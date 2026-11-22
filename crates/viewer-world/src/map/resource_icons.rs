@@ -536,6 +536,11 @@ fn row_parts(
 }
 
 impl PreparedResourceIcons {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn placed_positions(&self) -> Vec<[f32; 2]> {
+        self.placed.iter().map(|item| item.screen).collect()
+    }
+
     pub fn draw(
         &self,
         context: &Context<'_, impl native_gui::Resources + native_gui::Sheets>,

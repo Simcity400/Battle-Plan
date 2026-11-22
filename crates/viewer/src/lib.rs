@@ -31,7 +31,7 @@ use viewer_playback::layers;
 mod map;
 use viewer_playback::map_assets;
 use viewer_playback::map_views;
-mod page_clock;
+pub mod page_clock;
 use viewer_playback::perf_log;
 use viewer_playback::playback;
 mod playback_cost;

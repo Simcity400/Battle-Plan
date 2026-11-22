@@ -627,7 +627,8 @@ fn bound_of(text: &str) -> ConvoyBound {
 fn equipment_fields_follow_their_value_readers() {
     content_reader_core::test_game::enter();
     let (bound, misreads) = bound_of(
-        "equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
+        "upgrades = { a = { } b = { } }
+         equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
             upgrades = { a b } resources = { steel = 1 } default_modules = { s = empty }
             allow_mission_type = { x } forbid_mission_type = y allowed_types = { convoy }
             ai_type = convoy alias = { c }
@@ -715,4 +716,719 @@ fn a_link_cycle_is_refused_by_name() {
         "equipments = { s = { is_archetype = yes archetype = s parent = s type = convoy } }",
     );
     assert_eq!(bound, Ok([0, 0]), "{misreads:?}");
+}
+
+#[test]
+fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers() {
+    content_reader_core::test_game::enter();
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { gun = { add_stats = { lg_attack = 2 } multiply_stats = { lg_attack = 0.25 } } }
+         equipments = {
+            hull = { is_archetype = yes type = convoy reliability = 0.8
+                scaled_by_reliability = { hg_attack = 0.5 }
+                module_add_stats_multiplier = { lg_attack = 0.5 }
+                module_multiply_stats_multiplier = { lg_attack = 1.0 } }
+            hull_1 = { archetype = hull default_modules = { main = gun } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 450_000]));
+    let (bound, misreads) = bound_of(
+        "equipments = {
+            hull = { is_archetype = yes type = convoy reliability = 0.5
+                scaled_by_reliability = { hg_attack = 0.5 sub_attack = -0.25 } }
+            hull_1 = { archetype = hull }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-25_000, 50_000]));
+    let (bound, _) = bound_of(
+        "equipments = {
+            modular_convoy = { type = convoy
+                module_slots = { main = { } }
+                module_add_stats_multiplier = { lg_attack = 0.5 } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("modular_convoy")),
+        "modular convoy with module stat multipliers must be refused by name"
+    );
+    let (bound, _) = bound_of(
+        "equipment_modules = { neg_gun = { category = ship_gun add_stats = { lg_attack = -2 } } }
+         equipments = {
+            optional_convoy = { type = convoy lg_attack = 2
+                module_slots = { main = { required = no allowed_module_categories = { ship_gun } } }
+                default_modules = { main = neg_gun } }
+         }",
+    );
+    let refused = bound.unwrap_err();
+    assert!(refused.contains("optional_convoy"), "{refused}");
+    assert_eq!(bounded_total(8_190_000, 0, Err(&refused)), Some(81));
+    assert_eq!(bounded_total(8_190_000, 1, Err(&refused)), None);
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { neg_gun = { add_stats = { lg_attack = -2 } } }
+         equipments = {
+            hull = { type = convoy lg_attack = 2 default_modules = { main = neg_gun } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 200_000]));
+    let (bound, _) = bound_of(
+        "equipment_modules = {
+            basic = { category = turret }
+            advanced = { category = turret allowed_module_categories = { gun_slot = { heavy } } }
+            light = { category = light }
+            heavy = { category = heavy add_stats = { lg_attack = 2 } }
+         }
+         equipments = {
+            transitive_convoy = { type = convoy
+                module_slots = {
+                    turret_slot = { required = yes allowed_module_categories = { turret } }
+                    gun_slot = { required = yes allowed_module_categories = { light } }
+                }
+                default_modules = { turret_slot = basic gun_slot = light } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("transitive_convoy")),
+        "convoy with transitively unlocked weapon module must be refused by name"
+    );
+    let (bound, _) = bound_of(
+        "upgrades = { convoy_gun = { lg_attack = 1 } }
+         equipments = {
+            upgraded_convoy = { type = convoy upgrades = { convoy_gun } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("upgraded_convoy")),
+        "slotless convoy with weapon-modifying upgrade must be refused by name"
+    );
+    let (bound, _) = bound_of(
+        "equipment_modules = { tuning = { add_stats = { reliability = -0.75 } } }
+         equipments = {
+            wrapping_convoy = { type = convoy reliability = 1.0
+                scaled_by_reliability = { lg_attack = 1844674407.37095 }
+                default_modules = { engine = tuning } }
+         }",
+    );
+    assert!(
+        bound.is_err_and(|why| why.contains("wrapping_convoy")),
+        "convoy whose scaled_by_reliability can wrap fixed-point arithmetic must be refused by name"
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { tiny = { add_stats = { lg_attack = 0.01 } } }
+         equipments = {
+            nine_defaults = { type = convoy
+                default_modules = {
+                    s1 = tiny s2 = tiny s3 = tiny s4 = tiny s5 = tiny
+                    s6 = tiny s7 = tiny s8 = tiny s9 = tiny
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 9_000]));
+    assert_eq!(bounded_total(0, 1, Ok([0, 9_000])), Some(0));
+    let (bound, misreads) = bound_of(
+        "equipment_modules = { cancel = { add_stats = { lg_attack = 1 } multiply_stats = { lg_attack = -1.0 } } }
+         equipments = {
+            correlated_convoy = { type = convoy default_modules = { main = cancel } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 0]));
+    assert_eq!(bounded_total(0, 1, Ok([0, 0])), Some(0));
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            cancel = { add_stats = { lg_attack = 1 } multiply_stats = { lg_attack = -1.0 } }
+            zero_avg = { add_average_stats = { lg_attack = 0 } }
+         }
+         equipments = {
+            thirteen_defaults = { type = convoy
+                default_modules = {
+                    main = cancel
+                    z1 = zero_avg z2 = zero_avg z3 = zero_avg z4 = zero_avg
+                    z5 = zero_avg z6 = zero_avg z7 = zero_avg z8 = zero_avg
+                    z9 = zero_avg z10 = zero_avg z11 = zero_avg z12 = zero_avg
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([0, 0]));
+    assert_eq!(bounded_total(0, 1, Ok([0, 0])), Some(0));
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            lead = { add_stats = { lg_attack = 1 } add_average_stats = { lg_attack = -0.1 } }
+            avg_only = { add_average_stats = { lg_attack = -0.1 } }
+         }
+         equipments = {
+            thirteen_avg_defaults = { type = convoy
+                default_modules = {
+                    main = lead
+                    a1 = avg_only a2 = avg_only a3 = avg_only a4 = avg_only
+                    a5 = avg_only a6 = avg_only a7 = avg_only a8 = avg_only
+                    a9 = avg_only a10 = avg_only a11 = avg_only a12 = avg_only
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-10_000, 90_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            lead = { add_stats = { lg_attack = 1 } add_average_stats = { lg_attack = -0.1 } }
+            d1 = { add_average_stats = { lg_attack = -0.1 } }
+            d2 = { add_average_stats = { lg_attack = -0.11 } }
+            d3 = { add_average_stats = { lg_attack = -0.12 } }
+            d4 = { add_average_stats = { lg_attack = -0.13 } }
+            d5 = { add_average_stats = { lg_attack = -0.14 } }
+            d6 = { add_average_stats = { lg_attack = -0.15 } }
+            d7 = { add_average_stats = { lg_attack = -0.16 } }
+            d8 = { add_average_stats = { lg_attack = -0.17 } }
+            d9 = { add_average_stats = { lg_attack = -0.18 } }
+            d10 = { add_average_stats = { lg_attack = -0.19 } }
+            d11 = { add_average_stats = { lg_attack = -0.2 } }
+            d12 = { add_average_stats = { lg_attack = -0.21 } }
+            d13 = { add_average_stats = { lg_attack = -0.22 } }
+         }
+         equipments = {
+            fourteen_distinct_avg = { type = convoy
+                default_modules = {
+                    main = lead
+                    s1 = d1 s2 = d2 s3 = d3 s4 = d4 s5 = d5 s6 = d6 s7 = d7
+                    s8 = d8 s9 = d9 s10 = d10 s11 = d11 s12 = d12 s13 = d13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-22_000, 90_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            combined = { add_stats = { lg_attack = 0.08 } add_average_stats = { lg_attack = -0.1 } }
+         }
+         equipments = {
+            thirteen_combined = { type = convoy
+                default_modules = {
+                    s1 = combined s2 = combined s3 = combined s4 = combined
+                    s5 = combined s6 = combined s7 = combined s8 = combined
+                    s9 = combined s10 = combined s11 = combined s12 = combined
+                    s13 = combined
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-2_000, 94_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            m1 = { add_stats = { lg_attack = 0.074 } add_average_stats = { lg_attack = -0.1 } }
+            m2 = { add_stats = { lg_attack = 0.075 } add_average_stats = { lg_attack = -0.1 } }
+            m3 = { add_stats = { lg_attack = 0.076 } add_average_stats = { lg_attack = -0.1 } }
+            m4 = { add_stats = { lg_attack = 0.077 } add_average_stats = { lg_attack = -0.1 } }
+            m5 = { add_stats = { lg_attack = 0.078 } add_average_stats = { lg_attack = -0.1 } }
+            m6 = { add_stats = { lg_attack = 0.079 } add_average_stats = { lg_attack = -0.1 } }
+            m7 = { add_stats = { lg_attack = 0.080 } add_average_stats = { lg_attack = -0.1 } }
+            m8 = { add_stats = { lg_attack = 0.081 } add_average_stats = { lg_attack = -0.1 } }
+            m9 = { add_stats = { lg_attack = 0.082 } add_average_stats = { lg_attack = -0.1 } }
+            m10 = { add_stats = { lg_attack = 0.083 } add_average_stats = { lg_attack = -0.1 } }
+            m11 = { add_stats = { lg_attack = 0.084 } add_average_stats = { lg_attack = -0.1 } }
+            m12 = { add_stats = { lg_attack = 0.085 } add_average_stats = { lg_attack = -0.1 } }
+            m13 = { add_stats = { lg_attack = 0.086 } add_average_stats = { lg_attack = -0.1 } }
+         }
+         equipments = {
+            thirteen_distinct_combined = { type = convoy
+                default_modules = {
+                    s1 = m1 s2 = m2 s3 = m3 s4 = m4 s5 = m5 s6 = m6 s7 = m7
+                    s8 = m8 s9 = m9 s10 = m10 s11 = m11 s12 = m12 s13 = m13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-2_600, 94_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            m1 = { add_stats = { lg_attack = 0.074 } add_average_stats = { lg_attack = -0.1 } }
+            m2 = { add_stats = { lg_attack = 0.075 } add_average_stats = { lg_attack = -0.1 } }
+            m3 = { add_stats = { lg_attack = 0.076 } add_average_stats = { lg_attack = -0.1 } }
+            m4 = { add_stats = { lg_attack = 0.077 } add_average_stats = { lg_attack = -0.1 } }
+            m5 = { add_stats = { lg_attack = 0.078 } add_average_stats = { lg_attack = -0.1 } }
+            m6 = { add_stats = { lg_attack = 0.079 } add_average_stats = { lg_attack = -0.1 } }
+            m7 = { add_stats = { lg_attack = 0.080 } add_average_stats = { lg_attack = -0.1 } }
+            m8 = { add_stats = { lg_attack = 0.081 } add_average_stats = { lg_attack = -0.1 } }
+            m9 = { add_stats = { lg_attack = 0.082 } add_average_stats = { lg_attack = -0.1 } }
+            m10 = { add_stats = { lg_attack = 0.083 } add_average_stats = { lg_attack = -0.1 } }
+            m11 = { add_stats = { lg_attack = 0.084 } add_average_stats = { lg_attack = -0.1 } }
+            m12 = { add_stats = { lg_attack = 0.085 } add_average_stats = { lg_attack = -0.1 } }
+            m13 = { add_stats = { lg_attack = 0.086 } add_average_stats = { lg_attack = 0 } }
+         }
+         equipments = {
+            thirteen_distinct_with_zero_avg = { type = convoy
+                default_modules = {
+                    s1 = m1 s2 = m2 s3 = m3 s4 = m4 s5 = m5 s6 = m6 s7 = m7
+                    s8 = m8 s9 = m9 s10 = m10 s11 = m11 s12 = m12 s13 = m13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-2_600, 94_770]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            m1 = { add_stats = { lg_attack = 0.074 } add_average_stats = { lg_attack = 0.046 } }
+            m2 = { add_stats = { lg_attack = 0.075 } add_average_stats = { lg_attack = 0.046 } }
+            m3 = { add_stats = { lg_attack = 0.076 } add_average_stats = { lg_attack = 0.046 } }
+            m4 = { add_stats = { lg_attack = 0.077 } add_average_stats = { lg_attack = 0.046 } }
+            m5 = { add_stats = { lg_attack = 0.078 } add_average_stats = { lg_attack = 0.046 } }
+            m6 = { add_stats = { lg_attack = 0.079 } add_average_stats = { lg_attack = 0.046 } }
+            m7 = { add_stats = { lg_attack = 0.080 } add_average_stats = { lg_attack = 0.04599 } }
+            m8 = { add_stats = { lg_attack = 0.081 } add_average_stats = { lg_attack = 0.04599 } }
+            m9 = { add_stats = { lg_attack = 0.082 } add_average_stats = { lg_attack = 0.04599 } }
+            m10 = { add_stats = { lg_attack = 0.083 } add_average_stats = { lg_attack = 0.04599 } }
+            m11 = { add_stats = { lg_attack = 0.084 } add_average_stats = { lg_attack = 0.04599 } }
+            m12 = { add_stats = { lg_attack = 0.085 } add_average_stats = { lg_attack = 0.04599 } }
+            m13 = { add_stats = { lg_attack = 0.001 } add_average_stats = { lg_attack = -0.6 } }
+         }
+         equipments = {
+            thirteen_mixed_sign_avg = { type = convoy
+                default_modules = {
+                    s1 = m1 s2 = m2 s3 = m3 s4 = m4 s5 = m5 s6 = m6 s7 = m7
+                    s8 = m8 s9 = m9 s10 = m10 s11 = m11 s12 = m12 s13 = m13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-59_900, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            a1 = { add_stats = { lg_attack = 0.08327 } add_average_stats = { lg_attack = 0.00004 } }
+            a2 = { add_stats = { lg_attack = 0.08328 } add_average_stats = { lg_attack = 0.00004 } }
+            a3 = { add_stats = { lg_attack = 0.08329 } add_average_stats = { lg_attack = 0.00004 } }
+            a4 = { add_stats = { lg_attack = 0.08330 } add_average_stats = { lg_attack = 0.00004 } }
+            a5 = { add_stats = { lg_attack = 0.08331 } add_average_stats = { lg_attack = 0.00004 } }
+            a6 = { add_stats = { lg_attack = 0.08332 } add_average_stats = { lg_attack = 0.00004 } }
+            a7 = { add_stats = { lg_attack = 0.08334 } add_average_stats = { lg_attack = 0.00003 } }
+            a8 = { add_stats = { lg_attack = 0.08335 } add_average_stats = { lg_attack = 0.00003 } }
+            a9 = { add_stats = { lg_attack = 0.08336 } add_average_stats = { lg_attack = 0.00003 } }
+            a10 = { add_stats = { lg_attack = 0.08337 } add_average_stats = { lg_attack = 0.00003 } }
+            a11 = { add_stats = { lg_attack = 0.08338 } add_average_stats = { lg_attack = 0.00003 } }
+            a12 = { add_stats = { lg_attack = 0.08339 } add_average_stats = { lg_attack = 0.00003 } }
+            a13 = { add_stats = { lg_attack = 0.08333 } add_average_stats = { lg_attack = -1.08332 } }
+         }
+         equipments = {
+            thirteen_mixed_sign_high_add = { type = convoy
+                default_modules = {
+                    s1 = a1 s2 = a2 s3 = a3 s4 = a4 s5 = a5 s6 = a6 s7 = a7
+                    s8 = a8 s9 = a9 s10 = a10 s11 = a11 s12 = a12 s13 = a13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-99_999, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            a1 = { add_stats = { lg_attack = 0.00327 } add_average_stats = { lg_attack = 0.00004 } }
+            a2 = { add_stats = { lg_attack = 0.08328 } add_average_stats = { lg_attack = 0.00004 } }
+            a3 = { add_stats = { lg_attack = 0.08329 } add_average_stats = { lg_attack = 0.00004 } }
+            a4 = { add_stats = { lg_attack = 0.08330 } add_average_stats = { lg_attack = 0.00004 } }
+            a5 = { add_stats = { lg_attack = 0.08331 } add_average_stats = { lg_attack = 0.00004 } }
+            a6 = { add_stats = { lg_attack = 0.08332 } add_average_stats = { lg_attack = 0.00004 } }
+            a7 = { add_stats = { lg_attack = 0.08334 } add_average_stats = { lg_attack = 0.00003 } }
+            a8 = { add_stats = { lg_attack = 0.08335 } add_average_stats = { lg_attack = 0.00003 } }
+            a9 = { add_stats = { lg_attack = 0.08336 } add_average_stats = { lg_attack = 0.00003 } }
+            a10 = { add_stats = { lg_attack = 0.08337 } add_average_stats = { lg_attack = 0.00003 } }
+            a11 = { add_stats = { lg_attack = 0.08338 } add_average_stats = { lg_attack = 0.00003 } }
+            a12 = { add_stats = { lg_attack = 0.16339 } add_average_stats = { lg_attack = 0.00003 } }
+            a13 = { add_stats = { lg_attack = 0.08333 } add_average_stats = { lg_attack = -1.08332 } }
+         }
+         equipments = {
+            thirteen_integrality_gap_upper = { type = convoy
+                default_modules = {
+                    s1 = a1 s2 = a2 s3 = a3 s4 = a4 s5 = a5 s6 = a6 s7 = a7
+                    s8 = a8 s9 = a9 s10 = a10 s11 = a11 s12 = a12 s13 = a13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-99_999, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            b1 = { add_stats = { lg_attack = -0.00327 } add_average_stats = { lg_attack = -0.00004 } }
+            b2 = { add_stats = { lg_attack = -0.08328 } add_average_stats = { lg_attack = -0.00004 } }
+            b3 = { add_stats = { lg_attack = -0.08329 } add_average_stats = { lg_attack = -0.00004 } }
+            b4 = { add_stats = { lg_attack = -0.08330 } add_average_stats = { lg_attack = -0.00004 } }
+            b5 = { add_stats = { lg_attack = -0.08331 } add_average_stats = { lg_attack = -0.00004 } }
+            b6 = { add_stats = { lg_attack = -0.08332 } add_average_stats = { lg_attack = -0.00004 } }
+            b7 = { add_stats = { lg_attack = -0.08334 } add_average_stats = { lg_attack = -0.00003 } }
+            b8 = { add_stats = { lg_attack = -0.08335 } add_average_stats = { lg_attack = -0.00003 } }
+            b9 = { add_stats = { lg_attack = -0.08336 } add_average_stats = { lg_attack = -0.00003 } }
+            b10 = { add_stats = { lg_attack = -0.08337 } add_average_stats = { lg_attack = -0.00003 } }
+            b11 = { add_stats = { lg_attack = -0.08338 } add_average_stats = { lg_attack = -0.00003 } }
+            b12 = { add_stats = { lg_attack = -0.16339 } add_average_stats = { lg_attack = -0.00003 } }
+            b13 = { add_stats = { lg_attack = -0.08333 } add_average_stats = { lg_attack = 1.08332 } }
+         }
+         equipments = {
+            thirteen_integrality_gap_lower = { type = convoy
+                default_modules = {
+                    s1 = b1 s2 = b2 s3 = b3 s4 = b4 s5 = b5 s6 = b6 s7 = b7
+                    s8 = b8 s9 = b9 s10 = b10 s11 = b11 s12 = b12 s13 = b13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-99_999, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+}
+
+#[test]
+fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades() {
+    use replay_data::rows::{
+        LexicalTokenRow, Recorded, TableRows, VariantBonusSnapshotRow, VariantBonusSource,
+        VariantDefinitionRow, VariantDesignState, VariantStatEntry, VariantUpgradeRow,
+        variant_bonus_snapshot_id,
+    };
+    use std::fs;
+    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+
+    content_reader_core::test_game::enter();
+    let lg_attack = content_reader_core::equipment::stat_index(b"lg_attack").unwrap() as u32;
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_viewer_convoy_variants_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let path = root.join("common/units/equipment/convoys.txt");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        "upgrades = {
+            global_gun = { lg_attack = 1.0 }
+            avg_first = { add_stats = { lg_attack = 2 } add_average_stats = { lg_attack = -2 } }
+            avg_zero = { add_average_stats = { lg_attack = -2 } }
+         }
+         equipments = {
+            convoy_1 = { type = convoy lg_attack = 0.6 }
+            vanilla_convoy = { type = convoy }
+         }",
+    )
+    .unwrap();
+    let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let database = content_reader_core::equipment::Database::load(&layers).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let (static_bound, misreads) = convoy_weapon_bound_from_database(&database);
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(static_bound, Ok([0, 60_000]));
+
+    let base_frame = |design: Recorded<VariantDesignState>,
+                      upgrades: Vec<VariantUpgradeRow>,
+                      snapshots: Vec<VariantBonusSnapshotRow>| {
+        let mut frame = test_frame(1);
+        put(
+            &mut frame,
+            TableRows::LexicalTokens(vec![
+                LexicalTokenRow {
+                    token: 10,
+                    literal: b"convoy_1".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 11,
+                    literal: b"lg_attack".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 12,
+                    literal: b"global_gun".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 13,
+                    literal: b"build_cost_ic".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 14,
+                    literal: b"vanilla_convoy".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 15,
+                    literal: b"avg_first".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 16,
+                    literal: b"avg_zero".to_vec(),
+                },
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+                id: 70,
+                equipment_token: 10,
+                design,
+                ..Default::default()
+            }]),
+        );
+        put(&mut frame, TableRows::VariantUpgrades(upgrades));
+        put(&mut frame, TableRows::VariantModules(Vec::new()));
+        put(&mut frame, TableRows::VariantBonusSnapshots(snapshots));
+        frame
+    };
+
+    let mio_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            design_team_bonus: vec![VariantStatEntry {
+                index: 11,
+                value: 100_000,
+            }],
+            ..Default::default()
+        }),
+        Vec::new(),
+        Vec::new(),
+    );
+    let mio_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &mio_frame,
+    )
+    .unwrap();
+    assert_eq!(mio_bound, Ok([0, 120_000]));
+    assert_eq!(
+        bounded_total(0, 1, mio_bound.as_ref().copied().map_err(String::as_str)),
+        None
+    );
+
+    let bonus = VariantBonusSource {
+        stats: vec![VariantStatEntry {
+            index: lg_attack,
+            value: 100_000,
+        }],
+        ..Default::default()
+    };
+    let bonus_id = variant_bonus_snapshot_id(&bonus);
+    let source_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            bonus_sources: vec![bonus_id],
+            ..Default::default()
+        }),
+        Vec::new(),
+        vec![VariantBonusSnapshotRow {
+            id: bonus_id,
+            source: bonus,
+        }],
+    );
+    let source_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &source_frame,
+    )
+    .unwrap();
+    assert_eq!(source_bound, Ok([0, 120_000]));
+
+    let unresolved_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            named_bonuses: vec![9],
+            unresolved_stats: (0..content_reader_core::equipment::STAT_COUNT as u32)
+                .filter(|index| {
+                    ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d].contains(index)
+                })
+                .map(|index| VariantStatEntry {
+                    index,
+                    value: if index == lg_attack { 120_000 } else { 0 },
+                })
+                .collect(),
+            ..Default::default()
+        }),
+        Vec::new(),
+        Vec::new(),
+    );
+    let unresolved_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &unresolved_frame,
+    )
+    .unwrap();
+    assert_eq!(unresolved_bound, Ok([0, 120_000]));
+
+    let upgrade_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        vec![VariantUpgradeRow {
+            variant: 70,
+            source_ordinal: 0,
+            definition_token: 12,
+            level: 1,
+        }],
+        Vec::new(),
+    );
+    let upgrade_bound = convoy_weapon_bound_for_frame(
+        static_bound.as_ref().copied().map_err(String::as_str),
+        Some(&database),
+        &upgrade_frame,
+    )
+    .unwrap();
+    assert_eq!(upgrade_bound, Ok([0, 120_000]));
+
+    let unrecorded_frame = base_frame(Recorded::NotRecorded, Vec::new(), Vec::new());
+    assert!(
+        convoy_weapon_bound_for_frame(
+            static_bound.as_ref().copied().map_err(String::as_str),
+            Some(&database),
+            &unrecorded_frame,
+        )
+        .unwrap()
+        .is_err()
+    );
+
+    let mut non_weapon_frame = base_frame(
+        Recorded::Value(VariantDesignState {
+            design_team_bonus: vec![VariantStatEntry {
+                index: 13,
+                value: -10_000,
+            }],
+            ..Default::default()
+        }),
+        Vec::new(),
+        Vec::new(),
+    );
+    put(
+        &mut non_weapon_frame,
+        TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 71,
+            equipment_token: 14,
+            design: Recorded::Value(VariantDesignState {
+                design_team_bonus: vec![VariantStatEntry {
+                    index: 13,
+                    value: -10_000,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+    );
+    let non_weapon_bound = convoy_weapon_bound_for_frame(
+        Ok([0, 0]),
+        Some(&database),
+        &non_weapon_frame,
+    )
+    .unwrap();
+    assert_eq!(non_weapon_bound, Ok([0, 0]));
+    assert_eq!(
+        bounded_total(8_190_000, 1, non_weapon_bound.as_ref().copied().map_err(String::as_str)),
+        Some(81)
+    );
+
+    let mut level_zero_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        vec![
+            VariantUpgradeRow {
+                variant: 71,
+                source_ordinal: 0,
+                definition_token: 15,
+                level: 1,
+            },
+            VariantUpgradeRow {
+                variant: 71,
+                source_ordinal: 1,
+                definition_token: 16,
+                level: 0,
+            },
+        ],
+        Vec::new(),
+    );
+    put(
+        &mut level_zero_frame,
+        TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 71,
+            equipment_token: 14,
+            design: Recorded::Value(VariantDesignState::default()),
+            ..Default::default()
+        }]),
+    );
+    let level_zero_bound = convoy_weapon_bound_for_frame(
+        Ok([0, 0]),
+        Some(&database),
+        &level_zero_frame,
+    )
+    .unwrap();
+    assert_eq!(level_zero_bound, Ok([0, 100_000]));
+    assert_eq!(
+        bounded_total(0, 1, level_zero_bound.as_ref().copied().map_err(String::as_str)),
+        None
+    );
+
+    let mut cached_unavailable_frame = base_frame(
+        Recorded::Value(VariantDesignState::default()),
+        Vec::new(),
+        Vec::new(),
+    );
+    put(
+        &mut cached_unavailable_frame,
+        TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: 72,
+            equipment_token: 14,
+            design: Recorded::Value(VariantDesignState {
+                named_bonuses: vec![9],
+                bonus_sources: vec![bonus_id],
+                unresolved_stats: (0..content_reader_core::equipment::STAT_COUNT as u32)
+                    .filter(|index| {
+                        ![0x2e, 0x2f, 0x30, 0x31, 0x3e, 0x41, 0x43, 0x44, 0x45, 0x4d]
+                            .contains(index)
+                    })
+                    .map(|index| VariantStatEntry { index, value: 0 })
+                    .collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+    );
+    *cached_unavailable_frame.tables[replay_data::rows::TableId::VariantBonusSnapshots.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "snapshots unavailable".into(),
+        };
+    *cached_unavailable_frame.tables[replay_data::rows::TableId::VariantUpgrades.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "upgrades unavailable".into(),
+        };
+    *cached_unavailable_frame.tables[replay_data::rows::TableId::VariantModules.index()] =
+        replay_frame::frame::TableView::Unavailable {
+            reason: "modules unavailable".into(),
+        };
+    let cached_bound = convoy_weapon_bound_for_frame(
+        Ok([0, 0]),
+        Some(&database),
+        &cached_unavailable_frame,
+    )
+    .unwrap();
+    assert_eq!(cached_bound, Ok([0, 0]));
+    assert_eq!(
+        bounded_total(0, 1, cached_bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
 }

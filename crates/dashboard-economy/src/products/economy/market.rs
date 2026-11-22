@@ -333,7 +333,10 @@ impl AtHour for MarketLendLease {
                         variants.extend(lease_variants(row));
                     }
                 }
-                let mut reads = vec![Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from))];
+                let mut reads = vec![
+                    Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from)),
+                    names::capital_state_read(held),
+                ];
                 if contracts {
                     reads.push(Read::these(TableId::PurchaseContracts, purchases.into_iter().map(u128::from)));
                 }

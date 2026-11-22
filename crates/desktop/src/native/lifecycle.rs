@@ -25,11 +25,13 @@ fn folder_arguments(config: &dashboard_core::config::Config) -> Vec<std::ffi::Os
 impl super::Inner {
     fn publish_stopped(&self, app: &AppHandle) {
         self.publish(app);
-        if let Some(views) = &self.dashboard_views {
-            let states: Vec<_> = views
+        if let Some(snapshot) = &self.dashboard_views {
+            let states: Vec<_> = snapshot
+                .views
                 .iter()
                 .map(|view| DashboardMapState {
                     id: view.id.clone(),
+                    clock_id: view.clock_id.clone(),
                     requested_sequence: view.sequence,
                     error: self.status.error.clone(),
                     ..Default::default()
@@ -37,6 +39,42 @@ impl super::Inner {
                 .collect();
             let _ = app.emit("dashboard-map-state", states);
         }
+    }
+
+    pub(super) fn filter_map_states(
+        &self,
+        mut states: Vec<DashboardMapState>,
+    ) -> Vec<DashboardMapState> {
+        let Some(requested) = self.dashboard_views.as_ref() else {
+            return Vec::new();
+        };
+        states.retain_mut(|state| {
+            if requested.clock_id.as_deref() != Some(state.clock_id.as_str()) {
+                return false;
+            }
+            let Some(view) = requested.views.iter().find(|view| view.id == state.id) else {
+                return false;
+            };
+            if state.clock_id != view.clock_id
+                || state
+                    .source_id
+                    .as_ref()
+                    .is_some_and(|id| *id != view.source_id)
+                || state
+                    .revision
+                    .as_ref()
+                    .is_some_and(|revision| *revision != view.revision)
+            {
+                return false;
+            }
+            if state.requested_sequence < view.sequence {
+                state.requested_sequence = view.sequence;
+                state.loading = true;
+                state.error = None;
+            }
+            true
+        });
+        states
     }
 
     pub(super) fn map_ended(&mut self, ending: Ending) -> bool {
@@ -237,8 +275,7 @@ impl NativeHost {
         inner.status.fly_aircraft = None;
         inner.last_diagnostic = None;
         if inner.active_dashboard {
-            let views = inner.dashboard_views.clone().unwrap_or_default();
-            inner.pending.maps = Some(views);
+            inner.pending.maps = Some(inner.dashboard_snapshot());
         } else {
             inner.pending.bounds = inner.bounds;
             inner.pending.visibility = Some(inner.status.visible);
@@ -344,33 +381,11 @@ impl NativeHost {
                 );
                 return;
             }
-            NativeEvent::MapStates { mut states } => {
-                let Some(requested) = inner.dashboard_views.as_ref() else {
-                    return;
-                };
-                states.retain_mut(|state| {
-                    let Some(view) = requested.iter().find(|view| view.id == state.id) else {
-                        return false;
-                    };
-                    if state
-                        .source_id
-                        .as_ref()
-                        .is_some_and(|id| *id != view.source_id)
-                        || state
-                            .revision
-                            .as_ref()
-                            .is_some_and(|revision| *revision != view.revision)
-                    {
-                        return false;
-                    }
-                    if state.requested_sequence < view.sequence {
-                        state.requested_sequence = view.sequence;
-                        state.loading = true;
-                        state.error = None;
-                    }
-                    true
-                });
-                let _ = app.emit("dashboard-map-state", states);
+            NativeEvent::MapStates { states } => {
+                let states = inner.filter_map_states(states);
+                if !states.is_empty() {
+                    let _ = app.emit("dashboard-map-state", states);
+                }
                 return;
             }
             NativeEvent::Ready { sample_counts, .. } => {

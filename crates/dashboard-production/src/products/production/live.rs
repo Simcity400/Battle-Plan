@@ -165,10 +165,12 @@ impl AtHour for ProductionLinesAt {
     fn projection(_params: &Self::Params, table: TableId, _plan: &[(Vec<Read>, i32)], _context: &Self::Context) -> Option<Vec<usize>> {
         let fields: &[&str] = match table {
             TableId::Countries => &["canonical_slot", "tag"],
-            TableId::CountryAppearance => &["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d"],
+            TableId::CountryAppearance => &["cosmetic_tag", "name_tag", "graphical_culture", "graphical_culture_2d", "original_tag", "original_tag_reference"],
+            TableId::ReservedCountryNaming => &["original_tag", "original_tag_reference", "dynamic_tag_boundary"],
             TableId::PoliticalParties => &["is_ruling", "token"],
             TableId::Politics => &["capital", "original_capital"],
-            TableId::States | TableId::Factions => &[],
+            TableId::States => &["continent"],
+            TableId::Factions => &[],
             _ => return None,
         };
         Some(dashboard_base::products::at_hour::field_columns(table, fields))
@@ -178,9 +180,10 @@ impl AtHour for ProductionLinesAt {
         match stage {
             1 => edits.fields(TableId::CountryLinks, u64::MAX),
             2 => edits.fields(TableId::CountryLinks, u64::MAX)
+                || edits.fields(TableId::Politics, dashboard_base::products::at_hour::field_mask(TableId::Politics, &["capital", "original_capital"]))
                 || edits.fields(TableId::ProductionLines, dashboard_base::products::at_hour::field_mask(TableId::ProductionLines, &["variant", "mio", "country"]))
                 || edits.fields(TableId::ProductionLineOutput, dashboard_base::products::at_hour::field_mask(TableId::ProductionLineOutput, &["variant", "mio", "ended"])),
-            3 => [TableId::VariantDefinitions, TableId::IndustrialOrganisations, TableId::Politics].into_iter().any(|t| edits.fields(t, u64::MAX)),
+            3 => [TableId::VariantDefinitions, TableId::IndustrialOrganisations, TableId::States].into_iter().any(|t| edits.fields(t, u64::MAX)),
             _ => false,
         }
     }
@@ -233,7 +236,11 @@ impl AtHour for ProductionLinesAt {
                         mios.insert(row.mio);
                     }
                 }
-                vec![Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from)), Read::these(TableId::IndustrialOrganisations, mios.into_iter().map(u128::from))]
+                vec![
+                    Read::these(TableId::VariantDefinitions, variants.into_iter().map(u128::from)),
+                    Read::these(TableId::IndustrialOrganisations, mios.into_iter().map(u128::from)),
+                    names::capital_state_read(held),
+                ]
             }
             3 => {
                 let mut tokens: BTreeSet<u32> = names::variant_tokens(held).collect();

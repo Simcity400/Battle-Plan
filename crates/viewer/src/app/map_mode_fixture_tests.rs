@@ -27,6 +27,7 @@ fn target(fixture: &Fixture, id: &str, x: i32) -> dashboard_core::protocol::Dash
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,

@@ -122,17 +122,7 @@ fn joins(entry: &Arc<Entry>) -> (MapSide, Arc<AtomicBool>) {
 }
 
 fn frames_at(side: &mut MapSide, hour: Hour, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let frame = side.frame(hour).unwrap();
-        if done(side) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what} within 120 s: applied {:?}, drawn {:?}, composing {}", side.applied(), side.last_frame().drawn, side.composing());
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
+    crate::layers::recorded::frames_at(side, hour, what, |side, _| done(side));
 }
 
 fn shown_at(side: &mut MapSide, hour: Hour) {
@@ -176,6 +166,7 @@ fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapVi
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,
@@ -189,6 +180,7 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     applied_held(&mut side, &gate, 8, true);
     let mut viewer = viewer(8, side);
     let state = viewer.map_state(&target(8, false));
+    assert_eq!(state.clock_id, "page-1");
     assert!(state.loading, "the head is hour 8, but the held layer shows hour 2: {state:?}");
     assert_eq!(state.hour, Some(2), "the hour on screen is the layer's");
     viewer.playhead_map.as_mut().unwrap().driven(|side| side.frame(8)).unwrap();
@@ -198,8 +190,13 @@ fn after_a_seek_the_report_loads_until_every_drawn_layer_shows_the_head() {
     assert!(viewer.map_state(&target(8, false)).loading, "the layers show hour 8, the overlay nothing");
     viewer.overlay_hour = Some(8);
     let state = viewer.map_state(&target(8, false));
+    assert_eq!(state.clock_id, "page-1");
     assert!(!state.loading, "the frame every part shows hour 8 stops the loading: {state:?}");
     assert_eq!(state.hour, Some(8));
+    viewer.error = Some("synthetic map error".into());
+    let failed = viewer.map_state(&target(8, false));
+    assert_eq!(failed.clock_id, "page-1");
+    assert_eq!(failed.error.as_deref(), Some("synthetic map error"));
 }
 
 #[test]
@@ -230,7 +227,7 @@ fn a_window_not_shown_lets_its_map_go_and_the_rows_answer_a_seek_meanwhile() {
     let _ = context.run_logic(&input, |context| eframe::App::logic(&mut viewer, context, &mut frame));
     entry.anchor(6, false, 0.0, true);
     assert!(apart.drive(6), "the rows answer the seek at the hour sought");
-    let rows_at = reader.wait(|frame| frame.hour == 6, Duration::from_secs(60)).expect("the rows answer the seek at the hour sought");
+    let rows_at = reader.frame().expect("the rows answer the seek at the hour sought");
     assert_eq!(rows_at.hour, 6);
 }
 

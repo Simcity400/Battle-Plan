@@ -4255,6 +4255,7 @@ dependencies = [
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
+ "dashboard-economy",
  "dashboard-follow",
  "dashboard-production",
  "dashboard-query",

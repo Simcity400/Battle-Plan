@@ -5,7 +5,7 @@ mod pending;
 
 use dashboard_core::protocol::{DashboardMapView, ViewBounds, ViewerState, validate_map_views};
 pub use gamepad::start_gamepad;
-use pending::{Pending, SeekTarget};
+use pending::{DashboardSnapshot, Pending, SeekTarget};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::WebviewWindow;
@@ -37,7 +37,7 @@ struct Inner {
     requested_path: Option<String>,
     requested_revision: Option<String>,
     requested_seek: Option<SeekTarget>,
-    dashboard_views: Option<Vec<DashboardMapView>>,
+    dashboard_views: Option<DashboardSnapshot>,
     active_dashboard: bool,
     shutting_down: bool,
     last_diagnostic: Option<String>,
@@ -49,6 +49,7 @@ struct Inner {
     muted: Option<bool>,
     exports: Vec<Export>,
     export_requests: u64,
+    clock_origins: viewer::page_clock::OriginGate,
 }
 
 struct Export {
@@ -108,6 +109,49 @@ impl Inner {
         self.pending.actions.push_back(action);
         self.flush();
         Ok(answered)
+    }
+
+    pub(super) fn dashboard_snapshot(&self) -> DashboardSnapshot {
+        self.dashboard_views
+            .clone()
+            .unwrap_or_else(|| DashboardSnapshot {
+                clock_id: self.clock_origins.active().map(str::to_owned),
+                views: Vec::new(),
+            })
+    }
+
+    fn apply_dashboard_views(
+        &mut self,
+        clock_id: &str,
+        views: &[DashboardMapView],
+    ) -> Result<bool, String> {
+        validate_map_views(clock_id, views).map_err(str::to_owned)?;
+        if self.shutting_down {
+            return Err("BattlePlan is closing.".into());
+        }
+        if self.clock_origins.admit(clock_id) == viewer::page_clock::OriginStatus::Retired {
+            return Ok(false);
+        }
+        let snapshot = DashboardSnapshot {
+            clock_id: Some(clock_id.to_owned()),
+            views: views.to_vec(),
+        };
+        self.dashboard_views = Some(snapshot.clone());
+        if !self.active_dashboard {
+            return Ok(false);
+        }
+        self.status.visible = views
+            .iter()
+            .any(|view| view.visible && view.clip.width > 0 && view.clip.height > 0);
+        self.pending.maps = Some(snapshot);
+        self.pending.bounds = None;
+        self.pending.visibility = None;
+        self.pending.open = None;
+        self.pending.seek = None;
+        self.requested_path = None;
+        self.requested_revision = None;
+        self.requested_seek = None;
+        Ok(true)
     }
 
     fn publish(&self, app: &tauri::AppHandle) {
@@ -179,7 +223,7 @@ impl NativeHost {
             inner.pending.visibility = None;
             inner.pending.open = None;
             inner.pending.seek = None;
-            inner.pending.maps = Some(inner.dashboard_views.clone().unwrap_or_default());
+            inner.pending.maps = Some(inner.dashboard_snapshot());
         } else {
             inner.pending.maps = None;
             inner.pending.campaign_map = true;
@@ -195,29 +239,15 @@ impl NativeHost {
     pub fn set_dashboard_views(
         &self,
         window: &WebviewWindow,
+        clock_id: &str,
         views: &[DashboardMapView],
     ) -> Result<(), String> {
-        validate_map_views(views).map_err(str::to_owned)?;
-        {
+        let admitted = {
             let mut inner = self.shared.lock().map_err(|error| error.to_string())?;
-            if inner.shutting_down {
-                return Err("BattlePlan is closing.".into());
-            }
-            inner.dashboard_views = Some(views.to_vec());
-            if !inner.active_dashboard {
-                return Ok(());
-            }
-            inner.status.visible = views
-                .iter()
-                .any(|view| view.visible && view.clip.width > 0 && view.clip.height > 0);
-            inner.pending.maps = Some(views.to_vec());
-            inner.pending.bounds = None;
-            inner.pending.visibility = None;
-            inner.pending.open = None;
-            inner.pending.seek = None;
-            inner.requested_path = None;
-            inner.requested_revision = None;
-            inner.requested_seek = None;
+            inner.apply_dashboard_views(clock_id, views)?
+        };
+        if !admitted {
+            return Ok(());
         }
         if !views.is_empty() {
             self.ensure_started(window)?;
@@ -445,7 +475,7 @@ impl NativeHost {
         hour: i32,
         playback: Option<dashboard_core::protocol::MapPlayback>,
     ) -> Result<(), String> {
-        if let Some(playback) = playback {
+        if let Some(playback) = &playback {
             playback.validate()?;
         }
         branch.parse::<u64>().map_err(|_| "Invalid campaign history")?;
@@ -453,6 +483,12 @@ impl NativeHost {
             return Err("A map seek must carry the revision its analysis read".into());
         }
         let mut inner = self.shared.lock().map_err(|e| e.to_string())?;
+        if playback.as_ref().is_some_and(|clock| {
+            inner.clock_origins.admit(&clock.clock_id)
+                == viewer::page_clock::OriginStatus::Retired
+        }) {
+            return Ok(());
+        }
         inner.dashboard_views = None;
         inner.pending.maps = None;
         let current_matches = inner.status.viewer.path.as_ref() == Some(&path)

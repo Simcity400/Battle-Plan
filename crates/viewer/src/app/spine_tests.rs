@@ -91,15 +91,7 @@ fn map(viewer: &mut Viewer) -> &mut crate::playhead_host::side::SideThread {
 
 fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
     side.with_side_mut(|side| {
-        loop {
-            let frame = side.frame(hour).unwrap();
-            if done(side) {
-                return;
-            }
-            if frame.steps == 0 && frame.swapped.is_none() {
-                std::thread::yield_now();
-            }
-        }
+        crate::layers::recorded::frames_at(side, hour, &format!("hour {hour}"), |side, _| done(side));
     });
     side.driven(|_| ());
 }
@@ -147,6 +139,7 @@ fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapVi
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,
@@ -363,4 +356,44 @@ fn overlay_continuity_matches_destination_across_lagging_layers_and_rejects_stal
         !super::overlay_matches_continuity((0, BRANCH, 8, 7), (BRANCH + 1, 8, Some("7")), Some(0), &gaps),
         "retained overlay from another branch is rejected"
     );
+}
+
+#[test]
+fn a_new_playing_origin_seeks_the_attached_map_side_to_the_new_hour() {
+    let (side, _) = side("spine origin switch");
+    let mut viewer = viewer(side, 2);
+    let now = viewer.last_step;
+    let sample = |origin, composed_at| {
+        Some(crate::page_clock::ClockSample {
+            origin,
+            composed_at,
+        })
+    };
+    viewer.anchor_playback(
+        at(2),
+        true,
+        1_440.0,
+        true,
+        sample("page-A", 10_000.0),
+        now,
+        LAST,
+    );
+    shown(map(&mut viewer), 2);
+    let before_epoch = map(&mut viewer).entry().playhead().epoch();
+    viewer.anchor_playback(
+        at(9),
+        true,
+        1_440.0,
+        false,
+        sample("page-B", 9_500.0),
+        now + std::time::Duration::from_millis(500),
+        LAST,
+    );
+    assert_eq!(viewer.playhead, Some(at(9)));
+    assert!(
+        map(&mut viewer).entry().playhead().epoch() > before_epoch,
+        "a new playing page origin must issue a seek to the attached map side"
+    );
+    shown(map(&mut viewer), 9);
+    assert_eq!(map(&mut viewer).applied(), Some(9));
 }

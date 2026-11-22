@@ -935,6 +935,7 @@ mod tests {
                 sequence: 1,
                 seek_sequence: None,
                 composed_at: 0.0,
+                clock_id: "page-1".into(),
                 bounds,
                 clip: bounds,
                 visible: true,
