@@ -5,12 +5,13 @@ import type { Availability, FollowTransport } from './store.ts';
 import { baseClient, PerClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate } from '../pulled.ts';
-import { newer, StructureQueue } from './structureQueue.ts';
-import type { OrderedReading, ReadingOrder } from '../../draw/followed';
+import { StructureQueue } from './structureQueue.ts';
+import { newer, type Version } from './version.ts';
+import type { OrderedReading } from '../../draw/followed';
 
 let nextId = 1;
 const ids = () => nextId++;
-const shown = new Map<number, ReadingOrder>();
+const shown = new Map<number, Version>();
 
 let nextInspection = 1;
 export function inspectFollow(id: number) {
@@ -20,7 +21,7 @@ export function inspectFollow(id: number) {
       if (message.type === 'inspection' && message.request === request) {
         off();
         const reading = message.reading, held = reading && shown.get(reading.id);
-        resolve(reading && !(held && newer(held, reading.order)) ? reading : undefined);
+        resolve(reading && !(held && newer(held, reading.version)) ? reading : undefined);
       }
       if (message.type === 'failed' || message.type === 'followFailure') { off(); resolve(undefined); }
     });

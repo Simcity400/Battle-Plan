@@ -1,13 +1,11 @@
-import type { OrderedReading, ReadingOrder } from '../../draw/followed';
-
-export const newer = (order: ReadingOrder, than: ReadingOrder | undefined) => !than || (order.generation !== than.generation
-  ? order.generation > than.generation : order.from !== than.from ? order.from > than.from : order.sequence > than.sequence);
+import type { OrderedReading } from '../../draw/followed';
+import { newer, type Version } from './version.ts';
 
 export class StructureQueue {
   private due: OrderedReading[] = [];
-  private readonly shown: Map<number, ReadingOrder>;
+  private readonly shown: Map<number, Version>;
 
-  constructor(shown = new Map<number, ReadingOrder>()) { this.shown = shown; }
+  constructor(shown = new Map<number, Version>()) { this.shown = shown; }
 
   get pending() { return this.due.length > 0; }
 
@@ -30,8 +28,8 @@ export class StructureQueue {
   }
 
   take(read: OrderedReading): boolean {
-    if (!newer(read.order, this.shown.get(read.id))) return false;
-    this.shown.set(read.id, read.order);
+    if (!newer(read.version, this.shown.get(read.id))) return false;
+    this.shown.set(read.id, read.version);
     return true;
   }
 
@@ -40,7 +38,7 @@ export class StructureQueue {
     const eligible = new Map<number, OrderedReading>();
     while (this.due.length && this.due.at(-1)!.hour <= hour) {
       const read = this.due.pop()!, held = eligible.get(read.id);
-      if (!held || newer(read.order, held.order)) eligible.set(read.id, read);
+      if (!held || newer(read.version, held.version)) eligible.set(read.id, read);
     }
     for (const read of eligible.values()) publish(read);
   }

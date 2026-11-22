@@ -6,39 +6,35 @@ import { rowKey } from '../dashboard/follow/message.ts';
 import { panelStructure } from './panels/views.ts';
 import { liveKey } from '../charts/live.ts';
 import { sectionOf, sectionValues, sectionGroups } from '../dashboard/follow/liveCells.ts';
-import type { FromWorker } from './kit';
+import type { Version } from '../dashboard/follow/version';
 
 export interface PageReading {
   id: number; seek: number; hour: number; through: number; coverage?: { start: number; through: number };
   panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
 }
 
-export interface ReadingOrder { generation: number; from: number; sequence: number }
-export type OrderedReading = PageReading & { order: ReadingOrder };
+export type OrderedReading = PageReading & { version: Version };
 
 export interface Answered { answer: FollowedAnswer; date: { since: number; through: number } }
+
+export interface Notices {
+  reset(ids: ReadonlySet<number>, route: number, seek: number, from: number): void;
+  lead?(updates: OrderedReading[]): void;
+}
 
 export class Followed {
   private readonly dirty = new Set<FollowEntry>();
   private readonly branches = new Map<number, string>();
   private readonly seeks = new Map<string, number>();
   private readonly products = new Map<number, string>();
-  private readonly sent = new Map<number, { panel?: FollowedPanel; answer?: FollowedAnswer; shape: string }>();
+  private readonly sent = new Map<number, { generation: number; panel?: FollowedPanel; answer?: FollowedAnswer; shape: string }>();
   private readonly store: DatedStore;
   private readonly entries = new Map<number, FollowEntry>();
   private readonly routes = new Map<string, number>();
-  private readonly upcoming = new Map<number, string>();
-  private readonly generations = new Map<number, number>();
-  private readonly landed = new Map<number, number>();
-  private staged = new WeakMap<FollowedPanel, string>();
-  private generation = 0;
-  private sequence = 0;
+  private readonly staged = new WeakMap<FollowedPanel, string>();
 
   constructor(release: (what: Release) => void, changed?: (id: number) => void) {
-    this.store = new DatedStore(entry => {
-      if (this.entries.get(entry.id) === entry) this.landed.set(entry.id, this.generations.get(entry.id)!);
-      this.dirty.add(entry); changed?.(entry.id);
-    }, release);
+    this.store = new DatedStore(entry => { this.dirty.add(entry); changed?.(entry.id); }, release);
   }
 
   get size() { return this.entries.size; }
@@ -48,59 +44,44 @@ export class Followed {
     const entry: FollowEntry = { id, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
     this.branches.set(id, branch);
     this.entries.set(id, entry);
-    this.generations.set(id, this.generation); this.landed.set(id, this.generation);
     this.store.add(entry, branch);
   }
   remove(id: number) {
     const entry = this.entries.get(id);
     if (entry) this.dirty.delete(entry);
-    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id); this.generations.delete(id); this.landed.delete(id);
+    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id);
     const branch = this.branches.get(id);
     this.branches.delete(id);
-    this.upcoming.delete(id);
     if (branch && ![...this.branches.values()].includes(branch)) { this.seeks.delete(branch); this.routes.delete(branch); }
   }
-  private resetLead(branch: string) {
-    const generation = ++this.generation;
-    for (const [id, key] of this.branches) if (key === branch) { this.upcoming.delete(id); this.sent.delete(id); this.generations.set(id, generation); }
-    this.staged = new WeakMap();
-  }
-  private order(generation: number, from: number): ReadingOrder {
-    return { generation, from, sequence: ++this.sequence };
-  }
   seek(branch: string, seek: number, retainThrough?: number) {
-    this.resetLead(branch); this.seeks.set(branch, seek); this.store.seek(branch, seek, retainThrough);
+    this.seeks.set(branch, seek); this.store.seek(branch, seek, retainThrough);
   }
   bind(branch: string, route: number, seek: number) {
-    if (this.routes.get(branch) !== route || this.seeks.get(branch) !== seek) this.resetLead(branch);
     this.routes.set(branch, route);
     this.seeks.set(branch, seek); this.store.bind(branch, route, seek);
   }
-  land(items: readonly FollowItem[], lead?: (message: FromWorker) => void) {
+  land(items: readonly FollowItem[], notices?: Notices) {
     for (const item of items) {
-      if (item.kind === 'followed' && item.message.reset) {
-        const { route, seek, hour } = item.message;
-        for (const [name, id] of this.routes) if (id === route && this.seeks.get(name) === seek) this.resetLead(name);
-        lead?.({ type: 'resetStructures', route, seek, from: hour });
+      if (item.kind === 'failure') {
+        for (const branch of new Set(this.branches.values())) this.store.seek(branch, this.seeks.get(branch) ?? 0);
+        continue;
       }
-      if (lead && item.kind === 'panels') {
-        const updates: OrderedReading[] = [];
-        const { route, seek } = item.batch;
-        for (const { panel, stepped, id, hour } of item.batch.panels) {
-          const branch = this.branches.get(id);
-          if (!stepped || !panel || branch === undefined || this.routes.get(branch) !== route || this.seeks.get(branch) !== seek) continue;
-          const section = sectionOf(panel.data);
-          if (section?.groups.some(g => g.follow !== undefined)) continue;
-          const shape = this.panelShape(id, panel, hour);
-          this.staged.set(panel, shape);
-          if ((this.upcoming.get(id) ?? this.sent.get(id)?.shape) !== shape)
-            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel), order: this.order(this.generations.get(id)!, hour) });
-          this.upcoming.set(id, shape);
-        }
-        if (updates.length) lead({ type: 'structureLead', updates });
+      if (notices && item.kind === 'followed' && item.message.reset) {
+        const { route, seek, hour } = item.message, ids = new Set<number>();
+        for (const [id, branch] of this.branches) if (this.routes.get(branch) === route && this.seeks.get(branch) === seek) ids.add(id);
+        notices.reset(ids, route, seek, hour);
       }
-      if (item.kind !== 'failure') this.store.accept(item);
-      else for (const branch of new Set(this.branches.values())) { this.resetLead(branch); this.store.seek(branch, this.seeks.get(branch) ?? 0); }
+      const updates: OrderedReading[] = [], lead = notices?.lead;
+      this.store.accept(item, lead && item.kind === 'panels' ? ({ id, hour, panel, stepped }, version) => {
+        if (!stepped || !panel || sectionOf(panel.data)?.groups.some(g => g.follow !== undefined)) return;
+        const shape = this.panelShape(id, panel, hour), last = this.sent.get(id);
+        this.staged.set(panel, shape);
+        if (last?.generation !== version.generation || last.shape !== shape)
+          updates.push({ id, seek: item.batch.seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel), version });
+        this.sent.set(id, { generation: version.generation, shape, panel });
+      } : undefined);
+      if (updates.length) lead!(updates);
     }
   }
   drain(head: number) { this.store.drain(head); }
@@ -114,7 +95,7 @@ export class Followed {
     if (!entry) return;
     const { hour, panel, answer } = entry;
     return { id, hour, through: this.store.eligibleThrough(entry), coverage: this.store.coverage(entry) ?? undefined, seek: this.seeks.get(this.branches.get(id)!) ?? 0,
-      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel), order: this.order(this.landed.get(id)!, panel || answer ? hour : -Infinity) };
+      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel), version: this.store.version(entry) };
   }
 
   private values(id: number, panel?: FollowedPanel) {
@@ -139,16 +120,16 @@ export class Followed {
   *structures(playing: boolean): Iterable<OrderedReading> {
     for (const entry of this.dirty) {
       const { id, panel, answer, hour } = entry;
-      const last = this.sent.get(id);
-      if (playing && last && last.panel === panel && last.answer === answer) continue;
+      const { generation } = this.store.version(entry), last = this.sent.get(id), same = last?.generation === generation;
+      if (playing && same && last.panel === panel && last.answer === answer) continue;
       let shape: string;
       if (panel) {
         shape = this.staged.get(panel) ?? this.panelShape(id, panel, hour);
       } else if (answer && answer.kind !== 'notRecorded') {
         shape = JSON.stringify(Array.from({ length: answer.rows }, (_, row) => String(rowKey(answer, row))).sort());
       } else shape = answer?.reason ?? 'pending';
-      this.sent.set(id, { shape, panel, answer });
-      if (!playing || last?.shape !== shape && !(panel && this.staged.has(panel))) yield this.snapshot(id)!;
+      this.sent.set(id, { generation, shape, panel, answer });
+      if (!playing || !same || last.shape !== shape) yield this.snapshot(id)!;
     }
     this.dirty.clear();
   }

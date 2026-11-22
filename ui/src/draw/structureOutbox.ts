@@ -14,6 +14,10 @@ export class StructureOutbox {
     this.flush();
   }
 
+  discard(ids: ReadonlySet<number>, from: number): void {
+    this.held = this.held.filter(update => !ids.has(update.id) || update.hour < from);
+  }
+
   taken(): void {
     this.waiting = false;
     this.flush();

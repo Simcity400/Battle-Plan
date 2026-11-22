@@ -502,7 +502,10 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
       dataPort = m.port;
       m.port.onmessage = ({ data }: MessageEvent<FollowItem[]>) => {
         if (lane === 0) for (const item of data) if (item.kind === 'failure') post({ type: 'followFailure', reason: item.reason });
-        followed.land(data, anchor.playing && lane === 0 ? post : undefined); wake();
+        followed.land(data, lane === 0 ? { reset: (ids, route, seek, from) => {
+          outbox.discard(ids, from);
+          post({ type: 'resetStructures', route, seek, from });
+        }, lead: anchor.playing ? updates => post({ type: 'structureLead', updates }) : undefined } : undefined); wake();
       };
       return;
     case 'structureTaken': outbox.taken(); return;

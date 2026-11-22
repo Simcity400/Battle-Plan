@@ -5,7 +5,7 @@ import { StructureOutbox } from './structureOutbox.ts';
 test('structure waits in the worker while the page has not taken the last, and goes as one message, the newest of each subscription', () => {
   const sent: [number, number][][] = [];
   const outbox = new StructureOutbox(updates => sent.push(updates.map(update => [update.id, update.hour])));
-  const read = (id: number, hour: number) => ({ id, seek: 1, hour, through: hour, order: { generation: 0, from: hour, sequence: hour } });
+  const read = (id: number, hour: number) => ({ id, seek: 1, hour, through: hour, version: { generation: 0, hour, sequence: hour } });
   outbox.add([read(1, 10), read(2, 10)]);
   assert.deepEqual(sent, [[[1, 10], [2, 10]]], 'structure goes at once while nothing is waiting on the page');
   for (let hour = 11; hour < 1500; hour++) outbox.add([read(hour % 3, hour)]);

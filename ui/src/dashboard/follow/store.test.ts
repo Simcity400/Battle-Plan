@@ -8,7 +8,6 @@ import { formatAmount } from '../../charts/valueAxis.ts';
 import { FollowStore } from './store.ts';
 import { Followed } from '../../draw/followed.ts';
 import type { OrderedReading } from '../../draw/followed';
-import type { FromWorker } from '../../draw/kit';
 import { StructureOutbox } from '../../draw/structureOutbox.ts';
 import { StructureQueue } from './structureQueue.ts';
 import { liveKey } from '../../charts/live.ts';
@@ -21,7 +20,7 @@ const one = (key: bigint, value: bigint) => ({ keys: [key], columns: 1, values: 
 test('queued row structures publish only at their hour and a reset removes abandoned rows through the next input', () => {
   const q = new StructureQueue(), published: number[] = [];
   let sequence = 0;
-  const record = (hour: number, seek = 5) => ({ id: 1, seek, hour, through: hour, order: { generation: 0, from: hour, sequence: ++sequence } });
+  const record = (hour: number, seek = 5) => ({ id: 1, seek, hour, through: hour, version: { generation: 0, hour, sequence: ++sequence } });
   const drain = (hour: number) => q.drain(hour, r => published.push(r.hour));
   q.add(record(12)); q.add(record(30)); q.add(record(20));
   drain(11); assert.deepEqual(published, []);
@@ -745,9 +744,7 @@ test('a structure the worker held for the page never replaces the newer lead the
   step(10, [{ id: 3, answer: { notRecorded: 'No reading at 10' } }]);
   assert.equal(sent.length, 1, 'the hour-10 snapshot waits in the worker until the page takes the first message');
   followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
-    panels: [{ id: 3, hour: 20, stepped: true, panel: { data: { rows: [20] }, refused: null } }] } }], message => {
-    if (message.type === 'structureLead') leads.push(...message.updates);
-  });
+    panels: [{ id: 3, hour: 20, stepped: true, panel: { data: { rows: [20] }, refused: null } }] } }], { reset() {}, lead: updates => leads.push(...updates) });
   for (const read of sent[0]!) take(read);
   for (const read of leads) page.add(read);
   page.drain(20, take);
@@ -767,24 +764,35 @@ function generations() {
   const followed = new Followed(what => decoder.release(what));
   followed.add(3, 'branch');
   followed.bind('branch', 9, 1);
-  const page = new StructureQueue(), shown: string[] = [];
-  const take = (read: OrderedReading) => {
-    if (page.take(read)) shown.push(`${read.hour}:${read.panel?.refused ?? (read.panel ? 'panel' : read.answer?.kind)}`);
+  const page = new StructureQueue(), shown: string[] = [], posted: string[][] = [], inFlight: OrderedReading[][] = [];
+  const label = (read: OrderedReading) => `${read.hour}:${read.panel?.refused ?? (read.panel ? 'panel'
+    : read.answer?.kind === 'notRecorded' ? read.answer.reason : read.answer?.kind)}`;
+  const take = (read: OrderedReading) => { if (page.take(read)) shown.push(label(read)); };
+  const outbox = new StructureOutbox(updates => { inFlight.push(updates); posted.push(updates.map(label)); });
+  let seek = 1, holding = false;
+  const deliver = () => {
+    const updates = inFlight.shift();
+    if (!updates) return;
+    for (const read of updates) take(read);
+    outbox.taken();
   };
-  const lead = (message: FromWorker) => {
-    if (message.type === 'resetStructures') page.discard(new Set([3]), message.from);
-    if (message.type === 'structureLead') for (const read of message.updates) page.add(read);
-  };
-  const panel = (hour: number, refused: string | null, playing = true) => followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
-    panels: [{ id: 3, hour, stepped: true, panel: refused === null ? { data: { rows: [hour] }, refused } : { refused } }] } }], playing ? lead : undefined);
+  const notices = (playing: boolean) => ({
+    reset(ids: ReadonlySet<number>, _route: number, _seek: number, from: number) { outbox.discard(ids, from); page.discard(ids, from); },
+    lead: playing ? (updates: OrderedReading[]) => { for (const read of updates) page.add(read); } : undefined,
+  });
+  const panel = (hour: number, refused: string | null, playing = true, stepped = true) => followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek, completed: undefined,
+    panels: [{ id: 3, hour, stepped, panel: refused === null ? { data: { rows: [hour] }, refused } : { refused } }] } }], notices(playing));
   const reset = (hour: number, answers: Parameters<typeof message>[1] = [], playing = true) =>
-    followed.land([decoder.item(datedStep(hour, answers, 1, true).slice().buffer)], playing ? lead : undefined);
+    followed.land([decoder.item(datedStep(hour, answers, seek, true).slice().buffer)], notices(playing));
   const frame = (head: number, playing = true) => {
     followed.drain(head);
-    for (const read of followed.structures(playing)) take(read);
+    outbox.add([...followed.structures(playing)]);
+    if (!holding) while (inFlight.length) deliver();
   };
-  return { followed, page, shown, take, panel, reset, frame, step: (hour: number, answers: Parameters<typeof message>[1]) =>
-    followed.land([decoder.item(datedStep(hour, answers, 1).slice().buffer)]) };
+  return { followed, page, shown, posted, take, panel, reset, frame, deliver,
+    hold: (held: boolean) => { holding = held; },
+    seek: (next: number, retainThrough?: number) => { seek = next; page.discard(new Set([3])); followed.seek('branch', next, retainThrough); },
+    step: (hour: number, answers: Parameters<typeof message>[1]) => followed.land([decoder.item(datedStep(hour, answers, seek).slice().buffer)]) };
 }
 
 test('a reset starts a new generation: the page takes the first reading after it whatever hour it holds from, and none from before it', () => {
@@ -818,7 +826,7 @@ test('a reset while paused starts a new generation, so a correction covering the
   g.frame(20, false);
   g.reset(20, [{ id: 3, hour: 18, answer: { notRecorded: 'Corrected from 18' } }], false);
   g.frame(20, false);
-  assert.deepEqual(g.shown, ['20:rows', '18:notRecorded'], 'the corrected reading from 18 replaces the paused hour-20 one');
+  assert.deepEqual(g.shown, ['20:rows', '18:Corrected from 18'], 'the corrected reading from 18 replaces the paused hour-20 one');
 });
 
 test('a reset back to an earlier shape sends that shape again, so the page leaves the newer lead it shows', () => {
@@ -835,13 +843,68 @@ test('a reset back to an earlier shape sends that shape again, so the page leave
   assert.deepEqual(g.shown, ['10:A', '20:B', '18:A'], 'the first shape of the new generation reaches the page although the worker last sent the same shape');
 });
 
+test("an answer queued before a native reset keeps the generation that produced it, so the reset's correction from an earlier hour replaces it", () => {
+  const g = generations();
+  g.step(10, [{ id: 3, answer: one(1n, 7n) }]);
+  g.frame(10);
+  g.step(20, [{ id: 3, answer: { notRecorded: 'Twenty' } }]);
+  g.reset(25, [{ id: 3, hour: 18, answer: { notRecorded: 'Corrected from 18' } }]);
+  g.frame(20);
+  g.frame(25);
+  assert.deepEqual(g.shown, ['10:rows', '20:Twenty', '18:Corrected from 18'], 'the page ends on the correction the reset at 25 made from 18');
+});
+
+test("a dirty reading from before a reset never stands in the shape the page was sent, so the reset's replacement still goes", () => {
+  const g = generations();
+  g.panel(10, 'A');
+  g.page.drain(10, g.take);
+  g.frame(10);
+  g.seek(2, 10);
+  g.panel(20, 'B');
+  g.page.drain(20, g.take);
+  g.reset(18);
+  g.frame(20);
+  g.panel(18, 'A');
+  g.page.drain(20, g.take);
+  g.frame(20);
+  assert.equal(g.shown.at(-1)?.split(':')[1], 'A', `the page leaves lead B for shape A after the reset at 18: ${g.shown}`);
+});
+
+test('an inspection reports the version of the data it read, so it never outranks a newer lead for the same hour', () => {
+  const g = generations();
+  g.panel(20, 'A');
+  g.page.drain(20, g.take);
+  g.frame(20);
+  g.panel(20, 'B');
+  g.page.drain(20, g.take);
+  g.take(g.followed.snapshot(3)!);
+  g.frame(20);
+  assert.deepEqual(g.shown, ['20:A', '20:B'], 'the inspection of A from before the drain is older than lead B');
+});
+
+test('a reset drops the snapshots the worker holds for the page from its hour on', () => {
+  const g = generations();
+  g.hold(true);
+  g.panel(10, 'X', true, false);
+  g.frame(10);
+  g.panel(20, 'A', true, false);
+  g.frame(20);
+  g.reset(18);
+  g.panel(18, 'B');
+  g.page.drain(20, g.take);
+  g.frame(20);
+  g.deliver(); g.deliver();
+  assert.deepEqual(g.posted, [['10:X']], 'the hour-20 snapshot the worker held is not published after the reset at 18');
+  assert.deepEqual(g.shown, ['18:B']);
+});
+
 test('a staged product computes its structural result only once', () => {
   const followed = new Followed(() => {});
   followed.add(1, 'a', 'nuclear-arsenal'); followed.bind('a', 1, 1);
   let validations = 0;
   const reply = { missing: null, warnings: [], types: [], get countries() { validations++; return []; } };
   followed.land([{ kind: 'panels', batch: { route: 1, clock: 0, seek: 1, completed: undefined,
-    panels: [{ id: 1, hour: 1, stepped: true, panel: { data: reply, refused: null } }] } }], () => {});
+    panels: [{ id: 1, hour: 1, stepped: true, panel: { data: reply, refused: null } }] } }], { reset() {}, lead() {} });
   const prepared = validations;
   followed.drain(1);
   [...followed.structures(true)];
