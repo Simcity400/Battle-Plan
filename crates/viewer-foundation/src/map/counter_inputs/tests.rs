@@ -245,7 +245,7 @@ fn a_reserve_fleet_is_one_whose_first_rostered_task_force_is_in_reserve() {
     assert_eq!(reserve_fleet(&fleet, |_| None), None);
     assert_eq!(
         color(1056898815, 0, 0, 1065353216),
-        [f32::from_bits(1056898815), 0.0, 0.0, 1.0]
+        Some([f32::from_bits(1056898815), 0.0, 0.0, 1.0])
     );
 }
 
@@ -360,10 +360,17 @@ fn order_membership_preserves_native_list_and_parent_precedence() {
         Some(None),
         "parent cycle terminates"
     );
-    index.colors = [(10, [1.0, 0.0, 0.0, 1.0]), (20, [0.0, 0.0, 1.0, 1.0])].into();
-    assert_eq!(index.marker(10, Some(true)), Some([0.0, 0.0, 1.0, 1.0]));
-    assert_eq!(index.marker(10, Some(false)), Some([1.0, 0.0, 0.0, 1.0]));
-    assert_eq!(index.marker(10, None), None);
+    index.colors = [
+        (10, Some([1.0, 0.0, 0.0, 1.0])),
+        (20, Some([0.0, 0.0, 1.0, 1.0])),
+    ]
+    .into();
+    assert_eq!(index.marker(10, Some(true)), Ok(Some([0.0, 0.0, 1.0, 1.0])));
+    assert_eq!(
+        index.marker(10, Some(false)),
+        Ok(Some([1.0, 0.0, 0.0, 1.0]))
+    );
+    assert_eq!(index.marker(10, None), Ok(None));
 }
 
 #[test]
@@ -523,9 +530,9 @@ fn area_defence_keeps_positive_evidence_and_requires_complete_negatives() {
 #[test]
 fn the_marker_hides_without_a_group_or_a_colour() {
     let index = OrdersIndex::default();
-    assert_eq!(index.marker(0, Some(false)), None);
-    assert_eq!(index.marker(10, Some(false)), None);
-    assert_eq!(index.marker(10, None), None);
+    assert_eq!(index.marker(0, Some(false)), Ok(None));
+    assert_eq!(index.marker(10, Some(false)), Ok(None));
+    assert_eq!(index.marker(10, None), Ok(None));
     let index = OrdersIndex {
         groups: [(
             10,
@@ -536,8 +543,74 @@ fn the_marker_hides_without_a_group_or_a_colour() {
         )]
         .into(),
         has_child: BTreeMap::new(),
-        colors: [(10, [1.0, 0.0, 0.0, 1.0])].into(),
+        colors: [(10, Some([1.0, 0.0, 0.0, 1.0]))].into(),
         ..Default::default()
     };
-    assert_eq!(index.marker(10, Some(false)), Some([1.0, 0.0, 0.0, 1.0]));
+    assert_eq!(
+        index.marker(10, Some(false)),
+        Ok(Some([1.0, 0.0, 0.0, 1.0]))
+    );
+}
+
+#[test]
+fn non_finite_recorded_colors_are_refused() {
+    use replay_data::{rows::OrdersGroupPlanRow, rows::TableId, rows::TableRows};
+    use replay_frame::frame::TableView;
+    let valid = [0.25f32, 0.5, 0.75, 1.0].map(f32::to_bits);
+    assert_eq!(
+        color(valid[0], valid[1], valid[2], valid[3]),
+        Some([0.25, 0.5, 0.75, 1.0])
+    );
+    assert_eq!(
+        color(
+            (-0.0f32).to_bits(),
+            0.0f32.to_bits(),
+            1.5f32.to_bits(),
+            1.0f32.to_bits()
+        ),
+        Some([-0.0, 0.0, 1.5, 1.0])
+    );
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for channel in 0..4 {
+            let mut raw = valid;
+            raw[channel] = bad.to_bits();
+            assert_eq!(color(raw[0], raw[1], raw[2], raw[3]), None);
+        }
+    }
+    let mut frame = order_membership_frame();
+    *frame.tables[TableId::OrdersGroupPlans.index()] =
+        TableView::Complete(TableRows::OrdersGroupPlans(vec![
+            OrdersGroupPlanRow {
+                group: 10,
+                red: f32::NAN.to_bits(),
+                green: 0.25f32.to_bits(),
+                blue: 0.5f32.to_bits(),
+                alpha: 1.0f32.to_bits(),
+                ..Default::default()
+            },
+            OrdersGroupPlanRow {
+                group: 20,
+                red: 0.1f32.to_bits(),
+                green: f32::INFINITY.to_bits(),
+                blue: 0.5f32.to_bits(),
+                alpha: 1.0f32.to_bits(),
+                ..Default::default()
+            },
+            OrdersGroupPlanRow {
+                group: 30,
+                red: 0.1f32.to_bits(),
+                green: 0.2f32.to_bits(),
+                blue: 0.3f32.to_bits(),
+                alpha: 1.0f32.to_bits(),
+                ..Default::default()
+            },
+        ]));
+    let index = OrdersIndex::read(&frame).unwrap();
+    assert_eq!(index.marker(10, Some(false)), Err(10));
+    assert_eq!(index.marker(10, Some(true)), Err(20));
+    assert_eq!(
+        index.marker(30, Some(false)),
+        Ok(Some([0.1, 0.2, 0.3, 1.0]))
+    );
+    assert_eq!(index.marker(99, Some(false)), Ok(None));
 }

@@ -54,6 +54,7 @@ export interface DashboardMapView {
   sequence: number;
   seekSequence?: number;
   composedAt: number;
+  clockId: string;
   bounds: MapBounds;
   clip: MapBounds;
   visible: boolean;
@@ -61,6 +62,7 @@ export interface DashboardMapView {
 
 export interface DashboardMapState {
   id: string;
+  clockId: string;
   sourceId: string | null;
   revision: string | null;
   branchId: string | null;
@@ -107,7 +109,7 @@ export interface DashboardClient {
   recorderSettings?(): Promise<RecorderSettings>;
   setRecordingCompression?(compression: Compression): Promise<RecorderSettings>;
   setAutoCompress?(enabled: boolean): Promise<RecorderSettings>;
-  setMapViews(views: DashboardMapView[]): Promise<void>;
+  setMapViews(clockId: string, views: DashboardMapView[]): Promise<void>;
   onMapStates(callback: (states: DashboardMapState[]) => void): Promise<() => void>;
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;

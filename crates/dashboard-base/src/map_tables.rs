@@ -157,6 +157,7 @@ pub fn selected_tables() -> &'static [TableId] {
             TableId::TheatreAreas,
             TableId::TrainInventory,
             TableId::UnitIntel,
+            TableId::VariantBonusSnapshots,
             TableId::VariantDefinitions,
             TableId::VariantModules,
             TableId::VariantStats,

@@ -304,7 +304,10 @@ fn initial_flag_warm_matches_cold_acquisition_across_changing_hours() {
                             assert_eq!(a.rect.map(f32::to_bits), b.rect.map(f32::to_bits));
                             assert_eq!(a.uv.map(f32::to_bits), b.uv.map(f32::to_bits));
                             assert_eq!(a.color.map(f32::to_bits), b.color.map(f32::to_bits));
-                            assert_eq!(a.rotation.to_bits(), b.rotation.to_bits());
+                            assert_eq!(
+                                a.rotation.map(f32::to_bits),
+                                b.rotation.map(f32::to_bits)
+                            );
                             assert_eq!(a.shade.to_bits(), b.shade.to_bits());
                             assert_eq!(
                                 cold.flags.iter().find_map(|f| f.key_at(a.texture, a.uv)),

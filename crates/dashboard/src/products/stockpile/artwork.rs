@@ -28,10 +28,11 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-const TABLES: [TableId; 13] = [
+const TABLES: [TableId; 14] = [
     TableId::Countries,
     TableId::CountryLinks,
     TableId::CountryAppearance,
+    TableId::ReservedCountryNaming,
     TableId::PoliticalParties,
     TableId::Politics,
     TableId::Factions,

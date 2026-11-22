@@ -181,7 +181,7 @@ mod tests {
             rect: [0.0; 4],
             uv: [0.0; 4],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             exact: None,

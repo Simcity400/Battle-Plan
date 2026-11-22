@@ -27,7 +27,7 @@ fn anchored(world: [f32; 3], cutoff: f32, layer: u64, rect: [f32; 4]) -> Quad {
         rect,
         uv: [0.0, 0.0, 1.0, 1.0],
         color: [1.0; 4],
-        rotation: 0.0,
+        rotation: None,
         layer,
         shade: 0.0,
         exact: None,

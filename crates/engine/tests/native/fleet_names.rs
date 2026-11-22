@@ -1,8 +1,6 @@
 use engine_native::{Memory, ccountry, cfleet, cship, ctask_force, read, walk::Outcome};
 
-#[allow(dead_code)]
-#[path = "support/unit_world.rs"]
-mod fixture;
+use crate::support::unit_world as fixture;
 
 struct NamedMemory<'a> {
     source: engine_native::memory::SliceMemory<'a>,
