@@ -4988,7 +4988,7 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
         std::f32::consts::FRAC_PI_2,
         [1.0; 4],
     );
-    assert_eq!(batch.quads[1].rotation, std::f32::consts::FRAC_PI_2);
+    assert_eq!(batch.quads[1].rotation, Some(std::f32::consts::FRAC_PI_2));
     assert_eq!(batch.quads[1].uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
     batch.bar(
         &bar,
@@ -5719,7 +5719,7 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
     draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 0.5);
     assert_eq!(batch.quads.len(), 1);
     let partial = &batch.quads[0];
-    assert_eq!(partial.rotation, bar_org.rotation);
+    assert_eq!(partial.rotation, Some(bar_org.rotation));
     assert_eq!(partial.uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
     let bounds = partial.screen_bounds();
     for (got, want) in bounds.iter().zip([957.5, 861.0, 10.0, 3.0]) {
@@ -5728,7 +5728,7 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
     draw_bar(&mut batch, &patterned, bar_org, [943.0, 846.0], 1.0);
     assert_eq!(batch.quads.len(), 2);
     let full = &batch.quads[1];
-    assert_eq!(full.rotation, bar_org.rotation);
+    assert_eq!(full.rotation, Some(bar_org.rotation));
     assert_eq!(full.uv, [0.0, 0.0, 1.0, 1.0]);
     let bounds = full.screen_bounds();
     for (got, want) in bounds.iter().zip([957.5, 861.0, 18.0, 3.0]) {
@@ -5745,7 +5745,7 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
     };
     let horizontal = sheet("GFX_horizontal_bar", 1, [17, 3]);
     draw_bar(&mut batch, &horizontal, &upright, [943.0, 846.0], 0.5);
-    assert_eq!(batch.quads[2].rotation, 0.0);
+    assert_eq!(batch.quads[2].rotation, Some(0.0));
     assert_eq!(batch.quads[2].rect, [957.0, 854.0, 10.0, 3.0]);
     assert_eq!(batch.quads[2].uv, [0.0, 0.0, 10.0 / 17.0, 1.0]);
     let upright_tall = Child {
@@ -5758,7 +5758,7 @@ fn draw_bar_preserves_authored_rotation_and_clips_the_length_axis() {
         order: 0,
     };
     draw_bar(&mut batch, &patterned, &upright_tall, [0.0, 0.0], 0.5);
-    assert_eq!(batch.quads[3].rotation, 0.0);
+    assert_eq!(batch.quads[3].rotation, Some(0.0));
     assert_eq!(batch.quads[3].rect, [18.0, 11.5, 3.0, 10.0]);
     assert_eq!(batch.quads[3].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
 }
@@ -5848,7 +5848,7 @@ fn rotated_bars_are_continuous_across_45_degrees_and_keep_texels_anchored() {
         let cx = q.rect[0] + q.rect[2] * 0.5;
         let cy = q.rect[1] + q.rect[3] * 0.5;
         let (dx, dy) = (q.rect[0] - cx, q.rect[1] - cy);
-        let (sin, cos) = q.rotation.sin_cos();
+        let (sin, cos) = q.rotation.unwrap_or(0.0).sin_cos();
         [cx + dx * cos + dy * sin, cy + dy * cos - dx * sin]
     };
     let mut full = Batch::default();
@@ -5886,9 +5886,10 @@ fn tall_bar_matches_native_geometry_across_rotations() {
         let [x, y, w, h] = q.rect;
         let cx = x + w * 0.5;
         let cy = y + h * 0.5;
-        let (sin, cos) = q.rotation.sin_cos();
+        let angle = q.rotation.unwrap_or(0.0);
+        let (sin, cos) = angle.sin_cos();
         [[x, y], [x + w, y], [x + w, y + h], [x, y + h]].map(|[px, py]| {
-            if q.rotation == 0.0 {
+            if angle == 0.0 {
                 [px, py]
             } else {
                 let (dx, dy) = (px - cx, py - cy);

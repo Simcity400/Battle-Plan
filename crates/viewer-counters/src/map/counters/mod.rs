@@ -4071,9 +4071,13 @@ fn draw_child(
     );
 }
 
-fn draw_bar(batch: &mut Batch, sheet: &SpriteSheet, child: &Child, origin: [f32; 2], fill: f32) {
-    let frame = sheet.frame_size();
-    let size = [frame[0] * child.scale, frame[1] * child.scale];
+pub(super) fn bar_placement(
+    at: [f32; 2],
+    frame: [f32; 2],
+    scale: f32,
+    fill: f32,
+) -> ([f32; 2], [f32; 2], f32) {
+    let size = [frame[0] * scale, frame[1] * scale];
     let vertical = frame[1] > frame[0];
     let (offset_x, length) = if vertical {
         (
@@ -4083,9 +4087,20 @@ fn draw_bar(batch: &mut Batch, sheet: &SpriteSheet, child: &Child, origin: [f32;
     } else {
         (0.0, size[0])
     };
+    ([at[0] + offset_x, at[1]], size, length)
+}
+
+fn draw_bar(batch: &mut Batch, sheet: &SpriteSheet, child: &Child, origin: [f32; 2], fill: f32) {
+    let frame = sheet.frame_size();
+    let (at, size, length) = bar_placement(
+        [origin[0] + child.at[0], origin[1] + child.at[1]],
+        frame,
+        child.scale,
+        fill,
+    );
     batch.bar(
         sheet,
-        [origin[0] + child.at[0] + offset_x, origin[1] + child.at[1]],
+        at,
         size,
         counter_inputs::bar_pixels(fill, length),
         child.rotation,

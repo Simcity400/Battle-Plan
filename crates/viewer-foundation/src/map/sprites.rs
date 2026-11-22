@@ -133,7 +133,7 @@ pub struct Quad {
     pub rect: [f32; 4],
     pub uv: [f32; 4],
     pub color: [f32; 4],
-    pub rotation: f32,
+    pub rotation: Option<f32>,
     pub layer: u64,
     pub shade: f32,
     pub exact: Option<Exact>,
@@ -143,7 +143,10 @@ pub struct Quad {
 
 impl Quad {
     pub fn screen_bounds(&self) -> [f32; 4] {
-        if self.rotation == 0.0 {
+        let Some(rotation) = self.rotation else {
+            return self.rect;
+        };
+        if rotation == 0.0 {
             return self.rect;
         }
         let corners = plain_quad_corners(self, 1.0);
@@ -489,7 +492,7 @@ impl Batch {
             rect: [at[0], at[1], size[0], size[1]],
             uv: sheet.frame_uv(frame),
             color,
-            rotation: 0.0,
+            rotation: None,
             layer: self.layer,
             shade: 0.0,
             exact: None,
@@ -511,7 +514,7 @@ impl Batch {
             rect: [at[0], at[1], size[0], size[1]],
             uv,
             color,
-            rotation: 0.0,
+            rotation: None,
             layer: self.layer,
             shade: 0.0,
             exact: None,
@@ -570,7 +573,7 @@ impl Batch {
             rect: [cx - rw * 0.5, cy - rh * 0.5, rw, rh],
             uv,
             color,
-            rotation,
+            rotation: Some(rotation),
             layer: self.layer,
             shade: 0.0,
             exact: None,
@@ -585,7 +588,7 @@ impl Batch {
             rect: glyph.rect,
             uv: glyph.uv,
             color: glyph.color.unwrap_or(color),
-            rotation: 0.0,
+            rotation: None,
             layer: self.layer,
             shade: 0.0,
             exact: None,
@@ -2728,17 +2731,21 @@ static TRANSFORM_BINDINGS: std::sync::LazyLock<[u32; 2]> = std::sync::LazyLock::
 });
 
 fn plain_quad_corners(quad: &Quad, ui_scale: f32) -> [[f32; 2]; 4] {
-    if quad.rotation == 0.0 {
+    let Some(rotation) = quad.rotation else {
         let [x0, y0, x1, y1] = device_corners(quad.rect, ui_scale);
         return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-    }
+    };
     let x0 = quad.rect[0] * ui_scale;
     let y0 = quad.rect[1] * ui_scale;
     let x1 = (quad.rect[0] + quad.rect[2]) * ui_scale;
     let y1 = (quad.rect[1] + quad.rect[3]) * ui_scale;
+    let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    if rotation == 0.0 {
+        return corners;
+    }
     let centre = [(x0 + x1) * 0.5, (y0 + y1) * 0.5];
-    let (sin, cos) = quad.rotation.sin_cos();
-    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|[x, y]| {
+    let (sin, cos) = rotation.sin_cos();
+    corners.map(|[x, y]| {
         let (dx, dy) = (x - centre[0], y - centre[1]);
         [
             centre[0] + dx * cos + dy * sin,
@@ -2976,7 +2983,7 @@ mod tests {
             rect: [0.0, 0.0, 4.0, 4.0],
             uv: [0.0, 0.0, 1.0, 1.0],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             anchor: None,
@@ -3217,7 +3224,7 @@ mod tests {
             rect,
             uv: [0.0, 0.0, 1.0, 1.0],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer,
             shade: 0.0,
             exact: None,
@@ -3619,7 +3626,7 @@ mod tests {
             [1.0; 4],
         );
         let partial = &batch.quads[0];
-        assert_eq!(partial.rotation, std::f32::consts::FRAC_PI_2);
+        assert_eq!(partial.rotation, Some(std::f32::consts::FRAC_PI_2));
         assert_eq!(partial.uv, [0.0, 0.0, 1.0, 8.0 / 17.0]);
         let bounds = partial.screen_bounds();
         for (got, want) in bounds.iter().zip([24.0, 28.0, 8.0, 3.0]) {
@@ -3649,7 +3656,7 @@ mod tests {
         );
         assert_eq!(batch.quads.len(), 2);
         batch.bar(&vertical, [14.0, 8.0], [3.0, 17.0], 10.0, 0.0, [1.0; 4]);
-        assert_eq!(batch.quads[2].rotation, 0.0);
+        assert_eq!(batch.quads[2].rotation, Some(0.0));
         assert_eq!(batch.quads[2].rect, [14.0, 11.5, 3.0, 10.0]);
         assert_eq!(batch.quads[2].uv, [0.0, 0.0, 1.0, 10.0 / 17.0]);
         let horizontal = SpriteSheet {
@@ -3659,9 +3666,47 @@ mod tests {
             size: [17, 3],
         };
         batch.bar(&horizontal, [24.0, 28.0], [17.0, 3.0], 8.5, 0.0, [1.0; 4]);
-        assert_eq!(batch.quads[3].rotation, 0.0);
+        assert_eq!(batch.quads[3].rotation, Some(0.0));
         assert_eq!(batch.quads[3].rect, [24.0, 28.0, 8.0, 3.0]);
         assert_eq!(batch.quads[3].uv, [0.0, 0.0, 8.0 / 17.0, 1.0]);
+    }
+
+    #[test]
+    fn bar_preserves_fractional_geometry_at_zero_rotation_under_2x_ui_scale() {
+        let vertical = SpriteSheet {
+            name: "GFX_bar_v".into(),
+            texture: 0,
+            frames: 1,
+            size: [3, 17],
+        };
+        let mut batch = Batch::default();
+        batch.bar(&vertical, [18.0, 8.0], [3.0, 17.0], 10.0, 0.0, [1.0; 4]);
+        batch.bar(&vertical, [18.0, 8.0], [3.0, 17.0], 10.0, 1e-6, [1.0; 4]);
+        let zero_corners = plain_quad_corners(&batch.quads[0], 2.0);
+        let tiny_corners = plain_quad_corners(&batch.quads[1], 2.0);
+        assert_eq!(
+            zero_corners,
+            [[36.0, 23.0], [42.0, 23.0], [42.0, 43.0], [36.0, 43.0]]
+        );
+        for (a, b) in zero_corners.iter().zip(tiny_corners.iter()) {
+            assert!(
+                (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3,
+                "zero {zero_corners:?} vs tiny {tiny_corners:?}"
+            );
+        }
+        let placement = fade::Placement::identity([64, 64]);
+        let zero_verts = plain_corners(&batch.quads[0], placement, 2.0);
+        let tiny_verts = plain_corners(&batch.quads[1], placement, 2.0);
+        assert_eq!(zero_verts[0].position, [36.0 / 32.0 - 1.0, 1.0 - 23.0 / 32.0]);
+        for (a, b) in zero_verts.iter().zip(tiny_verts.iter()) {
+            assert!(
+                (a.position[0] - b.position[0]).abs() < 1e-4
+                    && (a.position[1] - b.position[1]).abs() < 1e-4,
+                "{:?} vs {:?}",
+                a.position,
+                b.position
+            );
+        }
     }
 
     fn patterned_bar_renders_rotated_and_unrotated_fills_with_overrun(

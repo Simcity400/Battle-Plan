@@ -1922,7 +1922,7 @@ mod tests {
                         ],
                         uv: [0.; 4],
                         color: [1.; 4],
-                        rotation: 0.,
+                        rotation: None,
                         layer: 0,
                         shade: 0.,
                         exact: None,
