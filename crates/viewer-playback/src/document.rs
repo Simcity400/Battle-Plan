@@ -1819,6 +1819,7 @@ impl Document {
                 allow_unverified,
                 initial,
                 replay,
+                tables,
                 resolved,
                 visual_mods,
                 texture_quality,
@@ -1834,6 +1835,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        tables: Option<engine_executable::executable_tables::Tables>,
         resolved: Arc<content_reader_core::content::ResolvedContent>,
         visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
         texture_quality: u8,
@@ -1950,6 +1952,7 @@ impl Document {
             visual_mods,
             texture_quality,
             replay,
+            tables,
             content,
             &product_loader,
             warnings,
@@ -1968,6 +1971,7 @@ impl Document {
         visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
         texture_quality: u8,
         replay: Arc<Replay>,
+        tables: Option<engine_executable::executable_tables::Tables>,
         content: content_reader_core::content::ResolvedContent,
         product_loader: &map_products::loader::Loader,
         mut warnings: Vec<String>,
@@ -2038,7 +2042,9 @@ impl Document {
             let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
             let game_audio = dashboard_core::map_settings::game_audio(&settings);
             let game_dev_master = dashboard_core::map_settings::game_dev_master(&settings);
-            let cursors = crate::cursors::Cursors::load(|path| content.layers.read_uncovered(path));
+            let cursors = crate::cursors::Cursors::load_from_tables(tables, |path| {
+                content.layers.read_uncovered(path)
+            });
             let map_defines = crate::map_assets::graphics_define(
                 &content.layers,
                 "camera and map",
@@ -3127,7 +3133,7 @@ impl Document {
             let content = Content {
                 loading,
                 first_frame_reported: std::sync::atomic::AtomicBool::new(false),
-                tables: engine_executable::executable_tables::current(),
+                tables,
                 products,
                 radar_centers,
                 resource_icons,
