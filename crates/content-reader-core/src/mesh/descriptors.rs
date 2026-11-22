@@ -1361,27 +1361,34 @@ fn declared_names_in(
     items: &[parser::Item],
     words: &[&str],
     include_variables: bool,
+    all_names: bool,
 ) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut record = |item: &parser::Item| {
         let Some(fields) = item.value.items() else {
             return;
         };
-        let Some(field) = fields.iter().rev().find(|field| field.keyword_is("name")) else {
-            return;
+        let mut add = |field: &parser::Item| {
+            let Some(raw) = field.value.scalar() else {
+                return;
+            };
+            if !include_variables && !field.quoted() && raw.starts_with(b"@") {
+                return;
+            }
+            let Ok(text) = std::str::from_utf8(raw) else {
+                return;
+            };
+            let name = unquote(text);
+            if !name.is_empty() {
+                names.insert(name);
+            }
         };
-        let Some(raw) = field.value.scalar() else {
-            return;
-        };
-        if !include_variables && !field.quoted() && raw.starts_with(b"@") {
-            return;
-        }
-        let Ok(text) = std::str::from_utf8(raw) else {
-            return;
-        };
-        let name = unquote(text);
-        if !name.is_empty() {
-            names.insert(name);
+        if all_names {
+            for field in fields.iter().filter(|field| field.keyword_is("name")) {
+                add(field);
+            }
+        } else if let Some(field) = fields.iter().rev().find(|field| field.keyword_is("name")) {
+            add(field);
         }
     };
     for item in items {
@@ -1403,8 +1410,8 @@ fn declared_names_from(
     document: &parser::Document,
     words: &[&str],
 ) -> BTreeSet<String> {
-    let mut names = declared_names_in(native_items, words, true);
-    names.extend(declared_names_in(&document.items, words, false));
+    let mut names = declared_names_in(native_items, words, true, false);
+    names.extend(declared_names_in(&document.items, words, false, false));
     names
 }
 
@@ -1417,7 +1424,9 @@ fn recover_names(
     let native_items = native(bytes, "", true)
         .map(|(items, _)| items)
         .unwrap_or_default();
-    declared_names_from(&native_items, document, words)
+    let mut names = declared_names_in(&native_items, words, true, true);
+    names.extend(declared_names_in(&document.items, words, false, false));
+    names
 }
 
 pub fn lexical_names(bytes: &[u8]) -> BTreeSet<String> {

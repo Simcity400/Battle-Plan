@@ -2254,12 +2254,22 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
             name = @extra
             pdxmesh = "m"
         }
+        entity = {
+            game_data = { atlas_size = { @redef = overlay_redef_one x = 4 } }
+            pdxmesh = "m"
+        }
+        @redef = overlay_redef_two
+        @redef_copy = @redef
+        entity = { name = @redef_copy pdxmesh = "m" }
         entity = { name = "first" pdxmesh = "m" scale = 9.0 locator = { name = "point" position = { @x = 2 0 0 } } }
         entity = { name = "second" pdxmesh = "m" scale = 9.0 }
         @after_extra = overlay_after
         entity = { name = @after_extra pdxmesh = "m" }
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
+
+    let embedded_end = b"@id = wanted entity = { game_data = { atlas_size = { loose k = 1\xff x = 1 } } name = @id pdxmesh = \"m\" }";
+    assert!(parse_descriptors(embedded_end, "gfx/entities/embedded.asset").is_err());
 
     let root = std::env::temp_dir().join(format!(
         "content-reader-unsettled-overlay-{}",
@@ -2297,6 +2307,7 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     );
     let overlay_dir = root.join("overlay");
     write("overlay/gfx/entities/a.asset", unsettled);
+    write("overlay/gfx/entities/embedded.asset", embedded_end);
     let descriptor = format!(
         "name=\"VisualOverride\"\npath=\"{}\"\n",
         overlay_dir.display().to_string().replace('\\', "/")
@@ -2334,13 +2345,37 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.unreadable_names.get("@extra"), None);
     assert_eq!(roster.unreadable_names.get("@after_extra"), None);
     assert_eq!(roster.unreadable_names.get("@broken_var"), None);
+    assert_eq!(roster.unreadable_names.get("@redef"), None);
+    assert_eq!(roster.unreadable_names.get("@redef_copy"), None);
+    assert_eq!(roster.unreadable_names.get("@id"), None);
     assert!(roster.refused_declaration("overlay_only").is_some());
+    assert!(roster.refused_declaration("overlay_redef_one").is_some());
+    assert!(roster.refused_declaration("overlay_redef_two").is_some());
     assert!(roster.refused_declaration("overlay_after").is_some());
+    assert!(roster.refused_declaration("wanted").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(
         roster.unreadable_names.get("overlay_only").map(String::as_str),
         Some("gfx/entities/a.asset")
+    );
+    assert_eq!(
+        roster
+            .unreadable_names
+            .get("overlay_redef_one")
+            .map(String::as_str),
+        Some("gfx/entities/a.asset")
+    );
+    assert_eq!(
+        roster
+            .unreadable_names
+            .get("overlay_redef_two")
+            .map(String::as_str),
+        Some("gfx/entities/a.asset")
+    );
+    assert_eq!(
+        roster.unreadable_names.get("wanted").map(String::as_str),
+        Some("gfx/entities/embedded.asset")
     );
     assert!(!roster.descriptors.entities.contains_key("broken_first"));
     assert!(!roster.descriptors.entities.contains_key("broken_second"));

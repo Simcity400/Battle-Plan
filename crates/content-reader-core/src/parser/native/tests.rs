@@ -1531,10 +1531,86 @@ fn read_recovering_scans_past_unknown_dispatch_variable_ambiguities() {
         &mut |s, f| dispatch(s, f),
     );
     assert!(redef_recovered.unsettled.is_none(), "{redef_recovered:?}");
-    assert_eq!(
-        block(&redef_recovered.items, "b")[0].value,
-        Value::Scalar(b"one".to_vec())
+    let redef_names: Vec<&[u8]> = block(&redef_recovered.items, "b")
+        .iter()
+        .filter(|item| item.keyword_is("name"))
+        .filter_map(|item| item.value.scalar())
+        .collect();
+    assert_eq!(redef_names, vec![b"one".as_slice(), b"two".as_slice()]);
+
+    let multi_redef = b"a = { opaque = { @v = one x = 1 } } b = { opaque = { @v = two @v = ignored x = 1 } } @v = three @v = also_ignored @copy = @v c = { name = @copy }";
+    assert!(
+        read(
+            multi_redef,
+            Mode::KeepMark,
+            Top::File(()),
+            None,
+            &mut |s, f| dispatch(s, f)
+        )
+        .unsettled
+        .is_some()
     );
+    let multi_recovered = read_recovering(
+        multi_redef,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |s, f| dispatch(s, f),
+    );
+    assert!(multi_recovered.unsettled.is_none(), "{multi_recovered:?}");
+    let multi_names: Vec<&[u8]> = block(&multi_recovered.items, "c")
+        .iter()
+        .filter(|item| item.keyword_is("name"))
+        .filter_map(|item| item.value.scalar())
+        .collect();
+    assert_eq!(
+        multi_names,
+        vec![b"one".as_slice(), b"two".as_slice(), b"three".as_slice()]
+    );
+
+    let embedded_dispatch = |(), field: &Field<'_>| match field.keyword().as_deref() {
+        Some(b"entity" | b"game_data") => Shape::Object(()),
+        Some(b"atlas_size") => Shape::ByKey,
+        _ => Shape::One,
+    };
+    for (bytes, expected) in [
+        (
+            b"@id = wanted entity = { game_data = { atlas_size = { loose k = 1\xff x = 1 } } name = @id }"
+                .as_slice(),
+            b"wanted".as_slice(),
+        ),
+        (
+            b"@id = wanted_keyed entity = { game_data = { atlas_size = { a = 1 \xff x = 1 } } name = @id }"
+                .as_slice(),
+            b"wanted_keyed".as_slice(),
+        ),
+    ] {
+        assert!(
+            read(
+                bytes,
+                Mode::KeepMark,
+                Top::File(()),
+                None,
+                &mut |s, f| embedded_dispatch(s, f)
+            )
+            .unsettled
+            .is_some()
+        );
+        let recovered = read_recovering(
+            bytes,
+            Mode::KeepMark,
+            Top::File(()),
+            None,
+            &mut |s, f| embedded_dispatch(s, f),
+        );
+        assert!(recovered.unsettled.is_none(), "{recovered:?}");
+        let entity_name = block(&recovered.items, "entity")
+            .iter()
+            .find(|item| item.keyword_is("name"))
+            .and_then(|item| item.value.scalar())
+            .expect("entity name");
+        assert_eq!(entity_name, expected);
+    }
 
     let brace_value = b"@o = { a = { opaque = { loose k = @o } name = \"after_brace_var\" } }";
     assert!(
