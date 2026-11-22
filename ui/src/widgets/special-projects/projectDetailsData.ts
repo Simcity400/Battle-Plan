@@ -61,6 +61,7 @@ export function validateProjectIteration(value: unknown, hour: number): SpecialP
   if (!object(value) || value.hour !== hour || !heading(value.heading)
     || !Array.isArray(value.sections) || !value.sections.every(section => object(section) && heading(section.heading) && validGameRuns(section.runs))
     || (value.heading !== null && value.sections.length === 0)
+    || typeof value.noChanges !== 'boolean' || (value.noChanges && (value.heading !== null || value.sections.length > 0))
     || !counts(value.refusals) || !nullable(value.unavailable) || !strings(value.warnings)) throw new Error('Invalid special-project iteration');
   return value as unknown as SpecialProjectIteration;
 }

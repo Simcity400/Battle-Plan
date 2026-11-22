@@ -993,6 +993,13 @@ impl EnvironmentInputs {
         }
     }
 
+    pub(super) fn with_constants(
+        self,
+        constants: Result<content_reader_core::script_constants::Constants, String>,
+    ) -> Self {
+        Self { constants, ..self }
+    }
+
     #[cfg(test)]
     pub(super) fn with_aliases(
         self,

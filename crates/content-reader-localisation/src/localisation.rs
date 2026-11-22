@@ -510,6 +510,26 @@ pub fn format_scripted_variable(value: i64, format: Option<&[u8]>) -> String {
     crate::fixed5::fixed5_to_string(value, -1)
 }
 
+pub fn format_argument(value: Argument<'_>, format: &[u8]) -> Result<String, Cause> {
+    let mut out = Output::default();
+    formatted(value, format, &mut out);
+    out.finish()
+}
+
+pub fn argument_format<'t>(template: &'t str, name: &str) -> Option<&'t str> {
+    let mut rest = template;
+    loop {
+        let open = rest.find('$')?;
+        let close = open + 1 + rest[open + 1..].find('$')?;
+        let operand = &rest[open + 1..close];
+        let (operand_name, format) = operand.split_once('|').unwrap_or((operand, ""));
+        if close > open + 1 && operand_name == name {
+            return Some(format);
+        }
+        rest = &rest[close + 1..];
+    }
+}
+
 fn argument(operand: &[u8], arguments: &[(&str, Argument<'_>)], out: &mut Output) -> bool {
     if out.full() {
         return false;
@@ -1682,6 +1702,22 @@ mod tests {
         assert!(deep.ends_with("31 "));
         let key = vec![b'k'; 0x2000];
         assert_eq!(loc.localise(&key).map(|text| text.len()), Ok(0x1800));
+    }
+
+    #[test]
+    fn an_argument_keeps_its_template_format_outside_the_template() {
+        let template = "10$$ off $USES$$BONUS|%0+$ for $LIST|Y$.";
+        assert_eq!(argument_format(template, "BONUS"), Some("%0+"));
+        assert_eq!(argument_format(template, "USES"), Some(""));
+        assert_eq!(argument_format(template, "MISSING"), None);
+        let loc = loc(&[("KEY", template)]);
+        assert_eq!(
+            loc.localise_with(b"KEY", &[("BONUS", Argument::Fixed5(20_000)), ("LIST", Argument::Text("Armor")), ("USES", Argument::Text(""))]).as_deref(),
+            Ok("10$ off \u{11}G20%\u{11}! for \u{11}YArmor\u{11}!.")
+        );
+        assert_eq!(format_argument(Argument::Fixed5(20_000), b"%0+").as_deref(), Ok("\u{11}G20%\u{11}!"));
+        assert_eq!(format_argument(Argument::Fixed5(-5_000), b"=%H").as_deref(), Ok("\u{11}H-5.00%\u{11}!"));
+        assert_eq!(format_argument(Argument::Fixed5(1_500_000), b"=+0").as_deref(), Ok("\u{11}G+15\u{11}!"));
     }
 
     #[test]

@@ -39,15 +39,19 @@ test('an iteration reply is the game\'s headed output read at that iteration\'s 
   const text = (value: string, tone: string | null = null) => ({ kind: 'text' as const, text: value, tone });
   const iteration = { hour: 23, heading: [text('Output(s)')], refusals: { 'special-project iteration effect scientist effects: Unknown scientist reference type': 1 },
     sections: [
-      { heading: null, runs: [text('Support Ships', 'H'), text('('), { kind: 'flag' as const, tag: 'ENG' }, text(')\n  Add '), text('15.00%', 'H')] },
+      { heading: null, runs: [text('Project progress '), text('+15.00%', 'H'), text('\nNavy experience '), text('+15', 'G')] },
       { heading: [text('Equipment(s)')], runs: [{ kind: 'link' as const, entity: 'equipment' as const, token: 'mod_equipment', text: 'Rifle', tone: null }] },
-    ], unavailable: null, warnings: [] };
+    ], noChanges: false, unavailable: null, warnings: [] };
   assert.equal(validateProjectIteration(iteration, 23), iteration);
+  const unchanged = { ...iteration, heading: null, sections: [], noChanges: true, refusals: {} };
+  assert.equal(validateProjectIteration(unchanged, 23), unchanged, 'an option that changes nothing says so with no output');
+  assert.throws(() => validateProjectIteration({ ...iteration, noChanges: true }, 23), /Invalid/, 'no changes carries no output');
+  assert.throws(() => validateProjectIteration({ ...iteration, noChanges: undefined }, 23), /Invalid/);
   assert.throws(() => validateProjectIteration(iteration, 24), /Invalid/, 'a reply read at another hour is not this iteration\'s');
   assert.throws(() => validateProjectIteration({ ...iteration, sections: [] }, 23), /Invalid/, 'no output carries no heading');
   assert.throws(() => validateProjectIteration({ ...iteration, sections: [{ heading: null, runs: [{ kind: 'link', entity: 'equipment', token: '', text: 'Rifle', tone: null }] }] }, 23), /Invalid/);
   assert.throws(() => validateProjectIteration({ ...iteration, refusals: { reason: 0 } }, 23), /Invalid/);
-  const missing = { hour: 23, heading: null, sections: [], refusals: {}, unavailable: 'This iteration\'s choice was not read within a day of its hour', warnings: [] };
+  const missing = { hour: 23, heading: null, sections: [], noChanges: false, refusals: {}, unavailable: 'This iteration\'s choice was not read within a day of its hour', warnings: [] };
   assert.equal(validateProjectIteration(missing, 23), missing, 'not recorded is a named state, never an empty output');
 });
 

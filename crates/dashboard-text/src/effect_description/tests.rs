@@ -453,6 +453,7 @@ impl Fixture {
                 evaluator: OnceCell::new(),
                 out: Description::default(),
                 scripted_stack: Vec::new(),
+                concise: None,
             };
             let out = run(&mut renderer);
             *scopes = renderer.graph.borrow().clone();

@@ -25,6 +25,7 @@ pub fn doctrine_tactic_sources(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let mut output = Vec::new();
     let mut gaps = BTreeMap::<String, usize>::new();
@@ -269,6 +270,7 @@ pub fn doctrine_benefits(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let selected = crate::triggers::event_scopes::project(scopes, 0);
     let mut output = String::new();

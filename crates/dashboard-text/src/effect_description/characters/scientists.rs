@@ -80,14 +80,14 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         self.char_scientist_change(item, scopes, true)
     }
 
-    fn char_scientist_change(
+    pub(in crate::effect_description) fn char_scientist_gain(
         &self,
         item: &Item,
         scopes: Scopes,
         levels: bool,
-    ) -> Result<String, String> {
+    ) -> Result<Option<(Cow<'f, CharacterRow>, String, i64)>, String> {
         let Some(character) = self.char_scientist(scopes)? else {
-            return Ok(String::new());
+            return Ok(None);
         };
         let specialization = field(children(item), "specialization")
             .and_then(|field| field.value.scalar())
@@ -95,13 +95,27 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
         let Some(specialization) =
             self.char_specialization_name(specialization, character.country, scopes)?
         else {
-            return Ok(String::new());
+            return Ok(None);
         };
         let value = field(children(item), if levels { "level" } else { "experience" })
             .and_then(|field| field.value.scalar())
             .map(|operand| self.scoped_value(operand, scopes))
             .transpose()?
             .unwrap_or_default();
+        Ok(Some((character, specialization, value)))
+    }
+
+    fn char_scientist_change(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        levels: bool,
+    ) -> Result<String, String> {
+        let Some((character, specialization, value)) =
+            self.char_scientist_gain(item, scopes, levels)?
+        else {
+            return Ok(String::new());
+        };
         let text = self.char_native_text(
             if levels {
                 b"SCIENTIST_ADD_LEVEL_SPECIALIZATION_EFFECT"

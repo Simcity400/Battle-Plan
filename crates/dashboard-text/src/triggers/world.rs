@@ -3252,7 +3252,7 @@ impl<'a> World<'a> {
             })
     }
 
-    pub(super) fn script_constants(&self) -> Result<&'a Constants, &'a str> {
+    pub(crate) fn script_constants(&self) -> Result<&'a Constants, &'a str> {
         *self.script_constants
     }
 

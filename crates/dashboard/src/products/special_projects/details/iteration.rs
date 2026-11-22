@@ -52,6 +52,7 @@ pub struct SpecialProjectIteration {
     pub heading: Option<Vec<GameRun>>,
     #[doc = " What the chosen option gave, in the game's order."]
     pub sections: Vec<IterationSection>,
+    pub no_changes: bool,
     #[doc = " Why parts of the output were withheld, with how often each was met."]
     pub refusals: BTreeMap<String, usize>,
     pub unavailable: Option<String>,
@@ -132,6 +133,7 @@ fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, project: &P
     let cache = scripted.effects()?;
     let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project iteration", cache.view(None)).with_entity_links();
     let description = dashboard_text::effect_description::project_iteration_description(&option.output, &context, project.owner, project.local_id, scopes(frame, row));
+    out.no_changes = description.no_changes;
     let mut refusals = description.refusals;
     for section in &description.sections {
         let heading = match &section.heading {
@@ -153,7 +155,7 @@ fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, project: &P
 }
 
 fn empty(hour: i32) -> SpecialProjectIteration {
-    SpecialProjectIteration { hour, heading: None, sections: Vec::new(), refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() }
+    SpecialProjectIteration { hour, heading: None, sections: Vec::new(), no_changes: false, refusals: BTreeMap::new(), unavailable: None, warnings: Vec::new() }
 }
 
 fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<'_, Context>, slot: u32, out: &mut SpecialProjectIteration) -> io::Result<Result<(), String>> {

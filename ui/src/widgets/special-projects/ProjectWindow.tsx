@@ -150,6 +150,7 @@ function IterationOutput({ runtime, track, tag, active, project, choice, onOpen 
   if (!data) return null;
   const refusals = Object.keys(data.refusals);
   if (data.unavailable) return <p className="project-window-withheld" title={data.unavailable}>Not recorded</p>;
+  if (data.noChanges) return <div className="project-window-output"><p className="game-text">No changes</p></div>;
   return <>
     {data.sections.length > 0 && <div className="project-window-output">{data.sections.map((section, at) => <div key={at}>
       {section.heading && <span className="project-window-output-label"><GameRuns runs={trimLabel(section.heading)} /></span>}

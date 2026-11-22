@@ -64,6 +64,7 @@ pub(crate) fn find<'r, R: RowCodec + Clone + 'r>(
 
 mod ability;
 mod characters;
+mod concise;
 pub use ability::ability_description;
 mod diplomacy;
 mod doctrine_sources;
@@ -593,6 +594,7 @@ pub fn describe(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
     match projected {
@@ -626,6 +628,7 @@ struct Renderer<'r, 'c, 'f> {
     evaluator: OnceCell<Result<Evaluator<'c, 'f>, String>>,
     out: Description,
     scripted_stack: Vec<(Vec<u8>, Scope)>,
+    concise: Option<(u32, u32)>,
 }
 
 pub fn trim_description(text: &str) -> &str {
@@ -1263,6 +1266,13 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Some(0x142A31D78) => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
+        if let Some(text) = self.concise_leaf(item, scopes) {
+            return if self.indents(item) {
+                indent_nonempty_lines(&text, 3 * indent)
+            } else {
+                text
+            };
+        }
         let Some(own) = self.own(item, scopes) else {
             return String::new();
         };
@@ -1331,6 +1341,7 @@ pub fn technology_description(token: &str, context: &Context<'_, '_>, country: u
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     match renderer.bound_technology_effect(token, Scopes::of(Scope::Country(country))) {
         Ok(text) => renderer.out.text = text,
@@ -1358,6 +1369,7 @@ pub struct OutputSection {
 pub struct IterationDescription {
     pub heading: Option<String>,
     pub sections: Vec<OutputSection>,
+    pub no_changes: bool,
     pub refusals: BTreeMap<String, usize>,
 }
 
@@ -1368,6 +1380,12 @@ pub fn project_iteration_description(
     id: u32,
     iteration: IterationScopes,
 ) -> IterationDescription {
+    if concise::changes_nothing(output) {
+        return IterationDescription {
+            no_changes: true,
+            ..IterationDescription::default()
+        };
+    }
     let mut renderer = Renderer {
         context,
         graph: Rc::new(RefCell::new(EventScopes::new(vec![
@@ -1376,6 +1394,7 @@ pub fn project_iteration_description(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: Some((owner, id)),
     };
     let mut out = IterationDescription::default();
     match renderer.project_iteration_body(
@@ -1411,6 +1430,7 @@ pub fn project_output_description(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let item = Item {
         key: None,

@@ -5792,7 +5792,7 @@ heading: Array<GameRun> | null,
 /**
  * What the chosen option gave, in the game's order.
  */
-sections: Array<IterationSection>,
+sections: Array<IterationSection>, noChanges: boolean,
 /**
  * Why parts of the output were withheld, with how often each was met.
  */

@@ -434,6 +434,9 @@ impl Renderer<'_, '_, '_> {
                 return String::new();
             }
         };
+        if self.concise_own_project(selected.this) {
+            header.clear();
+        }
         let body = self.attached(children(item), true);
         let child_indent = if header.is_empty() {
             0

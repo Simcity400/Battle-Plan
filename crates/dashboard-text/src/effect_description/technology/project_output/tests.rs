@@ -27,6 +27,11 @@ fn fixture(output: &str) -> (Fixture, Folder) {
             "buildings={mod_facility={specialization={mod_science} level_cap={province_max=1}}}",
         ),
         ("common/units/test.txt", "sub_units={mod_unit={}}"),
+        ("common/technology_tags/test.txt", "technology_categories={mod_armor}"),
+        (
+            "common/script_constants/test.txt",
+            "sp_breakthrough_progress={schema={any_key=yes data=fixed_point} medium=0.25} sp_count={schema={any_key=yes data=int} one=1}",
+        ),
         (
             "common/units/equipment/test.txt",
             "equipments={mod_equipment={is_archetype=yes type=infantry}} equipment_modules={mod_module={allowed={always=yes}} mod_forbidden_module={allowed={always=no}}}",
@@ -43,7 +48,10 @@ fn fixture(output: &str) -> (Fixture, Folder) {
                 " mod_unit:0 \"Unit\"\n AAA_mod_unit:0 \"Alpha unit\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n mod_module:0 \"Module\"\n AAA_mod_module:0 \"Alpha module\"\n",
                 " STAT_ARMY_SOFT_ATTACK:0 \"Soft:\"\n STAT_MODIFIER_DIFF:0 \"$VALUE|2$\"\n",
                 " SUBUNIT_BONUS_HEADER:0 \"$ICON$$NAME$\"\n STAT_MODIFIER_VALUE:0 \"$VALUE|2$\"\n",
-                " SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT:0 \"Equipment got\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT_MODULE:0 \"Modules got\"\n"
+                " SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT:0 \"Equipment got\"\n SPECIAL_PROJECT_REWARD_EQUIPMENT_MODULE:0 \"Modules got\"\n",
+                " mod_armor:0 \"Armor technology\"\n AND:0 \"and \"\n EFFECT_TECH_BONUS_USES:0 \"$USES$x \"\n EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"$USES$$BONUS|%0+$ Research bonus for: $LIST|Y$.\"\n",
+                " mod_science:0 \"Naval Engineering\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_DESC:0 \"Gain breakthrough progress:\"\n ADD_BREAKTHROUGH_PROGRESS_EFFECT_SPECIALIZATION:0 \"$SPECIALIZATION|Y$: $AMOUNT|2%G$\"\n",
+                " EFFECT_ADD_NAVY_EXPERIENCE:0 \"Navy Experience: $VAL|=+0$.\"\n SCIENTIST_ADD_XP_SPECIALIZATION_EFFECT:0 \"gains $XP|0Y$ experience in $SPECIALIZATION|Y$\"\n"
             ),
         ),
     ]);
@@ -473,5 +481,115 @@ fn iteration_output_follows_the_history_view_and_links_its_unlocks() {
     );
     let empty = content_reader_core::special_projects::Output::default();
     let nothing = project_iteration_description(&empty, &context, 100, 8, scopes(Ok(None)));
-    assert_eq!((nothing.heading, nothing.sections.len()), (None, 0), "no output, no heading");
+    assert_eq!(
+        (nothing.heading, nothing.sections.len(), nothing.no_changes),
+        (None, 0, true),
+        "no output, no heading: the option changes nothing"
+    );
+}
+
+fn iteration(fixture: &Fixture) -> IterationDescription {
+    let scripted = fixture.catalogue.scripted_content().unwrap();
+    let cache = scripted.effects().unwrap();
+    let text = crate::scripted_text::ScriptedText::new(
+        &fixture.frame,
+        &fixture.catalogue.localisation,
+        scripted,
+        1,
+    );
+    let context = Context::new(
+        &text,
+        &fixture.catalogue.localisation,
+        1,
+        "special-project iteration",
+        cache.view(None),
+    )
+    .with_entity_links();
+    let definitions =
+        content_reader_core::special_projects::Catalog::read(&fixture.catalogue.content.layers).unwrap();
+    project_iteration_description(
+        &definitions.projects["mod_project"].output,
+        &context,
+        100,
+        8,
+        IterationScopes {
+            country_seed: Some(5),
+            scientist: Ok(Some(7)),
+            scientist_seed: None,
+            facility: Ok(None),
+            state_seed: None,
+        },
+    )
+}
+
+#[test]
+fn iteration_rewards_read_concisely_by_effect_type_in_the_games_value_format() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    let (rewards, _folder) = fixture(concat!(
+        "country_effects={add_tech_bonus={name=mod_bonus bonus=0.2 uses=1 category=mod_armor} FROM={add_project_progress_ratio=0.15} ",
+        "add_breakthrough_progress={specialization=mod_science value=sp_breakthrough_progress.medium} navy_experience=15 custom_effect_tooltip=PROJECT_COUNTRY} ",
+        "scientist_effects={add_scientist_xp={experience=15 specialization=mod_science}}",
+    ));
+    let described = iteration(&rewards);
+    assert!(!described.no_changes);
+    assert_eq!(
+        described.sections,
+        [
+            OutputSection {
+                heading: None,
+                text: concat!(
+                    "Research bonus \u{11}G+20%\u{11}! for Armor technology (1 use)\n",
+                    "Project progress +0.15\n",
+                    "Naval Engineering breakthrough \u{11}G+25.00%\u{11}!\n",
+                    "Navy experience \u{11}G+15\u{11}!\n",
+                    "Country AAA/AAA",
+                )
+                .into(),
+            },
+            OutputSection {
+                heading: None,
+                text: "Later: Naval Engineering experience \u{11}Y+15\u{11}!".into(),
+            },
+        ],
+        "covered effect types read concisely with the game's value format and names; the project's own header is dropped; a custom tooltip keeps the game text"
+    );
+    assert!(described.refusals.is_empty(), "{:?}", described.refusals);
+    let output = render(
+        &rewards,
+        "complete_special_project=sp:mod_project add_breakthrough_progress={specialization=mod_science value=0.25}",
+    );
+    for game in [
+        "1x \u{11}G20%\u{11}! Research bonus for: \u{11}YArmor technology\u{11}!.",
+        "Project context Project AAA Progress Project AAA 0.15",
+        "Navy Experience: \u{11}G+15\u{11}!.",
+        "Gain breakthrough progress:\n  \u{11}YNaval Engineering\u{11}!: \u{11}G25.00%\u{11}!",
+    ] {
+        assert!(output.text.contains(game), "outside iterations the game text stays: {game:?} in {output:?}");
+    }
+
+    let (unread, _folder) = fixture(
+        "country_effects={add_breakthrough_progress={specialization=mod_science value=sp_count.one}}",
+    );
+    let refused = iteration(&unread);
+    assert!(refused.sections.is_empty(), "{refused:?}");
+    assert_eq!(
+        refused.refusals.keys().collect::<Vec<_>>(),
+        ["special-project iteration effect add_breakthrough_progress: key add_breakthrough_progress: breakthrough progress sp_count.one is not a fixed-point script constant"],
+        "an integer constant is not the fixed-point value the game reads, so it is withheld by name"
+    );
+
+    let (shown, _folder) = fixture(
+        "country_effects={custom_effect_tooltip=PROJECT_COUNTRY if={limit={always=yes} effect_tooltip={navy_experience=15}}} scientist_effects={}",
+    );
+    let unchanged = iteration(&shown);
+    assert_eq!(
+        (unchanged.no_changes, unchanged.heading, unchanged.sections.len()),
+        (true, None, 0),
+        "an option whose effects only show tooltips changes nothing"
+    );
+    let (acting, _folder) = fixture("country_effects={custom_effect_tooltip=PROJECT_COUNTRY navy_experience=15}");
+    let changed = iteration(&acting);
+    assert!(!changed.no_changes);
+    assert_eq!(changed.sections[0].text, "Country AAA/AAA\nNavy experience \u{11}G+15\u{11}!");
 }

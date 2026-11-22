@@ -509,7 +509,10 @@ impl ScriptedContent {
 #[cfg(any(test, feature = "test-support"))]
 impl ScriptedContent {
     pub fn set_synthetic_environment(&self, state_names: std::collections::BTreeMap<u32, String>) {
-        let mut environment = entries::EnvironmentInputs::synthetic();
+        let mut environment = entries::EnvironmentInputs::synthetic().with_constants(
+            content_reader_core::script_constants::read(&self.layers.layers)
+                .map_err(|why| why.to_string()),
+        );
         environment.state_names = state_names
             .into_iter()
             .map(|(id, name)| (id, Ok(name)))
