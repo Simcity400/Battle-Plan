@@ -9,7 +9,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { TechnologyEffects as TechnologyEffectsReply } from '../../generated/dashboard';
 import EntityStatsWindow from './EntityStatsWindow';
-import GameText, { type EntityLink } from './GameText';
+import { GameBlocks, type EntityLink } from './GameText';
 import { technologyEffectsStructure, validateTechnologyEffects } from './technologyEffects';
 import { useTechnologyArtwork } from './useTechnologyArtwork';
 import '../../components/Dossier.css';
@@ -40,7 +40,7 @@ export function TechnologyEffects({ token, ...shown }: Shown & { token: string }
       : !data ? <p className="dossier-missing">Loading effects…</p>
         : <>
           {data.unavailable && <p className="dossier-missing">{data.unavailable}</p>}
-          {data.runs.length ? <GameText runs={data.runs} onOpen={setOpened} /> : !data.unavailable && !refusals.length && <p className="dossier-missing">No effects to describe.</p>}
+          {data.runs.length ? <GameBlocks runs={data.runs} onOpen={setOpened} /> : !data.unavailable && !refusals.length && <p className="dossier-missing">No effects to describe.</p>}
           {refusals.map(([reason, count]) => <p className="dossier-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
         </>}
     <OpenedLink {...shown} opened={opened} onClose={() => setOpened(null)} />

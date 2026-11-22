@@ -1,4 +1,6 @@
-import type { MouseEvent } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
+import { gameBlocks } from './gameLayout';
+import type { GameBlock } from './gameLayout';
 import type { EntityKind, GameRun } from '../../generated/dashboard';
 import { ENTITY_LABELS, toneClass } from './gameRuns';
 import './gameText.css';
@@ -29,4 +31,23 @@ export function GameRuns({ runs, onOpen }: { runs: readonly GameRun[]; onOpen?: 
 
 export default function GameText({ runs, onOpen, className = '' }: { runs: readonly GameRun[]; onOpen?: (link: EntityLink) => void; className?: string }) {
   return <p className={`game-text ${className}`}><GameRuns runs={runs} onOpen={onOpen} /></p>;
+}
+
+export function GameBlocks({ runs, onOpen }: { runs: readonly GameRun[]; onOpen?: (link: EntityLink) => void }) {
+  const blocks = gameBlocks(runs);
+  const out: ReactNode[] = [];
+  for (let at = 0; at < blocks.length; at++) {
+    const block = blocks[at];
+    if (block.kind === 'stat') {
+      const rows = [];
+      for (; at < blocks.length && blocks[at].kind === 'stat'; at++) {
+        const row = blocks[at] as Extract<GameBlock, { kind: 'stat' }>;
+        rows.push(<div key={at}><dt><GameRuns runs={row.label} onOpen={onOpen} /></dt><dd><GameRuns runs={row.value} onOpen={onOpen} /></dd></div>);
+      }
+      at--;
+      out.push(<dl key={'s' + at} className="game-block-stats">{rows}</dl>);
+    } else if (block.kind === 'heading') out.push(<p key={at} className="game-block-heading"><GameRuns runs={block.runs} onOpen={onOpen} /></p>);
+    else out.push(<p key={at} className={block.quiet ? 'game-block-text is-quiet' : 'game-block-text'}><GameRuns runs={block.runs} onOpen={onOpen} /></p>);
+  }
+  return <div className="game-blocks">{out}</div>;
 }

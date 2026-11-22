@@ -26,3 +26,17 @@
 .entity-stats-list dt { min-width: 0; color: var(--muted); }
 .entity-stats-list dd { margin: 0; color: var(--text); text-align: end; white-space: nowrap; }
 .entity-stats-missing { margin: 0; color: var(--quiet); font-size: 0.75rem; }
+
+.game-blocks { display: grid; gap: 6px; min-width: 0; font-size: 0.78125rem; line-height: 1.5; }
+.game-block-text { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.game-block-text.is-quiet { color: var(--muted); font-size: 0.75rem; }
+.game-block-text.is-quiet .game-text-run { color: inherit; font-weight: inherit; }
+.game-block-heading { margin: 6px 0 0; color: var(--text); font-weight: 600; }
+.game-block-heading:first-child { margin-top: 0; }
+.game-block-heading .game-text-run { color: inherit; font-weight: inherit; }
+.game-block-stats { display: grid; grid-template-columns: minmax(0, 1fr) max-content; margin: 0; font-variant-numeric: tabular-nums; }
+.game-block-stats > div { display: contents; }
+.game-block-stats dt, .game-block-stats dd { padding: 3px 0; border-top: 1px solid color-mix(in srgb, var(--text) 7%, transparent); }
+.game-block-stats dt { min-width: 0; color: var(--muted); }
+.game-block-stats dt .game-text-run { color: inherit; font-weight: inherit; }
+.game-block-stats dd { margin: 0; padding-left: 16px; color: var(--text); font-weight: 600; text-align: end; white-space: nowrap; }

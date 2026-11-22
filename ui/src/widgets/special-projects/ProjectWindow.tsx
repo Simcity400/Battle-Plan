@@ -14,7 +14,7 @@ import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useProduct } from '../../dashboard/products';
 import { OpenedLink } from '../research/TechnologyWindow';
-import GameText, { GameRuns, type EntityLink } from '../research/GameText';
+import GameText, { GameBlocks, GameRuns, type EntityLink } from '../research/GameText';
 import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
@@ -91,7 +91,7 @@ function Output({ value, state, onOpen }: { value: ProjectEffects | null | undef
   if (!value) return <p className="dossier-missing">Effects unavailable.</p>;
   const refusals = Object.entries(value.refusals);
   return <>
-    {value.runs.length > 0 ? <GameText runs={value.runs} onOpen={onOpen} /> : !refusals.length && <p className="dossier-note">No effects to describe.</p>}
+    {value.runs.length > 0 ? <GameBlocks runs={value.runs} onOpen={onOpen} /> : !refusals.length && <p className="dossier-note">No effects to describe.</p>}
     {refusals.map(([reason, count]) => <p className="dossier-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
   </>;
 }
