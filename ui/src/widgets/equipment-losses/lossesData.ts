@@ -1,5 +1,5 @@
 import { contentTitle } from '../../dashboard/contentTitles.ts';
-import type { Coverage, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
+import type { Coverage, DestructionRun, LossCause, LossDesign, LossLeaf, LossName, LossPoint, LossSource, LossesReply, NavigationKey, ShipListing, UnknownSpan } from '../../generated/dashboard';
 import type { SunburstItem, SunburstTotal } from '../../charts/sunburst/layout';
 import type { LegendItem } from '../../charts/Legend';
 import type { ChartTokens } from '../../charts/tokens';
@@ -31,6 +31,8 @@ const isCoverage = (coverage: Coverage) => ['logged', 'notLogged', 'unknown', 'p
 const isSpan = (span: UnknownSpan) => object(span) && int(span.firstHour) && int(span.lastHour) && span.firstHour <= span.lastHour
   && Object.hasOwn(UNKNOWN_LABELS, span.reason) && text(span.detail);
 const isHours = (span: { firstHour: number; lastHour: number }) => object(span) && int(span.firstHour) && int(span.lastHour) && span.firstHour <= span.lastHour;
+const isDestructionRun = (run: DestructionRun) => isHours(run)
+  && (run.countedFrom === null || int(run.countedFrom)) && (run.withheldFrom === null || int(run.withheldFrom));
 const isDesign = (design: LossDesign) => object(design) && int(design.variant) && design.variant >= 0
   && [design.equipment, design.archetype, design.archetypeName].every(text)
   && Array.isArray(design.names) && design.names.every((read, index) => object(read) && int(read.firstHour) && text(read.name)
@@ -46,7 +48,8 @@ export function validateLossesReply(data: unknown): LossesReply {
   const reply = data as LossesReply;
   const ok = object(reply) && typeof reply.branchId === 'string' && typeof reply.tag === 'string'
     && ['destruction', 'combatLog'].includes(reply.landSource) && text(reply.landLowerBound)
-    && (reply.destructionCountedFrom === null || int(reply.destructionCountedFrom))
+    && Array.isArray(reply.destructionRuns) && reply.destructionRuns.every((run, index) => isDestructionRun(run)
+      && (index === 0 || reply.destructionRuns[index - 1].lastHour < run.firstHour))
     && int(reply.amountScale) && reply.amountScale > 0 && Number.isInteger(Math.log10(reply.amountScale))
     && (reply.retainedMonths === null || int(reply.retainedMonths))
     && Array.isArray(reply.designs) && reply.designs.every(isDesign)
@@ -133,11 +136,17 @@ export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   return found;
 }
 
+function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): LossPoint | null {
+  const point = pointAt(leaf, hour);
+  return point && (minHour === null || point.hour >= minHour) ? point : null;
+}
+
 const peaks = new WeakMap<LossLeaf, { firstHour: number; value: number }[]>();
-function weightAt(leaf: LossLeaf, hour: number, from?: number | null): number {
-  if (from != null) {
-    const baseline = BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0');
-    return leaf.points.reduce((peak, point) => point.hour < from || point.hour > hour ? peak
+function weightAt(leaf: LossLeaf, hour: number, from?: number | null, minHour: number | null = null): number {
+  if (from != null || minHour !== null) {
+    const floor = from != null && minHour !== null ? Math.max(from, minHour) : (from ?? minHour!);
+    const baseline = from == null ? 0n : BigInt(pointIn(leaf, from - 1, minHour)?.totalRaw ?? '0');
+    return leaf.points.reduce((peak, point) => point.hour < floor || point.hour > hour ? peak
       : Math.max(peak, Math.abs(Number(BigInt(point.totalRaw) - baseline))), 0);
   }
   let steps = peaks.get(leaf);
@@ -164,7 +173,10 @@ const destructionReason = (span: UnknownSpan) => span.reason.startsWith('destruc
 export const unknownCauses = (reply: LossesReply, hour: number) => reply.causes.filter(cause => cause.loss).flatMap(cause => {
   if (cause.unknown !== null) return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: Unavailable` }];
   if (!spansAt(cause, hour).length) return [];
-  return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: ${cause.leaves.some(leaf => pointAt(leaf, hour)) ? 'Incomplete' : 'Unavailable'}` }];
+  const isDestruction = cause.source.kind === 'destruction';
+  const floor = isDestruction ? destructionFloorAt(reply, hour) : null;
+  const measured = (!isDestruction || floor !== null) && cause.leaves.some(leaf => pointIn(leaf, hour, floor));
+  return [{ id: sourceKey(cause.source), label: `${causeName(cause)}: ${measured ? 'Incomplete' : 'Unavailable'}` }];
 });
 
 type LandState = 'logged' | 'partial' | 'notLogged' | 'unknown';
@@ -198,9 +210,9 @@ export function lossWindow(window: { firstHour: number; lastHour: number } | nul
     from: mode === 'range' ? window.firstHour : null };
 }
 
-export function lossAmount(leaf: LossLeaf, hour: number, from?: number | null): bigint | null {
-  const point = pointAt(leaf, hour);
-  return point ? BigInt(point.totalRaw) - (from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0')) : null;
+export function lossAmount(leaf: LossLeaf, hour: number, from?: number | null, minHour: number | null = null): bigint | null {
+  const point = pointIn(leaf, hour, minHour);
+  return point ? BigInt(point.totalRaw) - (from == null ? 0n : BigInt(pointIn(leaf, from - 1, minHour)?.totalRaw ?? '0')) : null;
 }
 
 export const lossKey = (cause: LossCause, design: LossDesign | undefined) => JSON.stringify([sourceKey(cause.source), design?.variant ?? null]);
@@ -217,32 +229,24 @@ export interface LossItem extends SunburstItem {
 export interface LossTotal extends SunburstTotal { exact: bigint | null; incomplete: boolean }
 
 const NO_DESTRUCTION_READ = 'No destruction drain was recorded at this hour.';
+export function destructionRunAt(reply: LossesReply, hour: number): DestructionRun | null {
+  const run = entryAt(reply.destructionRuns, hour);
+  return run && run.lastHour >= hour ? run : null;
+}
+
 function destructionStartFor(reply: LossesReply, hour: number): number | null {
-  const lastRestart = reply.restarts.length ? reply.restarts[reply.restarts.length - 1] : null;
-  if (lastRestart === null || hour >= lastRestart) {
-    return reply.destructionCountedFrom
-      ?? reply.destructionCoverage.find(span => lastRestart === null || span.firstHour >= lastRestart)?.firstHour
-      ?? null;
-  }
-  let start = -Infinity;
-  let next = Infinity;
-  for (const restart of reply.restarts) {
-    if (restart <= hour) start = restart;
-    else { next = restart; break; }
-  }
-  return reply.destructionCoverage.find(span => span.firstHour >= start && span.firstHour < next)?.firstHour ?? null;
+  const run = destructionRunAt(reply, hour);
+  if (!run) return null;
+  return run.countedFrom ?? run.withheldFrom ?? null;
 }
 
 function destructionCountedFor(reply: LossesReply, hour: number): number | null {
-  const lastRestart = reply.restarts.length ? reply.restarts[reply.restarts.length - 1] : null;
-  if (lastRestart === null || hour >= lastRestart) return reply.destructionCountedFrom;
-  let start = -Infinity;
-  let next = Infinity;
-  for (const restart of reply.restarts) {
-    if (restart <= hour) start = restart;
-    else { next = restart; break; }
-  }
-  return reply.destructionCoverage.find(span => span.firstHour >= start && span.firstHour < next && span.reason === null)?.firstHour ?? null;
+  return destructionRunAt(reply, hour)?.countedFrom ?? null;
+}
+
+function destructionFloorAt(reply: LossesReply, hour: number): number | null {
+  const run = destructionRunAt(reply, hour);
+  return run?.countedFrom != null && hour >= run.countedFrom ? Math.max(run.firstHour, run.countedFrom) : null;
 }
 
 export function destructionCoverageAt(reply: LossesReply, hour: number): string | null {
@@ -251,8 +255,9 @@ export function destructionCoverageAt(reply: LossesReply, hour: number): string 
 }
 
 export function destructionCoverageHours(reply: LossesReply, first: number, last: number) {
-  const start = destructionStartFor(reply, last);
-  first = Math.max(first, start ?? last + 1);
+  const run = destructionRunAt(reply, last);
+  const start = run ? (run.countedFrom ?? run.withheldFrom ?? null) : null;
+  first = Math.max(first, run && start !== null ? Math.max(run.firstHour, start) : last + 1);
   let recorded = 0;
   let unknown = 0;
   const reasons = new Set<string>();
@@ -293,6 +298,8 @@ export function landNote(reply: LossesReply, first: number, hour: number): strin
 export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
   const items: LossItem[] = [];
   const land = landNote(reply, window.first, window.hour);
+  const destructionFloor = destructionFloorAt(reply, window.hour);
+  const endDestructionFloor = destructionFloorAt(reply, window.end);
   for (const cause of reply.causes) {
     if (!cause.loss) continue;
     const causePath = [{ id: `cause:${sourceKey(cause.source)}`, label: causeName(cause) }];
@@ -304,29 +311,33 @@ export function lossItems(reply: LossesReply, window: LossWindow): LossItem[] {
     const destructionMissing = spans.some(destructionReason);
     const unread = spans.some(span => span.reason === 'unread');
     const ended = spans.some(span => span.reason === 'endedAfterLastRead');
-    const countedFrom = destructionCountedFor(reply, window.hour);
-    const started = cause.source.kind !== 'destruction' || countedFrom !== null && window.hour >= countedFrom;
+    const isDestruction = cause.source.kind === 'destruction';
+    const started = !isDestruction || destructionFloor !== null;
+    const endStarted = !isDestruction || endDestructionFloor !== null;
+    const minHour = isDestruction ? destructionFloor : null;
+    const endMinHour = isDestruction ? endDestructionFloor : null;
     const incomplete = unread || ended || destructionMissing || !!(cause.domain === 'land' && started && land);
     const finalUnknown = finalSpans.length > 0 || !!(cause.domain === 'land' && landNote(reply, window.first, window.end));
-    const noAmount = !cause.leaves.some(leaf => pointAt(leaf, window.hour));
+    const noAmount = !started || !cause.leaves.some(leaf => pointIn(leaf, window.hour, minHour));
     const note = incomplete ? noAmount ? 'Unavailable' : 'Incomplete total.' : undefined;
     const noKnownAmount = noAmount && incomplete;
     items.push({ path: causePath, value: noKnownAmount ? null : 0, exact: 0n, final: 0,
       unknownValue: noKnownAmount, incomplete, finalUnknown, note: note || undefined, present: started || spans.length > 0 });
     for (const leaf of cause.leaves) {
-      const point = pointAt(leaf, window.hour);
+      const point = started ? pointIn(leaf, window.hour, minHour) : null;
       const design = leaf.design === null ? undefined : reply.designs[leaf.design];
-      const exact = lossAmount(leaf, window.hour, window.from), final = lossAmount(leaf, window.end, window.from);
+      const exact = started ? lossAmount(leaf, window.hour, window.from, minHour) : null;
+      const final = endStarted ? lossAmount(leaf, window.end, window.from, endMinHour) : null;
       const path = [...causePath, { id: `type:${design?.archetype ?? '?unknown'}`, label: typeName(design) },
         { id: `design:${design?.variant ?? 'none'}`, label: lossDesignName(design, window.hour), keepZero: true }];
       items.push({ path, value: exact === null ? null : Number(exact), exact, final: final === null ? null : Number(final),
-        weight: weightAt(leaf, window.end, window.from), present: point !== null,
-        incomplete: unread || cause.source.kind === 'destruction' && incomplete || !!(cause.domain === 'land' && land)
+        weight: endStarted ? weightAt(leaf, window.end, window.from, endMinHour) : 0, present: point !== null,
+        incomplete: unread || isDestruction && incomplete || !!(cause.domain === 'land' && land)
           || leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= window.hour,
-        finalUnknown: finalSpans.some(span => span.reason === 'unread') || cause.source.kind === 'destruction' && finalUnknown
+        finalUnknown: finalSpans.some(span => span.reason === 'unread') || isDestruction && finalUnknown
           || !!(cause.domain === 'land' && landNote(reply, window.first, window.end))
           || leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= window.end,
-        note: !ended || unread || cause.source.kind === 'destruction' || !!land
+        note: !ended || unread || isDestruction || !!land
           || leaf.lowerBoundFrom !== null && leaf.lowerBoundFrom <= window.hour ? note || undefined : undefined,
         counted: [lossKey(cause, design)] });
     }

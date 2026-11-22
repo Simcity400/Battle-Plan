@@ -55,11 +55,21 @@ fn a_bin_gives_its_first_value_at_its_first_hour_and_its_last_at_its_last() {
 fn drain_reasons_become_one_span_each_from_their_first_hour_after_counting_starts() {
     let held = Held {
         run: vec![
-            (0, 9, Some(RunCells { drain: Some(Row::DRAIN_NOT_READ.to_owned()), ..RunCells::default() })),
+            (0, 9, Some(RunCells { drain: Some(Row::DRAIN_NOT_READ.to_owned()), drain_state: Some(Row::DRAIN_STATE_NOT_READ), ..RunCells::default() })),
             (10, 19, run("", 0)),
-            (20, 24, run(Row::DRAIN_NOT_READ, 0)),
+            (20, 24, Some(RunCells { drain: Some(Row::DRAIN_NOT_READ.to_owned()), drain_state: Some(Row::DRAIN_STATE_NOT_READ), unread: Some(0), counted_from: Some(10), ..RunCells::default() })),
             (25, 29, None),
-            (30, 39, run(&format!("{}; {}", Row::DRAIN_OWNER_UNKNOWN, Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED), 0)),
+            (
+                30,
+                39,
+                Some(RunCells {
+                    drain: Some(format!("{}; {}", Row::DRAIN_OWNER_UNKNOWN, Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED)),
+                    drain_state: Some(Row::DRAIN_STATE_OWNER_UNKNOWN | Row::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE),
+                    unread: Some(0),
+                    counted_from: Some(10),
+                    ..RunCells::default()
+                }),
+            ),
             (40, 49, run("", 0)),
         ],
         ..Held::default()
@@ -549,4 +559,171 @@ fn combined_lost_and_unresolved_drain_states_emit_both_unknown_spans() {
             },
         ]
     );
+}
+
+#[test]
+fn current_format_unrecorded_drain_state_with_nonempty_text_reports_gap_not_guessed_class() {
+    let held = Held {
+        run: vec![
+            (
+                10,
+                11,
+                Some(RunCells {
+                    drain: Some("Reworded startup interval".to_owned()),
+                    drain_state: None,
+                    unread: Some(0),
+                    counted_from: Some(10),
+                    ..RunCells::default()
+                }),
+            ),
+            (
+                12,
+                13,
+                Some(RunCells {
+                    drain: Some(Row::DRAIN_OWNER_UNKNOWN.to_owned()),
+                    drain_state: None,
+                    unread: Some(0),
+                    counted_from: Some(10),
+                    ..RunCells::default()
+                }),
+            ),
+            (
+                14,
+                15,
+                Some(RunCells {
+                    drain: Some("Reworded refusal".to_owned()),
+                    drain_state: None,
+                    unread: Some(0),
+                    counted_from: Some(10),
+                    withheld_from: Some(14),
+                    ..RunCells::default()
+                }),
+            ),
+        ],
+        ..Held::default()
+    };
+    let spans = held.destruction_unknown(15);
+    assert!(spans.contains(&UnknownSpan { first_hour: 10, last_hour: 15, reason: UnknownReason::DestructionGap, detail: Some("Reworded startup interval".to_owned()) }), "{spans:?}");
+    assert!(spans.contains(&UnknownSpan { first_hour: 12, last_hour: 15, reason: UnknownReason::DestructionGap, detail: Some(Row::DRAIN_OWNER_UNKNOWN.to_owned()) }), "{spans:?}");
+    assert!(!spans.iter().any(|span| span.reason == UnknownReason::DestructionUnresolved), "absent format-143 drain_state must not guess unresolved from text: {spans:?}");
+    assert!(spans.contains(&UnknownSpan { first_hour: 14, last_hour: 15, reason: UnknownReason::DestructionGap, detail: Some("Reworded refusal".to_owned()) }), "{spans:?}");
+    assert!(spans.contains(&UnknownSpan { first_hour: 14, last_hour: 15, reason: UnknownReason::DestructionWithheld, detail: Some(Row::DRAIN_WITHHELD.to_owned()) }), "{spans:?}");
+    assert_eq!(spans.len(), 4, "{spans:?}");
+}
+
+#[test]
+fn contiguous_load_with_supplemental_gap_exports_exact_run_boundaries_and_gates_startup_reads() {
+    use crate::test_fixtures::{CAMPAIGN, records, source as base_frame};
+    use replay::{campaign::Replay, spool::Record};
+    use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
+    use replay_frame::{
+        branches::{BranchReason, BranchStart, Parentage},
+        frame::TableView,
+    };
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let variant = (7_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let make_frame = |branch: u64, hour: i32, rows: Vec<EquipmentDestructionRow>| {
+        let mut frame = base_frame(branch, hour, Some(1));
+        *frame.tables[TableId::EquipmentDestruction.index()] = TableView::Complete(TableRows::EquipmentDestruction(rows));
+        frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+        frame
+    };
+    let partial = |reason: &str| {
+        vec![EquipmentDestructionRow {
+            coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+            unavailable_reason: Recorded::Value(reason.to_owned()),
+            ..Default::default()
+        }]
+    };
+    let complete_loss = |amount_raw: i64| EquipmentDestructionRow {
+        country: 9001,
+        cause: EquipmentDestructionCause::LandCombat,
+        variant,
+        amount_raw,
+        coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+        unavailable_reason: Recorded::Value(String::new()),
+    };
+    let supplemental_marker = |reason: &str| EquipmentDestructionRow {
+        coverage: Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable),
+        unavailable_reason: Recorded::Value(reason.to_owned()),
+        ..Default::default()
+    };
+    let parent_frames: Vec<_> = (100..=119)
+        .map(|hour| match hour {
+            100 => make_frame(1, hour, partial("startup partial")),
+            101 => make_frame(1, hour, vec![supplemental_marker("supplemental hooks unavailable"), complete_loss(500_000)]),
+            102..=105 => make_frame(1, hour, vec![supplemental_marker("supplemental hooks unavailable")]),
+            _ => make_frame(1, hour, Vec::new()),
+        })
+        .collect();
+    let child_frames: Vec<_> = (120..=130)
+        .map(|hour| match hour {
+            120 => make_frame(2, hour, partial("child startup partial")),
+            121 => make_frame(2, hour, vec![complete_loss(200_000)]),
+            _ => make_frame(2, hour, Vec::new()),
+        })
+        .collect();
+
+    let parent = records(1, parent_frames);
+    let mut child = records(2, child_frames);
+    child[1] = Record::BranchStart(BranchStart {
+        id: 2,
+        session: 2,
+        loaded_hour: Some(119),
+        first_hour: 120,
+        parent: Parentage::Probable { branch: 1, hour: 119 },
+        reason: BranchReason::LoadSignal,
+    });
+    let replay = Replay::from_records(CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
+    let timelines = replay.timelines().expect("timelines");
+    assert_eq!(timelines.list.len(), 1);
+    let branch_id = timelines.list[0].id;
+    let source = Source::from_replay(
+        crate::SourceKey { source_id: "losses-load".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let query = crate::answer::query(&source, branch_id).unwrap();
+    assert_eq!(query.timeline.stretches.len(), 2, "{:?}", query.timeline.stretches);
+    assert!(matches!(query.timeline.stretches[1].join, Join::Load { .. }), "{:?}", query.timeline.stretches);
+    let params = LossesParams {
+        branch_id: branch_id.to_string(),
+        country: "GER".into(),
+        land_source: LandSource::Destruction,
+        identity: None,
+        from: 100,
+        to: 130,
+        width: 64,
+        reads: vec![101, 120, 121],
+    };
+    let reply = EquipmentLosses::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert!(reply.restarts.is_empty(), "contiguous branch load must have no restarts: {:?}", reply.restarts);
+    assert_eq!(
+        reply.destruction_runs,
+        vec![
+            DestructionRun { first_hour: 100, last_hour: 119, counted_from: Some(101), withheld_from: None },
+            DestructionRun { first_hour: 120, last_hour: 130, counted_from: Some(121), withheld_from: None },
+        ]
+    );
+    assert_eq!(
+        reply.destruction_coverage,
+        vec![
+            DestructionCoverageSpan { first_hour: 101, last_hour: 105, reason: Some("supplemental hooks unavailable".to_owned()) },
+            DestructionCoverageSpan { first_hour: 106, last_hour: 119, reason: None },
+            DestructionCoverageSpan { first_hour: 121, last_hour: 130, reason: None },
+        ]
+    );
+    let land = reply
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(land.leaves.len(), 1);
+    let points = &land.leaves[0].points;
+    assert!(points.iter().any(|point| point.hour == 101 && point.total_raw == "500000"), "{points:?}");
+    assert!(!points.iter().any(|point| point.hour == 120), "uncounted startup hour must never receive a synthetic zero or backdated point: {points:?}");
+    assert!(points.iter().any(|point| point.hour == 121 && point.total_raw == "200000"), "{points:?}");
 }

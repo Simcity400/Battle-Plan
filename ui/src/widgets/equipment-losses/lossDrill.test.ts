@@ -14,7 +14,7 @@ import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses,
 
 function reply(count = 1): LossesReply {
   return { branchId: 'b', tag: 'opaque tag', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], amountScale: 100000, retainedMonths: 6, warnings: [],
-    landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100,
+    landSource: 'combatLog', landLowerBound: null, destructionRuns: [{ firstHour: 100, lastHour: 110, countedFrom: 100, withheldFrom: null }],
     coverage: [{ firstHour: 100, lastHour: 110, coverage: 'logged' }],
     destructionCoverage: [{ firstHour: 100, lastHour: 110, reason: null }],
     designs: Array.from({ length: count }, (_, index) => ({ variant: index + 1, equipment: 'mod/item', archetype: 'mod/type', archetypeName: 'Mod type',
@@ -90,7 +90,7 @@ test('event history breaks unread and destruction intervals and resumes measured
 
 test('an absent opening destruction drain leaves unknown edges and boolean gap markers until a supplying read', () => {
   const data = reply();
-  data.landSource = 'destruction'; data.destructionCountedFrom = 104;
+  data.landSource = 'destruction'; data.destructionRuns = [{ firstHour: 100, lastHour: 110, countedFrom: 104, withheldFrom: null }];
   data.causes[0].source = { kind: 'destruction', reason: 'unknown' };
   data.causes[0].leaves[0].points = [{ hour: 104, totalRaw: '150000' }];
   data.destructionCoverage = [{ firstHour: 104, lastHour: 110, reason: null }];
@@ -101,6 +101,19 @@ test('an absent opening destruction drain leaves unknown edges and boolean gap m
   assert.equal(history.model.breakBefore[history.model.hours.indexOf(104)], true);
   assert.deepEqual(lossRows(data, { ...window, hour: 103 }), []);
   assert.deepEqual(lossRows(data, { ...window, hour: 104 }).map(row => [row.exact, row.readHour]), [[150000n, 104]]);
+
+  data.from = 100; data.to = 210;
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 199, countedFrom: 104, withheldFrom: null },
+    { firstHour: 200, lastHour: 210, countedFrom: 201, withheldFrom: null },
+  ];
+  data.destructionCoverage = [
+    { firstHour: 104, lastHour: 199, reason: null },
+    { firstHour: 201, lastHour: 210, reason: null },
+  ];
+  data.causes[0].leaves[0].points = [{ hour: 104, totalRaw: '500000' }, { hour: 201, totalRaw: '200000' }];
+  assert.deepEqual(lossRows(data, { first: 100, hour: 200, end: 210, campaign: false, from: null }), []);
+  assert.deepEqual(lossRows(data, { first: 100, hour: 201, end: 210, campaign: false, from: null }).map(row => [row.exact, row.readHour]), [[200000n, 201]]);
 });
 
 test('missing rows invent no amount or date, and exchange uncertainty belongs to its affected design', () => {

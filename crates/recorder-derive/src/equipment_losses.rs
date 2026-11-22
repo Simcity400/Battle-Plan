@@ -306,7 +306,24 @@ impl EquipmentLosses {
             _ => None,
         };
         let withheld_from = at(7);
-        let withheld = withheld_from.and_then(|_| view.text(4, slot)).and_then(|id| view.string(id)).map(|text| String::from_utf8_lossy(text).into_owned());
+        let drain_state = match view.value(15, slot) {
+            Held::Number(bits) => Some(bits as u8),
+            _ => None,
+        };
+        let withheld = withheld_from.and_then(|_| view.text(4, slot)).and_then(|id| view.string(id)).map(|text| {
+            let text = String::from_utf8_lossy(text).into_owned();
+            if drain_state.is_none_or(|state| state & Coverage::DRAIN_STATE_LOST != 0) {
+                if text == LOST {
+                    String::new()
+                } else if let Some(rest) = text.strip_prefix(LOST).and_then(|rest| rest.strip_prefix("; ")) {
+                    rest.to_owned()
+                } else {
+                    text
+                }
+            } else {
+                text
+            }
+        });
         self.run = Run { counted_from: at(6), withheld_from, withheld, incomplete_from: at(8), convoys_from: at(9), lend_from: at(10) };
     }
 

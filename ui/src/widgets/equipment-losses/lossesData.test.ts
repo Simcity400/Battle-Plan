@@ -16,7 +16,7 @@ const leaf = (extra: Partial<LossLeaf> = {}): LossLeaf => ({ design: 0, key: '0'
 const cause = (extra: Partial<LossCause> = {}): LossCause => ({ source: { kind: 'combatLog', reason: 0 }, domain: 'land', name: { key: 'mod_loss_combat', template: 'Mod combat', text: 'Mod combat' },
   group: null, loss: true, unknown: null, unknownSpans: [], leaves: [leaf()], ...extra });
 const reply = (): LossesReply => ({
-  branchId: 'mod-branch', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'opaque: tag / 1', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null, destructionCountedFrom: 100, destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
+  branchId: 'mod-branch', ships: [], from: 100, to: 110, width: 64, exactHours: [], restarts: [], tag: 'opaque: tag / 1', amountScale: 100_000, landSource: 'combatLog', landLowerBound: null, destructionRuns: [{ firstHour: 100, lastHour: 109, countedFrom: 100, withheldFrom: null }], destructionCoverage: [{ firstHour: 100, lastHour: 109, reason: null }], retainedMonths: 7, warnings: [],
   designs: [{ variant: 91001, equipment: 'mod_walkers_v2', archetype: 'mod_walkers', archetypeName: 'Walking machines',
     names: [{ firstHour: 100, name: 'First walker', known: true }, { firstHour: 105, name: 'Renamed walker', known: true }] }],
   coverage: [{ firstHour: 100, lastHour: 109, coverage: 'logged' }],
@@ -44,7 +44,9 @@ test('validates the contract and refuses malformed amounts, names, indices, span
     (bad: LossesReply) => { bad.coverage.push({ firstHour: 105, lastHour: 110, coverage: 'unknown' }); },
     (bad: LossesReply) => { bad.causes[2].unknown = 'Not available.'; bad.causes[2].leaves = [leaf()]; },
     (bad: LossesReply) => { bad.amountScale = 3; },
-    (bad: LossesReply) => { bad.destructionCountedFrom = NaN; },
+    (bad: LossesReply) => { bad.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: NaN, withheldFrom: null }]; },
+    (bad: LossesReply) => { bad.destructionRuns = [{ firstHour: 105, lastHour: 104, countedFrom: 105, withheldFrom: null }]; },
+    (bad: LossesReply) => { bad.destructionRuns = [{ firstHour: 100, lastHour: 105, countedFrom: 100, withheldFrom: null }, { firstHour: 105, lastHour: 109, countedFrom: 105, withheldFrom: null }]; },
     (bad: LossesReply) => { bad.destructionCoverage = [{ firstHour: 105, lastHour: 104, reason: null }]; },
     (bad: LossesReply) => { bad.causes[0].unknownSpans = [{ firstHour: 105, lastHour: 104, reason: 'unread', detail: null }]; },
   ]) {
@@ -241,7 +243,7 @@ const destruction = (): LossesReply => {
   data.landSource = 'destruction';
   data.landLowerBound = null;
   data.coverage = [];
-  data.destructionCountedFrom = 101;
+  data.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: 101, withheldFrom: null }];
   data.destructionCoverage = [{ firstHour: 101, lastHour: 109, reason: null }];
   data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
   data.causes[0].leaves[0].points[0].hour = 101;
@@ -437,7 +439,7 @@ test('distinct details of the same reason survive in cause notes and Unknown cau
 
 test('destruction without a counting start stays unavailable even with later refusal spans', () => {
   const data = destruction();
-  data.destructionCountedFrom = null;
+  data.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: null, withheldFrom: 102 }];
   data.destructionCoverage = [{ firstHour: 102, lastHour: 109, reason: 'Destruction table withheld after overflow.' }];
   for (const hour of [100, 105, 109]) assert.equal(destructionCountingNote(data, hour),
     'Unavailable');
@@ -445,27 +447,53 @@ test('destruction without a counting start stays unavailable even with later ref
   assert.equal(destructionLegend(data, live(105), TOKENS)[0].label, 'Incomplete');
   assert.equal(destructionLegend(data, whole, TOKENS)[0].label, 'Incomplete');
   assert.match(lossesFootnote(data, whole), /Unavailable/);
+  data.destructionRuns = [{ firstHour: 100, lastHour: 109, countedFrom: null, withheldFrom: null }];
   data.destructionCoverage = [];
   assert.equal(destructionCountingNote(data, 100), 'Unavailable');
   assert.deepEqual(destructionLegend(data, live(105), TOKENS), []);
 });
 
-test('multi-stretch restarts keep each runs counting boundary and startup partial separate', () => {
+test('per-run boundaries separate contiguous branch loads, supplemental gaps and uncounted startup totals', () => {
   const data = destruction();
   data.from = 100;
   data.to = 250;
-  data.restarts = [200];
-  data.destructionCountedFrom = 201;
+  data.restarts = [];
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 199, countedFrom: 101, withheldFrom: null },
+    { firstHour: 200, lastHour: 250, countedFrom: 201, withheldFrom: null },
+  ];
   data.destructionCoverage = [
-    { firstHour: 101, lastHour: 150, reason: null },
+    { firstHour: 101, lastHour: 139, reason: 'Supplemental hooks unavailable' },
+    { firstHour: 140, lastHour: 199, reason: null },
     { firstHour: 201, lastHour: 250, reason: null },
   ];
+  data.causes = [
+    cause({
+      source: { kind: 'destruction', reason: 'land_combat' },
+      leaves: [
+        leaf({ points: [{ hour: 101, totalRaw: '500000' }, { hour: 201, totalRaw: '200000' }] }),
+        leaf({ design: null, key: 'parent-only', points: [{ hour: 101, totalRaw: '900000' }] }),
+      ],
+    }),
+  ];
+  assert.equal(validateLossesReply(data), data);
+
+  assert.equal(destructionCountingNote(data, 120), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 120, end: 250, campaign: false }, TOKENS)[0].label, 'Incomplete');
+
   assert.equal(destructionCountingNote(data, 150), '');
   assert.equal(destructionLegend(data, { first: 100, hour: 150, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 150, end: 250, campaign: false })).exact, 1400000n);
+
   assert.equal(destructionCountingNote(data, 200), 'Unavailable');
   assert.deepEqual(destructionLegend(data, { first: 100, hour: 200, end: 250, campaign: false }, TOKENS), []);
-  assert.equal(destructionCountingNote(data, 205), '');
-  assert.equal(destructionLegend(data, { first: 100, hour: 205, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  const startupItems = lossItems(data, { first: 100, hour: 200, end: 250, campaign: false });
+  assert.equal(lossesTotal(startupItems).exact, null);
+  assert.equal(lossesTotal(startupItems).unknownValue, true);
+
+  assert.equal(destructionCountingNote(data, 201), '');
+  assert.equal(destructionLegend(data, { first: 100, hour: 201, end: 250, campaign: false }, TOKENS)[0].label, 'Complete');
+  assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 201, end: 250, campaign: false })).exact, 200000n);
   assert.equal(destructionLegend(data, { first: 100, hour: 250, end: 250, campaign: true }, TOKENS)[0].label, 'Complete');
   assert.deepEqual(destructionCoverageHours(data, 100, 250), { recorded: 50, unknown: 0, reasons: [] });
 });

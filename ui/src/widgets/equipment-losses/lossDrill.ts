@@ -43,7 +43,7 @@ export function lossRows(reply: LossesReply, window: LossWindow, selected: Reado
       const id = lossKey(cause, design);
       if (selected && !selected.has(id)) continue;
       const point = pointAt(leaf, window.hour), item = byKey.get(id);
-      if (!point) continue;
+      if (!point || !item || item.present === false) continue;
       rows.push({ id, causeKey: sourceKey(cause.source), cause: causeName(cause), type: typeName(design), design: lossDesignName(design, window.hour),
         exact: item?.exact ?? null, readHour: point.hour, incomplete: item?.incomplete === true,
         note: item?.note });

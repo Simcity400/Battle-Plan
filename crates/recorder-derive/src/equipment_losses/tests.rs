@@ -574,6 +574,39 @@ fn a_lost_drain_keeps_its_bit_and_reason_when_the_next_hour_also_flags_an_unreso
 }
 
 #[test]
+fn resuming_after_a_lost_and_withheld_hour_drops_the_transient_lost_prefix() {
+    let steps = || -> Vec<Vec<Op>> {
+        let mut first = countries();
+        first.push(drained(GER, 7, 5));
+        vec![
+            first,
+            vec![unavailable(TableId::Countries, "countries failed")],
+            vec![unavailable(TableId::EquipmentDestruction, "hooks unavailable")],
+            vec![drained(GER, 7, 3)],
+        ]
+    };
+    let mut unbroken = Run::new();
+    for ops in steps() {
+        unbroken.step(ops);
+    }
+    assert_eq!(unbroken.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_WITHHELD)));
+    assert_eq!(unbroken.drain(), "hooks unavailable");
+
+    let mut resumed = Run::new();
+    for (at, ops) in steps().into_iter().enumerate() {
+        resumed.step(ops);
+        if at == 2 {
+            assert_eq!(resumed.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_LOST | Coverage::DRAIN_STATE_WITHHELD)));
+            assert_eq!(resumed.drain(), format!("{LOST}; hooks unavailable"));
+            resumed.resume();
+        }
+    }
+    assert_eq!(resumed.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_WITHHELD)));
+    assert_eq!(resumed.drain(), "hooks unavailable");
+    assert_eq!(resumed.dump(), unbroken.dump());
+}
+
+#[test]
 fn a_resume_in_the_middle_leaves_the_tables_a_run_never_stopped_leaves() {
     let hours = || -> Vec<Vec<Op>> {
         let mut first = countries();

@@ -29,7 +29,7 @@ use std::{
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;
 
-pub use coverage::{Coverage, CoverageSpan, DestructionCoverageSpan, UnknownReason, UnknownSpan};
+pub use coverage::{Coverage, CoverageSpan, DestructionCoverageSpan, DestructionRun, UnknownReason, UnknownSpan};
 
 pub const AMOUNT_SCALE: i64 = 100_000;
 pub const SERIES: &str = "equipment-losses";
@@ -256,7 +256,7 @@ pub struct LossesReply {
     #[doc = " Combat Log land coverage; empty in destruction mode."]
     pub coverage: Vec<CoverageSpan>,
     pub destruction_coverage: Vec<DestructionCoverageSpan>,
-    pub destruction_counted_from: Option<i32>,
+    pub destruction_runs: Vec<DestructionRun>,
     pub retained_months: Option<i32>,
     #[doc = " The window and bins the points were read on, and the hours read exactly."]
     pub from: i32,
@@ -331,6 +331,9 @@ pub fn bin_points(bins: &[replay::lanes::Bin], first_bin_hour: i64, bin_hours: i
         }
         let start = (first_bin_hour + at as i64 * bin_hours).max(i64::from(from)) as i32;
         let end = (first_bin_hour + (at as i64 + 1) * bin_hours - 1).min(i64::from(to)) as i32;
+        if start > end {
+            continue;
+        }
         if out.last().is_none_or(|&(_, value)| value != bin.first) {
             out.push((start, bin.first));
         }
@@ -418,7 +421,11 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
             restarts.push(stretch.first);
         }
         let stretch = Stretch { last: stretch.last.min(highest), ..stretch };
+        let before_run = covered.run.len();
         covered.read(recording, stretch.run, coverage_key(who.slot, who.country_id), RUN_KEY, stretch.first, stretch.last)?;
+        let stretch_cells = &covered.run[before_run..];
+        let stretch_counted = stretch_cells.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min();
+        let stretch_withheld = stretch_cells.iter().filter_map(|(_, _, cells)| cells.as_ref()?.withheld_from).min();
         if stretch.last < lowest {
             continue;
         }
@@ -432,8 +439,18 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
             let charts = dashboard_query::series::charts_within(recording, stretch.run, (TableId::EquipmentLossTotals, column), Some(&keys[..]), (first, end), level, bin_hours)?;
             for (chart, (first, end)) in charts {
                 for (at, &key) in chart.keys.iter().enumerate() {
+                    let is_destruction = matches!(leaf_of(key), Some((LossSource::Destruction(_), _)));
+                    let leaf_first = if is_destruction {
+                        let Some(counted) = stretch_counted else { continue };
+                        first.max(counted)
+                    } else {
+                        first
+                    };
+                    if leaf_first > end {
+                        continue;
+                    }
                     let leaf = leaves.entry(key).or_default();
-                    for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, first, end) {
+                    for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, end) {
                         leaf.points.insert(hour, Some(value));
                     }
                 }
@@ -443,7 +460,15 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
             crate::metadata::check_cancel(cancelled)?;
             let Some(found) = totals_at(query, hour, (low, high))? else { continue };
             for (key, leaf) in leaves.iter_mut() {
-                leaf.points.insert(hour, found.get(key).map_or(Some(0), |&(total, _)| total));
+                let is_destruction = matches!(leaf_of(*key), Some((LossSource::Destruction(_), _)));
+                let value = if is_destruction && stretch_counted.is_none_or(|counted| hour < counted) {
+                    None
+                } else if is_destruction && !found.contains_key(key) && stretch_withheld.is_some_and(|withheld| hour >= withheld) {
+                    None
+                } else {
+                    found.get(key).map_or(Some(0), |&(total, _)| total)
+                };
+                leaf.points.insert(hour, value);
             }
         }
     }
@@ -581,7 +606,7 @@ fn reply(
         ships,
         coverage: if combat_log { covered.land() } else { Vec::new() },
         destruction_coverage: covered.destruction_coverage(),
-        destruction_counted_from: covered.counted_from(),
+        destruction_runs: covered.destruction_runs(),
         retained_months: content.retained_months.filter(|_| combat_log),
         from,
         to,
@@ -621,6 +646,7 @@ impl Product for EquipmentLosses {
             Coverage::decl(),
             CoverageSpan::decl(),
             DestructionCoverageSpan::decl(),
+            DestructionRun::decl(),
             LossesReply::decl(),
         ]
     }

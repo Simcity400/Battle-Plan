@@ -62,6 +62,16 @@ pub struct DestructionCoverageSpan {
     pub reason: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct DestructionRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub counted_from: Option<i32>,
+    pub withheld_from: Option<i32>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunCells {
     pub drain: Option<String>,
@@ -187,12 +197,24 @@ impl Held {
         self.run_segments().last()?.first().map(|(first, _, _)| *first)
     }
 
+    #[cfg(test)]
     pub fn counted_from(&self) -> Option<i32> {
         self.run_segments().last()?.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min()
     }
 
     pub fn incomplete_from(&self) -> Option<i32> {
         self.run_segments().last()?.iter().rev().find_map(|(_, _, cells)| cells.as_ref())?.incomplete_from
+    }
+
+    pub fn destruction_runs(&self) -> Vec<DestructionRun> {
+        let mut out = Vec::new();
+        for segment in self.run_segments() {
+            let (Some((first_hour, _, _)), Some((_, last_hour, _))) = (segment.first(), segment.last()) else { continue };
+            let counted_from = segment.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min();
+            let withheld_from = segment.iter().filter_map(|(_, _, cells)| cells.as_ref()?.withheld_from).min();
+            out.push(DestructionRun { first_hour: *first_hour, last_hour: *last_hour, counted_from, withheld_from });
+        }
+        out
     }
 
     pub fn destruction_coverage(&self) -> Vec<DestructionCoverageSpan> {
@@ -453,15 +475,13 @@ fn classify_drain(cells: &RunCells, legacy_partial_text: bool, mut note: impl Fn
         }
         return;
     }
-    let parts: Vec<&str> = drain.split("; ").filter(|part| !part.is_empty()).collect();
-    if parts.is_empty() {
-        if !legacy_partial_text {
-            note(UnknownReason::DestructionGap, DRAIN_STATE_UNRECORDED);
-        }
+    if !legacy_partial_text {
+        let detail = if drain.is_empty() { DRAIN_STATE_UNRECORDED } else { drain };
+        note(UnknownReason::DestructionGap, detail);
         return;
     }
-    for part in parts {
-        note(classify_text(part, legacy_partial_text), part);
+    for part in drain.split("; ").filter(|part| !part.is_empty()) {
+        note(classify_text(part, true), part);
     }
 }
 

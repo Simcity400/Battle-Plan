@@ -3466,11 +3466,12 @@ export type ShipListing = { signature: string, listedHour: number, sinkHour: num
 export type Coverage = "logged" | "notLogged" | { "partial": { ungrouped: number, } } | "unknown" | "pruneUnobserved";
 export type CoverageSpan = { firstHour: number, lastHour: number, coverage: Coverage, };
 export type DestructionCoverageSpan = { firstHour: number, lastHour: number, reason: string | null, };
+export type DestructionRun = { firstHour: number, lastHour: number, countedFrom: number | null, withheldFrom: number | null, };
 export type LossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, ships: Array<ShipListing>,
 /**
  * Combat Log land coverage; empty in destruction mode.
  */
-coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null,
+coverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionRuns: Array<DestructionRun>, retainedMonths: number | null,
 /**
  * The window and bins the points were read on, and the hours read exactly.
  */
