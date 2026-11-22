@@ -211,6 +211,7 @@ pub struct TextChild {
     pub at: [f32; 2],
     pub max_width: f32,
     pub align: text::Align,
+    pub truncate: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4117,23 +4118,39 @@ fn draw_child(
     );
 }
 
-pub(super) fn turned_rect(child: &Child, size: [f32; 2], origin: [f32; 2]) -> [f32; 4] {
-    let (width, height) = (size[0] * child.scale, size[1] * child.scale);
-    [
-        origin[0] + child.at[0],
-        origin[1] + child.at[1] + (height - width) * 0.5,
-        height,
-        width,
-    ]
+pub(super) fn bar_placement(
+    at: [f32; 2],
+    frame: [f32; 2],
+    scale: f32,
+    fill: f32,
+) -> ([f32; 2], [f32; 2], f32) {
+    let size = [frame[0] * scale, frame[1] * scale];
+    let vertical = frame[1] > frame[0];
+    let (offset_x, length) = if vertical {
+        (
+            counter_inputs::bar_step(fill, size[1].trunc()) as f32,
+            size[1],
+        )
+    } else {
+        (0.0, size[0])
+    };
+    ([at[0] + offset_x, at[1]], size, length)
 }
 
 fn draw_bar(batch: &mut Batch, sheet: &SpriteSheet, child: &Child, origin: [f32; 2], fill: f32) {
-    let rect = turned_rect(child, sheet.frame_size(), origin);
+    let frame = sheet.frame_size();
+    let (at, size, length) = bar_placement(
+        [origin[0] + child.at[0], origin[1] + child.at[1]],
+        frame,
+        child.scale,
+        fill,
+    );
     batch.bar(
         sheet,
-        [rect[0], rect[1]],
-        [rect[2], rect[3]],
-        counter_inputs::bar_pixels(fill, rect[2]),
+        at,
+        size,
+        counter_inputs::bar_pixels(fill, length),
+        child.rotation,
         [1.0; 4],
     );
 }
@@ -4149,12 +4166,13 @@ fn draw_text(
     if child.max_width <= 0.0 {
         return;
     }
-    let glyphs = text::layout(
+    let glyphs = text::layout_truncated(
         font,
         value,
         [origin[0] + child.at[0], origin[1] + child.at[1]],
         child.align,
         Some(child.max_width),
+        child.truncate,
     );
     if !glyphs.is_empty() {
         batch.text(&glyphs, color);
@@ -4189,7 +4207,7 @@ impl Countries {
 
 #[derive(Clone, Debug, Default)]
 struct UiColors {
-    colors: BTreeMap<u32, [f32; 4]>,
+    colors: BTreeMap<u32, Option<[f32; 4]>>,
     inheritance: viewer_foundation::map::color_inheritance::Inheritance,
     gap: String,
     unavailable: Option<String>,
@@ -4216,7 +4234,7 @@ impl UiColors {
             .filter_map(|row| {
                 let slot = *links.get(&row.country)?;
                 let rgba =
-                    [row.ui_red, row.ui_green, row.ui_blue, row.ui_alpha].map(f32::from_bits);
+                    counter_inputs::color(row.ui_red, row.ui_green, row.ui_blue, row.ui_alpha);
                 Some((slot, rgba))
             })
             .collect();
@@ -4249,13 +4267,18 @@ impl Countries {
             .inheritance
             .source(slot)
             .map_err(|error| format!("country-colour mode: {error}"))?;
-        colors.colors.get(&source).copied().ok_or_else(|| {
-            format!(
+        match colors.colors.get(&source) {
+            Some(Some(rgba)) => Ok(*rgba),
+            Some(None) => Err(format!(
+                "country-colour mode needs country slot {source}'s UI colour, \
+                 but its CountryAppearance row has non-finite colour components"
+            )),
+            None => Err(format!(
                 "country-colour mode needs country slot {source}'s UI colour, \
                  but {}",
                 colors.gap
-            )
-        })
+            )),
+        }
     }
 
     fn warm_flags(&self, assets: &CounterAssets) {

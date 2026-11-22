@@ -137,6 +137,7 @@ pub(super) fn text_child(
             at: [0.0; 2],
             max_width: 0.0,
             align: text::Align::Left,
+            truncate: true,
         });
     };
     supported(element)?;
@@ -168,6 +169,7 @@ pub(super) fn text_child(
             native::TextFormat::Center => text::Align::Centre,
             native::TextFormat::Right => text::Align::Right,
         },
+        truncate: text.truncate,
     })
 }
 
@@ -439,6 +441,7 @@ mod tests {
                     iconType={name=FLAG spriteType=GFX_flag position={x=1 y=2}}}
                 iconType={name=large_flag spriteType=GFX_large_flag position={x=4 y=5}}
                 instantTextBoxType={name=count_txt font=mod_font maxWidth=17}
+                instantTextBoxType={name=plain_txt font=mod_font maxWidth=17 truncate=no}
             }}"#,
             ),
         )]);
@@ -454,7 +457,10 @@ mod tests {
         )
         .unwrap();
         let count = text_child(root, "count_txt", LAND_WINDOW, &mut Vec::new()).unwrap();
+        let plain = text_child(root, "plain_txt", LAND_WINDOW, &mut Vec::new()).unwrap();
         assert_eq!(count.max_width, 17.0);
+        assert!(count.truncate);
+        assert!(!plain.truncate);
         assert!(flag.sprite.is_empty());
         assert_eq!(missing, ["unit_counter.flag"]);
         assert_eq!(large_flag.sprite, "GFX_large_flag");

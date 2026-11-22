@@ -1562,7 +1562,7 @@ pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
         && a.iter().zip(b).all(|(a, b)| {
             a.texture == b.texture
                 && a.layer == b.layer
-                && a.rotation.to_bits() == b.rotation.to_bits()
+                && a.rotation.map(f32::to_bits) == b.rotation.map(f32::to_bits)
                 && bits(&a.rect) == bits(&b.rect)
                 && bits(&a.uv) == bits(&b.uv)
                 && bits(&a.color) == bits(&b.color)
@@ -5648,7 +5648,7 @@ mod tests {
             rect: [0.0; 4],
             uv: [0.0; 4],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             exact: None,
@@ -5704,7 +5704,7 @@ mod tests {
             rect: [group as f32, 0.0, 1.0, 1.0],
             uv: [0.0, 0.0, 1.0, 1.0],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: group as u64,
             shade: 0.0,
             exact: None,
