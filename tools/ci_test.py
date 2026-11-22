@@ -428,11 +428,15 @@ class Sharding(unittest.TestCase):
         self.assertIn("--- FAIL leaf::bin/x t::two", lines)
         self.assertTrue(any(line.startswith("1 of the failures") for line in lines))
 
-    def test_only_a_crates_job_shards_and_only_a_sharded_job_warms(self):
+    def test_only_a_crates_job_shards_and_neither_an_unsharded_crates_job_nor_a_files_job_warms(self):
         with self.assertRaises(SystemExit):
             ci.load_pipeline(PIPELINE.replace('command = ["scan"]\n', 'command = ["scan"]\nshards = 2\n'))
         with self.assertRaises(SystemExit):
             ci.load_pipeline(PIPELINE.replace('kind = "crates"\ntoolchain = "rust"\ncommand = ["boat"', 'kind = "crates"\ntoolchain = "rust"\nwarm = ["cargo"]\ncommand = ["boat"'))
+        with self.assertRaises(SystemExit):
+            ci.load_pipeline(PIPELINE.replace('command = ["scan", "{files}"]\n', 'command = ["scan", "{files}"]\nwarm = ["cargo"]\n'))
+        warmed = ci.load_pipeline(PIPELINE.replace('command = ["scan"]\n', 'command = ["scan"]\nwarm = ["cargo"]\n'))
+        self.assertEqual(next(job for job in warmed.jobs if job.name == "scan").warm, ("cargo",))
 
 
 class RestoredTarget(unittest.TestCase):
@@ -520,7 +524,7 @@ class Pipeline(unittest.TestCase):
         ci_workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
         warm = cache["jobs"]["warm"]
         self.assertEqual(sorted(warm["strategy"]["matrix"]["job"]), sorted(job.name for job in pipeline.jobs if job.warm))
-        self.assertEqual(sorted(job.name for job in pipeline.jobs if job.warm), sorted(job.name for job in pipeline.jobs if job.shards))
+        self.assertLessEqual({job.name for job in pipeline.jobs if job.shards}, {job.name for job in pipeline.jobs if job.warm})
         paths = [step["with"]["path"] for step in warm["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
         paths += [step["with"]["path"] for step in ci_workflow["jobs"]["run"]["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
         self.assertEqual(len(paths), 3)

@@ -207,6 +207,7 @@ toolchain = "rust"
 inputs = ["fuzz/**", "crates/replay/**", "crates/replay-columnar/**", "crates/replay-data/**", "crates/replay-frame/**", "crates/dashboard-base/**"]
 command = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
 local = ["{python}", "tools/boat.py", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
+warm = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
 
 [[job]]
 name = "rust-test"

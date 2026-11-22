@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        job: [rust-clippy, rust-test]
+        job: [rust-clippy, rust-test, fuzz-build]
     steps:
       - uses: actions/checkout@v7
         with:

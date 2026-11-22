@@ -112,7 +112,8 @@ def load_pipeline(text):
         problems += ["not-run rule's panic or crates"] if any(not panic or not crates for _, panic, crates in job.not_run) else []
         problems += [f"shards {job.shards!r}, a positive count for a crates job"] if job.shards and (
             job.kind != "crates" or not isinstance(job.shards, int) or job.shards < 1) else []
-        problems += ["warm, a command for a crates job with shards"] if job.warm and not job.shards else []
+        problems += ["warm, a command for a crates job with shards or a command job"] if job.warm and (
+            job.kind == "files" or job.kind == "crates" and not job.shards) else []
         if problems:
             raise SystemExit(f"tools/ci.toml: job {job.name}: unknown or missing {', '.join(problems)}")
         jobs.append(job)
@@ -889,25 +890,25 @@ def prune(profile, live):
     return removed
 
 
-def rust_unchanged(source, pipeline):
+def rust_unchanged(source, pipeline, job):
     """Whether nothing a Rust build reads changed between `source` and HEAD: no crate, vendored
-    crate or Rust toolchain file."""
-    rust = matcher(("crates/**", *pipeline.toolchains["rust"]))
+    crate, Rust toolchain file or input of the job."""
+    rust = matcher(("crates/**", *pipeline.toolchains["rust"], *job.inputs))
     return not any(rust(path) for path in z(git("diff", "--name-only", "--no-renames", "-z", source, "HEAD")))
 
 
 def warm(name, target, github_output=None):
-    """Fills a target folder for a sharded job's cache: runs the job's `warm` command, which builds
-    every unit its runners may reuse, and, when it succeeds, prunes the units it did not use and
-    names HEAD as the commit the folder was built from. A failed build saves nothing: its folder
-    mixes units rebuilt at HEAD with the commit it named before. A folder that no Rust input
-    changed since is not built or saved again."""
+    """Fills a target folder for a job's cache: runs the job's `warm` command, which builds every
+    unit its runners may reuse, and, when it succeeds, prunes the units it did not use and names
+    HEAD as the commit the folder was built from. A failed build saves nothing: its folder mixes
+    units rebuilt at HEAD with the commit it named before. A folder that no Rust input changed
+    since is not built or saved again."""
     pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
     job = next((job for job in pipeline.jobs if job.name == name), None)
     if job is None or not job.warm:
         sys.exit(f"tools/ci.toml has no job {name!r} with a warm command")
     source = built_from(target)
-    save = not (source and rust_unchanged(source, pipeline))
+    save = not (source and rust_unchanged(source, pipeline, job))
     if save:
         started = time.monotonic()
         with tempfile.TemporaryFile() as messages:
@@ -953,7 +954,7 @@ def main(argv=None):
     grouped.add_argument("--shard", default="", metavar="AT/COUNT", help="run this runner's share of the one sharded job planned")
     timing = commands.add_parser("times", help="set file times for a target folder restored from a cache")
     timing.add_argument("--target", required=True)
-    warming = commands.add_parser("warm", help="build what a sharded job's target folder cache keeps, and name HEAD in it")
+    warming = commands.add_parser("warm", help="build what a job's target folder cache keeps, and name HEAD in it")
     warming.add_argument("--job", required=True)
     warming.add_argument("--target", required=True)
     warming.add_argument("--github-output", metavar="FILE")
