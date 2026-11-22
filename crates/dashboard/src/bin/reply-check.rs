@@ -71,6 +71,17 @@ fn run() -> io::Result<bool> {
         transcripts.ok_or_else(|| invalid(USAGE))?,
         report.ok_or_else(|| invalid(USAGE))?,
     );
+    if cold && no_index {
+        return Err(invalid(USAGE));
+    }
+    let cold_cache = cold
+        .then(|| {
+            replay::cold_cache::probe_file(
+                &recording,
+                replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+            )
+        })
+        .transpose()?;
     std::fs::create_dir_all(&report)?;
     let cancelled = AtomicBool::new(false);
     let opened = Instant::now();
@@ -96,12 +107,13 @@ fn run() -> io::Result<bool> {
         (None, None, None) => None,
         _ => return Err(invalid(USAGE)),
     };
-    let catalogue_ms = content.as_ref().map(|content| {
-        let started = Instant::now();
-        let source = source.borrow();
-        source.in_scope(|| dashboard_base::content::warm(&source, content));
-        started.elapsed().as_secs_f64() * 1e3
-    });
+    let catalogue_ms = content
+        .as_ref()
+        .map(|content| {
+            let source = source.borrow();
+            reply_check::warm_catalogue(&source, content)
+        })
+        .transpose()?;
     let context = LoadContext { content };
     let mut names: Vec<String> = std::fs::read_dir(&transcripts)?
         .filter_map(|entry| entry.ok())
@@ -134,29 +146,32 @@ fn run() -> io::Result<bool> {
         let mut kept = replies
             .then(|| File::create(report.join(format!("{family}.replies.zst"))).and_then(|file| zstd::stream::write::Encoder::new(file, 3)))
             .transpose()?;
-        let checked = reply_check::check(
+        let mut checked = reply_check::check(
             &mut reader,
             &|product, params| answer::answers(product, params),
             &mut serve,
-            &mut |_: &Value| -> f64 {
+            &mut |_: &Value| -> io::Result<f64> {
                 if no_index {
                     answer::forget(&source.borrow());
-                    return 0.0;
+                    return Ok(0.0);
                 }
                 if !cold {
-                    return 0.0;
+                    return Ok(0.0);
                 }
-                let Ok(fresh) = open() else { return 0.0 };
+                replay::cold_cache::probe_file(
+                    &recording,
+                    replay::cold_cache::ResetScope::FreshSourcePreIndexedPerExchange,
+                )?;
+                let fresh = open()?;
                 *source.borrow_mut() = fresh;
                 let started = Instant::now();
-                let _ = answer::open_all(&source.borrow());
-                let index = started.elapsed().as_secs_f64() * 1e3;
-                purge(&recording);
-                index
+                answer::open_all(&source.borrow())?;
+                Ok(started.elapsed().as_secs_f64() * 1e3)
             },
             &ignored,
             kept.as_mut().map(|kept| kept as &mut dyn std::io::Write),
         )?;
+        checked.cache = cold_cache.clone();
         if let Some(kept) = kept {
             kept.finish()?;
         }
@@ -166,12 +181,22 @@ fn run() -> io::Result<bool> {
             std::fs::write(report.join(format!("{family}.json")), serde_json::to_string_pretty(&checked)?)?;
         }
     }
-    println!("{}", serde_json::to_string_pretty(&json!({ "openMilliseconds": open_ms, "catalogueMilliseconds": catalogue_ms, "families": summary }))?);
+    let mode = if cold {
+        "fresh-source-pre-indexed"
+    } else if no_index {
+        "no-index"
+    } else {
+        "warm"
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "mode": mode,
+            "cache": cold_cache,
+            "openMilliseconds": open_ms,
+            "catalogueMilliseconds": catalogue_ms,
+            "families": summary,
+        }))?
+    );
     Ok(same)
-}
-
-fn purge(path: &std::path::Path) {
-    use std::os::windows::fs::OpenOptionsExt;
-    const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
-    let _ = std::fs::OpenOptions::new().read(true).custom_flags(FILE_FLAG_NO_BUFFERING).open(path);
 }

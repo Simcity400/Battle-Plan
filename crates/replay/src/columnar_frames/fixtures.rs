@@ -338,7 +338,7 @@ pub fn written_captured(
 }
 
 pub fn written_at(
-    writers: Writers,
+    writers: impl FnOnce(usize) -> Writers,
     format: u16,
     campaign: &[u8],
     runs: &[(u64, i32, u32)],

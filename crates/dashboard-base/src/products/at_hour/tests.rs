@@ -669,9 +669,20 @@ fn stepped(pages: &Arc<dyn Pages>, exact: &dashboard_follow::panel::AtHour, ever
     playhead.seek(FIRST);
     let (mut head, mut out) = (FIRST, Vec::new());
     loop {
-        playhead.advance(head);
-        let (last, read) = played.recv_timeout(std::time::Duration::from_secs(120)).unwrap_or_else(|_| panic!("no step at head {head}: {:?}", playhead.error()));
-        consumer.take(head, &mut Vec::new());
+        let mut next = None;
+        playhead
+            .drive_until(&mut consumer, head, || match played.try_recv() {
+                Ok(item) => {
+                    next = Some(item);
+                    std::ops::ControlFlow::Break(Ok(()))
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => std::ops::ControlFlow::Continue(()),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    std::ops::ControlFlow::Break(Err("step hook channel disconnected".into()))
+                }
+            })
+            .unwrap_or_else(|error| panic!("no step at head {head}: {error}"));
+        let (last, read) = next.unwrap();
         if let Some(read) = read {
             let before = declared.clone();
             for lane in &read.lanes {

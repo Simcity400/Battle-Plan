@@ -457,7 +457,7 @@ impl Facts {
 pub struct ResolvedLayer {
     content_digest: [u8; 32],
     inventory_witnesses: Arc<generation::Witnesses>,
-    inventory_paths: Arc<BTreeSet<LayerPath>>,
+    inventory_paths: Option<Arc<BTreeSet<LayerPath>>>,
     coverage: CoveragePolicy,
     pub role: LayerRole,
     facts: Option<Facts>,
@@ -495,6 +495,9 @@ struct Member {
 #[derive(Clone, Debug, Default)]
 struct LookupIndex {
     folders: BTreeMap<LayerPath, LayerPath>,
+    folder_aliases: Arc<std::sync::Mutex<BTreeMap<LayerPath, LayerPath>>>,
+    #[cfg(windows)]
+    short_names: BTreeMap<(String, String), String>,
     archive: Option<physfs_zip::Index>,
 }
 
@@ -543,6 +546,7 @@ struct ReadTrace {
     callback: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
     purpose: String,
     product: Option<Arc<graph::Node>>,
+    credited: Arc<std::sync::Mutex<BTreeSet<(graph::Digest, graph::Digest)>>>,
 }
 
 #[derive(Debug)]
@@ -682,6 +686,26 @@ impl std::fmt::Debug for ReadTrace {
     }
 }
 impl ReadTrace {
+    fn new(
+        callback: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
+        purpose: String,
+        product: Option<Arc<graph::Node>>,
+    ) -> Self {
+        Self {
+            callback,
+            purpose,
+            product,
+            credited: Arc::default(),
+        }
+    }
+
+    fn credit_once(&self, product: &graph::Product) -> bool {
+        self.credited
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(product.identity())
+    }
+
     fn for_layers(&self, layers: Vec<usize>) -> Self {
         let callback = self.callback.clone();
         Self {
@@ -691,6 +715,7 @@ impl ReadTrace {
             }),
             purpose: self.purpose.clone(),
             product: self.product.clone(),
+            credited: Arc::clone(&self.credited),
         }
     }
 }
@@ -899,12 +924,24 @@ fn folder_opens(relative: &[u8]) -> bool {
 
 const RECORD_DIGEST_SCHEME: &str = "archive-record-digest-2";
 
+enum RecordBytes {
+    Plain(Vec<u8>),
+    Stored(physfs_zip::Stored),
+}
+
 fn record_digest(
     archive: &mut physfs_zip::Archive,
     entry: &physfs_zip::Entry,
 ) -> io::Result<([u8; 32], Option<Vec<u8>>, u64)> {
     record_digest_observed(archive, entry, &mut ReadObservation::default())
         .map(ReadSuccess::into_value)
+        .map(|(digest, bytes, size)| {
+            let plain = match bytes {
+                RecordBytes::Plain(bytes) => Some(bytes),
+                RecordBytes::Stored(_) => None,
+            };
+            (digest, plain, size)
+        })
         .map_err(|failure| failure.error)
 }
 
@@ -912,22 +949,35 @@ fn record_digest_observed(
     archive: &mut physfs_zip::Archive,
     entry: &physfs_zip::Entry,
     observed: &ReadObservation,
-) -> ObservedResult<ReadSuccess<([u8; 32], Option<Vec<u8>>, u64)>> {
+) -> ObservedResult<ReadSuccess<([u8; 32], RecordBytes, u64)>> {
     #[cfg(test)]
     tests::LOADS.with(|loads| loads.set(loads.get() + 1));
-    let result = match archive.read_observed(entry, None, observed.enabled)? {
+    let plain = if entry.encrypted() {
+        None
+    } else {
+        archive.read_observed(entry, None, observed.enabled)?
+    };
+    let result = match plain {
         Some(bytes) => {
             let digest = payload_digest(&bytes);
-            observed.hashed((digest, Some(bytes), entry.size), entry.size, digest)
+            observed.hashed(
+                (digest, RecordBytes::Plain(bytes), entry.size),
+                entry.size,
+                digest,
+            )
         }
         None => {
             let stored = archive.stored_observed(entry, observed.enabled)?;
+            let digest_bytes = stored.digest_bytes();
             let mut hash = Sha256::new();
             hash.update(b"\0unopened archive record\0");
             hash.update(entry.opening());
-            hash.update(&stored);
-            let length = stored.len() as u64;
-            observed.bytes((hash.finalize().into(), None, length), &stored)
+            hash.update(digest_bytes);
+            let length = digest_bytes.len() as u64;
+            let digest = hash.finalize().into();
+            observed
+                .bytes((), digest_bytes)
+                .map(|()| (digest, RecordBytes::Stored(stored), length))
         }
     };
     Ok(result)
@@ -1289,6 +1339,102 @@ fn link_kind(_path: &Path) -> io::Result<Listed> {
     Ok(Listed::LinkedFile)
 }
 
+#[cfg(windows)]
+fn check_find_error(dir: &Path, error: io::Error, done: u32) -> io::Result<()> {
+    if error.raw_os_error() == Some(done as i32) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        error.kind(),
+        format!("short-name enumeration {}: {error}", dir.display()),
+    ))
+}
+
+#[cfg(windows)]
+fn collect_folder_short_names(
+    root: &Path,
+    files: &BTreeMap<LayerPath, Member>,
+) -> io::Result<BTreeMap<(String, String), String>> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::{
+        Foundation::{
+            ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
+        },
+        Storage::FileSystem::{FindClose, FindFirstFileW, FindNextFileW, WIN32_FIND_DATAW},
+    };
+    struct FindHandle(HANDLE);
+    impl Drop for FindHandle {
+        fn drop(&mut self) {
+            // SAFETY: self.0 is a valid search handle returned by FindFirstFileW.
+            unsafe { FindClose(self.0) };
+        }
+    }
+    let mut dirs = BTreeSet::new();
+    for path in files.keys() {
+        let Ok(text) = std::str::from_utf8(path) else {
+            continue;
+        };
+        let mut current = text;
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            if !dirs.insert(parent.to_owned()) {
+                break;
+            }
+            current = parent;
+        }
+        dirs.insert(String::new());
+    }
+    let mut short_names = BTreeMap::new();
+    for dir in dirs {
+        let mut dir_path = root.to_path_buf();
+        if !dir.is_empty() {
+            for part in dir.split('/') {
+                dir_path.push(part);
+            }
+        }
+        let pattern = dir_path.join("*");
+        let wide: Vec<u16> = pattern.as_os_str().encode_wide().chain([0]).collect();
+        // SAFETY: WIN32_FIND_DATAW is plain data that accepts all-zero initialization.
+        let mut data: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
+        // SAFETY: wide is NUL-terminated and data is a valid mutable pointer.
+        let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
+        if handle == INVALID_HANDLE_VALUE {
+            check_find_error(&dir_path, io::Error::last_os_error(), ERROR_FILE_NOT_FOUND)?;
+            continue;
+        }
+        let _guard = FindHandle(handle);
+        let parent_folded = dir.to_lowercase();
+        loop {
+            let alt_len = data
+                .cAlternateFileName
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(data.cAlternateFileName.len());
+            if alt_len > 0 {
+                let name_len = data
+                    .cFileName
+                    .iter()
+                    .position(|&unit| unit == 0)
+                    .unwrap_or(data.cFileName.len());
+                if let (Ok(short), Ok(long)) = (
+                    OsString::from_wide(&data.cAlternateFileName[..alt_len]).into_string(),
+                    OsString::from_wide(&data.cFileName[..name_len]).into_string(),
+                ) && long != "."
+                    && long != ".."
+                {
+                    short_names.insert((parent_folded.clone(), short.to_lowercase()), long);
+                }
+            }
+            // SAFETY: handle is open and valid until _guard drops.
+            if unsafe { FindNextFileW(handle, &mut data) } == 0 {
+                check_find_error(&dir_path, io::Error::last_os_error(), ERROR_NO_MORE_FILES)?;
+                break;
+            }
+        }
+    }
+    Ok(short_names)
+}
+
 fn walk_folder(
     root: &Path,
     directory: &Path,
@@ -1310,7 +1456,7 @@ fn walk_folder(
         }
     };
     if overlay && let Some(graph) = generation::current() {
-        graph.changes.watch_root(&start, true);
+        graph.watch_root(&start, true);
     }
     walk_below(root, directory, &mut vec![start], overlay, kind, visit)
 }
@@ -1363,7 +1509,7 @@ fn walk_below(
                     )));
                 }
                 if let Some(graph) = generation::current() {
-                    graph.changes.watch_root(&target, true);
+                    graph.watch_root(&target, true);
                 }
                 target
             }
@@ -1471,7 +1617,7 @@ impl ResolvedLayer {
         let _collection = generation::Collect::enter(Arc::clone(&self.inventory_witnesses));
         if let LayerSource::Folder(root) = &mut self.source {
             if let Some(graph) = generation::current() {
-                graph.changes.watch_root(root, true);
+                graph.watch_root(root, true);
                 graph.witnesses.directory(root)?;
             }
             *root = fs::canonicalize(&*root)?;
@@ -1485,6 +1631,7 @@ impl ResolvedLayer {
                     .roots()
                     .filter(|directory| !below(directory.as_bytes(), DESCRIPTOR_ROOT.as_bytes()))
                     .chain(std::iter::once(DESCRIPTOR_ROOT));
+                let mut paths = BTreeSet::new();
                 for directory in walked {
                     if let Some(path) = folded_path(root, directory)? {
                         collect_folder(
@@ -1493,10 +1640,11 @@ impl ResolvedLayer {
                             std::sync::Arc::make_mut(&mut self.files),
                             self.coverage,
                             listed_as_game,
-                            Arc::make_mut(&mut self.inventory_paths),
+                            &mut paths,
                         )?;
                     }
                 }
+                self.inventory_paths = Some(Arc::new(paths));
             }
             LayerSource::Archive(path) => {
                 self.inventory_witnesses.file(path, &File::open(path)?)?;
@@ -1552,8 +1700,16 @@ impl ResolvedLayer {
                 )));
             }
         }
-        if matches!(self.source, LayerSource::Folder(_)) {
-            std::sync::Arc::make_mut(&mut self.lookup).folders = folded;
+        if let LayerSource::Folder(root) = &self.source {
+            let verifies = self.verifies();
+            let lookup = std::sync::Arc::make_mut(&mut self.lookup);
+            lookup.folders = folded;
+            #[cfg(windows)]
+            if verifies {
+                lookup.short_names = collect_folder_short_names(root, &self.files)?;
+            }
+            #[cfg(not(windows))]
+            let _ = (root, verifies);
         }
         Ok(())
     }
@@ -1634,6 +1790,61 @@ impl ResolvedLayer {
         layer_hash(&hashes)
     }
 
+    fn covered_folder_entry(&self, relative: &[u8]) -> Option<LayerPath> {
+        let lower = relative.to_ascii_lowercase();
+        if let Some(path) = self.lookup.folders.get(&lower) {
+            return Some(path.clone());
+        }
+        if self.verifies() {
+            if let Some(path) = self
+                .lookup
+                .folder_aliases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get(&lower)
+            {
+                return Some(path.clone());
+            }
+            #[cfg(windows)]
+            {
+                let text = std::str::from_utf8(relative).ok()?;
+                let mut parent_folded = String::new();
+                let mut resolved_ascii = Vec::with_capacity(relative.len());
+                for part in text.split('/') {
+                    let trimmed = part.trim_end_matches(['.', ' ']);
+                    let part_folded = trimmed.to_lowercase();
+                    let canonical = self
+                        .lookup
+                        .short_names
+                        .get(&(parent_folded.clone(), part_folded))
+                        .map(String::as_str)
+                        .unwrap_or(trimmed);
+                    if !resolved_ascii.is_empty() {
+                        resolved_ascii.push(b'/');
+                        parent_folded.push('/');
+                    }
+                    resolved_ascii.extend_from_slice(&canonical.as_bytes().to_ascii_lowercase());
+                    parent_folded.push_str(&canonical.to_lowercase());
+                }
+                if let Some(path) = self.lookup.folders.get(&resolved_ascii) {
+                    return Some(path.clone());
+                }
+                if !parent_folded.is_ascii() {
+                    return self
+                        .lookup
+                        .folders
+                        .values()
+                        .find(|path| {
+                            std::str::from_utf8(path)
+                                .is_ok_and(|existing| existing.to_lowercase() == parent_folded)
+                        })
+                        .cloned();
+                }
+            }
+        }
+        None
+    }
+
     fn folder_lookup(&self, relative: &[u8]) -> io::Result<Option<(LayerPath, File)>> {
         let LayerSource::Folder(root) = &self.source else {
             return Err(invalid(format!("layer {} is not a folder", self.id)));
@@ -1646,8 +1857,8 @@ impl ResolvedLayer {
         };
         let (file, path) = match folder_file(root, text) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return match self.lookup.folders.get(&relative.to_ascii_lowercase()) {
-                    Some(path) if self.verifies() => Err(changed(path)),
+                return match self.covered_folder_entry(relative) {
+                    Some(path) if self.verifies() => Err(changed(&path)),
                     _ => Ok(None),
                 };
             }
@@ -1668,11 +1879,18 @@ impl ResolvedLayer {
                 )));
             }
         };
-        if self.verifies()
-            && self.coverage.covered_path(&real)
-            && self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real)
-        {
-            return Err(changed(&real));
+        if self.verifies() && self.coverage.covered_path(&real) {
+            if self.lookup.folders.get(&real.to_ascii_lowercase()) != Some(&real) {
+                return Err(changed(&real));
+            }
+            let lower = relative.to_ascii_lowercase();
+            if self.lookup.folders.get(&lower) != Some(&real) {
+                self.lookup
+                    .folder_aliases
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(lower, real.clone());
+            }
         }
         if self.fact_path(&real) {
             return Err(fact_alias(relative, &real));
@@ -1800,25 +2018,46 @@ impl ResolvedLayer {
                 } => *digest,
             };
             let record = record.verified(self.verify(&entry.name, &digest))?;
-            if password.is_none() {
-                match &record {
-                    ReadSuccess::Untraced((digest, Some(bytes), _))
-                    | ReadSuccess::Traced {
-                        value: (digest, Some(bytes), _),
-                        ..
-                    } => {
-                        io_counts::layer_digest(self, &entry.name, *digest, bytes.len() as u64);
+            return match record {
+                ReadSuccess::Untraced((_, RecordBytes::Plain(bytes), _)) => {
+                    if password.is_some() {
+                        Ok(None)
+                    } else {
+                        io_counts::layer_digest(self, &entry.name, digest, bytes.len() as u64);
+                        Ok(Some(ReadSuccess::Untraced(bytes)))
                     }
-                    _ => {}
                 }
-                return Ok(match record {
-                    ReadSuccess::Untraced((_, bytes, _)) => bytes.map(ReadSuccess::Untraced),
-                    ReadSuccess::Traced {
-                        value: (_, bytes, _),
-                        payload,
-                    } => bytes.map(|value| ReadSuccess::Traced { value, payload }),
-                });
-            }
+                ReadSuccess::Traced {
+                    value: (_, RecordBytes::Plain(bytes), _),
+                    payload,
+                } => {
+                    if password.is_some() {
+                        Ok(None)
+                    } else {
+                        io_counts::layer_digest(self, &entry.name, digest, bytes.len() as u64);
+                        Ok(Some(ReadSuccess::Traced {
+                            value: bytes,
+                            payload,
+                        }))
+                    }
+                }
+                ReadSuccess::Untraced((_, RecordBytes::Stored(stored), _))
+                | ReadSuccess::Traced {
+                    value: (_, RecordBytes::Stored(stored), _),
+                    ..
+                } => {
+                    if password.is_none() {
+                        return Ok(None);
+                    }
+                    let bytes =
+                        physfs_zip::decode_stored(entry, &stored, password, observed.enabled)
+                            .map_err(|failure| failure.context(context))?;
+                    Ok(bytes.map(|bytes| {
+                        io_counts::layer_bytes(self, &entry.name, &bytes);
+                        observed.bytes((), &bytes).map(|()| bytes)
+                    }))
+                }
+            };
         }
         #[cfg(test)]
         tests::LOADS.with(|loads| loads.set(loads.get() + 1));
@@ -1838,7 +2077,21 @@ impl ResolvedLayer {
             Some((entry, _)) if self.fact_path(&entry.name) => {
                 Err(fact_alias(request, &entry.name))
             }
-            Some((entry, password)) => archive.opens(entry, password),
+            Some((entry, password)) => {
+                let opening = archive.opening(entry)?;
+                if self.verifies()
+                    && self.files.contains_key(&entry.name)
+                    && self
+                        .lookup
+                        .archive
+                        .as_ref()
+                        .map(|index| index.opening(&entry.name))
+                        != Some(opening.as_ref())
+                {
+                    return Err(changed(&entry.name));
+                }
+                Ok(opening.is_some_and(|opening| opening.opens(password)))
+            }
             None => Ok(false),
         }
     }
@@ -1873,6 +2126,28 @@ impl ResolvedLayer {
                     && self.coverage.covered_path(&real)
                 {
                     return Err(changed(&real).into());
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn verify_miss_probe(&self, relative: &[u8]) -> io::Result<()> {
+        if !self.verifies() {
+            return Ok(());
+        }
+        match &self.source {
+            LayerSource::Archive(_) => {
+                if self.archive_exists(relative)? {
+                    return Err(changed(relative));
+                }
+                Ok(())
+            }
+            LayerSource::Folder(_) => {
+                if let Some((real, _)) = self.folder_lookup(relative)?
+                    && self.coverage.covered_path(&real)
+                {
+                    return Err(changed(&real));
                 }
                 Ok(())
             }
@@ -1956,14 +2231,13 @@ impl ResolvedLayers {
         trace: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
     ) -> Self {
         Self {
-            read_trace: Some(ReadTrace {
-                callback: trace,
-                purpose: String::new(),
-                product: self
-                    .read_trace
+            read_trace: Some(ReadTrace::new(
+                trace,
+                String::new(),
+                self.read_trace
                     .as_ref()
                     .and_then(|trace| trace.product.clone()),
-            }),
+            )),
             derived: Default::default(),
 
             ..self.clone()
@@ -2182,8 +2456,8 @@ impl ResolvedLayers {
             let kept = Arc::clone(&reads);
             let original = self.read_trace.clone();
             let mut reader = self.clone();
-            reader.read_trace = Some(ReadTrace {
-                callback: Arc::new(move |read: ContentRead| {
+            reader.read_trace = Some(ReadTrace::new(
+                Arc::new(move |read: ContentRead| {
                     let mut witness = read.clone();
                     if file_layer.is_some() {
                         witness.layer = None;
@@ -2195,12 +2469,11 @@ impl ResolvedLayers {
                         (trace.callback)(read);
                     }
                 }),
-                purpose: self
-                    .read_trace
+                self.read_trace
                     .as_ref()
                     .map_or_else(String::new, |trace| trace.purpose.clone()),
-                product: Some(Arc::clone(node)),
-            });
+                Some(Arc::clone(node)),
+            ));
             let (value, diagnostics) = diagnostics::capture(|| build(&reader));
             let reads =
                 std::mem::take(&mut *reads.lock().unwrap_or_else(|error| error.into_inner()));
@@ -2233,8 +2506,15 @@ impl ResolvedLayers {
                 .entry((parser, schema, parameters.to_vec())).or_default(),
         );
         let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
-        let (product, built) = match kept.as_ref() {
-            Some(product) => (Arc::clone(product), false),
+        let (product, built, from_holder, first_credit) = match kept.as_ref() {
+            Some(product) => {
+                let product = Arc::clone(product);
+                let first_credit = self
+                    .read_trace
+                    .as_ref()
+                    .is_some_and(|trace| trace.credit_once(&product));
+                (product, false, true, first_credit)
+            }
             None => {
                 let (product, built) = self.product_entry_with_retry(
                     graph::Key {
@@ -2250,14 +2530,22 @@ impl ResolvedLayers {
                 if cache_errors || product.successful() {
                     *kept = Some(Arc::clone(&product));
                 }
-                (product, built)
+                let first_credit = self
+                    .read_trace
+                    .as_ref()
+                    .is_some_and(|trace| trace.credit_once(&product));
+                (product, built, false, first_credit)
             }
         };
         drop(kept);
         if let Some(parent) = self.read_trace.as_ref().and_then(|trace| trace.product.as_ref()) {
             self.generation.depends(parent, &product)?;
         }
-        self.credit_product(&product, built, None);
+        if from_holder && !first_credit {
+            product.diagnostics.credit_to(self);
+        } else {
+            self.credit_product(&product, built, None);
+        }
         product.value()
     }
 
@@ -2268,8 +2556,12 @@ impl ResolvedLayers {
         parameters: &[u8],
         build: impl FnOnce(&Self) -> io::Result<T>,
     ) -> io::Result<Arc<T>> {
-        let reader = self.project_recorded()?.unwrap_or_else(|| self.clone());
+        let reader = self.recorded_or_self()?;
         reader.retained_product(parser, schema, parameters, build)
+    }
+
+    pub(crate) fn recorded_or_self(&self) -> io::Result<ResolvedLayers> {
+        Ok(self.project_recorded()?.unwrap_or_else(|| self.clone()))
     }
 
     pub fn recorded_product<T: Send + Sync + 'static>(
@@ -2318,14 +2610,14 @@ impl ResolvedLayers {
 
     pub fn with_file_witness<T>(&self, path: &Path, read: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
         if let Some(parent) = path.parent() {
-            self.generation.changes.watch_root(parent, false);
+            self.generation.watch_root(parent, false);
         }
         self.generation.witnesses.directory(path)?;
         let value = read()?;
         match path.canonicalize() {
             Ok(actual) => {
                 if let Some(parent) = actual.parent() {
-                    self.generation.changes.watch_root(parent, false);
+                    self.generation.watch_root(parent, false);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -2338,10 +2630,15 @@ impl ResolvedLayers {
         Ok(value)
     }
 
+    pub(crate) fn is_generation_scoped(&self) -> bool {
+        self.generation.is_scoped()
+    }
+
     fn validate_generation_in(&self, force: bool) -> io::Result<()> {
         if !self.generation_is_current() {
             return Err(invalid("content generation needs to be refreshed"));
         }
+        let force = force || self.generation.has_unwatched_roots();
         let result = self.generation.changes.validate(force, || {
             self.generation.witnesses.validate()?;
             let inventories: Vec<_> = self.generation.inventories
@@ -2427,13 +2724,17 @@ impl ResolvedLayers {
         for layer in &self.layers {
             self.generation.inventory(&layer.inventory_witnesses);
             match &layer.source {
-                LayerSource::Folder(root) => self.generation.changes.watch_root(root, true),
+                LayerSource::Folder(root) => self.generation.watch_root(root, true),
                 LayerSource::Archive(path) => {
-                    if let Some(parent) = path.parent() { self.generation.changes.watch_root(parent, true); }
+                    if let Some(parent) = path.parent() {
+                        self.generation.watch_root(parent, true);
+                    }
                 }
             }
             if let Some(path) = &layer.descriptor {
-                if let Some(parent) = path.parent() { self.generation.changes.watch_root(parent, true); }
+                if let Some(parent) = path.parent() {
+                    self.generation.watch_root(parent, true);
+                }
             }
         }
         fn field(hash: &mut Sha256, value: &[u8]) {
@@ -2449,6 +2750,7 @@ impl ResolvedLayers {
             hash.update(b"resolved-layer-content/v2");
             field(&mut hash, layer.id.as_bytes());
             field(&mut hash, format!("{:?}", layer.source).as_bytes());
+            hash.update([u8::from(layer.verifies())]);
             if let Some(facts) = &layer.facts {
                 hash.update(facts.layer().hash);
             }
@@ -2558,7 +2860,7 @@ impl ResolvedLayers {
                     std::sync::Arc::make_mut(&mut layer.files),
                     layer.coverage,
                     false,
-                    Arc::make_mut(&mut layer.inventory_paths),
+                    &mut BTreeSet::new(),
                 )?;
             }
             layer.finish_inventory()?;
@@ -2871,7 +3173,102 @@ impl ResolvedLayers {
     }
 
     pub fn key_names(&self) -> io::Result<Arc<crate::key_names::KeyNames>> {
-        self.retained_recorded_product("key names", 1, &[], crate::key_names::KeyNames::read)
+        let cache = self.derived::<RetainedProducts>();
+        let cell = Arc::clone(
+            cache
+                .values
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry(("key names", 1, Vec::new()))
+                .or_default(),
+        );
+        let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(product) = kept.as_ref() {
+            let product = Arc::clone(product);
+            let first_credit = self
+                .read_trace
+                .as_ref()
+                .is_some_and(|trace| trace.credit_once(&product));
+            drop(kept);
+            if let Some(parent) = self
+                .read_trace
+                .as_ref()
+                .and_then(|trace| trace.product.as_ref())
+            {
+                self.generation.depends(parent, &product)?;
+            }
+            if first_credit {
+                let reader = self.recorded_or_self()?;
+                reader.credit_product(&product, false, None);
+            } else {
+                product.diagnostics.credit_to(self);
+            }
+            return product.value();
+        }
+        let reader = self.recorded_or_self()?;
+        let mut roster = Vec::new();
+        for layer in &reader.layers {
+            roster.extend_from_slice(&(layer.id.len() as u64).to_le_bytes());
+            roster.extend_from_slice(layer.id.as_bytes());
+        }
+        let key = graph::Key {
+            context: reader.context,
+            parser: "key names",
+            schema: 1,
+            parameters: roster,
+        };
+        let parent = reader
+            .read_trace
+            .as_ref()
+            .and_then(|trace| trace.product.as_ref());
+        let (product, built) = reader.generation.product_shared_if(
+            key,
+            parent,
+            |node| {
+                let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let kept_reads = Arc::clone(&reads);
+                let original = reader.read_trace.clone();
+                let mut sub = reader.clone();
+                sub.derived = Default::default();
+                sub.read_trace = Some(ReadTrace::new(
+                    Arc::new(move |read: ContentRead| {
+                        kept_reads
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .push(read.clone());
+                        if let Some(trace) = &original {
+                            (trace.callback)(read);
+                        }
+                    }),
+                    reader
+                        .read_trace
+                        .as_ref()
+                        .map_or_else(String::new, |trace| trace.purpose.clone()),
+                    Some(Arc::clone(node)),
+                ));
+                let (value, diagnostics) =
+                    diagnostics::capture(|| crate::key_names::KeyNames::read(&sub));
+                let reads = std::mem::take(
+                    &mut *reads.lock().unwrap_or_else(|error| error.into_inner()),
+                );
+                (value, reads, diagnostics)
+            },
+            |names, reads| {
+                !names.template_columns.as_ref().is_some_and(Result::is_err)
+                    && !reads
+                        .iter()
+                        .any(|read| matches!(read.outcome, ReadOutcome::Error { .. }))
+            },
+        )?;
+        if product.successful() {
+            *kept = Some(Arc::clone(&product));
+        }
+        if let Some(trace) = &self.read_trace {
+            trace.credit_once(&product);
+        }
+        drop(kept);
+        reader.credit_product(&product, built, None);
+        product.value()
     }
 
     pub fn faction_templates(&self) -> Result<Arc<crate::faction_templates::Catalog>, String> {
@@ -2895,7 +3292,8 @@ impl ResolvedLayers {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get(&("faction templates", 1, Vec::new()))?
-            .lock().unwrap_or_else(|error| error.into_inner())
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
 
@@ -2941,13 +3339,31 @@ impl ResolvedLayers {
         let Some(relative) = sanitize(relative.as_bytes()) else {
             return Ok(false);
         };
-        let hit = self.resolved_file(&relative, !self.covered_path(&relative))?;
-        observed.layer = hit.as_ref().as_ref().map(|hit| hit.layer);
-        if let Some(hit) = hit.as_ref()
+        let (hit, inventory_hit) = if !self.covered_path(&relative) {
+            if self.recorded_fact(&relative) {
+                return Err(unproven(&relative, self.coverage).into());
+            }
+            (self.scan_uncovered_probe(&relative)?, false)
+        } else {
+            let hit = self.lookup_path(&relative)?;
+            self.verify_passed_probe(&relative, hit.as_ref().map(|hit| hit.layer))?;
+            (hit, true)
+        };
+        observed.layer = hit.as_ref().map(|hit| hit.layer);
+        if let Some(hit) = &hit
             && hit.fact.is_none()
-            && self.layers[hit.layer].reaches_link(&hit.path)
         {
-            return Err(unfollowed_link(&relative).into());
+            let layer = &self.layers[hit.layer];
+            if layer.reaches_link(&hit.path) {
+                return Err(unfollowed_link(&relative).into());
+            }
+            if inventory_hit
+                && matches!(layer.source, LayerSource::Archive(_))
+                && layer.verifies()
+                && !layer.archive_exists(&hit.path)?
+            {
+                return Err(changed(&hit.path).into());
+            }
         }
         Ok(hit.is_some())
     }
@@ -3026,6 +3442,15 @@ impl ResolvedLayers {
         let path = sanitize(relative).ok_or_else(|| not_found(relative))?;
         let mut observed = self.observation();
         let result = (|| -> ObservedResult<ReadSuccess<Bytes>> {
+            struct ReleaseFolder<'a>(&'a std::sync::Mutex<Option<File>>);
+            impl Drop for ReleaseFolder<'_> {
+                fn drop(&mut self) {
+                    self.0
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .take();
+                }
+            }
             let resolved;
             let file = match file {
                 Some(file) => file,
@@ -3037,6 +3462,7 @@ impl ResolvedLayers {
                     file
                 }
             };
+            let _release = ReleaseFolder(&file.folder);
             observed.at(file.layer);
             let layer = &self.layers[file.layer];
             let real = layer.record_name(&file.path);
@@ -3119,9 +3545,6 @@ impl ResolvedLayers {
                     _ => None,
                 }),
             })?;
-            if file.fact.is_none() && self.covered_path(real) {
-                layer.verify(real, &bytes.digest())?;
-            }
             self.note_overlay(file.layer, real);
             if uncovered
                 || (explicit_uncovered && !self.covered_path(&path) && layer.overlay.is_none())
@@ -3211,14 +3634,16 @@ impl ResolvedLayers {
                     Some(handle),
                     Some(node),
                 )?;
+                let result = observed.hashed(bytes.clone(), bytes.len() as u64, bytes.digest());
                 if self.covered_path(&file.path) {
-                    layer.verify(&file.path, &bytes.digest())?;
+                    result.verified(layer.verify(&file.path, &bytes.digest()))
+                } else {
+                    Ok(result)
                 }
-                Ok(observed.hashed(bytes.clone(), bytes.len() as u64, bytes.digest()))
             }
             LayerSource::Archive(path) => {
                 let archive = File::open(path)?;
-                self.generation.witnesses.file(path, &archive)?;
+                self.generation.witnesses.record_file(path, &archive)?;
                 layer
                     .archive_open_observed(&file.path, observed)?
                     .map(|bytes| bytes.map(Bytes::from))
@@ -3231,7 +3656,9 @@ impl ResolvedLayers {
         if let LayerSource::Folder(root) = &layer.source {
             let relative = std::str::from_utf8(path)
                 .map_err(|_| invalid("folder content path is not UTF-8"))?;
-            self.generation.witnesses.file(&root.join(relative), file)?;
+            self.generation
+                .witnesses
+                .record_file(&root.join(relative), file)?;
         }
         Ok(())
     }
@@ -3369,7 +3796,14 @@ impl ResolvedLayers {
         let layer = self
             .resolved_file(&relative, !self.covered_path(&relative))
             .ok()
-            .and_then(|hit| hit.as_ref().as_ref().map(|hit| hit.layer));
+            .and_then(|hit| {
+                let hit = hit.as_ref().as_ref()?;
+                hit.folder
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                Some(hit.layer)
+            });
         layer.is_some_and(|layer| self.layers[layer].overlay.is_some())
     }
 
@@ -3664,11 +4098,74 @@ impl ResolvedLayers {
     }
 
     pub fn uncovered_from_base(&self, relative: &str) -> io::Result<bool> {
-        Ok(self
-            .resolved_file(relative.as_bytes(), true)?
-            .as_ref()
-            .as_ref()
-            .is_some_and(|file| file.layer == 0))
+        let hit = self.resolved_file(relative.as_bytes(), true)?;
+        if let Some(file) = hit.as_ref() {
+            file.folder
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+        }
+        Ok(hit.as_ref().as_ref().is_some_and(|file| file.layer == 0))
+    }
+
+    fn scan_uncovered_probe(&self, relative: &[u8]) -> io::Result<Option<RecordedHit>> {
+        let lower = relative.to_ascii_lowercase();
+        for (index, layer) in self.layers.iter().enumerate().rev() {
+            if self.hides(layer, &lower) {
+                continue;
+            }
+            match &layer.source {
+                LayerSource::Folder(_) => {
+                    self.watch_directory(layer, relative)?;
+                    if let Some((path, _)) = layer.folder_lookup(relative)? {
+                        return Ok(Some(RecordedHit {
+                            layer: index,
+                            path,
+                            folder: None,
+                            fact: None,
+                        }));
+                    }
+                }
+                LayerSource::Archive(_) if layer.archive_exists(relative)? => {
+                    return Ok(Some(RecordedHit {
+                        layer: index,
+                        path: relative.to_vec(),
+                        folder: None,
+                        fact: None,
+                    }));
+                }
+                LayerSource::Archive(_) => {}
+            }
+            if layer
+                .replace_paths
+                .iter()
+                .any(|path| below(&lower, &path.to_ascii_lowercase()))
+            {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    fn verify_passed_probe(&self, relative: &[u8], answered: Option<usize>) -> io::Result<()> {
+        let lower = relative.to_ascii_lowercase();
+        for (index, layer) in self.layers.iter().enumerate().rev() {
+            if Some(index) == answered {
+                break;
+            }
+            if self.hides(layer, &lower) {
+                continue;
+            }
+            layer.verify_miss_probe(relative)?;
+            if layer
+                .replace_paths
+                .iter()
+                .any(|path| below(&lower, &path.to_ascii_lowercase()))
+            {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn verify_passed(
@@ -3855,8 +4352,10 @@ fn listed_files(
                 .roots()
                 .chain(std::iter::once(DESCRIPTOR_ROOT))
                 .any(|known| below(prefix, known.as_bytes()));
-            if covered_inventory {
-                for relative in layer.inventory_paths.iter() {
+            if covered_inventory
+                && let Some(inventory_paths) = &layer.inventory_paths
+            {
+                for relative in inventory_paths.iter() {
                     if !layer.fact_path(relative) {
                         admit(relative.clone())?;
                     }
@@ -4508,8 +5007,8 @@ pub fn playback(
     identity.validate()?;
     let coverage = CoveragePolicy::recorded(identity.coverage_policy)?;
     let graph = generation::current().expect("playback generation in scope");
-    graph.changes.watch_root(&options.game_dir, true);
-    graph.changes.watch_root(&options.user_dir, false);
+    graph.watch_root(&options.game_dir, true);
+    graph.watch_root(&options.user_dir, false);
     let game_dir = graph.witnesses.root(&options.game_dir);
     let user_dir = graph.witnesses.root(&options.user_dir);
     let missing = options.cache_dir.join("art-not-installed");

@@ -1,17 +1,18 @@
+use collector_workers::cpu_sets::{away_from_game, prepare, select};
 use std::{
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, OwnedHandle},
     sync::{
         OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use windows_sys::Win32::Foundation::{HANDLE, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
 use windows_sys::Win32::System::Threading::{
-    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, GetCurrentThread,
-    GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetThreadSelectedCpuSets,
-    SetWaitableTimer, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE,
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW,
+    GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetWaitableTimer,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE,
     THREAD_PRIORITY_NORMAL, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION,
     THREAD_SET_LIMITED_INFORMATION, TIMER_ALL_ACCESS, WaitForMultipleObjects,
 };
@@ -138,150 +139,6 @@ impl Target {
     }
 }
 
-const GROUP_PROCESSORS: usize = 64;
-
-struct Cores {
-    sets: [(u8, u8, u32); GROUP_PROCESSORS],
-    len: usize,
-    others: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
-    others_len: [usize; GROUP_PROCESSORS],
-}
-impl Cores {
-    fn read() -> Option<Self> {
-        use windows_sys::Win32::System::SystemInformation::{
-            CpuSetInformation, GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
-        };
-        let mut buffer = [0u64; 2048];
-        let mut length = 0u32;
-        if unsafe {
-            GetSystemCpuSetInformation(
-                buffer.as_mut_ptr().cast(),
-                size_of_val(&buffer) as u32,
-                &mut length,
-                std::ptr::null_mut(),
-                0,
-            )
-        } == 0
-        {
-            return None;
-        }
-        let mut entries = [(0, 0, 0); GROUP_PROCESSORS];
-        let mut len = 0;
-        let entry_size = size_of::<SYSTEM_CPU_SET_INFORMATION>();
-        let bytes = buffer.as_ptr().cast::<u8>();
-        let mut offset = 0usize;
-        while offset + entry_size <= length as usize && len < GROUP_PROCESSORS {
-            let entry = unsafe { &*bytes.add(offset).cast::<SYSTEM_CPU_SET_INFORMATION>() };
-            if (entry.Size as usize) < entry_size {
-                break;
-            }
-            if entry.Type == CpuSetInformation {
-                let set = unsafe { entry.Anonymous.CpuSet };
-                if set.Group == 0 {
-                    entries[len] = (set.LogicalProcessorIndex, set.CoreIndex, set.Id);
-                    len += 1;
-                }
-            }
-            offset += entry.Size as usize;
-        }
-        Self::from_sets(&entries[..len])
-    }
-
-    fn from_sets(entries: &[(u8, u8, u32)]) -> Option<Self> {
-        let mut cores = Self {
-            sets: [(0, 0, 0); GROUP_PROCESSORS],
-            len: 0,
-            others: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
-            others_len: [0; GROUP_PROCESSORS],
-        };
-        let placed = entries
-            .iter()
-            .filter(|&&(_, core, _)| usize::from(core) < GROUP_PROCESSORS);
-        for &entry in placed.take(GROUP_PROCESSORS) {
-            cores.sets[cores.len] = entry;
-            cores.len += 1;
-        }
-        for core in 0..GROUP_PROCESSORS {
-            for &(_, other, id) in &cores.sets[..cores.len] {
-                if usize::from(other) != core {
-                    cores.others[core][cores.others_len[core]] = id;
-                    cores.others_len[core] += 1;
-                }
-            }
-        }
-        (cores.len != 0).then_some(cores)
-    }
-
-    fn away_from(&self, processor: u32) -> Option<&[u32]> {
-        let &(_, core, _) = self.sets[..self.len]
-            .iter()
-            .find(|&&(logical, _, _)| u32::from(logical) == processor)?;
-        let core = usize::from(core);
-        Some(&self.others[core][..self.others_len[core]]).filter(|ids| !ids.is_empty())
-    }
-}
-
-static CORES: OnceLock<Option<Cores>> = OnceLock::new();
-static AWAY_FAILURES: AtomicU64 = AtomicU64::new(0);
-
-fn away_sets(cores: Option<&Cores>, processor: Option<u32>) -> Option<&[u32]> {
-    cores?.away_from(processor?)
-}
-
-fn cores() -> Option<&'static Cores> {
-    CORES.get_or_init(Cores::read).as_ref()
-}
-
-pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
-    let processor = processor?;
-    away_sets(cores(), Some(processor))
-}
-
-fn select(thread: HANDLE, sets: Option<&[u32]>) -> bool {
-    let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
-        (sets.as_ptr(), sets.len() as u32)
-    });
-    // SAFETY: callers name a live collector-owned thread; a null, empty list clears.
-    unsafe { SetThreadSelectedCpuSets(thread, list, count) != 0 }
-}
-
-pub(crate) fn select_away(thread: HANDLE, sets: Option<&[u32]>) -> bool {
-    let selected = select(thread, sets);
-    if !selected {
-        AWAY_FAILURES.fetch_add(1, Ordering::Relaxed);
-    }
-    selected
-}
-
-pub(crate) fn away_failures() -> u64 {
-    AWAY_FAILURES.load(Ordering::Relaxed)
-}
-
-#[derive(Default)]
-pub(crate) struct AwayFromGame {
-    wanted: Option<u32>,
-    applied: Option<&'static [u32]>,
-}
-impl AwayFromGame {
-    pub(crate) fn follow(&mut self, processor: Option<u32>) {
-        if processor == self.wanted {
-            return;
-        }
-        self.wanted = processor;
-        let sets = away_from_game(processor);
-        if sets.map(<[u32]>::as_ptr) == self.applied.map(<[u32]>::as_ptr) {
-            return;
-        }
-        if select_away(unsafe { GetCurrentThread() }, sets) {
-            self.applied = sets;
-        }
-    }
-
-    pub(crate) fn confined(&self) -> bool {
-        self.applied.is_some()
-    }
-}
-
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Boundary {
@@ -335,7 +192,9 @@ impl Pipeline {
     pub(crate) fn claim(&self) {
         let _ = self
             .available
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |free| free.checked_sub(1));
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |free| {
+                free.checked_sub(1)
+            });
         self.refresh();
     }
     fn pressure(&self) -> u32 {
@@ -533,7 +392,7 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         None
     };
     if sets.is_some() {
-        let selected = select(handle, sets);
+        let selected = select(target.handle.as_handle(), sets);
         if selected {
             target.confined.store(true, Ordering::SeqCst);
             target
@@ -542,7 +401,7 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         }
         applied &= selected;
     } else if target.confined.load(Ordering::SeqCst) {
-        let cleared = select(handle, None);
+        let cleared = select(target.handle.as_handle(), None);
         if cleared {
             target.confined.store(false, Ordering::SeqCst);
         }
@@ -627,7 +486,7 @@ impl Reconciler {
         let thread = std::thread::Builder::new()
             .name("hoi4-frame-priority".into())
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 crate::thread_cpu::register(crate::thread_cpu::Role::FramePriority);
@@ -643,7 +502,7 @@ impl Reconciler {
                 let started = Instant::now();
                 let now = || started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
                 let mut budget = Budget::default();
-                let _ = cores();
+                prepare();
                 loop {
                     let stopping = worker.stopping.load(Ordering::SeqCst);
                     worker.reconcile(&mut budget, now, |_, target, value| {

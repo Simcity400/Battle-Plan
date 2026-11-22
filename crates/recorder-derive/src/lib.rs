@@ -14,6 +14,15 @@ pub fn writers() -> Writers {
     Writers::new(writer_list())
 }
 
+pub fn writers_within(tables: usize) -> Writers {
+    Writers::new(
+        writer_list()
+            .into_iter()
+            .filter(|writer| writer.tables().iter().all(|output| output.table().index() < tables) && writer.reads().iter().all(|read| read.table.index() < tables))
+            .collect(),
+    )
+}
+
 fn writer_list() -> Vec<Box<dyn Writer>> {
     vec![
         Box::new(identity::TagHolders::default()),

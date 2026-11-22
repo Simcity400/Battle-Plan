@@ -2,7 +2,7 @@ use crate::sampling::{self, Placement};
 use collector_timing::capture_gate;
 use std::{
     io,
-    os::windows::io::AsRawHandle,
+    os::windows::io::{AsRawHandle, BorrowedHandle},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering},
     thread::JoinHandle,
@@ -258,7 +258,7 @@ fn held(full: bool) -> Held {
     if crate::command_batch::others_batching() {
         return Held::Busy;
     }
-    let _images = crate::portrait_changes::PreImagesCapture::begin();
+    let _images = collector_characters::portrait_changes::PreImagesCapture::begin();
     let world = world();
     // SAFETY: a game thread that stays in its callback (the hourly update's entry or return, or the
     // outermost command batch's return) for the whole read, with no other capture and no other
@@ -280,9 +280,10 @@ fn hurry() {
     let thread = THREAD.load(Ordering::SeqCst);
     if thread != 0 {
         // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
-        unsafe { SetThreadPriority(thread as _, THREAD_PRIORITY_ABOVE_NORMAL) };
+        let thread = unsafe { BorrowedHandle::borrow_raw(thread as _) };
+        unsafe { SetThreadPriority(thread.as_raw_handle(), THREAD_PRIORITY_ABOVE_NORMAL) };
         if CONFINED.swap(false, Ordering::SeqCst) {
-            crate::frame_priority::select_away(thread as _, None);
+            collector_workers::cpu_sets::select_away(thread, None);
         }
     }
 }
@@ -355,7 +356,7 @@ impl Drop for Gate {
     }
 }
 
-fn beside(away: &mut crate::frame_priority::AwayFromGame, game: Option<u32>) -> bool {
+fn beside(away: &mut collector_workers::cpu_sets::AwayFromGame, game: Option<u32>) -> bool {
     let own = unsafe { GetCurrentThread() };
     unsafe { SetThreadPriority(own, THREAD_PRIORITY_BELOW_NORMAL) };
     away.follow(game);
@@ -370,7 +371,7 @@ fn beside(away: &mut crate::frame_priority::AwayFromGame, game: Option<u32>) -> 
 
 fn run() {
     capture_gate::reader();
-    let mut away = crate::frame_priority::AwayFromGame::default();
+    let mut away = collector_workers::cpu_sets::AwayFromGame::default();
     let idle = IDLE;
     loop {
         match WORK.load(Ordering::Acquire) {
@@ -411,13 +412,13 @@ fn serve(capture: impl FnOnce(bool)) {
     }
 }
 
-fn capture_beside(away: &mut crate::frame_priority::AwayFromGame, full: bool) {
+fn capture_beside(away: &mut collector_workers::cpu_sets::AwayFromGame, full: bool) {
     let game = GAME.load(Ordering::Relaxed).checked_sub(1);
     let started = Instant::now();
     if beside(away, game) {
         CONFINED_CAPTURES.fetch_add(1, Ordering::Relaxed);
     }
-    let _images = crate::portrait_changes::PreImagesCapture::begin();
+    let _images = collector_characters::portrait_changes::PreImagesCapture::begin();
     let world = world();
     // SAFETY: the gate holds every command-batch writer until this capture has ended; portrait
     // writers proceed, and the portrait reader validates the live bytes it reads against the
@@ -438,7 +439,7 @@ fn capture_beside(away: &mut crate::frame_priority::AwayFromGame, full: bool) {
 }
 
 pub(crate) fn status() -> impl serde::Serialize {
-    let withheld = crate::portrait_changes::withheld_captures();
+    let withheld = collector_characters::portrait_changes::withheld_captures();
     crate::status::status!({
         "placement": if BESIDE.load(Ordering::Acquire) {
             "beside the game"
@@ -452,7 +453,7 @@ pub(crate) fn status() -> impl serde::Serialize {
         "beside": BESIDE_CAPTURES.load(Ordering::Relaxed),
         "beside_ns": BESIDE_NS.load(Ordering::Relaxed),
         "beside_off_game_core": CONFINED_CAPTURES.load(Ordering::Relaxed),
-        "off_game_core_failures": crate::frame_priority::away_failures(),
+        "off_game_core_failures": collector_workers::cpu_sets::away_failures(),
         "held": HELD_CAPTURES.load(Ordering::Relaxed),
         "batch_publication": crate::command_batch::publication_status(),
         "batch_publications_held": crate::command_batch::publications_held(),
@@ -483,7 +484,7 @@ pub(crate) mod tests {
     }
 
     pub(super) fn read(placement: Placement, full: bool) -> Option<bool> {
-        IMAGES.set(crate::portrait_changes::pre_images_active());
+        IMAGES.set(collector_characters::portrait_changes::pre_images_active());
         GATED.set(capture_gate::running());
         let admitted = READS.with_borrow_mut(|reads| {
             let (admitted, log) = reads.as_mut()?;
@@ -509,7 +510,13 @@ pub(crate) mod tests {
         ] {
             flag.store(false, Ordering::SeqCst);
         }
-        for count in [&PENDING_WORLD, &CAPTURED_WORLD, &HOURS, &ACCOUNTED, &ENDED_WORLD] {
+        for count in [
+            &PENDING_WORLD,
+            &CAPTURED_WORLD,
+            &HOURS,
+            &ACCOUNTED,
+            &ENDED_WORLD,
+        ] {
             count.store(0, Ordering::SeqCst);
         }
         LOST.set(0);
@@ -561,7 +568,7 @@ pub(crate) mod tests {
         assert!(GATED.get());
         assert!(IMAGES.get());
         assert!(!capture_gate::running());
-        assert!(!crate::portrait_changes::pre_images_active());
+        assert!(!collector_characters::portrait_changes::pre_images_active());
     }
 
     #[test]

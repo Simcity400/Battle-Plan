@@ -471,6 +471,17 @@ fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &super::Frame
     panic!("the map side never reached what the test waits for");
 }
 
+fn step_frame(side: &mut MapSide, head: i32) -> super::Frame {
+    for _ in 0..50_000_000u64 {
+        let frame = side.frame(head).unwrap();
+        if frame.steps > 0 {
+            return frame;
+        }
+        std::thread::yield_now();
+    }
+    panic!("no frame consumed steps through hour {head}: applied {:?}", side.applied());
+}
+
 fn sum_layer(side: &MapSide, at: usize) -> &Sum {
     side.parts().unwrap().1[at].any().downcast_ref::<Sum>().unwrap()
 }
@@ -677,7 +688,7 @@ fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
     use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
     let table = TableId::Divisions;
     let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];
-    let (bytes, _) = fixtures::written_at(recorder_derive::writers(), CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &[(1, 0, 1)], &[table], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers_within, CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &[(1, 0, 1)], &[table], |synthetic, _, ordinal| {
         let rows = &divisions[..if ordinal < 20 { 1 } else { 2 }];
         synthetic.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
     });
@@ -1429,7 +1440,7 @@ fn a_map_with_a_worker_layer_is_drawn_at_its_shown_hour_and_keeps_up_while_playi
             }
             std::thread::yield_now();
         }
-        let frame = side.frame(head).unwrap();
+        let frame = step_frame(&mut side, head);
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head - 4), "the worker holds the step: drawn at its product's hour, not the {head} applied");
         let frame = side.frame(head).unwrap();
@@ -1494,7 +1505,7 @@ fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behi
             }
             std::thread::yield_now();
         }
-        let frame = side.frame(head).unwrap();
+        let frame = step_frame(&mut side, head);
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head), "the window clock is not held by a layer of rows at the head");
         assert_eq!(frame.oldest, Some(head - lag), "the oldest hour on screen counts it {lag} hours behind");
@@ -1671,7 +1682,7 @@ fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
         }
         std::thread::yield_now();
     }
-    let frame = side.frame(head).unwrap();
+    let frame = step_frame(&mut side, head);
     assert_eq!(frame.applied, Some(head), "the step to the held hour is applied");
     assert_ne!(frame.drawn, Some(head), "the worker has not shown it yet");
     let frame = side.frame(head).unwrap();
@@ -1872,10 +1883,13 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
     entry.playhead().play(4.0);
     entry.playhead().seek(100);
     let deadline = Instant::now() + Duration::from_secs(120);
+    let (mut first_reset, mut second_reset) = (false, false);
     loop {
         let head = entry.playhead().newest().unwrap_or(0);
         let (one, other) = (first.frame(head).unwrap(), second.frame(head).unwrap());
-        if one.resets > 0 && other.resets > 0 {
+        first_reset |= one.resets > 0;
+        second_reset |= other.resets > 0;
+        if first_reset && second_reset {
             break;
         }
         assert!(Instant::now() < deadline, "the maps did not take the reset within two minutes");
@@ -2192,7 +2206,7 @@ fn a_step_made_ahead_is_shown_current_in_the_frame_that_applies_it() {
     for _ in 0..10 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        let frame = side.frame(next).unwrap();
+        let frame = step_frame(&mut side, next);
         assert_eq!((frame.applied, frame.steps), (Some(next), 1), "one step a frame");
         assert_eq!(frame.layers[0].ready_at_hour, Some(true), "the product of hour {next} was ready in the frame that applied it");
         assert_eq!(ahead(&side).published(), crate::layers::Published::Current);
@@ -2213,13 +2227,13 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
     }
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
-    let frame = side.frame(from + 4).unwrap();
+    let frame = step_frame(&mut side, from + 4);
     assert_eq!(frame.applied, Some(from + 4));
     assert_eq!(ahead(&side).shown.map(|(_, hour, _)| hour), Some(Some(from + 4)), "the product of {} is made; not shown before its hour", from + 8);
     assert_eq!(frame.drawn, Some(from + 4));
-    let frame = side.frame(from + 8).unwrap();
+    let frame = step_frame(&mut side, from + 8);
     assert_eq!((frame.drawn, frame.layers[0].ready_at_hour), (Some(from + 8), Some(true)));
-    let frame = side.frame(from + 12).unwrap();
+    let frame = step_frame(&mut side, from + 12);
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(frame.layers[0].ready_at_hour, Some(false), "the step to {} is not folded", from + 12);
     assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
@@ -2243,8 +2257,8 @@ fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
     }
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
-    side.frame(from + 8).unwrap();
-    let frame = side.frame(from + 12).unwrap();
+    step_frame(&mut side, from + 8);
+    let frame = step_frame(&mut side, from + 12);
     assert_eq!(frame.applied, Some(from + 12));
     assert_eq!(ahead(&side).published(), crate::layers::Published::At(from + 8));
     assert_eq!(
@@ -2263,7 +2277,7 @@ fn two_steps_taken_in_one_frame_show_the_seconds_product() {
     let (mut side, _entry, _permits) = ahead_side("ahead two", None);
     let from = side.applied().unwrap();
     made_ahead(&mut side, from + 8);
-    let frame = side.frame(from + 8).unwrap();
+    let frame = step_frame(&mut side, from + 8);
     assert_eq!((frame.applied, frame.steps), (Some(from + 8), 2));
     assert_eq!(frame.layers[0].ready_at_hour, Some(true));
     assert_eq!(ahead(&side).shown.map(|(_, hour, sum)| (hour, sum)), Some((Some(from + 8), mirrored(&side))));
@@ -2283,7 +2297,7 @@ fn a_seek_shows_none_of_the_products_made_ahead_before_it() {
     for _ in 0..6 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        side.frame(next).unwrap();
+        step_frame(&mut side, next);
         let shown = ahead(&side).shown.unwrap();
         assert_eq!(shown.0, epoch, "a product made before the seek was shown at hour {next}");
         assert_eq!((shown.1, shown.2), (Some(next), mirrored(&side)));
@@ -2296,7 +2310,7 @@ fn a_dependent_hears_a_fed_layers_change_in_the_frame_of_its_step() {
     for _ in 0..5 {
         let next = side.applied().unwrap() + 4;
         made_ahead(&mut side, next);
-        side.frame(next).unwrap();
+        step_frame(&mut side, next);
         let hears = side.parts().unwrap().1[1].any().downcast_ref::<Hears>().unwrap();
         let (stepped, heard) = hears.heard.last().unwrap();
         assert_eq!(*stepped, Some(next), "the dependent settled in the frame that applied {next}");

@@ -1,5 +1,6 @@
 use super::{MAP_TABLES, MapCaptured, elapsed, qpc};
-use crate::{extended::combat_progress, table_capture::CaptureRows};
+use crate::table_capture::CaptureRows;
+use collector_land_events::extended::combat_progress;
 use engine_native::{Memory, cland_combat, cnaval_combat, cnaval_combatant, walk::Outcome};
 use replay_data::rows::TableId;
 
@@ -58,7 +59,7 @@ impl CombatRequest {
             land.outcome
         } else {
             Outcome::Unavailable {
-                reason: crate::extended::NOT_RECORDED,
+                reason: collector_extended_support::outcomes::NOT_RECORDED,
             }
         });
         report.progress_ticks = report

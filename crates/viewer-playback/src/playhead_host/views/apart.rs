@@ -39,9 +39,15 @@ impl Apart {
     #[cfg(any(test, feature = "test-support"))]
     pub fn drive(&mut self, hour: Hour) -> bool {
         let entry = Arc::clone(&self.entry);
-        let reached = entry.playhead().wait_for(|| {
+        let reached = entry.playhead().wait_for(|| loop {
             self.step(hour);
-            self.applied == Some((hour, entry.playhead().epoch())) && self.home()
+            if self.applied == Some((hour, entry.playhead().epoch())) && self.home() {
+                return true;
+            }
+            if self.consumer.reaches(hour) == Some(false) {
+                return false;
+            }
+            std::thread::yield_now();
         });
         if reached.is_ok() {
             self.store.settled();
@@ -64,10 +70,10 @@ impl Apart {
 
     fn step(&mut self, hour: Hour) {
         self.store.settled();
+        let Some(mirrors) = Arc::get_mut(&mut self.mirrors) else { return };
         let mut steps: Vec<Arc<Step>> = Vec::new();
         self.consumer.advance(hour);
         self.consumer.take(hour, &mut steps);
-        let Some(mirrors) = Arc::get_mut(&mut self.mirrors) else { return };
         let mut tables = Vec::new();
         for step in &steps {
             if step.last() > hour {

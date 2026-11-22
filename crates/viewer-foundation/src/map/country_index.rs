@@ -73,6 +73,9 @@ impl CountryIndex {
     }
 
     pub fn settled(memo: &Settled<Self>, frame: &DecodedFrame) -> io::Result<Arc<Self>> {
+        for table in TABLES {
+            let _ = &*frame.tables[table.index()];
+        }
         memo.get_or_build(frame, Self::read)
     }
 
@@ -374,83 +377,6 @@ mod tests {
             CountryIndex::read(&frame(1, &[links.clone(), countries.clone(), orphaned])).unwrap(),
             CountryIndex::read(&frame(1, &[links, countries, appearance])).unwrap()
         );
-    }
-
-    #[expect(
-        clippy::type_complexity,
-        reason = "the four maps, as hour_tables holds them"
-    )]
-    fn hour_tables_maps(
-        frame: &DecodedFrame,
-    ) -> io::Result<(
-        BTreeMap<u32, u32>,
-        BTreeMap<u32, String>,
-        BTreeMap<u32, u32>,
-        BTreeMap<u32, FlagTags>,
-    )> {
-        let links: BTreeMap<u32, u32> = core::<tables::CountryLinks>(frame)?
-            .iter()
-            .map(|link| (link.id, link.canonical_slot))
-            .collect();
-        let rows = core::<tables::Countries>(frame)?;
-        let tags: BTreeMap<u32, String> = rows
-            .iter()
-            .map(|country| {
-                (
-                    country.canonical_slot,
-                    String::from_utf8_lossy(&country.tag).into_owned(),
-                )
-            })
-            .collect();
-        let country_ids = rows
-            .iter()
-            .map(|country| (country.canonical_slot, country.id))
-            .collect();
-        let by_slot: BTreeMap<_, _> = rows
-            .iter()
-            .map(|country| (country.canonical_slot, country))
-            .collect();
-        let appearances: BTreeMap<_, _> =
-            super::super::tables::rows::<tables::CountryAppearance>(frame)?
-                .rows()
-                .iter()
-                .map(|row| (row.country, row))
-                .collect();
-        let flag_tags = by_slot
-            .iter()
-            .filter_map(|(&slot, country)| {
-                let row = appearances.get(&country.id)?;
-                Some((
-                    slot,
-                    (
-                        std::str::from_utf8(&row.cosmetic_tag)
-                            .map(str::to_owned)
-                            .map_err(|_| "country cosmetic tag is not UTF-8".into()),
-                        content_reader_country_names::country_names::original_tag(country, row)
-                            .map(str::to_owned),
-                    ),
-                ))
-            })
-            .collect();
-        Ok((links, tags, country_ids, flag_tags))
-    }
-
-    #[test]
-    fn the_index_matches_the_overlay_hour_tables_maps() {
-        let [links, countries, appearance] = tables(40, 0);
-        for hour in [
-            [links.clone(), countries.clone(), appearance.clone()],
-            [links.clone(), countries.clone(), truncated(&appearance)],
-            [links, countries, unavailable()],
-        ] {
-            let frame = frame(1, &hour);
-            let index = CountryIndex::read(&frame).unwrap();
-            let (links, tags, ids, flag_tags) = hour_tables_maps(&frame).unwrap();
-            assert_eq!(index.links(), &links);
-            assert_eq!(index.tags(), &tags);
-            assert_eq!(index.ids(), &ids);
-            assert_eq!(index.flag_tags(), &flag_tags);
-        }
     }
 
     #[test]

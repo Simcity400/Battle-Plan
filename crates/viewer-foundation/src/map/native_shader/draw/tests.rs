@@ -32,6 +32,7 @@ fn part(kind: PartKind, asset: Arc<super::super::library::Effect>) -> gui::Part 
     gui::Part {
         path: "fixture".into(),
         child: None,
+        background_index: None,
         kind,
         clip: None,
         color: [1.; 4],
