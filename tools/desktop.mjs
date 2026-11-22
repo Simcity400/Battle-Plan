@@ -175,28 +175,24 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
     ? path.resolve(desktopDir, env.CARGO_HOME)
     : homeRoot ? path.join(homeRoot, ".cargo") : undefined;
   let configured;
+  let canSetEnvTarget = false;
   if (explicitTargets.length === 1) {
-    let fromCliConfig = false;
-    if (configArgs.length > 0) {
-      try {
-        fromCliConfig = (await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home }))?.fromCliConfig === true;
-      } catch {
-        fromCliConfig = false;
-      }
+    try {
+      await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
+      canSetEnvTarget = true;
+    } catch {
+      canSetEnvTarget = false;
     }
-    configured = { target: explicitTargets[0], source: "--target", fromCliConfig };
+    configured = { target: explicitTargets[0], source: "--target" };
   } else {
     configured = await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
+    canSetEnvTarget = configured !== undefined;
   }
   const placement = configured === undefined
     ? undefined
     : await resolveTargetPlacement({ ...configured, hostTarget: hostTarget ?? (() => readHostTuple(env)) });
   const targetArgs = placement === undefined ? [] : ["--target", placement.targetArg];
-
-  const tauriEnv = {};
-  if (placement !== undefined && (configured.fromCliConfig || (configured.source === "CARGO_BUILD_TARGET" && env.CARGO_BUILD_TARGET !== placement.targetArg))) {
-    tauriEnv.CARGO_BUILD_TARGET = placement.targetArg;
-  }
+  const tauriEnv = placement !== undefined && canSetEnvTarget ? { CARGO_BUILD_TARGET: placement.targetArg } : {};
 
   const targetDirs = flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--target-dir");
   const targetDir = targetDirs.length > 0 ? targetDirs[targetDirs.length - 1] : undefined;

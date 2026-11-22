@@ -298,6 +298,10 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
     'rel-home/crates/desktop/cargo-home/config.toml': '[build]\ntarget = "aarch64-pc-windows-msvc"\n',
     'int-workspace/.cargo/config.toml': '[build]\ntarget = 123\n',
     'int-workspace/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
+    'int-include/.cargo/config.toml': '[build]\ntarget = 123\n',
+    'int-include/crates/desktop/.cargo/override.toml': '[build]\ntarget = "x86_64-pc-windows-msvc"\n',
+    'int-include/crates/desktop/.cargo/config.toml': 'include = ["override.toml"]\n',
+    'int-include/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
     'json-desktop/crates/desktop/.cargo/config.toml': '[build]\ntarget = "targets/custom.json"\n',
     'json-root/.cargo/config.toml': '[build]\ntarget = "targets/root-spec.json"\n',
     'json-root/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
@@ -454,6 +458,26 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   assert.deepEqual(relHomePlan.targetArgs, ['--target', 'aarch64-pc-windows-msvc']);
   assert.deepEqual(relHomePlan.tauriArgs, ['--target', 'aarch64-pc-windows-msvc', '--']);
 
+  const intIncludePlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: [],
+    root: path.join(root, 'int-include'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(intIncludePlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(intIncludePlan.tauriArgs, ['--target', 'x86_64-pc-windows-msvc', '--', '--profile', 'release-lto']);
+  assert.deepEqual(intIncludePlan.tauriEnv, { CARGO_BUILD_TARGET: 'x86_64-pc-windows-msvc' });
+
+  const intIncludeWithExplicitPlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-tx86_64-pc-windows-msvc'],
+    root: path.join(root, 'int-include'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(intIncludeWithExplicitPlan.tauriEnv, { CARGO_BUILD_TARGET: 'x86_64-pc-windows-msvc' });
+
   const desktopCfgPlan = await planDesktopInvocation({
     mode: 'build',
     argv: [],
@@ -463,7 +487,7 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   });
   assert.deepEqual(desktopCfgPlan.targetArgs, ['--target', 'aarch64-pc-windows-msvc']);
   assert.deepEqual(desktopCfgPlan.tauriArgs, ['--target', 'aarch64-pc-windows-msvc', '--', '--profile', 'release-lto']);
-  assert.deepEqual(desktopCfgPlan.tauriEnv, {});
+  assert.deepEqual(desktopCfgPlan.tauriEnv, { CARGO_BUILD_TARGET: 'aarch64-pc-windows-msvc' });
 
   const envTargetPlan = await planDesktopInvocation({
     mode: 'dev',

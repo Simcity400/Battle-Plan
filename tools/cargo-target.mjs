@@ -612,15 +612,15 @@ export async function resolveCargoTarget({ cwd, home, env, cargoArgs }) {
 
   if (cliSetTarget) {
     if (tomlState.kind !== 'string') throw unplaceable(tomlState.source);
-    return { target: normalizeTarget(tomlState.value, tomlState.source), source: tomlState.source, fromCliConfig: true };
+    return { target: normalizeTarget(tomlState.value, tomlState.source), source: tomlState.source };
   }
   if (envTarget !== undefined) {
     if (tomlState?.kind === 'array') throw unplaceable(tomlState.source);
-    return { target: normalizeTarget(envTarget, 'CARGO_BUILD_TARGET'), source: 'CARGO_BUILD_TARGET', fromCliConfig: false };
+    return { target: normalizeTarget(envTarget, 'CARGO_BUILD_TARGET'), source: 'CARGO_BUILD_TARGET' };
   }
   if (tomlState === null) return undefined;
   if (tomlState.kind !== 'string') throw unplaceable(tomlState.source);
-  return { target: normalizeTarget(tomlState.value, tomlState.source), source: tomlState.source, fromCliConfig: false };
+  return { target: normalizeTarget(tomlState.value, tomlState.source), source: tomlState.source };
 }
 
 export async function cargoTarget(options) {
