@@ -84,6 +84,8 @@ pub fn frame_heap_bytes(frame: &DecodedFrame) -> usize {
 pub struct Pool {
     pool: rayon::ThreadPool,
     threads: Joined,
+    #[cfg(test)]
+    entered: std::sync::atomic::AtomicUsize,
 }
 
 impl Drop for Pool {
@@ -126,11 +128,28 @@ impl Pool {
             })
             .build()
             .map_err(io::Error::other)?;
-        Ok(Self { pool, threads })
+        Ok(Self {
+            pool,
+            threads,
+            #[cfg(test)]
+            entered: std::sync::atomic::AtomicUsize::new(0),
+        })
     }
 
     pub fn install<R: Send>(&self, work: impl FnOnce() -> R + Send) -> R {
-        self.pool.install(work)
+        self.pool.install(|| {
+            #[cfg(test)]
+            {
+                assert!(self.pool.current_thread_index().is_some());
+                self.entered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            work()
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entered(&self) -> usize {
+        self.entered.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn on<R: Send>(pool: Option<&Self>, work: impl FnOnce() -> R + Send) -> R {

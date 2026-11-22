@@ -139,8 +139,6 @@ impl SampleSource for Columnar {
                 Cursor::new(
                     Arc::clone(&self.natives),
                     &[TableId::AirDailyRoster, TableId::CountryLinks],
-                    self.replay.format,
-                    self.replay.capture_mode,
                 )
                 .map(Mutex::new)
                 .map_err(|error| error.to_string())
@@ -161,7 +159,7 @@ impl SampleSource for Columnar {
             Err(_) if superseded() => Err(SUPERSEDED.into()),
             Err(error) => only(Err(error.to_string())),
             Ok(false) => only(Err(format!("hour {hour} of branch {branch} is not recorded"))),
-            Ok(true) => only(cursor.build(None).map_err(|error| error.to_string()).and_then(|decoded| roster(&decoded))),
+            Ok(true) => only(cursor.build().map_err(|error| error.to_string()).and_then(|decoded| roster(&decoded))),
         }
     }
 }
