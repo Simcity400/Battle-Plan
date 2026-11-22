@@ -110,7 +110,7 @@ impl Run<'_> {
         let (mut work, mut frames, mut unsettled_after, mut after) = (Vec::new(), Vec::new(), 0u32, 0u32);
         let mut behind_after: BTreeMap<String, u32> = BTreeMap::new();
         for index in 0u64.. {
-            wait_until(requested + Duration::from_secs_f64(index as f64 / self.switches.refresh_hz));
+            wait_until(crate::playback_cost::frame_due(requested, index, self.switches.refresh_hz)?);
             let at_ms = requested.elapsed().as_secs_f64() * 1e3;
             let work_ms = self.frame(playing)?;
             let seen = seen(self.viewer, target, head.or(self.viewer.playhead), playing, &mut self.layers);
@@ -249,7 +249,7 @@ pub(crate) fn measure(config: dashboard::Config, mut options: Options, path: Pat
         run.viewer.anchor_playback(at, true, switches.play_speed, false, None, Instant::now(), last);
         let playing_from = Instant::now();
         while playing_from.elapsed() < Duration::from_secs(1) {
-            wait_until(Instant::now() + Duration::from_secs_f64(1.0 / switches.refresh_hz));
+            wait_until(crate::playback_cost::frame_due(Instant::now(), 1, switches.refresh_hz)?);
             run.frame(true)?;
         }
         for _ in 0..switches.play_switches {

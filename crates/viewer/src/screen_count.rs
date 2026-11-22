@@ -292,13 +292,13 @@ pub(crate) mod readout {
         }
     }
 
-    trait Moment: Copy {
-        fn since(self, earlier: Self) -> Duration;
+    trait Moment: Copy + PartialOrd {
+        fn earlier(self, by: Duration) -> Option<Self>;
     }
 
     impl Moment for Instant {
-        fn since(self, earlier: Self) -> Duration {
-            self.saturating_duration_since(earlier)
+        fn earlier(self, by: Duration) -> Option<Self> {
+            self.checked_sub(by)
         }
     }
 
@@ -425,15 +425,18 @@ pub(crate) mod readout {
                     seen: screen[1] > SEEN,
                     presented: PRESENTED.load(Ordering::Relaxed),
                 },
+                Instant::now(),
             );
             self.waiting = false;
             self.compare.last = None;
         }
     }
 
-    fn keep<T: Moment>(frames: &mut Vec<Frame<T>>, frame: Frame<T>) {
-        frames.retain(|kept| frame.at.since(kept.at) <= Duration::from_secs(1));
+    fn keep<T: Moment>(frames: &mut Vec<Frame<T>>, frame: Frame<T>, now: T) {
         frames.push(frame);
+        if let Some(second) = now.earlier(Duration::from_secs(1)) {
+            frames.retain(|kept| kept.at >= second);
+        }
     }
 
     pub(crate) fn lines() -> Vec<String> {
@@ -468,25 +471,30 @@ pub(crate) mod readout {
     mod tests {
         use super::*;
 
+        impl Moment for Duration {
+            fn earlier(self, by: Duration) -> Option<Self> {
+                self.checked_sub(by)
+            }
+        }
+
         #[test]
         fn frames_from_the_clock_origin_keep_the_last_second() {
-            impl Moment for Duration {
-                fn since(self, earlier: Self) -> Duration {
-                    self.saturating_sub(earlier)
-                }
-            }
-            let frame = |millis| Frame {
-                at: Duration::from_millis(millis),
-                differed: false,
-                seen: false,
-                presented: millis,
-            };
             let mut frames = Vec::new();
-            for millis in [0, 500, 900, 1_000, 1_600] {
-                keep(&mut frames, frame(millis));
-            }
-            let kept: Vec<u64> = frames.iter().map(|frame| frame.presented).collect();
-            assert_eq!(kept, [900, 1_000, 1_600]);
+            let mut kept = |at: u64, now: u64| {
+                let frame = Frame {
+                    at: Duration::from_millis(at),
+                    differed: false,
+                    seen: false,
+                    presented: at,
+                };
+                keep(&mut frames, frame, Duration::from_millis(now));
+                frames.iter().map(|frame| frame.presented).collect::<Vec<_>>()
+            };
+            assert_eq!(kept(0, 0), [0]);
+            assert_eq!(kept(500, 500), [0, 500]);
+            assert_eq!(kept(1_000, 1_000), [0, 500, 1_000]);
+            assert_eq!(kept(1_500, 1_501), [1_000, 1_500]);
+            assert_eq!(kept(2_500, 2_501), [2_500]);
         }
     }
 }

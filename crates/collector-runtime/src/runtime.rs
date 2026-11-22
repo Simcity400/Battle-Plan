@@ -7092,13 +7092,14 @@ mod tests {
         assert_eq!(cadence.interval, SizingBackoff::FAST);
     }
 
+    impl Moment for Duration {
+        fn since(self, earlier: Self) -> Duration {
+            self.saturating_sub(earlier)
+        }
+    }
+
     #[test]
     fn every_second_is_due_at_once_from_the_clock_origin_then_once_a_second() {
-        impl Moment for Duration {
-            fn since(self, earlier: Self) -> Duration {
-                self.saturating_sub(earlier)
-            }
-        }
         let origin = Duration::ZERO;
         let mut every = EverySecond::default();
         assert!(every.due(origin));

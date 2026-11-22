@@ -55,6 +55,26 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
+pub(crate) fn refresh_rate(hz: f64) -> io::Result<f64> {
+    let range = dashboard::protocol::MAP_FRAME_LIMIT_RANGE;
+    if range.contains(&hz) {
+        Ok(hz)
+    } else {
+        Err(invalid(format!(
+            "--refresh-hz needs a rate of {} to {} frames a second",
+            range.start(),
+            range.end()
+        )))
+    }
+}
+
+pub(crate) fn frame_due(start: Instant, index: u64, refresh_hz: f64) -> io::Result<Instant> {
+    std::time::Duration::try_from_secs_f64(index as f64 / refresh_hz)
+        .ok()
+        .and_then(|after| start.checked_add(after))
+        .ok_or_else(|| invalid(format!("frame {index} at {refresh_hz} Hz is past the clock's range")))
+}
+
 pub(crate) fn dispatch(args: &[OsString]) -> Option<io::Result<()>> {
     let given = |flag: &str| args.iter().any(|arg| arg == flag);
     if !["--playhead-proof", "--visual-toggle", "--viewpoint-switch", "--playback-cost"].iter().any(|job| given(job)) {
@@ -412,12 +432,12 @@ fn parse(args: &[OsString], var: impl Fn(&str) -> Option<OsString>) -> io::Resul
             Some("--complete-models") => schedule.complete_models = true,
             Some("--gpu-pass-times") => gpu_pass_times = true,
             Some("--refresh-hz") => {
-                schedule.refresh_hz = args
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .filter(|v| v.is_finite() && *v > 0.0)
-                    .ok_or_else(|| invalid("--refresh-hz needs a positive rate"))?;
+                schedule.refresh_hz = refresh_rate(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .ok_or_else(|| invalid("--refresh-hz needs a number"))?,
+                )?;
             }
             Some("--frame-limit") => {
                 frame_limit = Some(
@@ -876,6 +896,21 @@ mod lean_tests {
             assert!(refusal(&[], set).is_some(), "{name}");
             let empty = |given: &str| (given == name).then(OsString::new);
             assert!(refusal(&[], empty).is_some(), "{name} empty");
+        }
+    }
+
+    #[test]
+    fn every_run_refuses_a_refresh_rate_outside_the_frame_limit_range() {
+        let none = |_: &str| None;
+        assert_eq!(refusal(&["--refresh-hz", "1"], none), None);
+        let named = |refused: Option<String>| refused.is_some_and(|why| why.contains("--refresh-hz"));
+        for rate in ["1e-300", "0.5", "1001"] {
+            assert!(named(refusal(&["--refresh-hz", rate], none)), "{rate}");
+            let toggle: Vec<OsString> = ["--refresh-hz", rate].iter().map(OsString::from).collect();
+            assert!(named(toggle::run(&toggle).err().map(|error| error.to_string())), "{rate}");
+            let viewpoint: Vec<OsString> =
+                ["--countries", "GER,ENG", "--refresh-hz", rate].iter().map(OsString::from).collect();
+            assert!(named(viewpoint::run(&viewpoint).err().map(|error| error.to_string())), "{rate}");
         }
     }
 
