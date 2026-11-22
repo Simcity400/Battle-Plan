@@ -41,6 +41,7 @@ const TABLES: &[Output] = &[
 
 const NONE: u32 = TagHolderRow::NONE;
 const POLITICAL: u8 = PowerCurrency::Political as u8;
+const MAX_BATCH_PAYMENTS: u64 = (u32::MAX as u64) + 1;
 
 fn currency_bit(currency: PowerCurrency) -> u8 {
     match currency {
@@ -283,6 +284,34 @@ fn recurring(cause: PowerCause) -> bool {
 
 type Holds = BTreeMap<u64, Hold>;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DayRuns(Vec<(i32, i32)>);
+
+impl DayRuns {
+    fn contains(&self, day: i32) -> bool {
+        let at = self.0.partition_point(|&(first, _)| first <= day);
+        at > 0 && day <= self.0[at - 1].1
+    }
+
+    fn insert(&mut self, day: i32) {
+        let at = self.0.partition_point(|&(first, _)| first <= day);
+        if at > 0 && day <= self.0[at - 1].1 {
+            return;
+        }
+        let merge_left = at > 0 && self.0[at - 1].1.checked_add(24) == Some(day);
+        let merge_right = at < self.0.len() && day.checked_add(24) == Some(self.0[at].0);
+        match (merge_left, merge_right) {
+            (true, true) => {
+                self.0[at - 1].1 = self.0[at].1;
+                self.0.remove(at);
+            }
+            (true, false) => self.0[at - 1].1 = day,
+            (false, true) => self.0[at].0 = day,
+            (false, false) => self.0.insert(at, (day, day)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct BatchKey {
     raw: u32,
@@ -345,14 +374,15 @@ fn project(holder: u32, ordinal: u32, parts: &[(BatchKey, &CostPart)]) -> Part {
         }
         read = read.min(part.read);
     }
+    let spent = sum.and_then(|total| i64::try_from(total).ok());
     Part {
         holder,
         currency: POLITICAL,
         ordinal,
         day,
-        spent: sum.and_then(|total| i64::try_from(total).ok()).map_or(Recorded::NotRecorded, Recorded::Value),
+        spent: spent.map_or(Recorded::NotRecorded, Recorded::Value),
         payments,
-        covered,
+        covered: covered && spent.is_some(),
         sequence: Some(sequence),
         cost_ordinal: Some(cost_ordinal),
         read,
@@ -414,9 +444,9 @@ pub struct PowerLedger {
     batches: BTreeMap<BatchKey, CostBatch>,
     by_raw: HashMap<u32, Vec<BatchKey>>,
     by_holder: HashMap<u32, Vec<BatchKey>>,
-    settled: HashMap<u32, i32>,
+    settled: HashMap<u32, DayRuns>,
     holds: HashMap<u32, Holds>,
-    steady: HashSet<u32>,
+    mismatched: HashSet<u32>,
     idle: bool,
 }
 
@@ -428,8 +458,9 @@ impl PowerLedger {
         self.links.get(&raw).copied().unwrap_or(NONE)
     }
 
-    fn sole(&self, holder: u32, raw: u32) -> bool {
-        holder != NONE && self.aliases.get(&holder).is_some_and(|raws| raws.as_slice() == [raw])
+    fn holder_steady(&self, holder: u32) -> bool {
+        self.aliases.get(&holder).is_some_and(|raws| raws.iter().any(|raw| self.mismatched.contains(raw)))
+            || self.holder_batches(holder).iter().any(|key| self.mismatched.contains(&key.raw))
     }
 
     fn index_batches(&mut self) {
@@ -495,26 +526,7 @@ impl PowerLedger {
     }
 
     fn record_settled(&mut self, raw: u32, day: i32) {
-        self.settled.entry(raw).and_modify(|through| *through = (*through).max(day)).or_insert(day);
-    }
-
-    fn clear_steady(&mut self, hour: &Hour<'_>, holder: u32, except_raw: u32) -> io::Result<()> {
-        if !self.steady.contains(&holder) {
-            return Ok(());
-        }
-        if self.sole(holder, except_raw) {
-            self.steady.remove(&holder);
-            return Ok(());
-        }
-        if let Some(raws) = self.aliases.get(&holder) {
-            for &other in raws.iter().filter(|&&other| other != except_raw) {
-                if self.mismatch(hour, other)? == Some(true) {
-                    return Ok(());
-                }
-            }
-        }
-        self.steady.remove(&holder);
-        Ok(())
+        self.settled.entry(raw).or_default().insert(day);
     }
 
     fn read_identities(&mut self, hour: &Hour<'_>) -> Vec<u32> {
@@ -558,7 +570,6 @@ impl PowerLedger {
         for row in inputs::every::<Hold>(&own.table(TableId::PowerHolds))? {
             self.holds.entry(row.holder).or_default().insert(row.hold, row);
         }
-        self.steady = inputs::every::<Coverage>(&own.table(TableId::PowerSpendCoverage))?.into_iter().filter(|row| row.daily_mismatch & Coverage::STEADY_MISMATCH != 0).map(|row| row.holder).collect();
         Ok(())
     }
 
@@ -734,19 +745,19 @@ impl PowerLedger {
         let keys: Vec<BatchKey> = self.batches.keys().copied().collect();
         for key in keys {
             let Some(batch) = self.batches.get(&key).cloned() else { continue };
-            let rows: Vec<CountryPowerDailyCostRow> = inputs::costs_of(hour, key.raw)?
-                .into_iter()
-                .filter(|cost| cost.epoch == key.epoch && midnight(cost.day_hour) == key.day && cost.pp_sequence == key.sequence)
-                .collect();
-            if !rows.is_empty() {
-                pending.recovered.insert(key);
-            }
+            let all_day_rows: Vec<CountryPowerDailyCostRow> = inputs::costs_of(hour, key.raw)?.into_iter().filter(|cost| midnight(cost.day_hour) == key.day).collect();
+            let rows: Vec<CountryPowerDailyCostRow> = all_day_rows.iter().filter(|cost| cost.epoch == key.epoch && cost.pp_sequence == key.sequence).cloned().collect();
+            let moved_country = moved.contains(&key.raw) || batch.holder != self.slot(key.raw);
             let fresh = inputs::fresh_daily(hour, key.raw)?;
             let applied = fresh.as_ref().filter(|daily| daily.epoch == key.epoch && midnight(daily.day_hour) == key.day && daily.pp_sequence == Some(key.sequence));
             if rows.is_empty() {
-                let emptied = applied.is_some_and(|daily| {
-                    daily.pp_cost_raw == Some(0) && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(daily.epoch, hour.hour, Streams::PP_DAILY_COSTS, hour.hour))
-                });
+                let emptied = all_day_rows.is_empty()
+                    && fresh.as_ref().is_some_and(|daily| {
+                        midnight(daily.day_hour) == key.day
+                            && daily.pp_cost_raw == Some(0)
+                            && daily.pp_sequence.is_some()
+                            && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(daily.epoch, hour.hour, Streams::PP_DAILY_COSTS, hour.hour))
+                    });
                 let held_sum = batch.parts.values().try_fold(0i128, |sum, part| match part.spent {
                     Recorded::Value(spent) => Some(sum + i128::from(spent)),
                     Recorded::NotRecorded => None,
@@ -755,17 +766,20 @@ impl PowerLedger {
                 let contradicted = applied.is_some_and(|daily| held_sum.zip(daily.pp_cost_raw).is_some_and(|(sum, cost)| sum != i128::from(cost)));
                 if emptied {
                     self.remove_batch(key, pending);
-                    self.clear_steady(hour, batch.holder, key.raw)?;
+                    self.mismatched.remove(&key.raw);
+                    self.record_settled(key.raw, key.day);
                 } else if key.day == today && agrees {
                 } else {
                     if contradicted {
-                        self.steady.insert(batch.holder);
+                        self.mismatched.insert(key.raw);
                     }
                     self.mark_batch_unknown(key, pending);
                 }
                 continue;
             }
-            let moved_country = moved.contains(&key.raw) || batch.holder != self.slot(key.raw);
+            if !moved_country {
+                pending.recovered.insert(key);
+            }
             self.reconcile_batch(hour, own, witnesses, pending, Batch { key, batch, rows, moved: moved_country }, applied)?;
         }
         Ok(())
@@ -813,9 +827,9 @@ impl PowerLedger {
         let changed = unknown_new || !batch.parts.iter().all(|(&ordinal, part)| exact(ordinal, part)) || !opened.is_empty();
         if matched || changed {
             if !reconciles {
-                self.steady.insert(holder);
+                self.mismatched.insert(key.raw);
             } else {
-                self.clear_steady(hour, holder, key.raw)?;
+                self.mismatched.remove(&key.raw);
             }
         }
         if !changed {
@@ -833,7 +847,7 @@ impl PowerLedger {
             seen.unmatched |= !matched;
             seen.negative |= matched && cost.cost_raw < 0;
         }
-        let covered = reconciles && !self.steady.contains(&holder) && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(key.epoch, key.day, Streams::PP | Streams::PP_DAILY_COSTS, at));
+        let covered = reconciles && !self.mismatched.contains(&key.raw) && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(key.epoch, key.day, Streams::PP | Streams::PP_DAILY_COSTS, at));
         let mut next_parts = BTreeMap::new();
         for (ordinal, mut part) in batch.parts {
             match remaining.get(&ordinal) {
@@ -844,10 +858,11 @@ impl PowerLedger {
                     next_parts.insert(ordinal, part);
                 }
                 Some(&(sum, payments, first)) => {
-                    part.spent = i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value);
+                    let spent = i64::try_from(sum).ok();
+                    part.spent = spent.map_or(Recorded::NotRecorded, Recorded::Value);
                     part.payments = payments;
                     part.cost_ordinal = first;
-                    part.covered = covered;
+                    part.covered = covered && spent.is_some();
                     next_parts.insert(ordinal, part);
                 }
                 None => {}
@@ -855,12 +870,13 @@ impl PowerLedger {
         }
         for ordinal in opened {
             let (sum, payments, first) = remaining[&ordinal];
+            let spent = i64::try_from(sum).ok();
             next_parts.insert(
                 ordinal,
                 CostPart {
-                    spent: i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value),
+                    spent: spent.map_or(Recorded::NotRecorded, Recorded::Value),
                     payments,
-                    covered,
+                    covered: covered && spent.is_some(),
                     cost_ordinal: first,
                     read: at,
                 },
@@ -936,7 +952,7 @@ impl PowerLedger {
                     _ => Recorded::NotRecorded,
                 };
                 part.payments += 1;
-                part.covered &= covered;
+                part.covered &= covered && matches!(part.spent, Recorded::Value(_));
                 self.open_change_part(pending, part);
             }
         }
@@ -1004,12 +1020,11 @@ impl PowerLedger {
             }
         }
         for raw in mem::take(&mut pending.daily) {
-            let holder = self.slot(raw);
             if let Some(steady) = self.mismatch(hour, raw)? {
                 if steady {
-                    self.steady.insert(holder);
+                    self.mismatched.insert(raw);
                 } else {
-                    self.clear_steady(hour, holder, raw)?;
+                    self.mismatched.remove(&raw);
                 }
             }
         }
@@ -1017,7 +1032,11 @@ impl PowerLedger {
     }
 
     fn mismatch(&self, hour: &Hour<'_>, raw: u32) -> io::Result<Option<bool>> {
-        let Some(daily) = inputs::daily(hour, raw)? else { return Ok(Some(false)) };
+        let today = midnight(hour.hour);
+        let Some(daily) = inputs::daily(hour, raw)? else {
+            let has_open = self.raw_batches(raw).into_iter().any(|key| key.day == today && self.batches.get(&key).is_some_and(|batch| !batch.unmatched));
+            return Ok(Some(has_open));
+        };
         let Some(sequence) = daily.pp_sequence else { return Ok(Some(false)) };
         let key = BatchKey { raw, epoch: daily.epoch, day: midnight(daily.day_hour), sequence };
         let Some(batch) = self.batches.get(&key).filter(|batch| !batch.unmatched && batch.holder == self.slot(raw)) else {
@@ -1042,7 +1061,7 @@ impl PowerLedger {
         let holder = self.slot(raw);
         let daily = inputs::daily(hour, raw)?;
         let today = midnight(at);
-        let settled_before = self.settled.get(&raw).copied();
+        let settled_before = self.settled.get(&raw).cloned();
         let mut applications: BTreeMap<(u64, i32, u64), Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
         for cost in &publication.costs {
             applications.entry((cost.epoch, midnight(cost.day_hour), cost.pp_sequence)).or_default().push(cost);
@@ -1058,10 +1077,10 @@ impl PowerLedger {
                 self.remove_batch(old, pending);
             }
         }
-        let mut newly_settled: Option<i32> = None;
+        let mut newly_settled = Vec::new();
         for ((epoch, day, sequence), costs) in applications {
             let opens = day == today;
-            if !opens && settled_before.is_some_and(|through| day <= through) {
+            if !opens && settled_before.as_ref().is_some_and(|runs| runs.contains(day)) {
                 continue;
             }
             let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && midnight(daily.day_hour) == day && daily.pp_sequence == Some(sequence));
@@ -1074,16 +1093,16 @@ impl PowerLedger {
                 let sum: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
                 let steady = daily.as_ref().is_some_and(|daily| daily.pp_cost_raw.is_none_or(|cost| i128::from(cost) != sum));
                 if steady {
-                    self.steady.insert(holder);
+                    self.mismatched.insert(raw);
                 } else {
-                    self.clear_steady(hour, holder, raw)?;
+                    self.mismatched.remove(&raw);
                 }
                 pending.daily.remove(&raw);
             }
             if day <= run_first {
                 continue;
             }
-            let covered = !self.steady.contains(&holder) && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(epoch, day, Streams::PP | Streams::PP_DAILY_COSTS, at));
+            let covered = !self.mismatched.contains(&raw) && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(epoch, day, Streams::PP | Streams::PP_DAILY_COSTS, at));
             let mut items: BTreeMap<u32, (i128, i64, u32)> = BTreeMap::new();
             for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
                 let ordinal = if matched {
@@ -1097,46 +1116,52 @@ impl PowerLedger {
                 entry.1 += 1;
                 entry.2 = entry.2.min(cost.ordinal);
             }
+            let confirmed_empty = items.is_empty() && matched && covered && daily.as_ref().is_some_and(|daily| daily.pp_cost_raw == Some(0));
             if opens {
                 let key = BatchKey { raw, epoch, day, sequence };
                 let old = self.remove_batch(key, pending).filter(|old| old.holder == holder);
                 let mut parts = BTreeMap::new();
                 for (ordinal, (sum, payments, first)) in items {
+                    let spent = i64::try_from(sum).ok();
                     let held = old.as_ref().and_then(|batch| batch.parts.get(&ordinal));
                     parts.insert(
                         ordinal,
                         CostPart {
-                            spent: i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value),
+                            spent: spent.map_or(Recorded::NotRecorded, Recorded::Value),
                             payments,
-                            covered: covered && held.is_none_or(|held| held.covered),
+                            covered: covered && spent.is_some() && held.is_none_or(|held| held.covered),
                             cost_ordinal: first,
                             read: held.map_or(at, |held| held.read),
                         },
                     );
                 }
                 self.insert_batch(key, CostBatch { holder, unmatched: !matched, parts }, pending);
+                if confirmed_empty {
+                    newly_settled.push(day);
+                }
             } else {
                 for (ordinal, (sum, payments, first)) in &items {
+                    let spent = i64::try_from(*sum).ok();
                     let part = Part {
                         holder,
                         currency: POLITICAL,
                         ordinal: *ordinal,
                         day,
-                        spent: i64::try_from(*sum).map_or(Recorded::NotRecorded, Recorded::Value),
+                        spent: spent.map_or(Recorded::NotRecorded, Recorded::Value),
                         payments: *payments,
-                        covered,
+                        covered: covered && spent.is_some(),
                         sequence: Some(sequence),
                         cost_ordinal: Some(*first),
                         read: at,
                     };
                     Self::settle(own, pending, &part)?;
                 }
-                if !items.is_empty() {
-                    newly_settled = Some(newly_settled.map_or(day, |held| held.max(day)));
+                if !items.is_empty() || confirmed_empty {
+                    newly_settled.push(day);
                 }
             }
         }
-        if let Some(day) = newly_settled {
+        for day in newly_settled {
             self.record_settled(raw, day);
         }
         Ok(())
@@ -1148,25 +1173,76 @@ impl PowerLedger {
         let holder = self.slot(raw);
         let today = midnight(at);
         let daily = inputs::fresh_daily(hour, raw)?.filter(|daily| midnight(daily.day_hour) == today);
+        if publication.costs.is_empty()
+            && let Some(daily) = &daily
+            && daily.pp_cost_raw == Some(0)
+            && daily.pp_sequence.is_some()
+            && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
+        {
+            let keys: Vec<BatchKey> = self.raw_batches(raw).into_iter().filter(|key| key.day == today).collect();
+            for key in keys {
+                self.remove_batch(key, pending);
+            }
+            self.mismatched.remove(&raw);
+            pending.daily.remove(&raw);
+            self.record_settled(raw, today);
+            return Ok(());
+        }
         let mut survivors: BTreeMap<(u64, u64), Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
         for cost in publication.costs.iter().filter(|cost| midnight(cost.day_hour) == today) {
             survivors.entry((cost.epoch, cost.pp_sequence)).or_default().push(cost);
         }
-        if publication.costs.is_empty()
-            && let Some(daily) = &daily
-            && daily.pp_cost_raw == Some(0)
-            && let Some(sequence) = daily.pp_sequence
-            && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, at, Streams::PP_DAILY_COSTS, at))
-        {
-            survivors.insert((daily.epoch, sequence), Vec::new());
-        }
         for ((epoch, sequence), costs) in survivors {
             let key = BatchKey { raw, epoch, day: today, sequence };
-            let Some(mut batch) = self.batches.get(&key).filter(|batch| batch.holder == holder || costs.is_empty()).cloned() else { continue };
-            let batch_holder = batch.holder;
+            let Some(mut batch) = self.batches.get(&key).cloned() else { continue };
+            let total: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
+            let applied = daily.as_ref().filter(|daily| daily.epoch == epoch && daily.pp_sequence == Some(sequence));
+            let reconciles = applied.is_some_and(|daily| daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
+            if batch.holder != holder {
+                if !reconciles {
+                    self.mismatched.insert(raw);
+                } else {
+                    self.mismatched.remove(&raw);
+                }
+                pending.daily.remove(&raw);
+                let covered = reconciles
+                    && !self.mismatched.contains(&raw)
+                    && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(epoch, today, Streams::PP | Streams::PP_DAILY_COSTS, at));
+                let mut remaining: BTreeMap<u32, (i128, i64, u32)> = BTreeMap::new();
+                for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
+                    let ordinal = if batch.unmatched {
+                        Total::GAINS
+                    } else {
+                        let first = First { site: cost.site, hour: today, read: at, country: raw, epoch, sequence: u64::from(cost.ordinal) };
+                        self.item(own, pending, holder, ItemId::cost(cost), first)?
+                    };
+                    let entry = remaining.entry(ordinal).or_insert((0, 0, cost.ordinal));
+                    entry.0 += i128::from(cost.cost_raw);
+                    entry.1 += 1;
+                    entry.2 = entry.2.min(cost.ordinal);
+                }
+                let mut next_parts = BTreeMap::new();
+                for (ordinal, (sum, payments, first)) in remaining {
+                    let spent = i64::try_from(sum).ok();
+                    next_parts.insert(
+                        ordinal,
+                        CostPart {
+                            spent: spent.map_or(Recorded::NotRecorded, Recorded::Value),
+                            payments,
+                            covered: covered && spent.is_some(),
+                            cost_ordinal: first,
+                            read: at,
+                        },
+                    );
+                }
+                batch.holder = holder;
+                batch.parts = next_parts;
+                self.insert_batch(key, batch, pending);
+                continue;
+            }
             let mut remaining: BTreeMap<u32, (i128, i64, u32)> = BTreeMap::new();
             for cost in costs.iter().filter(|cost| cost.cost_raw != 0) {
-                let ordinal = if batch.unmatched { Some(Total::GAINS) } else { self.known_item(own, pending, batch_holder, &ItemId::cost(cost))? };
+                let ordinal = if batch.unmatched { Some(Total::GAINS) } else { self.known_item(own, pending, holder, &ItemId::cost(cost))? };
                 if let Some(ordinal) = ordinal {
                     let entry = remaining.entry(ordinal).or_insert((0, 0, cost.ordinal));
                     entry.0 += i128::from(cost.cost_raw);
@@ -1174,9 +1250,6 @@ impl PowerLedger {
                     entry.2 = entry.2.min(cost.ordinal);
                 }
             }
-            let total: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
-            let applied = daily.as_ref().filter(|daily| daily.epoch == epoch && daily.pp_sequence == Some(sequence));
-            let reconciles = applied.is_some_and(|daily| daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
             let exact = |ordinal: u32, part: &CostPart| {
                 remaining.get(&ordinal).is_some_and(|&(sum, payments, _)| part.payments == payments && matches!(part.spent, Recorded::Value(spent) if i128::from(spent) == sum))
             };
@@ -1184,9 +1257,9 @@ impl PowerLedger {
                 continue;
             }
             if !reconciles {
-                self.steady.insert(batch_holder);
+                self.mismatched.insert(raw);
             } else {
-                self.clear_steady(hour, batch_holder, raw)?;
+                self.mismatched.remove(&raw);
             }
             pending.daily.remove(&raw);
             let mut next_parts = BTreeMap::new();
@@ -1199,10 +1272,11 @@ impl PowerLedger {
                         next_parts.insert(ordinal, part);
                     }
                     Some(&(sum, payments, first)) => {
-                        part.spent = i64::try_from(sum).map_or(Recorded::NotRecorded, Recorded::Value);
+                        let spent = i64::try_from(sum).ok();
+                        part.spent = spent.map_or(Recorded::NotRecorded, Recorded::Value);
                         part.payments = payments;
                         part.cost_ordinal = first;
-                        part.covered &= reconciles;
+                        part.covered = part.covered && reconciles && spent.is_some();
                         next_parts.insert(ordinal, part);
                     }
                     None => {}
@@ -1219,7 +1293,12 @@ impl PowerLedger {
         let keys: Vec<BatchKey> = self
             .raw_batches(raw)
             .into_iter()
-            .filter(|key| key.day == today && self.batches.get(key).is_some_and(|batch| batch.holder != to))
+            .filter(|key| {
+                key.day == today
+                    && self.batches.get(key).is_some_and(|batch| {
+                        batch.holder != to || (to != NONE && batch.parts.values().any(|part| part.spent == Recorded::NotRecorded || !part.covered))
+                    })
+            })
             .collect();
         if keys.is_empty() {
             return Ok(false);
@@ -1235,10 +1314,13 @@ impl PowerLedger {
         };
         let mut reread = false;
         for key in keys {
+            let same_holder = self.batches.get(&key).is_some_and(|batch| batch.holder == to);
             if current.contains(&(key.epoch, key.day, key.sequence)) {
-                self.remove_batch(key, pending);
+                if !same_holder {
+                    self.remove_batch(key, pending);
+                }
                 reread = true;
-            } else {
+            } else if !same_holder {
                 self.mark_batch_unknown(key, pending);
             }
         }
@@ -1268,7 +1350,7 @@ impl PowerLedger {
             let facts = raw.and_then(|raw| pending.raws.get(&raw));
             let window = witness.filter(|_| gap.is_none()).map_or(at..=at, |witness| witness.since..=at);
             let unmatched = facts.is_some_and(|facts| facts.unmatched);
-            let steady = self.steady.contains(&holder);
+            let steady = self.holder_steady(holder);
             let unreconciled = steady || unmatched;
             let daily_mismatch = u8::from(steady) * Coverage::STEADY_MISMATCH | u8::from(unmatched) * Coverage::GAIN_UNMATCHED;
             let has_daily = facts.is_some_and(|facts| facts.daily_gains.iter().any(|hour| window.contains(hour)));
@@ -1544,24 +1626,33 @@ impl Writer for PowerLedger {
             let cells = cells(part, out)?;
             out.set(TableId::PowerDayParts, *key, cells);
         }
-        for (holder, ordinal) in pending.dirty_costs {
-            let key = part_key(holder, POLITICAL, ordinal);
-            let parts: Vec<(BatchKey, &CostPart)> = self
-                .holder_batches(holder)
-                .iter()
-                .filter_map(|&batch_key| {
-                    let part = self.batches.get(&batch_key)?.parts.get(&ordinal)?;
-                    Some((batch_key, part))
-                })
-                .collect();
-            if parts.is_empty() {
-                if out.table(TableId::PowerDayParts).slot(key).is_some() {
-                    out.delete(TableId::PowerDayParts, key);
+        if !pending.dirty_costs.is_empty() {
+            let mut by_holder: BTreeMap<u32, BTreeMap<u32, Vec<(BatchKey, &CostPart)>>> = BTreeMap::new();
+            for (holder, ordinal) in pending.dirty_costs {
+                by_holder.entry(holder).or_default().insert(ordinal, Vec::new());
+            }
+            for (holder, mut ordinals) in by_holder {
+                for &batch_key in self.holder_batches(holder) {
+                    if let Some(batch) = self.batches.get(&batch_key) {
+                        for (&ordinal, part) in &batch.parts {
+                            if let Some(parts) = ordinals.get_mut(&ordinal) {
+                                parts.push((batch_key, part));
+                            }
+                        }
+                    }
                 }
-            } else {
-                let part = project(holder, ordinal, &parts);
-                let cells = cells(&part, out)?;
-                out.set(TableId::PowerDayParts, key, cells);
+                for (ordinal, parts) in ordinals {
+                    let key = part_key(holder, POLITICAL, ordinal);
+                    if parts.is_empty() {
+                        if out.table(TableId::PowerDayParts).slot(key).is_some() {
+                            out.delete(TableId::PowerDayParts, key);
+                        }
+                    } else {
+                        let part = project(holder, ordinal, &parts);
+                        let cells = cells(&part, out)?;
+                        out.set(TableId::PowerDayParts, key, cells);
+                    }
+                }
             }
         }
         partial(hour, out);
@@ -1583,12 +1674,23 @@ impl Writer for PowerLedger {
             blob.varint(u64::from(raw))?;
             blob.varint(u64::from(slot))?;
         }
-        let mut settled: Vec<(u32, i32)> = self.settled.iter().map(|(&raw, &day)| (raw, day)).collect();
-        settled.sort_unstable();
-        blob.varint(settled.len() as u64)?;
-        for (raw, day) in settled {
+        let mut mismatched: Vec<u32> = self.mismatched.iter().copied().collect();
+        mismatched.sort_unstable();
+        blob.varint(mismatched.len() as u64)?;
+        for raw in mismatched {
             blob.varint(u64::from(raw))?;
-            blob.varint(u64::from(day as u32))?;
+        }
+        let mut settled: Vec<(u32, &DayRuns)> = self.settled.iter().filter(|(_, runs)| !runs.0.is_empty()).map(|(&raw, runs)| (raw, runs)).collect();
+        settled.sort_unstable_by_key(|&(raw, _)| raw);
+        blob.varint(settled.len() as u64)?;
+        for (raw, runs) in settled {
+            blob.varint(u64::from(raw))?;
+            blob.varint(runs.0.len() as u64)?;
+            for &(first, last) in &runs.0 {
+                blob.varint(u64::from(first as u32))?;
+                let span = (i64::from(last) - i64::from(first)) / 24;
+                blob.varint(u64::try_from(span).map_err(|_| invalid("PowerLedger's state holds an inverted settled day run"))?)?;
+            }
         }
         blob.varint(self.batches.len() as u64)?;
         for (&key, batch) in &self.batches {
@@ -1600,13 +1702,20 @@ impl Writer for PowerLedger {
             blob.varint(u64::from(batch.unmatched))?;
             blob.varint(batch.parts.len() as u64)?;
             for (&ordinal, part) in &batch.parts {
+                if batch.unmatched != (ordinal == Total::GAINS) {
+                    return Err(invalid("PowerLedger's state pairs an unmatched batch with a matched item or vice versa"));
+                }
+                if part.covered && matches!(part.spent, Recorded::NotRecorded) {
+                    return Err(invalid("PowerLedger's state marks an unknown part as covered"));
+                }
+                let payments = u64::try_from(part.payments).ok().filter(|&count| (1..=MAX_BATCH_PAYMENTS).contains(&count)).ok_or_else(|| invalid("PowerLedger's state holds an impossible payment count"))?;
                 blob.varint(u64::from(ordinal))?;
                 let flags = u64::from(part.covered) | (u64::from(matches!(part.spent, Recorded::Value(_))) << 1);
                 blob.varint(flags)?;
                 if let Recorded::Value(spent) = part.spent {
                     blob.varint(encode_signed(spent))?;
                 }
-                blob.varint(u64::try_from(part.payments).map_err(|_| invalid("PowerLedger's state holds a negative payment count"))?)?;
+                blob.varint(payments)?;
                 blob.varint(u64::from(part.cost_ordinal))?;
                 blob.varint(u64::from(part.read as u32))?;
             }
@@ -1641,17 +1750,49 @@ impl Writer for PowerLedger {
                 return Err(invalid(format!("PowerLedger's state links country {raw} twice")));
             }
         }
+        let mismatched = reader.count()?;
+        if mismatched > blob.len() {
+            return Err(invalid("PowerLedger's state counts more mismatched countries than it holds"));
+        }
+        for _ in 0..mismatched {
+            let raw = reader.varint_u32()?;
+            if !self.mismatched.insert(raw) {
+                return Err(invalid(format!("PowerLedger's state marks country {raw} mismatched twice")));
+            }
+        }
         let settled = reader.count()?;
         if settled > blob.len() {
-            return Err(invalid("PowerLedger's state counts more settled days than it holds"));
+            return Err(invalid("PowerLedger's state counts more settled countries than it holds"));
         }
         for _ in 0..settled {
             let raw = reader.varint_u32()?;
-            let day = reader.varint_u32()? as i32;
-            if day.rem_euclid(24) != 0 {
-                return Err(invalid(format!("PowerLedger's state names settled day {day} that is not a midnight")));
+            let run_count = reader.count()?;
+            if run_count == 0 || run_count > blob.len() {
+                return Err(invalid("PowerLedger's state names an invalid settled day run count"));
             }
-            if self.settled.insert(raw, day).is_some() {
+            let mut runs = Vec::with_capacity(run_count);
+            let mut prev_last: Option<i32> = None;
+            for _ in 0..run_count {
+                let first = reader.varint_u32()? as i32;
+                if first.rem_euclid(24) != 0 {
+                    return Err(invalid(format!("PowerLedger's state names settled day {first} that is not a midnight")));
+                }
+                let span = reader.varint()?;
+                let last = i64::try_from(span)
+                    .ok()
+                    .and_then(|days| days.checked_mul(24))
+                    .and_then(|hours| i64::from(first).checked_add(hours))
+                    .and_then(|end| i32::try_from(end).ok())
+                    .ok_or_else(|| invalid("PowerLedger's state holds a settled day run past 32 bits"))?;
+                if let Some(prev) = prev_last
+                    && prev.checked_add(24).is_none_or(|next| first <= next)
+                {
+                    return Err(invalid("PowerLedger's state holds unsorted, overlapping or unmerged settled day runs"));
+                }
+                prev_last = Some(last);
+                runs.push((first, last));
+            }
+            if self.settled.insert(raw, DayRuns(runs)).is_some() {
                 return Err(invalid(format!("PowerLedger's state settles country {raw} twice")));
             }
         }
@@ -1680,13 +1821,20 @@ impl Writer for PowerLedger {
             let mut parts = BTreeMap::new();
             for _ in 0..count {
                 let ordinal = reader.varint_u32()?;
+                if unmatched != (ordinal == Total::GAINS) {
+                    return Err(invalid("PowerLedger's state pairs an unmatched batch with a matched item or vice versa"));
+                }
                 let flags = reader.varint()?;
-                if flags > 3 {
-                    return Err(invalid("PowerLedger's state names unknown part flags"));
+                if flags == 1 || flags > 3 {
+                    return Err(invalid("PowerLedger's state names invalid part flags"));
                 }
                 let covered = flags & 1 != 0;
                 let spent = if flags & 2 != 0 { Recorded::Value(decode_signed(reader.varint()?)) } else { Recorded::NotRecorded };
-                let payments = i64::try_from(reader.varint()?).map_err(|_| invalid("PowerLedger's state holds a payment count past i64"))?;
+                let raw_payments = reader.varint()?;
+                if !(1..=MAX_BATCH_PAYMENTS).contains(&raw_payments) {
+                    return Err(invalid("PowerLedger's state holds an impossible payment count"));
+                }
+                let payments = raw_payments as i64;
                 let cost_ordinal = reader.varint_u32()?;
                 let read = reader.varint_u32()? as i32;
                 if parts.insert(ordinal, CostPart { spent, payments, covered, cost_ordinal, read }).is_some() {
