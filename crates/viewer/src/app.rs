@@ -4902,7 +4902,18 @@ impl Viewer {
                 self.overlay_loading.extend(loading);
             }
             let at = shown_head.unwrap_or_default();
-            let moved_now = self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
+            let head = head_rows::head(live_of(&self.playhead_map));
+            let clock_speed = self
+                .head_rows
+                .map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed)
+                .flatten();
+            let clockless_moving = clock_speed.is_none()
+                && self.overlay.as_ref().is_some_and(Batch::moves);
+            if clockless_moving {
+                self.overlay_fraction = None;
+            }
+            let moved_now = !clockless_moving
+                && self.move_overlay(overlay_camera, pixels, ui_scale, at)?;
             let placed_now = !moved_now
                 && self.place_overlay(&now, overlay_camera, pixels, ui_scale, &tables, &rows, left);
             if let Some(side) = live_of(&self.playhead_map)
@@ -4962,7 +4973,6 @@ impl Viewer {
                         self.overlay_loading.push(format!("the selection's movement arrows: {error}"));
                     }
                 }
-                let clock_speed = self.head_rows.map(head, frame, viewer_foundation::map::counter_move::MovementFrame::clock_speed).flatten();
                 scene
                     .apply(
                         &state.device,

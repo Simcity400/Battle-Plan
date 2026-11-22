@@ -1638,6 +1638,7 @@ fn continuity_reset_keeps_live_layout_tracks_without_leaking_to_fresh_same_hour_
     let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
     next_frame(&mut history, 2, 148, 2.0);
     let held_layout = DrawnLayout::new(148);
+    let untracked_pre_reset = DrawnLayout::new(148);
     let held_track = history
         .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
         .expect("two places");
@@ -1657,14 +1658,26 @@ fn continuity_reset_keeps_live_layout_tracks_without_leaking_to_fresh_same_hour_
         .at_head(unit, &moving)
         .expect("still-held layout survives continuity reset");
     assert_eq!(figure.at, held_track.at(head));
+    let repainted = history
+        .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("repainted pre-reset layout keeps its pre-reset track");
+    assert_eq!(repainted, held_track);
+    assert_eq!(
+        history.track(&untracked_pre_reset, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ContinuityReset),
+        "untracked pre-reset layout is refused without seeding post-reset places"
+    );
+    let post_gap = DrawnLayout::new(196);
+    assert_eq!(
+        history.track(&post_gap, unit, &[at_hour(196, [130.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::NoPriorPlacement),
+        "pre-reset repaint must not seed a track across the continuity gap"
+    );
     let fresh_same_hour = DrawnLayout::new(148);
     assert_eq!(history.layout_track(&fresh_same_hour, unit), None);
-    assert_eq!(
-        history.track(&fresh_same_hour, unit, &[at_hour(148, [90.0, 0.0, 0.0])], 0.0),
-        Err(TrackRefusal::NoPriorPlacement)
-    );
     drop(held_layout);
-    history.set_overlay_layout(Some(fresh_same_hour));
+    drop(untracked_pre_reset);
+    history.set_overlay_layout(Some(post_gap));
     assert_eq!(history.layouts.len(), 1);
 }
 
@@ -1703,6 +1716,51 @@ fn missing_clock_speed_refuses_track_so_counter_and_figure_agree() {
 }
 
 #[test]
+fn reused_painted_layout_keeps_figure_on_track_when_clock_speed_drops() {
+    use crate::map::anchored::Head;
+    let unit = Unit::Division(7);
+    let moving = live_position(1, &[2], 0.0, false);
+    let mut history = settled_on(&moving, &[unit]);
+    next_frame(&mut history, 1, 100, 2.0);
+    let initial = DrawnLayout::new(100);
+    let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+    let painted = DrawnLayout::new(148);
+    let head = Head { hour: 124, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head,
+            overlay_layout: Some(painted.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(0.2, 148, 2.0)
+        },
+        SEEN,
+    );
+    let track = history
+        .track(&painted, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("painted track");
+    let clockless_head = Head { hour: 136, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: clockless_head,
+            overlay_layout: Some(painted.clone()),
+            clock_speed: None,
+            ..movement_frame(0.3, 148, 2.0)
+        },
+        SEEN,
+    );
+    let figure = history
+        .at_head(unit, &moving)
+        .expect("reused painted batch still carries the figure along its track");
+    assert_eq!(figure.at, track.at(clockless_head));
+    assert_eq!(figure.heading, None);
+    assert_eq!(
+        history.track(&painted, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+}
+
+#[test]
 fn same_hour_layouts_with_different_endpoints_do_not_false_trigger_actor_judge() {
     use crate::map::anchored::Head;
     let unit = Unit::Division(7);
@@ -1710,6 +1768,7 @@ fn same_hour_layouts_with_different_endpoints_do_not_false_trigger_actor_judge()
     let absent_unit = Unit::Division(9);
     let moving = live_position(1, &[2], 0.0, false);
     let mut history = settled_on(&moving, &[unit]);
+    history.force_judge = true;
     next_frame(&mut history, 1, 100, 2.0);
     let initial = DrawnLayout::new(100);
     let _ = history.track(&initial, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
@@ -1726,6 +1785,8 @@ fn same_hour_layouts_with_different_endpoints_do_not_false_trigger_actor_judge()
     let newer_track = history
         .track(&newer_same_hour, unit, &[at_hour(148, [78.0, 0.0, 0.0])], 0.0)
         .expect("newer track at same hour");
+    assert!(history.layouts[&older_same_hour.id()].tracks[&unit].reference.is_some());
+    assert!(history.layouts[&newer_same_hour.id()].tracks[&unit].reference.is_some());
     let head = Head { hour: 124, fraction: 0.0 };
     history.begin_frame(
         MovementFrame {
@@ -1757,6 +1818,15 @@ fn same_hour_layouts_with_different_endpoints_do_not_false_trigger_actor_judge()
         JudgeOutcome::Matched { apart: 0.0 }
     );
     assert_ne!(older_figure.at, newer_figure.at);
+    if !judging() {
+        let mut unjudged = MovementHistory::default();
+        next_frame(&mut unjudged, 1, 100, 2.0);
+        let first = DrawnLayout::new(100);
+        let _ = unjudged.track(&first, unit, &[at_hour(100, [10.0, 0.0, 0.0])], 0.0);
+        let second = DrawnLayout::new(148);
+        assert!(unjudged.track(&second, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0).is_ok());
+        assert!(unjudged.layouts[&second.id()].tracks[&unit].reference.is_none());
+    }
 }
 
 #[test]

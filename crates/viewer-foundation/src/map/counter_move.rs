@@ -1226,6 +1226,7 @@ pub struct Drawn {
 pub enum TrackRefusal {
     SteadyOrNoFrame,
     ClockSpeedUnavailable,
+    ContinuityReset,
     NoPriorPlacement,
     UnchangedPlacement,
 }
@@ -1235,6 +1236,7 @@ impl TrackRefusal {
         match self {
             Self::SteadyOrNoFrame => "the frame is steady or none",
             Self::ClockSpeedUnavailable => "clock speed is unavailable",
+            Self::ContinuityReset => "continuity reset before this layout was placed",
             Self::NoPriorPlacement => "no publication before this one placed it",
             Self::UnchangedPlacement => "the recording left it where it was",
         }
@@ -1246,6 +1248,8 @@ impl std::fmt::Display for TrackRefusal {
         formatter.write_str(self.reason())
     }
 }
+
+static NEXT_LAYOUT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Debug)]
 struct LayoutToken {
@@ -1260,8 +1264,7 @@ pub struct DrawnLayout {
 
 impl DrawnLayout {
     pub fn new(hour: i32) -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = NEXT_LAYOUT_ID.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Self {
             token: Arc::new(LayoutToken { id, hour }),
         }
@@ -1338,7 +1341,10 @@ pub struct MovementHistory {
     units: BTreeMap<Unit, Moving>,
     placed: BTreeMap<Unit, Placements>,
     layouts: std::collections::HashMap<u64, HandedLayout>,
+    reset_before_id: u64,
     largest_glide: f32,
+    #[cfg(test)]
+    force_judge: bool,
 }
 
 #[derive(Debug)]
@@ -1387,6 +1393,7 @@ impl Placements {
         &self,
         hour: i32,
         width: f32,
+        keep_reference: bool,
     ) -> (
         Result<crate::map::free_icons::Track, TrackRefusal>,
         Option<(Arc<[crate::map::free_icons::Place]>, f32)>,
@@ -1400,7 +1407,8 @@ impl Placements {
         if !track.moves() {
             return (Err(TrackRefusal::UnchangedPlacement), None);
         }
-        (Ok(track), Some((Arc::from(places), width)))
+        let reference = keep_reference.then(|| (Arc::from(places), width));
+        (Ok(track), reference)
     }
 }
 
@@ -1529,10 +1537,19 @@ fn game_day(hour: i32) -> i64 {
 }
 
 impl MovementHistory {
+    fn judging_now(&self) -> bool {
+        #[cfg(test)]
+        if self.force_judge {
+            return true;
+        }
+        judging()
+    }
+
     pub fn clear(&mut self) {
         self.frame = None;
         self.units.clear();
         self.placed.clear();
+        self.reset_before_id = NEXT_LAYOUT_ID.load(std::sync::atomic::Ordering::Acquire);
         self.prune_layouts();
     }
 
@@ -1643,7 +1660,23 @@ impl MovementHistory {
             self.record_layout_track(layout, unit, Err(TrackRefusal::ClockSpeedUnavailable), None);
             return refused(TrackRefusal::ClockSpeedUnavailable);
         }
+        if layout.id() < self.reset_before_id {
+            if let Some(outcome) = self
+                .layouts
+                .get(&layout.id())
+                .and_then(|held| held.tracks.get(&unit))
+                .map(|handed| handed.outcome.clone())
+            {
+                return match outcome {
+                    Ok(track) => Ok(track),
+                    Err(why) => refused(why),
+                };
+            }
+            self.record_layout_track(layout, unit, Err(TrackRefusal::ContinuityReset), None);
+            return refused(TrackRefusal::ContinuityReset);
+        }
         let hour = layout.hour();
+        let keep_reference = self.judging_now();
         let held = self.placed.entry(unit).or_default();
         held.after_a_seek(hour);
         for place in places {
@@ -1655,7 +1688,7 @@ impl MovementHistory {
             crate::view_record::add("places", "held", held.held.len() as u64);
             crate::view_record::add("places", "movers", 1);
         }
-        let (made, reference) = held.track_with_places(hour, width);
+        let (made, reference) = held.track_with_places(hour, width, keep_reference);
         self.record_layout_track(layout, unit, made.clone(), reference);
         let track = match made {
             Ok(track) => track,
@@ -1753,10 +1786,10 @@ impl MovementHistory {
         };
         let (head, layout) = {
             let frame = self.frame.as_ref().filter(|frame| !frame.steady)?;
-            frame.clock_speed?;
             (frame.head, frame.overlay_layout.clone())
         };
         let frames = self.frames;
+        let judging_now = self.judging_now();
         let on_the_hour = |places: Option<&mut Placements>| {
             if crate::view_record::on() {
                 crate::view_record::add("figures", "on_the_hour", 1);
@@ -1777,14 +1810,14 @@ impl MovementHistory {
         let track = match outcome {
             Some(Ok(track)) => track,
             Some(Err(refusal)) => {
-                if judging() {
+                if judging_now {
                     record_judge(unit, JudgeOutcome::Refused(refusal));
                 }
                 on_the_hour(self.placed.get_mut(&unit));
                 return standing();
             }
             None => {
-                if judging() {
+                if judging_now {
                     record_judge(unit, JudgeOutcome::Absent);
                 }
                 on_the_hour(self.placed.get_mut(&unit));
@@ -1796,7 +1829,7 @@ impl MovementHistory {
             let places = self.placed.entry(unit).or_default();
             note_figure(places, frames, at, track.outside(head), track.held_still(head));
         }
-        if judging() {
+        if judging_now {
             let verdict = self.judge_unit(&layout, unit, head, Some(at));
             record_judge(unit, verdict);
         }
