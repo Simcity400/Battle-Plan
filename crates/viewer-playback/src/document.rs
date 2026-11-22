@@ -5111,26 +5111,28 @@ fn load_rivers(
     image: &RiverImage<'_>,
     heights: &HeightField<'_>,
 ) -> io::Result<(RiverMesh, rivers::Trace, Duration, Option<String>)> {
-    let river_defines = match crate::map_assets::graphics_define(
+    let started = Instant::now();
+    match crate::map_assets::graphics_define(
         layers,
         "rivers",
         art_defines,
         defines,
         rivers::RiverDefines::load,
     ) {
-        Ok(defines) => defines,
-        Err(error) => {
-            return Ok((
-                RiverMesh::default(),
-                rivers::Trace::default(),
-                Duration::ZERO,
-                Some(format!("Rivers are withheld and draw nothing: {error}")),
-            ));
+        Ok(river_defines) => {
+            let (river_mesh, river_trace) = rivers::build(image, heights, river_defines)?;
+            Ok((river_mesh, river_trace, started.elapsed(), None))
         }
-    };
-    let started = Instant::now();
-    let (river_mesh, river_trace) = rivers::build(image, heights, river_defines)?;
-    Ok((river_mesh, river_trace, started.elapsed(), None))
+        Err(error) => {
+            let river_trace = rivers::trace(image)?;
+            Ok((
+                RiverMesh::default(),
+                river_trace,
+                started.elapsed(),
+                Some(format!("Rivers are withheld and draw nothing: {error}")),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -5733,26 +5735,47 @@ mod tests {
                 b"NDefines = { NGraphics = { RIVER_FADE_TO = 3.0 } }",
             )
             .unwrap();
-        let indices = [255u8; 4];
-        let values = [120u8; 4];
+        let rows = [
+            "..........",
+            "...4......",
+            "...j......",
+            ".S3366777.",
+            "..........",
+        ];
+        let mut indices = Vec::with_capacity(50);
+        for row in rows {
+            for ch in row.chars() {
+                indices.push(match ch {
+                    '.' => 255,
+                    'S' => 0,
+                    'j' => 1,
+                    digit => digit.to_digit(10).unwrap() as u8,
+                });
+            }
+        }
+        let values = [120u8; 50];
         let (mesh, trace, _, warning) = load_rivers(
             &layers,
             &defines,
             &defines,
             &RiverImage {
-                width: 2,
-                height: 2,
+                width: 10,
+                height: 5,
                 indices: &indices,
             },
             &HeightField {
-                width: 2,
-                height: 2,
+                width: 10,
+                height: 5,
                 values: &values,
             },
         )
         .unwrap();
         assert!(mesh.is_empty());
-        assert!(trace.rivers.is_empty());
+        assert_eq!(mesh.ribbons, 0);
+        assert_eq!(trace.sources, 1);
+        assert_eq!(trace.junctions, 1);
+        assert_eq!(trace.junctions_used, 1);
+        assert_eq!(trace.rivers.len(), 2);
         let warning = warning.expect("missing river fade define must report a warning");
         assert!(
             warning.contains("Rivers are withheld") && warning.contains("RIVER_FADE_FROM"),

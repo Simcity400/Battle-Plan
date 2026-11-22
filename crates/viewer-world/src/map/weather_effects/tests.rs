@@ -311,6 +311,50 @@ fn particle_life_abs_curve_evaluates_elapsed_seconds_and_malformed_curves_are_re
             .items,
     );
     assert!(odd.is_err(), "odd curve count must be refused");
+    let nested = Curve::parse(
+        &parser::parse(b"name = nested op = mul curve = { 0 0 { bad } 1 1 }")
+            .unwrap()
+            .items,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        nested.contains("nested") && nested.contains("curve"),
+        "{nested}"
+    );
+    let nan_max = Curve::parse(
+        &parser::parse(b"name = nan_max op = mul maxValue = NaN curve = { 0 0 1 1 }")
+            .unwrap()
+            .items,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        nan_max.contains("nan_max") && nan_max.contains("maxValue"),
+        "{nan_max}"
+    );
+    let bad_start = Curve::parse(
+        &parser::parse(b"name = bad_start op = mul start = nope curve = { 0 0 1 1 }")
+            .unwrap()
+            .items,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        bad_start.contains("bad_start") && bad_start.contains("start"),
+        "{bad_start}"
+    );
+    let upper_time = Curve::parse(
+        &parser::parse(
+            b"name = upper_time op = \"ADD\" time = \"LIFE_ABS\" start = 0 duration = 1 \
+              minValue = 0 maxValue = 1 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    assert_eq!(upper_time.op, Op::Add);
+    assert_eq!(upper_time.time, TimeMode::Spawn);
 
     let life_abs = Curve::parse(
         &parser::parse(
@@ -338,6 +382,64 @@ fn particle_life_abs_curve_evaluates_elapsed_seconds_and_malformed_curves_are_re
     assert!(
         (drawn_size - 32.0 / 63.0).abs() < 1e-4,
         "expected ~0.5079 for life_abs at age=0.5, got {drawn_size}"
+    );
+}
+
+#[test]
+fn spawn_curves_freeze_birth_values_at_subsystem_age() {
+    let ramp = Curve::parse(
+        &parser::parse(
+            b"name = spawn_ramp start = 0 duration = 1 op = abs time = spawn \
+              minValue = 1 maxValue = 5 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let mut emitter = activation_test_emitter();
+    emitter.emission = Parameter {
+        base: 2.0,
+        spread: 0.0,
+        curve: None,
+    };
+    emitter.size = Parameter {
+        base: 1.0,
+        spread: 0.0,
+        curve: Some(ramp.clone()),
+    };
+    emitter.life = Parameter {
+        base: 1.0,
+        spread: 0.0,
+        curve: Some(ramp),
+    };
+    emitter.forces.clear();
+    let mut sim = Simulation::cold(&emitter, 7, [0.0; 3], 0.0);
+    sim.tick(&emitter, 0.5);
+    assert_eq!(sim.particles.len(), 1);
+    sim.tick(&emitter, 0.5);
+    assert_eq!(sim.particles.len(), 2);
+
+    let expected_second = 1.0 + 4.0 * (32.0 / 63.0);
+    let packet = native::DrawPacket::weather(&emitter, &sim, [0.0; 3], 1.0);
+    let first_size = packet.instances[0].position_size[3];
+    let second_size = packet.instances[1].position_size[3];
+    assert!(
+        (first_size - 1.0).abs() < 1e-4,
+        "first particle must keep its birth size 1.0, got {first_size}"
+    );
+    assert!(
+        (second_size - expected_second).abs() < 1e-3,
+        "second particle must take birth size ~{expected_second}, got {second_size}"
+    );
+    assert!(
+        (sim.particles[0].life - 1.0).abs() < 1e-4,
+        "first particle must keep birth life 1.0, got {}",
+        sim.particles[0].life
+    );
+    assert!(
+        (sim.particles[1].life - expected_second).abs() < 1e-3,
+        "second particle must take birth life ~{expected_second}, got {}",
+        sim.particles[1].life
     );
 }
 

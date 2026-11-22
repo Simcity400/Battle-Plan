@@ -1081,10 +1081,10 @@ fn stock_signature_mapname_shader_renders_authored_color_run_pixels() {
     );
     let vertex = Shader {
         wgsl: "struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };\n\
-               @vertex fn main(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>) -> Out {\n\
+               @vertex fn main(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>, @builtin(vertex_index) vid: u32) -> Out {\n\
                    var out: Out;\n\
                    out.pos = vec4<f32>(p.x, p.z, 0.5, 1.0);\n\
-                   out.uv = uv;\n\
+                   out.uv = vec2<f32>(uv.x, select(1.0, 0.5, vid >= 12u));\n\
                    return out;\n\
                }"
             .into(),
@@ -1111,7 +1111,7 @@ fn stock_signature_mapname_shader_renders_authored_color_run_pixels() {
     };
     let pixel = Shader {
         wgsl: "@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {\n\
-                   return vec4<f32>(1.0, 1.0, 1.0, 1.0 + uv.x * 0.0);\n\
+                   return vec4<f32>(1.0, uv.y, 1.0, 1.0 + uv.x * 0.0);\n\
                }"
             .into(),
         independent_draws: true,
@@ -1258,8 +1258,8 @@ fn stock_signature_mapname_shader_renders_authored_color_run_pixels() {
     );
     assert!(
         (right[0] - 1.0).abs() < 0.05
-            && (right[1] - 1.0).abs() < 0.05
+            && (right[1] - 0.5).abs() < 0.05
             && (right[2] - 1.0).abs() < 0.05,
-        "right reset glyph should render white, got {right:?}"
+        "right reset glyph with vertex_index >= 12 should render [1.0, 0.5, 1.0], got {right:?}"
     );
 }

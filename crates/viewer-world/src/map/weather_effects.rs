@@ -87,9 +87,27 @@ impl Parameter {
             curve,
         }
     }
+    #[cfg(test)]
     fn sample(&self, random: f32, age: f32) -> f32 {
         self.animate(self.base + (random * 2.0 - 1.0) * self.spread, age)
     }
+    fn sample_birth(&self, random: f32, system_age: f32) -> f32 {
+        match &self.curve {
+            Some(curve) if matches!(curve.time, TimeMode::Spawn | TimeMode::System) => {
+                curve.apply(self.base, system_age) + (random * 2.0 - 1.0) * self.spread
+            }
+            Some(curve) => curve.apply(self.base + (random * 2.0 - 1.0) * self.spread, 0.0),
+            None => self.base + (random * 2.0 - 1.0) * self.spread,
+        }
+    }
+    fn sample_spawn(&self, random: f32, system_age: f32) -> f32 {
+        let base = match &self.curve {
+            Some(curve) if curve.time == TimeMode::Spawn => curve.apply(self.base, system_age),
+            _ => self.base,
+        };
+        base + (random * 2.0 - 1.0) * self.spread
+    }
+    #[cfg(test)]
     fn animate(&self, value: f32, age: f32) -> f32 {
         self.curve.as_ref().map_or(value, |c| c.apply(value, age))
     }
@@ -98,9 +116,10 @@ impl Parameter {
             return value;
         };
         let time = match curve.time {
+            TimeMode::Spawn => return value,
             TimeMode::Life => age / life,
             TimeMode::LifeAbs => age,
-            TimeMode::System | TimeMode::Spawn => system_age,
+            TimeMode::System => system_age,
         };
         curve.apply(value, time)
     }
@@ -159,22 +178,67 @@ impl Curve {
         }
     }
 
+    fn curve_number(items: &[Item], name: &str, key: &str, default: f32) -> io::Result<f32> {
+        let Some(value) = get(items, key) else {
+            return Ok(default);
+        };
+        let token = match value {
+            Value::Scalar(_) => value.scalar_str(),
+            Value::Block(entries) if entries.len() == 1 && entries[0].key.is_none() => {
+                entries[0].value.scalar_str()
+            }
+            _ => None,
+        }
+        .ok_or_else(|| invalid(format!("animation curve {name:?} has malformed {key} value")))?;
+        let parsed = token.parse::<f32>().map_err(|_| {
+            invalid(format!(
+                "animation curve {name:?} has malformed {key} value {token:?}"
+            ))
+        })?;
+        if !parsed.is_finite() {
+            return Err(invalid(format!(
+                "animation curve {name:?} has non-finite {key} value {token:?}"
+            )));
+        }
+        Ok(parsed)
+    }
+
     pub(super) fn parse(items: &[Item]) -> io::Result<Self> {
         let name = text(items, "name");
-        let raw_tokens = get(items, "curve").map(tokens).unwrap_or_default();
-        let mut values = Vec::with_capacity(raw_tokens.len());
-        for token in raw_tokens {
-            let parsed = token.parse::<f32>().map_err(|_| {
-                invalid(format!(
-                    "animation curve {name:?} has malformed curve value {token:?}"
-                ))
-            })?;
-            if !parsed.is_finite() {
-                return Err(invalid(format!(
-                    "animation curve {name:?} has non-finite curve value {token:?}"
-                )));
+        let mut values = Vec::new();
+        if let Some(raw_curve) = get(items, "curve") {
+            let entries = match raw_curve {
+                Value::Block(entries) => entries.as_slice(),
+                _ => {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed curve value"
+                    )));
+                }
+            };
+            values.reserve(entries.len());
+            for entry in entries {
+                if entry.key.is_some() {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed curve entry"
+                    )));
+                }
+                let token = entry.value.scalar_str().ok_or_else(|| {
+                    invalid(format!(
+                        "animation curve {name:?} has nested non-scalar item in curve"
+                    ))
+                })?;
+                let parsed = token.parse::<f32>().map_err(|_| {
+                    invalid(format!(
+                        "animation curve {name:?} has malformed curve value {token:?}"
+                    ))
+                })?;
+                if !parsed.is_finite() {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has non-finite curve value {token:?}"
+                    )));
+                }
+                values.push(parsed);
             }
-            values.push(parsed);
         }
         if values.len() % 2 != 0 {
             return Err(invalid(format!(
@@ -190,34 +254,45 @@ impl Curve {
                 )));
             }
         }
-        let op = match text(items, "op").to_ascii_lowercase().as_str() {
-            "" | "mul" => Op::Mul,
-            "add" => Op::Add,
-            "abs" => Op::Abs,
-            other => {
-                return Err(invalid(format!(
-                    "animation curve {name:?} has unsupported op {other:?}"
-                )));
-            }
+        let op = match get(items, "op") {
+            None => Op::Mul,
+            Some(value) => match value.scalar_str() {
+                Some(raw) => match raw.to_ascii_lowercase().as_str() {
+                    "" | "mul" => Op::Mul,
+                    "add" => Op::Add,
+                    "abs" => Op::Abs,
+                    other => {
+                        return Err(invalid(format!(
+                            "animation curve {name:?} has unsupported op {other:?}"
+                        )));
+                    }
+                },
+                None => {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed op value"
+                    )));
+                }
+            },
         };
-        let time = match text(items, "time").to_ascii_lowercase().as_str() {
-            "" | "spawn" => TimeMode::Spawn,
-            "system" => TimeMode::System,
-            "life" => TimeMode::Life,
-            "life_abs" => TimeMode::LifeAbs,
-            other => {
-                return Err(invalid(format!(
-                    "animation curve {name:?} has unsupported time mode {other:?}"
-                )));
-            }
+        let time = match get(items, "time") {
+            None => TimeMode::Spawn,
+            Some(value) => match value.scalar_str() {
+                Some("life_abs") => TimeMode::LifeAbs,
+                Some("life") => TimeMode::Life,
+                Some("system") => TimeMode::System,
+                Some(_) => TimeMode::Spawn,
+                None => {
+                    return Err(invalid(format!(
+                        "animation curve {name:?} has malformed time value"
+                    )));
+                }
+            },
         };
-        let mut curve = Self::new(
-            &knots,
-            number(items, "start", 0.0),
-            number(items, "duration", 1.0),
-            number(items, "minValue", 0.0),
-            number(items, "maxValue", 1.0),
-        );
+        let start = Self::curve_number(items, name, "start", 0.0)?;
+        let duration = Self::curve_number(items, name, "duration", 1.0)?;
+        let min = Self::curve_number(items, name, "minValue", 0.0)?;
+        let max = Self::curve_number(items, name, "maxValue", 1.0)?;
+        let mut curve = Self::new(&knots, start, duration, min, max);
         curve.op = op;
         curve.time = time;
         curve.repeat = parser::read_bool_field(items, "repeat", false);
@@ -1448,16 +1523,19 @@ impl Simulation {
         self.accumulator -= births as f32;
         let basis = if births > 0 {
             emitter_basis(
-                e.emitter_yaw.sample(random(&mut self.seed), 0.0),
-                e.emitter_pitch.sample(random(&mut self.seed), 0.0),
+                e.emitter_yaw.sample_birth(random(&mut self.seed), self.age),
+                e.emitter_pitch.sample_birth(random(&mut self.seed), self.age),
             )
         } else {
             emitter_basis(0.0, 0.0)
         };
         for ordinal in 0..births {
-            let life = e.life.sample(random(&mut self.seed), 0.0).max(0.01);
-            let mass = e.mass.base + (random(&mut self.seed) * 2.0 - 1.0) * e.mass.spread;
-            let mut sample = |p: &Parameter| p.sample(random(&mut self.seed), 0.0);
+            let life = e
+                .life
+                .sample_birth(random(&mut self.seed), self.age)
+                .max(0.01);
+            let mass = e.mass.sample_spawn(random(&mut self.seed), self.age);
+            let mut sample = |p: &Parameter| p.sample_birth(random(&mut self.seed), self.age);
             let r = sample(&e.radius);
             let sp = -sample(&e.sphere_pitch).to_radians();
             let sy = -sample(&e.sphere_yaw).to_radians();
@@ -1499,17 +1577,18 @@ impl Simulation {
                 mass,
                 position,
                 velocity,
-                size: e.size.base + (random(&mut self.seed) * 2.0 - 1.0) * e.size.spread,
+                size: e.size.sample_spawn(random(&mut self.seed), self.age),
                 rotation: e
                     .rotation
                     .each_ref()
-                    .map(|p| p.sample(random(&mut self.seed), 0.0)),
+                    .map(|p| p.sample_birth(random(&mut self.seed), self.age)),
                 spin: e
                     .spin
                     .each_ref()
-                    .map(|p| p.sample(random(&mut self.seed), 0.0)),
+                    .map(|p| p.sample_birth(random(&mut self.seed), self.age)),
                 color: e.color.each_ref().map(|p| {
-                    (p.base + (random(&mut self.seed) * 2.0 - 1.0) * p.spread).clamp(0.0, 255.0)
+                    p.sample_spawn(random(&mut self.seed), self.age)
+                        .clamp(0.0, 255.0)
                 }),
                 tile: sample_tile(&mut self.seed, e.render.tiles),
             });

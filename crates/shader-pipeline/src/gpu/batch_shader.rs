@@ -148,6 +148,7 @@ fn attribute(binding: Option<&Binding>) -> Result<String, String> {
         Binding::BuiltIn(builtin) => {
             let name = match builtin {
                 BuiltIn::Position { .. } => "position",
+                BuiltIn::VertexIndex => "vertex_index",
                 BuiltIn::InstanceIndex => "instance_index",
                 BuiltIn::FrontFacing => "front_facing",
                 BuiltIn::SampleIndex => "sample_index",
