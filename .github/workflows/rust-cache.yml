@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v6
@@ -47,7 +47,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
-          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.event.workflow_run.head_sha || github.sha }}
+          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
           restore-keys: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
       - run: python tools/ci.py times --target .cargo-target
       - id: warm
@@ -63,4 +63,4 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             .cargo-target
-          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.event.workflow_run.head_sha || github.sha }}
+          key: rust-${{ matrix.job }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
