@@ -80,7 +80,7 @@ test.skip('technology artwork reports failed batches without losing successful t
           startedAfterHour: 117, lastObservedHour: 239, endedByHour: 240, outcome: 'switched' },
         { token: 'a_future', technologyHandle: 10, databaseIndex: 11, outcomeObservedHour: null, continuityStartHour: 100, level: 0, firstObservedHour: 240,
           startedAfterHour: 239, lastObservedHour: 299, endedByHour: 300, outcome: 'completed' },
-      ], states: [{ firstHour: 118, lastHour: 239, token: 'zz_current', entryFirstObservedHour: 118,
+      ], states: [{ firstHour: 118, lastHour: 239, token: 'zz_current', databaseIndex: 10, entryFirstObservedHour: 118,
         speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0', details: null }] }] };
     const tokens = researchArtworkTokens(researchAt(history, 150), 150, true);
     const render = () => { cursor = 0; return useTechnologyArtwork(client, track, tokens, true); };

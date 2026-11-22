@@ -128,6 +128,8 @@ pub struct ProjectRewardOption {
 #[serde(rename_all = "camelCase")]
 pub struct PendingProjectReward {
     pub label: ProjectLabel,
+    #[doc = " The reward's occurrence in the project's definition; none where it was not recorded."]
+    pub ordinal: Option<u32>,
     pub description: Option<String>,
     pub options: Vec<ProjectRewardOption>,
     pub unavailable: Option<String>,
@@ -223,12 +225,33 @@ impl From<dashboard_text::effect_description::Description> for ProjectEffects {
 #[serde(rename_all = "camelCase")]
 pub struct SpecialProjectEffects {
     pub hour: i32,
+    #[doc = " The project read every effect is rendered from; none where no read supplies it."]
+    pub read_hour: Option<i32>,
     #[doc = " None where the project's definition is not in the recorded content."]
     pub output: Option<ProjectEffects>,
-    #[doc = " The pending reward's options, in its order; empty with none pending."]
-    pub options: Vec<ProjectEffects>,
+    #[doc = " None with no reward pending, or where it could not be read."]
+    pub pending: Option<PendingEffects>,
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct PendingEffects {
+    #[doc = " The pending reward's token and its occurrence in the project's definition."]
+    pub reward: String,
+    pub ordinal: u32,
+    #[doc = " Each option, in the reward's order."]
+    pub options: Vec<OptionEffects>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct OptionEffects {
+    pub token: String,
+    pub effects: ProjectEffects,
 }
 
 dashboard_base::reply_warnings!(SpecialProjectEffects);
@@ -313,6 +336,15 @@ impl Reads<'_, '_> {
 
     fn supplies(&self, read: i32) -> bool {
         read <= self.hour && self.hour - read < STAGGER_PERIOD && held_since(self.query, self.tag, self.holder, read, self.hour)
+    }
+
+    fn owned(&self, owner: u32, read: i32) -> Result<(), String> {
+        let frame = dashboard_base::products::at_hour::frame(self.query, read, &[Read::all(TableId::CountryLinks)], "Project owners").map_err(|why| why.to_string())?;
+        if owners_of(&frame, self.holder.slot).map_err(|why| format!("Country links are unavailable: {why}"))?.contains(&owner) {
+            Ok(())
+        } else {
+            Err(OTHER_OWNER.into())
+        }
     }
 
     fn follows(&self, read: i32, until: i32) -> bool {
@@ -423,12 +455,14 @@ fn owner_read(frame: &DecodedFrame, table: TableId, owner: u32) -> Result<i32, S
     replay_data::sliced::read_hour(slices, table, owner).ok_or_else(|| "Projects were not read in the day up to this hour while this country held the tag".to_owned())
 }
 
-fn supplied_project<'f>(frame: &'f DecodedFrame, reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<&'f ProjectRow, String> {
-    if !owner_read(frame, TableId::Projects, owner).is_ok_and(|read| reads.supplies(read)) {
-        return Err("Projects were not read in the day up to this hour while this country held the tag".into());
-    }
+const OTHER_OWNER: &str = "The project was read while its owner belonged to another country";
+
+fn supplied_project<'f>(frame: &'f DecodedFrame, reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(&'f ProjectRow, i32), String> {
+    let read = owner_read(frame, TableId::Projects, owner).ok().filter(|&read| reads.supplies(read));
+    let read = read.ok_or("Projects were not read in the day up to this hour while this country held the tag")?;
+    reads.owned(owner, read)?;
     let rows = frame.complete::<tables::Projects>().map_err(|why| format!("Projects are unavailable: {why}"))?;
-    rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| &rows[at]).ok_or_else(|| "The project is not recorded at this hour".to_owned())
+    rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| (&rows[at], read)).ok_or_else(|| "The project is not recorded at this hour".to_owned())
 }
 
 fn owners_of(frame: &DecodedFrame, slot: u32) -> io::Result<BTreeSet<u32>> {
@@ -827,6 +861,7 @@ fn pending(frame: &DecodedFrame, runtime: &ProjectRuntime, project_token: Result
     match found {
         Ok((token, reward)) => PendingProjectReward {
             label: ProjectLabel { name: namer.name(reward.name.as_deref().unwrap_or(&token)), token },
+            ordinal: runtime.pending_ordinal,
             description: reward.description.as_deref().and_then(|key| namer.name(key)),
             options: reward
                 .options
@@ -835,7 +870,13 @@ fn pending(frame: &DecodedFrame, runtime: &ProjectRuntime, project_token: Result
                 .collect(),
             unavailable: None,
         },
-        Err(why) => PendingProjectReward { label: ProjectLabel { token: reward_token.unwrap_or_else(|_| id.to_string()), name: None }, description: None, options: Vec::new(), unavailable: Some(why) },
+        Err(why) => PendingProjectReward {
+            label: ProjectLabel { token: reward_token.unwrap_or_else(|_| id.to_string()), name: None },
+            ordinal: runtime.pending_ordinal,
+            description: None,
+            options: Vec::new(),
+            unavailable: Some(why),
+        },
     }
 }
 
@@ -894,18 +935,27 @@ fn projects(
     let rows = frame.complete::<tables::Projects>().map_err(|why| unavailable.push(format!("Projects are unavailable: {why}"))).ok()?;
     let slices = frame.complete::<tables::SliceReads>().map_err(|why| unavailable.push(format!("Project read hours are unavailable: {why}"))).ok()?;
     let mut read_of: BTreeMap<u32, i32> = BTreeMap::new();
+    let mut withheld = Vec::new();
     for &owner in owners {
         let has_rows = !prefixed(rows, owner, |row| row.owner).is_empty();
-        match replay_data::sliced::read_hour(slices, TableId::Projects, owner) {
-            Some(read) if reads.supplies(read) => {
-                read_of.insert(owner, read);
-            }
-            _ if has_rows || owner == reads.holder.id => {
-                unavailable.push("Projects were not read in the day up to this hour while this country held the tag".into());
-                return None;
-            }
-            _ => {}
+        let why = match replay_data::sliced::read_hour(slices, TableId::Projects, owner) {
+            Some(read) if reads.supplies(read) => match reads.owned(owner, read) {
+                Ok(()) => {
+                    read_of.insert(owner, read);
+                    continue;
+                }
+                Err(why) => why,
+            },
+            _ if has_rows || owner == reads.holder.id => "Projects were not read in the day up to this hour while this country held the tag".to_owned(),
+            _ => continue,
+        };
+        if !withheld.contains(&why) {
+            withheld.push(why);
         }
+    }
+    if !withheld.is_empty() {
+        unavailable.extend(withheld);
+        return None;
     }
     let mut out = Vec::new();
     for (&owner, &read) in &read_of {
@@ -1005,7 +1055,7 @@ impl AtHour for SpecialProjectEffectsAt {
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![SpecialProjectEffectsParams::decl(), SpecialProjectEffects::decl(), ProjectEffects::decl()]
+        vec![SpecialProjectEffectsParams::decl(), SpecialProjectEffects::decl(), PendingEffects::decl(), OptionEffects::decl(), ProjectEffects::decl()]
     }
 
     fn owner(params: &Self::Params) -> Option<&Country> {
@@ -1031,7 +1081,7 @@ impl AtHour for SpecialProjectEffectsAt {
 
     fn reply(frame: &DecodedFrame, params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project effects name no country"))?;
-        let mut out = SpecialProjectEffects { hour: at.hour, output: None, options: Vec::new(), unavailable: None, warnings: Vec::new() };
+        let mut out = SpecialProjectEffects { hour: at.hour, read_hour: None, output: None, pending: None, unavailable: None, warnings: Vec::new() };
         if !owners_of(frame, owner.slot)?.contains(&params.owner) {
             out.unavailable = Some("The project's owner is not this country at this hour".into());
             return Ok(out);
@@ -1040,7 +1090,10 @@ impl AtHour for SpecialProjectEffectsAt {
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
         let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
         let project = match supplied_project(frame, &reads, params.owner, params.project) {
-            Ok(project) => project,
+            Ok((project, read)) => {
+                out.read_hour = Some(read);
+                project
+            }
             Err(why) => {
                 out.unavailable = Some(why);
                 return Ok(out);
@@ -1077,10 +1130,21 @@ impl AtHour for SpecialProjectEffectsAt {
         })();
         out.output = Some(effects(content, frame, owner.slot, project, &found.output, &scientist));
         if let Recorded::Value(runtime) = &project.runtime
-            && let (Some(id), Some(ordinal)) = (runtime.pending_reward, runtime.pending_ordinal)
+            && let Some(id) = runtime.pending_reward
         {
-            match spelled(frame, id).and_then(|reward| content.definitions.reward_at(&token, ordinal, &reward)) {
-                Ok(reward) => out.options = reward.options.iter().map(|option| effects(content, frame, owner.slot, project, &option.output, &scientist)).collect(),
+            let found = runtime.pending_ordinal.ok_or_else(|| "Pending reward object occurrence is unavailable".to_owned()).and_then(|ordinal| {
+                let reward = spelled(frame, id)?;
+                content.definitions.reward_at(&token, ordinal, &reward).map(|found| (reward, ordinal, found))
+            });
+            match found {
+                Ok((reward, ordinal, found)) => {
+                    let options = found
+                        .options
+                        .iter()
+                        .map(|option| OptionEffects { token: option.token.clone(), effects: effects(content, frame, owner.slot, project, &option.output, &scientist) })
+                        .collect();
+                    out.pending = Some(PendingEffects { reward, ordinal, options });
+                }
                 Err(why) => out.unavailable = Some(why),
             }
         }

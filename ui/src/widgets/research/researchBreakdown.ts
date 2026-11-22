@@ -86,7 +86,7 @@ export function researchBreakdown(slot: ResearchSlotHistory, entry: ResearchEntr
   let cursor = firstHour;
   let lastKey: string | null = null;
   for (const state of slot.states) {
-    if (state.entryFirstObservedHour !== firstHour || state.token !== entry.token) continue;
+    if (state.entryFirstObservedHour !== firstHour || state.token !== entry.token || state.databaseIndex !== entry.databaseIndex) continue;
     const from = Math.max(firstHour, state.firstHour);
     const to = Math.min(endHour, state.lastHour + 1);
     if (to <= from) continue;

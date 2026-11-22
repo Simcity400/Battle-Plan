@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detailsStructure, detailTexts, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
-import type { SpecialProjectDetails } from '../../generated/dashboard';
+import { detailsStructure, detailTexts, effectsRead, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
+import type { ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const person = { assigned: true, id: 7, name: 'Scientist', portrait: null, missing: null };
 const label = { token: 'mod_project', name: 'Project' };
@@ -13,7 +13,7 @@ const reply = {
   programs: [{ id: 3, province: 9, readHour: 24,
     facility: { speedRaw: '87654', unavailable: null, sources: [{ kind: 'Scientist trait', unit: 'factor', label, modifier: label, assignment: 1, scientistReference: '30064771145', valueRaw: '123456' }] },
     assignments: [{ ordinal: 0, reference: '30064771145', person, target: 5, current: -2, timed: 1 }, { ordinal: 1, reference: '30064771145', person, target: 5, current: 2, timed: 0 }] }],
-  projects: [{ owner: 5, id: 1, label, readHour: 24, pendingKnown: true, pending: { label, description: null, options: [{ label }], unavailable: null },
+  projects: [{ owner: 5, id: 1, label, readHour: 24, pendingKnown: true, pending: { label, ordinal: 0, description: null, options: [{ label }], unavailable: null },
     choices: [{ ordinal: 0, date: 23, reward: label, option: label, province: -1, progress: 12345, characterReference: '18446744073709551615', country: 5, scientist: 7, state: null }],
     seed: 4294967295, variables: [{ name: 'mod_array^0', valueRaw: '-9223372036854775808' }] }],
 } satisfies SpecialProjectDetails;
@@ -31,11 +31,35 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], pendingKnown: false }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, warnings: undefined }), /Invalid/);
   const runs = [{ kind: 'text', text: 'Unlocks ', tone: 'H' }, { kind: 'link', entity: 'technology', token: 'mod_technology', text: 'Gun Carriages', tone: 'H' }];
-  const effects = { hour: 24, output: { runs, refusals: { 'Scope unavailable': 1 } }, options: [{ runs: [], refusals: {} }], unavailable: null, warnings: [] };
+  const effects = { hour: 24, readHour: 24, output: { runs, refusals: { 'Scope unavailable': 1 } },
+    pending: { reward: 'mod_project', ordinal: 0, options: [{ token: 'mod_project', effects: { runs: [], refusals: {} } }] }, unavailable: null, warnings: [] };
   assert.equal(validateProjectEffects(effects), effects);
   assert.throws(() => validateProjectEffects({ ...effects, output: { runs, refusals: { reason: 0 } } }), /Invalid/);
   assert.throws(() => validateProjectEffects({ ...effects, output: { text: 'Output', refusals: {} } }), /Invalid/, 'plain text is no longer the output');
-  assert.throws(() => validateProjectEffects({ ...effects, options: [{ runs: [{ kind: 'link', entity: 'technology', token: '', text: 'x', tone: null }], refusals: {} }] }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, pending: { ...effects.pending, options: [{ token: 'mod_project', effects: { runs: [{ kind: 'link', entity: 'technology', token: '', text: 'x', tone: null }], refusals: {} } }] } }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, pending: { ...effects.pending, options: [{ runs: [], refusals: {} }] } }), /Invalid/, 'an option without its identity');
+  assert.throws(() => validateProjectEffects({ ...effects, readHour: 25 }), /Invalid/, 'a read after the hour shown');
+  assert.throws(() => validateProjectEffects({ ...effects, readHour: null }), /Invalid/, 'effects with no supplying read');
+});
+
+test('pending options show only their own reward\'s effects, joined on the read, the reward and each option', () => {
+  const output = (text: string) => ({ runs: [{ kind: 'text' as const, text, tone: null }], refusals: {} });
+  const project = (reward: string, ordinal: number, readHour: number): ProjectRuntimeDetails => ({ ...reply.projects[0], readHour,
+    pending: { label: { token: reward, name: null }, ordinal, description: null, options: [{ label: { token: 'mod_first', name: null } }, { label: { token: 'mod_second', name: null } }], unavailable: null } });
+  const effects = (reward: string, ordinal: number, readHour: number, hour = readHour, tokens = ['mod_first', 'mod_second']): SpecialProjectEffects => ({ hour, readHour, output: output('Output'),
+    pending: { reward, ordinal, options: tokens.map(token => ({ token, effects: output(`${reward} ${token}`) })) }, unavailable: null, warnings: [] });
+  const shown = (asked: ProjectRuntimeDetails, reply: SpecialProjectEffects) => {
+    const options = effectsRead(asked.readHour, asked, reply) ?? optionEffects(asked, reply);
+    return typeof options === 'string' ? options : options.map(option => option.runs.map(run => run.kind === 'text' ? run.text : '').join(''));
+  };
+  const b = project('mod_b', 1, 30);
+  assert.deepEqual(shown(b, effects('mod_b', 1, 30)), ['mod_b mod_first', 'mod_b mod_second']);
+  assert.equal(shown(b, effects('mod_a', 0, 20, 24)), 'Loading effects…', 'the reply still on the earlier read waits instead of showing reward A beside reward B');
+  assert.equal(shown(b, effects('mod_a', 0, 20, 30)), 'Effects were read from another reading of this project.');
+  assert.equal(shown(b, effects('mod_a', 1, 30)), 'These effects are of another reward than the one pending.');
+  assert.equal(shown(b, effects('mod_b', 0, 30)), 'These effects are of another reward than the one pending.', 'the same reward token at another occurrence is not this reward');
+  assert.equal(shown(b, effects('mod_b', 1, 30, 30, ['mod_second', 'mod_first'])), 'These effects are of another reward than the one pending.', 'options join by their identity, never by position');
+  assert.equal(shown(b, { ...effects('mod_b', 1, 30), readHour: null, output: null, pending: null, unavailable: 'Projects were not read' }), 'Projects were not read');
 });
 
 test('an iteration reply is the game\'s headed output read at that iteration\'s own hour, and names what it could not show', () => {

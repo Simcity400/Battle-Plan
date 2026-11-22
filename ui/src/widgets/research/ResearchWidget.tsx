@@ -109,7 +109,7 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
       <b className="research-idle">Idle</b><small data-paint="saved">{numbers.saved}</small></div>;
   }
   const token = entry?.token ?? read.state.token!;
-  const databaseIndex = entry?.databaseIndex ?? null;
+  const databaseIndex = read.state.databaseIndex;
   const name = text.name(token, databaseIndex);
   const content = () => {
     const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;

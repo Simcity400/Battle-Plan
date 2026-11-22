@@ -11,7 +11,7 @@ const entry = (token: string, first: number, end: number | null, outcome: Resear
   lastObservedHour: end === null ? first : end - 1, endedByHour: end, outcomeObservedHour: null, outcome,
 });
 const state = (token: string | null, first: number, entryFirst: number | null, extra: Partial<ResearchSlotState> = {}): ResearchSlotState => ({
-  firstHour: first, lastHour: first + 23, token, entryFirstObservedHour: entryFirst, speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0',
+  firstHour: first, lastHour: first + 23, token, databaseIndex: token === null ? null : 3, entryFirstObservedHour: entryFirst, speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0',
   aheadReductionYearsRaw: token ? '0' : null, details: null, ...extra,
 });
 const reply = (entries: ResearchEntry[], extra: Partial<ResearchReply> = {}): ResearchReply => ({
@@ -49,7 +49,7 @@ test('the slots at an hour join their slot and assignment; an hour without a rea
   const data = validateResearchReply(reply([entry('radio', 0, 10), entry('radar', 10, null)]));
   const now: ResearchSlotsAt = { hour: 30, ...validateResearchSlots({ tag: 'MOD', readHour: 24, missing: null, warnings: [],
     grants: { nextId: 1, grants: [], unavailable: null },
-    slots: [{ index: 0, state: state('radar', 24, 10, { lastHour: 30, details: { remainingDays: 9, bonuses: [], modifiers: null } }),
+    slots: [{ index: 0, state: state('radar', 24, 10, { lastHour: 30, details: { remainingDays: 9, estimateRaw: '850000', bonuses: [], modifiers: null } }),
       progress: { firstHour: 24, lastHour: 24, entryFirstObservedHour: 10, baseDaysRaw: '1000000', progressRaw: '250000' } }] }) };
   const [slot] = withSlotReads(researchAt(data.history, 30), now);
   const shown = researchStateAt(slot, 30)!;
@@ -80,7 +80,7 @@ test('a breakdown\'s reads join the slots of its parts in hour order', () => {
 
 test('modifier playback uses the hour\'s day, exact fixed point, and the minimum speed', () => {
   const hour = 43_800_000 + 1937 * 8760;
-  const modified = (total: string) => state('radio', hour, 0, { details: { remainingDays: null, bonuses: [], modifiers: { components: [], totalBonusRaw: total, year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000' } } });
+  const modified = (total: string) => state('radio', hour, 0, { details: { remainingDays: null, estimateRaw: null, bonuses: [], modifiers: { components: [], totalBonusRaw: total, year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000' } } });
   assert.deepEqual(researchRateAt(modified('20000'), hour), { rateRaw: '40000', penaltyRaw: '200000', floored: false });
   assert.ok(BigInt(researchRateAt(modified('20000'), hour + 24)!.rateRaw) > 40000n, 'the ahead penalty falls each day');
   assert.deepEqual(researchRateAt(modified('-250000'), hour), { rateRaw: '10000', penaltyRaw: '200000', floored: true });

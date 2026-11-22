@@ -176,7 +176,9 @@ impl AtHour for ResearchSlots {
             let joined = assignments.iter().find(|a| a.index == index && a.lane == 0 && a.outcome == ResearchAssignmentRow::ACTIVE && r.technology_present != 0 && r.database_index == replay_data::rows::Recorded::Value(a.database_index) && r.token == a.token);
             let rate = mods.filter(|_| sample(samples, TableId::ResearchModifiers, r.country) == Some(read)).and_then(|m| super::modifiers::breakdown(r, Some(m))).and_then(|m| super::modifiers::rate(&m, r.ahead_reduction_raw, read))
                 .or_else(|| joined.filter(|a| a.started_after_hour.is_some() && read - a.first_observed_hour < 24).map(|_| i128::from(r.research_speed_raw)));
-            slot["state"]["details"]["remainingDays"] = if r.technology_present != 0 { rate.and_then(|v| super::remaining(r, v)) } else { None }.into();
+            let estimate = if r.technology_present != 0 { rate.and_then(|v| super::remaining(r, v)) } else { None };
+            slot["state"]["details"]["remainingDays"] = estimate.map(|(days, _)| days).into();
+            slot["state"]["details"]["estimateRaw"] = estimate.map(|(_, raw)| raw.to_string()).into();
             slot["state"]["bankedDaysRaw"] = r.banked_days_raw.to_string().into();
             slot["state"]["appliedDaysRaw"] = r.applied_days_raw.to_string().into();
             if !slot["progress"].is_null() { slot["progress"]["progressRaw"] = r.progress_raw.to_string().into(); }

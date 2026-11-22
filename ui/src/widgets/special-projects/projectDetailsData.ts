@@ -1,7 +1,7 @@
 import { dayLabel } from '../../charts/draw.ts';
 import { researchNumber } from '../research/researchBreakdown.ts';
 import { validGameRuns } from '../research/gameRuns.ts';
-import type { ProjectLabel, ProjectPerson, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration } from '../../generated/dashboard';
+import type { ProjectEffects, ProjectLabel, ProjectPerson, ProjectRuntimeDetails, ScientistDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration } from '../../generated/dashboard';
 
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
@@ -20,7 +20,7 @@ const facility = (value: unknown) => object(value) && (value.speedRaw === null |
   && Array.isArray(value.sources) && value.sources.every(source => object(source) && typeof source.kind === 'string' && typeof source.unit === 'string'
     && (source.label === null || label(source.label)) && (source.modifier === null || label(source.modifier)) && uint(source.assignment)
     && reference(source.scientistReference) && raw(source.valueRaw));
-const reward = (value: unknown) => object(value) && label(value.label) && nullable(value.description) && nullable(value.unavailable) && Array.isArray(value.options)
+const reward = (value: unknown) => object(value) && label(value.label) && (value.ordinal === null || uint(value.ordinal)) && nullable(value.description) && nullable(value.unavailable) && Array.isArray(value.options)
   && value.options.every(option => object(option) && label(option.label));
 const roster = (value: unknown): value is unknown[] | null => value === null || Array.isArray(value);
 const readBy = (value: unknown, hour: number) => integer(value) && value <= hour;
@@ -49,10 +49,29 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
   return value as unknown as SpecialProjectDetails;
 }
 
+const pendingEffects = (value: unknown) => object(value) && typeof value.reward === 'string' && uint(value.ordinal) && Array.isArray(value.options)
+  && value.options.every(option => object(option) && typeof option.token === 'string' && effects(option.effects));
+
 export function validateProjectEffects(value: unknown): SpecialProjectEffects {
-  if (!object(value) || !integer(value.hour) || !(value.output === null || effects(value.output)) || !Array.isArray(value.options) || !value.options.every(effects)
+  if (!object(value) || !integer(value.hour) || !(value.readHour === null || readBy(value.readHour, value.hour)) || !(value.output === null || effects(value.output))
+    || !(value.pending === null || pendingEffects(value.pending)) || (value.readHour === null && (value.output !== null || value.pending !== null))
     || !nullable(value.unavailable) || !strings(value.warnings)) throw new Error('Invalid special-project effects');
   return value as unknown as SpecialProjectEffects;
+}
+
+export function effectsRead(hour: number, project: ProjectRuntimeDetails, reply: SpecialProjectEffects): string | null {
+  if (reply.readHour === null) return reply.unavailable ?? 'Effects were not read for this project.';
+  if (reply.readHour === project.readHour) return null;
+  return reply.hour === hour ? 'Effects were read from another reading of this project.' : 'Loading effects…';
+}
+
+export function optionEffects(project: ProjectRuntimeDetails, reply: SpecialProjectEffects): ProjectEffects[] | string {
+  const asked = project.pending, shown = reply.pending;
+  if (!asked) return [];
+  if (!shown) return reply.unavailable ?? 'Effects of the pending reward were not read.';
+  const same = shown.reward === asked.label.token && shown.ordinal === asked.ordinal && shown.options.length === asked.options.length
+    && shown.options.every((option, at) => option.token === asked.options[at].label.token);
+  return same ? shown.options.map(option => option.effects) : 'These effects are of another reward than the one pending.';
 }
 
 const heading = (value: unknown) => value === null || validGameRuns(value);
@@ -66,7 +85,7 @@ export function validateProjectIteration(value: unknown, hour: number): SpecialP
   return value as unknown as SpecialProjectIteration;
 }
 
-export const effectsStructure = (reply: SpecialProjectEffects) => JSON.stringify([reply.unavailable, reply.options, reply.output, reply.warnings]);
+export const effectsStructure = (reply: SpecialProjectEffects) => JSON.stringify([reply.unavailable, reply.readHour, reply.pending, reply.output, reply.warnings]);
 
 const number = (value: string) => researchNumber(BigInt(value));
 const read = (hour: number | null) => hour === null ? '' : ` · read ${dayLabel(hour)}`;
@@ -113,7 +132,7 @@ export function detailsStructure(details: SpecialProjectDetails): string {
     details.programs?.map(p => [p.id, p.province, p.assignments?.map(a => [a.ordinal, a.reference, person(a.person), a.timed]),
       p.facility && [p.facility.unavailable, p.facility.sources.map(s => [s.kind, s.unit, label(s.label), label(s.modifier), s.assignment, s.scientistReference])]]),
     details.projects?.map(p => [p.owner, p.id, label(p.label), p.pendingKnown, p.seed !== null, p.variables?.map(v => v.name),
-      p.pending && [label(p.pending.label), p.pending.description, p.pending.unavailable, p.pending.options.map(o => label(o.label))],
+      p.pending && [label(p.pending.label), p.pending.ordinal, p.pending.description, p.pending.unavailable, p.pending.options.map(o => label(o.label))],
       p.choices?.map(c => [c.ordinal, c.date, label(c.reward), label(c.option), c.province, c.progress, c.characterReference, c.country, c.scientist, c.state])]),
   ]);
 }

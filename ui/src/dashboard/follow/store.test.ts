@@ -742,7 +742,7 @@ test('a changed effects, stats or pending reward reply reaches the page while pl
   const replies: Record<string, (text: string) => unknown> = {
     'technology-effects': text => ({ hour: 1, runs: runs(text), refusals: {}, unavailable: null, warnings: [] }),
     'content-entity-stats': text => ({ hour: 1, kind: 'equipment', token: 'rifle', stats: [{ label: runs('Attack'), value: runs(text) }], refusals: {}, unavailable: null, warnings: [] }),
-    'special-project-effects': text => ({ hour: 1, output: effects('output'), options: [effects(text)], unavailable: null, warnings: [] }),
+    'special-project-effects': text => ({ hour: 1, readHour: 1, output: effects('output'), pending: { reward: 'mod_reward', ordinal: 0, options: [{ token: 'mod_option', effects: effects(text) }] }, unavailable: null, warnings: [] }),
   };
   for (const [product, reply] of Object.entries(replies)) {
     const followed = new Followed(() => {});

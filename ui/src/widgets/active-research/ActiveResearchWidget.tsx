@@ -58,8 +58,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     if (item.kind === 'idle') return <div key={key} className="active-row is-quiet" role="status" data-research-slot={item.slot.index}>
       <span className="active-row-art is-icon"><Icon name="pause" /></span><span className="active-row-name is-idle">Idle</span>
       <span className="active-row-saved" data-paint="saved">{numbers.saved}</span></div>;
-    const { entry, token, slot } = item;
-    const databaseIndex = entry?.databaseIndex ?? null;
+    const { token, databaseIndex, slot } = item;
     const art = researchArt(artwork, token, databaseIndex);
     const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
     const click = (event: MouseEvent<HTMLElement>) => open(item, event.clientX, event.clientY);

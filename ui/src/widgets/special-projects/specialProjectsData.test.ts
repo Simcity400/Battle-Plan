@@ -12,7 +12,7 @@ import { dayLabel } from '../../charts/draw.ts';
 import { effectsStructure } from './projectDetailsData.ts';
 
 test('project effects render again when their game text changes, never only because the hour moved', () => {
-  const record = (hour: number, amount: number) => ({ hour, options: [], warnings: [], unavailable: null,
+  const record = (hour: number, amount: number) => ({ hour, readHour: 12, pending: null, warnings: [], unavailable: null,
     output: { runs: [{ kind: 'text' as const, text: 'Amount ' + amount, tone: null }], refusals: { 'Unknown effect': 1 } } });
   assert.equal(effectsStructure(record(12, 3)), effectsStructure(record(24, 3)));
   assert.notEqual(effectsStructure(record(24, 3)), effectsStructure(record(24, 8)));
@@ -416,11 +416,14 @@ test('the iteration mark names its count only, and its tooltip says what the cou
 test('a project window joins its runtime project on the episode owner and local id, read within the episode and not after the hour', () => {
   const data=fixture(); data.projects[0]={ ...data.projects[0], owner: 9, local: 3 };
   const card=shownCard(data,120,data.projects[0].id)!;
-  const runtime=(owner:number,id:number,name:string|null):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour:120,pendingKnown:true,pending:null,seed:null,variables:null,choices:null});
+  const runtime=(owner:number,id:number,name:string|null,readHour=120):ProjectRuntimeDetails=>({owner,id,label:{token:'mod_project',name},readHour,pendingKnown:true,pending:null,seed:null,variables:null,choices:null});
   const details=(projects:ProjectRuntimeDetails[]|null,hour=120):SpecialProjectDetails=>({hour,scientists:null,programs:null,breakthroughs:null,projects,unavailable:[],warnings:[]});
   assert.deepEqual(runtimeProject(details([runtime(9,4,'Mod project name'),runtime(9,3,'Other')]),card,120), runtime(9,3,'Other'), 'the name is not the join');
   assert.match(runtimeProject(details([runtime(10,3,'Mod project name')]),card,120) as string, /not recorded/, 'another owner with the same local id is not this project');
-  assert.match(runtimeProject(details([runtime(9,3,'Mod project name')],99),card,120) as string, /before this project/);
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',99)],106),card,120) as string, /before this project/, 'a reply dated within the project whose row was read before it began is not this project');
+  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',100)],106),card,120), runtime(9,3,'Mod project name',100), 'a row read at the start of the project is its own');
+  const ended={...card,project:{...card.project,runs:[card.project.runs[0]]}};
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',148)],148),ended,150) as string, /after this project ended/);
   assert.equal(runtimeProject(details([runtime(9,3,'Mod project name')],121),card,120), null, 'a reply from after the displayed hour waits');
   assert.match(runtimeProject(details([]),card,120) as string, /not recorded/);
   assert.match(runtimeProject(details(null),card,120) as string, /not read/);

@@ -5277,7 +5277,11 @@ state: ResearchSlotState,
  * The joined assignment's progress at the read; none while idle.
  */
 progress: ResearchProgress | null, };
-export type ResearchSlotState = { firstHour: number, lastHour: number, token: string | null, entryFirstObservedHour: number | null,
+export type ResearchSlotState = { firstHour: number, lastHour: number, token: string | null,
+/**
+ * The technology's template occurrence as read; none while idle.
+ */
+databaseIndex: number | null, entryFirstObservedHour: number | null,
 /**
  * Native fixed5 operands as decimal text.
  */
@@ -5292,6 +5296,10 @@ export type ResearchDetails = {
  * The game's days-left estimate at the read; none where its rate is not known.
  */
 remainingDays: number | null,
+/**
+ * The same estimate before the game rounds it up to whole days, as fixed5 days.
+ */
+estimateRaw: string | null,
 /**
  * None where the bonuses were not read with the slot or do not attribute.
  */
@@ -5757,7 +5765,11 @@ export type ProgramDetails = { id: number, province: number, readHour: number, a
 export type FacilitySource = { kind: string, unit: string, label: ProjectLabel | null, modifier: ProjectLabel | null, assignment: number, scientistReference: string, valueRaw: string, };
 export type FacilityDetails = { speedRaw: string | null, sources: Array<FacilitySource>, unavailable: string | null, };
 export type ProjectRewardOption = { label: ProjectLabel, };
-export type PendingProjectReward = { label: ProjectLabel, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
+export type PendingProjectReward = { label: ProjectLabel,
+/**
+ * The reward's occurrence in the project's definition; none where it was not recorded.
+ */
+ordinal: number | null, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
 export type ProjectVariableValue = { name: string, valueRaw: string, };
 export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
 export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
@@ -5770,13 +5782,27 @@ export type SpecialProjectEffectsParams = { branchId: string, country: CountryRe
 owner: number, project: number, };
 export type SpecialProjectEffects = { hour: number,
 /**
+ * The project read every effect is rendered from; none where no read supplies it.
+ */
+readHour: number | null,
+/**
  * None where the project's definition is not in the recorded content.
  */
 output: ProjectEffects | null,
 /**
- * The pending reward's options, in its order; empty with none pending.
+ * None with no reward pending, or where it could not be read.
  */
-options: Array<ProjectEffects>, unavailable: string | null, warnings: Array<string>, };
+pending: PendingEffects | null, unavailable: string | null, warnings: Array<string>, };
+export type PendingEffects = {
+/**
+ * The pending reward's token and its occurrence in the project's definition.
+ */
+reward: string, ordinal: number,
+/**
+ * Each option, in the reward's order.
+ */
+options: Array<OptionEffects>, };
+export type OptionEffects = { token: string, effects: ProjectEffects, };
 export type ProjectEffects = { runs: Array<GameRun>, refusals: { [key in string]?: number }, };
 export type SpecialProjectEffectsParamsAtHour = SpecialProjectEffectsParams & { hour: number };
 export type SpecialProjectIterationParams = { branchId: string, country: CountryRef,

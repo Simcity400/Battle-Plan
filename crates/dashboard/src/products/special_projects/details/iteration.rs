@@ -88,6 +88,7 @@ fn later_history(reads: &Reads<'_, '_>, params: &SpecialProjectIterationParams) 
     if !reads.follows(read, until) {
         return Err("This iteration's choice was next read after this country stopped holding the tag".into());
     }
+    reads.owned(params.owner, read)?;
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
     history_row(rows, history_key(params)).cloned().ok_or_else(|| unread.into())
 }
@@ -171,11 +172,14 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project iteration hour is not recorded"))?.run;
     let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder, run, hour: at.hour };
     let project = match supplied_project(frame, &reads, params.owner, params.project) {
-        Ok(project) => project,
+        Ok((project, _)) => project,
         Err(why) => return Ok(Err(why)),
     };
-    if !owner_read(frame, TableId::ProjectHistory, params.owner).is_ok_and(|read| reads.supplies(read)) {
+    let Some(read) = owner_read(frame, TableId::ProjectHistory, params.owner).ok().filter(|&read| reads.supplies(read)) else {
         return Ok(Err("Project choice history was not read in the day up to this hour while this country held the tag".into()));
+    };
+    if let Err(why) = reads.owned(params.owner, read) {
+        return Ok(Err(why));
     }
     let held = history_row(frame.complete::<tables::ProjectHistory>()?, history_key(params)).cloned();
     let row = match held.map_or_else(|| later_history(&reads, params), Ok) {

@@ -13,9 +13,9 @@ const assignment: ResearchEntry = {
 };
 function state(from: number, to: number, bonus: string): ResearchSlotState {
   return {
-    firstHour: start + from * 24, lastHour: start + to * 24 - 1, token: 'radio', entryFirstObservedHour: start,
+    firstHour: start + from * 24, lastHour: start + to * 24 - 1, token: 'radio', databaseIndex: 1, entryFirstObservedHour: start,
     speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0', aheadReductionYearsRaw: '0',
-    details: { remainingDays: null, bonuses: [], modifiers: {
+    details: { remainingDays: null, estimateRaw: null, bonuses: [], modifiers: {
       components: ['country', 'category', 'designTeam', 'experience', 'license', 'scientist', 'applied', 'sharing']
         .map(kind => ({ kind, raw: kind === 'country' ? bonus : '0', sources: [] })),
       totalBonusRaw: bonus, year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000',
@@ -75,7 +75,7 @@ test('ahead penalties decline across days without creating modifier periods', ()
 test('countdown-only states merge visually; missing modifier hours cannot be bridged', () => {
   const slot = fixture();
   slot.states.splice(0, 1, state(0, 30, '0'), state(30, 60, '0'));
-  slot.states[1].details!.remainingDays = 150;
+  slot.states[1].details = { ...slot.states[1].details!, remainingDays: 150, estimateRaw: '15000000' };
   assert.equal(researchBreakdown(slot, assignment).periods.length, 3);
   slot.states.splice(1, 1);
   const result = researchBreakdown(slot, assignment);

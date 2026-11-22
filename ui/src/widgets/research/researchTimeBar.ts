@@ -20,16 +20,18 @@ const kindOf = (m: { label: string; kind: string }) =>
 const DAY = 100_000n;
 const total = (segments: readonly ResearchSegment[]) => segments.reduce((sum, s) => sum + s.value, 0n);
 
-export const researchDaysLeftMissing = (split: ResearchTimeSplit, active: boolean, daysLeft: number | null) =>
+export interface ResearchDaysLeft { left: number; rounding: bigint }
+
+export const researchDaysLeftMissing = (split: ResearchTimeSplit, active: boolean, daysLeft: ResearchDaysLeft | null) =>
   active && split.remaining > 0n && daysLeft === null;
 
-export function researchTimeRows(split: ResearchTimeSplit, active: boolean, daysLeft: number | null): ResearchTimeRows | null {
+export function researchTimeRows(split: ResearchTimeSplit, active: boolean, daysLeft: ResearchDaysLeft | null): ResearchTimeRows | null {
   const expectedTotal = split.base + split.penalty;
   if (expectedTotal <= 0n || researchDaysLeftMissing(split, active, daysLeft)) return null;
-  const left = active && daysLeft !== null && split.remaining > 0n ? BigInt(daysLeft) * DAY : null;
-  const rounded = left === null ? 0n : (split.remaining + DAY - 1n) / DAY * DAY;
-  const rounding = rounded - (left === null ? rounded : split.remaining);
-  const rest = left === null ? 0n : rounded - left;
+  const left = active && daysLeft !== null && split.remaining > 0n ? BigInt(daysLeft.left) * DAY : null;
+  const estimate = left === null ? 0n : left > daysLeft!.rounding ? left - daysLeft!.rounding : 0n;
+  const rounding = left === null ? 0n : left - estimate;
+  const rest = left === null ? 0n : split.remaining - estimate;
   const slowed = split.modifiers.filter(m => m.days < 0n);
   const saved = split.modifiers.filter(m => m.days > 0n);
   const expected: ResearchSegment[] = [

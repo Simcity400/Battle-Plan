@@ -12,13 +12,13 @@ import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar';
 import { Icon } from '../../components/Icons';
 import { researchNumber } from './researchBreakdown';
 import { completedResearchJourney, researchAssignments, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
-import { researchDaysLeftMissing, researchTimeRows, type ResearchSegment } from './researchTimeBar';
+import { researchDaysLeftMissing, researchTimeRows, type ResearchDaysLeft, type ResearchSegment } from './researchTimeBar';
 import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry, ResearchSlotsReply } from '../../generated/dashboard';
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
 
-function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active: boolean; daysLeft: number | null }) {
+function TimeBar({ split, active, daysLeft }: { split: ResearchTimeSplit; active: boolean; daysLeft: ResearchDaysLeft | null }) {
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const rows = useMemo(() => researchTimeRows(split, active, daysLeft), [split, active, daysLeft]);
   const hovered = hoveredKey === null || !rows ? null : [...rows.expected, ...rows.took].find(s => s.key === hoveredKey) ?? null;
@@ -49,9 +49,13 @@ export function breakdownParts(slots: readonly ResearchSlotHistory[], slot: Rese
     started: part.entry.startedAfterHour !== null }));
 }
 
-export function daysLeftAt(reply: ResearchSlotsReply, slot: number, entry: ResearchEntry, hour: number) {
-  const read = reply.slots.find(item => item.index === slot && item.state.token === entry.token && item.state.entryFirstObservedHour === entry.firstObservedHour);
-  return read ? slotNumbers(read, hour).left : null;
+export function daysLeftAt(reply: ResearchSlotsReply, slot: number, entry: ResearchEntry, hour: number): ResearchDaysLeft | null {
+  const read = reply.slots.find(item => item.index === slot && item.state.token === entry.token && item.state.databaseIndex === entry.databaseIndex
+    && item.state.entryFirstObservedHour === entry.firstObservedHour);
+  const details = read?.state.details;
+  const left = read ? slotNumbers(read, hour).left : null;
+  if (left === null || details?.remainingDays == null || details.estimateRaw === null) return null;
+  return { left, rounding: BigInt(details.remainingDays) * 100_000n - BigInt(details.estimateRaw) };
 }
 
 export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description }: {

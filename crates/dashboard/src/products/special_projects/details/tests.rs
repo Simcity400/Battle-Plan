@@ -5,7 +5,7 @@ use crate::{
 };
 use replay::campaign::SeekResult;
 use replay_data::rows::{
-    CharacterRoleTraitRow, LexicalTokenRow, ProjectBreakthroughRow, ProjectHistoryRow, ProjectProgramRow, ProjectScientistAssignment, ScientistRow,
+    CharacterRoleTraitRow, CountryLinkRow, LexicalTokenRow, ProjectBreakthroughRow, ProjectHistoryRow, ProjectProgramRow, ProjectScientistAssignment, ScientistRow,
     ScientistSkillRow, SliceReadRow, TableRows,
 };
 use replay_frame::frame::TableView;
@@ -20,6 +20,10 @@ const UNHELD: i32 = 45;
 const LATE_ITERATION: i32 = 48;
 const NEXT_DAY_ITERATION: i32 = 31;
 const UNHELD_NEXT_ITERATION: i32 = 42;
+const MOVED_OWNER: u32 = 9002;
+const MOVED_READS: [i32; 3] = [47, 50, 53];
+const MOVED_HELD: std::ops::Range<i32> = 49..53;
+const MOVED_ITERATION: i32 = 51;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -45,9 +49,19 @@ fn frame(hour: i32) -> DecodedFrame {
         ..Default::default()
     }]));
     set(&mut frame, TableId::ProjectBreakthroughs, TableRows::ProjectBreakthroughs(vec![ProjectBreakthroughRow { owner: 11, specialization: 41, points: 777 }]));
+    if MOVED_HELD.contains(&hour) {
+        let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+        links.push(CountryLinkRow { id: MOVED_OWNER, canonical_slot: 7 });
+    }
+    let moved = MOVED_READS.into_iter().filter(|&at| at <= hour).max();
     let read = PROJECT_READS.into_iter().filter(|&at| at <= hour).max();
     let history = |ordinal, date, first: i32| read.filter(|&read| read >= first).map(|_| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() });
-    set(&mut frame, TableId::Projects, TableRows::Projects(read.map(|_| ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }).into_iter().collect()));
+    set(&mut frame, TableId::Projects, TableRows::Projects(
+        [read.map(|_| ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }), moved.map(|_| ProjectRow { owner: MOVED_OWNER, local_id: 5, definition_id: 77, ..Default::default() })]
+            .into_iter()
+            .flatten()
+            .collect(),
+    ));
     set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(
         [
             history(0, PROJECT_READS[0], PROJECT_READS[0]),
@@ -55,13 +69,17 @@ fn frame(hour: i32) -> DecodedFrame {
             history(2, LATE_ITERATION, PROJECT_READS[2]),
             history(3, NEXT_DAY_ITERATION, PROJECT_READS[1]),
             history(4, UNHELD_NEXT_ITERATION, PROJECT_READS[2]),
+            moved.filter(|&read| read >= MOVED_READS[2]).map(|_| ProjectHistoryRow { owner: MOVED_OWNER, project: 5, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: MOVED_ITERATION, ..Default::default() }),
         ]
         .into_iter()
         .flatten()
         .collect(),
     ));
-    let mut slices: Vec<SliceReadRow> =
-        read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner: 9001, sample_hour })).into_iter().flatten().collect();
+    let mut slices: Vec<SliceReadRow> = [(9001, read), (MOVED_OWNER, moved)]
+        .into_iter()
+        .filter_map(|(owner, read)| read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
+        .flatten()
+        .collect();
     slices.sort_by_key(|row| (row.table, row.owner));
     set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
     for table in [TableId::ProjectPrograms, TableId::ProjectBreakthroughs, TableId::ScientistDaily] {
@@ -213,4 +231,16 @@ fn effects_withhold_a_project_last_read_before_the_holder_took_the_tag() {
     let source = recording();
     let effects = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "hour": UNHELD + 2 })).unwrap();
     assert_eq!(effects["unavailable"], json!("Projects were not read in the day up to this hour while this country held the tag"), "{effects}");
+}
+
+#[test]
+fn a_project_read_while_its_raw_owner_belonged_to_another_country_is_not_this_countrys() {
+    let source = recording();
+    let other = "The project was read while its owner belonged to another country";
+    let at = MOVED_HELD.start;
+    let effects = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "hour": at })).unwrap();
+    assert_eq!(effects["unavailable"], json!(other), "the retained read predates the owner's move to this country: {effects}");
+    assert!(has(&details(&source, at), other), "the details list withholds the same read");
+    let iteration = asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "ordinal": 0, "hour": MOVED_ITERATION })).unwrap();
+    assert_eq!(iteration["unavailable"], json!(other), "the choice was next read after the owner left this country: {iteration}");
 }

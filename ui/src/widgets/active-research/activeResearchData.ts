@@ -4,25 +4,30 @@ import { coverageAt, researchDate } from '../research/researchLayout.ts';
 import type { ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
 
 export type ActiveSlot =
-  | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string }
+  | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string; databaseIndex: number }
   | { kind: 'idle'; slot: ResearchSlotHistory; read: ResearchSlotNow }
   | { kind: 'unavailable'; slot: ResearchSlotHistory; reason: string };
 
-export interface OpenedResearch { slot: number; token: string; databaseIndex: number | null; firstObservedHour: number | null }
+export type OpenedResearch = { slot: number; token: string; databaseIndex: number }
+  & ({ firstObservedHour: number; readHour: null } | { firstObservedHour: null; readHour: number });
 
 type Researching = Extract<ActiveSlot, { kind: 'researching' }>;
 
-export const openedResearch = (item: Researching): OpenedResearch =>
-  ({ slot: item.slot.index, token: item.token, databaseIndex: item.entry?.databaseIndex ?? null, firstObservedHour: item.entry?.firstObservedHour ?? null });
+export const openedResearch = ({ slot, token, databaseIndex, entry, read }: Researching): OpenedResearch => entry
+  ? { slot: slot.index, token, databaseIndex, firstObservedHour: entry.firstObservedHour, readHour: null }
+  : { slot: slot.index, token, databaseIndex, firstObservedHour: null, readHour: read.state.firstHour };
 
 export const isOpenedResearch = (item: Researching, opened: OpenedResearch) => item.slot.index === opened.slot && item.token === opened.token
-  && (item.entry?.databaseIndex ?? null) === opened.databaseIndex && (item.entry?.firstObservedHour ?? null) === opened.firstObservedHour;
+  && item.databaseIndex === opened.databaseIndex
+  && (item.entry ? item.entry.firstObservedHour === opened.firstObservedHour : opened.readHour !== null && item.read.state.firstHour === opened.readHour);
 
 export type ResearchAfter = { kind: 'completed'; slot: ResearchSlotHistory; entry: ResearchEntry; hour: number } | { kind: 'gone'; message: string };
 
 export function researchAfter(slots: readonly ResearchSlotHistory[], opened: OpenedResearch, hour: number): ResearchAfter {
   const { firstObservedHour } = opened;
-  if (firstObservedHour === null) return { kind: 'gone', message: 'This research is not in its slot at this hour, and its history was not joined, so what became of it is not recorded.' };
+  if (firstObservedHour === null) return { kind: 'gone', message: hour < opened.readHour
+    ? `Not read in its slot yet at this hour: opened from the read of ${researchDate(opened.readHour)}.`
+    : 'Its assignment was not recorded, so no other read of its slot can be told to be this research.' };
   if (hour < firstObservedHour) return { kind: 'gone', message: `Not in its slot yet at this hour: first seen there ${researchDate(firstObservedHour)}.` };
   const slot = slots.find(owner => owner.index === opened.slot);
   const entry = slot?.entries.find(item => item.token === opened.token && item.databaseIndex === opened.databaseIndex && item.firstObservedHour === firstObservedHour);
@@ -48,6 +53,7 @@ export function activeSlots(history: ResearchHistory, now: ResearchSlotsAt): Act
     const full = history.slots.find(owner => owner.index === slot.index) ?? slot;
     const entry = researchEntryAt(full, read.state, hour);
     if (!entry && !isUnjoinedResearch(read.state)) return [{ kind: 'idle', slot, read }];
-    return [{ kind: 'researching', slot, read, entry, token: entry?.token ?? read.state.token! }];
+    if (read.state.token === null || read.state.databaseIndex === null) return [{ kind: 'unavailable', slot, reason: 'The research read names no technology definition' }];
+    return [{ kind: 'researching', slot, read, entry, token: read.state.token, databaseIndex: read.state.databaseIndex }];
   });
 }

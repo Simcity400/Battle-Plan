@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
-import { activeSlots, researchAfter } from './activeResearchData.ts';
+import { activeSlots, isOpenedResearch, openedResearch, researchAfter } from './activeResearchData.ts';
 import { researchAt } from '../research/researchData.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
@@ -11,7 +11,7 @@ import type { ResearchSlotsAt } from '../research/types';
 const base = HOUR_EPOCH + 1944 * 8760 + 12;
 const day = (n: number) => base + n * 24;
 const state = (token: string | null, entry: number | null, extra: Partial<ResearchSlotState> = {}): ResearchSlotState => ({
-  firstHour: day(96), lastHour: day(100), token, entryFirstObservedHour: entry, speedMultiplierRaw: '100000', bankedDaysRaw: '0',
+  firstHour: day(96), lastHour: day(100), token, databaseIndex: token === null ? null : token === 'radar' ? 4 : 9, entryFirstObservedHour: entry, speedMultiplierRaw: '100000', bankedDaysRaw: '0',
   appliedDaysRaw: '0', aheadReductionYearsRaw: token ? '0' : null, details: null, ...extra,
 });
 const active: ResearchEntry = { token: 'radar', technologyHandle: 1, databaseIndex: 4, continuityStartHour: day(0), level: 0, firstObservedHour: day(0),
@@ -28,9 +28,9 @@ test('each open slot says what it researches, and its painted numbers count down
     { index: 2, availability: open, entries: [], states: [], progress: [] },
     { index: 3, availability: [{ firstHour: day(0), lastHour: day(50) }], entries: [], states: [], progress: [] },
   ] };
-  const radar: ResearchSlotNow = { index: 0, state: state('radar', day(0), { details: { remainingDays: 40, bonuses: null, modifiers: modifiers(1945) } }),
+  const radar: ResearchSlotNow = { index: 0, state: state('radar', day(0), { details: { remainingDays: 40, estimateRaw: '3950000', bonuses: null, modifiers: modifiers(1945) } }),
     progress: { firstHour: day(96), lastHour: day(96), entryFirstObservedHour: day(0), baseDaysRaw: '10000000', progressRaw: '6200000' } };
-  const sonar: ResearchSlotNow = { index: 1, state: state('sonar', null, { details: { remainingDays: 12, bonuses: null, modifiers: modifiers(1940) } }), progress: null };
+  const sonar: ResearchSlotNow = { index: 1, state: state('sonar', null, { details: { remainingDays: 12, estimateRaw: '1200000', bonuses: null, modifiers: modifiers(1940) } }), progress: null };
   const idle: ResearchSlotNow = { index: 2, state: state(null, null, { bankedDaysRaw: '1200000' }), progress: null };
   const now = reply(day(100), [radar, sonar, idle]);
   const slots = activeSlots(history, now);
@@ -48,7 +48,7 @@ test('each open slot says what it researches, and its painted numbers count down
 });
 
 test('the drawn card uses the dated slot identity, progress and countdown', () => {
-  const read: ResearchSlotNow = { index: 0, state: state('radar', day(0), { details: { remainingDays: 3, bonuses: null, modifiers: null } }),
+  const read: ResearchSlotNow = { index: 0, state: state('radar', day(0), { details: { remainingDays: 3, estimateRaw: '300000', bonuses: null, modifiers: null } }),
     progress: { firstHour: day(96), lastHour: day(96), entryFirstObservedHour: day(0), baseDaysRaw: '100000', progressRaw: '50000' } };
   const values = slotValues(reply(day(97), [read]), day(97));
   assert.equal(values.get('0:percent'), '50%');
@@ -88,7 +88,9 @@ test('an opened research keeps its own assignment: completed only once seen comp
     { index: 1, availability: open, entries: [{ ...active, firstObservedHour: day(5), outcome: 'switched', endedByHour: day(15) }], states: [], progress: [] },
   ] };
   const after = (opened: { slot?: number; first: number | null; index?: number }, hour: number) =>
-    researchAfter(researchAt(history, hour), { slot: opened.slot ?? 0, token: 'radar', databaseIndex: opened.index ?? 4, firstObservedHour: opened.first }, hour);
+    researchAfter(researchAt(history, hour), opened.first === null
+      ? { slot: opened.slot ?? 0, token: 'radar', databaseIndex: opened.index ?? 4, firstObservedHour: null, readHour: day(8) }
+      : { slot: opened.slot ?? 0, token: 'radar', databaseIndex: opened.index ?? 4, firstObservedHour: opened.first, readHour: null }, hour);
   const completed = (result: ReturnType<typeof researchAfter>) => result.kind === 'completed' ? result.hour : result.message;
   assert.equal(completed(after({ first: day(30) }, day(62))), 'Left its slot; what became of it is not recorded at this hour.', 'a completion is not shown before it was observed');
   assert.equal(completed(after({ first: day(30) }, day(70))), day(60));
@@ -97,5 +99,22 @@ test('an opened research keeps its own assignment: completed only once seen comp
   assert.equal(completed(after({ first: day(30), index: 5 }, day(90))), 'This research is not recorded in its slot at this hour.', 'another definition of the token is not this research');
   assert.match(completed(after({ slot: 1, first: day(5) }, day(20))) as string, /^Switched out of its slot by /);
   assert.match(completed(after({ first: day(30) }, day(10))) as string, /^Not in its slot yet at this hour/);
-  assert.match(completed(after({ first: null }, day(10))) as string, /history was not joined/);
+  assert.match(completed(after({ first: null }, day(10))) as string, /assignment was not recorded/);
+  assert.match(completed(after({ first: null }, day(6))) as string, /^Not read in its slot yet/);
+});
+
+test('a research without a joined assignment keeps the definition it was read with, and a later read is never taken for it', () => {
+  const first: ResearchEntry = { ...active, token: 'mod_tech', databaseIndex: 5 };
+  const history: ResearchHistory = { coverage: open, slots: [{ index: 0, availability: open, entries: [first], states: [], progress: [] }] };
+  const read = (at: number): ResearchSlotNow => ({ index: 0, progress: null,
+    state: state('mod_tech', null, { firstHour: at, lastHour: at, databaseIndex: 6, details: { remainingDays: 9, estimateRaw: '900000', bonuses: null, modifiers: null } }) });
+  const researching = (at: number) => {
+    const [slot] = activeSlots(history, reply(at, [read(at)]));
+    assert.ok(slot.kind === 'researching');
+    return slot;
+  };
+  const opened = openedResearch(researching(day(96)));
+  assert.deepEqual([opened.databaseIndex, opened.firstObservedHour, opened.readHour], [6, null, day(96)], 'the definition the slot read is kept');
+  assert.ok(isOpenedResearch(researching(day(96)), opened));
+  assert.ok(!isOpenedResearch(researching(day(97)), opened), 'a later read of the token in the slot is not this research');
 });

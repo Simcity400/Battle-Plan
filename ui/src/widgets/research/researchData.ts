@@ -47,7 +47,7 @@ export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotSt
   while (low < high) { const mid = (low + high) >>> 1; if (slot.entries[mid].firstObservedHour < (state.entryFirstObservedHour ?? -Infinity)) low = mid + 1; else high = mid; }
   for (; low < slot.entries.length && slot.entries[low].firstObservedHour === state.entryFirstObservedHour; low++) {
     const entry = slot.entries[low];
-    if (entry.token === state.token && entry.firstObservedHour <= hour && (entry.endedByHour === null || entry.endedByHour > hour))
+    if (entry.token === state.token && entry.databaseIndex === state.databaseIndex && entry.firstObservedHour <= hour && (entry.endedByHour === null || entry.endedByHour > hour))
       return { ...entry, lastObservedHour: Math.min(entry.lastObservedHour, hour), endedByHour: null, outcomeObservedHour: null, outcome: 'active' as const };
   }
   return null;
@@ -181,7 +181,7 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
   if (moment) for (const slot of ordered) {
     const current = researchStateAt(slot, hour);
     const entry = current && slot.entries.find(entry => entry.outcome === 'active'
-      && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token);
+      && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token && entry.databaseIndex === current.databaseIndex);
     if (entry) tokens.push(entry.token);
     else if (isUnjoinedResearch(current)) tokens.push(current.token);
   }
@@ -207,11 +207,14 @@ function validState(state: ResearchSlotState): boolean {
   const details = state.details;
   return hour(state.firstHour) && hour(state.lastHour) && state.lastHour >= state.firstHour
     && (state.token === null || (typeof state.token === 'string' && state.token.length > 0 && state.token.length <= 512))
+    && (state.databaseIndex === null ? state.token === null : state.token !== null && templateIndex(state.databaseIndex))
     && (state.entryFirstObservedHour === null || hour(state.entryFirstObservedHour))
     && fixed(state.speedMultiplierRaw) && fixed(state.bankedDaysRaw) && fixed(state.appliedDaysRaw)
     && (state.aheadReductionYearsRaw === null || fixed(state.aheadReductionYearsRaw))
     && (details === null || (
-      (details.remainingDays === null || (Number.isInteger(details.remainingDays) && details.remainingDays >= 0 && details.remainingDays <= 4294967295))
+      (details.remainingDays === null ? details.estimateRaw === null : Number.isInteger(details.remainingDays) && details.remainingDays >= 0 && details.remainingDays <= 4294967295
+        && fixed(details.estimateRaw) && BigInt(details.estimateRaw) <= BigInt(details.remainingDays) * 100_000n
+        && BigInt(details.estimateRaw) > BigInt(details.remainingDays) * 100_000n - 100_000n)
       && (details.modifiers === null || (hour(details.modifiers.year)
         && fixed(details.modifiers.totalBonusRaw) && fixed(details.modifiers.aheadFactorRaw) && fixed(details.modifiers.minimumSpeedRaw)
         && Array.isArray(details.modifiers.components) && details.modifiers.components.length === 8

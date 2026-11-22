@@ -8,7 +8,7 @@ import '../../components/Dossier.css';
 import { dayLabel } from '../../charts/draw';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
-import { useHeadProduct } from '../../dashboard/headProduct';
+import { useHeadProduct, whenDue } from '../../dashboard/headProduct';
 import type { BoundTrack } from '../../dashboard/model';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
@@ -18,7 +18,7 @@ import GameText, { GameBlocks, GameRuns, type EntityLink } from '../research/Gam
 import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
-import { detailsStructure, detailTexts, effectsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
+import { detailsStructure, detailTexts, effectsRead, effectsStructure, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
 import { projectDate, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
@@ -26,14 +26,14 @@ import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProje
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
 
-type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | null; hour: number; missing: string; feed: PanelFeed | null; anchor: FloatingAnchor;
-  onClose: () => void; onWarnings: (warnings: readonly string[]) => void };
+type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | null; hour: number; through: () => number | null; missing: string; feed: PanelFeed | null;
+  anchor: FloatingAnchor; onClose: () => void; onWarnings: (warnings: readonly string[]) => void };
 
-export default function ProjectWindow({ reply, card, hour, missing, feed, anchor, onClose, onWarnings, ...asked }: WindowProps) {
+export default function ProjectWindow({ reply, card, hour, through, missing, feed, anchor, onClose, onWarnings, ...asked }: WindowProps) {
   return <FloatingPanel title="Special project" label="special project details" anchor={anchor} onClose={onClose} className="project-window">
     {card ? <div className="dossier is-blueprint">
       <Summary reply={reply} card={card} feed={feed} active={asked.active} clock={asked.runtime.clock} />
-      <Runtime {...asked} card={card} hour={hour} onWarnings={onWarnings} />
+      <Runtime {...asked} card={card} hour={hour} through={through} onWarnings={onWarnings} />
     </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}
   </FloatingPanel>;
 }
@@ -67,7 +67,9 @@ function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsR
   </>;
 }
 
-function Runtime({ runtime, widget, tag, active, card, hour, onWarnings }: Asked & { card: ProjectCard; hour: number; onWarnings: (warnings: readonly string[]) => void }) {
+function Runtime({ runtime, widget, tag, active, card, hour, through, onWarnings }: Asked & {
+  card: ProjectCard; hour: number; through: () => number | null; onWarnings: (warnings: readonly string[]) => void;
+}) {
   const box = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
     { active, validate: validateProjectDetails, structure: detailsStructure });
@@ -78,11 +80,17 @@ function Runtime({ runtime, widget, tag, active, card, hour, onWarnings }: Asked
   useEffect(() => onWarnings(JSON.parse(warnings) as string[]), [warnings, onWarnings]);
   useEffect(() => () => onWarnings([]), [onWarnings]);
   const ref = useCallback((element: HTMLDivElement | null) => { box.current = element; root(element); }, [root]);
-  const match = data ? runtimeProject(data, card, hour) : null;
+  const current = useCallback(() => Math.max(hour, through() ?? hour), [hour, through]);
+  const due = data && data.hour > current() ? data.hour : null;
+  const [, wake] = useState(0);
+  useEffect(() => {
+    if (due !== null) return whenDue(due, current, runtime.clock.subscribeFrame, () => wake(n => n + 1));
+  }, [due, current, runtime.clock]);
+  const match = data ? runtimeProject(data, card, current()) : null;
   return <div className="dossier-body" ref={ref}>
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data || !match ? <WidgetState kind="loading" label="Loading project rewards…" />
       : typeof match === 'string' ? <p className="dossier-missing">{match}</p>
-        : <DetailValues.Provider value={values}><Rewards runtime={runtime} widget={widget} tag={tag} active={active} project={match} done={card.run.state === 'completed'} /></DetailValues.Provider>}
+        : <DetailValues.Provider value={values}><Rewards runtime={runtime} widget={widget} tag={tag} active={active} hour={data.hour} project={match} done={card.run.state === 'completed'} /></DetailValues.Provider>}
   </div>;
 }
 
@@ -96,11 +104,13 @@ function Output({ value, state, onOpen }: { value: ProjectEffects | null | undef
   </>;
 }
 
-function Rewards({ runtime, widget, tag, active, project, done }: Asked & { project: ProjectRuntimeDetails; done: boolean }) {
+function Rewards({ runtime, widget, tag, active, hour, project, done }: Asked & { hour: number; project: ProjectRuntimeDetails; done: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', { country: countryFromKey(tag), owner: project.owner, project: project.id },
     { active, validate: validateProjectEffects, structure: effectsStructure });
-  const state = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effects.data.unavailable;
+  const read = effects.error ? effects.error.message : !effects.data ? 'Loading effects…' : effectsRead(hour, project, effects.data);
+  const state = read ?? (effects.data?.output ? null : effects.data?.unavailable ?? null);
+  const options = read ?? (effects.data ? optionEffects(project, effects.data) : 'Loading effects…');
   useLayoutEffect(() => { effects.root(box.current); }, [effects.root]);
   const [opened, setOpened] = useState<EntityLink | null>(null);
   const at = `j:${project.owner}:${project.id}`;
@@ -112,7 +122,7 @@ function Rewards({ runtime, widget, tag, active, project, done }: Asked & { proj
         {project.pending.description && <p className="dossier-note">{project.pending.description}</p>}
         {project.pending.unavailable && <p className="dossier-missing">{project.pending.unavailable}</p>}
         <div className="project-page-options">{project.pending.options.map((option, index) => <div className="project-page-option" key={index}>
-          <h5><Name label={option.label} /></h5><Output value={effects.data?.options[index]} state={state} onOpen={setOpened} /></div>)}</div>
+          <h5><Name label={option.label} /></h5><Output value={typeof options === 'string' ? null : options[index]} state={typeof options === 'string' ? options : null} onOpen={setOpened} /></div>)}</div>
       </>}
     </section>}
     <Iterations runtime={runtime} widget={widget} tag={tag} active={active} project={project} onOpen={setOpened} />
@@ -138,8 +148,7 @@ function Iterations({ runtime, widget, tag, active, project, onOpen }: Asked & {
     {choices === null ? <p className="dossier-missing">Iterations not recorded.</p> : choices.length === 0 ? <p className="dossier-note">No iterations yet.</p>
       : <ol className="project-window-timeline">{choices.map(choice => <li key={choice.ordinal}>
         <time>{dayLabel(choice.date)}</time>
-        <p className="project-window-choice-name"><Name label={choice.reward} />
-          {choice.option.name && <span className="project-window-option"> · <Name label={choice.option} /></span>}</p>
+        <p className="project-window-choice-name"><Name label={choice.reward} /><span className="project-window-option"> · <Name label={choice.option} /></span></p>
         <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={onOpen} />
       </li>)}</ol>}
   </section>;

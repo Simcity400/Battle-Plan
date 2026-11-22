@@ -24,7 +24,7 @@ function lines(runs: readonly GameRun[]): GameRun[][] {
 const plain = (runs: readonly GameRun[]) => runs.map(run => run.kind === 'text' || run.kind === 'link' ? run.text : run.kind === 'flag' ? run.tag : '').join('');
 
 function tidy(line: readonly GameRun[], lead = BULLET): GameRun[] {
-  const out = line.filter(run => run.kind !== 'icon');
+  const out = [...line];
   while (out[0]?.kind === 'text') {
     const text = out[0].text.replace(lead, '');
     if (text) { out[0] = { ...out[0], text }; break; }
@@ -70,7 +70,7 @@ export function gameBlocks(runs: readonly GameRun[]): GameBlock[] {
   for (const raw of lines(runs)) {
     const line = tidy(raw);
     const text = plain(line).trim();
-    if (!text) continue;
+    if (!text && !line.some(run => run.kind === 'icon')) continue;
     if (/[:：]$/u.test(text)) { out.push({ kind: 'heading', runs: withoutColon(line) }); continue; }
     const parts = stat(line);
     if (parts) { out.push({ kind: 'stat', ...parts }); continue; }
