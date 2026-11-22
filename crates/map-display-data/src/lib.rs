@@ -260,6 +260,15 @@ pub mod winter {
         pub fn ptr_eq(&self, other: &Self) -> bool {
             self.0.ptr_eq(&other.0)
         }
+        pub fn changed_pages(&self, previous: &Self) -> Vec<usize> {
+            self.0.changed_pages_by(&previous.0, same)
+        }
+        pub fn changed_page_indices<'a>(
+            &'a self,
+            previous: &'a Self,
+        ) -> impl Iterator<Item = usize> + 'a {
+            self.0.changed_page_indices_by(&previous.0, same)
+        }
     }
     impl std::ops::Deref for SnowFactors {
         type Target = Paged<Option<f32>>;
@@ -311,9 +320,7 @@ impl Product for winter::SnowFactors {
 #[cfg(test)]
 mod snow_wire_oracle {
     use super::*;
-    // quarantine: #148 the code and the test disagree on a recorded or displayed fact
     #[test]
-    #[ignore = "quarantined under #148"]
     fn factor_edits_copy_only_dirty_pages_and_preserve_bits_and_rollback() {
         let base = winter::SnowFactors(
             Paged::try_from_iter(
@@ -344,6 +351,10 @@ mod snow_wire_oracle {
         assert_eq!(changed[0], Some(0.0));
         let nan = f32::from_bits(0x7fc0_1234);
         let with_nan = changed.try_edited([Ok((0, Some(nan)))]).unwrap();
+        assert_eq!(with_nan.changed_pages(&changed), [0]);
+        let copied_nan =
+            winter::SnowFactors::try_from_iter(with_nan.len(), with_nan.iter().copied()).unwrap();
+        assert!(with_nan.changed_pages(&copied_nan).is_empty());
         assert!(
             with_nan
                 .try_edited([Ok((0, Some(nan)))])
