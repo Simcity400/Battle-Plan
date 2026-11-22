@@ -1063,3 +1063,84 @@ fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavaila
         },
     );
 }
+
+#[test]
+fn non_finite_fleet_color_refuses_group_marker_by_name() {
+    use replay_data::rows::FleetCounterInputRow;
+    let check = |fleet_rows: Vec<FleetCounterInputRow>, port: bool| {
+        let force = TaskForceRow {
+            id: 1,
+            fleet: 42,
+            mission: 1,
+            ..Default::default()
+        };
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 1,
+            tables: std::array::from_fn(|_| TableView::Unavailable {
+                reason: "not needed".into(),
+            })
+            .map(Into::into),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::FleetCounterInputs.index()] =
+            TableView::Complete(TableRows::FleetCounterInputs(fleet_rows));
+        let native = NativeInputs::read(&frame).unwrap();
+        let vision = Vision::default();
+        let country_ids = BTreeMap::new();
+        let forces = [force];
+        let context = NavalContext {
+            type_tints: &type_tint::Index::default(),
+            vision: &vision,
+            native: &native,
+            ship_inputs: None,
+            aggression: &[1],
+            ship_task_forces: Arc::new(BTreeMap::new()),
+            ships_complete: true,
+            ships: Arc::new(BTreeMap::new()),
+            country_ids: &country_ids,
+            ideology: &|_| Ok(None),
+            missions: Arc::new(BTreeMap::from([(1, 1)])),
+            mission_skips: Default::default(),
+            forces: &forces,
+            forces_complete: true,
+        };
+        let unit = port_unit(&forces[0], 0);
+        context.flotilla(&[&unit], port, false).marker
+    };
+    let valid = [0.2f32, 0.4, 0.6, 1.0];
+    let valid_row = FleetCounterInputRow {
+        fleet: 42,
+        task_forces: vec![1],
+        red: valid[0].to_bits(),
+        green: valid[1].to_bits(),
+        blue: valid[2].to_bits(),
+        alpha: valid[3].to_bits(),
+        ..Default::default()
+    };
+    assert_eq!(check(vec![valid_row.clone()], false), Ok(Some(valid)));
+    assert_eq!(check(vec![valid_row], true), Ok(Some(valid)));
+    let absent = check(Vec::new(), true).unwrap_err();
+    assert!(absent.contains("is not recorded"), "{absent}");
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for channel in 0..4 {
+            let mut raw = valid.map(f32::to_bits);
+            raw[channel] = bad.to_bits();
+            let row = FleetCounterInputRow {
+                fleet: 42,
+                task_forces: vec![1],
+                red: raw[0],
+                green: raw[1],
+                blue: raw[2],
+                alpha: raw[3],
+                ..Default::default()
+            };
+            for port in [false, true] {
+                let err = check(vec![row.clone()], port)
+                    .expect_err("non-finite fleet colour must be refused");
+                assert!(err.contains("non-finite"), "{err}");
+                assert!(err.contains("42"), "{err}");
+            }
+        }
+    }
+}
