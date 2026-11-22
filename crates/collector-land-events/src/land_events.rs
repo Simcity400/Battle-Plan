@@ -84,7 +84,10 @@ fn unless_foreign<T>(diverted: impl FnOnce() -> T, body: impl FnOnce() -> T) -> 
     body()
 }
 
-pub fn prepare() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
+/// land-event observation), while storage remains live and teardown is excluded.
+pub unsafe fn prepare() {
     unless_foreign(|| (), || engine_allocation::advisory(prepare_storage));
 }
 
@@ -112,7 +115,10 @@ fn prepare_storage() {
     }
 }
 
-pub fn presize(words: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
+/// land-event observation), while storage remains live and teardown is excluded.
+pub unsafe fn presize(words: usize) {
     unless_foreign(
         || (),
         || {
@@ -126,7 +132,7 @@ pub fn presize(words: usize) {
     );
 }
 
-pub fn observe_observer_rows(rows: usize) {
+pub(crate) fn observe_observer_rows(rows: usize) {
     unless_foreign(
         || (),
         || {
@@ -144,7 +150,10 @@ pub fn capacity() -> usize {
     LOG_REQUIRED.load(Ordering::Relaxed)
 }
 
-pub fn install_offered() {
+/// # Safety
+/// Run only at attach or the admitted hour's sole observer boundary while no competing swap or
+/// teardown runs.
+pub unsafe fn install_offered() {
     unless_foreign(|| (), install_offered_owned);
 }
 fn install_offered_owned() {
@@ -2725,8 +2734,11 @@ mod tests {
             assert_eq!(out[0], demand as u64);
             assert!(out[1..].iter().enumerate().all(|(n, &word)| word == n as u64 + 1));
             assert!(spilled().is_empty() && SPILL.is_empty());
-            prepare();
-            install_offered();
+            // SAFETY: test holds `exclusive()` with no live land-event hooks.
+            unsafe {
+                prepare();
+                install_offered();
+            }
             assert!(LOG_CAPACITY.load(Ordering::SeqCst) >= demand);
         }
         assert_eq!(test_support::thread_lost(), lost);
@@ -2795,11 +2807,13 @@ mod tests {
     fn live_word_hint_presizes_the_log_and_drains_before_any_event_overflow() {
         let _guard = exclusive();
         test_support::reset_with_words(0);
-        presize(50_005);
+        // SAFETY: test holds `exclusive()` with no live land-event hooks.
+        unsafe { presize(50_005) };
         let prepared = capacity();
         assert!(prepared >= 50_005);
         let mut out = vec![0; prepared];
-        install_offered();
+        // SAFETY: test holds `exclusive()` with no live land-event hooks.
+        unsafe { install_offered() };
         drain(&mut out, 10, true);
         append(50_005, |put| {
             for _ in 1..50_005 {
@@ -2821,10 +2835,12 @@ mod tests {
         let mut frames: [crate::extended::land_events::Captured; 4] = std::array::from_fn(|_| {
             crate::extended::land_events::Captured::with_capacities(&capacities)
         });
-        presize(9);
+        // SAFETY: test holds `exclusive()` with no live land-event hooks.
+        unsafe { presize(9) };
         for hour in 10..18 {
             for frame in &mut frames {
-                frame.grow(&mut capacities);
+                // SAFETY: test holds `exclusive()` with no live land-event hooks.
+                unsafe { frame.grow(&mut capacities) };
             }
             frames[(hour as usize - 10) % 4].drain(hour, hour == 10);
             assert_eq!(capacities.words, 9);
@@ -2858,8 +2874,11 @@ mod tests {
             });
             entered.wait();
             LOG_REQUIRED.fetch_max(4096, Ordering::SeqCst);
-            prepare();
-            install_offered();
+            // SAFETY: test holds `exclusive()` and verifies producer overlap defers swap.
+            unsafe {
+                prepare();
+                install_offered();
+            }
             assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), 1024);
             let bad = drain(&mut out, 11, false);
             assert!(!bad.complete);
@@ -2867,7 +2886,8 @@ mod tests {
             release.wait();
             producer.join().unwrap();
         });
-        install_offered();
+        // SAFETY: producer thread has joined and test holds `exclusive()`.
+        unsafe { install_offered() };
         assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), 4096);
         let next = drain(&mut out, 12, false);
         assert!(next.complete);
@@ -2908,7 +2928,8 @@ mod ownership_tests {
             let drained = lost_drain(11, "land observer frame not captured");
             assert!(!drained.complete);
             assert_eq!(drained.reason, "land event log owned by another test");
-            presize(1 << 16);
+            // SAFETY: test verifies foreign-thread ownership guard rejects `presize`.
+            unsafe { presize(1 << 16) };
             stop_observation();
             append_record(&[5]);
         })

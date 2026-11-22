@@ -134,7 +134,10 @@ pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
 }
 
-pub fn presize() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// advisor-pool watches remain live and teardown is excluded.
+pub unsafe fn presize() {
     let pools = POOLS.load(Ordering::Relaxed);
     if pools != 0 {
         WATCHES.registry.offer(pools + 1);

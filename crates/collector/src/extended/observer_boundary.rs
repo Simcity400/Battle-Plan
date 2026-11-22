@@ -79,8 +79,13 @@ impl ObserverBoundaryRequest {
         crate::local_subunit_changes::boundary(!self.continuous || self.recovery);
         crate::design_changes::boundary(!self.continuous || self.recovery);
         collector_division_templates::template_changes::boundary(!self.continuous || self.recovery);
-        collector_factions::faction_goal_changes::boundary(!self.continuous || self.recovery);
-        collector_factions::faction_companion_changes::boundary(!self.continuous || self.recovery);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while faction watches live.
+        unsafe {
+            collector_factions::faction_goal_changes::boundary(!self.continuous || self.recovery);
+            collector_factions::faction_companion_changes::boundary(
+                !self.continuous || self.recovery,
+            );
+        }
         crate::ship_model_changes::boundary(!self.continuous || self.recovery);
         collector_divisions::province_unit_changes::boundary(!self.continuous || self.recovery);
         crate::province_combat_changes::boundary(!self.continuous || self.recovery);
@@ -96,7 +101,8 @@ impl ObserverBoundaryRequest {
         self.finished[1] = true;
         report.ticks[1] = elapsed(begin);
         let begin = qpc();
-        self.lines.drain();
+        // SAFETY: Admitted hour's sole observer boundary drains the line-output interval once.
+        unsafe { self.lines.drain() };
         self.finished[2] = true;
         report.ticks[2] = elapsed(begin);
         let begin = qpc();
@@ -105,7 +111,8 @@ impl ObserverBoundaryRequest {
         self.finished[3] = true;
         report.ticks[3] = elapsed(begin);
         let begin = qpc();
-        self.construction.drain();
+        // SAFETY: Admitted hour's sole observer boundary drains the construction-IC interval once.
+        unsafe { self.construction.drain() };
         crate::construction_ic::install_offered();
         crate::line_output::install_offered();
         self.finished[4] = true;
@@ -115,9 +122,12 @@ impl ObserverBoundaryRequest {
         crate::peace_settlements::install_offered();
         self.finished[5] = true;
         report.ticks[5] = elapsed(begin);
-        report.ticks[6] = self.operations.capture();
+        // SAFETY: Admitted hour's sole observer boundary seals operation-outcome and politics
+        // handoffs while their global staging logs remain live.
+        report.ticks[6] = unsafe { self.operations.capture() };
         self.finished[6] = true;
-        report.ticks[7] = self.politics.capture();
+        // SAFETY: Admitted hour's sole observer boundary seals the politics handoff while staging lives.
+        report.ticks[7] = unsafe { self.politics.capture() };
         self.finished[7] = true;
         report
     }
@@ -155,8 +165,11 @@ impl ObserverBoundaryRequest {
             crate::local_subunit_changes::boundary(true);
             crate::design_changes::boundary(true);
             collector_division_templates::template_changes::boundary(true);
-            collector_factions::faction_goal_changes::boundary(true);
-            collector_factions::faction_companion_changes::boundary(true);
+            // SAFETY: Admitted hour's sole observer boundary invalidates faction watches on failure.
+            unsafe {
+                collector_factions::faction_goal_changes::boundary(true);
+                collector_factions::faction_companion_changes::boundary(true);
+            }
             crate::ship_model_changes::boundary(true);
             collector_divisions::province_unit_changes::boundary(true);
             crate::province_combat_changes::boundary(true);

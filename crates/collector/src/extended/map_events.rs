@@ -53,15 +53,18 @@ impl Publication {
     }
 
     pub(crate) fn admitted(&self) {
-        self.0.admitted();
+        // SAFETY: Called by the originating spool upon queue admission while map-event lanes live.
+        unsafe { self.0.admitted() };
     }
     pub(crate) fn commit(self) {
-        self.0.commit();
+        // SAFETY: Called by the originating spool after writer receipt confirmation while lanes live.
+        unsafe { self.0.commit() };
     }
 }
 
 pub(crate) fn reset_admitted() {
-    map_events::lanes::reset_admitted();
+    // SAFETY: Called by the originating spool when discarding uncommitted writes before release.
+    unsafe { map_events::lanes::reset_admitted() };
 }
 
 impl Ledger {
@@ -75,7 +78,9 @@ impl Ledger {
             return None;
         };
         let mut assembled = map_events::lanes::Assembled::default();
-        let row = map_events::lanes::assemble(interval.seal, &mut assembled)
+        // SAFETY: The originating spool is the sole consumer assembling this frame's sealed interval
+        // while the session's map-event lanes remain live.
+        let row = unsafe { map_events::lanes::assemble(interval.seal, &mut assembled) }
             .and_then(|()| map_events::interval::row(&interval, &assembled));
         match row {
             Ok(row) => {

@@ -34,7 +34,11 @@ pub struct Orders {
 }
 
 impl Orders {
-    pub fn new(rows: usize, geometry: usize, groups: usize, visits: usize) -> Self {
+    /// # Safety
+    /// Supply capacities measured for the active session's sizing pass, or call from an isolated
+    /// fixture without a live attachment. Allocation failure invokes the process-wide collector
+    /// allocation-failure handler.
+    pub unsafe fn new(rows: usize, geometry: usize, groups: usize, visits: usize) -> Self {
         Self {
             rows: CaptureRows::new(rows),
             geometry: engine_allocation::owned_vec(engine_allocation::default_vec(geometry)),
@@ -61,7 +65,8 @@ impl Orders {
         }
     }
     pub fn vacant() -> Self {
-        Self::new(0, 0, 0, 0)
+        // SAFETY: Zero capacities perform no heap allocation and cannot invoke the failure handler.
+        unsafe { Self::new(0, 0, 0, 0) }
     }
     pub fn reset(&mut self) {
         self.rows.reset();

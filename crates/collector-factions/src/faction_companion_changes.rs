@@ -85,12 +85,18 @@ pub fn active() -> usize {
         + crate::faction_accounts::mirror::active()
         + WATCHES.iter().map(WatchRegistry::active).sum::<usize>()
 }
-pub fn boundary(invalidate: bool) {
+/// # Safety
+/// Only the attaching prime pass or the admitted hour's sole observer boundary (or an isolated
+/// test) may advance the faction-companion watch boundary.
+pub unsafe fn boundary(invalidate: bool) {
     for watches in &WATCHES {
         watches.boundary(invalidate);
     }
 }
-pub fn presize() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// the faction-companion watches remain live and teardown is excluded.
+pub unsafe fn presize() {
     for (family, watches) in WATCHES.iter().enumerate() {
         let count = if family == Family::Accounts as usize {
             ACCOUNT_DEMAND.load(Ordering::Relaxed)
@@ -105,9 +111,15 @@ pub fn collect() {
         watches.collect();
     }
 }
-pub fn prime() {
-    presize();
-    boundary(false);
+/// # Safety
+/// Only the attaching runtime or an isolated collector fixture may prime the live faction-companion
+/// watches, excluding concurrent observer boundaries, capture and detach.
+pub unsafe fn prime() {
+    // SAFETY: Caller guarantees exclusive attach/fixture priming with live watches.
+    unsafe {
+        presize();
+        boundary(false);
+    }
 }
 /// # Safety
 /// Only the Factions worker under its exclusive native quiescent lease.

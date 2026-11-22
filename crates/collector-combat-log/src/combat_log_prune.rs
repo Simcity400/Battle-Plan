@@ -268,7 +268,7 @@ fn spill_rows(
     COUNTERS[2].fetch_add(kept, Ordering::Relaxed);
 }
 
-pub fn prepare(demand: usize) {
+pub(crate) fn prepare(demand: usize) {
     let required = REQUIRED.fetch_max(demand, Ordering::SeqCst).max(demand);
     let mut swap = SWAP.lock().unwrap_or_else(PoisonError::into_inner);
     let retired = swap.retired.take();

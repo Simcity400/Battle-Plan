@@ -485,7 +485,7 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+pub(crate) fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
 fn drain_buffer(output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {

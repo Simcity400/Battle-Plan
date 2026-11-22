@@ -449,7 +449,10 @@ fn generations() -> impl Iterator<Item = &'static Log> {
     })
 }
 
-pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
+/// # Safety
+/// Only the originating session's sole spool consumer (or an isolated test owning the global map-
+/// event lanes) may assemble a sealed interval while the lanes remain live before [`release`].
+pub unsafe fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
     output.frames.clear();
     output.bytes.clear();
     output.lanes.clear();
@@ -599,7 +602,10 @@ impl Assembled {
             .map(|(_, &(address, _))| address)
     }
 
-    pub fn admitted(&self) {
+    /// # Safety
+    /// Acknowledge actual admission by the originating session, before its observer lanes are
+    /// released.
+    pub unsafe fn admitted(&self) {
         if self.admitted.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -622,7 +628,10 @@ impl Assembled {
         }
     }
 
-    pub fn commit(&self) {
+    /// # Safety
+    /// Acknowledge a confirmed writer receipt, before the originating session releases the observer
+    /// lanes retained by this publication.
+    pub unsafe fn commit(&self) {
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
@@ -674,7 +683,10 @@ impl Assembled {
     }
 }
 
-pub fn reset_admitted() {
+/// # Safety
+/// Only the session's spool may reset the frontier after invalidating its pending writes and before
+/// its event lanes are freed.
+pub unsafe fn reset_admitted() {
     for log in generations() {
         for lane in log.lanes.iter() {
             lane.assembled
@@ -692,7 +704,7 @@ pub fn reset_admitted() {
     }
 }
 
-pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
+pub(crate) fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let current = CURRENT.load(Ordering::SeqCst);
     let lanes = lanes.max(REQUIRED_LANES.load(Ordering::Relaxed));
     let (lane_bytes, shared) = match unsafe { current.as_ref() } {

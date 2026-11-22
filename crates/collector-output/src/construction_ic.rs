@@ -93,7 +93,7 @@ pub fn capacity() -> usize {
     OBSERVATION.capacity.load(Ordering::Acquire)
 }
 
-pub fn presize(events: usize) {
+pub(crate) fn presize(events: usize) {
     engine_allocation::advisory(|| presize_storage(events));
 }
 
@@ -465,7 +465,7 @@ fn entry(slot: &Slot) -> Entry {
     }
 }
 
-pub fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+pub(crate) fn drain(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
     let log = log();
     OBSERVATION.drain(
         output,

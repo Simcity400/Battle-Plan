@@ -2425,23 +2425,29 @@ impl Processor {
                 TableView::Complete(replay_data::rows::TableRows::EventFeedHistory(rows)),
             );
         }
-        let operation_publication = campaign
-            .operation_outcomes
-            .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables);
+        // SAFETY: Sole spool consumer assembles operation completions while observer logs stay live.
+        let operation_publication = unsafe {
+            campaign
+                .operation_outcomes
+                .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables)
+        };
         let map_event_publication = campaign
             .map_events
             .assemble_owned(captured.extended.map_events(), &mut source.tables);
         if crate::allocation::failed() {
             return Err(crate::allocation::oom());
         }
-        campaign.politics.assemble_owned(
-            source.branch,
-            source.hour,
-            captured.extended.politics(),
-            &captured.countries,
-            captured.countries_result,
-            &mut source.tables,
-        )?;
+        // SAFETY: Sole spool consumer assembles politics events while staging logs stay live.
+        unsafe {
+            campaign.politics.assemble_owned(
+                source.branch,
+                source.hour,
+                captured.extended.politics(),
+                &captured.countries,
+                captured.countries_result,
+                &mut source.tables,
+            )
+        }?;
         campaign.assemble_construction_ic(&mut source, captured);
         campaign.fuel_awards.assemble(
             source.branch,
@@ -2655,7 +2661,8 @@ impl Processor {
             .last_ticket()
             .expect("processor always uses its collector writer");
         if let Some(publication) = &frame.operation_publication {
-            publication.admitted();
+            // SAFETY: Originating spool acknowledges queue admission while operation logs stay live.
+            unsafe { publication.admitted() };
         }
         if let Some(publication) = &frame.map_event_publication {
             publication.admitted();
@@ -2685,7 +2692,8 @@ impl Processor {
             crate::event_feed_observer::accepted(&publication)?;
         }
         if let Some(publication) = operation_publication {
-            publication.commit();
+            // SAFETY: Originating spool commits confirmed writer receipt while operation logs live.
+            unsafe { publication.commit() };
         }
         if let Some(publication) = map_event_publication {
             publication.commit();
@@ -2803,7 +2811,8 @@ impl Processor {
             }
         }
         if lost {
-            collector_operation_outcomes::extended::operation_outcomes::reset_admitted();
+            // SAFETY: Originating spool resets admitted frontier after discarding uncommitted output.
+            unsafe { collector_operation_outcomes::extended::operation_outcomes::reset_admitted() };
             crate::extended::map_events::reset_admitted();
         }
         if failed {

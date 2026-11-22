@@ -179,7 +179,10 @@ pub fn schedule_storage(
     }
     Ok(demand)
 }
-pub fn presize(demand: usize, countries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// market observer storage remains live and teardown is excluded.
+pub unsafe fn presize(demand: usize, countries: usize) {
     SCHEDULE_DEMAND.fetch_max(demand, Ordering::Release);
     prepare_events();
     VARIABLES_WATCH.offer(countries);
@@ -204,7 +207,10 @@ fn prepare_events() {
 pub fn contract_storage(_items: usize, _in_transit: usize) -> Option<usize> {
     Some(10)
 }
-pub fn prepare_contract_events(demand: usize) {
+/// # Safety
+/// Run only during admitted economy capture or the active session's sizing pass (or an isolated
+/// test), while market observer storage remains live and teardown is excluded.
+pub unsafe fn prepare_contract_events(demand: usize) {
     CONTRACT_DEMAND.fetch_max(demand, Ordering::Release);
     prepare_events();
 }
@@ -1201,7 +1207,8 @@ pub mod test_support {
             ENABLED.store(true, Ordering::SeqCst);
             observe_resets(true);
             observe_variables(true);
-            presize(16, 16);
+            // SAFETY: Test session holds `SERIAL`, owning the global market observer state.
+            unsafe { presize(16, 16) };
             held::invalidate();
             Self(guard)
         }

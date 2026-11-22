@@ -172,7 +172,10 @@ pub struct Capacities {
 
 collector_primitives::capacity_max!(Capacities { rows, lend_lease });
 impl Capacities {
-    pub fn presize(
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass against the authenticated
+    /// session image, while combat-log observer storage remains live and teardown is excluded.
+    pub unsafe fn presize(
         &mut self,
         memory: &impl Memory,
         base: usize,

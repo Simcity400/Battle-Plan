@@ -849,7 +849,8 @@ fn country_recovery_rebinds_a_fresh_market_manager_from_the_existing_census() {
 #[test]
 fn country_market_writer_rebinding_has_no_country_count_or_id_cap() {
     let session = producer::test_support::Session::default();
-    producer::presize(1500, 1500);
+    // SAFETY: `session` serializes market-change globals with no live hooks.
+    unsafe { producer::presize(1500, 1500) };
     let mut memory = Native::new();
     memory.bytes.resize(0x20000 + 1498 * COUNTRY_STRIDE, 0);
     let holders: Vec<_> = (0..1498)
@@ -936,7 +937,8 @@ fn failed_initial_country_seed_recovers_without_publishing_a_default_row() {
 fn persistent_country_failure_retries_only_its_holder_and_preserves_healthy_writer_marks_at_scale()
 {
     let session = producer::test_support::Session::default();
-    producer::presize(1500, 1500);
+    // SAFETY: `session` serializes market-change globals with no live hooks.
+    unsafe { producer::presize(1500, 1500) };
     let mut memory = Native::new();
     memory.bytes.resize(0x20000 + 1498 * COUNTRY_STRIDE, 0);
     let holders: Vec<_> = (0..1498)
@@ -1367,7 +1369,8 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
         let mut decoder = FrameDecoder::for_tables(&TABLES);
         boundary(99);
         let slots = session.country_domain_capacity(producer::PRICES);
-        producer::presize(16, slots / 2);
+        // SAFETY: `session` serializes market-change globals with no live hooks.
+        unsafe { producer::presize(16, slots / 2) };
         memory.clock(100);
         producer::boundary(
             Some(cgame_state::Clock {

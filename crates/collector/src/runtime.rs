@@ -952,15 +952,18 @@ fn run(
             ),
         )
     })?;
-    crate::politics_changes::resize(
-        crate::country_scale::observe_politics_demand(&memory, base, slots, sampling::BUFFERS)
-            .unwrap_or(slots),
-        processor
-            .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
-                &memory, base,
-            ))
-            .unwrap_or(0),
-    );
+    // SAFETY: Runtime attach owns the authenticated image and sizes politics staging before capture.
+    unsafe {
+        crate::politics_changes::resize(
+            crate::country_scale::observe_politics_demand(&memory, base, slots, sampling::BUFFERS)
+                .unwrap_or(slots),
+            processor
+                .observe_input_demand(engine_events::politics_sites::lexical_key_demand(
+                    &memory, base,
+                ))
+                .unwrap_or(0),
+        );
+    }
     crate::country_input_changes::presize_countries(slots);
     crate::relation_changes::presize(slots);
     crate::world_input_changes::presize(slots);
@@ -984,7 +987,8 @@ fn run(
     if let Err(reason) = sizing.extended.presize_live_inputs(&memory, base) {
         processor.observe_input_demand_error(reason);
     }
-    collector_land_events::land_events::install_offered();
+    // SAFETY: Runtime attach installs initial land-event storage before callback publication.
+    unsafe { collector_land_events::land_events::install_offered() };
     sizing.extended.logistics.raise(logistics_rows);
     crate::fuel_awards::presize(&memory, base);
     crate::fuel_awards::install_offered();
@@ -1003,14 +1007,20 @@ fn run(
         collector_equipment_destruction::equipment_destruction::demand();
     collector_naval_results::naval_result_sources::prepare(&memory, base);
     sizing.extended.naval_result_sources = collector_naval_results::naval_result_sources::demand();
-    crate::air_losses::prepare(&memory, base, slots);
-    crate::building_bombing::prepare(&memory, base, slots);
+    // SAFETY: Runtime attach prepares live observer storage against the authenticated image before
+    // callback publication.
+    unsafe {
+        crate::air_losses::prepare(&memory, base, slots);
+        crate::building_bombing::prepare(&memory, base, slots);
+    }
     crate::nuclear_strikes::presize(crate::building_bombing::buildings().saturating_add(slots));
-    crate::map_events::presize(slots)?;
+    // SAFETY: Runtime attach presizes map-event lanes before callback publication.
+    unsafe { crate::map_events::presize(slots) }?;
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
     sizing.extended.nuclear_strikes = crate::nuclear_strikes::capacity();
-    crate::market_changes::presize(slots, slots);
+    // SAFETY: Runtime attach presizes market observer storage before callback publication.
+    unsafe { crate::market_changes::presize(slots, slots) };
     sizing.extended.market = crate::market_changes::capacity();
     sizing.content = engine_dlc::cdlc_manager::observe_counts(&memory, base);
     if let Some(rows) = processor
@@ -1138,7 +1148,8 @@ fn run(
     {
         sizing.extended.economy.demand.raise(demand);
     }
-    sizing.extended.operation_outcomes.prepare();
+    // SAFETY: Runtime attach prepares operation-log storage before callback publication.
+    unsafe { sizing.extended.operation_outcomes.prepare() };
     progress.step("inputs_sized", None);
     let combat_hints = CombatHints::observe(&memory, base);
     for reason in combat_hints.failures.into_iter().flatten() {
@@ -5144,7 +5155,8 @@ fn sizing_pass(
     crate::flag_changes::collect();
     crate::building_changes::presize();
     crate::building_changes::collect();
-    crate::advisor_pool_changes::presize();
+    // SAFETY: The session's sole serial sizing pass runs while observer storage stays live.
+    unsafe { crate::advisor_pool_changes::presize() };
     crate::advisor_pool_changes::collect();
     crate::party_leader_changes::presize();
     crate::party_leader_changes::collect();
@@ -5154,7 +5166,8 @@ fn sizing_pass(
     crate::party_changes::collect();
     crate::wing_changes::presize();
     crate::wing_changes::collect();
-    collector_missions::mission_changes::presize();
+    // SAFETY: The session's sole serial sizing pass runs while mission watches stay live.
+    unsafe { collector_missions::mission_changes::presize() };
     collector_missions::mission_changes::collect();
     crate::rail_changes::presize();
     crate::rail_changes::collect();
@@ -5185,11 +5198,14 @@ fn sizing_pass(
     collector_divisions::province_unit_changes::collect();
     crate::province_combat_changes::presize();
     crate::province_combat_changes::collect();
-    collector_factions::faction_goal_changes::presize();
+    // SAFETY: The session's sole serial sizing pass offers watch storage while watches stay live.
+    unsafe { collector_factions::faction_goal_changes::presize() };
     collector_factions::faction_goal_changes::collect();
-    collector_factions::faction_companion_changes::presize();
+    // SAFETY: The session's sole serial sizing pass offers watch storage while watches stay live.
+    unsafe { collector_factions::faction_companion_changes::presize() };
     collector_factions::faction_companion_changes::collect();
-    collector_division_templates::template_changes::presize();
+    // SAFETY: The session's sole serial sizing pass offers watch storage while watches stay live.
+    unsafe { collector_division_templates::template_changes::presize() };
     collector_division_templates::template_changes::collect();
     crate::ship_model_changes::presize();
     crate::ship_model_changes::collect();
@@ -5199,18 +5215,28 @@ fn sizing_pass(
         collector_characters::extended::characters::census::initial_len(),
     );
     crate::character_changes::collect();
-    crate::politics_changes::prepare();
-    crate::air_losses::presize(0);
-    crate::building_bombing::presize(0);
+    // SAFETY: The session's sole serial sizing pass prepares live observer logs before detach.
+    unsafe {
+        crate::politics_changes::prepare();
+        crate::air_losses::presize(0);
+        crate::building_bombing::presize(0);
+    }
     crate::nuclear_strikes::presize(0);
-    crate::market_changes::presize(0, collector_primitives::country_slots::census_rows(0));
+    // SAFETY: The session's sole serial sizing pass prepares live observer logs before detach.
+    unsafe {
+        crate::market_changes::presize(0, collector_primitives::country_slots::census_rows(0));
+    }
+    // SAFETY: The session's sole serial sizing pass presizes live map-event lanes before detach.
     if let Err(reason) =
-        crate::map_events::presize(collector_primitives::country_slots::census_rows(0))
+        unsafe { crate::map_events::presize(collector_primitives::country_slots::census_rows(0)) }
     {
         sizing.error(reason);
     }
-    collector_land_events::land_events::prepare();
-    collector_combat_log::history_events::prepare(0);
+    // SAFETY: The session's sole serial sizing pass prepares live land and history-event logs.
+    unsafe {
+        collector_land_events::land_events::prepare();
+        collector_combat_log::history_events::prepare(0);
+    }
     let air_loss_capacity = crate::air_losses::capacity();
     let bombing_capacity = crate::building_bombing::capacity();
     let nuclear_capacity = crate::nuclear_strikes::capacity();
@@ -5224,7 +5250,8 @@ fn sizing_pass(
     });
     let operations =
         sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-    operations.prepare();
+    // SAFETY: The session's sole serial sizing pass prepares live operation-log storage.
+    unsafe { operations.prepare() };
     crate::experience_gains::prepare(registry.slots);
     crate::line_output::collect();
     crate::construction_ic::collect();
@@ -5238,7 +5265,8 @@ fn sizing_pass(
             registry.slots,
             shared.frames.live(),
         ) {
-            crate::politics_changes::resize(entries, 0);
+            // SAFETY: The session's sole serial sizing pass resizes live politics staging.
+            unsafe { crate::politics_changes::resize(entries, 0) };
         }
         crate::fuel_awards::presize(&live, base);
     }
@@ -5247,7 +5275,8 @@ fn sizing_pass(
         && let Some(entries) =
             crate::country_scale::observe_politics_demand(&live, base, registry.slots, frames)
     {
-        crate::politics_changes::resize(entries, 0);
+        // SAFETY: The session's sole serial sizing pass resizes live politics staging.
+        unsafe { crate::politics_changes::resize(entries, 0) };
         state.politics_frames = frames;
     }
     if capacity_census {
@@ -5317,16 +5346,24 @@ fn sizing_pass(
     }
     if let Some((slots, regions)) = registry.poll(&live, base) {
         crate::country_scale::note_slots(slots);
-        collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
-        crate::politics_changes::resize(
-            crate::country_scale::observe_politics_demand(&live, base, slots, shared.frames.live())
+        // SAFETY: The session's sole serial sizing pass resizes live operation and politics logs.
+        unsafe {
+            collector_operation_outcomes::operation_outcomes::resize(slots.max(1));
+            crate::politics_changes::resize(
+                crate::country_scale::observe_politics_demand(
+                    &live,
+                    base,
+                    slots,
+                    shared.frames.live(),
+                )
                 .unwrap_or(slots),
-            sizing
-                .demand(engine_events::politics_sites::lexical_key_demand(
-                    &live, base,
-                ))
-                .unwrap_or(0),
-        );
+                sizing
+                    .demand(engine_events::politics_sites::lexical_key_demand(
+                        &live, base,
+                    ))
+                    .unwrap_or(0),
+            );
+        }
         crate::country_input_changes::presize_countries(slots);
         crate::relation_changes::presize(slots);
         crate::world_input_changes::presize(slots);
@@ -5353,8 +5390,12 @@ fn sizing_pass(
         if let Err(reason) = crate::construction_ic::presize_from_live(&live, base) {
             sizing.error(reason);
         }
-        crate::air_losses::prepare(&live, base, registry.slots);
-        crate::building_bombing::prepare(&live, base, registry.slots);
+        // SAFETY: The session's sole serial sizing pass prepares live observer storage against the
+        // authenticated session image before detach.
+        unsafe {
+            crate::air_losses::prepare(&live, base, registry.slots);
+            crate::building_bombing::prepare(&live, base, registry.slots);
+        }
         crate::nuclear_strikes::presize(
             crate::building_bombing::buildings().saturating_add(registry.slots),
         );
@@ -5365,7 +5406,8 @@ fn sizing_pass(
         );
         let air_loss_capacity = crate::air_losses::capacity();
         let bombing_capacity = crate::building_bombing::capacity();
-        crate::market_changes::presize(0, registry.slots);
+        // SAFETY: The session's sole serial sizing pass presizes live market observer storage.
+        unsafe { crate::market_changes::presize(0, registry.slots) };
         let market_capacity = crate::market_changes::capacity();
         let nuclear_capacity = crate::nuclear_strikes::capacity();
         sizing.raise(shared, |capacities| {
@@ -5560,7 +5602,8 @@ fn sizing_pass(
         });
         let operations =
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
-        operations.prepare();
+        // SAFETY: background sizing is the sole non-hook caller preparing operation-log capacity while attached.
+        unsafe { operations.prepare() };
     }
     if capacity_census
         && let Some(slots) = sizing

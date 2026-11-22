@@ -1047,7 +1047,10 @@ fn copy_economy_market_contracts(
         }
     }
     match event_demand {
-        Some(demand) => collector_observers::market_changes::prepare_contract_events(demand),
+        // SAFETY: Admitted economy capture prepares contract event storage while observer storage lives.
+        Some(demand) => unsafe {
+            collector_observers::market_changes::prepare_contract_events(demand)
+        },
         None => collector_observers::market_changes::held::refuse(
             "market contract event demand overflow",
         ),

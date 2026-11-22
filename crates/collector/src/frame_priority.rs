@@ -392,7 +392,8 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         None
     };
     if sets.is_some() {
-        let selected = select(target.handle.as_handle(), sets);
+        // SAFETY: The reconciler owns these retained collector worker handles and applies session policy.
+        let selected = unsafe { select(target.handle.as_handle(), sets) };
         if selected {
             target.confined.store(true, Ordering::SeqCst);
             target
@@ -401,7 +402,8 @@ fn set_native(pipeline: &Pipeline, target: &Target, value: u32) -> bool {
         }
         applied &= selected;
     } else if target.confined.load(Ordering::SeqCst) {
-        let cleared = select(target.handle.as_handle(), None);
+        // SAFETY: The reconciler owns these retained collector worker handles and clears session affinity.
+        let cleared = unsafe { select(target.handle.as_handle(), None) };
         if cleared {
             target.confined.store(false, Ordering::SeqCst);
         }

@@ -13,7 +13,9 @@ fn table_retry_preserves_admitted_operation_completion() {
     let fixture = Fixture::new(b"modded outcome");
     complete(&log, &fixture, 1);
     let mut cursors = vec![LaneCursor::default()];
-    let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+    // SAFETY: `log` stays alive on the stack through the `handoff.drain` call below.
+    let handoff =
+        unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }.unwrap();
     let shared = crate::sampling::Shared::new(0, 0, 1);
     shared.request_retry_full();
     let recovery = shared.force_next.swap(false, Ordering::AcqRel);
@@ -23,7 +25,8 @@ fn table_retry_preserves_admitted_operation_completion() {
     }
     let mut events = [Event::default()];
     let mut bytes = [0; 32];
-    let drained = handoff.drain(&cursors, &mut events, &mut bytes).unwrap();
+    // SAFETY: `log` is still alive and `cursors` came from `handoff_buffer` above.
+    let drained = unsafe { handoff.drain(&cursors, &mut events, &mut bytes) }.unwrap();
     assert_eq!(drained.copied, 1);
     assert_eq!(events[0].definition_token, 0xfabc_1234);
     assert_eq!(&bytes[..drained.bytes], b"modded outcome");

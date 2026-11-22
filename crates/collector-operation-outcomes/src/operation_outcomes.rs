@@ -428,10 +428,13 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn resize(entries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test holding
+/// `tests::serial()`), while operation-log storage remains live and [`release`] is excluded.
+pub unsafe fn resize(entries: usize) {
     presize(entries, 0);
 }
-pub fn presize(entries: usize, bytes: usize) {
+pub(crate) fn presize(entries: usize, bytes: usize) {
     #[cfg(any(test, feature = "test-support"))]
     let _exclusive = tests::exclusive();
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
@@ -507,7 +510,7 @@ pub fn presize(entries: usize, bytes: usize) {
         OFFERED.store(pointer, Ordering::Release);
     }
 }
-pub fn reset_admitted() {
+pub(crate) fn reset_admitted() {
     #[cfg(any(test, feature = "test-support"))]
     let _exclusive = tests::exclusive();
     let current = LOG.load(Ordering::Acquire);
@@ -754,17 +757,23 @@ pub struct Handoff {
     lanes: usize,
     shared_rejected: u64,
 }
-pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("operation completion hooks unavailable");
     }
     let log = log().ok_or("operation completion staging unavailable")?;
-    handoff_buffer(
-        seal_offered(log),
-        engine_native::walk::Buffer::Growing(cursors),
-    )
+    // SAFETY: `log` is a retained generation in `LOGS` kept live until `release()` after workers join.
+    unsafe {
+        handoff_buffer(
+            seal_offered(log),
+            engine_native::walk::Buffer::Growing(cursors),
+        )
+    }
 }
-pub fn handoff_buffer(
+/// # Safety
+/// `log` must remain alive and pinned at its address for every subsequent call on the returned
+/// [`Handoff`], and only the single spool or isolated fixture owning this handoff may consume it.
+pub unsafe fn handoff_buffer(
     log: &Log,
     mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
@@ -795,12 +804,12 @@ pub struct Drained {
     pub bytes: usize,
 }
 impl Handoff {
-    pub fn pending(self) -> usize {
+    pub(crate) fn pending(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         self.sequence
             .saturating_sub(log.assembled.load(Ordering::Acquire)) as usize
     }
-    pub fn description_capacity(self, cursors: &[LaneCursor]) -> Result<usize, &'static str> {
+    pub(crate) fn description_capacity(self, cursors: &[LaneCursor]) -> Result<usize, &'static str> {
         let log = unsafe { &*(self.log as *const Log) };
         if self.sequence < log.assembled.load(Ordering::Acquire) {
             return Ok(0);
@@ -832,7 +841,7 @@ impl Handoff {
         shared.retain(|&(order, _)| order > first && order <= self.sequence);
         Ok(shared)
     }
-    pub fn admitted(self, cursors: &[LaneCursor]) {
+    pub(crate) fn admitted(self, cursors: &[LaneCursor]) {
         let log = unsafe { &*(self.log as *const Log) };
         let assembled = log.assembled.load(Ordering::Acquire);
         if self.sequence < assembled
@@ -850,7 +859,7 @@ impl Handoff {
         log.assembled.store(self.sequence, Ordering::Release);
         log.assembled_epoch.store(self.epoch, Ordering::Release);
     }
-    pub fn commit(self, cursors: &[LaneCursor]) {
+    pub(crate) fn commit(self, cursors: &[LaneCursor]) {
         let log = unsafe { &*(self.log as *const Log) };
         if self.sequence < log.consumed.load(Ordering::Acquire)
             || cursors.len() < self.lanes
@@ -896,8 +905,11 @@ impl Handoff {
         log.consumed_epoch.store(self.epoch, Ordering::Release);
         self.admitted(cursors);
     }
+    /// # Safety
+    /// The [`Log`] captured by this [`Handoff`] must still be alive at its original address,
+    /// `cursors` must match its sealed lane cursors, and only the single owning consumer may drain it.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn drain(
+    pub unsafe fn drain(
         self,
         cursors: &[LaneCursor],
         output: &mut [Event],
@@ -909,7 +921,7 @@ impl Handoff {
         }
         result
     }
-    pub fn prepare(
+    pub(crate) fn prepare(
         self,
         cursors: &[LaneCursor],
         output: &mut [Event],
@@ -1276,10 +1288,13 @@ pub mod tests {
     }
     pub fn drain(log: &Log) -> Result<(Vec<Event>, Vec<u8>), &'static str> {
         let mut cursors = vec![LaneCursor::default()];
-        let handoff = handoff_buffer(log, engine_native::walk::Buffer::Growing(&mut cursors))?;
+        // SAFETY: test helpers serialize access to `log` with `serial()` and own `cursors`.
+        let handoff =
+            unsafe { handoff_buffer(log, engine_native::walk::Buffer::Growing(&mut cursors)) }?;
         let mut events = vec![Event::default(); handoff.pending()];
         let mut bytes = vec![0; handoff.description_capacity(&cursors).unwrap()];
-        let drained = handoff.drain(&cursors, &mut events, &mut bytes)?;
+        // SAFETY: `handoff` was just sealed from `log` and this helper is the sole consumer.
+        let drained = unsafe { handoff.drain(&cursors, &mut events, &mut bytes) }?;
         events.truncate(drained.copied);
         bytes.truncate(drained.bytes);
         Ok((events, bytes))
@@ -1337,7 +1352,10 @@ pub mod tests {
         let fixture = Fixture::new(b"retained");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
-        let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        // SAFETY: test holds `serial()` and is the sole consumer of `log`.
+        let handoff =
+            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                .unwrap();
         let captured = Captured::sealed(handoff, cursors);
         let mut ledger = Ledger::default();
         let mut tables = vec![
@@ -1351,7 +1369,8 @@ pub mod tests {
             unsafe { &*(log.lanes[0].byte_ring.load(Ordering::Acquire) as *const ByteRing) }
                 .consumed
                 .load(Ordering::Acquire);
-        let publication = ledger.assemble_owned(&captured, &mut tables).unwrap();
+        // SAFETY: test holds `serial()` as the sole spool consumer of `captured`.
+        let publication = unsafe { ledger.assemble_owned(&captured, &mut tables) }.unwrap();
         assert_eq!(handoff.pending(), 1);
         assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), before);
         drop(publication);
@@ -1361,11 +1380,13 @@ pub mod tests {
                 .load(Ordering::Acquire),
             bytes_before
         );
-        let publication = ledger.assemble_owned(&captured, &mut tables).unwrap();
+        // SAFETY: test holds `serial()` and reassembles the uncommitted interval.
+        let publication = unsafe { ledger.assemble_owned(&captured, &mut tables) }.unwrap();
         assert!(matches!(&tables[TableId::OperationCompletions.index()],
             TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows)))
                 if rows.len() == 1 && rows[0].effect_description == b"retained"));
-        publication.commit();
+        // SAFETY: test holds `serial()` and commits the assembled publication.
+        unsafe { publication.commit() };
         assert_eq!(handoff.pending(), 0);
         assert!(log.lanes[0].consumed.load(Ordering::Acquire) > before);
         assert!(
@@ -1478,7 +1499,10 @@ pub mod tests {
         prime(&log);
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            // SAFETY: test holds `serial()` as the sole consumer of `log`.
+            let handoff =
+                unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                    .unwrap();
             Captured::sealed(handoff, cursors)
         };
         let rows = |tables: &[TableInput]| match &tables[TableId::OperationCompletions.index()] {
@@ -1513,15 +1537,18 @@ pub mod tests {
                 complete(&log, &fixture, 1);
                 expected.push((owner, 0, description));
             }
-            let publication = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+            // SAFETY: test holds `serial()` and assembles intervals in order.
+            let publication = unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
             assert_eq!(rows(&tables), expected, "hour {hour}");
-            publication.admitted();
+            // SAFETY: test holds `serial()` and admits publications in assembly order.
+            unsafe { publication.admitted() };
             queued.push(publication);
         }
         assert_eq!(log.consumed.load(Ordering::Acquire), 0);
         assert_eq!(log.shared.pending(), 7);
         for publication in queued {
-            publication.commit();
+            // SAFETY: test holds `serial()` and commits publications in assembly order.
+            unsafe { publication.commit() };
         }
         assert_eq!(log.consumed.load(Ordering::Acquire), 9);
         assert!(log.shared.is_drained());
@@ -1621,14 +1648,17 @@ pub mod tests {
                     .store(index as u64 + 7, Ordering::Release);
             }
             let epoch = EPOCH.load(Ordering::Acquire);
+            // SAFETY: test holds `serial()` and owns `log` with no concurrent writers.
             let handoff =
-                handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+                unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                    .unwrap();
             assert_eq!(handoff.lanes, count);
             assert_eq!(handoff.epoch, epoch);
             assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
             assert_eq!(cursors[count - 1].cursor, count as u64 - 1);
             assert_eq!(cursors[count - 1].attempts, count as u64 + 6);
-            assert!(handoff_buffer(&log, engine_native::walk::Buffer::Count).is_err());
+            // SAFETY: test holds `serial()` and exercises count-only buffer refusal on `log`.
+            assert!(unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Count) }.is_err());
         }
     }
     #[test]
@@ -1654,7 +1684,8 @@ pub mod tests {
         assert!(hooks.entry.is_none());
         assert!(!RUNTIME_ENABLED.load(Ordering::Relaxed));
         let logs = LOGS.lock().unwrap().len();
-        resize(usize::MAX);
+        // SAFETY: test holds `serial()` with runtime disabled and no live hooks.
+        unsafe { resize(usize::MAX) };
         assert_eq!(LOGS.lock().unwrap().len(), logs);
     }
 
@@ -1669,7 +1700,10 @@ pub mod tests {
         let fixture = Fixture::new(b"outcome");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
-        let old = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        // SAFETY: test holds `serial()` as the sole consumer of `log`.
+        let old =
+            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                .unwrap();
         let idle = Captured::sealed(old, cursors.clone());
         let mut ledger = Ledger::default();
         let mut tables = vec![
@@ -1678,8 +1712,10 @@ pub mod tests {
             });
             TableId::ALL.len()
         ];
-        if let Some(publication) = ledger.assemble_owned(&idle, &mut tables) {
-            publication.commit();
+        // SAFETY: test holds `serial()` as the sole spool consumer.
+        if let Some(publication) = unsafe { ledger.assemble_owned(&idle, &mut tables) } {
+            // SAFETY: test holds `serial()` and commits the assembled publication.
+            unsafe { publication.commit() };
         }
         assert!(
             matches!(&tables[TableId::OperationCompletions.index()], TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows))) if rows.len() == 1)
@@ -1690,8 +1726,9 @@ pub mod tests {
         assert_eq!(old.description_capacity(&cursors).unwrap(), 0);
         let consumed = log.consumed.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
+        // SAFETY: test holds `serial()` and verifies stale-handoff rejection on `old`.
         assert_eq!(
-            old.drain(&cursors, &mut [], &mut []),
+            unsafe { old.drain(&cursors, &mut [], &mut []) },
             Err("operation completion stale handoff")
         );
         assert_eq!(log.consumed.load(Ordering::Acquire), consumed);
@@ -1702,8 +1739,10 @@ pub mod tests {
         let expected = capacity;
         capacity.raise_for_operations(idle.drained_pending());
         assert!(capacity == expected);
-        if let Some(publication) = ledger.assemble_owned(&idle, &mut tables) {
-            publication.commit();
+        // SAFETY: test holds `serial()` and verifies stale-handoff assembly refusal.
+        if let Some(publication) = unsafe { ledger.assemble_owned(&idle, &mut tables) } {
+            // SAFETY: test holds `serial()` and commits any assembled publication.
+            unsafe { publication.commit() };
         }
         assert!(
             matches!(&tables[TableId::OperationCompletions.index()], TableInput::Sampled(TableView::Unavailable { reason }) if reason == "operation completion stale handoff")
@@ -1796,11 +1835,13 @@ pub mod tests {
         prime(&log);
         complete(&log, &Fixture::new(b"sealed"), 1);
         let mut cursors = vec![LaneCursor::default()];
-        let sealed = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        // SAFETY: test holds `serial()` as the sole consumer of `log`.
+        let sealed =
+            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                .unwrap();
         complete(&log, &Fixture::new(&[0xfb; 10]), 1);
-        sealed
-            .drain(&cursors, &mut [Event::default()], &mut [0; 6])
-            .unwrap();
+        // SAFETY: test holds `serial()` and drains `sealed` as the sole consumer.
+        unsafe { sealed.drain(&cursors, &mut [Event::default()], &mut [0; 6]) }.unwrap();
         assert_eq!(log.lanes[0].consumed_byte_demand.load(Ordering::Acquire), 6);
         complete(&log, &Fixture::new(&[0xfc; 9]), 1);
         assert_eq!(log.lanes[0].required_bytes.load(Ordering::Relaxed), 19);
@@ -1907,7 +1948,8 @@ pub mod tests {
         complete(old, &Fixture::new(description), 1);
         let pointer = LOG.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
-        resize(4_098);
+        // SAFETY: test holds `serial()` with no concurrent log sizing.
+        unsafe { resize(4_098) };
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         assert_eq!(drain(old).unwrap().1, description);
@@ -2104,7 +2146,10 @@ pub mod tests {
         let lane = &log.lanes[0];
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            // SAFETY: test holds `serial()` as the sole consumer of `log`.
+            let handoff =
+                unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                    .unwrap();
             Captured::sealed(handoff, cursors)
         };
         let shared = |description: &[u8]| {
@@ -2133,20 +2178,26 @@ pub mod tests {
         ];
         complete(&log, &Fixture::new(b"first"), 1);
         shared(b"first shared");
-        let first = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        // SAFETY: test holds `serial()` and assembles intervals in order.
+        let first = unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert_eq!(rows(&tables), [b"first".to_vec(), b"first shared".to_vec()]);
-        first.admitted();
+        // SAFETY: test holds `serial()` and admits publications in assembly order.
+        unsafe { first.admitted() };
         complete(&log, &Fixture::new(b"second"), 1);
         shared(b"second shared");
-        let second = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        // SAFETY: test holds `serial()` and assembles intervals in order.
+        let second = unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert_eq!(
             rows(&tables),
             [b"second".to_vec(), b"second shared".to_vec()]
         );
-        second.admitted();
-        let quiet = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        // SAFETY: test holds `serial()` and admits publications in assembly order.
+        unsafe { second.admitted() };
+        // SAFETY: test holds `serial()` and assembles intervals in order.
+        let quiet = unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert!(rows(&tables).is_empty());
-        quiet.admitted();
+        // SAFETY: test holds `serial()` and admits publications in assembly order.
+        unsafe { quiet.admitted() };
         assert_eq!(lane.assembled.load(Ordering::Acquire), 2);
         assert_eq!(lane.assembled_attempts.load(Ordering::Acquire), 2);
         assert_eq!(log.consumed.load(Ordering::Acquire), 0);
@@ -2161,7 +2212,8 @@ pub mod tests {
             lane.required_bytes.load(Ordering::Relaxed),
             b"firstsecond".len()
         );
-        first.commit();
+        // SAFETY: test holds `serial()` and commits publications in assembly order.
+        unsafe { first.commit() };
         assert_eq!(log.consumed.load(Ordering::Acquire), 2);
         assert_eq!(lane.consumed.load(Ordering::Acquire), 1);
         assert_eq!(lane.consumed_attempts.load(Ordering::Acquire), 1);
@@ -2172,8 +2224,11 @@ pub mod tests {
             1
         );
         assert_eq!(log.assembled.load(Ordering::Acquire), 4);
-        second.commit();
-        quiet.commit();
+        // SAFETY: test holds `serial()` and commits publications in assembly order.
+        unsafe {
+            second.commit();
+            quiet.commit();
+        }
         assert_eq!(log.consumed.load(Ordering::Acquire), 4);
         assert_eq!(lane.ring().consumed.load(Ordering::Acquire), 11);
         assert!(
@@ -2203,7 +2258,10 @@ pub mod tests {
             1,
         );
         let mut first = vec![LaneCursor::default()];
-        let queued = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)).unwrap();
+        // SAFETY: test holds `serial()` as the sole consumer of `log`.
+        let queued =
+            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)) }
+                .unwrap();
         let mut events = [Event::default(); 2];
         let mut bytes = [0; 32];
         assert_eq!(
@@ -2217,7 +2275,10 @@ pub mod tests {
         queued.admitted(&first);
         complete(&log, &Fixture::new(b"later"), 1);
         let mut second = vec![LaneCursor::default()];
-        let later = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)).unwrap();
+        // SAFETY: test holds `serial()` as the sole consumer of `log`.
+        let later =
+            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)) }
+                .unwrap();
         assert_eq!(later.pending(), 1);
         later.admitted(&second);
         queued.admitted(&first);
@@ -2236,10 +2297,16 @@ pub mod tests {
         assert_eq!(bytes, b"lostlost sharedlater");
         complete(&log, &Fixture::new(b"before"), 1);
         let mut cursors = vec![LaneCursor::default()];
-        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+        // SAFETY: test holds `serial()` as the sole consumer of `log`.
+        unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+            .unwrap()
+            .admitted(&cursors);
         invalidate();
         complete(&log, &Fixture::new(b"after"), 1);
-        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+        // SAFETY: test holds `serial()` as the sole consumer of `log`.
+        unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+            .unwrap()
+            .admitted(&cursors);
         log.reset_admitted();
         assert_eq!(
             drain(&log),
@@ -2258,7 +2325,10 @@ pub mod tests {
         for _ in 0..2 {
             complete(&log, &fixture, 1);
             let mut cursors = vec![LaneCursor::default()];
-            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+            // SAFETY: test holds `serial()` as the sole consumer of `log`.
+            unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
+                .unwrap()
+                .admitted(&cursors);
         }
         complete(&log, &fixture, 1);
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 3);
@@ -2280,7 +2350,8 @@ pub mod tests {
         let sealed = seal_offered(old);
         assert!(!std::ptr::eq(log().unwrap(), old));
         let mut cursors = vec![LaneCursor::default()];
-        handoff_buffer(sealed, engine_native::walk::Buffer::Growing(&mut cursors))
+        // SAFETY: test holds `serial()` as the sole consumer of `sealed`.
+        unsafe { handoff_buffer(sealed, engine_native::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
             .admitted(&cursors);
         let epoch = EPOCH.load(Ordering::Acquire);

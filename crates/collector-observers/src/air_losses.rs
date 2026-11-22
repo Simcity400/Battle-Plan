@@ -70,7 +70,10 @@ pub fn mark_stranded() {
 pub fn capacity() -> usize {
     LEDGER.demand()
 }
-pub fn presize(events: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
+/// air-loss observation), while observer storage remains live and teardown is excluded.
+pub unsafe fn presize(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
@@ -91,7 +94,10 @@ pub fn lost_output(events: usize) {
     }
     LEDGER.lost_output(events);
 }
-pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass against the authenticated
+/// session image, while air-loss observer storage remains live and teardown is excluded.
+pub unsafe fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;

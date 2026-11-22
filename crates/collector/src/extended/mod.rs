@@ -263,8 +263,38 @@ macro_rules! pack_frame {
     (naval_combat_sources, $capacity:expr) => {
         naval_combat_sources::Captured::without_home($capacity)
     };
+    (naval_counters, $capacity:expr) => {
+        // SAFETY: Frame allocation runs in attach, sizing, or an isolated fixture with live watches.
+        unsafe { naval_counters::Captured::with_capacities($capacity) }
+    };
     ($pack:ident, $capacity:expr) => {
         $pack::Captured::with_capacities($capacity)
+    };
+}
+
+macro_rules! grow_pack {
+    (operation_outcomes, $pack:expr, $capacity:expr) => {
+        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        unsafe { $pack.grow($capacity) }
+    };
+    (politics, $pack:expr, $capacity:expr) => {
+        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        unsafe { $pack.grow($capacity) }
+    };
+    (air_losses, $pack:expr, $capacity:expr) => {
+        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        unsafe { $pack.grow($capacity) }
+    };
+    (building_bombing, $pack:expr, $capacity:expr) => {
+        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        unsafe { $pack.grow($capacity) }
+    };
+    (land_events, $pack:expr, $capacity:expr) => {
+        // SAFETY: Runs during attach or the session's serial sizing pass with live observer storage.
+        unsafe { $pack.grow($capacity) }
+    };
+    ($name:ident, $pack:expr, $capacity:expr) => {
+        $pack.grow($capacity)
     };
 }
 
@@ -483,7 +513,7 @@ impl Captured {
             }
             fn grow_hints(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
-                $(self.$pack.grow(&mut capacity.$pack);)+
+                $(grow_pack!($pack, self.$pack, &mut capacity.$pack);)+
                 self.fuel_awards.grow(&mut capacity.fuel_awards);
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
@@ -797,8 +827,9 @@ impl Capacities {
         for result in [
             capacity_census.then(|| {
                 crate::country_scale::observe_advisor_modifiers(memory, base).map(|demand| {
+                    // SAFETY: Runs during attach or the session's serial sizing pass.
                     if let Some(demand) = demand
-                        && characters::advisors::note_modifier_demand(demand)
+                        && unsafe { characters::advisors::note_modifier_demand(demand) }
                     {
                         crate::decode::presize_advisor_pools();
                     }
@@ -814,7 +845,8 @@ impl Capacities {
             Some(
                 crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
                     if let Some(words) = demand {
-                        collector_land_events::land_events::presize(words);
+                        // SAFETY: Runs during attach or the session's serial sizing pass with live storage.
+                        unsafe { collector_land_events::land_events::presize(words) };
                         self.land_events.words = self
                             .land_events
                             .words
@@ -908,7 +940,8 @@ impl Capacities {
 
     pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
         self.war_overview.raise_for_demand(demand.war_overview);
-        characters::advisors::note_modifier_demand(demand.advisor_modifiers);
+        // SAFETY: Runs during attach or the session's serial sizing pass with measured demand.
+        unsafe { characters::advisors::note_modifier_demand(demand.advisor_modifiers) };
         crate::country_scale::raise(&mut self.intel.agency_names, demand.agency_name_bytes);
         crate::country_scale::raise(&mut self.intel.rows[17], demand.agency_upgrade_rows);
         crate::country_scale::raise(
@@ -1175,7 +1208,8 @@ impl Captured {
         self.resource_map.reset_selection(hour, force_full);
         self.country_stability.prepare_hour(hour, force_full);
         self.combat_log.prepare_hour(hour, force_full);
-        self.combat_progress.prepare_hour(hour, force_full);
+        // SAFETY: Runs during admitted hour preparation before combat capture starts.
+        unsafe { self.combat_progress.prepare_hour(hour, force_full) };
         self.characters.prepare_hour(hour, force_full);
         self.naval_mission_inputs.reset_selection(hour, force_full);
         self.supply_trains.reset_selection(hour, force_full);
@@ -3158,7 +3192,8 @@ impl<M: Memory> Sources<'_, M> {
 impl<M: Memory> MapSources for Sources<'_, M> {
     fn begin_land(&mut self) -> u64 {
         let begin = qpc();
-        self.captured.combat_progress.begin();
+        // SAFETY: Runs in the admitted hour's sole land-combat walk; `finish_land` settles it.
+        unsafe { self.captured.combat_progress.begin() };
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
     fn land(&mut self, source: engine_native::cland_combat::Source) -> u64 {
@@ -3170,7 +3205,8 @@ impl<M: Memory> MapSources for Sources<'_, M> {
     }
     fn finish_land(&mut self, outcome: Outcome) -> u64 {
         let begin = qpc();
-        self.captured.combat_progress.finish(outcome);
+        // SAFETY: Settles the admitted hour's land-combat baseline and reports observer demand.
+        unsafe { self.captured.combat_progress.finish(outcome) };
         self.captured
             .land_events
             .lost_casualty_reads(self.captured.combat_progress.lost_reads());

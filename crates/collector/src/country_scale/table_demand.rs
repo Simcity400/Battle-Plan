@@ -65,16 +65,27 @@ pub(crate) fn presize_periodic(
     size!(census, extended.governance.presize(memory, base, state));
     size!(census, extended.characters.presize(memory, base, state));
     size!(census, extended.projects.presize(memory, base, state));
-    size!(prompt, extended.division_templates.presize(memory, base, state));
     size!(
         prompt,
-        extended
-            .industrial_organisations
-            .presize(memory, base, state),
+        // SAFETY: Runs in attach or the session's sole serial sizing pass against its live image.
+        unsafe { extended.division_templates.presize(memory, base, state) },
+    );
+    size!(
+        prompt,
+        // SAFETY: Runs in attach or the session's sole serial sizing pass against its live image.
+        unsafe {
+            extended
+                .industrial_organisations
+                .presize(memory, base, state)
+        },
     );
     size!(census, extended.production.presize(memory, base, state));
     size!(census, extended.model_inputs.presize(memory, base, state));
-    size!(prompt, extended.naval_counters.presize(memory, base, state));
+    size!(
+        prompt,
+        // SAFETY: Runs in attach or the session's sole serial sizing pass against its live image.
+        unsafe { extended.naval_counters.presize(memory, base, state) },
+    );
     size!(census, extended.intel.presize(memory, base, state));
     size!(census, extended.country_stability.presize(memory, base, state));
     size!(
@@ -107,8 +118,16 @@ pub(crate) fn presize_periodic(
         extended.raid_target_statuses.presize(memory, base, state),
     );
     size!(census, extended.raid_state_inputs.presize(memory, base, state));
-    size!(prompt, extended.combat_log.presize(memory, base, state));
-    size!(prompt, extended.group_counters.presize(memory, base, state));
+    size!(
+        prompt,
+        // SAFETY: Runs in attach or the session's sole serial sizing pass against its live image.
+        unsafe { extended.combat_log.presize(memory, base, state) },
+    );
+    size!(
+        prompt,
+        // SAFETY: Runs in attach or the session's sole serial sizing pass against its live image.
+        unsafe { extended.group_counters.presize(memory, base, state) },
+    );
     size!(census, extended.air.presize(memory, base, state));
     size!(census, extended.naval_history.presize(memory, base, state));
     size!(census, extended.visibility.presize(memory, base, state));
@@ -118,7 +137,11 @@ pub(crate) fn presize_periodic(
         extended.country_tactic_unlocks.presize(memory, base, state),
     );
     size!(census, extended.construction.presize(memory, base, state));
-    size!(prompt, extended.economy.presize(memory, base, state));
+    size!(
+        prompt,
+        // SAFETY: Runs in attach or the session's sole serial sizing pass against its live image.
+        unsafe { extended.economy.presize(memory, base, state) },
+    );
     size!(census, extended.session.presize(memory, base, state));
     size!(
         census,

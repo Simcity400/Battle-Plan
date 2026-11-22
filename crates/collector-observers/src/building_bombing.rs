@@ -83,7 +83,10 @@ pub fn capacity() -> usize {
 pub fn buildings() -> usize {
     BUILDINGS.load(Ordering::Acquire)
 }
-pub fn presize(events: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test owning
+/// building-bombing observation), while observer storage remains live and teardown is excluded.
+pub unsafe fn presize(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
@@ -110,7 +113,10 @@ fn writer_cost(start: i64) {
     INTERVAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
 }
 
-pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass against the authenticated
+/// session image, while building-bombing observer storage remains live and teardown is excluded.
+pub unsafe fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;

@@ -307,24 +307,33 @@ fn equipment_enabled() -> bool {
     }
 }
 
-pub fn prepare_active(demand: usize) {
+/// # Safety
+/// Run only from the admitted combat capture or serial sizing pass (or an isolated test), while
+/// history-event storage remains live and teardown is excluded.
+pub unsafe fn prepare_active(demand: usize) {
     ACTIVE_DEMAND.fetch_max(demand, SeqCst);
-    prepare(0);
+    // SAFETY: Caller guarantees admitted combat capture or sizing pass while storage is live.
+    unsafe { prepare(0) };
 }
-pub fn prepare_noncombat(demand: usize) {
+pub(crate) fn prepare_noncombat(demand: usize) {
     NONCOMBAT_DEMAND.fetch_max(demand, SeqCst);
-    prepare(0);
+    // SAFETY: Crate-internal sizing helper called from `combat_log::Capacities::presize`.
+    unsafe { prepare(0) };
 }
 pub(crate) fn prepare_seed(demand: usize) {
     SEED_DEMAND.fetch_max(demand.max(1), SeqCst);
-    prepare(0);
+    // SAFETY: Crate-internal sizing helper called from `history_capture` while storage is live.
+    unsafe { prepare(0) };
 }
 fn demand(seed: usize, active: usize, noncombat: usize, attempted: usize) -> usize {
     seed.saturating_add(active)
         .saturating_add(noncombat)
         .max(attempted)
 }
-pub fn prepare(attempted: usize) {
+/// # Safety
+/// Run only during attach, the active session's serial sizing pass, or admitted combat-log capture
+/// (or an isolated test), while history-event storage remains live and teardown is excluded.
+pub unsafe fn prepare(attempted: usize) {
     REQUIRED.fetch_max(
         demand(
             SEED_DEMAND.load(SeqCst),

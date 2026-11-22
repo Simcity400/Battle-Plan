@@ -342,9 +342,10 @@ fn politics_daily_scale() {
             let mut tables: Vec<_> = (0..replay_data::rows::TABLE_COUNT)
                 .map(|_| TableInput::Sampled(unavailable("fixture")))
                 .collect();
-            capture.capture();
-            ledger
-                .assemble_owned(
+            // SAFETY: benchmark holds the politics lock as the sole capture and spool caller.
+            unsafe {
+                capture.capture();
+                ledger.assemble_owned(
                     1,
                     -1,
                     &capture,
@@ -352,7 +353,8 @@ fn politics_daily_scale() {
                     Outcome::Rows { len: countries },
                     &mut tables,
                 )
-                .unwrap();
+            }
+            .unwrap();
             let all = Instant::now();
             let start = Instant::now();
             for (owner, receivers) in world.receivers.chunks_exact(8).enumerate() {
@@ -360,11 +362,13 @@ fn politics_daily_scale() {
             }
             let observed = start.elapsed();
             let start = Instant::now();
-            black_box(capture.capture());
+            // SAFETY: benchmark holds the politics lock as the sole capture caller.
+            black_box(unsafe { capture.capture() });
             let handed = start.elapsed();
             let start = Instant::now();
-            ledger
-                .assemble_owned(
+            // SAFETY: benchmark holds the politics lock as the sole spool consumer.
+            unsafe {
+                ledger.assemble_owned(
                     1,
                     0,
                     &capture,
@@ -372,7 +376,8 @@ fn politics_daily_scale() {
                     Outcome::Rows { len: countries },
                     &mut tables,
                 )
-                .unwrap();
+            }
+            .unwrap();
 
             let Some(TableRows::CountryPowerChanges(changes)) =
                 rows(&tables[TableId::CountryPowerChanges.index()])

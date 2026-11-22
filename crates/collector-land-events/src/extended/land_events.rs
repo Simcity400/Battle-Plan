@@ -43,8 +43,12 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.words.capacity() * size_of::<u64>()
     }
-    pub fn grow(&mut self, c: &mut Capacities) {
-        crate::land_events::prepare();
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass (or an isolated test),
+    /// while land-event observer storage remains live and teardown is excluded.
+    pub unsafe fn grow(&mut self, c: &mut Capacities) {
+        // SAFETY: Caller guarantees attach or serial sizing pass with live land-event storage.
+        unsafe { crate::land_events::prepare() };
         c.words = c.words.max(crate::land_events::capacity());
         if let Some(d) = self.drained {
             grow_capacity(&mut c.words, d.required);
@@ -58,7 +62,8 @@ impl Captured {
             hour,
             invalidating,
         ));
-        crate::land_events::install_offered();
+        // SAFETY: Runs on the sole observer-boundary drain path with no competing swap or teardown.
+        unsafe { crate::land_events::install_offered() };
         collector_primitives::clock::qpc()
             .saturating_sub(start)
             .max(0) as u64

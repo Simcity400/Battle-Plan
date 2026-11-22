@@ -49,8 +49,12 @@ impl Captured {
             + self.roster.capacity()
                 * std::mem::size_of::<engine_air_history::air_loss_sites::RosterRow>()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities) {
-        producer::presize(0);
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass (or an isolated test),
+    /// while air-loss observer storage remains live and teardown is excluded.
+    pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
+        // SAFETY: Caller guarantees attach or serial sizing pass with live air-loss storage.
+        unsafe { producer::presize(0) };
         capacity.events = capacity.events.max(producer::capacity());
         grow_vec(&mut self.rows.rows, capacity.events);
         grow_vec(&mut self.roster, capacity.roster);
@@ -164,7 +168,8 @@ mod tests {
         }));
         assert_eq!(captured.roster.as_ptr(), pointer);
         capacity.raise_for_countries(7000);
-        captured.grow(&mut capacity);
+        // SAFETY: Isolated unit test sizing local buffers with no live collector attached.
+        unsafe { captured.grow(&mut capacity) };
         assert!(captured.roster.capacity() >= 7000);
     }
 }

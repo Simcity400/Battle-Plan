@@ -184,7 +184,8 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     source.bytes[0x3000 + ccountry::LOCK_ALL_TEMPLATES] = 1;
 
     let mut capacities = Capacities::default();
-    capacities.presize(&source, 0, 0x1000).unwrap();
+    // SAFETY: synthetic memory fixture with no live template observer hooks.
+    unsafe { capacities.presize(&source, 0, 0x1000) }.unwrap();
     collector_model_inputs::local_subunit_changes::boundary(true);
     crate::template_changes::boundary(true);
     let mut capture = Captured::with_capacities(&capacities);
@@ -1234,7 +1235,8 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
 fn live_template_demand_and_same_capture_growth_keep_every_country() {
     let source = large_content(20, 4);
     let mut capacity = Capacities::default();
-    capacity.presize(&source, 0, 0x1000).unwrap();
+    // SAFETY: synthetic memory fixture with no live template observer hooks.
+    unsafe { capacity.presize(&source, 0, 0x1000) }.unwrap();
     assert!(capacity.rows >= 80 && capacity.icon_rows >= 80);
     assert!(capacity.bytes >= 80 * 11);
     assert!(capacity.icon_bytes >= 80 * 20);

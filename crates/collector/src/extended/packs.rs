@@ -1533,12 +1533,16 @@ impl OrdinaryPart {
             Self::Map(packs) => {
                 scatter(
                     &naval_bases::TABLES,
-                    packs.naval_bases.acquire(
-                        memory,
-                        base,
-                        game_state,
-                        crate::decode::owned_failed,
-                    ),
+                    // SAFETY: Admitted naval-base capture reads the live image and settles or
+                    // discards its owned management loan before frame reuse or detach.
+                    unsafe {
+                        packs.naval_bases.acquire(
+                            memory,
+                            base,
+                            game_state,
+                            crate::decode::owned_failed,
+                        )
+                    },
                     &mut ticks,
                 );
                 pack!(packs: map_facilities);

@@ -32,12 +32,18 @@ impl Changes for Observer {
 pub fn active() -> usize {
     WATCHES.active()
 }
-pub fn boundary(invalidate: bool) {
+/// # Safety
+/// Only the attaching prime pass or the admitted hour's sole observer boundary (or an isolated
+/// test) may advance the faction-goal watch boundary.
+pub unsafe fn boundary(invalidate: bool) {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
     WATCHES.boundary(invalidate);
 }
-pub fn presize() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// the faction-goal watches remain live and teardown is excluded.
+pub unsafe fn presize() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
     WATCHES.offer(DEMAND.load(Ordering::Relaxed).max(WATCHES.registered()));
@@ -52,10 +58,14 @@ pub fn demand(owners: usize) {
     let _exclusive = tests::exclusive();
     DEMAND.fetch_max(owners, Ordering::Relaxed);
 }
-pub fn prime() {
+/// # Safety
+/// Only the attaching runtime or an isolated collector fixture may prime the live faction-goal
+/// watches, excluding concurrent observer boundaries, capture and detach.
+pub unsafe fn prime() {
     #[cfg(test)]
     let _exclusive = tests::exclusive();
-    presize();
+    // SAFETY: Caller guarantees exclusive attach/fixture priming with live watches.
+    unsafe { presize() };
     WATCHES.boundary(false);
 }
 /// # Safety

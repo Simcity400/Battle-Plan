@@ -212,7 +212,8 @@ impl State {
                 self.recover(reason);
             }
         }
-        history_events::prepare(0);
+        // SAFETY: Admitted combat-log capture prepares history-event storage while storage lives.
+        unsafe { history_events::prepare(0) };
     }
     fn begin_observed(
         &mut self,
@@ -319,7 +320,8 @@ impl State {
             } else {
                 self.refuse("combat log writer changed after retained-state recovery");
             }
-            history_events::prepare(0);
+            // SAFETY: Admitted combat-log capture prepares history-event storage while storage lives.
+        unsafe { history_events::prepare(0) };
         }
     }
     fn acquire_observed(

@@ -1061,8 +1061,12 @@ impl Shared {
         ))?;
         let air_wing_parts =
             std::array::from_fn(|_| collector_air::extended::air::AirWingJob::part());
-        collector_factions::faction_goal_changes::prime();
-        collector_factions::faction_companion_changes::prime();
+        // SAFETY: `Shared::without_frames` runs during attach or an isolated fixture, priming
+        // faction watches before capture or concurrent boundaries can observe them.
+        unsafe {
+            collector_factions::faction_goal_changes::prime();
+            collector_factions::faction_companion_changes::prime();
+        }
         if crate::allocation::failed() {
             return Err(std::io::ErrorKind::OutOfMemory.into());
         }

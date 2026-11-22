@@ -118,9 +118,11 @@ fn reset() {
 fn drain(hour: i32) -> replay_data::rows::MapEventsRow {
     let sealed = interval::seal(hour, Some(crate::world_lifetime::generation()));
     let mut assembled = lanes::Assembled::default();
-    lanes::assemble(sealed.seal, &mut assembled).unwrap();
+    // SAFETY: tests serialize lane access with `LOCK` and are the sole assembler.
+    unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
     let row = interval::row(&sealed, &assembled).unwrap();
-    assembled.commit();
+    // SAFETY: `assembled` was produced by `lanes::assemble` under `LOCK`.
+    unsafe { assembled.commit() };
     row
 }
 
@@ -384,9 +386,11 @@ fn an_event_left_pending_by_an_ended_world_is_never_listed_by_the_next_one() {
     let seal = |hour, world| {
         let sealed = interval::seal(hour, world);
         let mut assembled = lanes::Assembled::default();
-        lanes::assemble(sealed.seal, &mut assembled).unwrap();
+        // SAFETY: test holds `LOCK` as the sole assembler.
+        unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
         let row = interval::row(&sealed, &assembled).unwrap();
-        assembled.commit();
+        // SAFETY: `assembled` was produced by `lanes::assemble` under `LOCK`.
+        unsafe { assembled.commit() };
         row
     };
     let critical = |world| {
@@ -463,9 +467,11 @@ fn a_world_change_while_the_operands_are_read_refuses_the_event() {
     .unwrap();
     let sealed = interval::seal(8, Some(new));
     let mut assembled = lanes::Assembled::default();
-    lanes::assemble(sealed.seal, &mut assembled).unwrap();
+    // SAFETY: test holds `LOCK` as the sole assembler.
+    unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
     let row = interval::row(&sealed, &assembled).unwrap();
-    assembled.commit();
+    // SAFETY: `assembled` was produced by `lanes::assemble` under `LOCK`.
+    unsafe { assembled.commit() };
     assert_eq!(
         row.events
             .iter()
@@ -589,9 +595,11 @@ fn hook_cost_map_events() {
     let drain = || {
         let sealed = interval::seal(5, Some(crate::world_lifetime::generation()));
         let mut assembled = lanes::Assembled::default();
-        lanes::assemble(sealed.seal, &mut assembled).unwrap();
+        // SAFETY: test holds `LOCK` as the sole assembler.
+        unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
         std::hint::black_box(interval::row(&sealed, &assembled).unwrap());
-        assembled.commit();
+        // SAFETY: `assembled` was produced by `lanes::assemble` under `LOCK`.
+        unsafe { assembled.commit() };
     };
     drain();
     let native = collector_test_support::per_call_ns(CALLS, || {
@@ -667,7 +675,8 @@ fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_e
         }
         let sealed = interval::seal(hour, Some(world));
         let mut assembled = lanes::Assembled::default();
-        lanes::assemble(sealed.seal, &mut assembled).unwrap();
+        // SAFETY: test holds `LOCK` as the sole assembler.
+        unsafe { lanes::assemble(sealed.seal, &mut assembled) }.unwrap();
         let row = interval::row(&sealed, &assembled).unwrap();
         assert_eq!(expected.len(), per_hour as usize, "hour {hour}");
         assert_eq!(
@@ -687,13 +696,15 @@ fn a_burst_past_the_lanes_with_hours_in_flight_keeps_every_event_and_completes_e
             "hour {hour}"
         );
         assert!(row.health[family.index()].complete, "hour {hour}");
-        assembled.admitted();
+        // SAFETY: test holds `LOCK` and admits intervals in assembly order.
+        unsafe { assembled.admitted() };
         queued.push(assembled);
     }
     assert_eq!(hooks::missed(family), missed);
     assert!(lanes::capacity().spill_pending > 0);
     for assembled in queued {
-        assembled.commit();
+        // SAFETY: test holds `LOCK` and commits intervals in assembly order.
+        unsafe { assembled.commit() };
     }
     assert_eq!(lanes::capacity().spill_pending, 0);
     assert!(drain(5).events.is_empty());

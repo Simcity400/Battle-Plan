@@ -30,8 +30,12 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
     }
-    pub fn grow(&mut self, c: &mut Capacities) {
-        producer::presize(0);
+    /// # Safety
+    /// Run only during attach or the active session's serial sizing pass (or an isolated test),
+    /// while building-bombing observer storage remains live and teardown is excluded.
+    pub unsafe fn grow(&mut self, c: &mut Capacities) {
+        // SAFETY: Caller guarantees attach or serial sizing pass with live bombing storage.
+        unsafe { producer::presize(0) };
         *c = (*c).max(producer::capacity());
         grow_vec(&mut self.rows.rows, *c);
     }

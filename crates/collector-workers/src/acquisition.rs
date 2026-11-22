@@ -1156,7 +1156,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 if unsafe { SetThreadPriority(handle as _, THREAD_PRIORITY_ABOVE_NORMAL) } == 0 {
                     PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
                 }
-                crate::cpu_sets::select_away(thread.as_handle(), None);
+                // SAFETY: `thread` is a live collector worker handle owned by `threads`.
+                unsafe { crate::cpu_sets::select_away(thread.as_handle(), None) };
             }
             self.shared.hurried.fetch_add(1, Ordering::Release);
         }
@@ -1748,7 +1749,8 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     index: usize,
     wake_boost: bool,
 ) {
-    collector_timing::capture_gate::reader();
+    // SAFETY: This thread is a collector-owned acquisition worker reading under the capture gate.
+    unsafe { collector_timing::capture_gate::reader() };
     #[cfg(feature = "worker_sampler")]
     let _sampler_registration = crate::worker_sampler::register_worker();
     {
@@ -1788,7 +1790,8 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
                 PRIORITY_REFUSALS.fetch_add(1, Ordering::Relaxed);
             }
         }
-        away.follow(shared.away.load(Ordering::Acquire).checked_sub(1));
+        // SAFETY: This thread is a collector-owned acquisition worker applying the pool's affinity policy.
+        unsafe { away.follow(shared.away.load(Ordering::Acquire).checked_sub(1)) };
         if let Some(claim) = state.take_ready(&shared, None) {
             let relay = if state.ready.is_empty() {
                 shared.burst_peers.store(0, Ordering::Release);

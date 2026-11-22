@@ -179,14 +179,16 @@ pub(crate) mod tests {
         }
         let _serial = crate::capture_point::tests::serial();
         ORIGINAL.store(native as *const () as usize, Ordering::SeqCst);
-        assert!(capture_gate::begin());
+        // SAFETY: Serialized test owns the capture gate and pairs begin() with end().
+        assert!(unsafe { capture_gate::begin() });
         let entered = std::thread::spawn(|| unsafe { batch(7) });
         while capture_gate::waiting() == 0 {
             std::thread::yield_now();
         }
         assert!(!others_batching());
         assert!(!RAN.load(Ordering::SeqCst));
-        capture_gate::end();
+        // SAFETY: Pairs with the begin() above in this serialized test.
+        unsafe { capture_gate::end() };
         assert_eq!(entered.join().unwrap(), 7);
         assert!(RAN.load(Ordering::SeqCst));
         assert!(!others_batching());
@@ -215,9 +217,11 @@ pub(crate) mod tests {
             std::thread::yield_now();
         }
         assert!(!OTHERS.load(Ordering::SeqCst));
-        assert!(capture_gate::begin());
+        // SAFETY: Serialized test owns the capture gate and pairs begin() with end().
+        assert!(unsafe { capture_gate::begin() });
         assert!(others_batching());
-        capture_gate::end();
+        // SAFETY: Pairs with the begin() above in this serialized test.
+        unsafe { capture_gate::end() };
         RELEASE.store(true, Ordering::SeqCst);
         assert_eq!(inside.join().unwrap(), 2);
         assert!(!others_batching());

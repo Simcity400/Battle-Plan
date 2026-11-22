@@ -232,7 +232,8 @@ impl Census {
             task_forces: rows,
             ships: rows,
         });
-        let mut bases = bases::Session::begin(self, 0);
+        // SAFETY: tests serialize naval-management observer state with `changes::fixture::SERIAL`.
+        let mut bases = unsafe { bases::Session::begin(self, 0) };
         bases.visit(
             BASE,
             &engine_native::cnaval_base::Row {
@@ -452,7 +453,8 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
         memory.array(pointer(index) + native::BASE_REPAIR_QUEUE, LISTS, 0);
     }
     let capture = || {
-        let mut session = bases::Session::begin(&memory, 0);
+        // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
+        let mut session = unsafe { bases::Session::begin(&memory, 0) };
         for index in 0..BASES {
             session.visit(
                 pointer(index),

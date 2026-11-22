@@ -614,7 +614,10 @@ fn log() -> Option<&'static Log> {
         Some(unsafe { &*pointer })
     }
 }
-pub fn resize(entries: usize, keys: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test holding
+/// `staging_test()`), while politics staging remains live and [`release`] is excluded.
+pub unsafe fn resize(entries: usize, keys: usize) {
     engine_allocation::advisory(|| resize_storage(entries, keys));
 }
 
@@ -709,9 +712,13 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
     Ok(())
 }
 
-pub fn prepare() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test holding
+/// `staging_test()`), while politics staging remains live and [`release`] is excluded.
+pub unsafe fn prepare() {
     if let Some(log) = log() {
-        resize(log.entries, log.key_stride);
+        // SAFETY: Caller guarantees serial sizing or isolated test ownership while staging is live.
+        unsafe { resize(log.entries, log.key_stride) };
     }
 }
 /// Release staging after disabled hooks and all callback/capture workers are
@@ -1076,7 +1083,7 @@ pub struct Handoff {
     lanes: usize,
     shared_rejected: u64,
 }
-pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native::walk::Buffer::Growing(cursors))
 }
 fn handoff_buffer(
@@ -1147,11 +1154,11 @@ fn handoff_from_buffer(
     })
 }
 impl Handoff {
-    pub fn pending(self) -> usize {
+    pub(crate) fn pending(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         self.cursor.wrapping_sub(log.consumed_frontier()) as usize
     }
-    pub fn key_capacity(self) -> usize {
+    pub(crate) fn key_capacity(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
         let spilled = log
             .held()
@@ -1162,7 +1169,10 @@ impl Handoff {
             .saturating_mul(log.key_stride)
             .saturating_add(spilled)
     }
-    pub fn drain(
+    /// # Safety
+    /// The log captured by this [`Handoff`] must still be alive at its original address, `cursors`
+    /// must cover `self.lanes`, and only the single spool consumer or isolated fixture may drain it.
+    pub unsafe fn drain(
         self,
         cursors: &[LaneCursor],
         output: &mut [Event],
@@ -3117,7 +3127,10 @@ impl StagingFixture {
         event.epoch = EPOCH.load(Ordering::Acquire);
         append_to(&self.0, event, memory);
     }
-    pub fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+    /// # Safety
+    /// Keep `self` alive and unmoved at its current address for every subsequent call on the
+    /// returned [`Handoff`].
+    pub unsafe fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
         handoff_from_buffer(&self.0, engine_native::walk::Buffer::Growing(cursors))
     }
     pub fn registered_lanes(&self) -> usize {
@@ -3140,7 +3153,8 @@ pub fn stage_fixture(events: &[Event], memory: &impl Memory) -> (Drained, Vec<Ev
 #[cfg(any(test, feature = "test-support"))]
 pub fn bench_begin(base: usize, entries: usize, keys: usize) {
     BASE.store(base, Ordering::Relaxed);
-    resize(entries, keys);
+    // SAFETY: Isolated benchmark harness owns the global politics staging log.
+    unsafe { resize(entries, keys) };
     ENABLED.store(true, Ordering::SeqCst);
     let mut cursors = vec![LaneCursor::default(); thread_slots()];
     let _ = handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors));
@@ -3537,8 +3551,11 @@ mod tests {
         assert_eq!(LOG.load(Ordering::Acquire), offered);
         assert!(cursors.len() >= log().unwrap().lanes.len());
         let mut events = [Event::default()];
+        // SAFETY: test holds `staging_test()` and is the sole consumer of `sealed`.
         assert_eq!(
-            sealed.drain(&cursors, &mut events, &mut []).unwrap().copied,
+            unsafe { sealed.drain(&cursors, &mut events, &mut []) }
+                .unwrap()
+                .copied,
             1
         );
         assert_eq!(events[0].country, 5000);
@@ -3716,7 +3733,8 @@ mod tests {
             append_lane(before, 0, Event::default(), &memory);
         }
         let pointer = LOG.load(Ordering::Acquire);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
@@ -3726,7 +3744,8 @@ mod tests {
         assert!(after.entries >= before.entries);
         assert!(after.key_stride >= before.key_stride);
         let pointer = LOG.load(Ordering::Acquire);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
     }
 
@@ -3801,7 +3820,8 @@ mod tests {
             (1, first, first_cursors),
             (HALF + 1, second, second_cursors),
         ] {
-            let drained = sealed.drain(&cursors, &mut output, &mut bytes).unwrap();
+            // SAFETY: test holds `staging_test()` and drains each sealed interval in order.
+            let drained = unsafe { sealed.drain(&cursors, &mut output, &mut bytes) }.unwrap();
             assert_eq!(
                 (
                     drained.first,
@@ -3824,9 +3844,8 @@ mod tests {
                 assert_eq!(&bytes[key.address..key.address + key.len], b"mod_itemx");
             }
         }
-        let drained = third
-            .drain(&third_cursors, &mut output, &mut bytes)
-            .unwrap();
+        // SAFETY: test holds `staging_test()` and drains `third` in order.
+        let drained = unsafe { third.drain(&third_cursors, &mut output, &mut bytes) }.unwrap();
         assert_eq!(
             (
                 drained.first,
@@ -3924,7 +3943,8 @@ mod tests {
         assert!(combined.entries >= first.entries);
         assert!(combined.key_stride > old.key_stride);
         let offered = OFFERED.load(Ordering::Acquire);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_eq!(OFFERED.load(Ordering::Acquire), offered);
         seal_staging();
         assert_eq!(LOG.load(Ordering::Acquire), offered);
@@ -3974,8 +3994,9 @@ mod tests {
         resize_checked(old.entries + 1, 0).unwrap();
         invalidate();
         let mut output = [Event::default()];
+        // SAFETY: test holds `staging_test()` as the sole consumer of `sealed`.
         assert_eq!(
-            sealed.drain(&cursors, &mut output, &mut []),
+            unsafe { sealed.drain(&cursors, &mut output, &mut []) },
             Err("politics observation restarted")
         );
         seal_staging();
@@ -3989,8 +4010,11 @@ mod tests {
             },
         );
         let (sealed, cursors) = seal_staging();
+        // SAFETY: test holds `staging_test()` as the sole consumer of `sealed`.
         assert_eq!(
-            sealed.drain(&cursors, &mut output, &mut []).unwrap().copied,
+            unsafe { sealed.drain(&cursors, &mut output, &mut []) }
+                .unwrap()
+                .copied,
             1
         );
         clear_staging();
@@ -4535,7 +4559,8 @@ mod tests {
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];
-        let drained = handoff.drain(&cursors, &mut output, &mut bytes).unwrap();
+        // SAFETY: all producer threads have joined and test holds `staging_test()`.
+        let drained = unsafe { handoff.drain(&cursors, &mut output, &mut bytes) }.unwrap();
         assert_eq!(drained.copied, 20);
         assert_eq!(
             output
@@ -4698,7 +4723,8 @@ mod tests {
             serde_json::json!("politics staging allocation failed")
         );
         drop(held);
-        prepare();
+        // SAFETY: test holds `staging_test()` as the sole politics-log sizer.
+        unsafe { prepare() };
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
         assert!(super::log().unwrap().shared.len() > capacity);

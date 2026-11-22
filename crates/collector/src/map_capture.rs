@@ -82,12 +82,15 @@ impl Default for MapCapacities {
 
 impl MapCapacities {
     pub(crate) fn orders(&self) -> Orders {
-        Orders::new(
-            self.rows[9],
-            self.order_geometry,
-            self.order_groups,
-            self.order_visits,
-        )
+        // SAFETY: Called from the session's frame allocation/sizing path with measured capacities.
+        unsafe {
+            Orders::new(
+                self.rows[9],
+                self.order_geometry,
+                self.order_groups,
+                self.order_visits,
+            )
+        }
     }
 
     pub(crate) fn presize_combats(
@@ -212,13 +215,16 @@ impl ShipCensus {
         let begin = qpc();
         self.discard_owned();
         models.begin_sources();
-        let management = std::cell::RefCell::new(
+        // SAFETY: `ShipCensus::walk` runs in the admitted naval capture against the session image
+        // and settles or discards `self.management_owned` before frame reuse or detach.
+        let management = std::cell::RefCell::new(unsafe {
             collector_naval_management::forces::Session::begin_owned(
                 memory,
                 base,
                 state,
                 crate::decode::owned_failed,
-            ));
+            )
+        });
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
         let naval = cfleet::walk_timed_with_management(

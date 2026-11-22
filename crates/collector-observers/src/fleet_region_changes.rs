@@ -71,11 +71,17 @@ pub fn sequence(fleet: usize) -> Option<Certificate> {
     }
 }
 
-pub fn demand(fleets: usize) {
+/// # Safety
+/// Run only during attach, the active session's serial sizing pass, or admitted naval capture (or
+/// an isolated test), with measured fleet demand for the current session.
+pub unsafe fn demand(fleets: usize) {
     RECEIVERS.fetch_max(fleets, Ordering::Relaxed);
 }
 
-pub fn presize() {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// fleet-region watches remain live and teardown is excluded.
+pub unsafe fn presize() {
     if !CONFIGURED.load(Ordering::Acquire) {
         return;
     }
