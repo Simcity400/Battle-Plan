@@ -716,3 +716,51 @@ fn head_row_build_error_emits_typed_build_error_failure() {
         }
     );
 }
+
+#[test]
+fn keyed_view_replacement_clears_whole_view_failure_for_same_table() {
+    use super::view::HeadFailureKind;
+    let table = COMBATS;
+    let valid_key = 1u128 << 32;
+    let broken_key = 2u128 << 32;
+    let valid = combat(valid_key, 0);
+    let mut broken = combat(broken_key, 0);
+    broken.1[0] = Put::Unrecorded;
+    let units = record_with("keyed replaces whole failure", 1, |store, at| {
+        store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+        write_rows(store, table, &[valid.clone(), broken.clone()]);
+    });
+    let entry = open(units, hourly_steps()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    entry.playhead().seek(0);
+    let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
+    let whole = apart.store().handle().reader_at("whole", &[Need::every(table)], Pace::Step);
+    let both = apart.store().handle().reader_at("both", &[Need::every(table)], Pace::Step);
+    both.declare_keyed(table, Arc::new(BTreeSet::from([super::prefix(valid_key)])));
+    assert!(apart.drive(0), "the store never reached hour 0");
+    let _ = whole.wait(|frame| frame.hour == 0, LIMIT).expect("whole hour 0");
+    let _ = both.wait(|frame| frame.hour == 0, LIMIT).expect("both hour 0");
+
+    let (whole_frame, whole_failures) = whole.frame_with_failures().expect("whole frame");
+    assert!(
+        matches!(&*whole_frame.tables[table.index()], TableView::Unavailable { .. }),
+        "whole view including malformed row must fail: {:?}",
+        whole_frame.tables[table.index()]
+    );
+    assert!(
+        whole_failures
+            .iter()
+            .any(|failure| failure.table == table && matches!(failure.kind, HeadFailureKind::BuildError(_))),
+        "whole view must record a BuildError: {whole_failures:?}"
+    );
+
+    let (frame, failures) = both.frame_with_failures().expect("both frame");
+    match &*frame.tables[table.index()] {
+        TableView::Complete(rows) => assert_eq!(rows.len(), 1),
+        other => panic!("keyed selection excluding malformed row must be complete: {other:?}"),
+    }
+    assert!(
+        failures.is_empty(),
+        "successful keyed replacement must not retain whole-view failure: {failures:?}"
+    );
+}

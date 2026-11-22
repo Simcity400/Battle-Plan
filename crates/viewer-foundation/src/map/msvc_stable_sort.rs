@@ -555,6 +555,22 @@ mod tests {
             |&a, &b| fleet_difference(a, b) < 0,
         );
         assert_eq!(zero_scratch, expected_zero_scratch);
+
+        let mut pivot_fixture = Vec::with_capacity(24);
+        pivot_fixture.extend(std::iter::repeat_n(A, 12));
+        pivot_fixture.extend([C, A, B, C, A, B, B, C, A, B, B, C]);
+        let expected_pivot = [
+            C, A, A, A, A, A, A, A, B, C, A, A, A, A, A, A, A, B, B, C, A, B, B, C,
+        ];
+        let mut empty = Scratch::Heap(Vec::new());
+        inplace_merge(
+            &mut pivot_fixture,
+            12,
+            &mut empty,
+            &mut |&a, &b| fleet_difference(a, b) < 0,
+        );
+        assert_eq!(pivot_fixture.iter().position(|&v| v == B), Some(8));
+        assert_eq!(pivot_fixture, expected_pivot);
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

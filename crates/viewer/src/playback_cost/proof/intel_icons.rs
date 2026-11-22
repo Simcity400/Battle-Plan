@@ -4,7 +4,7 @@ use crate::{
     document::Document,
     layers::{
         Layer,
-        intel_icons::{Evaluate, Icons},
+        intel_icons::{Evaluate, FailedView, Icons},
     },
     playhead_host::{
         MapSide,
@@ -163,41 +163,30 @@ fn diff_intel_icons(expected: &IntelIcons, actual: &IntelIcons) -> Vec<String> {
         }
     }
 
-    let actual_state_count = actual.states.len();
-    let actual_entry_count: usize = actual.states.iter().map(|state| state.entries.len()).sum();
-    if actual.report.states != actual_state_count || actual.report.entries != actual_entry_count {
-        diffs.push(format!(
-            "layer report counts inconsistent: report holds ({}, {}), vectors hold ({}, {})",
-            actual.report.states, actual.report.entries, actual_state_count, actual_entry_count
-        ));
-    }
-
-    let expected_state_count = expected.states.len();
-    let expected_entry_count: usize = expected.states.iter().map(|state| state.entries.len()).sum();
-    if expected.report.states != expected_state_count
-        || expected.report.entries != expected_entry_count
-    {
-        diffs.push(format!(
-            "expected report counts inconsistent: report holds ({}, {}), vectors hold ({}, {})",
-            expected.report.states,
-            expected.report.entries,
-            expected_state_count,
-            expected_entry_count
-        ));
-    }
-
     diffs
+}
+
+fn report_invariant_error(label: &str, icons: &IntelIcons) -> Option<String> {
+    let state_count = icons.states.len();
+    let entry_count: usize = icons.states.iter().map(|state| state.entries.len()).sum();
+    if icons.report.states != state_count || icons.report.entries != entry_count {
+        Some(format!(
+            "{label} report counts inconsistent: report holds ({}, {}), vectors hold ({}, {})",
+            icons.report.states, icons.report.entries, state_count, entry_count
+        ))
+    } else {
+        None
+    }
 }
 
 fn substitute_eligible_failures(
     document_frame: &DecodedFrame,
-    head_rows: &DecodedFrame,
-    eligible: &[&HeadFailure],
+    eligible: &[&FailedView],
 ) -> DecodedFrame {
     let mut substituted = document_frame.clone();
-    for failure in eligible {
-        let index = failure.table.index();
-        substituted.tables[index] = head_rows.tables[index].clone();
+    for failed in eligible {
+        let index = failed.failure.table.index();
+        substituted.tables[index] = failed.view.clone();
     }
     substituted
 }
@@ -206,10 +195,9 @@ fn compare_with_substituted(
     wanted: &IntelIcons,
     icons: &IntelIcons,
     document_frame: &DecodedFrame,
-    head_rows: Option<&DecodedFrame>,
-    failures: &[HeadFailure],
+    installed_failures: &[FailedView],
     declared: &[TableId],
-    evaluate: impl FnOnce(&DecodedFrame) -> IntelIcons,
+    evaluate_reference: impl FnOnce(&DecodedFrame) -> IntelIcons,
 ) -> Compared {
     let mut compared = Compared {
         entries: entries(wanted),
@@ -222,28 +210,35 @@ fn compare_with_substituted(
         "tables": declared.len(),
     });
 
-    let eligible: Vec<&HeadFailure> = match head_rows {
-        Some(rows) => failures
-            .iter()
-            .filter(|failure| {
-                matches!(failure.kind, HeadFailureKind::BuildError(_))
-                    && declared.contains(&failure.table)
-                    && *document_frame.tables[failure.table.index()]
-                        != *rows.tables[failure.table.index()]
-            })
-            .collect(),
-        None => Vec::new(),
-    };
+    let eligible: Vec<&FailedView> = installed_failures
+        .iter()
+        .filter(|failed| {
+            matches!(failed.failure.kind, HeadFailureKind::BuildError(_))
+                && declared.contains(&failed.failure.table)
+                && *document_frame.tables[failed.failure.table.index()] != *failed.view
+        })
+        .collect();
 
-    let substituted_expected = if let Some(rows) = head_rows.filter(|_| !eligible.is_empty()) {
-        let substituted = substitute_eligible_failures(document_frame, rows, &eligible);
-        Some(evaluate(&substituted))
+    let substituted_expected = if !eligible.is_empty() {
+        let substituted = substitute_eligible_failures(document_frame, &eligible);
+        Some(evaluate_reference(&substituted))
     } else {
         None
     };
 
     let expected = substituted_expected.as_ref().unwrap_or(wanted);
-    let mismatches = diff_intel_icons(expected, icons);
+    let mut mismatches = diff_intel_icons(expected, icons);
+    if let Some(err) = report_invariant_error("layer", icons) {
+        mismatches.push(err);
+    }
+    if let Some(err) = report_invariant_error("expected", wanted) {
+        mismatches.push(err);
+    }
+    if let Some(substituted) = &substituted_expected
+        && let Some(err) = report_invariant_error("substituted expected", substituted)
+    {
+        mismatches.push(err);
+    }
     let exceptions = match &substituted_expected {
         Some(expected) => diff_intel_icons(wanted, expected),
         None => Vec::new(),
@@ -251,45 +246,112 @@ fn compare_with_substituted(
 
     compared.differing = mismatches.len() as u64;
     compared.first = mismatches.into_iter().next();
-    compared.notes = if exceptions.is_empty() && failures.is_empty() {
+    compared.notes = if exceptions.is_empty() && installed_failures.is_empty() {
         notes
     } else {
         json!({
             "known_exceptions": exceptions,
-            "refused_at_the_head": failures.iter().map(failure_json).collect::<Vec<_>>(),
+            "refused_at_the_head": installed_failures
+                .iter()
+                .map(|failed| failure_json(&failed.failure))
+                .collect::<Vec<_>>(),
             "detail": notes,
         })
     };
     compared
 }
 
-pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    let layer = of(layer);
-    let frame = document.frame()?;
-    let Some((icons, hour)) = layer.icons() else {
-        return Ok(Compared { notes: json!({"skipped": "no icons yet: their tables are being learned or loading", "tables": layer.tables().len()}), ..Compared::default() });
-    };
-    if *hour != frame.hour {
-        return Ok(Compared { notes: json!({"skipped": format!("the icons are of hour {hour}")}), ..Compared::default() });
+fn reference_icons(
+    content: &crate::document::Content,
+    frame: &DecodedFrame,
+    ours: io::Result<u32>,
+) -> IntelIcons {
+    match ours {
+        Ok(ours) => intel_icons::icons(
+            &content.icons.intel,
+            &content.icons.raids,
+            frame,
+            ours,
+            &content.names.localisation,
+            &content.raid_hover.recorded_language,
+        ),
+        Err(why) => {
+            let mut icons = IntelIcons {
+                built_for: None,
+                ..IntelIcons::default()
+            };
+            icons.report.reasons.insert(
+                format!(
+                    "the viewing country cannot be resolved at hour {}: {why}",
+                    frame.hour
+                ),
+                1,
+            );
+            icons
+        }
     }
-    let choice = viewer_foundation::map::perspective::Choice::default();
-    let ours = document.vision(&choice)?.ours();
-    let content = &document.content;
-    let wanted = intel_icons::icons(&content.icons.intel, &content.icons.raids, frame, ours, &content.names.localisation, &content.raid_hover.recorded_language);
-    let newest = layer.newest_rows_with_failures();
-    let (rows, failures) = match newest.as_ref().filter(|(rows, _)| rows.hour == *hour) {
-        Some((rows, failures)) => (Some(rows.as_ref()), failures.as_ref()),
-        None => (None, &[][..]),
+}
+
+fn compare_today(
+    layer: &Icons,
+    frame: &DecodedFrame,
+    document_eval: impl Fn(&DecodedFrame) -> IntelIcons,
+) -> Compared {
+    let Some((icons, hour, installed_failures)) = layer.icons_with_failures() else {
+        return Compared {
+            notes: json!({"skipped": "no icons yet: their tables are being learned or loading", "tables": layer.tables().len()}),
+            ..Compared::default()
+        };
     };
-    Ok(compare_with_substituted(
+    if hour != frame.hour {
+        return Compared {
+            notes: json!({"skipped": format!("the icons are of hour {hour}")}),
+            ..Compared::default()
+        };
+    }
+    let wanted = document_eval(frame);
+    compare_with_substituted(
         &wanted,
         icons,
         frame,
-        rows,
-        failures,
+        installed_failures,
         layer.tables(),
-        |substituted| layer.evaluate(substituted),
-    ))
+        &document_eval,
+    )
+}
+
+pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
+    let layer = of(layer);
+    let frame = document.frame()?;
+    let Some((_, hour, _)) = layer.icons_with_failures() else {
+        return Ok(Compared {
+            notes: json!({"skipped": "no icons yet: their tables are being learned or loading", "tables": layer.tables().len()}),
+            ..Compared::default()
+        });
+    };
+    if hour != frame.hour {
+        return Ok(Compared {
+            notes: json!({"skipped": format!("the icons are of hour {hour}")}),
+            ..Compared::default()
+        });
+    }
+    let choice = viewer_foundation::map::perspective::Choice::default();
+    let initial_ours = document.vision(&choice)?.ours();
+    let content = &document.content;
+    Ok(compare_today(layer, frame, |target| {
+        let resolved = if std::ptr::eq(target, frame) {
+            Ok(initial_ours)
+        } else {
+            viewer_foundation::map::perspective::incremental::Fold::advance(
+                &mut None,
+                target,
+                &choice,
+                viewer_foundation::map::visibility::FogContent::loaded(&content.counters.fog),
+            )
+            .map(|vision| vision.ours())
+        };
+        reference_icons(content, target, resolved)
+    }))
 }
 
 pub(super) fn fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
@@ -359,8 +421,16 @@ mod tests {
         frame
     }
 
-    fn synthetic_eval(frame: &DecodedFrame) -> IntelIcons {
-        let mut entries_10 = vec![entry(EntryKind::Shield, EntryKey::Shield(1), "5")];
+    fn failed_view(failure: HeadFailure) -> FailedView {
+        let view = SharedView::from(TableView::Unavailable {
+            reason: failure.format(),
+        });
+        FailedView { failure, view }
+    }
+
+    fn synthetic_eval_for_country(frame: &DecodedFrame, country: u32) -> IntelIcons {
+        let shield_text = if country == 1 { "5" } else { "9" };
+        let mut entries_10 = vec![entry(EntryKind::Shield, EntryKey::Shield(1), shield_text)];
         let mut reasons: Vec<(&str, usize)> = Vec::new();
         match &*frame.tables[TableId::AgencyOperationBuffers.index()] {
             TableView::Complete(_) => {
@@ -375,14 +445,20 @@ mod tests {
             }
             _ => {}
         }
-        icons_of(
+        let mut icons = icons_of(
             vec![StateIcon {
                 state: 10,
                 anchor: Anchor::Province(100),
                 entries: entries_10,
             }],
             &reasons,
-        )
+        );
+        icons.built_for = Some((frame.branch, frame.hour, country));
+        icons
+    }
+
+    fn synthetic_eval(frame: &DecodedFrame) -> IntelIcons {
+        synthetic_eval_for_country(frame, 1)
     }
 
     #[test]
@@ -405,19 +481,59 @@ mod tests {
                 table,
                 kind: HeadFailureKind::BuildError(format!("{table:?} is held without keys")),
             };
-            let head = frame_with_unavailable(&[(table, failure.format())]);
             let compared = compare_with_substituted(
                 &wanted,
                 &actual,
                 &doc,
-                Some(&head),
-                &[failure],
+                &[failed_view(failure)],
                 &[TableId::Clock, TableId::AgencyOperationBuffers, TableId::LexicalTokens],
                 synthetic_eval,
             );
             assert_eq!(compared.differing, 1, "table {table:?} must not excuse shield mismatch: {compared:?}");
             assert!(compared.first.as_deref().unwrap_or_default().contains("Shield"));
         }
+    }
+
+    #[test]
+    fn unrelated_build_error_does_not_switch_reference_to_layer_evaluator() {
+        struct WrongCountryLayer;
+        impl Evaluate for WrongCountryLayer {
+            fn icons(
+                &self,
+                frame: &DecodedFrame,
+                _choice: &viewer_foundation::map::perspective::Choice,
+            ) -> IntelIcons {
+                synthetic_eval_for_country(frame, 2)
+            }
+        }
+
+        let doc = complete_frame();
+        let clock_failure = HeadFailure {
+            table: TableId::Clock,
+            kind: HeadFailureKind::BuildError("Clock is held without keys".into()),
+        };
+        let head = frame_with_unavailable(&[(TableId::Clock, clock_failure.format())]);
+        let mut layer = Icons::new(Arc::new(WrongCountryLayer), Pace::Step);
+        let layer_icons = layer.evaluate(&head);
+        layer.install_for_test(layer_icons, doc.hour, vec![failed_view(clock_failure)]);
+
+        let compared = compare_today(&layer, &doc, synthetic_eval);
+        assert!(
+            compared.differing >= 1,
+            "layer-only wrong-country discrepancy must not be reproduced on the reference side under an unrelated Clock build error: {compared:?}"
+        );
+        assert!(
+            compared.first.as_deref().unwrap_or_default().contains("built for"),
+            "{compared:?}"
+        );
+        let exceptions = compared.notes["known_exceptions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            exceptions.is_empty(),
+            "unrelated Clock build error should produce zero reference exceptions: {compared:?}"
+        );
     }
 
     #[test]
@@ -434,8 +550,7 @@ mod tests {
             &wanted,
             &actual,
             &doc,
-            Some(&head),
-            &[failure],
+            &[failed_view(failure)],
             &[TableId::AgencyOperationBuffers, TableId::LexicalTokens],
             synthetic_eval,
         );
@@ -458,8 +573,7 @@ mod tests {
             &wanted,
             &actual,
             &doc,
-            Some(&head),
-            &[failure],
+            &[failed_view(failure)],
             &[TableId::AgencyOperationBuffers, TableId::LexicalTokens],
             synthetic_eval,
         );
@@ -482,24 +596,16 @@ mod tests {
             &wanted,
             &actual,
             &doc,
-            Some(&head),
-            &[panic_failure],
+            &[failed_view(panic_failure)],
             &[TableId::AgencyOperationBuffers],
             synthetic_eval,
         );
         assert_eq!(panicked_cmp.differing, 2, "panicked head failure must not excuse operation or reason: {panicked_cmp:?}");
 
-        let recorded_wording = HeadFailure {
-            table: TableId::AgencyOperationBuffers,
-            kind: HeadFailureKind::BuildError("AgencyOperationBuffers is held without keys".into()),
-        }
-        .format();
-        let recorded_head = frame_with_unavailable(&[(TableId::AgencyOperationBuffers, recorded_wording)]);
         let recorded_cmp = compare_with_substituted(
             &wanted,
             &actual,
             &doc,
-            Some(&recorded_head),
             &[],
             &[TableId::AgencyOperationBuffers],
             synthetic_eval,
@@ -536,7 +642,6 @@ mod tests {
             &wanted,
             &reversed,
             &doc,
-            None,
             &[],
             &[],
             |_| unreachable!(),
@@ -550,7 +655,6 @@ mod tests {
             &wanted,
             &modified_dup,
             &doc,
-            None,
             &[],
             &[],
             |_| unreachable!(),
@@ -573,12 +677,54 @@ mod tests {
             &wanted,
             &actual,
             &doc,
-            Some(&head),
-            &[failure],
+            &[failed_view(failure)],
             &[TableId::AgencyOperationBuffers],
             synthetic_eval,
         );
         assert_eq!(compared.differing, 1, "bogus report count must not be suppressed by an excused entry: {compared:?}");
         assert!(compared.first.as_deref().unwrap_or_default().contains("report counts inconsistent"));
+    }
+
+    #[test]
+    fn malformed_original_reference_report_is_not_masked_by_substitution() {
+        let doc = complete_frame();
+        let mut wanted = synthetic_eval(&doc);
+        wanted.report.entries = 99;
+        let failure = HeadFailure {
+            table: TableId::Clock,
+            kind: HeadFailureKind::BuildError("Clock is held without keys".into()),
+        };
+        let head = frame_with_unavailable(&[(TableId::Clock, failure.format())]);
+        let actual = synthetic_eval(&head);
+        let compared = compare_with_substituted(
+            &wanted,
+            &actual,
+            &doc,
+            &[failed_view(failure)],
+            &[TableId::Clock, TableId::AgencyOperationBuffers],
+            synthetic_eval,
+        );
+        assert_eq!(
+            compared.differing, 1,
+            "malformed original reference report must remain a hard mismatch: {compared:?}"
+        );
+        assert!(
+            compared
+                .first
+                .as_deref()
+                .unwrap_or_default()
+                .contains("expected report counts inconsistent"),
+            "{compared:?}"
+        );
+        let exceptions = compared.notes["known_exceptions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            exceptions
+                .iter()
+                .all(|item| !item.as_str().unwrap_or_default().contains("report counts inconsistent")),
+            "report invariant violation must never enter known_exceptions: {compared:?}"
+        );
     }
 }

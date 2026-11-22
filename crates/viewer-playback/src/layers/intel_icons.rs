@@ -6,14 +6,14 @@ use super::{Carried, Settling, Inputs, Layer, Published, View};
 use crate::playhead_host::{
     MapSide,
     mirror::Mirrors,
-    views::{Need, Pace, Reader as ViewReader, Stands, Views},
+    views::{Need, Pace, Reader as ViewReader, Stands, Views, view::HeadFailure},
 };
 use playhead::Step;
 use replay_data::{
     Hour,
     rows::{TableId, tables},
 };
-use replay_frame::frame::{DecodedFrame, discovering};
+use replay_frame::frame::{DecodedFrame, SharedView, discovering};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -56,8 +56,20 @@ fn refused(frame: &DecodedFrame, why: &str) -> IntelIcons {
     icons
 }
 
+#[derive(Clone, Debug)]
+pub struct FailedView {
+    pub failure: HeadFailure,
+    pub view: SharedView,
+}
+
+struct Installed {
+    shown: (Arc<IntelIcons>, Hour),
+    failures: Arc<[FailedView]>,
+}
+
 struct Job {
     frame: Arc<DecodedFrame>,
+    failures: Arc<[HeadFailure]>,
     choice: perspective::Choice,
     epoch: u64,
 }
@@ -69,6 +81,7 @@ enum Work {
 
 struct Done {
     icons: Option<IntelIcons>,
+    failures: Arc<[FailedView]>,
     missed: Vec<TableId>,
     hour: Hour,
     frame: std::sync::Weak<DecodedFrame>,
@@ -81,7 +94,7 @@ struct Open {
     jobs: mpsc::Sender<Work>,
     done: mpsc::Receiver<Done>,
     busy: bool,
-    seen: Option<Arc<DecodedFrame>>,
+    seen: Option<(Arc<DecodedFrame>, Arc<[HeadFailure]>)>,
     handed: bool,
 }
 
@@ -103,10 +116,21 @@ impl Open {
                 };
                 let started = Instant::now();
                 let (icons, missed) = discovering(|| evaluate.icons(&job.frame, &job.choice));
+                let failures: Arc<[FailedView]> = if job.failures.is_empty() {
+                    Arc::from([])
+                } else {
+                    job.failures
+                        .iter()
+                        .map(|failure| FailedView {
+                            failure: failure.clone(),
+                            view: job.frame.tables[failure.table.index()].clone(),
+                        })
+                        .collect()
+                };
                 let (hour, frame) = (job.frame.hour, Arc::downgrade(&job.frame));
                 drop(job.frame);
                 let icons = missed.is_empty().then_some(icons);
-                if send.send(Done { icons, missed, hour, frame, ns: started.elapsed().as_nanos() as u64, epoch: job.epoch }).is_err() {
+                if send.send(Done { icons, failures, missed, hour, frame, ns: started.elapsed().as_nanos() as u64, epoch: job.epoch }).is_err() {
                     return;
                 }
             }
@@ -118,7 +142,7 @@ impl Open {
         let _ = self.jobs.send(Work::Free(Box::new(held)));
     }
 
-    fn see(&mut self, frame: Option<Arc<DecodedFrame>>) {
+    fn see(&mut self, frame: Option<(Arc<DecodedFrame>, Arc<[HeadFailure]>)>) {
         if let Some(old) = std::mem::replace(&mut self.seen, frame) {
             self.free(old);
         }
@@ -189,7 +213,7 @@ pub struct Icons {
     choice: perspective::Choice,
     tables: Vec<TableId>,
     open: Option<Open>,
-    icons: Option<(Arc<IntelIcons>, Hour)>,
+    icons: Option<Installed>,
     stands: Option<Stands>,
     epoch: u64,
     applied: Option<Hour>,
@@ -203,7 +227,21 @@ impl Icons {
     }
 
     pub fn icons(&self) -> Option<&(Arc<IntelIcons>, Hour)> {
-        self.icons.as_ref()
+        self.icons.as_ref().map(|installed| &installed.shown)
+    }
+
+    pub fn icons_with_failures(&self) -> Option<(&Arc<IntelIcons>, Hour, &[FailedView])> {
+        self.icons
+            .as_ref()
+            .map(|installed| (&installed.shown.0, installed.shown.1, &*installed.failures))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_for_test(&mut self, icons: IntelIcons, hour: Hour, failures: Vec<FailedView>) {
+        self.show(Some(Installed {
+            shown: (Arc::new(icons), hour),
+            failures: Arc::from(failures),
+        }));
     }
 
     pub fn tables(&self) -> &[TableId] {
@@ -226,12 +264,6 @@ impl Icons {
         self.open.as_ref().and_then(|open| open.reader.frame())
     }
 
-    pub fn newest_rows_with_failures(
-        &self,
-    ) -> Option<(Arc<DecodedFrame>, Arc<[crate::playhead_host::views::view::HeadFailure]>)> {
-        self.open.as_ref().and_then(|open| open.reader.frame_with_failures())
-    }
-
     fn close(&mut self) {
         let icons = self.icons.take();
         if let Some(open) = self.open.take() {
@@ -244,7 +276,7 @@ impl Icons {
         self.epoch += 1;
     }
 
-    fn show(&mut self, icons: Option<(Arc<IntelIcons>, Hour)>) {
+    fn show(&mut self, icons: Option<Installed>) {
         if let Some(old) = std::mem::replace(&mut self.icons, icons) {
             match &self.open {
                 Some(open) => open.free(old),
@@ -283,7 +315,10 @@ impl Icons {
         *self.stats.evaluations.entry((done.ns / 100_000) as u32).or_default() += 1;
         match done.icons {
             Some(icons) => {
-                self.show(Some((Arc::new(icons), done.hour)));
+                self.show(Some(Installed {
+                    shown: (Arc::new(icons), done.hour),
+                    failures: done.failures,
+                }));
                 self.stands = Some(Stands::at(done.frame, done.hour));
             }
             None => {
@@ -301,20 +336,20 @@ impl Icons {
 
     fn offer(&mut self) {
         let Some(open) = &mut self.open else { return };
-        if let Some(frame) = open.reader.frame()
-            && !open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame))
+        if let Some((frame, failures)) = open.reader.frame_with_failures()
+            && !open.seen.as_ref().is_some_and(|(seen, _)| Arc::ptr_eq(seen, &frame))
         {
             if open.seen.is_some() && !open.handed {
                 self.stats.skipped += 1;
             }
-            open.see(Some(frame));
+            open.see(Some((frame, failures)));
             open.handed = false;
         }
         if open.busy || open.handed {
             return;
         }
-        let Some(frame) = open.seen.clone() else { return };
-        if open.jobs.send(Work::Evaluate(Job { frame, choice: self.choice.clone(), epoch: self.epoch })).is_ok() {
+        let Some((frame, failures)) = open.seen.clone() else { return };
+        if open.jobs.send(Work::Evaluate(Job { frame, failures, choice: self.choice.clone(), epoch: self.epoch })).is_ok() {
             open.busy = true;
             open.handed = true;
         }
@@ -325,7 +360,7 @@ impl Icons {
         let until = Instant::now() + settling.waiting(CATCH_UP);
         let ran_out = |why: String| if settling.strict() { Err(io::Error::other(why)) } else { Ok(()) };
         loop {
-            if self.icons.as_ref().is_some_and(|(_, at)| *at == hour) && !self.open.as_ref().is_some_and(|open| open.busy) {
+            if self.icons.as_ref().is_some_and(|installed| installed.shown.1 == hour) && !self.open.as_ref().is_some_and(|open| open.busy) {
                 return Ok(());
             }
             let Some(open) = &mut self.open else { return Ok(()) };
@@ -342,7 +377,7 @@ impl Icons {
                 }
                 continue;
             }
-            let Some(frame) = open.reader.frame() else {
+            let Some((frame, failures)) = open.reader.frame_with_failures() else {
                 return Ok(());
             };
             if frame.hour < hour {
@@ -352,12 +387,12 @@ impl Icons {
                 }
                 continue;
             }
-            let seen = open.seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, &frame));
+            let seen = open.seen.as_ref().is_some_and(|(seen, _)| Arc::ptr_eq(seen, &frame));
             if frame.hour > hour || (seen && open.handed) {
                 return Ok(());
             }
             if !seen {
-                open.see(Some(frame));
+                open.see(Some((frame, failures)));
                 open.handed = false;
             }
             self.offer();
@@ -418,7 +453,7 @@ impl Layer for Icons {
 
     fn compose(&mut self, mirrors: &Mirrors) -> io::Result<()> {
         self.applied = mirrors.get(TableId::Countries).and_then(|mirror| mirror.head()).or(self.applied);
-        self.icons = None;
+        self.show(None);
         self.epoch += 1;
         if let Some(open) = &mut self.open {
             open.handed = false;
@@ -447,7 +482,7 @@ impl Layer for Icons {
             }
         }
         match (&self.icons, self.applied) {
-            (Some((_, at)), Some(applied)) => *self.stats.ages.entry(applied - at).or_default() += 1,
+            (Some(installed), Some(applied)) => *self.stats.ages.entry(applied - installed.shown.1).or_default() += 1,
             (None, _) => self.stats.loading += 1,
             _ => {}
         }
@@ -460,11 +495,11 @@ impl Layer for Icons {
     }
 
     fn published(&self) -> Published {
-        self.icons.as_ref().map_or(Published::Current, |(_, hour)| Published::Cadence(self.stands.as_ref().map_or(*hour, |stands| stands.hour().max(*hour))))
+        self.icons.as_ref().map_or(Published::Current, |installed| Published::Cadence(self.stands.as_ref().map_or(installed.shown.1, |stands| stands.hour().max(installed.shown.1))))
     }
 
     fn held(&self) -> usize {
-        self.icons.as_ref().map_or(0, |(icons, _)| Self::icon_bytes(icons)) + self.tables.capacity() * std::mem::size_of::<TableId>()
+        self.icons.as_ref().map_or(0, |installed| Self::icon_bytes(&installed.shown.0)) + self.tables.capacity() * std::mem::size_of::<TableId>()
     }
 
     fn any(&self) -> &dyn std::any::Any {
