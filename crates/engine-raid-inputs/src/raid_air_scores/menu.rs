@@ -7,9 +7,7 @@ use std::sync::Arc;
 
 const COVERAGE: usize = 0x10;
 const REDUCTIONS: usize = 0x30;
-const FIELDS: [RecordField; 2] = [field(COVERAGE, 0, 8), field(REDUCTIONS, 8, 64)];
-const LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&FIELDS, 72).expect("valid air power menu layout");
+const MAP_HEADERS: usize = REDUCTIONS + 32;
 const SENTINEL_FIELDS: [RecordField; 1] = [field(0, 0, 26)];
 const SENTINEL_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&SENTINEL_FIELDS, 26).expect("valid air power map sentinel layout");
@@ -45,32 +43,29 @@ impl Scratch {
     }
 }
 
-pub(super) fn read(
+pub(super) fn read_from_entries(
     memory: &impl Memory,
-    addresses: &[usize],
+    entries: &[u8],
+    stride: usize,
+    complete: Option<&[bool]>,
     held: &[Option<&Arc<Menu>>],
     scratch: &mut Scratch,
 ) -> [Read; BATCH] {
-    let mut bytes = [0_u8; BATCH * 72];
-    let mut complete = [false; BATCH];
-    gather_records(
-        memory,
-        addresses,
-        &LAYOUT,
-        &mut bytes[..addresses.len() * 72],
-        &mut complete[..addresses.len()],
-    );
+    let count = entries.len() / stride;
+    let is_complete = |index: usize| complete.is_none_or(|mask| mask[index]);
     let mut heads = [0_usize; BATCH * 2];
     let mut gathered = [usize::MAX; BATCH * 2];
     let mut nonempty = 0;
-    for index in 0..addresses.len() {
-        if !complete[index] {
+    for index in 0..count {
+        if !is_complete(index) {
             continue;
         }
+        let base = index * stride + MAP_HEADERS;
         for side in 0..2 {
-            let at = index * 72 + 40 + side * 16;
-            if let Ok((head, count)) = node::Cursor::header(bytes[at..at + 16].try_into().unwrap())
-                && count != 0
+            let at = base + side * 16;
+            if let Ok((head, map_count)) =
+                node::Cursor::header(entries[at..at + 16].try_into().unwrap())
+                && map_count != 0
             {
                 gathered[index * 2 + side] = nonempty;
                 heads[nonempty] = head;
@@ -97,15 +92,32 @@ pub(super) fn read(
         }
     };
     std::array::from_fn(|index| {
-        if index >= addresses.len() || !complete[index] {
+        if index >= count || !is_complete(index) {
             return Read::Unavailable;
         }
         let (Ok(first), Ok(second)) = (sentinel(index * 2), sentinel(index * 2 + 1)) else {
             return Read::Unavailable;
         };
-        decode(
+        let entry = &entries[index * stride..(index + 1) * stride];
+        let coverage = i64::from_le_bytes(entry[COVERAGE..COVERAGE + 8].try_into().unwrap());
+        let reductions = std::array::from_fn(|i| {
+            i64::from_le_bytes(
+                entry[REDUCTIONS + i * 8..REDUCTIONS + (i + 1) * 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        });
+        let headers = [
+            entry[MAP_HEADERS..MAP_HEADERS + 16].try_into().unwrap(),
+            entry[MAP_HEADERS + 16..MAP_HEADERS + 32]
+                .try_into()
+                .unwrap(),
+        ];
+        decode_parts(
             memory,
-            &bytes[index * 72..(index + 1) * 72],
+            coverage,
+            reductions,
+            headers,
             [first, second],
             held.get(index).copied().flatten(),
             scratch,
@@ -114,28 +126,21 @@ pub(super) fn read(
     })
 }
 
-fn decode(
+fn decode_parts(
     memory: &impl Memory,
-    bytes: &[u8],
+    coverage: i64,
+    reductions: [i64; 4],
+    headers: [[u8; 16]; 2],
     sentinels: [Option<[u8; 26]>; 2],
     held: Option<&Arc<Menu>>,
     scratch: &mut Scratch,
 ) -> Result<Read, &'static str> {
-    let value = |at| i64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
-    let coverage = value(0);
-    let reductions: [i64; 4] = std::array::from_fn(|index| value(8 + index * 8));
     let Scratch {
         contributions,
         stack,
     } = scratch;
     for (side, rows) in contributions.iter_mut().enumerate() {
-        read_map(
-            memory,
-            bytes[40 + side * 16..56 + side * 16].try_into().unwrap(),
-            sentinels[side],
-            stack,
-            rows,
-        )?;
+        read_map(memory, headers[side], sentinels[side], stack, rows)?;
     }
     if let Some(held) = held
         && held.coverage == coverage

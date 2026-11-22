@@ -143,6 +143,7 @@ impl Runtime {
         selection: Option<&SliceSelection>,
         defer: bool,
     ) {
+        let mut reader = project_variable_changes::stamp_reader();
         for row in rows {
             let key = (row.owner, row.local_id);
             if !self.held.contains_key(&key) {
@@ -170,8 +171,22 @@ impl Runtime {
                     held.freeze_pending = false;
                     return;
                 };
-                let stamp = project_variable_changes::register(store, row.owner, row.local_id);
-                let pending_stamp = project_variable_changes::pending_stamp(store);
+                if reader.is_none() {
+                    reader = project_variable_changes::stamp_reader();
+                }
+                let (stamp, pending_stamp) = match reader
+                    .as_ref()
+                    .and_then(|reader| reader.stamps(store, row.owner, row.local_id))
+                {
+                    Some(stamps) => stamps,
+                    None => {
+                        reader = None;
+                        (
+                            project_variable_changes::register(store, row.owner, row.local_id),
+                            project_variable_changes::pending_stamp(store),
+                        )
+                    }
+                };
                 if pending_stamp.is_none() {
                     held.pending_known = false;
                     PROJECT_REWARD_REFUSALS.fetch_add(1, Relaxed);
@@ -180,6 +195,7 @@ impl Runtime {
                     || pending_stamp != held.pending_stamp
                     || row.state.iterations != held.iterations
                 {
+                    reader = None;
                     let pending = pointer
                         .checked_add(nproject_cproject::PENDING_REWARD)
                         .and_then(|address| engine_native::read::<u64>(memory, address))
@@ -227,6 +243,7 @@ impl Runtime {
                 if !force && held.variables_known && stamp == held.stamp {
                     return;
                 }
+                reader = None;
                 held.variables_known = false;
                 held.freeze_pending = false;
                 let read = engine_scripts::cvariables::read_store_carried(
@@ -271,6 +288,7 @@ impl Runtime {
             })();
             self.heap_bytes += held.allocated_bytes();
         }
+        drop(reader);
         if full_census {
             self.finish_census(rows, selection);
         }

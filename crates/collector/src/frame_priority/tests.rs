@@ -376,6 +376,7 @@ fn availability_counts_every_published_frame_and_each_claim() {
 #[test]
 fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     let cores = Cores::from_sets(&[(0, 0, 256), (1, 0, 257), (2, 1, 258), (3, 1, 259)]).unwrap();
+    assert_eq!(cores.physical_cores, 2);
     assert_eq!(away_sets(Some(&cores), Some(0)), Some(&[258, 259][..]));
     assert_eq!(away_sets(Some(&cores), Some(1)), Some(&[258, 259][..]));
     assert_eq!(away_sets(Some(&cores), Some(3)), Some(&[256, 257][..]));
@@ -383,6 +384,7 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     assert_eq!(away_sets(Some(&cores), None), None);
     assert_eq!(away_sets(None, Some(0)), None);
     let single = Cores::from_sets(&[(0, 0, 256), (1, 0, 257)]).unwrap();
+    assert_eq!(single.physical_cores, 1);
     assert_eq!(away_sets(Some(&single), Some(1)), None);
     assert!(Cores::from_sets(&[]).is_none());
 }

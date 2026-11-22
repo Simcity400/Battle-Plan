@@ -11,8 +11,8 @@ use windows_sys::Win32::Foundation::{HANDLE, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, GetCurrentThread,
     GetCurrentThreadId, OpenThread, SetEvent, SetThreadPriority, SetThreadSelectedCpuSets,
-    SetWaitableTimer, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL,
-    THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_IDLE, THREAD_PRIORITY_NORMAL,
+    SetWaitableTimer, THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_HIGHEST,
+    THREAD_PRIORITY_IDLE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
     THREAD_QUERY_LIMITED_INFORMATION, THREAD_SET_INFORMATION, THREAD_SET_LIMITED_INFORMATION,
     TIMER_ALL_ACCESS, WaitForMultipleObjects,
 };
@@ -63,7 +63,7 @@ fn priority(level: u32) -> i32 {
         TICK_PRESSED => THREAD_PRIORITY_NORMAL,
         2 => THREAD_PRIORITY_HIGHEST,
         1 => THREAD_PRIORITY_ABOVE_NORMAL,
-        _ => THREAD_PRIORITY_BELOW_NORMAL,
+        _ => THREAD_PRIORITY_LOWEST,
     }
 }
 fn for_role(pressure: u32, role: usize) -> u32 {
@@ -142,6 +142,7 @@ const GROUP_PROCESSORS: usize = 64;
 struct Cores {
     sets: [(u8, u8, u32); GROUP_PROCESSORS],
     len: usize,
+    physical_cores: usize,
     others: [[u32; GROUP_PROCESSORS]; GROUP_PROCESSORS],
     others_len: [usize; GROUP_PROCESSORS],
 }
@@ -190,13 +191,20 @@ impl Cores {
         let mut cores = Self {
             sets: [(0, 0, 0); GROUP_PROCESSORS],
             len: 0,
+            physical_cores: 0,
             others: [[0; GROUP_PROCESSORS]; GROUP_PROCESSORS],
             others_len: [0; GROUP_PROCESSORS],
         };
+        let mut seen = [false; GROUP_PROCESSORS];
         let placed = entries
             .iter()
             .filter(|&&(_, core, _)| usize::from(core) < GROUP_PROCESSORS);
         for &entry in placed.take(GROUP_PROCESSORS) {
+            let core = usize::from(entry.1);
+            if !seen[core] {
+                seen[core] = true;
+                cores.physical_cores += 1;
+            }
             cores.sets[cores.len] = entry;
             cores.len += 1;
         }
@@ -234,6 +242,10 @@ fn cores() -> Option<&'static Cores> {
 pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))
+}
+
+pub(crate) fn physical_cores() -> Option<usize> {
+    cores().map(|cores| cores.physical_cores)
 }
 
 fn select(thread: HANDLE, sets: Option<&[u32]>) -> bool {

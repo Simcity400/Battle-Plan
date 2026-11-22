@@ -170,41 +170,64 @@ int seh_execute_read_plan(const PlannedRead *reads, size_t read_count,
     size_t hint_index = 0;
     int result = 0;
     __try {
-        for (size_t index = 0;;) {
-            while (control_index < control_count &&
-                   controls[control_index].after_reads == index) {
-                const PlannedControl *control = &controls[control_index];
-                if (control->len != 0 &&
-                    !same_control(destination + control->offset,
-                                  expected + control->expected_offset, control->len)) {
-                    result = 1;
-                    goto plan_finished;
+        if (control_count == 0 && hint_count == 0) {
+            active_read = 1;
+            for (size_t index = 0; index < read_count; ++index) {
+                const PlannedRead *read = &reads[index];
+                if (read->len != 0) {
+                    copy_bytes(destination + read->destination_offset,
+                               (const unsigned char *)read->address, read->len);
                 }
-                ++control_index;
+                completed = index + 1;
             }
-            while (hint_index < hint_count && hints[hint_index].after_reads == index) {
-                const PlannedHint *hint = &hints[hint_index++];
-                if (hint->len != 0) {
-                    _mm_prefetch((const char *)hint->address, _MM_HINT_T0);
-                    uintptr_t last = hint->address + hint->len - 1;
-                    if ((last >> 6) != (hint->address >> 6)) {
-                        _mm_prefetch((const char *)last, _MM_HINT_T0);
+            active_read = 0;
+        } else {
+            for (size_t index = 0;;) {
+                while (control_index < control_count &&
+                       controls[control_index].after_reads == index) {
+                    const PlannedControl *control = &controls[control_index];
+                    if (control->len != 0 &&
+                        !same_control(destination + control->offset,
+                                      expected + control->expected_offset, control->len)) {
+                        result = 1;
+                        goto plan_finished;
+                    }
+                    ++control_index;
+                }
+                while (hint_index < hint_count && hints[hint_index].after_reads == index) {
+                    const PlannedHint *hint = &hints[hint_index++];
+                    if (hint->len != 0) {
+                        _mm_prefetch((const char *)hint->address, _MM_HINT_T0);
+                        uintptr_t last = hint->address + hint->len - 1;
+                        if ((last >> 6) != (hint->address >> 6)) {
+                            _mm_prefetch((const char *)last, _MM_HINT_T0);
+                        }
                     }
                 }
-            }
-            if (index == read_count) {
-                break;
-            }
-            const PlannedRead *read = &reads[index];
-            if (read->len != 0) {
-                unsigned char *target = destination + read->destination_offset;
-                const unsigned char *source = (const unsigned char *)read->address;
-                size_t len = read->len;
+                if (index == read_count) {
+                    break;
+                }
+                size_t stop = read_count;
+                if (control_index < control_count && controls[control_index].after_reads < stop) {
+                    stop = controls[control_index].after_reads;
+                }
+                if (hint_index < hint_count && hints[hint_index].after_reads < stop) {
+                    stop = hints[hint_index].after_reads;
+                }
+                if (stop <= index) {
+                    stop = index + 1;
+                }
                 active_read = 1;
-                copy_bytes(target, source, len);
+                while (index < stop) {
+                    const PlannedRead *read = &reads[index];
+                    if (read->len != 0) {
+                        copy_bytes(destination + read->destination_offset,
+                                   (const unsigned char *)read->address, read->len);
+                    }
+                    completed = ++index;
+                }
                 active_read = 0;
             }
-            completed = ++index;
         }
     } __except (plan_copy_fault(GetExceptionInformation(), reads, read_count,
                                destination, completed, active_read)
@@ -326,6 +349,9 @@ static __forceinline void hint_pointer_record(uintptr_t pointer) {
 static __forceinline void hint_packed_field(uintptr_t address, size_t len) {
     uintptr_t last = address + len - 1;
     _mm_prefetch((const char *)address, _MM_HINT_T0);
+    if (len > 128) {
+        _mm_prefetch((const char *)(address + 64), _MM_HINT_T0);
+    }
     if ((address >> 6) != (last >> 6)) {
         _mm_prefetch((const char *)last, _MM_HINT_T0);
     }
@@ -409,6 +435,32 @@ size_t seh_guarded_copy_records(const uintptr_t *pointers,
                 }
                 memcpy(destination + index * 8,
                        (const unsigned char *)record_pointer(pointers, source_base, source_stride, index), 8);
+                completed = index + 1;
+            }
+        } else if (validated_field_count != 0 && field_count == 1 &&
+                   fields[0].len != 0 && fields[0].destination_offset == 0) {
+            const size_t source_offset = fields[0].source_offset;
+            const size_t len = fields[0].len;
+            size_t hinted = 0;
+            while (hinted < 16 && hinted < validated_field_count) {
+                hint_packed_field(
+                    record_pointer(pointers, source_base, source_stride, hinted) + source_offset,
+                    len);
+                ++hinted;
+            }
+            for (size_t index = 0; index < validated_field_count; ++index) {
+                if (hinted < validated_field_count) {
+                    hint_packed_field(
+                        record_pointer(pointers, source_base, source_stride, hinted) + source_offset,
+                        len);
+                    ++hinted;
+                }
+                copy_bytes(
+                    destination + index * row_stride,
+                    (const unsigned char *)(record_pointer(pointers, source_base, source_stride,
+                                                           index) +
+                                            source_offset),
+                    len);
                 completed = index + 1;
             }
         } else if (validated_field_count != 0 && field_count == 5 &&

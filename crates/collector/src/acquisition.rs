@@ -15,7 +15,7 @@ use std::{
 use serde::Serialize;
 use windows_sys::Win32::System::Threading::{
     GetCurrentThread, GetCurrentThreadId, SetThreadPriority, SetThreadPriorityBoost,
-    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
     WakeByAddressSingle,
 };
 
@@ -1159,13 +1159,13 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         let away = game.map_or(0, |processor| processor.saturating_add(1));
         if !self.shared.called_up.load(Ordering::Acquire)
             && self.shared.regulars.load(Ordering::Acquire) == regulars
-            && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_NORMAL
+            && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_BELOW_NORMAL
             && self.shared.away.load(Ordering::Acquire) == away
         {
             return;
         }
         let state = self.shared.lock();
-        self.pace(state, regulars, THREAD_PRIORITY_NORMAL, false, game);
+        self.pace(state, regulars, THREAD_PRIORITY_BELOW_NORMAL, false, game);
     }
     fn pace(
         &self,
@@ -1955,7 +1955,7 @@ mod tests {
             for _ in 0..64 {
                 assert_eq!(
                     run(&pool),
-                    (regular, THREAD_PRIORITY_NORMAL),
+                    (regular, THREAD_PRIORITY_BELOW_NORMAL),
                     "a resting reserve took work"
                 );
             }

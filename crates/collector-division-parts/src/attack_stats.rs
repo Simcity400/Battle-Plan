@@ -52,9 +52,18 @@ fn next_stamp() -> u64 {
     }
 }
 
+const COMPACT_SLABS: usize = 16;
+
+#[derive(Default)]
+struct TerrainSlab {
+    terrain: Vec<i64>,
+    movement: Vec<i64>,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Row {
     division: u64,
+    slab: u16,
     start: usize,
     len: usize,
     stamp: u64,
@@ -70,6 +79,7 @@ struct Held {
     division: u64,
     army: usize,
     stat_block: usize,
+    slab: u16,
     start: usize,
     len: usize,
     stamp: u64,
@@ -163,8 +173,7 @@ pub struct ArmyStatStore {
     held: Vec<Held>,
     divisions: Vec<u64>,
     locator: Locator,
-    terrain: Vec<i64>,
-    movement: Vec<i64>,
+    slabs: Vec<std::sync::Arc<TerrainSlab>>,
     next: Vec<Held>,
     next_terrain: Vec<i64>,
     next_movement: Vec<i64>,
@@ -258,8 +267,7 @@ impl ArmyStatStore {
             held: Vec::new(),
             divisions: Vec::new(),
             locator: Locator::default(),
-            terrain: Vec::new(),
-            movement: Vec::new(),
+            slabs: Vec::new(),
             next: Vec::new(),
             next_terrain: Vec::new(),
             next_movement: Vec::new(),
@@ -289,8 +297,7 @@ impl ArmyStatStore {
         self.locator.clear();
         self.name_locator.clear();
         self.held.clear();
-        self.terrain.clear();
-        self.movement.clear();
+        self.slabs.clear();
         self.next.clear();
         self.next_terrain.clear();
         self.next_movement.clear();
@@ -301,6 +308,11 @@ impl ArmyStatStore {
     }
 
     pub fn allocated_bytes(&self) -> usize {
+        let slab_bytes: usize = self
+            .slabs
+            .iter()
+            .map(|slab| (slab.terrain.capacity() + slab.movement.capacity()) * 8)
+            .sum();
         self.experience.allocated_bytes()
             + self.supply.allocated_bytes()
             + self.progression.allocated_bytes()
@@ -312,8 +324,9 @@ impl ArmyStatStore {
             + (self.held.capacity() + self.next.capacity()) * std::mem::size_of::<Held>()
             + (self.divisions.capacity() + self.name_divisions.capacity()) * 8
             + (self.locator.order.capacity() + self.name_locator.order.capacity()) * 16
-            + (self.terrain.capacity() + self.next_terrain.capacity()) * 8
-            + (self.movement.capacity() + self.next_movement.capacity()) * 8
+            + self.slabs.capacity() * std::mem::size_of::<std::sync::Arc<TerrainSlab>>()
+            + slab_bytes
+            + (self.next_terrain.capacity() + self.next_movement.capacity()) * 8
             + (self.names.capacity() + self.next_names.capacity()) * std::mem::size_of::<HeldName>()
             + self.name_bytes.capacity()
             + self.next_name_bytes.capacity()
@@ -372,18 +385,70 @@ impl ArmyStatStore {
         self.locator.locate(&self.divisions, index, division)
     }
 
+    #[cfg(test)]
     fn terrain(&self, held: &Held) -> &[i64] {
-        &self.terrain[held.start..held.start + held.len]
+        &self.slabs[usize::from(held.slab - 1)].terrain[held.start..held.start + held.len]
     }
 
-    fn movement(&self, held: &Held) -> &[i64] {
-        &self.movement[held.start..held.start + held.len]
+    fn flush_next_slab(&mut self) {
+        if self.next_terrain.is_empty() && self.next_movement.is_empty() {
+            return;
+        }
+        let slab_id = (self.slabs.len() + 1) as u16;
+        let terrain = std::mem::take(&mut self.next_terrain);
+        let movement = std::mem::take(&mut self.next_movement);
+        self.slabs
+            .push(std::sync::Arc::new(TerrainSlab { terrain, movement }));
+        for held in &mut self.next {
+            if held.slab == 0 {
+                held.slab = slab_id;
+            }
+        }
+    }
+
+    fn compact_slabs(&mut self) {
+        let live_words: usize = self.held.iter().map(|held| held.len).sum();
+        if live_words == 0 {
+            self.slabs.clear();
+            return;
+        }
+        let stored_words: usize = self.slabs.iter().map(|slab| slab.terrain.len()).sum();
+        if self.slabs.len() < COMPACT_SLABS
+            && stored_words <= live_words.saturating_mul(2).saturating_add(8192)
+        {
+            return;
+        }
+        let mut terrain = Vec::new();
+        let mut movement = Vec::new();
+        let reserved = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut terrain, live_words)?;
+            engine_allocation::reserve(&mut movement, live_words)
+        });
+        if reserved.is_err() {
+            if self.slabs.len() >= usize::from(u16::MAX - 1) {
+                self.forget();
+            }
+            return;
+        }
+        for held in &mut self.held {
+            let slab = &self.slabs[usize::from(held.slab - 1)];
+            let start = terrain.len();
+            let span = held.start..held.start + held.len;
+            terrain.extend_from_slice(&slab.terrain[span.clone()]);
+            if !slab.movement.is_empty() {
+                movement.extend_from_slice(&slab.movement[span]);
+            }
+            held.slab = 1;
+            held.start = start;
+        }
+        self.slabs.clear();
+        self.slabs
+            .push(std::sync::Arc::new(TerrainSlab { terrain, movement }));
     }
 
     pub fn hold(&mut self, epoch: Option<u64>) {
+        self.flush_next_slab();
         std::mem::swap(&mut self.held, &mut self.next);
-        std::mem::swap(&mut self.terrain, &mut self.next_terrain);
-        std::mem::swap(&mut self.movement, &mut self.next_movement);
         std::mem::swap(&mut self.names, &mut self.next_names);
         std::mem::swap(&mut self.name_bytes, &mut self.next_name_bytes);
         self.next.clear();
@@ -409,6 +474,7 @@ impl ArmyStatStore {
             .extend(self.names.iter().map(|held| held.division));
         self.locator.index(&self.divisions);
         self.name_locator.index(&self.name_divisions);
+        self.compact_slabs();
         self.epoch = epoch;
     }
 
@@ -443,6 +509,7 @@ pub struct Captured {
         Option<Result<std::sync::Arc<crate::division_history::HistorySnapshot>, &'static str>>,
     rows: Vec<Row>,
     order: Vec<(u64, u32)>,
+    slabs: Vec<std::sync::Arc<TerrainSlab>>,
     terrain: Vec<i64>,
     movement: Vec<i64>,
     scratch: Vec<i64>,
@@ -467,9 +534,34 @@ impl Captured {
     pub fn reset(&mut self) {
         self.rows.clear();
         self.order.clear();
+        self.slabs.clear();
         self.terrain.clear();
         self.movement.clear();
         self.witness.clear();
+    }
+
+    fn terrain_slice(&self, row: &Row) -> Option<&[i64]> {
+        let span = row.start..row.start.saturating_add(row.len);
+        if row.slab == 0 {
+            self.terrain.get(span)
+        } else {
+            self.slabs
+                .get(usize::from(row.slab - 1))?
+                .terrain
+                .get(span)
+        }
+    }
+
+    fn movement_slice(&self, row: &Row) -> Option<&[i64]> {
+        let span = row.start..row.start.saturating_add(row.len);
+        if row.slab == 0 {
+            self.movement.get(span)
+        } else {
+            self.slabs
+                .get(usize::from(row.slab - 1))?
+                .movement
+                .get(span)
+        }
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -482,6 +574,7 @@ impl Captured {
             + self.career.capacity() * std::mem::size_of::<Option<i32>>()
             + self.rows.capacity() * std::mem::size_of::<Row>()
             + self.order.capacity() * std::mem::size_of::<(u64, u32)>()
+            + self.slabs.capacity() * std::mem::size_of::<std::sync::Arc<TerrainSlab>>()
             + (self.terrain.capacity() + self.scratch.capacity()) * 8
             + (self.movement.capacity() + self.movement_scratch.capacity()) * 8
             + self.held_index.capacity() * 8
@@ -1055,12 +1148,10 @@ impl Captured {
                 && !witnessed(hour, id)
             {
                 counts.reused += 1;
-                let start = self.terrain.len();
-                self.terrain.extend_from_slice(store.terrain(&held));
-                self.movement.extend_from_slice(store.movement(&held));
                 self.rows.push(Row {
                     division: seed.division,
-                    start,
+                    slab: held.slab,
+                    start: held.start,
                     len: held.len,
                     stamp: held.stamp,
                     scalars: Some(held.scalars),
@@ -1069,14 +1160,7 @@ impl Captured {
                     career_counter,
                     pending_template,
                 });
-                let next = store.next_terrain.len();
-                let span = held.start..held.start + held.len;
-                store
-                    .next_terrain
-                    .extend_from_slice(&store.terrain[span.clone()]);
-                store.next_movement.extend_from_slice(&store.movement[span]);
                 store.next.push(Held {
-                    start: next,
                     maxima: maxima(index),
                     ..held
                 });
@@ -1107,49 +1191,66 @@ impl Captured {
                     if fresh.panel.iter().any(Option::is_none) || fresh.suppression.is_none() {
                         counts.refused += 1;
                     }
-                    let start = self.terrain.len();
-                    self.terrain.extend_from_slice(&fresh.terrain);
-                    self.movement.extend_from_slice(&fresh.movement_terrain);
                     let scalars = Scalars::of(fresh);
                     let stamp = if store.is_some() && registered {
                         next_stamp()
                     } else {
                         0
                     };
-                    self.rows.push(Row {
-                        division: seed.division,
-                        start,
-                        len: fresh.terrain.len(),
-                        stamp,
-                        scalars: Some(scalars),
-                        experience,
-                        officer_experience,
-                        career_counter,
-                        pending_template,
-                    });
-                    if witnessed(hour, id) && !self.terrains.is_empty() {
-                        counts.witnessed += 1;
-                        self.witness
-                            .push((seed.division, witness(fresh, &self.terrains)));
-                    }
                     if let Some(store) = store.as_deref_mut()
                         && registered
+                        && store.slabs.len() < usize::from(u16::MAX - 1)
                     {
-                        let next = store.next_terrain.len();
+                        let slab = (store.slabs.len() + 1) as u16;
+                        let start = store.next_terrain.len();
                         store.next_terrain.extend_from_slice(&fresh.terrain);
                         store
                             .next_movement
                             .extend_from_slice(&fresh.movement_terrain);
+                        self.rows.push(Row {
+                            division: seed.division,
+                            slab,
+                            start,
+                            len: fresh.terrain.len(),
+                            stamp,
+                            scalars: Some(scalars),
+                            experience,
+                            officer_experience,
+                            career_counter,
+                            pending_template,
+                        });
                         store.next.push(Held {
                             division: seed.division,
                             army: seed.pointer,
                             stat_block,
-                            start: next,
+                            slab,
+                            start,
                             len: fresh.terrain.len(),
                             stamp,
                             scalars,
                             maxima: maxima(index),
                         });
+                    } else {
+                        let start = self.terrain.len();
+                        self.terrain.extend_from_slice(&fresh.terrain);
+                        self.movement.extend_from_slice(&fresh.movement_terrain);
+                        self.rows.push(Row {
+                            division: seed.division,
+                            slab: 0,
+                            start,
+                            len: fresh.terrain.len(),
+                            stamp: 0,
+                            scalars: Some(scalars),
+                            experience,
+                            officer_experience,
+                            career_counter,
+                            pending_template,
+                        });
+                    }
+                    if witnessed(hour, id) && !self.terrains.is_empty() {
+                        counts.witnessed += 1;
+                        self.witness
+                            .push((seed.division, witness(fresh, &self.terrains)));
                     }
                     if staged.is_none()
                         && let Some(Ok(fresh)) = acquired
@@ -1181,6 +1282,8 @@ impl Captured {
         self.witness.sort_unstable_by_key(|(division, _)| *division);
         let complete = matches!(outcome, Outcome::Rows { .. });
         if let Some(store) = store {
+            store.flush_next_slab();
+            self.slabs.extend(store.slabs.iter().cloned());
             if complete {
                 store.hold(self.epoch);
             } else {
@@ -1379,7 +1482,7 @@ impl RowView<'_> {
         let scalars = row.scalars?;
         Some(DivisionAttackStats {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
-                self.captured.terrain.get(row.start..row.start + row.len)?,
+                self.captured.terrain_slice(row)?,
             )),
             river: scalars.river,
             fort: scalars.fort,
@@ -1393,7 +1496,7 @@ impl RowView<'_> {
         let scalars = row.scalars?;
         Some(DivisionMovementStats {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
-                self.captured.movement.get(row.start..row.start + row.len)?,
+                self.captured.movement_slice(row)?,
             )),
             scalars: scalars.movement,
             fuel_rate: scalars.fuel_rate,
@@ -1427,9 +1530,8 @@ impl RowView<'_> {
             scalars.air_defense,
         ];
         record.words(Some(words.as_slice()));
-        let span = row.start..row.start.saturating_add(row.len);
-        record.words(self.captured.terrain.get(span.clone()));
-        record.words(self.captured.movement.get(span));
+        record.words(self.captured.terrain_slice(row));
+        record.words(self.captured.movement_slice(row));
     }
 
     pub fn same_movement(
@@ -1440,10 +1542,7 @@ impl RowView<'_> {
             return false;
         };
         let current = self.row.and_then(|row| {
-            Some((
-                row.scalars?,
-                self.captured.movement.get(row.start..row.start + row.len)?,
-            ))
+            Some((row.scalars?, self.captured.movement_slice(row)?))
         });
         match (current, previous) {
             (None, None) => true,
@@ -1465,10 +1564,7 @@ impl RowView<'_> {
             return false;
         };
         let current = self.row.and_then(|row| {
-            Some((
-                row.scalars?,
-                self.captured.terrain.get(row.start..row.start + row.len)?,
-            ))
+            Some((row.scalars?, self.captured.terrain_slice(row)?))
         });
         match (current, previous) {
             (None, None) => true,
@@ -1528,6 +1624,7 @@ mod tests {
                 division,
                 army: 0x1000,
                 stat_block: 0x2000,
+                slab: 0,
                 start: 0,
                 len: terrain.len(),
                 stamp: 0,

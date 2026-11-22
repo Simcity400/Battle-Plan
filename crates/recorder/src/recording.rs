@@ -995,7 +995,16 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
     options.output = options.output.canonicalize().map_err(|e| e.to_string())?;
     match command.as_str() {
-        "record" => record(options),
+        "record" => {
+            // SAFETY: lowers only this recorder process's priority class during live capture.
+            unsafe {
+                use windows_sys::Win32::System::Threading::{
+                    BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass,
+                };
+                SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+            }
+            record(options)
+        }
         "detach" => request_detach(&options.output),
         "refresh" => request_refresh(&options.output),
         "finalize" => {

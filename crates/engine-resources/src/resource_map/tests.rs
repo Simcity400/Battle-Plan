@@ -610,6 +610,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
             countries: &countries,
             threshold: THRESHOLD,
             local_resources: Default::default(),
+            links: Ok(None),
         };
         memory.spans.borrow_mut().clear();
         assert!(
@@ -643,6 +644,7 @@ fn scalar_batches_follow_client_handle_and_origin_route_authentication() {
         countries: &countries,
         threshold: THRESHOLD,
         local_resources: Default::default(),
+        links: Ok(None),
     };
     let country = ccountry::Country {
         pointer: 0x2000,

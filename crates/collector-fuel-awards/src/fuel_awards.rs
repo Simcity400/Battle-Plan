@@ -576,7 +576,7 @@ fn append(
     memory: &impl Memory,
 ) -> bool {
     let attempted = ENTRY_ATTEMPTS
-        .fetch_add(1, Ordering::SeqCst)
+        .fetch_add(1, Ordering::Relaxed)
         .wrapping_add(1);
     raise(
         &ENTRY_DEMAND,
@@ -587,10 +587,10 @@ fn append(
         Some(name) => {
             let bytes = name.byte_len() as u64;
             NAME_ATTEMPTS
-                .fetch_add(bytes, Ordering::SeqCst)
+                .fetch_add(bytes, Ordering::Relaxed)
                 .wrapping_add(bytes)
         }
-        None => NAME_ATTEMPTS.load(Ordering::SeqCst),
+        None => NAME_ATTEMPTS.load(Ordering::Relaxed),
     };
     raise(
         &NAME_DEMAND,
@@ -600,7 +600,7 @@ fn append(
     if let Some(name) = &name {
         raise(&NAME_STRIDE, name.byte_len(), Ordering::Release);
     }
-    let Some(buffer) = (unsafe { LIVE.load(Ordering::SeqCst).as_ref() }).and_then(publishing)
+    let Some(buffer) = (unsafe { LIVE.load(Ordering::Acquire).as_ref() }).and_then(publishing)
     else {
         let index = LOG.cursor.fetch_add(1, Ordering::SeqCst);
         if SPILL.push(index, entry, name, memory) {

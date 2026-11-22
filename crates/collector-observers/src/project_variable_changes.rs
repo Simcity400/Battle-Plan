@@ -124,10 +124,59 @@ pub fn invalidate() {
 }
 
 pub fn retain_live(mut keep: impl FnMut(u32, u32) -> bool) {
+    if let Ok(entries) = OWNERS.try_read() {
+        let Some(entries) = entries.as_ref() else {
+            return;
+        };
+        if entries.values().all(|entry| keep(entry.owner, entry.id)) {
+            return;
+        }
+    }
     if let Ok(mut entries) = OWNERS.try_write()
         && let Some(entries) = entries.as_mut()
     {
         entries.retain(|_, entry| keep(entry.owner, entry.id));
+    }
+}
+
+pub struct StampReader(RwLockReadGuard<'static, Option<HashMap<usize, Entry>>>);
+
+pub fn stamp_reader() -> Option<StampReader> {
+    OWNERS.try_read().ok().map(StampReader)
+}
+
+impl StampReader {
+    pub fn stamps(
+        &self,
+        store: usize,
+        owner: u32,
+        id: u32,
+    ) -> Option<(Option<(u64, u64)>, Option<(u64, u64)>)> {
+        let enabled = ENABLED.load(Ordering::SeqCst);
+        let entry = self.0.as_ref().and_then(|entries| entries.get(&store));
+        let stamp = if !enabled {
+            None
+        } else {
+            let entry = entry.filter(|entry| entry.owner == owner && entry.id == id)?;
+            (entry.active.load(Ordering::SeqCst) == 0).then(|| {
+                (
+                    EPOCH.load(Ordering::SeqCst),
+                    entry.revision.load(Ordering::SeqCst),
+                )
+            })
+        };
+        let pending_stamp = if !PROJECT_HOOKS.load(Ordering::SeqCst) {
+            None
+        } else {
+            entry.and_then(|entry| {
+                let stamp = (
+                    EPOCH.load(Ordering::SeqCst),
+                    entry.pending_revision.load(Ordering::SeqCst),
+                );
+                (entry.pending_active.load(Ordering::SeqCst) == 0).then_some(stamp)
+            })
+        };
+        Some((stamp, pending_stamp))
     }
 }
 

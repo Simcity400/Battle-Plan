@@ -9,13 +9,14 @@ use std::{
     time::{Duration, Instant},
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, GetThreadId, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
-    THREAD_PRIORITY_NORMAL, WaitOnAddress, WakeByAddressAll,
+    GetCurrentThread, GetThreadId, SetThreadPriority, SetThreadPriorityBoost,
+    THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, WaitOnAddress, WakeByAddressAll,
 };
 
 pub(crate) fn beside_readers() -> usize {
-    let cpus = crate::acquisition::usable_cpus();
-    (cpus * 3 / 4).clamp(3, crate::acquisition::MAX_WORKERS)
+    let cores = crate::frame_priority::physical_cores()
+        .unwrap_or_else(|| crate::acquisition::usable_cpus().div_ceil(2));
+    (cores / 2).clamp(3, 6).min(crate::acquisition::MAX_WORKERS)
 }
 
 const IDLE: u32 = 0;
@@ -373,9 +374,9 @@ fn beside(
         *away = crate::frame_priority::AwayFromGame::default();
     }
     let own = unsafe { GetCurrentThread() };
-    if *priority != THREAD_PRIORITY_NORMAL {
-        unsafe { SetThreadPriority(own, THREAD_PRIORITY_NORMAL) };
-        *priority = THREAD_PRIORITY_NORMAL;
+    if *priority != THREAD_PRIORITY_BELOW_NORMAL {
+        unsafe { SetThreadPriority(own, THREAD_PRIORITY_BELOW_NORMAL) };
+        *priority = THREAD_PRIORITY_BELOW_NORMAL;
     }
     away.follow(game);
     CONFINED.store(away.confined(), Ordering::SeqCst);
@@ -392,6 +393,7 @@ fn beside(
 
 fn run() {
     capture_gate::reader();
+    unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) };
     let mut priority = i32::MIN;
     let mut seen_hurry = 0;
     let mut away = crate::frame_priority::AwayFromGame::default();

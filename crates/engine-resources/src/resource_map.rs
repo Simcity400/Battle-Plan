@@ -461,7 +461,112 @@ struct Walk<'a, M: Memory> {
     countries: &'a ccountry::Reader<'a, M>,
     threshold: i64,
     local_resources: std::cell::Cell<Option<modifier_definition::Operands>>,
+    links: Result<Option<Array>, &'static str>,
 }
+
+struct OriginBatch {
+    origin_ptrs: [usize; ORIGIN_BATCH],
+    origin_bytes: [u8; ORIGIN_BATCH * ORIGIN_RECORD_STRIDE],
+    state_ptrs: [usize; ORIGIN_BATCH],
+    state_bytes: [u8; ORIGIN_BATCH * STATE_RECORD_STRIDE],
+}
+
+impl Default for OriginBatch {
+    fn default() -> Self {
+        Self {
+            origin_ptrs: [0; ORIGIN_BATCH],
+            origin_bytes: [0; ORIGIN_BATCH * ORIGIN_RECORD_STRIDE],
+            state_ptrs: [0; ORIGIN_BATCH],
+            state_bytes: [0; ORIGIN_BATCH * STATE_RECORD_STRIDE],
+        }
+    }
+}
+
+impl OriginBatch {
+    fn origin_record(&self, index: usize) -> &[u8] {
+        &self.origin_bytes[index * ORIGIN_RECORD_STRIDE..(index + 1) * ORIGIN_RECORD_STRIDE]
+    }
+
+    fn state_record(&self, index: usize) -> &[u8] {
+        &self.state_bytes[index * STATE_RECORD_STRIDE..(index + 1) * STATE_RECORD_STRIDE]
+    }
+}
+
+const ORIGIN_BATCH: usize = 64;
+const ORIGIN_PTR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 8,
+}];
+const ORIGIN_PTR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ORIGIN_PTR_FIELDS, 8).expect("valid origin pointer layout");
+const ORIGIN_RECORD_STRIDE: usize = 84;
+const ORIGIN_RECORD_FIELDS: [RecordField; 9] = [
+    RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CLIENT_CONVOYS,
+        destination_offset: 8,
+        len: 8,
+    },
+    RecordField {
+        source_offset: CLIENT_EFFICIENCY_A,
+        destination_offset: 16,
+        len: 16,
+    },
+    RecordField {
+        source_offset: CLIENT_CONVOYS_BASE,
+        destination_offset: 32,
+        len: 4,
+    },
+    RecordField {
+        source_offset: ORIGIN_STATE,
+        destination_offset: 36,
+        len: 8,
+    },
+    RecordField {
+        source_offset: ORIGIN_EFFICIENCY,
+        destination_offset: 44,
+        len: 8,
+    },
+    RecordField {
+        source_offset: ORIGIN_ROUTE,
+        destination_offset: 52,
+        len: 8,
+    },
+    RecordField {
+        source_offset: ORIGIN_ROUTE_FACTOR,
+        destination_offset: 60,
+        len: 8,
+    },
+    RecordField {
+        source_offset: ORIGIN_RIGHTS,
+        destination_offset: 68,
+        len: 16,
+    },
+];
+const ORIGIN_RECORD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ORIGIN_RECORD_FIELDS, ORIGIN_RECORD_STRIDE)
+        .expect("valid origin record layout");
+const STATE_RECORD_STRIDE: usize = 24;
+const STATE_RECORD_FIELDS: [RecordField; 2] = [
+    RecordField {
+        source_offset: cstate::ID,
+        destination_offset: 0,
+        len: 4,
+    },
+    RecordField {
+        source_offset: cstate::COUNTRY_MODIFIERS,
+        destination_offset: 4,
+        len: 17,
+    },
+];
+const STATE_RECORD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&STATE_RECORD_FIELDS, STATE_RECORD_STRIDE)
+        .expect("valid origin state record layout");
 
 impl<M: Memory> Walk<'_, M> {
     fn id(&self, link: u32) -> Result<u32, &'static str> {
@@ -612,6 +717,16 @@ impl<M: Memory> Walk<'_, M> {
             RIGHTS_STRIDE,
             "origin rights unreadable",
         )?;
+        self.rights_from_array(rights, state, table, output)
+    }
+
+    fn rights_from_array(
+        &self,
+        rights: Array,
+        state: u32,
+        table: &mut Table,
+        output: &mut Buffer<'_, RightsRow>,
+    ) -> Result<(), &'static str> {
         for entry in 0..rights.count {
             let address = rights
                 .element(entry, RIGHTS_STRIDE)
@@ -630,6 +745,182 @@ impl<M: Memory> Walk<'_, M> {
             )?;
         }
         Ok(())
+    }
+
+    fn try_read_origin_batch(
+        &self,
+        origins: Array,
+        stride: usize,
+        first: u32,
+        count: usize,
+        batch: &mut OriginBatch,
+    ) -> bool {
+        let Ok(expected_vtable) = vtable(self.base, ORIGIN_VTABLE_RVA) else {
+            return false;
+        };
+        let Some(start) = origins.element(first, stride) else {
+            return false;
+        };
+        let mut ptr_bytes = [0_u8; ORIGIN_BATCH * 8];
+        if self.memory.copy_records(
+            RecordSources::Strided {
+                base: start,
+                stride,
+                count,
+            },
+            &ORIGIN_PTR_LAYOUT,
+            &mut ptr_bytes[..count * 8],
+        ) != count
+        {
+            return false;
+        }
+        for (slot, chunk) in batch.origin_ptrs[..count]
+            .iter_mut()
+            .zip(ptr_bytes[..count * 8].chunks_exact(8))
+        {
+            let Ok(origin) = usize::try_from(u64::from_le_bytes(chunk.try_into().unwrap())) else {
+                return false;
+            };
+            if origin == 0 || origin.checked_add(ORIGIN_RIGHTS + 16).is_none() {
+                return false;
+            }
+            *slot = origin;
+        }
+        if self.memory.copy_records(
+            RecordSources::Pointers(&batch.origin_ptrs[..count]),
+            &ORIGIN_RECORD_LAYOUT,
+            &mut batch.origin_bytes[..count * ORIGIN_RECORD_STRIDE],
+        ) != count * ORIGIN_RECORD_FIELDS.len()
+        {
+            return false;
+        }
+        for (slot, record) in batch.state_ptrs[..count].iter_mut().zip(
+            batch.origin_bytes[..count * ORIGIN_RECORD_STRIDE].chunks_exact(ORIGIN_RECORD_STRIDE),
+        ) {
+            if u64::from_le_bytes(record[0..8].try_into().unwrap()) as usize != expected_vtable {
+                return false;
+            }
+            let Ok(state) = usize::try_from(u64::from_le_bytes(record[36..44].try_into().unwrap()))
+            else {
+                return false;
+            };
+            if state == 0
+                || state.checked_add(cstate::ID + 4).is_none()
+                || state.checked_add(cstate::COUNTRY_MODIFIERS + 17).is_none()
+            {
+                return false;
+            }
+            *slot = state;
+        }
+        self.memory.copy_records(
+            RecordSources::Pointers(&batch.state_ptrs[..count]),
+            &STATE_RECORD_LAYOUT,
+            &mut batch.state_bytes[..count * STATE_RECORD_STRIDE],
+        ) == count * STATE_RECORD_FIELDS.len()
+    }
+
+    fn country_modifier_accumulator_from_header(
+        &self,
+        state_pointer: usize,
+        country_id: u32,
+        header: [u8; 17],
+        cached_owner: &mut Option<Result<u32, &'static str>>,
+    ) -> Result<usize, &'static str> {
+        if self.game_state == 0 || country_id == 0 {
+            return cstate::country_modifier_accumulator_with_canonical(
+                self.memory,
+                state_pointer,
+                country_id,
+                header,
+                Ok,
+            );
+        }
+        let links = self.links?.ok_or("state movement country links invalid")?;
+        let owner_canonical = *cached_owner.get_or_insert_with(|| {
+            links
+                .element(country_id, 4)
+                .and_then(|address| read(self.memory, address))
+                .ok_or("state movement country link unreadable")
+        });
+        cstate::country_modifier_accumulator_with_canonical(
+            self.memory,
+            state_pointer,
+            country_id,
+            header,
+            |raw| {
+                if raw == country_id {
+                    owner_canonical
+                } else {
+                    links
+                        .element(raw, 4)
+                        .and_then(|address| read(self.memory, address))
+                        .ok_or("state movement country link unreadable")
+                }
+            },
+        )
+    }
+
+    fn origin_from_batch(
+        &self,
+        batch: &OriginBatch,
+        index: usize,
+        list: u8,
+        ordinal: u32,
+        country: ccountry::Country,
+        cached_owner: &mut Option<Result<u32, &'static str>>,
+    ) -> Result<OriginRow, &'static str> {
+        let origin = batch.origin_ptrs[index];
+        let record = batch.origin_record(index);
+        let state_pointer = batch.state_ptrs[index];
+        let state_record = batch.state_record(index);
+        let state = u32::from_le_bytes(state_record[0..4].try_into().unwrap());
+        let modifiers: [u8; 17] = state_record[4..21].try_into().unwrap();
+        let efficiency = i64::from_le_bytes(record[44..52].try_into().unwrap());
+        let route_factor = i64::from_le_bytes(record[60..68].try_into().unwrap());
+        let accumulator = self.country_modifier_accumulator_from_header(
+            state_pointer,
+            country.id,
+            modifiers,
+            cached_owner,
+        )?;
+        let local_resources_factor = effective(
+            self.memory,
+            self.base,
+            accumulator,
+            LOCAL_RESOURCES_FACTOR,
+            &self.local_resources,
+        )?;
+        let route_address = at(origin, ORIGIN_ROUTE)?;
+        if u64::from_le_bytes(record[52..60].try_into().unwrap()) as usize
+            != vtable(self.base, ROUTE_VTABLE_RVA)?
+        {
+            return Err("route vtable mismatch");
+        }
+        let status = ClientStatus::new(
+            [
+                i64::from_le_bytes(record[16..24].try_into().unwrap()),
+                i64::from_le_bytes(record[24..32].try_into().unwrap()),
+            ],
+            [
+                i32::from_le_bytes(record[8..12].try_into().unwrap()),
+                i32::from_le_bytes(record[12..16].try_into().unwrap()),
+            ],
+            i32::from_le_bytes(record[32..36].try_into().unwrap()),
+            self.threshold,
+        );
+        Ok(OriginRow {
+            state,
+            country: country.id,
+            list,
+            ordinal,
+            efficiency,
+            route_factor,
+            local_resources_factor,
+            bad: status.bad,
+            convoys: status.convoys,
+            convoys_base: status.convoys_base,
+            route_address,
+        })
     }
 
     fn country_clients(
@@ -983,6 +1274,15 @@ pub fn walk_buffer(
         tables[ORIGINS].failed = Some(reason);
         tables[CLIENTS].failed = Some(reason);
     }
+    let links = if game_state == 0 {
+        Ok(None)
+    } else {
+        game_state
+            .checked_add(cgame_state::COUNTRY_LINKS)
+            .and_then(|address| Array::read(memory, address, 4))
+            .map(Some)
+            .ok_or("state movement country links invalid")
+    };
     let walk = Walk {
         memory,
         base,
@@ -990,6 +1290,7 @@ pub fn walk_buffer(
         countries: &countries,
         threshold: threshold.unwrap_or_default(),
         local_resources: Default::default(),
+        links,
     };
     let oil_metadata = Default::default();
     let supply_systems = (|| -> Result<usize, &'static str> {
@@ -1056,51 +1357,147 @@ pub fn walk_buffer(
             }
         };
         let [origins_table, rights_table, _, clients_table] = &mut tables;
-        rights_table.run(|table| {
+        let mut owner_canonical = None;
+        let mut batch = OriginBatch::default();
+        if rights_table.failed.is_none() || origins_table.failed.is_none() {
+            match at(resources, ccountry_resources::RESOURCE_ORIGINS)
+                .and_then(|address| array(memory, address, 8, "origin list unreadable"))
+            {
+                Ok(origins) => {
+                    let mut first = 0_u32;
+                    while first < origins.count {
+                        let count = ((origins.count - first) as usize).min(ORIGIN_BATCH);
+                        if walk.try_read_origin_batch(origins, 8, first, count, &mut batch) {
+                            rights_table.run(|table| {
+                                for index in 0..count {
+                                    let record = batch.origin_record(index);
+                                    let state_record = batch.state_record(index);
+                                    let state = u32::from_le_bytes(
+                                        state_record[0..4].try_into().unwrap(),
+                                    );
+                                    let rights = Array::from_header(
+                                        record[68..84].try_into().unwrap(),
+                                        RIGHTS_STRIDE,
+                                    )
+                                    .ok_or("origin rights unreadable")?;
+                                    walk.rights_from_array(
+                                        rights,
+                                        state,
+                                        table,
+                                        &mut outputs.rights,
+                                    )?;
+                                }
+                                Ok(())
+                            });
+                            origins_table.run(|table| {
+                                for index in 0..count {
+                                    let row = walk.origin_from_batch(
+                                        &batch,
+                                        index,
+                                        0,
+                                        first + index as u32,
+                                        country,
+                                        &mut owner_canonical,
+                                    )?;
+                                    table.push(&mut outputs.origins, row)?;
+                                }
+                                Ok(())
+                            });
+                            first += count as u32;
+                        } else {
+                            rights_table.run(|table| {
+                                for index in first..origins.count {
+                                    let origin =
+                                        element(memory, origins, index, 8, "origin unreadable")?;
+                                    if origin == 0 {
+                                        return Err("null origin in a live list");
+                                    }
+                                    if pointer(memory, origin, "origin vtable unreadable")?
+                                        != vtable(base, ORIGIN_VTABLE_RVA)?
+                                    {
+                                        return Err("origin vtable mismatch");
+                                    }
+                                    let state = pointer(
+                                        memory,
+                                        at(origin, ORIGIN_STATE)?,
+                                        "origin state unreadable",
+                                    )?;
+                                    if state == 0 {
+                                        return Err("origin without a state");
+                                    }
+                                    let state = read::<u32>(memory, at(state, cstate::ID)?)
+                                        .ok_or("origin state id unreadable")?;
+                                    walk.rights(origin, state, table, &mut outputs.rights)?;
+                                }
+                                Ok(())
+                            });
+                            origins_table.run(|table| {
+                                for index in first..origins.count {
+                                    let origin =
+                                        element(memory, origins, index, 8, "origin unreadable")?;
+                                    if origin == 0 {
+                                        return Err("null origin in a live list");
+                                    }
+                                    let (row, _) = walk.origin(origin, 0, index, country)?;
+                                    table.push(&mut outputs.origins, row)?;
+                                }
+                                Ok(())
+                            });
+                            break;
+                        }
+                    }
+                }
+                Err(reason) => {
+                    rights_table.run(|_| Err(reason));
+                    origins_table.run(|_| Err(reason));
+                }
+            }
+        }
+        origins_table.run(|table| {
             let origins = array(
                 memory,
-                at(resources, ccountry_resources::RESOURCE_ORIGINS)?,
-                8,
+                at(resources, RIGHTS_ORIGINS)?,
+                RIGHTS_ORIGIN_STRIDE,
                 "origin list unreadable",
             )?;
-            for index in 0..origins.count {
-                let origin = element(memory, origins, index, 8, "origin unreadable")?;
-                if origin == 0 {
-                    return Err("null origin in a live list");
-                }
-                if pointer(memory, origin, "origin vtable unreadable")?
-                    != vtable(base, ORIGIN_VTABLE_RVA)?
-                {
-                    return Err("origin vtable mismatch");
-                }
-                let state = pointer(memory, at(origin, ORIGIN_STATE)?, "origin state unreadable")?;
-                if state == 0 {
-                    return Err("origin without a state");
-                }
-                let state = read::<u32>(memory, at(state, cstate::ID)?)
-                    .ok_or("origin state id unreadable")?;
-                walk.rights(origin, state, table, &mut outputs.rights)?;
-            }
-            Ok(())
-        });
-        origins_table.run(|table| {
-            for (list, offset, stride) in [
-                (0_u8, ccountry_resources::RESOURCE_ORIGINS, 8),
-                (1, RIGHTS_ORIGINS, RIGHTS_ORIGIN_STRIDE),
-            ] {
-                let origins = array(
-                    memory,
-                    at(resources, offset)?,
-                    stride,
-                    "origin list unreadable",
-                )?;
-                for index in 0..origins.count {
-                    let origin = element(memory, origins, index, stride, "origin unreadable")?;
-                    if origin == 0 {
-                        return Err("null origin in a live list");
+            let mut first = 0_u32;
+            while first < origins.count {
+                let count = ((origins.count - first) as usize).min(ORIGIN_BATCH);
+                if walk.try_read_origin_batch(
+                    origins,
+                    RIGHTS_ORIGIN_STRIDE,
+                    first,
+                    count,
+                    &mut batch,
+                ) {
+                    for index in 0..count {
+                        let row = walk.origin_from_batch(
+                            &batch,
+                            index,
+                            1,
+                            first + index as u32,
+                            country,
+                            &mut owner_canonical,
+                        )?;
+                        table.push(&mut outputs.origins, row)?;
                     }
-                    let (row, _) = walk.origin(origin, list, index, country)?;
-                    table.push(&mut outputs.origins, row)?;
+                    first += count as u32;
+                } else {
+                    for index in first..origins.count {
+                        let origin = element(
+                            memory,
+                            origins,
+                            index,
+                            RIGHTS_ORIGIN_STRIDE,
+                            "origin unreadable",
+                        )?;
+                        if origin == 0 {
+                            return Err("null origin in a live list");
+                        }
+                        let (row, _) = walk.origin(origin, 1, index, country)?;
+                        table.push(&mut outputs.origins, row)?;
+                    }
+                    break;
                 }
             }
             Ok(())
