@@ -485,16 +485,47 @@ fn a_compose_shows_the_plan_before_it_and_counts_none_until_one_is_made_after_th
     assert_eq!(layer.published(), Published::Current);
 }
 
-struct HeldForFour(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+#[derive(Default)]
+struct HeldForFour {
+    gate: std::sync::Mutex<(bool, usize)>,
+    changed: std::sync::Condvar,
+}
+
+impl HeldForFour {
+    fn open(&self) {
+        self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0 = true;
+        self.changed.notify_all();
+    }
+
+    fn wait_begun(&self) {
+        let mut gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while gate.1 == 0 {
+            gate = self.changed.wait(gate).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
 
 impl Plans for HeldForFour {
     fn build(&self, _frame: &DecodedFrame, ours: u32, _show_allied: bool) -> io::Result<OrderField> {
         if ours == 4 {
-            let _ = self.0.lock().unwrap().recv();
+            let mut gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            gate.1 += 1;
+            self.changed.notify_all();
+            while !gate.0 {
+                gate = self.changed.wait(gate).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
         let mut plan = OrderField::default();
         plan.report.recorded = ours as usize;
         Ok(plan)
+    }
+}
+
+struct OpenHeldForFour(Arc<HeldForFour>);
+
+impl Drop for OpenHeldForFour {
+    fn drop(&mut self) {
+        self.0.open();
     }
 }
 
@@ -504,8 +535,9 @@ fn a_plan_made_for_another_viewing_country_is_withheld_until_its_own_is_made() {
     let entry = open(recorded::record("orders viewer", 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
     let mut fed = Apart::new(&entry, 0).unwrap();
-    let (release, gate) = std::sync::mpsc::channel();
-    let mut layer = Orders::new(Arc::new(HeldForFour(std::sync::Mutex::new(gate))));
+    let held = Arc::new(HeldForFour::default());
+    let mut layer = Orders::new(Arc::clone(&held) as Arc<dyn Plans>);
+    let _release = OpenHeldForFour(Arc::clone(&held));
     layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
     entry.playhead().seek(0);
@@ -522,11 +554,16 @@ fn a_plan_made_for_another_viewing_country_is_withheld_until_its_own_is_made() {
     }
     assert_eq!(made_for(&layer), Some(3));
     layer.set_vision(Choice { country: Country::Tag("other".into()), ..Choice::default() }, Arc::new(Vision::sharing(4, [])));
+    settle(&mut fed, &mut layer);
+    assert_eq!(made_for(&layer), None, "slot 3's plan shown while slot 4's is made");
+    held.wait_begun();
+    let target = entry.playhead().newest().unwrap_or(0).max(50);
+    assert!(fed.drive(target), "the store never reached hour {target}");
     for _ in 0..50 {
         settle(&mut fed, &mut layer);
         assert_eq!(made_for(&layer), None, "slot 3's plan shown while slot 4's is made");
     }
-    release.send(()).unwrap();
+    held.open();
     while made_for(&layer).is_none() {
         settle(&mut fed, &mut layer);
         assert!(std::time::Instant::now() < deadline, "slot 4's plan within {LIMIT:?}");

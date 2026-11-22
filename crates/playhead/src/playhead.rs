@@ -1205,6 +1205,9 @@ impl Playhead {
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
+            if control.stop {
+                return Err("playhead stopped".into());
+            }
             drop(self.shared.wake.wait_timeout(control, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner));
         }
     }
