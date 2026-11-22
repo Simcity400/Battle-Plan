@@ -1527,9 +1527,7 @@ fn movement_records_the_map_entity_bit_and_fails_closed_on_its_read() {
     }
 }
 
-// quarantine: #147 the reader and the test disagree
 #[test]
-#[ignore = "quarantined under #147"]
 fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry() {
     let (mut source, sources) = movement_combat_fixture();
     for (index, pointer) in [A1, A2, A3].into_iter().enumerate() {
@@ -1538,6 +1536,11 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
             &mut source.bytes,
             pointer + crate::cunit::MOVEMENT_PRIORITY,
             (i32::MIN + index as i32) as u32,
+        );
+        p32(
+            &mut source.bytes,
+            pointer + crate::cunit::QUEUED_ACTION_COUNT,
+            1 + index as u32,
         );
     }
     let run = |memory: &ScalarBatchMemory<'_>, rows: &mut [super::MovementRow; 3], owned| {
@@ -1568,6 +1571,7 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
                 (pointer + crate::cunit::WITHDRAWAL, 1),
                 (pointer + crate::cunit::MOVEMENT_PRIORITY, 4),
                 (pointer + carmy::FUEL_CANDIDATE, 8),
+                (pointer + crate::cunit::QUEUED_ACTION_COUNT, 4),
             ]
         })
         .collect::<Vec<_>>();
@@ -1599,6 +1603,7 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
         for fault in [
             A1 + crate::cunit::WITHDRAWAL,
             A1 + crate::cunit::MOVEMENT_PRIORITY,
+            A1 + crate::cunit::QUEUED_ACTION_COUNT,
         ] {
             let memory = ScalarBatchMemory::new(&source);
             memory.fault.set(Some(fault));
@@ -1625,12 +1630,18 @@ fn optional_arrow_styles_preserve_all_movement_rows_and_read_once_without_retry(
                 rows[0].movement_priority,
                 (fault != A1 + crate::cunit::MOVEMENT_PRIORITY).then_some(i32::MIN)
             );
+            assert_eq!(
+                rows[0].queued_actions,
+                (fault != A1 + crate::cunit::QUEUED_ACTION_COUNT).then_some(1)
+            );
             assert_eq!(rows[1..], baseline[1..]);
             for (mut actual, mut expected) in rows.into_iter().zip(baseline) {
                 actual.withdrawal = None;
                 actual.movement_priority = None;
+                actual.queued_actions = None;
                 expected.withdrawal = None;
                 expected.movement_priority = None;
+                expected.queued_actions = None;
                 assert_eq!(actual, expected);
             }
         }

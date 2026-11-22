@@ -181,10 +181,8 @@ fn failed_headers_entries_and_identity_are_unavailable() {
         Outcome::Unavailable { .. }
     ));
 }
-// quarantine: #147 the reader and the test disagree
 #[test]
-#[ignore = "quarantined under #147"]
-fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
+fn mixed_contributor_lists_grow_contributors_for_the_whole_census() {
     let (mut bytes, mut seeds) = world(1);
     let base = bytes.as_ptr() as usize;
     for (n, count) in [2u32, 3, 1].into_iter().enumerate() {
@@ -192,6 +190,10 @@ fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
         bytes[at + 16..at + 20].copy_from_slice(&count.to_le_bytes());
         bytes[at + 20..at + 24].copy_from_slice(&count.to_le_bytes());
     }
+    bytes[0x700 + 0x690..0x700 + 0x694].copy_from_slice(&42u32.to_le_bytes());
+    bytes[0x700 + 0x694..0x700 + 0x698].copy_from_slice(&123i32.to_le_bytes());
+    bytes[2 * 0x700 + 0x680..2 * 0x700 + 0x684].copy_from_slice(&99u32.to_le_bytes());
+    bytes[2 * 0x700 + 0x684..2 * 0x700 + 0x688].copy_from_slice(&(-5i32).to_le_bytes());
     carmy::capture_division_seeds(
         &SliceMemory {
             base,
@@ -212,16 +214,28 @@ fn truncation_is_a_census_prefix_even_when_later_smaller_lists_fit() {
         &mut rows,
         &mut contributors,
     );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(walk.required_contributors, 6);
+    assert_eq!(walk.contributors, 6);
+    assert_eq!(rows[0].division, seeds[0].division);
     assert_eq!(
-        walk.outcome,
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 2
+        [(rows[0].start, rows[0].len), (rows[1].start, rows[1].len), (rows[2].start, rows[2].len)],
+        [(0, 2), (2, 3), (5, 1)]
+    );
+    assert_eq!(
+        contributors[4],
+        land::Contributor {
+            country: 42,
+            amount: 123
         }
     );
-    assert_eq!(walk.required_contributors, 6);
-    assert_eq!(walk.contributors, 2);
-    assert_eq!(rows[0].division, seeds[0].division);
+    assert_eq!(
+        contributors[5],
+        land::Contributor {
+            country: 99,
+            amount: -5
+        }
+    );
 }
 
 #[test]
