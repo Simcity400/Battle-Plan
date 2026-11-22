@@ -1,12 +1,9 @@
 
 use super::{Natives, invalid};
 use crate::{
-    campaign::Parallel,
     columnar_frames::{Frames, Pool, Recording},
-    format::FormatVersion,
     frame::DecodedFrame,
     rows::TableId,
-    scope::CaptureMode,
 };
 use replay_columnar::manifest::Status;
 use std::{io, ops::Deref, sync::Arc};
@@ -31,8 +28,7 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    pub fn new(natives: Arc<Natives>, tables: &[TableId], format: FormatVersion, mode: CaptureMode) -> io::Result<Self> {
-        let _ = (format, mode);
+    pub fn new(natives: Arc<Natives>, tables: &[TableId]) -> io::Result<Self> {
         let frames = Frames::new(Held(Arc::clone(&natives)), tables)?;
         let tables = frames.selected().collect();
         Ok(Self { natives, tables, frames, moved: None, pool: None, changes: false })
@@ -80,8 +76,7 @@ impl Cursor {
         Ok(true)
     }
 
-    pub fn build(&mut self, parallel: Option<&Parallel<'_>>) -> io::Result<DecodedFrame> {
-        let _ = parallel;
+    pub fn build(&mut self) -> io::Result<DecodedFrame> {
         let (branch, _) = self.moved.ok_or_else(|| invalid("A frame is built before any move"))?;
         let frames = &mut self.frames;
         let built = Pool::on(self.pool.as_deref(), || frames.frame(branch));
@@ -91,11 +86,11 @@ impl Cursor {
         built
     }
 
-    pub fn frame(&mut self, segment: u64, branch: u64, hour: i32, parallel: Option<&Parallel<'_>>) -> io::Result<Option<DecodedFrame>> {
+    pub fn frame(&mut self, segment: u64, branch: u64, hour: i32) -> io::Result<Option<DecodedFrame>> {
         if !self.move_to(segment, branch, hour, &|| false)? {
             return Ok(None);
         }
-        self.build(parallel).map(Some)
+        self.build().map(Some)
     }
 
     pub fn complete(&self, table: TableId) -> io::Result<bool> {

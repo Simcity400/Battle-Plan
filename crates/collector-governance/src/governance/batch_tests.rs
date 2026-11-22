@@ -287,9 +287,22 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
             (600_013_i64 + position as i64).to_le_bytes(),
         );
     }
-    for (address, calls) in [
-        (country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS, 9),
-        (country + TECH + 0x400 + ctechnology::LIVE_PROGRESS, 10),
+    for (address, calls, once_read) in [
+        (
+            country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
+            8,
+            vec![country + SLOT + cresearch_slot::BANKED_DAYS],
+        ),
+        (
+            country + TECH + 0x400 + ctechnology::LIVE_PROGRESS,
+            6,
+            vec![
+                country + SLOT + cresearch_slot::BANKED_DAYS,
+                country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
+                country + SLOT + 2 * 0x80 + cresearch_slot::BANKED_DAYS,
+                country + TECH + ctechnology::LIVE_PROGRESS,
+            ],
+        ),
     ] {
         let before = Trace::gather_fault(&world, "Research serial", address);
         let after = Trace::gather_fault(&world, "Research batch", address);
@@ -304,6 +317,27 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
         assert_eq!(after.remaining.get(), Some(0));
         assert_eq!(&*after.fallbacks.witnesses(), &["research_drift"]);
         assert_eq!(after.count(), calls);
+        for kept in once_read {
+            assert_eq!(
+                after
+                    .operands
+                    .borrow()
+                    .iter()
+                    .filter(|&&(at, _)| at == kept)
+                    .count(),
+                1,
+                "completed operand {kept:#x} was reread"
+            );
+        }
+        assert_eq!(
+            after
+                .operands
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == address)
+                .count(),
+            2
+        );
     }
     let address = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
     let before = Trace::gather_fault(&world, "Technology serial", address);
@@ -314,7 +348,25 @@ fn governance_batch_carried_gather_only_fault_publishes_serial_fallback() {
     assert_eq!(before.remaining.get(), Some(1));
     assert_eq!(after.remaining.get(), Some(0));
     assert_eq!(&*after.fallbacks.witnesses(), &["technology_drift"]);
-    assert_eq!(after.count(), 6);
+    assert_eq!(after.count(), 5);
+    assert_eq!(
+        after
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == country + TECH + ctechnology::LIVE_PROGRESS)
+            .count(),
+        1
+    );
+    assert_eq!(
+        after
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == address)
+            .count(),
+        2
+    );
 }
 #[test]
 fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
@@ -323,9 +375,20 @@ fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
     let mut store = drift::Store::default();
     let mut serial = serial::Store::default();
     hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
-    for address in [
-        country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
-        country + TECH + 0x400 + ctechnology::LIVE_PROGRESS,
+    for (address, once_read) in [
+        (
+            country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
+            vec![country + SLOT + cresearch_slot::BANKED_DAYS],
+        ),
+        (
+            country + TECH + 0x400 + ctechnology::LIVE_PROGRESS,
+            vec![
+                country + SLOT + cresearch_slot::BANKED_DAYS,
+                country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS,
+                country + SLOT + 2 * 0x80 + cresearch_slot::BANKED_DAYS,
+                country + TECH + ctechnology::LIVE_PROGRESS,
+            ],
+        ),
     ] {
         let before = Trace::fault(&world, "Research serial", address, false);
         let after = Trace::fault(&world, "Research batch", address, false);
@@ -337,6 +400,27 @@ fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
         );
         assert_eq!(research(&store, &after, 1), old);
         assert_eq!(&*after.fallbacks.witnesses(), &["research_drift"]);
+        for kept in once_read {
+            assert_eq!(
+                after
+                    .operands
+                    .borrow()
+                    .iter()
+                    .filter(|&&(at, _)| at == kept)
+                    .count(),
+                1,
+                "completed operand {kept:#x} was reread"
+            );
+        }
+        assert_eq!(
+            after
+                .operands
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == address)
+                .count(),
+            2
+        );
     }
     let address = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
     let before = Trace::fault(&world, "Technology serial", address, false);
@@ -345,6 +429,24 @@ fn governance_batch_carried_persistent_drift_fault_keeps_serial_failure() {
     assert!(matches!(old.0, Outcome::Unavailable { .. }));
     assert_eq!(technologies(&store, &after, 1), old);
     assert_eq!(&*after.fallbacks.witnesses(), &["technology_drift"]);
+    assert_eq!(
+        after
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == country + TECH + ctechnology::LIVE_PROGRESS)
+            .count(),
+        1
+    );
+    assert_eq!(
+        after
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == address)
+            .count(),
+        2
+    );
 }
 #[test]
 fn governance_batch_carried_assigned_aliases_keep_one_technology_progress_read() {
@@ -373,6 +475,138 @@ fn governance_batch_carried_assigned_aliases_keep_one_technology_progress_read()
         1
     );
     assert_eq!(trace.count(), 4);
+}
+#[test]
+fn governance_batch_carried_research_aliased_technologies_do_not_reread_completed_prefix() {
+    let mut world = World::new(1);
+    let country = World::country(1);
+    world.pointer(
+        country + SLOT + 0x80 + cresearch_slot::TECHNOLOGY,
+        country + TECH + 0x400,
+    );
+    world.put(
+        country + SLOT + 0x80 + cresearch_slot::TECHNOLOGY_HANDLE,
+        8_u32.to_le_bytes(),
+    );
+    world.pointer(
+        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY,
+        country + TECH,
+    );
+    world.put(
+        country + SLOT + 2 * 0x80 + cresearch_slot::TECHNOLOGY_HANDLE,
+        7_u32.to_le_bytes(),
+    );
+    world.array(
+        country + TECH + 0x400 + ctechnology::APPLIED_BONUS_IDS,
+        country + 0x4104,
+        0,
+    );
+    let mut store = drift::Store::default();
+    let mut serial = serial::Store::default();
+    hold(&mut store, &mut serial, &world, 1, &full(&world, 1));
+    let tech_a = country + TECH + ctechnology::LIVE_PROGRESS;
+    let tech_b = country + TECH + 0x400 + ctechnology::LIVE_PROGRESS;
+    world.put(tech_a, 777_001_i64.to_le_bytes());
+    world.put(tech_b, 888_002_i64.to_le_bytes());
+
+    let trace = Trace::fault(&world, "Research alias B one-shot", tech_b, true);
+    let result = research(&store, &trace, 1);
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .all(|o| matches!(o, Outcome::Rows { .. }))
+    );
+    assert_eq!(result.inputs[0].progress_raw, 777_001);
+    assert_eq!(result.inputs[1].progress_raw, 888_002);
+    assert_eq!(result.inputs[2].progress_raw, 777_001);
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_a)
+            .count(),
+        1
+    );
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_b)
+            .count(),
+        2
+    );
+
+    let trace = Trace::fault(&world, "Research alias A one-shot", tech_a, true);
+    let result = research(&store, &trace, 1);
+    assert!(
+        result
+            .outcomes
+            .iter()
+            .all(|o| matches!(o, Outcome::Rows { .. }))
+    );
+    assert_eq!(result.inputs[0].progress_raw, 777_001);
+    assert_eq!(result.inputs[1].progress_raw, 888_002);
+    assert_eq!(result.inputs[2].progress_raw, 777_001);
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_a)
+            .count(),
+        2
+    );
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_b)
+            .count(),
+        1
+    );
+
+    let banked_b = country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS;
+    let trace = Trace::fault(&world, "Research alias banked one-shot", banked_b, true);
+    let mut inputs = vec![research_inputs::Row::default(); 3];
+    let mut bonuses = vec![research_inputs::BonusRow::default(); 2];
+    let mut modifiers = vec![research_modifiers::Row::default(); 64];
+    let growths = engine_allocation::growths();
+    let outcome = store.carry_research(
+        &trace,
+        0,
+        1,
+        country,
+        engine_native::walk::Buffer::Growing(&mut inputs),
+        engine_native::walk::Buffer::Growing(&mut bonuses),
+        engine_native::walk::Buffer::Growing(&mut modifiers),
+    );
+    assert_eq!(engine_allocation::growths() - growths, 2);
+    assert!(matches!(outcome, drift::Carried::Rows([3, 2, _])));
+    assert_eq!(inputs[0].progress_raw, 777_001);
+    assert_eq!(inputs[1].progress_raw, 888_002);
+    assert_eq!(inputs[2].progress_raw, 777_001);
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_a)
+            .count(),
+        1
+    );
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_b)
+            .count(),
+        1
+    );
 }
 #[test]
 fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason() {

@@ -844,8 +844,7 @@ impl Census {
         }
         let inputs = self.unit_inputs.as_ref().unwrap();
         let mut identities = CoreIdentities::new(base, provinces);
-        self.theatres.clear();
-        let mut country = None;
+        let mut theatres = TheatreLookup::new(&mut self.theatres);
         for (index, (entry, seed)) in self
             .entries
             .iter()
@@ -882,17 +881,14 @@ impl Census {
                     }
                 }
             }
-            let mut row = project(memory, &countries, *entry, seed, &mut identities)?;
-            row.theatre = theatre(
+            let row = project(
                 memory,
-                base,
                 &countries,
-                &mut self.theatres,
-                &mut country,
-                entry.canonical,
-                seed.theatre,
-            )
-            .ok();
+                *entry,
+                seed,
+                &mut identities,
+                &mut theatres,
+            )?;
             Self::count_division(
                 &mut self.counts,
                 self.required_counts,
@@ -1244,28 +1240,42 @@ impl CoreIdentities {
     }
 }
 
-fn theatre(
-    memory: &impl Memory,
-    base: usize,
-    countries: &Countries,
-    theatres: &mut ctheatre::UnitTheatres,
-    country: &mut Option<(u32, usize)>,
-    canonical: u32,
-    pointer: Option<usize>,
-) -> Result<u64, &'static str> {
-    let pointer = pointer.ok_or("division theatre pointer unreadable")?;
-    if pointer == 0 {
-        return Ok(0);
-    }
-    let held = match *country {
-        Some((slot, held)) if slot == canonical => held,
-        _ => {
-            let held = countries.pointer(memory, canonical)?;
-            *country = Some((canonical, held));
-            held
+struct TheatreLookup<'a> {
+    theatres: &'a mut ctheatre::UnitTheatres,
+    country: Option<(u32, usize)>,
+}
+
+impl<'a> TheatreLookup<'a> {
+    fn new(theatres: &'a mut ctheatre::UnitTheatres) -> Self {
+        theatres.clear();
+        Self {
+            theatres,
+            country: None,
         }
-    };
-    theatres.handle(memory, base, held, pointer)
+    }
+
+    fn handle(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        countries: &Countries,
+        canonical: u32,
+        pointer: Option<usize>,
+    ) -> Result<u64, &'static str> {
+        let pointer = pointer.ok_or("division theatre pointer unreadable")?;
+        if pointer == 0 {
+            return Ok(0);
+        }
+        let held = match self.country {
+            Some((slot, held)) if slot == canonical => held,
+            _ => {
+                let held = countries.pointer(memory, canonical)?;
+                self.country = Some((canonical, held));
+                held
+            }
+        };
+        self.theatres.handle(memory, base, held, pointer)
+    }
 }
 
 fn project(
@@ -1274,6 +1284,7 @@ fn project(
     entry: Entry,
     scalar: &carmy::DivisionSeed,
     identities: &mut CoreIdentities,
+    theatres: &mut TheatreLookup<'_>,
 ) -> Result<carmy::Row, &'static str> {
     let primary = engine_sites::at(identities.base, carmy::VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
@@ -1325,6 +1336,15 @@ fn project(
         .orders_group
         .ok_or("division orders group pointer unreadable")?;
     let orders_group = identities.group(memory, group)?;
+    let theatre = theatres
+        .handle(
+            memory,
+            identities.base,
+            countries,
+            entry.canonical,
+            scalar.theatre,
+        )
+        .ok();
     Ok(carmy::Row {
         id,
         roster_owner,
@@ -1336,7 +1356,7 @@ fn project(
         organisation,
         orders_group,
         reveal_skip,
-        theatre: None,
+        theatre,
     })
 }
 

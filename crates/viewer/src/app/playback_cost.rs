@@ -345,7 +345,7 @@ fn frame_ui(
                     _ => Ok(()),
                 }
             } else {
-                viewer.map_with_state(ui, state, document)
+                viewer.map_with_state(ui, state, document, None)
             };
         },
     );

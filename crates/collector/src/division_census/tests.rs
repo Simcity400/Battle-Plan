@@ -507,9 +507,7 @@ fn shared_seeds_keep_the_complete_census_and_private_faults() {
     assert!(inputs.seeds()[2].handle.is_some());
 }
 
-// quarantine: #146 not updated for the format 142 capture additions
 #[test]
-#[ignore = "quarantined under #146"]
 fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
     let mut bytes = kit::fixture();
     let roster = kit::C0 + ccountry::DIVISIONS;
@@ -554,12 +552,14 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
             let provinces = Array::read(&serial, kit::GAME_STATE + cgame_state::PROVINCES, 8)
                 .ok_or("province array unreadable or invalid")?;
             for (index, seed) in seeds.iter().enumerate() {
+                let mut theatres = ctheatre::UnitTheatres::default();
                 let row = project(
                     &serial,
                     &roots.countries,
                     census.entries[index],
                     seed,
                     &mut CoreIdentities::new(roots.base, provinces),
+                    &mut TheatreLookup::new(&mut theatres),
                 )?;
                 rows.push(row);
             }
