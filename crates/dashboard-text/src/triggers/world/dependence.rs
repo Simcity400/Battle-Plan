@@ -34,6 +34,13 @@ fn character_retired() -> Vec<TableRead> {
     ]
 }
 
+fn scientist(character: u32, fields: &[&'static str]) -> Vec<TableRead> {
+    vec![
+        TableRead::fields(TableId::Scientists, fields).row(character.into()),
+        TableRead::fields(TableId::CountryCharacters, &["character"]),
+    ]
+}
+
 fn folds() -> TableRead {
     TableRead::fields(TableId::LexicalTokens, &["literal"])
 }
@@ -483,6 +490,19 @@ impl Query {
                 TableRead::fields(T::Nukes, &["amount_raw"]).owned_by(slot, 32),
                 links(),
             ],
+            Query::CountryScientists(_) => {
+                vec![TableRead::fields(T::Scientists, &["country", "ordinal"]), links()]
+            }
+            &Query::ScientistActive(character) => scientist(character, &["active"]),
+            &Query::ScientistLevel(character, _) => [
+                scientist(character, &["skill_count"]),
+                vec![prefixed(
+                    TableRead::fields(T::ScientistSkills, &["token", "level"]),
+                    character.into(),
+                    32,
+                )],
+            ]
+            .concat(),
         })
     }
 }

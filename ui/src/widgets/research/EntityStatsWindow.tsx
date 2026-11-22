@@ -1,5 +1,6 @@
 import WidgetState from '../../components/WidgetState';
 import FloatingPanel from '../../components/FloatingPanel';
+import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useHeadProduct } from '../../dashboard/headProduct';
@@ -19,9 +20,10 @@ export default function EntityStatsWindow({ runtime, widget, tag, link, active, 
   const { data, error, retry } = stats;
   const kind = ENTITY_LABELS[link.kind];
   const refusals = Object.entries(data?.refusals ?? {});
-  return <FloatingPanel title={kind} label={`${kind} ${link.text} stats`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="entity-stats-window">
+  const name = contentTitle(data ? data.name : error, link.token, 'Name unavailable', !data && !error);
+  return <FloatingPanel title={kind} label={`${kind} ${name} stats`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="entity-stats-window">
     <div className="entity-stats" ref={stats.root}>
-      <h3>{link.text || data?.name || link.token}</h3>
+      <h3 data-tooltip={contentTitleHint(link.token)}>{name}</h3>
       {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
         : !data ? <p className="entity-stats-missing">Loading stats…</p>
           : <>

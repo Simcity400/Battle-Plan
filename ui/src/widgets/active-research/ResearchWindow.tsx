@@ -52,7 +52,7 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, repl
         </section>
         : <p className="dossier-missing">The research time breakdown is unavailable: this slot's history was not joined.</p>)}
       {finished && <section className="dossier-section"><h4>Research time</h4>
-        <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={reply.hour} history={data.history} slots={slots} slot={finished.slot} entry={finished.entry} />
+        <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={reply.hour} history={data.history} slots={slots} slot={finished.slot} entry={finished.entry} daysLeft={null} />
       </section>}
       </div>
     </div>

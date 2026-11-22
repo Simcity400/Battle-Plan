@@ -73,7 +73,7 @@ fn fixture() -> (Fixture, Folder) {
                 " FACTION_ACCESS_TAB_REASEARCH:0 \"Research [Root.GetTag]\"\n FACTION_ACCESS_TAB_UNLOCK:0 \"Unlock $NAME$\"\n FACTION_ACCESS_TAB_LOCK:0 \"Lock $NAME$\"\n",
                 " mod_category:0 \"Category\"\n AAA_mod_category:0 \"Alpha category [Root.GetTag]\"\n mod_other:0 \"Other\"\n mod_parent:0 \"Parent\"\n AAA_mod_parent:0 \"Alpha parent\"\n mod_equipment:0 \"Equipment\"\n AAA_mod_equipment:0 \"Alpha equipment\"\n",
                 " EFFECT_GIVE_TECHNOLOGY:0 \"Give $NAME$\"\n AND:0 \"plus \"\n EFFECT_TECH_BONUS_USES:0 \"$USES|0$ uses\"\n",
-                " MOD_UNLOCK_TECH:0 \"Unlocks $TECH|H$.\"\n mod_tech:0 \"Mod technology\"\n",
+                " MOD_UNLOCK_TECH:0 \"Unlocks $TECH|H$.\"\n MOD_UNLOCK_LOWER:0 \"Unlocks $TECH|l$.\"\n mod_tech:0 \"Mod technology\"\n",
                 " EFFECT_ADD_TECH_BONUS_BONUS_ONLY:0 \"Bonus $BONUS|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS_AHEAD_ONLY:0 \"Ahead $AHEAD|2$/$USES$:$LIST$\"\n EFFECT_ADD_TECH_BONUS:0 \"Both $AHEAD|2$/$BONUS|2$/$USES|0$:$LIST$\"\n",
                 " mod_folder_name:0 \"Folder\"\n mod_track_name:0 \"Track\"\n mod_grand_name:0 \"Grand\"\n mod_sub_name:0 \"Sub\"\n",
                 " SET_SUB_DOCTRINE_EFFECT:0 \"Set sub $NAME$\"\n SET_GRAND_DOCTRINE_EFFECT:0 \"Set grand $NAME$\"\n ADD_DAILY_MASTERY_EFFECT:0 \"Daily $AMOUNT|2$/$DAYS|0$\"\n ADD_MASTERY_BONUS_EFFECT:0 \"Mastery bonus $BONUS|2$/$DAYS|0$\"\n",
@@ -714,6 +714,27 @@ fn technology_names_link_to_their_technology_only_when_asked() {
             .collect();
         assert_eq!(links, [(EntityKind::Technology, "mod_tech", name)], "{body}");
     }
+    let items = content_reader_core::effect_keys::read_body(
+        b"custom_effect_tooltip={localization_key=MOD_UNLOCK_LOWER TECH=mod_tech}",
+        content.view(None).key_names.unwrap(),
+    )
+    .unwrap();
+    let render = |links| {
+        fixture.with_context_linking(content.view(None), links, |context| {
+            describe(&items, context, &mut fresh())
+        })
+    };
+    let (plain, linked) = (render(false), render(true));
+    assert_eq!(plain.text, "Unlocks mod technology.");
+    assert!(plain.refusals.is_empty(), "{:?}", plain.refusals);
+    assert!(!linked.text.contains("Mod technology"), "{linked:?}");
+    assert!(
+        linked
+            .refusals
+            .keys()
+            .any(|why| why.contains("the game's formatting changes the linked technology names")),
+        "a case directive on a linked name withholds the text by name instead of dropping the link: {linked:?}"
+    );
 }
 
 #[test]

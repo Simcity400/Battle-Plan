@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchSlotHistory } from './types';
 import { completedResearchJourney, researchJourney, researchTimeSplit, savedResearchCredit } from './researchJourney.ts';
 import type { ResearchTimeSplit } from './researchJourney';
-import { researchTimeRows } from './researchTimeBar.ts';
+import { researchDaysLeftMissing, researchTimeRows } from './researchTimeBar.ts';
 import { researchAt } from './researchData.ts';
 import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
@@ -176,12 +176,13 @@ test('time out of a slot lengthens the Took row instead of replacing research ti
   const split = researchTimeSplit(researchJourney([first, second], second, second.entries[0]), true)!;
   assert.equal(split.paused, 1000000n);
   assert.equal(split.taken, 1500000n);
-  const rows = researchTimeRows(split, true)!;
+  const left = Number(split.remaining / 100_000n);
+  const rows = researchTimeRows(split, true, left)!;
   assert.equal(rows.elapsed, 2500000n);
   const value = (key: string) => rows.took.find(s => s.key === key)?.value;
   assert.equal(value('core'), 1500000n, 'every researched day stays in the row');
   assert.equal(value('paused'), 1000000n);
-  const saved = researchTimeRows({ ...split, juggle: 100000n }, true)!.took.find(segment => segment.key === 'juggle');
+  const saved = researchTimeRows({ ...split, juggle: 100000n }, true, left)!.took.find(segment => segment.key === 'juggle');
   assert.equal(saved?.name, 'Saved research days');
   assert.equal(saved?.effect, '−1 day');
   assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expectedTotal + split.paused);
@@ -195,7 +196,7 @@ test('maluses adding more days than were researched keep every segment its own e
   const floored: ResearchTimeSplit = { base: 10000000n, penalty: 0n, bonus: -90000000n, juggle: 0n, earlier: 0n, remaining: 0n, paused: 0n, taken: 100000000n,
     modifiers: [modifier('Malus', -150000000n)], other: 60000000n, floored: true };
   for (const [split, row] of [[mixed, 20000000n], [floored, 160000000n]] as const) {
-    const rows = researchTimeRows(split, false)!;
+    const rows = researchTimeRows(split, false, null)!;
     assert.ok([...rows.expected, ...rows.took].every(s => s.value > 0n));
     assert.equal(rows.took.find(s => s.key === 'core')?.value, split.taken, 'every researched day stays in the row');
     for (const effect of split.modifiers)
@@ -228,7 +229,9 @@ test('with the game days left, the rest of an active research reads in calendar 
   const slow = researchTimeRows(split, true, 70)!;
   assert.equal(slow.expected.find(s => s.key === 'rest-slower')?.value, 1300000n);
   assert.equal(total(slow.took), total(slow.expected));
-  const unknown = researchTimeRows(split, true, null)!;
-  assert.equal(unknown.left, null);
-  assert.equal(unknown.took.find(s => s.key === 'remaining')?.name, 'Base research time still to do');
+  assert.equal(researchDaysLeftMissing(split, true, null), true);
+  assert.equal(researchTimeRows(split, true, null), null, 'without the game estimate the active breakdown is withheld, not drawn from base days');
+  const paused = researchTimeRows(split, false, null)!;
+  assert.equal(researchDaysLeftMissing(split, false, null), false);
+  assert.equal(paused.took.find(s => s.key === 'remaining')?.name, 'Base research time still to do');
 });

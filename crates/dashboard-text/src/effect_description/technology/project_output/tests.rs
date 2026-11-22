@@ -523,6 +523,31 @@ fn iteration(fixture: &Fixture) -> IterationDescription {
 }
 
 #[test]
+fn iteration_scientist_rewards_gated_on_the_scientists_level_render() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    for (gate, shown) in [("level < 5", true), ("level > 1", false)] {
+        let (mut rewards, _folder) = fixture(&format!(
+            "scientist_effects={{if={{limit={{has_scientist_level={{{gate} specialization=mod_science}}}} add_scientist_xp={{experience=15 specialization=mod_science}}}}}}"
+        ));
+        if let TableView::Complete(TableRows::Scientists(rows)) =
+            &mut *rewards.frame.tables[TableId::Scientists.index()]
+        {
+            for row in rows {
+                row.skill_count = 1;
+            }
+        }
+        let described = iteration(&rewards);
+        assert!(described.refusals.is_empty(), "{gate}: {:?}", described.refusals);
+        assert_eq!(
+            described.sections.iter().any(|section| section.text.contains("Naval Engineering experience")),
+            shown,
+            "{gate}: {described:?}"
+        );
+    }
+}
+
+#[test]
 fn iteration_rewards_read_concisely_by_effect_type_in_the_games_value_format() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
@@ -592,4 +617,11 @@ fn iteration_rewards_read_concisely_by_effect_type_in_the_games_value_format() {
     let changed = iteration(&acting);
     assert!(!changed.no_changes);
     assert_eq!(changed.sections[0].text, "Country AAA/AAA\nNavy experience \u{11}G+15\u{11}!");
+    let (selected, _folder) = fixture("country_effects={navy_experience=ROOT}");
+    let selected = iteration(&selected);
+    assert!(selected.refusals.is_empty(), "{:?}", selected.refusals);
+    assert!(
+        selected.sections[0].text.starts_with("Navy experience "),
+        "a scope-selected amount reads concisely with the zero the game's own text shows: {selected:?}"
+    );
 }

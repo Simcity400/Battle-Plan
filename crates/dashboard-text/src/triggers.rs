@@ -23,6 +23,7 @@ pub use organisations::{OrganisationCondition, Undecided};
 pub mod refusal;
 pub use refusal::Failure;
 pub mod saved_event_targets;
+mod scientists;
 pub mod scripted_localisation;
 #[cfg(test)]
 mod tests;
@@ -93,6 +94,8 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::OrdersGroups,
     replay_data::rows::TableId::PartyLeaders,
     replay_data::rows::TableId::PoliticalParties,
+    replay_data::rows::TableId::ScientistSkills,
+    replay_data::rows::TableId::Scientists,
     replay_data::rows::TableId::Politics,
     replay_data::rows::TableId::Players,
     replay_data::rows::TableId::PowerBalanceMembers,

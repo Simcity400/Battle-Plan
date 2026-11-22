@@ -37,11 +37,11 @@ fn uses(count: i32) -> String {
 }
 
 impl Renderer<'_, '_, '_> {
-    pub(super) fn concise_leaf(&self, item: &Item, scopes: Scopes) -> Option<String> {
+    pub(super) fn concise_leaf(&self, item: &Item, scopes: Scopes) -> Option<Result<String, String>> {
         let own = self.concise?;
         let key = item.keyword()?.folded();
         let number = |label: &str, key: &[u8]| self.concise_number(item, scopes, label, key);
-        match key.as_slice() {
+        Some(match key.as_slice() {
             b"add_tech_bonus" => self.concise_tech_bonus(item, scopes),
             b"add_project_progress_ratio" => self.concise_project_progress(item, scopes, own),
             b"add_breakthrough_progress" => self.concise_breakthrough(item, scopes, true),
@@ -54,8 +54,7 @@ impl Renderer<'_, '_, '_> {
             b"add_stability" => number("Stability", b"EFFECT_ADD_STABILITY"),
             b"add_war_support" => number("War support", b"EFFECT_ADD_WAR_SUPPORT"),
             _ => return None,
-        }
-        .ok()
+        })
     }
 
     pub(super) fn concise_own_project(&self, scope: Scope) -> bool {
@@ -186,10 +185,11 @@ impl Renderer<'_, '_, '_> {
         label: &str,
         key: &[u8],
     ) -> Result<String, String> {
-        if scope_selector(item).is_some() {
-            return Err("a scope-selected amount keeps the game's text".into());
-        }
-        let value = self.scoped_value(item.value.scalar().unwrap_or(b"0"), scopes)?;
+        let value = if scope_selector(item).is_some() {
+            0
+        } else {
+            self.scoped_value(item.value.scalar().unwrap_or(b"0"), scopes)?
+        };
         let value = self.game_value(key, "VAL", Argument::Fixed5(value), true)?;
         Ok(format!("{label} {value}\n"))
     }

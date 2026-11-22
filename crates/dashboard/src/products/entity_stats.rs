@@ -247,14 +247,14 @@ impl AtHour for EntityStatsAt {
         let localisation = &catalogue.localisation;
         let mut sheet = Sheet::new(localisation);
         let token = params.token.as_str();
-        let mut tag = None;
+        let mut tag: Result<Option<String>, String> = Err("The country's tag for this name was not read".into());
         let read = (|| -> Result<(), String> {
             let scripted = catalogue.scripted_content()?;
             let text = dashboard_text::scripted_text::ScriptedText::new(frame, localisation, scripted, owner.slot);
             tag = match params.kind {
-                EntityKind::Building => None,
-                EntityKind::Module => text.country_tag(0).ok().map(str::to_owned),
-                _ => text.country_tag(owner.slot).ok().map(str::to_owned),
+                EntityKind::Building => Ok(None),
+                EntityKind::Module => text.country_tag(0).map(|tag| Some(tag.to_owned())),
+                _ => text.country_tag(owner.slot).map(|tag| Some(tag.to_owned())),
             };
             let effects = scripted.effects()?;
             let view = effects.view(None);
@@ -297,7 +297,7 @@ impl AtHour for EntityStatsAt {
         if let Err(why) = read {
             out.unavailable = Some(why);
         }
-        match name(localisation, tag.as_deref(), token) {
+        match tag.and_then(|tag| name(localisation, tag.as_deref(), token)) {
             Ok(name) => out.name = Some(name),
             Err(why) => *sheet.refusals.entry(why).or_default() += 1,
         }

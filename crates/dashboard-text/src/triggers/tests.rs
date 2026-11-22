@@ -30,6 +30,9 @@ mod flags;
 #[path = "country_leader_tests.rs"]
 mod country_leaders;
 
+#[path = "scientist_tests.rs"]
+mod scientists;
+
 #[path = "collections/tests.rs"]
 mod collections;
 

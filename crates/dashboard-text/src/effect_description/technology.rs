@@ -558,7 +558,7 @@ impl Renderer<'_, '_, '_> {
                 continue;
             };
             let name = self.technology_name(template, country, scopes, false)?;
-            let name = self.technology_entity(EntityKind::Technology, &template.id, name);
+            let name = self.technology_entity(EntityKind::Technology, &template.id, name)?;
             out.push_str(&self.linked_text(&name, |name| {
                 self.char_native_line(
                     b"EFFECT_GIVE_TECHNOLOGY",
@@ -655,7 +655,7 @@ impl Renderer<'_, '_, '_> {
                 self.technology_template(entry.value.scalar().unwrap_or_default(), scopes)?
             {
                 let name = self.technology_name(template, country, scopes, true)?;
-                list.push_str(&self.technology_entity(EntityKind::Technology, &template.id, name));
+                list.push_str(&self.technology_entity(EntityKind::Technology, &template.id, name)?);
                 if index + 1 < technology.len() || !category.is_empty() {
                     list.push_str(", ");
                 }

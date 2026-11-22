@@ -290,6 +290,20 @@ impl Catalog {
         Ok(self.specialization_tokens.get(token).map(String::as_str))
     }
 
+    pub fn cached(layers: &ResolvedLayers) -> Result<std::sync::Arc<Self>, String> {
+        #[derive(Default)]
+        struct Cached(crate::content::diagnostics::Once<Result<std::sync::Arc<Catalog>, String>>);
+        layers
+            .derived::<Cached>()
+            .0
+            .get_or_init(|| {
+                Self::read(layers)
+                    .map(std::sync::Arc::new)
+                    .map_err(|why| why.to_string())
+            })
+            .clone()
+    }
+
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut result = Self::default();
         let mut project_tokens = BTreeMap::<Token, String>::new();

@@ -171,7 +171,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                         scopes,
                     )?;
-                    let name = self.technology_entity(EntityKind::Equipment, &definition.name, name);
+                    let name = self.technology_entity(EntityKind::Equipment, &definition.name, name)?;
                     self.technology_join(
                         &mut names,
                         &name,
@@ -215,7 +215,7 @@ impl Renderer<'_, '_, '_> {
                         continue;
                     }
                     let name = self.technology_country_name(token, 0, false, scopes)?;
-                    let name = self.technology_entity(EntityKind::Module, token, name);
+                    let name = self.technology_entity(EntityKind::Module, token, name)?;
                     self.technology_join(&mut names, &name, ordinal + 1 == modules.len(), scopes)?;
                 }
                 if !names.is_empty() {
@@ -249,7 +249,7 @@ impl Renderer<'_, '_, '_> {
                     {
                         let name = self.localised(building.name.as_bytes(), &[], scopes, false)?;
                         let name =
-                            self.technology_entity(EntityKind::Building, building.name.as_bytes(), name);
+                            self.technology_entity(EntityKind::Building, building.name.as_bytes(), name)?;
                         let level = self.char_native_text(
                             b"BUILDING_LEVEL",
                             &[("LEVEL", Argument::Int32(*level))],
@@ -295,7 +295,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                         scopes,
                     )?;
-                    let name = self.technology_entity(EntityKind::SubUnit, token.as_bytes(), name);
+                    let name = self.technology_entity(EntityKind::SubUnit, token.as_bytes(), name)?;
                     self.technology_join(
                         &mut names,
                         &name,
@@ -363,7 +363,7 @@ impl Renderer<'_, '_, '_> {
                 false,
                 scopes,
             )?;
-            let name = self.technology_entity(EntityKind::Tactic, &tactic.token, name);
+            let name = self.technology_entity(EntityKind::Tactic, &tactic.token, name)?;
             self.technology_join(&mut names, &name, Some(tactic.id) == last, scopes)?;
         }
         Ok(names)
@@ -442,11 +442,22 @@ impl Renderer<'_, '_, '_> {
         self.technology_condition(&conditions.allowed, selected)
     }
 
-    pub(super) fn technology_entity(&self, kind: EntityKind, token: &[u8], name: String) -> String {
-        match std::str::from_utf8(c_string(token)) {
-            Ok(token) if self.context.entity_links => mark(kind, token, &name),
-            _ => name,
+    pub(super) fn technology_entity(
+        &self,
+        kind: EntityKind,
+        token: &[u8],
+        name: String,
+    ) -> Result<String, String> {
+        if !self.context.entity_links {
+            return Ok(name);
         }
+        let token = std::str::from_utf8(c_string(token)).map_err(|_| {
+            format!(
+                "the {kind:?} link token {} is not UTF-8",
+                String::from_utf8_lossy(token)
+            )
+        })?;
+        Ok(mark(kind, token, &name))
     }
 
     fn technology_join(
@@ -500,7 +511,12 @@ impl Renderer<'_, '_, '_> {
         if !self.context.entity_links {
             return Ok(text);
         }
-        let plain = render(&unmark(names))?;
-        Ok(if unmark(&text) == plain { text } else { plain })
+        if unmark(&text) != render(&unmark(names))? {
+            return Err(
+                "the game's formatting changes the linked names in this line, so their links are not reproduced"
+                    .into(),
+            );
+        }
+        Ok(text)
     }
 }

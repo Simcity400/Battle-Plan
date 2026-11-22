@@ -85,6 +85,7 @@ pub(crate) trait PreparedContent: Send + Sync {
     fn ideas(&self) -> Result<&content_reader_core::ideas::IdeaContent, &str>;
     fn mio_traits(&self) -> Result<&content_reader_core::mio_traits::Catalog, &str>;
     fn equipment_groups(&self) -> Result<&content_reader_core::equipment::Groups, &str>;
+    fn special_projects(&self) -> Result<&content_reader_core::special_projects::Catalog, &str>;
     fn authored_states(&self) -> AuthoredStates<'_>;
     fn continents(&self) -> Result<&[String], &str>;
     fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, &str>;
@@ -296,6 +297,9 @@ const PARTY_TOKEN: usize = column::<replay_data::rows::PoliticalPartyRow>("token
 const PARTY_LEADER: u64 =
     mask::<replay_data::rows::PartyLeaderRow>(&["character", "leader_id", "role"]);
 const COUNTRY_CHARACTER: u64 = mask::<replay_data::rows::CountryCharacterRow>(&["character"]);
+const SCIENTIST: u64 =
+    mask::<replay_data::rows::ScientistRow>(&["country", "ordinal", "skill_count", "active"]);
+const SCIENTIST_SKILL: u64 = mask::<replay_data::rows::ScientistSkillRow>(&["token", "level"]);
 const IDEA_TOKEN: usize = column::<replay_data::rows::ActiveIdeaRow>("token");
 const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
 
@@ -509,6 +513,8 @@ pub struct World<'a> {
         PreparedOperand<'a, Result<&'a content_reader_core::mio_traits::Catalog, &'a str>>,
     pub(super) equipment_groups:
         PreparedOperand<'a, Result<&'a content_reader_core::equipment::Groups, &'a str>>,
+    pub(super) special_projects:
+        PreparedOperand<'a, Result<&'a content_reader_core::special_projects::Catalog, &'a str>>,
     character_tables: OnceLock<character_scope::Tables<'a>>,
     aliases: &'a Arc<TagAliases>,
     recorded: OnceLock<RecordedScopes<'a>>,
@@ -828,6 +834,9 @@ pub enum Query {
     IsClaimedBy(u32, Option<u32>),
     RawCountry(u32),
     Nukes(u32),
+    CountryScientists(u32),
+    ScientistActive(u32),
+    ScientistLevel(u32, u32),
 }
 
 impl World<'_> {
@@ -1034,6 +1043,15 @@ impl World<'_> {
             }
             Query::RawCountry(slot) => super::inputs::digest(&self.raw_country_unrecorded(*slot)),
             Query::Nukes(slot) => super::inputs::digest(&self.nukes_unrecorded(*slot)),
+            Query::CountryScientists(slot) => {
+                super::inputs::digest(&self.country_scientists_unrecorded(*slot))
+            }
+            Query::ScientistActive(character) => {
+                super::inputs::digest(&self.scientist_active_unrecorded(*character))
+            }
+            Query::ScientistLevel(character, specialization) => super::inputs::digest(
+                &self.scientist_level_unrecorded(*character, *specialization),
+            ),
         })
     }
 }
@@ -1440,6 +1458,7 @@ impl<'a> World<'a> {
             ideas: Err("idea definitions are not supplied").into(),
             mio_traits: Err("industrial organisation definitions are not supplied").into(),
             equipment_groups: Err("equipment groups are not supplied").into(),
+            special_projects: Err("special project definitions are not supplied").into(),
             aliases: content.tag_aliases,
             recorded: OnceLock::new(),
             names: OnceLock::new(),
@@ -1493,6 +1512,21 @@ impl<'a> World<'a> {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_special_projects(
+        mut self,
+        catalog: &'a content_reader_core::special_projects::Catalog,
+    ) -> Self {
+        self.special_projects = Ok(catalog).into();
+        self
+    }
+
+    pub(crate) fn with_prepared_special_projects(mut self, content: &'a dyn PreparedContent) -> Self {
+        self.special_projects =
+            PreparedOperand::lazy(content, self.frame, |content, _| content.special_projects());
+        self
+    }
+
     pub(crate) fn with_prepared_content(mut self, content: &'a dyn PreparedContent) -> Self {
         self.prepared_content = Some(content);
         self.state_provinces = PreparedOperand::lazy(content, self.frame, |content, _| {
@@ -1514,6 +1548,7 @@ impl<'a> World<'a> {
             PreparedOperand::lazy(content, self.frame, |content, _| content.mio_traits());
         self.equipment_groups =
             PreparedOperand::lazy(content, self.frame, |content, _| content.equipment_groups());
+        self = self.with_prepared_special_projects(content);
         self.character_traits =
             PreparedOperand::lazy(content, self.frame, |content, _| content.character_traits());
         self.leader_roles =
@@ -4333,6 +4368,104 @@ impl<'a> World<'a> {
                 0xa7c5
             },
         )
+    }
+
+    pub(super) fn country_scientists(&self, slot: u32) -> Result<Vec<u32>, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::CountryScientists(slot)),
+            || self.country_scientists_unrecorded(slot),
+        )
+    }
+
+    fn country_scientists_unrecorded(&self, slot: u32) -> Result<Vec<u32>, Failure> {
+        let mut rostered = Vec::new();
+        for row in each::<tables::Scientists>(table::<tables::Scientists>(self.frame, SCIENTIST)?) {
+            let row = row?;
+            if self.slot(row.country) == Some(slot) {
+                rostered.push((row.ordinal, row.character));
+            }
+        }
+        rostered.sort_unstable();
+        Ok(rostered.into_iter().map(|(_, character)| character).collect())
+    }
+
+    fn scientist(&self, character: u32) -> Result<Option<Cow<'a, replay_data::rows::ScientistRow>>, Failure> {
+        let scientists = table::<tables::Scientists>(self.frame, SCIENTIST)?;
+        if let Some(row) = keyed::<tables::Scientists>(&scientists, u128::from(character))? {
+            return Ok(Some(row));
+        }
+        for row in each::<tables::CountryCharacters>(table::<tables::CountryCharacters>(
+            self.frame,
+            COUNTRY_CHARACTER,
+        )?) {
+            if row?.character == Some(character) {
+                return Ok(None);
+            }
+        }
+        Err(format!(
+            "character {character} is in no recorded roster, so whether it holds a scientist role is not recorded"
+        )
+        .into())
+    }
+
+    pub(super) fn scientist_active(&self, character: u32) -> Result<Option<u8>, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::ScientistActive(character)),
+            || self.scientist_active_unrecorded(character),
+        )
+    }
+
+    fn scientist_active_unrecorded(&self, character: u32) -> Result<Option<u8>, Failure> {
+        let Some(row) = self.scientist(character)? else {
+            return Ok(None);
+        };
+        super::refusal::optional(
+            &row.active,
+            tables::Scientists::ID,
+            "active",
+            Some(Store::Character(character)),
+        )
+        .map(|active| Some(*active))
+    }
+
+    pub(super) fn scientist_level(
+        &self,
+        character: u32,
+        specialization: u32,
+    ) -> Result<Option<i32>, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::ScientistLevel(character, specialization)),
+            || self.scientist_level_unrecorded(character, specialization),
+        )
+    }
+
+    fn scientist_level_unrecorded(
+        &self,
+        character: u32,
+        specialization: u32,
+    ) -> Result<Option<i32>, Failure> {
+        let Some(row) = self.scientist(character)? else {
+            return Ok(None);
+        };
+        let skills = table::<tables::ScientistSkills>(self.frame, SCIENTIST_SKILL)?;
+        let first = u128::from(character) << 32;
+        let mut held = 0_i64;
+        let mut level = None;
+        for skill in skills.range(first..=first | u128::from(u32::MAX)) {
+            let skill = skill.map_err(walked::<tables::ScientistSkills>)?;
+            held += 1;
+            if level.is_none() && skill.token == specialization {
+                level = Some(skill.level);
+            }
+        }
+        if held != i64::from(row.skill_count) {
+            return Err(format!(
+                "scientist {character} has {held} recorded specialization levels of its {}",
+                row.skill_count
+            )
+            .into());
+        }
+        Ok(Some(level.unwrap_or(0)))
     }
 }
 

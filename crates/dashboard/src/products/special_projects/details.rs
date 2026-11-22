@@ -368,10 +368,11 @@ impl<'c, 'r, 'q> Namer<'c, 'r, 'q> {
         ProjectLabel { name: self.name(&token), token }
     }
 
-    fn named(&mut self, token: Option<String>, id: u32, key: Option<String>) -> ProjectLabel {
-        match token {
-            Some(token) => ProjectLabel { name: self.name(key.as_deref().unwrap_or(&token)), token },
-            None => ProjectLabel { token: id.to_string(), name: None },
+    fn named(&mut self, token: Option<String>, id: u32, key: Option<Option<String>>) -> ProjectLabel {
+        match (token, key) {
+            (None, _) => ProjectLabel { token: id.to_string(), name: None },
+            (Some(token), None) => ProjectLabel { token, name: None },
+            (Some(token), Some(key)) => ProjectLabel { name: self.name(key.as_deref().unwrap_or(&token)), token },
         }
     }
 
@@ -818,7 +819,10 @@ fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_,
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| unavailable.push(format!("Project choice history is unavailable: {why}"))).ok()?;
     let first = rows.partition_point(|row| (row.owner, row.project) < (project.owner, project.local_id));
     let last = first + rows[first..].partition_point(|row| (row.owner, row.project) == (project.owner, project.local_id));
-    let project_token = spelled(frame, project.definition_id).ok();
+    let project_token = spelled(frame, project.definition_id);
+    if let Err(why) = &project_token {
+        unavailable.push(why.clone());
+    }
     Some(
         rows[first..last]
             .iter()
@@ -826,16 +830,18 @@ fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_,
             .map(|row| {
                 let reward = spelled(frame, row.prototype_reward_handle).map_err(|why| unavailable.push(why)).ok();
                 let option = spelled(frame, row.option_handle).map_err(|why| unavailable.push(why)).ok();
-                let authored = namer
-                    .content()
-                    .zip(project_token.as_deref())
-                    .zip(reward.as_deref())
-                    .and_then(|((content, project), reward)| content.definitions.reward_named(project, reward).ok());
-                let option_key = authored
-                    .zip(option.as_deref())
-                    .and_then(|(found, option)| found.options.iter().find(|candidate| candidate.token.eq_ignore_ascii_case(option)))
-                    .and_then(|found| found.name.clone());
-                (row, namer.named(reward, row.prototype_reward_handle, authored.and_then(|found| found.name.clone())), namer.named(option, row.option_handle, option_key))
+                let authored = match (namer.content(), &project_token, reward.as_deref()) {
+                    (Some(content), Ok(project), Some(reward)) => content.definitions.reward_named(project, reward).map_err(|why| unavailable.push(why)).ok(),
+                    _ => None,
+                };
+                let option_key = authored.zip(option.as_deref()).and_then(|(found, option)| {
+                    let chosen = found.options.iter().find(|candidate| candidate.token.eq_ignore_ascii_case(option));
+                    if chosen.is_none() {
+                        unavailable.push(format!("Chosen option {option} is absent from recorded content"));
+                    }
+                    chosen.map(|chosen| chosen.name.clone())
+                });
+                (row, namer.named(reward, row.prototype_reward_handle, authored.map(|found| found.name.clone())), namer.named(option, row.option_handle, option_key))
             })
             .map(|(row, reward, option)| ProjectChoice {
                 ordinal: row.ordinal,

@@ -11,7 +11,7 @@ import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar';
 import { Icon } from '../../components/Icons';
 import { researchNumber } from './researchBreakdown';
 import { completedResearchJourney, researchAssignments, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
-import { researchTimeRows, type ResearchSegment } from './researchTimeBar';
+import { researchDaysLeftMissing, researchTimeRows, type ResearchSegment } from './researchTimeBar';
 import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry } from '../../generated/dashboard';
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
@@ -48,8 +48,8 @@ export function breakdownParts(slots: readonly ResearchSlotHistory[], slot: Rese
     started: part.entry.startedAfterHour !== null }));
 }
 
-export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description, daysLeft = null }: {
-  client: DashboardClient; track: BoundTrack; tag: string; hour: number; daysLeft?: number | null;
+export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description, daysLeft }: {
+  client: DashboardClient; track: BoundTrack; tag: string; hour: number; daysLeft: number | null;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
   const parts = breakdownParts(slots, slot, entry, hour);
@@ -74,6 +74,8 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
     </div>
     {error && !data ? <WidgetState kind="error" failure={error} onRetry={retry} />
       : !data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>
+        : split && researchDaysLeftMissing(split, active, daysLeft)
+          ? <p className="research-unavailable">Research time breakdown unavailable: the game's days-left estimate is not recorded at this hour.</p>
         : split ? <TimeBar split={split} active={active} daysLeft={daysLeft} />
           : <p className="research-unavailable">Research time breakdown unavailable{missing.length ? `: ${missing.join(' ')}` : '.'}</p>}
     {description && <details className="research-description-text"><summary>Description<Icon name="chevron-down" className="research-chevron" aria-hidden="true" /></summary><p>{description}</p></details>}

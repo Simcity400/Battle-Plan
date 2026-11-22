@@ -587,7 +587,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                         scopes,
                     )
-                    .map(|shown| self.technology_entity(EntityKind::SubUnit, name.as_bytes(), shown))
+                    .and_then(|shown| self.technology_entity(EntityKind::SubUnit, name.as_bytes(), shown))
                 })
                 .collect();
         }
@@ -646,7 +646,7 @@ impl Renderer<'_, '_, '_> {
                 } else {
                     EntityKind::Module
                 };
-                names.push(self.technology_entity(entity, token, shown));
+                names.push(self.technology_entity(entity, token, shown)?);
             }
         }
         Ok(names)

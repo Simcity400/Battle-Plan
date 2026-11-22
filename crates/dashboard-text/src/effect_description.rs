@@ -109,8 +109,6 @@ const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::RaidTargets,
     replay_data::rows::TableId::RailwayGunCounterInputs,
     replay_data::rows::TableId::RelationLinks,
-    replay_data::rows::TableId::ScientistSkills,
-    replay_data::rows::TableId::Scientists,
     replay_data::rows::TableId::TaskForces,
     replay_data::rows::TableId::TimedIdeas,
     replay_data::rows::TableId::TrainInventory,
@@ -1266,12 +1264,15 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Some(0x142A31D78) => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
-        if let Some(text) = self.concise_leaf(item, scopes) {
-            return if self.indents(item) {
-                indent_nonempty_lines(&text, 3 * indent)
-            } else {
-                text
-            };
+        match self.concise_leaf(item, scopes) {
+            Some(Ok(text)) if self.indents(item) => return indent_nonempty_lines(&text, 3 * indent),
+            Some(Ok(text)) => return text,
+            Some(Err(why)) => {
+                let effect_key = key(item);
+                self.refuse(&effect_key, format!("key {effect_key}: {why}"));
+                return String::new();
+            }
+            None => {}
         }
         let Some(own) = self.own(item, scopes) else {
             return String::new();

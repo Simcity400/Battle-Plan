@@ -19,9 +19,12 @@ const kindOf = (m: { label: string; kind: string }) =>
   m.label.toLowerCase().includes(m.kind) ? undefined : m.kind.charAt(0).toUpperCase() + m.kind.slice(1);
 const total = (segments: readonly ResearchSegment[]) => segments.reduce((sum, s) => sum + s.value, 0n);
 
-export function researchTimeRows(split: ResearchTimeSplit, active: boolean, daysLeft: number | null = null): ResearchTimeRows | null {
+export const researchDaysLeftMissing = (split: ResearchTimeSplit, active: boolean, daysLeft: number | null) =>
+  active && split.remaining > 0n && daysLeft === null;
+
+export function researchTimeRows(split: ResearchTimeSplit, active: boolean, daysLeft: number | null): ResearchTimeRows | null {
   const expectedTotal = split.base + split.penalty;
-  if (expectedTotal <= 0n) return null;
+  if (expectedTotal <= 0n || researchDaysLeftMissing(split, active, daysLeft)) return null;
   const left = active && daysLeft !== null && split.remaining > 0n ? BigInt(daysLeft) * 100_000n : null;
   const rest = left === null ? 0n : split.remaining - left;
   const slowed = split.modifiers.filter(m => m.days < 0n);

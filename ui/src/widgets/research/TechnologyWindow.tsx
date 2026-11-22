@@ -51,8 +51,9 @@ export default function TechnologyWindow({ link, onClose, ...shown }: Shown & { 
   const { runtime, widget, active } = shown;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tokens = useMemo(() => [link.token], [link.token]);
-  const art = useTechnologyArtwork(runtime.client, track, tokens, active).artwork.get(link.token);
-  const name = contentTitle(art?.name ?? (link.text || null), link.token, 'Technology name unavailable');
+  const read = useTechnologyArtwork(runtime.client, track, tokens, active);
+  const art = read.artwork.get(link.token), failed = read.failures.get(link.token);
+  const name = contentTitle(failed ?? art?.name, link.token, 'Technology name unavailable', !art && !failed);
   return <FloatingPanel title="Technology" label={`${name} technology`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="technology-window">
     <div className="dossier">
       <header className="dossier-hero">
