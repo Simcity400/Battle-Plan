@@ -825,7 +825,7 @@ fn journal_candidates(
             .iter()
             .position(|place| place.is_some_and(|table| derived[table]))
             .unwrap_or(written.columns.len());
-        for tables in first_derived.max(1)..=written.columns.len() {
+        for tables in first_derived.max(1)..=written.columns.len().min(kinds.len()) {
             let candidate = written.first(tables);
             if !layout.is_empty() && candidate.removed.is_empty() {
                 continue;
@@ -895,7 +895,7 @@ fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], derived: &[
                     } else {
                         candidates.retain(|(_, structural)| manifest_matches(bytes, sections_bytes, structural));
                         if candidates.is_empty() {
-                            return Err(invalid("No table count reads every manifest of the journal"));
+                            return Err(invalid("The journal's schema digest is unrecognized and no current table count reads every manifest of the journal"));
                         }
                     }
                     held.hours += 1;
@@ -930,9 +930,15 @@ fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], derived: &[
         candidates.swap_remove(0).0
     } else {
         if candidates.is_empty() {
-            return Err(invalid("No table count reads every manifest of the journal"));
+            return Err(invalid("The journal's schema digest is unrecognized and no current table count reads every manifest of the journal"));
         }
-        let journal = candidates[0].0.clone().relax_derived(derived);
+        let journal = candidates
+            .iter()
+            .find(|(candidate, _)| candidate.removed.is_empty())
+            .ok_or_else(|| invalid("The journal's schema digest is unrecognized and shifting tables across retired slots requires a recognized digest"))?
+            .0
+            .clone()
+            .relax_derived(derived);
         for ((_, path), held) in segments.iter().zip(&mut scanned) {
             scan(path, |kind, total, bytes| {
                 if kind != 3 {
@@ -1712,7 +1718,6 @@ mod tests {
         sections.push(section(links, Values::U32(&[42])));
         let mut statuses = vec![Status::NotRecorded; before.len()];
         let mut read = vec![0_u64; before.len().div_ceil(64)];
-        statuses[before.len() - 1] = Status::Complete;
         for &(table, _) in &sections {
             statuses[table] = Status::Complete;
             read[table / 64] |= 1 << (table % 64);
@@ -1762,25 +1767,28 @@ mod tests {
     #[test]
     fn a_journal_written_with_a_table_removed_since_reads_with_every_other_table_where_this_schema_holds_it() {
         let before = before();
-        for (digest, exact) in [(None, true), (Some([0xab; 32]), false)] {
-            let folder = Folder::new(if exact { "named" } else { "unnamed" });
-            let written = journal(&folder.0, digest, false);
-            let expected: Vec<(usize, String)> = written
-                .iter()
-                .map(|(table, bytes)| {
-                    let decoded = Decoded::read(bytes, &before[*table], false).unwrap();
-                    (table - usize::from(*table > MIDDLE[0].0), format!("{:?} {:?}", decoded.keys, decoded.inserts))
-                })
-                .collect();
-            let (named, hours) = read(&folder.0).unwrap();
-            assert_eq!(named, exact, "whether the digest named the tables");
-            assert_eq!(hours.len(), 1);
-            let (rows, statuses) = &hours[0];
-            assert_eq!(rows, &expected, "Campaign and CountryLinks at their places, rows as written");
-            assert_eq!(rows.iter().map(|(table, _)| *table).collect::<Vec<_>>(), [TableId::Campaign.index(), TableId::CountryLinks.index()]);
-            assert_eq!(statuses[TableId::CountryLinks.index()], Status::Complete);
-            assert_eq!(statuses[TableId::Countries.index()], Status::NotRecorded, "Countries takes no status of the table before it");
-        }
+        let named = Folder::new("named");
+        let written = journal(&named.0, None, false);
+        let expected: Vec<(usize, String)> = written
+            .iter()
+            .map(|(table, bytes)| {
+                let decoded = Decoded::read(bytes, &before[*table], false).unwrap();
+                (table - usize::from(*table > MIDDLE[0].0), format!("{:?} {:?}", decoded.keys, decoded.inserts))
+            })
+            .collect();
+        let (exact, hours) = read(&named.0).unwrap();
+        assert!(exact, "recognized retired digest names the tables");
+        assert_eq!(hours.len(), 1);
+        let (rows, statuses) = &hours[0];
+        assert_eq!(rows, &expected, "Campaign and CountryLinks at their places, rows as written");
+        assert_eq!(rows.iter().map(|(table, _)| *table).collect::<Vec<_>>(), [TableId::Campaign.index(), TableId::CountryLinks.index()]);
+        assert_eq!(statuses[TableId::CountryLinks.index()], Status::Complete);
+        assert_eq!(statuses[TableId::Countries.index()], Status::NotRecorded, "Countries takes no status of the table before it");
+
+        let unnamed = Folder::new("unnamed");
+        journal(&unnamed.0, Some([0xab; 32]), false);
+        let refused = read(&unnamed.0).err().expect("unrecognized digest shifting across MIDDLE is refused by name");
+        assert!(refused.to_string().contains("unrecognized"), "{refused}");
     }
 
     #[test]
@@ -2055,28 +2063,36 @@ mod tests {
         assert_eq!(synthetic_rows, Some(vec![(region_weights, vec![99, 100], "[I32([123, 456])]".to_owned())]));
 
         let before = before();
-        for (digest, exact) in [(None, true), (Some([0xab; 32]), false)] {
-            let folder = Folder::new(if exact { "post-derived-middle-named" } else { "post-derived-middle-unnamed" });
-            let identity = Identity { schema: digest.unwrap_or_else(|| schema_digest(&before)), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
-            let mut writer = JournalWriter::create(&folder.0, 0, &identity, &test_capture()).unwrap();
-            let _ = writer.next_segment().unwrap();
-            writer.run(1, 0, 0).unwrap();
-            let sections = vec![
-                insert_section(&before, TableId::Campaign.index(), 1, &[Values::Bytes(&[0])]),
-                insert_section(&before, region_weights + 1, 77, &[Values::I32(&[321])]),
-                insert_section(&before, building_inputs + 1, 78, &building_values),
-            ];
-            write_hour(&mut writer, &before, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
-            writer.finish(None).unwrap();
-            let (named, hours) = read(&folder.0).unwrap();
-            assert_eq!(named, exact);
-            assert_eq!(hours.len(), 1);
-            assert_eq!(hours[0].0.iter().map(|(table, _)| *table).collect::<Vec<_>>(), [TableId::Campaign.index(), region_weights, building_inputs]);
-            assert_eq!(hours[0].0[1].1, "[77] [I32([321])]");
-            assert_eq!(hours[0].1[region_weights], Status::Complete);
-            assert_eq!(hours[0].1[building_inputs], Status::Complete);
-            assert_eq!(hours[0].1[tag_holders], Status::NotRecorded);
-        }
+        let named = Folder::new("post-derived-middle-named");
+        let identity = Identity { schema: schema_digest(&before), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+        let mut writer = JournalWriter::create(&named.0, 0, &identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        let sections = vec![
+            insert_section(&before, TableId::Campaign.index(), 1, &[Values::Bytes(&[0])]),
+            insert_section(&before, region_weights + 1, 77, &[Values::I32(&[321])]),
+            insert_section(&before, building_inputs + 1, 78, &building_values),
+        ];
+        write_hour(&mut writer, &before, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
+        writer.finish(None).unwrap();
+        let (exact, hours) = read(&named.0).unwrap();
+        assert!(exact);
+        assert_eq!(hours.len(), 1);
+        assert_eq!(hours[0].0.iter().map(|(table, _)| *table).collect::<Vec<_>>(), [TableId::Campaign.index(), region_weights, building_inputs]);
+        assert_eq!(hours[0].0[1].1, "[77] [I32([321])]");
+        assert_eq!(hours[0].1[region_weights], Status::Complete);
+        assert_eq!(hours[0].1[building_inputs], Status::Complete);
+        assert_eq!(hours[0].1[tag_holders], Status::NotRecorded);
+
+        let unnamed = Folder::new("post-derived-middle-unnamed");
+        let unknown = Identity { schema: [0xab; 32], campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+        let mut writer = JournalWriter::create(&unnamed.0, 0, &unknown, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        write_hour(&mut writer, &before, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
+        writer.finish(None).unwrap();
+        let refused = read(&unnamed.0).err().expect("unrecognized digest with 519 tables is refused by name");
+        assert!(refused.to_string().contains("unrecognized"), "{refused}");
     }
 
     fn feed_store(source: &mut Multiplied, kinds: &[Vec<Kind>]) -> io::Result<replay_columnar::store::Store> {
@@ -2202,6 +2218,31 @@ mod tests {
             .expect("drifted LandUnitOrder columns must not fall back to retired layout and emit StrategicRegionWeights as LandUnitOrder");
         assert!(refused.to_string().contains("more than one table layout"), "{refused}");
 
+        let folder = Folder::new("unknown-appended-519-table");
+        let mut appended = kinds.clone();
+        appended.push(vec![Kind::I32]);
+        let appended_columns: Vec<usize> = appended.iter().map(Vec::len).collect();
+        let appended_identity = Identity { schema: schema_digest(&appended), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+        let mut writer = JournalWriter::create(&folder.0, 0, &appended_identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        let sections = vec![insert_section(&appended, land_order, 2, &[Values::Opaque { ends: &[2], items: &[9, 8] }])];
+        let mut statuses = vec![Status::NotRecorded; appended.len()];
+        let mut read_bits = vec![0_u64; appended.len().div_ceil(64)];
+        statuses[land_order] = Status::Complete;
+        read_bits[land_order / 64] |= 1 << (land_order % 64);
+        let extra = appended.len() - 1;
+        statuses[extra] = Status::Complete;
+        read_bits[extra / 64] |= 1 << (extra % 64);
+        let entries = vec![Section { table: land_order, bytes: sections[0].1.len() as u64, columns: vec![1], ops: INSERTS }];
+        let manifest = Manifest { branch: 1, hour: 0, flags: 0, total_ns: 0, pool_bytes: 0, dropped_frames: 0, appends: vec![&b"campaign"[..]], statuses, read: read_bits, samples: Vec::new(), sections: entries };
+        writer.hour(None, &manifest.write(&appended_columns).unwrap(), &[sections[0].1.as_slice()]).unwrap();
+        writer.finish(None).unwrap();
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
+            .err()
+            .expect("an unrecognized 519-table appended schema must never be remapped across LogForgets");
+        assert!(refused.to_string().contains("unrecognized"), "{refused}");
+
         let folder = Folder::new("unknown-pre-addition-equivalent");
         let earlier = &drifted[..land_order];
         let mut writer = JournalWriter::create(&folder.0, 0, &unknown, &test_capture()).unwrap();
@@ -2230,22 +2271,23 @@ mod tests {
         }
         assert_eq!(tables, [(TableId::Campaign.index(), vec![1]), (TableId::CountryLinks.index(), vec![4])]);
 
-        let folder = Folder::new("unknown-unique-before-strict-non-derived");
-        let mut drifted_before = before();
-        let links = TableId::CountryLinks.index() + 1;
-        drifted_before[links].push(Kind::U32);
-        let drifted_before_identity = Identity { schema: schema_digest(&drifted_before), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
-        let mut writer = JournalWriter::create(&folder.0, 0, &drifted_before_identity, &test_capture()).unwrap();
+        let folder = Folder::new("unknown-pre-addition-strict-non-derived");
+        let mut drifted_earlier = earlier.to_vec();
+        let links = TableId::CountryLinks.index();
+        drifted_earlier[links].push(Kind::U32);
+        let drifted_earlier_identity = Identity { schema: schema_digest(&drifted_earlier), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+        let mut writer = JournalWriter::create(&folder.0, 0, &drifted_earlier_identity, &test_capture()).unwrap();
         let _ = writer.next_segment().unwrap();
         writer.run(1, 0, 0).unwrap();
         let sections = vec![
-            insert_section(&drifted_before, TableId::Campaign.index(), 1, &[Values::Bytes(&[0])]),
-            insert_section(&drifted_before, links, 4, &[Values::U32(&[42]), Values::U32(&[99])]),
-            insert_section(&drifted_before, building_inputs + 1, 78, &building),
+            insert_section(&drifted_earlier, TableId::Campaign.index(), 1, &[Values::Bytes(&[0])]),
+            insert_section(&drifted_earlier, links, 4, &[Values::U32(&[42]), Values::U32(&[99])]),
         ];
-        write_hour(&mut writer, &drifted_before, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
+        write_hour(&mut writer, &drifted_earlier, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
         writer.finish(None).unwrap();
-        let refused = read(&folder.0).err().expect("unique retired layout still enforces exact column counts on non-derived tables");
+        let refused = Multiplied::open(&folder.0, 0, unit_factors(), None)
+            .err()
+            .expect("agreed unrecognized-digest layout still enforces exact column counts on non-derived tables");
         assert!(refused.to_string().contains("column past its table"), "{refused}");
     }
 
