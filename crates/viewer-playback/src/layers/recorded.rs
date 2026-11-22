@@ -90,40 +90,37 @@ pub fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &Frame) -> bo
 
 pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String, mut done: impl FnMut(&MapSide, &Frame) -> bool) {
     let last = side.entry().playhead().timeline().last();
-    let mut at_end = 0u64;
+    let carried = |side: &MapSide| side.parts().map_or(0, |(_, layers)| layers.iter().map(|layer| layer.carried().entities).sum::<usize>());
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped while waiting for {}: {:?}", what(side), side.entry().playhead().error());
         reads_landed(side);
-        let head = side.entry().playhead().newest().unwrap_or(0);
-        let frame = side.frame(head).unwrap();
+        let before_newest = side.entry().playhead().newest();
+        let carried_before = carried(side);
+        let head = before_newest.unwrap_or(0);
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if done(side, &frame) {
             return;
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            if !side.composing() && side.applied().is_some_and(|applied| applied >= last) {
-                let quiet = side.parts().is_some_and(|(_, layers)| {
-                    layers.iter().all(|layer| matches!(layer.published(), crate::layers::Published::Current) && layer.carried().entities == 0)
-                });
-                at_end += 1;
-                let limit = if quiet { 64 } else { 200_000 };
-                assert!(at_end < limit, "the map side reached the last recorded hour ({last}) without reaching {}: {}", what(side), seen(side));
-            } else {
-                at_end = 0;
-            }
-            std::thread::yield_now();
-        } else {
-            at_end = 0;
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded || carried(side) < carried_before {
+            continue;
         }
+        assert!(
+            before_newest.is_none_or(|newest| newest < last),
+            "the map side reached the last recorded hour ({last}) without reaching {}: {}",
+            what(side),
+            seen(side),
+        );
+        side.entry()
+            .playhead()
+            .wait_newest_after(before_newest)
+            .unwrap_or_else(|error| panic!("the playhead stopped while waiting for {}: {error}; {}", what(side), seen(side)));
     }
 }
 
 pub fn reads_landed(side: &MapSide) {
-    let playhead = side.entry().playhead();
-    playhead
-        .wait_for(|| {
-            let (declared, counters) = (playhead.declarations(), playhead.held().2);
-            counters.declarations_applied == declared && counters.joins_open == 0
-        })
+    side.entry()
+        .playhead()
+        .wait_declarations()
         .unwrap_or_else(|error| panic!("the playhead stopped while landing declarations: {error}; {}", seen(side)));
 }
 

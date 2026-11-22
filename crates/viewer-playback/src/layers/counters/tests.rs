@@ -188,25 +188,28 @@ fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &crate::playhead_
 
 fn reach(side: &mut MapSide, hour: i32) {
     let cap = (hour + 3).min(side.entry().playhead().timeline().last());
-    let mut stood = 0u64;
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped before hour {hour}: {:?}", side.entry().playhead().error());
-        let head = side.entry().playhead().newest().unwrap_or(0).min(cap);
-        let frame = side.frame(head).unwrap();
+        crate::layers::recorded::reads_landed(side);
+        let before_newest = side.entry().playhead().newest();
+        let head = before_newest.unwrap_or(0).min(cap);
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if !side.composing() && side.applied().is_some_and(|applied| applied >= hour) {
             return;
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            if !side.composing() && side.entry().playhead().newest().is_some_and(|newest| newest >= cap) {
-                stood += 1;
-                assert!(stood < 64, "the map side reached hour {:?} (head cap {cap}) without reaching hour {hour}: {}", side.applied(), crate::layers::recorded::seen(side));
-            } else {
-                stood = 0;
-            }
-            std::thread::yield_now();
-        } else {
-            stood = 0;
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
+            continue;
         }
+        assert!(
+            before_newest.is_none_or(|newest| newest < cap),
+            "the map side reached hour {:?} (head cap {cap}) without reaching hour {hour}: {}",
+            side.applied(),
+            crate::layers::recorded::seen(side),
+        );
+        side.entry()
+            .playhead()
+            .wait_newest_after(before_newest)
+            .unwrap_or_else(|error| panic!("the playhead stopped before hour {hour}: {error}"));
     }
 }
 

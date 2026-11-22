@@ -1628,8 +1628,8 @@ impl Layer for Units {
             }
             match table {
                 TableId::Divisions => {
-                    let keyed = [columns.province.column, columns.owner.column];
-                    let selected = [columns.template.column, columns.roster.column, columns.expeditionary.column];
+                    let keyed = [columns.province.column, columns.owner.column, columns.roster.column];
+                    let selected = [columns.template.column, columns.expeditionary.column];
                     let mut moved = |slot: u32| {
                         if self.moved.mark(slot, frame) {
                             self.marked[0] += 1;

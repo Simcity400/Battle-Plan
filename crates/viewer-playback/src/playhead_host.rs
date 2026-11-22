@@ -1188,11 +1188,20 @@ impl MapSide {
         self.frame_within(head, crate::layers::Settling::step(), true)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn frame_waiting(&mut self, head: Hour) -> io::Result<Frame> {
+        self.frame_step(head, crate::layers::Settling::step(), true, true)
+    }
+
     pub fn frame_still(&mut self, head: Hour) -> io::Result<Frame> {
         self.frame_within(head, crate::layers::Settling::still(), true)
     }
 
     fn frame_within(&mut self, head: Hour, settling: crate::layers::Settling, lay: bool) -> io::Result<Frame> {
+        self.frame_step(head, settling, lay, false)
+    }
+
+    fn frame_step(&mut self, head: Hour, settling: crate::layers::Settling, lay: bool, wait_compose: bool) -> io::Result<Frame> {
         self.frame += 1;
         let stepping = Instant::now();
         let doing = Arc::clone(&self.doing);
@@ -1209,7 +1218,12 @@ impl MapSide {
             if playhead.epoch() != self.epoch {
                 self.cancel.store(true, Ordering::Release);
             }
-            match self.worker.done.try_recv() {
+            let received = if wait_compose {
+                self.worker.done.recv().map_err(|_| TryRecvError::Disconnected)
+            } else {
+                self.worker.done.try_recv()
+            };
+            match received {
                 Ok(away) if away.cancel.load(Ordering::Acquire) => {
                     frame.superseded = true;
                     self.take_home(*away);

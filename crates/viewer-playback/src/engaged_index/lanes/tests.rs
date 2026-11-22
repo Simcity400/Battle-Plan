@@ -310,4 +310,44 @@ fn naval_combat_sides_of_an_earlier_format_decode_at_its_own_format() {
     check(tables::NavalCombatDetails::borrow(table.rows()).unwrap(), 1);
     table.step(3).unwrap();
     check(tables::NavalCombatDetails::borrow(table.rows()).unwrap(), 0);
+    let custom_sea_column = (0..64).find(|&column| TableId::NavalCombatDetails.field_name(column) == Some("custom_sea")).unwrap();
+    let custom_sea_error_column = (0..64).find(|&column| TableId::NavalCombatDetails.field_name(column) == Some("custom_sea_error")).unwrap();
+    let mut none_sea = Vec::new();
+    Option::<Vec<u8>>::None.encode(&mut none_sea).unwrap();
+    let conflict_recording = record_runs_at(FORMAT, &[(0, 1)], &[], |hour, store| {
+        store.status(TableId::NavalCombatDetails.index(), Status::Complete, true, Some(hour), true).unwrap();
+        let row = row_at(1);
+        let mut changes = store.table(TableId::NavalCombatDetails.index()).unwrap();
+        changes.insert_at(0, row.key()).unwrap();
+        let old = old_sides(&row);
+        changes.write(0, sides_column, Cell::Opaque(&old)).unwrap();
+        changes.write(0, custom_sea_column, Cell::Opaque(&none_sea)).unwrap();
+        changes.write(0, custom_sea_error_column, Cell::U8(0)).unwrap();
+    });
+    let conflict_pages: Arc<dyn Pages> = conflict_recording;
+    let mut with_sea = Table::<tables::NavalCombatDetails>::open(&conflict_pages, 0, Some(&["sides", "custom_sea", "custom_sea_error"]), "The test").unwrap();
+    let conflict = with_sea.seek(0).expect_err("selecting custom_sea and custom_sea_error validates their invariant");
+    assert!(conflict.to_string().contains("custom sea capture status conflicts with values"), "{conflict}");
+    let odd_recording = record_runs_at(FORMAT, &[(0, 2)], &[], |hour, store| {
+        store.status(TableId::NavalCombatDetails.index(), Status::Complete, true, Some(hour), true).unwrap();
+        let row = row_at(1);
+        let mut changes = store.table(TableId::NavalCombatDetails.index()).unwrap();
+        if hour == 0 {
+            changes.insert_at(0, row.key()).unwrap();
+            let old = old_sides(&row);
+            changes.write(0, sides_column, Cell::Opaque(&old)).unwrap();
+            changes.write(0, custom_sea_column, Cell::Opaque(&none_sea)).unwrap();
+            changes.write(0, custom_sea_error_column, Cell::U8(1)).unwrap();
+        } else {
+            let mut odd_sea = Vec::new();
+            Some(vec![7u8]).encode(&mut odd_sea).unwrap();
+            changes.write(0, custom_sea_column, Cell::Opaque(&odd_sea)).unwrap();
+            changes.write(0, custom_sea_error_column, Cell::U8(0)).unwrap();
+        }
+    });
+    let odd_pages: Arc<dyn Pages> = odd_recording;
+    let mut odd_table = Table::<tables::NavalCombatDetails>::open(&odd_pages, 0, Some(&["sides", "custom_sea", "custom_sea_error"]), "The test").unwrap();
+    odd_table.seek(0).unwrap();
+    let odd = odd_table.step(1).expect_err("stepping into odd-length custom_sea fails validation on partial projection");
+    assert!(odd.to_string().contains("odd custom sea i16 bytes"), "{odd}");
 }

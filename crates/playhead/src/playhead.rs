@@ -1182,6 +1182,40 @@ impl Playhead {
     }
 
     #[cfg(feature = "test-support")]
+    pub fn wait_newest_after(&self, before: Option<Hour>) -> Result<Hour, String> {
+        let mut control = lock(&self.shared.control);
+        loop {
+            if let Some(error) = &control.error {
+                return Err(error.clone());
+            }
+            if let Some(newest) = control.newest
+                && before.is_none_or(|before| newest > before)
+            {
+                return Ok(newest);
+            }
+            control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn wait_declarations(&self) -> Result<(), String> {
+        loop {
+            let version = lock(&self.shared.control).version;
+            let (declared, counters) = (self.declarations(), self.held().2);
+            if counters.declarations_applied == declared && counters.joins_open == 0 {
+                return Ok(());
+            }
+            let mut control = lock(&self.shared.control);
+            while control.version == version {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
+    #[cfg(feature = "test-support")]
     pub fn wait_for(&self, mut ready: impl FnMut() -> bool) -> Result<(), String> {
         loop {
             if ready() {

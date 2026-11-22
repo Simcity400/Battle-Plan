@@ -963,6 +963,7 @@ impl Convoys {
             self.refused = Some("The convoys layer is refused: it is given no vision of the viewing country yet".into());
             (self.pending, self.stale, self.since) = (Vec::new(), false, None);
             (self.worker, self.in_flight, self.worker_bytes) = (None, 0, 0);
+            (self.product, self.product_for, self.product_hour) = (Arc::default(), None, None);
             return;
         }
         if TABLES.iter().any(|&table| mirrors.get(table).is_none()) {

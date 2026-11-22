@@ -971,6 +971,9 @@ fn the_model_picker_reads_every_division_where_a_figure_stands_with_its_route_fa
             movement.write(1, column(TableId::DivisionMovement, "path"), Cell::U32List(&[])).unwrap();
             movement.write(1, column(TableId::DivisionMovement, "target"), Cell::U32(0)).unwrap();
         }
+        if at == 10 {
+            store.table(TableId::Divisions.index()).unwrap().write(0, column(TableId::Divisions, "roster_owner"), Cell::U32(8)).unwrap();
+        }
     });
     let entry = open(recording, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Units::new(flat()))], View::default()).unwrap();
@@ -979,17 +982,27 @@ fn the_model_picker_reads_every_division_where_a_figure_stands_with_its_route_fa
     entry.playhead().seek(0);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let divisions = layer(&side).pick_divisions();
-    let facts = |province: u32| divisions[&province].iter().map(|d| (d.id, d.owner, d.roster, d.hop, d.unrouted)).collect::<Vec<_>>();
+    let facts = |divisions: &HashMap<u32, Vec<super::PickDivision>>, province: u32| {
+        divisions[&province].iter().map(|d| (d.id, d.owner, d.roster, d.hop, d.unrouted)).collect::<Vec<_>>()
+    };
     assert_eq!(
-        facts(10),
+        facts(&divisions, 10),
         [(101, 3, Some(3), None, None), (102, 3, Some(3), None, None), (103, 3, Some(3), None, None), (104, 4, Some(4), Some(11), Some(false))],
         "a division without a movement row keeps its roster and settles no route fact; a routed transfer keeps its first hop"
     );
     assert!(divisions[&10].iter().all(|d| d.kind.is_none()), "without route geometry no stack kind is placed");
     assert_eq!(
-        facts(20),
+        facts(&divisions, 20),
         [(105, 3, Some(3), Some(0), Some(true))],
         "a transfer with no ordinary route has hop zero and is passed over"
+    );
+    through(&mut side, 12);
+    side.settle_all().unwrap();
+    let stepped = layer(&side).pick_divisions();
+    assert_eq!(
+        facts(&stepped, 10),
+        [(101, 3, Some(4), None, None), (102, 3, Some(3), None, None), (103, 3, Some(3), None, None), (104, 4, Some(4), Some(11), Some(false))],
+        "a roster-only step updates the cached roster of an unmoved division"
     );
 }
 

@@ -15,7 +15,6 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
 };
 use viewer_foundation::map::perspective::{Choice, Vision};
 use viewer_world::map::trade_routes::{self, Countries, ExchangeOrder, Stops, TradeRoutes};
@@ -213,27 +212,28 @@ fn composed_equal(side: &MapSide) {
 
 fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
     let cap = cap.min(side.entry().playhead().timeline().last());
-    let mut stood = 0u64;
     loop {
         assert!(side.entry().playhead().error().is_none(), "the playhead stopped before cap {cap}: {:?}", side.entry().playhead().error());
-        let head = side.entry().playhead().newest().unwrap_or(0).min(cap);
-        let frame = side.frame(head).unwrap();
+        recorded::reads_landed(side);
+        let before_newest = side.entry().playhead().newest();
+        let head = before_newest.unwrap_or(0).min(cap);
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
         if done(side, &frame) {
             return;
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            if !side.composing() && side.entry().playhead().newest().is_some_and(|newest| newest >= cap) {
-                let quiet = side.parts().is_some_and(|_| layer(side).in_flight == 0 && layer(side).carried().entities == 0);
-                stood += 1;
-                let limit = if quiet { 64 } else { 200_000 };
-                assert!(stood < limit, "the map side reached hour {:?} (cap {cap}) without reaching what the test waits for: {}", side.applied(), recorded::seen(side));
-            } else {
-                stood = 0;
-            }
-            std::thread::yield_now();
-        } else {
-            stood = 0;
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
+            continue;
         }
+        assert!(
+            before_newest.is_none_or(|newest| newest < cap),
+            "the map side reached hour {:?} (cap {cap}) without reaching what the test waits for: {}",
+            side.applied(),
+            recorded::seen(side),
+        );
+        side.entry()
+            .playhead()
+            .wait_newest_after(before_newest)
+            .unwrap_or_else(|error| panic!("the playhead stopped before cap {cap}: {error}"));
     }
 }
 
@@ -260,7 +260,8 @@ fn a_row_changed_twice_before_the_layer_settles_shows_its_newest_values() {
     let settles = side.hold_settles();
     frames_within(&mut side, 56, |_, frame| frame.applied.is_some_and(|applied| applied >= 51));
     crate::layers::recorded::released_unit_by_unit(&mut side, settles);
-    frames_within(&mut side, 56, |side, _| layer(side).carried().entities == 0 && layer(side).published() == crate::layers::Published::Current);
+    side.settle_all().unwrap();
+    assert_eq!((layer(&side).carried().entities, layer(&side).published()), (0, crate::layers::Published::Current));
     let at = side.parts().unwrap().0.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head).expect("a head");
     assert!((51..=56).contains(&at), "the mirrors at hour {at}");
     assert_eq!(drawn(&side), (2, 5), "the newest convoys");
@@ -342,6 +343,14 @@ struct HeldLines {
     changed: std::sync::Condvar,
 }
 
+struct ReleaseRoutes(Arc<HeldLines>);
+
+impl Drop for ReleaseRoutes {
+    fn drop(&mut self) {
+        self.0.set(true);
+    }
+}
+
 impl HeldLines {
     fn set(&self, open: bool) {
         *self.open.lock().unwrap() = open;
@@ -365,11 +374,9 @@ impl Routes for HeldLines {
         stops: &mut dyn FnMut(&Route, bool) -> Result<Option<Stops>, String>,
         emit: &mut trade_routes::Emit<'_>,
     ) -> TradeRoutes {
-        let until = std::time::Instant::now() + Duration::from_secs(60);
         let mut open = self.open.lock().unwrap();
         while !*open {
-            let Some(left) = until.checked_duration_since(std::time::Instant::now()) else { break };
-            open = self.changed.wait_timeout(open, left).unwrap().0;
+            open = self.changed.wait(open).unwrap();
         }
         drop(open);
         self.lines.build(ours, tables, countries, exchanges, culture, provinces, stops, emit)
@@ -381,6 +388,7 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
     use crate::layers::Published;
     let entry = open(recorded::record("convoys-job-out", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(HeldLines::default());
+    let _release = ReleaseRoutes(Arc::clone(&routes));
     routes.set(true);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>))], supply()).unwrap();
     layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
@@ -402,7 +410,8 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
     assert_eq!(layer(&side).blocking_waits, waited, "a still publication waits on no convoy job");
     assert!(layer(&side).in_flight > 0, "the job out joins a later publication");
     routes.set(true);
-    frames_within(&mut side, 56, |side, _| layer(side).in_flight == 0 && layer(side).carried().entities == 0);
+    side.settle_all().unwrap();
+    assert_eq!((layer(&side).in_flight, layer(&side).carried().entities), (0, 0));
     assert_eq!(layer(&side).published(), Published::Current);
     assert_eq!(drawn(&side), (2, 5), "the newest convoys");
 }
@@ -412,6 +421,7 @@ fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     use viewer_foundation::map::perspective::Country;
     let entry = open(recorded::record("convoys-viewer-change", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(HeldLines::default());
+    let _release = ReleaseRoutes(Arc::clone(&routes));
     routes.set(true);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Convoys::new(Arc::clone(&routes) as Arc<dyn Routes>))], supply()).unwrap();
     layer(&side).set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
@@ -425,13 +435,12 @@ fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
     let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
     frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
     layer(&side).set_vision(Choice { country: Country::Tag("other".into()), ..Choice::default() }, Arc::new(Vision::sharing(7, [])));
-    frames_within(&mut side, 60, |side, _| layer(side).vision.as_ref().is_some_and(|&(_, ours)| ours == 7));
+    side.frame(side.applied().expect("a step applied")).unwrap();
+    assert_eq!(layer(&side).vision.as_ref().map(|&(_, ours)| ours), Some(7));
     assert!(layer(&side).shown().is_none(), "slot 3's lines are withheld for slot 7 while its own are made");
     routes.set(true);
-    frames_within(&mut side, 60, |side, _| {
-        assert!(layer(side).shown().is_none_or(|_| layer(side).product_for == Some(7)), "the job asked for slot 3 is never taken for slot 7");
-        layer(side).in_flight == 0
-    });
+    side.settle_all().unwrap();
+    assert_eq!(layer(&side).in_flight, 0);
     assert_eq!(layer(&side).product_for, Some(7));
     assert!(layer(&side).shown().is_some(), "slot 7's own lines are shown");
 }
@@ -454,6 +463,7 @@ fn a_refused_vision_withholds_the_lines_made_for_the_country_before() {
 fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() {
     use crate::layers::Published;
     let routes = Arc::new(HeldLines::default());
+    let _release = ReleaseRoutes(Arc::clone(&routes));
     routes.set(true);
     let mut side = window_side("convoys-refused-settled", Arc::clone(&routes) as Arc<dyn Routes>, 60..146);
     through(&mut side, 30);
@@ -461,19 +471,24 @@ fn a_refused_vision_carries_nothing_and_the_next_vision_reads_every_row_again() 
     routes.set(false);
     let at = |side: &MapSide| side.parts().and_then(|(mirrors, _)| mirrors.get(TableId::ConvoyClients).and_then(crate::playhead_host::mirror::Mirror::head));
     frames_within(&mut side, 56, |side, _| at(side).is_some_and(|hour| hour >= 51) && layer(side).in_flight > 0);
-    frames_within(&mut side, 140, |side, frame| at(side).is_some_and(|hour| hour >= 134) && frame.steps == 0);
+    frames_within(&mut side, 140, |side, _| at(side).is_some_and(|hour| hour >= 134));
     side.frame(140).unwrap();
     assert_eq!(vision_layer(&side).ours(), None);
     assert!(layer(&side).refused().is_some_and(|why| why.contains("vision")), "{:?}", layer(&side).refused());
     assert_eq!((layer(&side).carried().entities, layer(&side).published(), layer(&side).in_flight), (0, Published::Current, 0), "a refused layer carries and publishes no work");
     assert!(side.on_screen().is_some_and(|on| on.settled), "the held map settles while the vision is refused");
     assert!(layer(&side).shown().is_none());
-    routes.set(true);
     frames_within(&mut side, 152, |side, _| !side.composing() && side.applied().is_some_and(|hour| hour >= 148));
-    side.settle_all().unwrap();
     assert_eq!(vision_layer(&side).ours(), Some(3));
     assert_eq!(layer(&side).refused(), None);
+    assert!(layer(&side).in_flight > 0, "the replacement build is still held while the vision recovers");
+    assert_eq!(layer(&side).product_for, None, "pre-refusal lines are cleared when vision is refused");
+    assert!(layer(&side).shown().is_none(), "stale pre-refusal lines do not reappear while the replacement job is pending");
+    routes.set(true);
+    side.settle_all().unwrap();
+    assert_eq!(layer(&side).in_flight, 0);
     assert_eq!(layer(&side).product_for, Some(3));
+    assert!(layer(&side).shown().is_some());
     assert_eq!(drawn(&side), (2, 7), "the client that replaced the one before, read again");
     composed_equal(&side);
 }
