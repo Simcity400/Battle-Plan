@@ -6,4 +6,4 @@ The loss course uses exact signed fixed5 design counts and keeps identical names
 
 Naval live battles use recorded participant histories and the derived battle identity and size. A participant without a ship denotes a convoy. Retained outcomes join only through `NavalResultObservations`. A result's countries are retained with their own observation evidence. Window rows cut on changed visible values, and the ranking uses the last state in the requested range. Several battles at the same hour share their fleet reads. A forward seeker reuses each table across the hours. A sinking list carried into a read uses the last actual read at or before the hour, including at block boundaries.
 
-[Land battles](../../crates/dashboard/src/products/land_battles.rs) · [Land terrain](../../crates/dashboard/src/products/land_terrain.rs) · [Naval battles](../../crates/dashboard/src/products/naval/battles.rs)
+[Land battles](../../crates/dashboard-land/src/products/land_battles.rs) · [Land terrain](../../crates/dashboard-land/src/products/land_terrain.rs) · [Naval battles](../../crates/dashboard-naval/src/products/naval/battles.rs)

@@ -6,4 +6,4 @@ Destruction and Combat Log land coverage describe different evidence. Read recor
 
 Search the declared sunk-ship log only in occupied six-hour buckets. Date each ship by its sinking hour and retain the greatest observed count for each signature. A later listing does not erase an earlier count. Add chart bin endpoints only when they change, with exact reads available separately. An unrecorded value does not establish that a prior amount ended. Unavailable totals tables supply no exact values.
 
-[Equipment losses](../../crates/dashboard/src/products/equipment_losses.rs) · [Cause naming](../../crates/dashboard/src/products/equipment_losses/content.rs) · [Coverage reader](../../crates/dashboard/src/products/equipment_losses/coverage.rs)
+[Equipment losses](../../crates/dashboard-production/src/products/equipment_losses.rs) · [Cause naming](../../crates/dashboard-production/src/products/equipment_losses/content.rs) · [Coverage reader](../../crates/dashboard-production/src/products/equipment_losses/coverage.rs)

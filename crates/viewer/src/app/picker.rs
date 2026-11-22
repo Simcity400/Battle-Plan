@@ -31,10 +31,10 @@ const FOURTH_BUTTON_DLC: u32 = 0x20;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ViewEvent {
-    Options(dashboard::protocol::MapOptions),
-    Toggle(dashboard::protocol::MapToggle),
-    Modes(Vec<dashboard::protocol::MapModeChoice>),
-    Observe(dashboard::protocol::ObservedCountry),
+    Options(dashboard_core::protocol::MapOptions),
+    Toggle(dashboard_core::protocol::MapToggle),
+    Modes(Vec<dashboard_core::protocol::MapModeChoice>),
+    Observe(dashboard_core::protocol::ObservedCountry),
 }
 
 pub struct PickerState {
@@ -42,7 +42,7 @@ pub struct PickerState {
     pub picker: picker::Picker,
     pub open: Open,
     pub slots: Vec<String>,
-    pub requested: Option<dashboard::protocol::MapOptions>,
+    pub requested: Option<dashboard_core::protocol::MapOptions>,
     pub events: Vec<ViewEvent>,
     pub hidden: bool,
     pub country_pinned: bool,
@@ -55,7 +55,7 @@ pub struct PickerState {
 impl Default for PickerState {
     fn default() -> Self {
         Self {
-            radar: dashboard::map_display::option_defaults::RADAR,
+            radar: dashboard_core::map_display::option_defaults::RADAR,
             picker: Default::default(),
             open: Default::default(),
             slots: Vec::new(),
@@ -147,14 +147,14 @@ fn dump_toggles(document: &Document, options: &crate::Options) -> Toggles {
     let settings = options.counter_settings(&document.game_options);
     Toggles {
         day_night: None,
-        player_counters: Some(dashboard::map_display::option_defaults::PLAYER_COUNTERS),
+        player_counters: Some(dashboard_core::map_display::option_defaults::PLAYER_COUNTERS),
         counter_colors: Some(
             settings.color_mode == viewer_counters::map::counters::CounterColorMode::Country,
         ),
         allied_plans: None,
         fog: viewer_foundation::map::perspective::fog_recorded(document.capture_mode())
             .then_some(options.perspective.fog),
-        radar: Some(dashboard::map_display::option_defaults::RADAR),
+        radar: Some(dashboard_core::map_display::option_defaults::RADAR),
     }
 }
 
@@ -377,13 +377,13 @@ pub fn parse_shortcut(text: &str) -> Option<(egui::Modifiers, egui::Key)> {
 }
 
 pub fn echoes(
-    requested: &dashboard::protocol::MapOptions,
-    options: &dashboard::protocol::MapOptions,
+    requested: &dashboard_core::protocol::MapOptions,
+    options: &dashboard_core::protocol::MapOptions,
 ) -> bool {
     requested.map_mode == options.map_mode && requested.map_mode_slots == options.map_mode_slots
 }
 
-pub fn host_choice(options: &dashboard::protocol::MapOptions) -> (MapMode, Vec<String>) {
+pub fn host_choice(options: &dashboard_core::protocol::MapOptions) -> (MapMode, Vec<String>) {
     let mode = options
         .map_mode
         .as_deref()
@@ -397,8 +397,8 @@ pub fn toggle_request(
     name: &str,
     toggles: Toggles,
     hosted: bool,
-) -> Option<dashboard::protocol::MapSetting> {
-    use dashboard::protocol::MapSetting;
+) -> Option<dashboard_core::protocol::MapSetting> {
+    use dashboard_core::protocol::MapSetting;
     Some(match name {
         "button_fog" if hosted => MapSetting::Fog,
         "day_night_toggle" => {
@@ -518,7 +518,7 @@ impl Viewer {
             Country::Tag(tag) => (Some(tag.clone()), None),
             Country::Slot { slot, tag } => (Some(tag.clone()), Some(*slot)),
         };
-        let options = dashboard::protocol::MapOptions {
+        let options = dashboard_core::protocol::MapOptions {
             country,
             country_slot,
             country_pinned: self.picker.country_pinned,
@@ -532,7 +532,7 @@ impl Viewer {
         self.picker.events.push(ViewEvent::Options(options));
     }
 
-    pub(crate) fn apply_host_options(&mut self, options: &dashboard::protocol::MapOptions) {
+    pub(crate) fn apply_host_options(&mut self, options: &dashboard_core::protocol::MapOptions) {
         self.picker.hidden = options.picker_hidden;
         self.picker.country_pinned = options.country_pinned;
         let echoed = self
@@ -570,7 +570,7 @@ impl Viewer {
                 .iter()
                 .map(|mode| {
                     let button = mode_button(document, mode);
-                    dashboard::protocol::MapModeChoice {
+                    dashboard_core::protocol::MapModeChoice {
                         token: button.token,
                         label: button.name,
                         unavailable: button.unavailable,
@@ -685,7 +685,7 @@ impl Viewer {
         if let Some(setting) = toggle_request(name, self.picker_toggles(), hosted) {
             self.picker
                 .events
-                .push(ViewEvent::Toggle(dashboard::protocol::MapToggle {
+                .push(ViewEvent::Toggle(dashboard_core::protocol::MapToggle {
                     setting,
                 }));
             return;
@@ -759,8 +759,8 @@ impl Viewer {
 mod tests {
     use super::*;
 
-    fn options(fog: bool, mode: Option<&str>) -> dashboard::protocol::MapOptions {
-        dashboard::protocol::MapOptions {
+    fn options(fog: bool, mode: Option<&str>) -> dashboard_core::protocol::MapOptions {
+        dashboard_core::protocol::MapOptions {
             country: None,
             country_slot: None,
             country_pinned: false,
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn a_toggle_asks_the_host_to_flip_its_setting() {
-        use dashboard::protocol::MapSetting;
+        use dashboard_core::protocol::MapSetting;
         let toggles = Toggles {
             day_night: Some(true),
             allied_plans: Some(false),
@@ -878,7 +878,7 @@ mod tests {
         assert!(hosted.graphics.day_night && !hosted.graphics.show_allied_plans);
     }
 
-    fn toggles(viewer: &mut Viewer) -> Vec<dashboard::protocol::MapToggle> {
+    fn toggles(viewer: &mut Viewer) -> Vec<dashboard_core::protocol::MapToggle> {
         viewer
             .take_view_events()
             .into_iter()
@@ -891,10 +891,7 @@ mod tests {
 
     #[test]
     fn toggles_flip_on_the_host_and_show_what_it_last_applied() {
-        use dashboard::protocol::{
-            DashboardMapView, MapAction, MapOptions, MapSetting, MapToggle, ResolvedMapSettings,
-            ViewBounds,
-        };
+        use dashboard_core::protocol::{DashboardMapView, MapAction, MapOptions, MapSetting, MapToggle, ResolvedMapSettings, ViewBounds};
         let mut viewer = viewer();
         viewer.dashboard_map = true;
         viewer.graphics.day_night = true;
@@ -980,7 +977,7 @@ mod tests {
 
     #[test]
     fn campaign_picker_requests_day_night_and_allied_plans_without_changing_them_locally() {
-        use dashboard::protocol::{MapSetting, MapToggle, ResolvedMapSettings};
+        use dashboard_core::protocol::{MapSetting, MapToggle, ResolvedMapSettings};
         let mut viewer = viewer();
         assert!(!viewer.dashboard_map);
         let mut settings = ResolvedMapSettings::default();
@@ -1024,7 +1021,7 @@ mod tests {
 
     #[test]
     fn campaign_saved_settings_reach_the_frame_without_changing_the_hour() {
-        use dashboard::{map_settings::Store, protocol::CampaignMapSettings};
+        use dashboard_core::{map_settings::Store, protocol::CampaignMapSettings};
         let root =
             std::env::temp_dir().join(format!("hoi4-campaign-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
@@ -1033,8 +1030,8 @@ mod tests {
         let mut host = Store::open();
         let service = dashboard::Service::new(Arc::new(|_| true)).unwrap();
         let replay = crate::playback::tests::fixture();
-        let campaign = dashboard::map_settings::campaign_key(&replay);
-        let widget = dashboard::map_settings::widget_key(&campaign, "another-map");
+        let campaign = dashboard_core::map_settings::campaign_key(&replay);
+        let widget = dashboard_core::map_settings::widget_key(&campaign, "another-map");
         let mut viewer = viewer();
         assert!(!viewer.dashboard_map);
         assert!(!viewer.playing);
@@ -1074,7 +1071,7 @@ mod tests {
         assert_eq!(viewer.frame_day_night(hour, &speeds).strength, 0.0);
 
         viewer.picker_toggle("day_night_toggle");
-        let [toggle]: [dashboard::protocol::MapToggle; 1] =
+        let [toggle]: [dashboard_core::protocol::MapToggle; 1] =
             toggles(&mut viewer).try_into().unwrap();
         host.flip(campaign.clone(), toggle.setting).unwrap();
         assert_eq!(viewer.frame_day_night(hour, &speeds).strength, 0.0);
@@ -1128,7 +1125,7 @@ mod tests {
         let mut restarted = viewer();
         let mut frame = eframe::Frame::_new_kittest();
         restarted.host_map_action(
-            dashboard::protocol::MapAction::Configure { options },
+            dashboard_core::protocol::MapAction::Configure { options },
             &egui::Context::default(),
             &mut frame,
         );

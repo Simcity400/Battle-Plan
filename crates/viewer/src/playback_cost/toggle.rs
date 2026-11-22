@@ -112,7 +112,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
-    let mut config = dashboard::Config::load()?;
+    let mut config = dashboard_core::config::Config::load()?;
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }
