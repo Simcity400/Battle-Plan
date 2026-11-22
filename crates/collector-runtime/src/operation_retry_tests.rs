@@ -28,7 +28,8 @@ fn table_retry_preserves_admitted_operation_completion() {
     // SAFETY: The test uses isolated recovery state.
     let refresh = unsafe { shared.refresh_next() }.swap(false, Ordering::AcqRel);
     if recovery {
-        invalidate();
+        // SAFETY: Test holds `serial()` and exercises recovery invalidation in isolation.
+        unsafe { invalidate() };
     }
     let mut events = [Event::default()];
     let mut bytes = [0; 32];

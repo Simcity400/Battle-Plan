@@ -22,16 +22,24 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities { events: 0 })
     }
-    pub fn fail(&mut self, hour: i32, reason: &'static str) {
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live event-feed observation.
+    pub unsafe fn fail(&mut self, hour: i32, reason: &'static str) {
         self.prepared = None;
-        collector_observers::event_feed_observer::lost_drain();
+        // SAFETY: Caller owns the event-feed capture or publication failure path.
+        unsafe { collector_observers::event_feed_observer::lost_drain() };
         self.snapshot
             .refuse(crate::world_lifetime::generation(), hour, reason);
         self.sampled = true;
     }
-    pub fn fail_prepared(&mut self, reason: &'static str) {
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// a prepared event-feed handoff.
+    pub unsafe fn fail_prepared(&mut self, reason: &'static str) {
         if let Some((hour, _)) = self.prepared {
-            self.fail(hour, reason);
+            // SAFETY: Caller owns the event-feed capture or publication failure path.
+            unsafe { self.fail(hour, reason) };
         }
     }
     pub fn with_capacities(capacity: &Capacities) -> Self {
@@ -52,11 +60,15 @@ impl Captured {
         crate::table_capture::grow_capacity(&mut capacity.events, self.snapshot.required);
         let _ = self.snapshot.grow(capacity.events);
     }
-    pub fn drain(&mut self, hour: i32, partial: bool) {
+    /// # Safety
+    /// Caller must run on the admitted hourly observer boundary as the sole consumer preparing the
+    /// event-feed interval (or own an isolated test fixture).
+    pub unsafe fn drain(&mut self, hour: i32, partial: bool) {
         self.prepared = None;
         match collector_observers::event_feed_observer::prepare_growing(hour, partial) {
             Ok(()) => self.prepared = Some((hour, partial)),
-            Err(reason) => self.fail(hour, reason),
+            // SAFETY: Caller holds hourly observer-boundary ownership on drain failure.
+            Err(reason) => unsafe { self.fail(hour, reason) },
         }
     }
     pub fn seal(&mut self) {
@@ -103,7 +115,7 @@ mod tests {
     #[test]
     fn a_refused_preparation_is_sampled_and_no_seal_or_join_failure_replaces_it() {
         let mut captured = Captured::vacant();
-        captured.drain(7, false);
+        unsafe { captured.drain(7, false) };
         let refused = captured.snapshot.boundary;
         assert!(matches!(refused.coverage, EventFeedCoverage::Unavailable));
         assert_eq!(refused.read_hour, 7);
@@ -112,7 +124,7 @@ mod tests {
         assert!(captured.prepare_pack().unwrap().is_some());
 
         captured.seal();
-        captured.fail_prepared("event feed seal job failed");
+        unsafe { captured.fail_prepared("event feed seal job failed") };
         let kept = captured.snapshot.boundary;
         assert!(matches!(kept.coverage, EventFeedCoverage::Unavailable));
         assert_eq!(kept.read_hour, 7);

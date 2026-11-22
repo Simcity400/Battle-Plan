@@ -43,10 +43,13 @@ impl ObserverBoundaryRequest {
     pub fn capture(&mut self) -> ObserverBoundaryReport {
         let mut report = ObserverBoundaryReport::default();
         let boundaries = qpc();
-        collector_observers::market_changes::boundary(
-            self.market_clock,
-            !self.continuous || self.recovery || self.market_refresh,
-        );
+        // SAFETY: Runs on the admitted hour's sole observer boundary while market observation lives.
+        unsafe {
+            collector_observers::market_changes::boundary(
+                self.market_clock,
+                !self.continuous || self.recovery || self.market_refresh,
+            );
+        }
         collector_air_relations::relation_changes::boundary(!self.continuous || self.recovery);
         collector_air_histories::history_changes::boundary(!self.continuous || self.recovery);
         collector_intel::flag_changes::boundary(!self.continuous || self.recovery);
@@ -102,8 +105,11 @@ impl ObserverBoundaryRequest {
         self.finished[0] = true;
         report.ticks[0] = elapsed(boundaries);
         let begin = qpc();
-        self.feed
-            .drain(self.hour, !self.continuous || self.recovery);
+        // SAFETY: Runs on the admitted hour's sole observer boundary while event-feed storage lives.
+        unsafe {
+            self.feed
+                .drain(self.hour, !self.continuous || self.recovery);
+        }
         self.finished[1] = true;
         report.ticks[1] = elapsed(begin);
         let begin = qpc();
@@ -190,24 +196,25 @@ impl ObserverBoundaryRequest {
         let lane_reason = lane_reason(&self.finished, reason);
         for (index, finished) in self.finished.into_iter().enumerate() {
             if !finished {
+                // SAFETY: Observer-boundary failure path owns invalidating unfinished live lanes.
                 match index {
-                    0 => self.land.fail(self.hour, reason),
-                    1 => self.feed.fail(self.hour, reason),
+                    0 => unsafe { self.land.fail(self.hour, reason) },
+                    1 => unsafe { self.feed.fail(self.hour, reason) },
                     2 => {
-                        collector_output::line_output::invalidate();
+                        unsafe { collector_output::line_output::invalidate() };
                         self.lines.fail(reason);
                     }
                     3 => self.fuel.fail(reason),
                     4 => {
-                        collector_output::construction_ic::invalidate();
+                        unsafe { collector_output::construction_ic::invalidate() };
                         self.construction.fail(reason);
                     }
                     5 => {
                         collector_peace::peace_settlements::lost_drain();
                         self.peace.fail(reason);
                     }
-                    6 => self.operations.fail(lane_reason),
-                    7 => self.politics.fail(lane_reason),
+                    6 => unsafe { self.operations.fail(lane_reason) },
+                    7 => unsafe { self.politics.fail(lane_reason) },
                     _ => unreachable!(),
                 }
             }

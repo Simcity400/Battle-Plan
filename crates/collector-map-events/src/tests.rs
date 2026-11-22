@@ -358,7 +358,7 @@ fn a_new_epoch_restarts_coverage_and_the_sequence_continues_the_history() {
     let second = drain(11);
     assert!(second.continues(&first));
     assert!(second.health.iter().all(|health| health.complete));
-    interval::invalidate();
+    unsafe { interval::invalidate() };
     let reset = drain(12);
     assert_eq!(reset.epoch, 6);
     assert!(!reset.continues(&second));
@@ -368,7 +368,7 @@ fn a_new_epoch_restarts_coverage_and_the_sequence_continues_the_history() {
             .iter()
             .all(|health| health.faults.contains(Fault::ObservationStart))
     );
-    interval::lost_output();
+    unsafe { interval::lost_output() };
     let lost = drain(13);
     assert!(
         lost.health

@@ -622,7 +622,7 @@ impl Conversion {
     }
 }
 static CONVERSION: Mutex<Conversion> = Mutex::new(Conversion::new());
-pub fn release_conversion() {
+pub(crate) fn release_conversion() {
     *CONVERSION.lock().unwrap_or_else(|e| e.into_inner()) = Conversion::new();
 }
 

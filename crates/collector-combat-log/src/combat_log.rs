@@ -36,7 +36,7 @@ pub const TABLES: [TableId; N] = [
     TableId::CombatLogBattleCountries,
 ];
 
-pub fn release_retained_history() {
+pub(crate) fn release_retained_history() {
     with_store(|store| store.retained = crate::history_capture::State::new());
     crate::history_capture::release_conversion();
 }

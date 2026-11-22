@@ -257,13 +257,13 @@ mod tests {
             }
         }
         let _session = producer::test_support::Session::default();
-        producer::boundary(
+        unsafe { producer::boundary(
             Some(engine_native::cgame_state::Clock {
                 hour: 100,
                 ..Default::default()
             }),
             false,
-        );
+        ) };
         held::discover_country(
             &Unreadable,
             0,
@@ -322,13 +322,13 @@ mod tests {
         }
         for daily in [true, false] {
             let _session = producer::test_support::Session::default();
-            producer::boundary(
+            unsafe { producer::boundary(
                 Some(engine_native::cgame_state::Clock {
                     hour: 100,
                     ..Default::default()
                 }),
                 false,
-            );
+            ) };
             if daily {
                 held::finish_contract_seed(false);
             }
@@ -371,13 +371,13 @@ mod tests {
                     encoder = FrameEncoder::new();
                     decoder = FrameDecoder::for_tables(&TABLES);
                 }
-                producer::boundary(
+                unsafe { producer::boundary(
                     Some(engine_native::cgame_state::Clock {
                         hour,
                         ..Default::default()
                     }),
                     false,
-                );
+                ) };
                 let reseeded = held::full_publication_required();
                 assert_eq!(reseeded, matches!(hour, 100 | 102));
                 if reseeded {

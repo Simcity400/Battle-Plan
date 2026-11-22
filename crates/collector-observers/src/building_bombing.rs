@@ -94,19 +94,27 @@ pub unsafe fn presize(events: usize) {
     }
     LEDGER.prepare(events);
 }
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// owning building-bombing observation) when invalidating building-bombing drains.
+pub unsafe fn lost_drain() {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.lost_drain();
+    // SAFETY: Caller owns the building-bombing recovery or publication failure path.
+    unsafe { LEDGER.lost_drain() };
 }
-pub fn lost_output(events: usize) {
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test owning building-bombing observation) when recording lost building-bombing output.
+pub unsafe fn lost_output(events: usize) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
     }
-    LEDGER.lost_output(events);
+    // SAFETY: Caller owns the building-bombing projection or publication failure path.
+    unsafe { LEDGER.lost_output(events) };
 }
 fn writer_cost(start: i64) {
     let ticks = qpc().saturating_sub(start).max(0) as u64;
@@ -142,7 +150,10 @@ pub unsafe fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         LEDGER.refuse_preparation("building bombing preparation population size overflow");
     }
 }
-pub fn boundary(clock: Option<Clock>) {
+/// # Safety
+/// Caller must run on the admitted hourly capture boundary as the sole consumer advancing
+/// building-bombing observation (or an isolated test owning building-bombing observation).
+pub unsafe fn boundary(clock: Option<Clock>) {
     #[cfg(test)]
     if !tests::owns_observation() {
         return;
@@ -150,7 +161,8 @@ pub fn boundary(clock: Option<Clock>) {
     let ticks = INTERVAL_TICKS.swap(0, Ordering::Relaxed);
     LAST_HOUR_TICKS.store(ticks, Ordering::Relaxed);
     MAX_HOUR_TICKS.fetch_max(ticks, Ordering::Relaxed);
-    LEDGER.boundary(clock);
+    // SAFETY: Caller runs on the admitted hourly capture boundary for building-bombing observation.
+    unsafe { LEDGER.boundary(clock) };
 }
 /// # Safety
 /// Caller must be the admitted hourly capture consumer draining building-bombing events while

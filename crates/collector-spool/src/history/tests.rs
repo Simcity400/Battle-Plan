@@ -687,9 +687,11 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
         })
     };
     for hour in [6, 7] {
-        market.boundary(clock(hour));
-        losses.boundary(clock(hour));
-        bombing.boundary(clock(hour));
+        unsafe {
+            market.boundary(clock(hour));
+            losses.boundary(clock(hour));
+            bombing.boundary(clock(hour));
+        }
     }
     let token = losses.claim((5000, 71)).unwrap();
     losses

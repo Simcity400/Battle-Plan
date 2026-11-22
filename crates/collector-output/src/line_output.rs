@@ -98,8 +98,9 @@ fn presize_storage(events: usize) {
 }
 
 /// # Safety
-/// Caller must run on the admitted post-drain observer boundary under the capture gate (or an
-/// isolated test holding `test_lock()` with hooks quiesced) as the sole log-swap consumer.
+/// Caller must hold exclusive pre-publication attach ownership (before enabling hooks), run on
+/// the admitted post-drain observer boundary under the capture gate, or hold `test_lock()` in an
+/// isolated test with hooks quiesced as the sole log-swap consumer.
 pub unsafe fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
@@ -316,7 +317,10 @@ thread_local! {
     static PENDING: Cell<Pending> = const { Cell::new(NOTHING_PENDING) };
 }
 
-pub fn invalidate() {
+/// # Safety
+/// Caller must own the active session's capture or publication failure path (or hold `test_lock()`
+/// in an isolated test) when invalidating line-output observation.
+pub unsafe fn invalidate() {
     OBSERVATION.invalidate();
 }
 
@@ -429,7 +433,7 @@ fn observe_credit(frozen: Option<Entry>) {
         Some(entry) => append(entry),
         None => {
             COUNTERS[9].fetch_add(1, Ordering::Relaxed);
-            invalidate();
+            OBSERVATION.invalidate();
         }
     }
 }
@@ -471,7 +475,7 @@ fn entry(slot: &Slot) -> Entry {
     let counts = slot.counts.load(Ordering::SeqCst);
     Entry {
         kind: OutputKind::from_raw(slot.kind.load(Ordering::SeqCst)).unwrap_or_else(|| {
-            invalidate();
+            OBSERVATION.invalidate();
             OutputKind::Equipment
         }),
         line: slot.line.load(Ordering::SeqCst),
@@ -1233,7 +1237,7 @@ mod tests {
         );
         let grown = drained(4).0.unwrap();
         assert_eq!((grown.epoch, grown.first), (whole.epoch, whole.cursor));
-        invalidate();
+        unsafe { invalidate() };
         let (result, _) = drained(4);
         assert!(result.unwrap().epoch > whole.epoch);
         ENABLED.store(false, Ordering::SeqCst);

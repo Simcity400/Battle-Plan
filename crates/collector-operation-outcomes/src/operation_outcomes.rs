@@ -324,13 +324,23 @@ impl Drop for Call {
         });
     }
 }
-pub fn invalidate() {
+fn invalidate_prepared() {
     #[cfg(any(test, feature = "test-support"))]
     let _exclusive = tests::exclusive();
     restart();
 }
-pub fn lost_drain() {
-    invalidate();
+/// # Safety
+/// Caller must own the active session's capture, recovery, or publication failure path (or hold
+/// `tests::serial()` in an isolated test) when invalidating live operation-completion observation.
+pub unsafe fn invalidate() {
+    invalidate_prepared();
+}
+/// # Safety
+/// Caller must own the active session's capture, recovery, or publication failure path (or hold
+/// `tests::serial()` in an isolated test) when recording a lost operation-completion drain.
+pub unsafe fn lost_drain() {
+    // SAFETY: Caller owns the operation-completion recovery or publication failure path.
+    unsafe { invalidate() };
 }
 fn restart() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
@@ -1223,7 +1233,7 @@ impl Hooks {
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }
-        if !collector_hooks::hook::shared::defer_preparation(invalidate) {
+        if !collector_hooks::hook::shared::defer_preparation(invalidate_prepared) {
             restart();
         }
         let Some(hook) = self.entry.as_mut() else {
@@ -1726,7 +1736,7 @@ pub mod tests {
         let first = drain(&old).unwrap().0[0].sequence;
         // SAFETY: Test is the sole writer to lane 0 of this log.
         unsafe { complete(&old, &fixture, 1) };
-        invalidate();
+        unsafe { invalidate() };
         let fresh = new_log(4, 32);
         // SAFETY: Test is the sole writer to lane 0 of this log.
         unsafe { complete(&fresh, &fixture, 1) };
@@ -2541,7 +2551,7 @@ pub mod tests {
         unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
             .admitted(&cursors);
-        invalidate();
+        unsafe { invalidate() };
         // SAFETY: Test is the sole writer to lane 0 of this log.
         unsafe { complete(&log, &Fixture::new(b"after"), 1) };
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
@@ -2719,6 +2729,32 @@ pub mod tests {
         let current = log().unwrap();
         assert_eq!(current.entries, 1024);
         assert!(current.lanes.iter().all(|lane| lane.ring().bytes.len() >= 4096));
+        assert!(offered().is_none());
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+    }
+
+    #[test]
+    fn seal_offered_defers_while_logs_locked_and_promotes_once_released() {
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+        presize(8, 64);
+        let old = log().unwrap();
+        presize(64, 64);
+        let fresh = offered().unwrap();
+        let guard = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let deferred = seal_offered(old);
+        assert!(std::ptr::eq(deferred, old));
+        assert!(std::ptr::eq(log().unwrap(), old));
+        assert!(std::ptr::eq(offered().unwrap(), fresh));
+        drop(guard);
+        let sealed = seal_offered(old);
+        assert!(std::ptr::eq(sealed, old));
+        assert!(std::ptr::eq(log().unwrap(), fresh));
         assert!(offered().is_none());
         // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
         unsafe { release() };

@@ -545,8 +545,8 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub const TEST_ROWS: usize = 1 << 12;
+#[cfg(test)]
+const TEST_ROWS: usize = 1 << 12;
 
 #[cfg(test)]
 pub(crate) fn observe_for_test(enabled: bool) {
@@ -574,8 +574,8 @@ fn install_for_test(rows: usize) {
     };
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn append_for_test(signal: i64, rows: &[Row]) {
+#[cfg(test)]
+pub(crate) fn append_for_test(signal: i64, rows: &[Row]) {
     record(signal, rows.len(), |out| {
         out.copy_from_slice(&rows[..out.len()]);
         Ok(if out.len() == rows.len() {

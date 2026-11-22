@@ -217,14 +217,26 @@ pub unsafe fn prepare_contract_events(demand: usize) {
 pub fn mark_stranded() {
     LEDGER.mark_stranded();
 }
-pub fn lost_drain() {
-    LEDGER.lost_drain();
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// session) when invalidating market-event drains.
+pub unsafe fn lost_drain() {
+    // SAFETY: Caller owns the market recovery or publication failure path.
+    unsafe { LEDGER.lost_drain() };
 }
-pub fn lost_output(count: usize) {
-    LEDGER.lost_output(count);
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test session) when recording lost market-event output.
+pub unsafe fn lost_output(count: usize) {
+    // SAFETY: Caller owns the market projection or publication failure path.
+    unsafe { LEDGER.lost_output(count) };
 }
-pub fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidate: bool) {
-    LEDGER.boundary(clock);
+/// # Safety
+/// Caller must run on the admitted hourly observer boundary as the sole consumer advancing market
+/// observation and watch tables (or an isolated test session).
+pub unsafe fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidate: bool) {
+    // SAFETY: Caller runs on the admitted hourly observer boundary for market observation.
+    unsafe { LEDGER.boundary(clock) };
     let invalidate = invalidate || LEDGER.interval_incomplete() || held::recovery_requested();
     let renew = if invalidate {
         [None; 4]
@@ -1222,7 +1234,8 @@ pub mod test_support {
             held::test_census(rows);
         }
         pub fn lose_interval(&self) {
-            LEDGER.lost_output(1);
+            // SAFETY: Test session holds `SERIAL`, owning the global market observer state.
+            unsafe { LEDGER.lost_output(1) };
         }
         pub fn emit(&self, row: MarketEventRow) {
             append(row).unwrap();
@@ -1312,13 +1325,13 @@ mod tests {
     #[test]
     fn country_receiver_keys_cover_zero_and_the_full_native_id_domain() {
         let _session = test_support::Session::default();
-        boundary(
+        unsafe { boundary(
             Some(engine_native::cgame_state::Clock {
                 hour: 1,
                 ..Default::default()
             }),
             false,
-        );
+        ) };
         for owner in [0, 1, 5000, u32::MAX] {
             let key = country_receiver(owner);
             assert_ne!(key, 0);
@@ -1336,19 +1349,19 @@ mod tests {
     #[test]
     fn contract_removal_copies_only_fixed_scalars_without_allocation() {
         let _session = test_support::Session::default();
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 1,
             ..Default::default()
-        }));
+        })) };
         assert!(
             unsafe { LEDGER.drain(&mut Vec::new()) }
                 .unwrap_err()
                 .contains("partial")
         );
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 2,
             ..Default::default()
-        }));
+        })) };
         const POINTER: usize = 0x100;
         struct FixedOperands {
             identity: Option<u64>,
@@ -1613,18 +1626,18 @@ mod tests {
         }
         LEDGER.reset();
         LEDGER.prepare(30030);
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 76,
             ..Default::default()
-        }));
+        })) };
         assert_eq!(
             unsafe { LEDGER.drain(&mut Vec::new()) },
             Err("event ledger first/branch/recovery interval is partial")
         );
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 77,
             ..Default::default()
-        }));
+        })) };
         let memory = Memory(&world);
         crate::test_support::with_allocations_denied(|| {
             replacement(&memory, 0, exchange).unwrap();

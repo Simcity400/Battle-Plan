@@ -126,8 +126,9 @@ fn presize_storage(events: usize) {
 }
 
 /// # Safety
-/// Caller must run on the admitted post-drain observer boundary under the capture gate (or an
-/// isolated test holding `test_lock()` with hooks quiesced) as the sole log-swap consumer.
+/// Caller must hold exclusive pre-publication attach ownership (before enabling hooks), run on
+/// the admitted post-drain observer boundary under the capture gate, or hold `test_lock()` in an
+/// isolated test with hooks quiesced as the sole log-swap consumer.
 pub unsafe fn install_offered() {
     let Ok(mut swap) = LOG_SWAP.try_lock() else {
         return;
@@ -198,7 +199,10 @@ thread_local! {
     static RAILWAY_LINE: Cell<(usize, u32)> = const { Cell::new((0, 0)) };
 }
 
-pub fn invalidate() {
+/// # Safety
+/// Caller must own the active session's capture or publication failure path (or hold `test_lock()`
+/// in an isolated test) when invalidating construction-IC observation.
+pub unsafe fn invalidate() {
     OBSERVATION.invalidate();
 }
 
@@ -280,7 +284,7 @@ fn refuse(reason: &'static str) {
     COUNTERS[11].fetch_add(1, Ordering::Relaxed);
     let _ = REFUSED.set(reason);
     REFUSAL_PENDING.store(true, Ordering::SeqCst);
-    invalidate();
+    OBSERVATION.invalidate();
 }
 
 fn observe_building(line: usize, caller: usize) {

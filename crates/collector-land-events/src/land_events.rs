@@ -63,7 +63,7 @@ fn take_spill(held: &mut Vec<(u64, u64)>, end: u64) -> bool {
                 kept = false;
             } else {
                 STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-                fail();
+                record_fail();
             }
             continue;
         }
@@ -407,14 +407,20 @@ impl Drop for Call {
         if !self.completed.get() || std::thread::panicking() {
             CALL_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
             ENABLED.store(false, Ordering::SeqCst);
-            fail();
+            unless_foreign(|| (), fail_owned);
             return;
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
-pub fn fail() {
+fn record_fail() {
     unless_foreign(|| (), fail_owned);
+}
+/// # Safety
+/// Caller must own the active session's capture, decode, or publication failure path (or an
+/// isolated test fixture) when invalidating land-event observation.
+pub unsafe fn fail() {
+    record_fail();
 }
 fn fail_owned() {
     count_on_thread(1, 0);
@@ -450,7 +456,7 @@ fn append_owned(
     impl Drop for Producer {
         fn drop(&mut self) {
             if self.uncommitted {
-                fail();
+                record_fail();
             }
             PRODUCERS.fetch_sub(1, Ordering::SeqCst);
         }
@@ -472,7 +478,7 @@ fn append_owned(
             .is_err()
         {
             STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-            fail();
+            record_fail();
             return;
         }
         words.push(0);
@@ -486,13 +492,13 @@ fn append_owned(
         });
         producer.uncommitted = false;
         if result.is_err() || written != size {
-            fail();
+            record_fail();
             return;
         }
         words[0] = size as u64;
         if SPILL.push((first, words)).is_err() {
             STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-            fail();
+            record_fail();
         }
         return;
     };
@@ -511,7 +517,7 @@ fn append_owned(
     let lapped = CONSUMED.load(Ordering::SeqCst) > first
         && CURSOR.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
     if result.is_err() || written != size || lapped {
-        fail();
+        record_fail();
         return;
     }
     log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
@@ -536,7 +542,10 @@ pub(crate) fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Dra
         invalidating,
     )
 }
-pub fn lost_drain(hour: i32, reason: &'static str) -> Drain {
+/// # Safety
+/// Caller must own the active session's capture or publication failure path (or an isolated test
+/// fixture) when recording a lost land-event drain.
+pub unsafe fn lost_drain(hour: i32, reason: &'static str) -> Drain {
     unless_foreign(|| diverted_drain(hour), || lost_drain_owned(hour, reason))
 }
 fn lost_drain_owned(hour: i32, reason: &'static str) -> Drain {
@@ -644,7 +653,7 @@ fn drain_interval(
         return result;
     }
     if let Err(reason) = output.ensure(required) {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -652,7 +661,7 @@ fn drain_interval(
         return result;
     }
     if required > output.len() {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -670,7 +679,7 @@ fn drain_interval(
         return result;
     }
     if PRODUCERS.load(Ordering::SeqCst) != 0 {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -678,7 +687,7 @@ fn drain_interval(
         return result;
     }
     if !take_spill(spilled, end) {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -712,7 +721,7 @@ fn drain_interval(
         || EPOCH.load(Ordering::SeqCst) != epoch
         || CURSOR.load(Ordering::SeqCst) != end
     {
-        fail();
+        record_fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -749,7 +758,7 @@ fn observe(combat: usize) {
                     Ok(())
                 });
             }
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
     } else {
         match native::ResultPlan::read(&memory, base, combat, None) {
@@ -761,7 +770,7 @@ fn observe(combat: usize) {
                 };
                 append(plan.words, |put| plan.copy(&memory, base, put));
             }
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
     }
 }
@@ -799,15 +808,15 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
                     )
                     .is_err()
                     {
-                        fail();
+                        record_fail();
                     }
                 }
             }
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
         match native::HistoryPlan::read(&memory, base, combat) {
             Ok(plan) => append(plan.words, |put| plan.copy(&memory, put)),
-            Err(_) => fail(),
+            Err(_) => record_fail(),
         }
     }
     _call.finish();
@@ -847,7 +856,7 @@ unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
         Ok(Some(plan)) => append(plan.words, |put| plan.copy(&memory, base, put)),
         Ok(None) => {}
         Err(_) => {
-            fail();
+            record_fail();
         }
     }
     #[cfg(test)]
@@ -887,12 +896,12 @@ unsafe extern "system-unwind" fn destroyed(
                         put(handle);
                         Ok(())
                     }),
-                    Err(_) => fail(),
+                    Err(_) => record_fail(),
                 }
                 context.seen = true;
                 DESTRUCTION.set(context);
             } else {
-                fail();
+                record_fail();
                 if matches {
                     context.failed = true;
                     DESTRUCTION.set(context);
@@ -930,7 +939,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
                 });
             }
             Err(_) => {
-                fail();
+                record_fail();
                 DESTRUCTION.set(Destruction {
                     army,
                     from,
@@ -945,7 +954,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
         unsafe { std::mem::transmute(ORIGINAL[DESTRUCTION_ORIGINAL].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(army, from, to) });
     if observing() && !DESTRUCTION.get().seen && !DESTRUCTION.get().failed {
-        fail();
+        record_fail();
     }
     _call.finish();
 }
@@ -978,7 +987,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                 terminating: [255; 2],
             });
         } else {
-            fail();
+            record_fail();
             BORDER.set(NO_BORDER);
         }
     }
@@ -996,10 +1005,10 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                     };
                     append(plan.words, |put| plan.copy(&memory, base, put));
                 }
-                Err(_) => fail(),
+                Err(_) => record_fail(),
             }
         } else {
-            fail();
+            record_fail();
         }
     }
     let original: unsafe extern "system-unwind" fn(usize) =
@@ -1042,7 +1051,7 @@ unsafe extern "system-unwind" fn leader_tap_body(
             if self.0 {
                 TAP_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
                 ENABLED.store(false, Ordering::SeqCst);
-                fail();
+                record_fail();
             }
         }
     }
@@ -1064,7 +1073,7 @@ unsafe extern "system-unwind" fn border_terminate(side: usize, caller: usize) ->
                 BORDER.set(border);
             }
             Ok(None) => {}
-            Err(()) => fail(),
+            Err(()) => record_fail(),
         }
     }
     _call.finish();
@@ -1102,11 +1111,11 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                             plan.copy(&memory, BASE.load(Ordering::Relaxed), put)
                         });
                     }
-                    Err(_) => fail(),
+                    Err(_) => record_fail(),
                 }
             }
             Err(_) => {
-                fail();
+                record_fail();
                 DISPATCH.set(NO_DISPATCH);
             }
         }
@@ -1127,7 +1136,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                 Ok(())
             });
         } else {
-            fail();
+            record_fail();
         }
     }
     _call.finish();
@@ -1158,11 +1167,11 @@ unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: us
                         observed.seen[n] = true;
                         DISPATCH.set(observed);
                     }
-                    Err(_) => fail(),
+                    Err(_) => record_fail(),
                 }
             }
             Ok(None) => {}
-            Err(()) => fail(),
+            Err(()) => record_fail(),
         }
     }
     result
@@ -1459,7 +1468,8 @@ pub mod test_support {
         drop(SPILL.take());
         drop(std::mem::take(&mut *spilled()));
     }
-    pub fn append_record(payload: &[u64]) {
+    #[cfg(test)]
+    pub(crate) fn append_record(payload: &[u64]) {
         append(payload.len() + 1, |put| {
             for &word in payload {
                 put(word);
@@ -1467,7 +1477,8 @@ pub mod test_support {
             Ok(())
         });
     }
-    pub fn disable() {
+    #[cfg(test)]
+    pub(crate) fn disable() {
         ENABLED.store(false, Ordering::SeqCst);
     }
     pub fn production_enabled() -> bool {
@@ -1522,15 +1533,15 @@ mod tests {
         unsafe { reset(&mut owned) };
         let before = test_support::thread_lost();
         collector_test_support::with_allocations_denied(|| {
-            fail();
-            fail();
+            record_fail();
+            record_fail();
         });
         assert_eq!(test_support::thread_lost(), before + 2);
         let global = LOST.load(Ordering::Relaxed);
         let calls = test_support::thread_leader_calls();
         std::thread::spawn(|| {
             test_support::adopt();
-            fail()
+            record_fail()
         })
         .join()
         .unwrap();
@@ -2080,8 +2091,8 @@ mod tests {
             );
         }
         append(2, |_| Err("combat wipe remaining class unsupported"));
-        fail();
-        fail();
+        record_fail();
+        record_fail();
         unsafe {
             observe_wipe(0, 0);
         }
@@ -2962,9 +2973,10 @@ mod ownership_tests {
         let epoch = EPOCH.load(Ordering::SeqCst);
         let capacity = LOG_CAPACITY.load(Ordering::SeqCst);
         std::thread::spawn(|| {
-            fail();
+            record_fail();
             assert_eq!(lost_casualty_reads(3), 3);
-            let drained = lost_drain(11, "land observer frame not captured");
+            // SAFETY: test verifies foreign-thread ownership guard rejects `lost_drain`.
+            let drained = unsafe { lost_drain(11, "land observer frame not captured") };
             assert!(!drained.complete);
             assert_eq!(drained.reason, "land event log owned by another test");
             // SAFETY: test verifies foreign-thread ownership guard rejects `presize`.
@@ -2983,7 +2995,7 @@ mod ownership_tests {
         assert_eq!(&out[..owned.words], &[2, 9]);
         std::thread::spawn(|| {
             adopt();
-            fail();
+            record_fail();
         })
         .join()
         .unwrap();

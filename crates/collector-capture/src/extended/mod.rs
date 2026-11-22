@@ -1228,7 +1228,8 @@ impl Captured {
         failure: Option<&'static str>,
     ) {
         if let Some(reason) = failure {
-            feed.fail_prepared(reason);
+            // SAFETY: Capture owns the failed event-feed seal recovery path for this hour.
+            unsafe { feed.fail_prepared(reason) };
         }
         self.event_feed = feed;
     }

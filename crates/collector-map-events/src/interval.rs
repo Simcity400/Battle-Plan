@@ -31,11 +31,17 @@ pub fn begin(previous_epoch: u64, previous_sequence: u64) -> Result<(), &'static
     Ok(())
 }
 
-pub fn invalidate() {
+/// # Safety
+/// Caller must own the active session's recovery or capture failure path (or an isolated test)
+/// when invalidating map-event observation continuity.
+pub unsafe fn invalidate() {
     START.store(true, Ordering::SeqCst);
 }
 
-pub fn lost_output() {
+/// # Safety
+/// Caller must own the active session's assembly, recovery, or publication failure path (or an
+/// isolated test) when recording lost map-event output.
+pub unsafe fn lost_output() {
     OUTPUT_LOST.store(true, Ordering::SeqCst);
 }
 

@@ -73,7 +73,8 @@ impl Captured {
         match project(&self.rows.rows[..len]) {
             Ok(rows) => [TableView::Complete(TableRows::NuclearStrikes(rows))],
             Err(reason) => {
-                producer::lost_output(len);
+                // SAFETY: Owning frame projection records lost output when conversion fails.
+                unsafe { producer::lost_output(len) };
                 [unavailable(reason)]
             }
         }

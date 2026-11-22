@@ -1333,7 +1333,10 @@ pub fn note_wars(count: usize) {
     WARS.store(count, Ordering::Relaxed);
 }
 
-pub fn lost_drain() {
+/// # Safety
+/// Caller must own the active session's capture, recovery, or publication failure path (or an
+/// isolated test fixture) when revoking live event-feed world observation.
+pub unsafe fn lost_drain() {
     if let Some(owner) = unsafe { SHARED.load(Ordering::SeqCst).as_ref() } {
         owner.revoke_world();
     }

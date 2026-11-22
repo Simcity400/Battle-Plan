@@ -119,8 +119,12 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, reason: &'static str) {
-        hooks::invalidate();
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live politics observation.
+    pub unsafe fn fail(&mut self, reason: &'static str) {
+        // SAFETY: Caller owns the politics capture or publication failure path.
+        unsafe { hooks::invalidate() };
         self.handoff = Some(Err(reason));
     }
     /// # Safety

@@ -214,9 +214,9 @@ fn clock(hour: i32, session: i64) -> Option<Clock> {
     })
 }
 fn ready() {
-    boundary(clock(1, 4));
+    unsafe { boundary(clock(1, 4)) };
     assert!(unsafe { drain(&mut Vec::new()) }.is_err());
-    boundary(clock(2, 4));
+    unsafe { boundary(clock(2, 4)) };
 }
 #[test]
 fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
@@ -226,9 +226,9 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     ready();
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
     std::thread::spawn(|| {
-        boundary(clock(3, 4));
-        lost_drain();
-        lost_output(1);
+        unsafe { boundary(clock(3, 4)) };
+        unsafe { lost_drain() };
+        unsafe { lost_output(1) };
         assert!(unsafe { drain(&mut Vec::new()) }.is_err());
     })
     .join()
@@ -512,7 +512,7 @@ fn building_bombing_scale_bench() {
                 world.post(token);
                 elapsed += started.elapsed();
             }
-            boundary(clock(3, 4));
+            unsafe { boundary(clock(3, 4)) };
             let mut output = vec![Entry::default(); countries];
             let started = Instant::now();
             assert_eq!(unsafe { drain(&mut output) }.unwrap(), countries);

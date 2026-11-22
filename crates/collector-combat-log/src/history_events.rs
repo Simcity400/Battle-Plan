@@ -171,14 +171,20 @@ pub fn active() -> usize {
 pub(crate) fn quiet() -> Option<Witness> {
     WRITERS.quiet()
 }
-pub fn stop() {
+/// # Safety
+/// Caller must own session teardown/detach (or isolated test cleanup) when disabling combat
+/// history observation.
+pub unsafe fn stop() {
     WRITERS.enabled.store(false, SeqCst);
     WRITERS.changed();
 }
 pub fn retention_required() -> bool {
     WRITERS.escaped.load(SeqCst)
 }
-pub fn release_storage() -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session teardown/detach after combat history hooks are stopped and quiesced
+/// (or isolated test cleanup with no live hooks or concurrent consumers).
+pub unsafe fn release_storage() -> Result<(), &'static str> {
     if WRITERS.enabled.load(SeqCst) || WRITERS.active.load(SeqCst) != 0 || retention_required() {
         return Err("combat log event storage release before quiescence");
     }
@@ -808,8 +814,11 @@ pub(crate) mod test_support {
     }
     impl Drop for Producer {
         fn drop(&mut self) {
-            stop();
-            release_storage().unwrap();
+            // SAFETY: Unit test owns combat-history teardown with no live hooks.
+            unsafe {
+                stop();
+                release_storage().unwrap();
+            }
         }
     }
 }

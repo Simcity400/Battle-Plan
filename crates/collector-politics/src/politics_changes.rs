@@ -449,7 +449,7 @@ impl Log {
                 Ok(()) => spill.sort_unstable_by_key(|(record, _)| record.sequence),
                 Err(_) => {
                     COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-                    invalidate();
+                    invalidate_epoch();
                 }
             }
         }
@@ -553,7 +553,10 @@ impl Drop for Call {
         });
     }
 }
-pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
+/// # Safety
+/// Caller must own session attach before enabling politics hooks (or hold `staging_test()` in an
+/// isolated test) when restoring the process-wide politics observation epoch.
+pub unsafe fn restore_epoch(previous: u64) -> Result<(), &'static str> {
     let epoch = previous
         .checked_add(1)
         .ok_or("politics observation epoch exhausted")?;
@@ -561,13 +564,19 @@ pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn invalidate() {
+fn invalidate_epoch() {
     #[cfg(any(test, feature = "test-support"))]
     if !STAGING_OWNER.get() {
         return;
     }
     crate::event_feed_observer::decisions::political_balance_lost();
     EPOCH.fetch_add(1, Ordering::SeqCst);
+}
+/// # Safety
+/// Caller must own the active session's capture, recovery, or publication failure path (or hold
+/// `staging_test()` in an isolated test) when invalidating live politics observation.
+pub unsafe fn invalidate() {
+    invalidate_epoch();
 }
 fn failed(reason: &'static str) {
     if let Some(index) = FAILURE_NAMES.iter().position(|name| *name == reason) {
@@ -577,7 +586,7 @@ fn failed(reason: &'static str) {
         UNLISTED_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
-    invalidate();
+    invalidate_epoch();
 }
 fn memory() -> engine_native::memory::LiveMemory {
     unsafe { engine_native::memory::LiveMemory::new() }
@@ -628,7 +637,7 @@ pub unsafe fn resize(entries: usize, keys: usize) {
 fn resize_storage(entries: usize, keys: usize) {
     if resize_checked(entries, keys).is_err() {
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-        invalidate();
+        invalidate_epoch();
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
@@ -962,7 +971,7 @@ fn spill(log: &Log, record: Record, mut keys: [native::Literal; 3], memory: &imp
         });
     let Ok(mut spilled) = reserved else {
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
-        invalidate();
+        invalidate_epoch();
         return;
     };
     let (record, bytes) = &mut *spilled;
@@ -1436,7 +1445,7 @@ impl Drop for ScopeRestore {
         if !self.completed {
             PENDING.set(None);
             COUNTERS[9].fetch_add(1, Ordering::Relaxed);
-            invalidate();
+            invalidate_epoch();
         }
     }
 }
@@ -3048,8 +3057,8 @@ impl Hooks {
                 false,
             );
         }
-        if !crate::hook::shared::defer_preparation(invalidate) {
-            invalidate();
+        if !crate::hook::shared::defer_preparation(invalidate_epoch) {
+            invalidate_epoch();
         }
         let outcome = match crate::hook::shared::attach_outcome() {
             Some(outcome) => outcome,
@@ -3666,7 +3675,7 @@ mod tests {
         let _guard = staging_test();
         clear_staging();
         let prior = EPOCH.load(Ordering::Acquire).max(99);
-        restore_epoch(prior).unwrap();
+        unsafe { restore_epoch(prior) }.unwrap();
         resize_checked(16, 257).unwrap();
         let first = log().unwrap();
         let stride = first.key_stride;
@@ -3685,7 +3694,7 @@ mod tests {
         seal_staging();
         assert!(log().unwrap().entries > entries);
         let epoch = EPOCH.load(Ordering::Acquire);
-        assert!(restore_epoch(u64::MAX).is_err());
+        assert!(unsafe { restore_epoch(u64::MAX) }.is_err());
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
     }
 
@@ -4000,7 +4009,7 @@ mod tests {
         );
         let (sealed, cursors) = seal_staging();
         resize_checked(old.entries + 1, 0).unwrap();
-        invalidate();
+        invalidate_epoch();
         let mut output = [Event::default()];
         // SAFETY: test holds `staging_test()` as the sole consumer of `sealed`.
         assert_eq!(
@@ -4658,7 +4667,7 @@ mod tests {
         publish(1);
         let frontier = log.frontier();
         publish(2);
-        invalidate();
+        invalidate_epoch();
         let cursors = [LaneCursor::default()];
         let mut output = [Event::default(); 2];
         assert_eq!(

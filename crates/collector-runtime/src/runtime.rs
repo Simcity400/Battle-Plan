@@ -66,9 +66,11 @@ use windows_sys::Win32::{
 macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
         let reason = $reason;
-        // SAFETY: Session detach refusal owns teardown of land-event observation.
-        unsafe { collector_land_events::land_events::stop_observation() };
-        collector_combat_log::history_events::stop();
+        // SAFETY: Session detach refusal owns teardown of land-event and combat-history observation.
+        unsafe {
+            collector_land_events::land_events::stop_observation();
+            collector_combat_log::history_events::stop();
+        }
         ($retain)(reason);
         return Err(reason);
     }};
@@ -649,7 +651,8 @@ fn run(
     for campaign in &config.without_history {
         history.without_history(campaign);
     }
-    collector_politics::politics_changes::restore_epoch(history.politics_epoch())?;
+    // SAFETY: Attach owns restoring the politics observation epoch before enabling hooks.
+    unsafe { collector_politics::politics_changes::restore_epoch(history.politics_epoch()) }?;
     collector_operation_outcomes::operation_outcomes::restore_sequence(
         history.completion_sequence(),
     )?;
@@ -2143,7 +2146,7 @@ fn run(
         }
         // SAFETY: Detach has disabled hooks and quiesced callbacks before releasing observer storage.
         if let Err(reason) = unsafe { collector_land_events::land_events::release() }
-            .and_then(|()| collector_combat_log::history_events::release_storage())
+            .and_then(|()| unsafe { collector_combat_log::history_events::release_storage() })
             .and_then(|()| unsafe { collector_combat_log::combat_log_prune::release_storage() })
             .and_then(|()| collector_equipment_destruction::equipment_destruction::release())
             .and_then(|()| collector_naval_results::naval_result_sources::release())
@@ -4679,15 +4682,18 @@ fn spool_loop(
                         collector_equipment_destruction::equipment_destruction::lost_drain();
                         collector_naval_results::naval_result_sources::lost_drain();
                         collector_experience_gains::experience_gains::lost_drain();
-                        collector_observers::event_feed_observer::lost_drain();
-                        collector_operation_outcomes::operation_outcomes::lost_drain();
-                        collector_politics::politics_changes::invalidate();
-                        collector_land_events::land_events::fail();
-                        collector_observers::air_losses::lost_drain();
-                        collector_observers::building_bombing::lost_drain();
-                        collector_observers::nuclear_strikes::lost_drain();
-                        collector_observers::market_changes::lost_drain();
-                        collector_map_events::interval::lost_output();
+                        // SAFETY: Spool publication failure owns invalidating live observer intervals.
+                        unsafe {
+                            collector_observers::event_feed_observer::lost_drain();
+                            collector_operation_outcomes::operation_outcomes::lost_drain();
+                            collector_politics::politics_changes::invalidate();
+                            collector_land_events::land_events::fail();
+                            collector_observers::air_losses::lost_drain();
+                            collector_observers::building_bombing::lost_drain();
+                            collector_observers::nuclear_strikes::lost_drain();
+                            collector_observers::market_changes::lost_drain();
+                            collector_map_events::interval::lost_output();
+                        }
                         last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     }
                     None
@@ -4699,15 +4705,18 @@ fn spool_loop(
                     collector_equipment_destruction::equipment_destruction::lost_drain();
                     collector_naval_results::naval_result_sources::lost_drain();
                     collector_experience_gains::experience_gains::lost_drain();
-                    collector_observers::event_feed_observer::lost_drain();
-                    collector_operation_outcomes::operation_outcomes::lost_drain();
-                    collector_politics::politics_changes::invalidate();
-                    collector_land_events::land_events::fail();
-                    collector_observers::air_losses::lost_drain();
-                    collector_observers::building_bombing::lost_drain();
-                    collector_observers::nuclear_strikes::lost_drain();
-                    collector_observers::market_changes::lost_drain();
-                    collector_map_events::interval::lost_output();
+                    // SAFETY: Spool publication failure owns invalidating live observer intervals.
+                    unsafe {
+                        collector_observers::event_feed_observer::lost_drain();
+                        collector_operation_outcomes::operation_outcomes::lost_drain();
+                        collector_politics::politics_changes::invalidate();
+                        collector_land_events::land_events::fail();
+                        collector_observers::air_losses::lost_drain();
+                        collector_observers::building_bombing::lost_drain();
+                        collector_observers::nuclear_strikes::lost_drain();
+                        collector_observers::market_changes::lost_drain();
+                        collector_map_events::interval::lost_output();
+                    }
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
                     None
                 }
@@ -4747,15 +4756,18 @@ fn spool_loop(
                 collector_equipment_destruction::equipment_destruction::lost_drain();
                 collector_naval_results::naval_result_sources::lost_drain();
                 collector_experience_gains::experience_gains::lost_drain();
-                collector_observers::event_feed_observer::lost_drain();
-                collector_operation_outcomes::operation_outcomes::lost_drain();
-                collector_politics::politics_changes::invalidate();
-                collector_land_events::land_events::fail();
-                collector_observers::air_losses::lost_drain();
-                collector_observers::building_bombing::lost_drain();
-                collector_observers::nuclear_strikes::lost_drain();
-                collector_observers::market_changes::lost_drain();
-                collector_map_events::interval::lost_output();
+                // SAFETY: Spool publication failure owns invalidating live observer intervals.
+                unsafe {
+                    collector_observers::event_feed_observer::lost_drain();
+                    collector_operation_outcomes::operation_outcomes::lost_drain();
+                    collector_politics::politics_changes::invalidate();
+                    collector_land_events::land_events::fail();
+                    collector_observers::air_losses::lost_drain();
+                    collector_observers::building_bombing::lost_drain();
+                    collector_observers::nuclear_strikes::lost_drain();
+                    collector_observers::market_changes::lost_drain();
+                    collector_map_events::interval::lost_output();
+                }
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
             }
             sizing.retire(processor.take_retired());
@@ -4800,15 +4812,18 @@ fn spool_loop(
             collector_equipment_destruction::equipment_destruction::lost_drain();
             collector_naval_results::naval_result_sources::lost_drain();
             collector_experience_gains::experience_gains::lost_drain();
-            collector_observers::event_feed_observer::lost_drain();
-            collector_operation_outcomes::operation_outcomes::lost_drain();
-            collector_politics::politics_changes::invalidate();
-            collector_land_events::land_events::fail();
-            collector_observers::air_losses::lost_drain();
-            collector_observers::building_bombing::lost_drain();
-            collector_observers::nuclear_strikes::lost_drain();
-            collector_observers::market_changes::lost_drain();
-            collector_map_events::interval::lost_output();
+            // SAFETY: Spool flush failure owns invalidating live observer intervals.
+            unsafe {
+                collector_observers::event_feed_observer::lost_drain();
+                collector_operation_outcomes::operation_outcomes::lost_drain();
+                collector_politics::politics_changes::invalidate();
+                collector_land_events::land_events::fail();
+                collector_observers::air_losses::lost_drain();
+                collector_observers::building_bombing::lost_drain();
+                collector_observers::nuclear_strikes::lost_drain();
+                collector_observers::market_changes::lost_drain();
+                collector_map_events::interval::lost_output();
+            }
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
         span.finish();

@@ -156,7 +156,8 @@ impl Log {
         if !self.pushed.is_empty() {
             match self.pushed.take_into(&mut spill) {
                 Ok(()) => spill.sort_unstable_by_key(|spilled| spilled.sequence),
-                Err(_) => crate::interval::lost_output(),
+                // SAFETY: Overflow loss during map-event lane handling records lost output.
+                Err(_) => unsafe { crate::interval::lost_output() },
             }
         }
         spill
@@ -704,7 +705,8 @@ pub unsafe fn reset_admitted() {
         }
     }
     if ADMITTED.swap(0, Ordering::AcqRel) != 0 {
-        crate::interval::lost_output();
+        // SAFETY: Spool reset-admitted recovery path owns recording lost map-event output.
+        unsafe { crate::interval::lost_output() };
     }
 }
 

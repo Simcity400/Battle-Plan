@@ -28,8 +28,12 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, hour: i32, reason: &'static str) {
-        self.drained = Some(crate::land_events::lost_drain(hour, reason));
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live land-event observation.
+    pub unsafe fn fail(&mut self, hour: i32, reason: &'static str) {
+        // SAFETY: Caller owns the capture or publication failure path for land events.
+        self.drained = Some(unsafe { crate::land_events::lost_drain(hour, reason) });
     }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {

@@ -1955,7 +1955,8 @@ fn table_retry_preserves_admitted_politics_mutations() {
     let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
     assert!(cadence.force_full(&clock.borrowed()) | recovery | refresh);
     if !continuous || recovery {
-        politics::invalidate();
+        // SAFETY: Test owns its isolated politics fixture and exercises recovery invalidation.
+        unsafe { politics::invalidate() };
     }
     let mut events = [Event::default()];
     let mut bytes = [0; 128];

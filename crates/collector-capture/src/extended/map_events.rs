@@ -103,7 +103,8 @@ impl Ledger {
             Ok(row) => {
                 let mut rows = Vec::new();
                 if engine_allocation::reserve_exact(&mut rows, 1).is_err() {
-                    map_events::interval::lost_output();
+                    // SAFETY: Originating spool owns map-event assembly failure reporting.
+                    unsafe { map_events::interval::lost_output() };
                     tables[TableId::MapEvents.index()] =
                         TableInput::Sampled(unavailable("map event interval allocation failed"));
                     return None;
@@ -114,7 +115,8 @@ impl Ledger {
                 Some(Publication(assembled))
             }
             Err(reason) => {
-                map_events::interval::lost_output();
+                // SAFETY: Originating spool owns map-event assembly failure reporting.
+                unsafe { map_events::interval::lost_output() };
                 tables[TableId::MapEvents.index()] = TableInput::Sampled(unavailable(reason));
                 Some(Publication(assembled))
             }

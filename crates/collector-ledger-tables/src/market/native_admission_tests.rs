@@ -209,13 +209,13 @@ impl Memory for Native {
     }
 }
 fn boundary(hour: i32) {
-    producer::boundary(
+    unsafe { producer::boundary(
         Some(cgame_state::Clock {
             hour,
             ..Default::default()
         }),
         false,
-    );
+    ) };
 }
 fn record(
     memory: &impl Memory,
@@ -1372,13 +1372,13 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
         // SAFETY: `session` serializes market-change globals with no live hooks.
         unsafe { producer::presize(16, slots / 2) };
         memory.clock(100);
-        producer::boundary(
+        unsafe { producer::boundary(
             Some(cgame_state::Clock {
                 hour: 100,
                 ..Default::default()
             }),
             true,
-        );
+        ) };
         session.defer_country_domain_retirement(producer::PRICES);
         memory.start();
         record(&memory, 100, &mut encoder, &mut decoder);
