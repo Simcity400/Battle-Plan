@@ -43,10 +43,14 @@ pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
                 out.str(reason);
             }
         });
-        let bindings: Vec<_> = table.bindings.iter().collect();
+        let bindings: Vec<_> = table
+            .bindings
+            .iter()
+            .filter_map(|(&action, entry)| entry.as_ref().ok().map(|&slot| (action, slot)))
+            .collect();
         out.list(&bindings, |out, (action, slot)| {
-            out.u8(**action as u8);
-            out.u32(**slot);
+            out.u8(*action as u8);
+            out.u32(*slot);
         });
     });
     out.0
@@ -753,5 +757,24 @@ mod tests {
         let mut later = encoded.clone();
         later[4..6].copy_from_slice(&(VERSION + 1).to_le_bytes());
         assert!(decode(&later).is_err());
+
+        let mut conflicting = encoded[..encoded.len() - (4 + 3 * 5)].to_vec();
+        conflicting.extend_from_slice(&3_u32.to_le_bytes());
+        conflicting.push(cursors::CursorAction::Normal as u8);
+        conflicting.extend_from_slice(&0_u32.to_le_bytes());
+        conflicting.push(cursors::CursorAction::Normal as u8);
+        conflicting.extend_from_slice(&2_u32.to_le_bytes());
+        conflicting.push(cursors::CursorAction::DragSelect as u8);
+        conflicting.extend_from_slice(&2_u32.to_le_bytes());
+        let decoded_conflict = decode(&conflicting).unwrap().cursors.unwrap();
+        let conflict_err = decoded_conflict
+            .path_for(cursors::CursorAction::Normal)
+            .unwrap_err();
+        assert!(conflict_err.contains("normal"), "{conflict_err}");
+        assert!(conflict_err.contains("conflicting"), "{conflict_err}");
+        assert_eq!(
+            decoded_conflict.path_for(cursors::CursorAction::DragSelect),
+            Ok("gfx/alt/beta.ani")
+        );
     }
 }

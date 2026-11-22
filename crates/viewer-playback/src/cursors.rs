@@ -153,7 +153,7 @@ impl Cursors {
         let path = registry.path_for(cursor.action())?;
         read(path)
             .and_then(|bytes| Animated::decode(path, bytes.as_ref()))
-            .map_err(|error| format!("{path}: {error}"))
+            .map_err(|error| format!("{} ({path}): {error}", cursor.name()))
     }
 
     pub fn get(&self, cursor: MapCursor) -> Result<&Animated, &str> {
@@ -255,8 +255,14 @@ mod tests {
             [(CursorAction::Normal, 0), (CursorAction::DragSelect, 1)],
         );
         let cursors = Cursors::load(Ok(&registry), |_: &str| Err::<Vec<u8>, _>(io::Error::other("absent")));
-        assert_eq!(cursors.get(MapCursor::DragSelect).err(), Some("gfx/cursors/dragselect.ani: absent"));
-        assert_eq!(cursors.get(MapCursor::Normal).err(), Some("gfx/cursors/normal.cur: absent"));
+        assert_eq!(
+            cursors.get(MapCursor::DragSelect).err(),
+            Some("dragselect (gfx/cursors/dragselect.ani): absent")
+        );
+        assert_eq!(
+            cursors.get(MapCursor::Normal).err(),
+            Some("normal (gfx/cursors/normal.cur): absent")
+        );
         assert!(
             cursors
                 .get(MapCursor::PingOffensive)
@@ -296,6 +302,7 @@ mod tests {
             (CursorAction::NoMove, 1),
             (CursorAction::DragSelect, 2),
             (CursorAction::PingDefensive, 3),
+            (CursorAction::AttackMove, 4),
             (CursorAction::AssignAir, 99),
         ];
 
@@ -305,6 +312,7 @@ mod tests {
                 "",
                 "gfx/cursors/dragselect.ani",
                 "gfx/alt/ping_defensive.ico",
+                "gfx/alt/absent_asset.cur",
             ])
             .cursor_bindings(bindings)
             .build();
@@ -314,6 +322,7 @@ mod tests {
                 "",
                 "gfx/cursors/normal.cur",
                 "gfx/alt/ping_defensive.ico",
+                "gfx/alt/absent_asset.cur",
             ])
             .cursor_bindings(bindings)
             .build();
@@ -334,8 +343,11 @@ mod tests {
         for loaded in [&first, &swapped] {
             assert!(loaded.get(MapCursor::NoMove).unwrap_err().contains("no_move"));
             assert!(loaded.get(MapCursor::NoMove).unwrap_err().contains("empty cursor path"));
+            assert!(loaded.get(MapCursor::PingDefensive).unwrap_err().contains("ping_defensive"));
             assert!(loaded.get(MapCursor::PingDefensive).unwrap_err().contains("gfx/alt/ping_defensive.ico"));
             assert!(loaded.get(MapCursor::PingDefensive).unwrap_err().contains("unsupported"));
+            assert!(loaded.get(MapCursor::AttackMove).unwrap_err().contains("attack_move"));
+            assert!(loaded.get(MapCursor::AttackMove).unwrap_err().contains("gfx/alt/absent_asset.cur"));
             assert!(loaded.get(MapCursor::AssignAir).unwrap_err().contains("assign_air"));
             assert!(loaded.get(MapCursor::AssignAir).unwrap_err().contains("exceeds"));
             assert!(loaded.get(MapCursor::PingOffensive).unwrap_err().contains("ping_offensive"));
