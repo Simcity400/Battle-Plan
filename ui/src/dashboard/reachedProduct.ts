@@ -10,7 +10,7 @@ import type { WidgetRuntime } from './definitions';
 import { selectedCountryKeys } from './countrySelection.ts';
 import { countryFromKey } from './countryKey.ts';
 import { useSlotTags } from './countrySlots.ts';
-import { choiceAt, resolveChoice, type CountryHolder, type ReachedCountry } from './reachedCountry.ts';
+import { choiceAt, outsideCountry, resolveChoice, type CountryHolder, type ReachedCountry } from './reachedCountry.ts';
 import { datedCountryToken, readDatedCountry, type DatedCountrySelection } from './datedCountry.ts';
 import { useCountryGroups } from './useCountryGroups';
 import { reachedKeys, reachedView, type ReachedState } from './reachedState.ts';
@@ -61,7 +61,8 @@ export function useReachedCountry(widget: WidgetSpec, runtime: WidgetRuntime, ho
   }, [kept]);
   const slotTag = typeof slot === 'number' && slots ? slots.tagAt(slot, hour) : null;
   const country: ReachedCountry = !chosen ? { chosen: null, tag: null, absent: false, reason: null }
-    : bySlot ? { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
+    : bySlot ? track && (hour < track.branch.firstHour || hour > track.branch.lastHour) ? outsideCountry(chosen)
+      : { chosen, tag: slotTag, absent: !!slots && slotTag === null, reason: null }
     : resolved?.country ?? { chosen, tag: null, absent: false, reason: null };
   return { ...country, holders: resolved?.holders ?? null,
     pick: holder => { if (campaign !== undefined && branch !== undefined && chosen && track)

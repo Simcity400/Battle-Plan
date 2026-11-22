@@ -96,7 +96,6 @@ export default function MinefieldsWidget({ widget, runtime, active, onDiagnostic
   const more = !!shown && (shown.unlisted > 0 || rows.some(row => !row.owners.length));
   const pill = headerSlot && data && createPortal(<span className="pill">{mined}{more ? '+' : ''} {mined === 1 && !more ? 'region' : 'regions'} mined</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see minefields." />;
-  if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <div ref={attach} className="minefields"><WidgetState kind="loading" label="Loading minefields…" /></div>;
   const main = <div className="minefields-rows">

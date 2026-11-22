@@ -267,7 +267,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const coverageBody = limitations.length ? <details className="equipment-losses-completeness"><summary>{status}</summary>
     {limitations.map(item => <p key={item.id}>{item.label}</p>)}</details> : <span className="equipment-losses-completeness">{status}</span>;
   const readHourOf = (at: readonly LossRow[]) => at.reduce<number | null>((latest, row) => row.readHour === null ? latest : Math.max(latest ?? row.readHour, row.readHour), null);
-  const main = <div className="equipment-losses-main">
+  const main = followView && head.outside ? <WidgetState kind="outside" /> : <div className="equipment-losses-main">
     <p className="chart-line-key">{total.incomplete ? 'Subtotal' : 'Losses'}: {total.exact === null ? 'Not known' : formatLosses(total.value ?? 0, total.exact, scale)}
       {view.since != null && <span className="equipment-losses-since"> ({sinceLabel(view.since)})</span>}</p>
     <Sunburst label="Equipment losses" items={items} root={ROOT} levels={levelsShown(options, LEVELS)} text={text} settings={settings}

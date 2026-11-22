@@ -40,7 +40,7 @@ const wingsStructure = (reply: AirMissionWingsReply) => JSON.stringify([reply.wi
 export default function AirMissionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const anchor = useRef<HTMLDivElement | null>(null);
-  const { track, tag, options, data, error, retry, root, read, live, shownAt, at } = useAirMissions(widget, runtime, active);
+  const { track, tag, options, data, error, retry, root, live, shownAt, at } = useAirMissions(widget, runtime, active);
   const shown = useShownHour();
   const shownNow = useRef(shownAt);
   shownNow.current = shownAt;
@@ -98,7 +98,6 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const pill = headerSlot && data && !data.missing && theatresKnown && createPortal(<span className="pill">{rows.length} {rows.length === 1 ? 'region' : 'regions'}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see air missions." />;
   if (!tag) return <WidgetState kind="empty" icon="plane" message="Choose a country in the widget's header." />;
-  if (read === 'off' && !data) return <div ref={attach}><WidgetState kind="unavailable" message="Choose another time in widget settings." /></div>;
   if (error) return <div ref={attach}><WidgetState kind="error" failure={error} onRetry={retry} /></div>;
   if (!data) return <div ref={attach}><WidgetState kind="loading" label="Loading air missions…" /></div>;
   const main = data.missing ? <WidgetState kind="unavailable" message={data.missing} />

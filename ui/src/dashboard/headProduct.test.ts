@@ -141,6 +141,10 @@ test('continuous playback across a track’s end tells a following widget once, 
   const widgets = [new WidgetFrames(page, 'aces'), new WidgetFrames(page, 'aces-2')];
   const told: [number, boolean][] = [];
   const stops = widgets.map((widget, index) => watchBoundary(widget.clock, () => read.hourAt(widget.clock.getHour()) === null, () => told.push([index, read.hourAt(page.getHour()) === null])));
+  const starting = { id: 'late', axisOffset: 0, branch: { id: 'l', firstHour: 100, lastHour: 500 } } as unknown as BoundTrack;
+  const late = headRead({ kind: 'doctrine-mastery', trackIds: ['late'], time: { mode: 'follow' } }, starting, [starting], null);
+  const entered: boolean[] = [];
+  const stopLate = watchBoundary(page, () => late.hourAt(page.getHour()) === null, () => entered.push(late.hourAt(page.getHour()) === null));
   page.setBounds({ firstHour: 0, lastHour: 500 });
   page.seek(99);
   page.setSpeed(1440);
@@ -150,11 +154,12 @@ test('continuous playback across a track’s end tells a following widget once, 
   tick(16);
   assert.ok(page.getHour() > 100, `the clock crossed the track’s end in one frame, to ${page.getHour()}`);
   assert.deepEqual(told, [[0, true], [1, true]], 'each widget is told once that its hour has left the track');
+  assert.deepEqual(entered, [false], 'a widget on a track that starts later is told once, while playing, that its hour has entered the track');
   tick(16); tick(16);
   assert.equal(told.length, 2, 'later frames outside the track tell nothing');
   page.seek(50);
   assert.deepEqual(told.slice(2), [[0, false], [1, false]], 'a seek back inside tells each once');
-  for (const stop of stops) stop();
+  for (const stop of [...stops, stopLate]) stop();
   page.seek(300);
   assert.equal(told.length, 4, 'a stopped watch hears nothing');
 });

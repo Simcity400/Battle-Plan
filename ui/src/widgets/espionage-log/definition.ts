@@ -13,6 +13,6 @@ export const OPTIONS: readonly OptionField[] = [
 export const definition = {
   kind: 'espionage-log', version: 1, title: 'Espionage operations log', icon: 'target',
   description: 'Espionage operations, preparation and outcomes.',
-  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, ownsOutsideState: true, history: true,
+  timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, all: true }, minSize: { w: 4, h: 6 }, defaultSize: { w: 9, h: 14 }, options: OPTIONS,
 } as const satisfies WidgetMeta;

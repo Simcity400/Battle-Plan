@@ -102,7 +102,6 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const pill = headerSlot && head.data && createPortal(<span className="pill">{activeTracks(head.data.folders)} tracks active</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="flask" message="Load a campaign to see doctrines." />;
   if (!tag) return <WidgetState kind="empty" icon="flask" message="Choose a country in the widget's header." />;
-  if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <div ref={attach} className="doctrine-mastery"><WidgetState kind="loading" label="Loading doctrines…" /></div>;
   const chips = data.folders.map(folder => ({ value: folder.id, label: folderName(folder), icon: folderImage(doctrineSprite(folder.icon)) }));

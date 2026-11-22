@@ -70,7 +70,6 @@ export interface WidgetMeta {
   defaultSize: { w: number; h: number };
   countries?: { max: number; ranked?: boolean; rankedBy?: string; aggregate?: boolean; all?: boolean; factions?: boolean; fixed?: boolean };
   playsBackDated?: boolean;
-  ownsOutsideState?: boolean;
   defaultCountries?: CountrySelection;
   options?: readonly OptionField[];
   captureModes?: readonly CaptureMode[];

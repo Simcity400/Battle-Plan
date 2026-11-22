@@ -130,7 +130,7 @@ export default function ExperienceWidget({ widget, runtime, active, onDiagnostic
   if (!branches.length) return <WidgetState kind="empty" message="Turn on an experience branch in the widget settings." />;
   const legend = single ? branches.map(branch => {
     const row = head ? experienceCard(head, branch).rows.find(item => item.label === MEASURE_LABELS[measure]) : null;
-    return { id: branch, label: BRANCH_LABELS[branch], color: lines.find(line => line.branch === branch)?.color, value: row ? String(row.value) : 'Loading…' };
+    return { id: branch, label: BRANCH_LABELS[branch], color: lines.find(line => line.branch === branch)?.color, value: row ? String(row.value) : card.outside ? 'Outside the recording' : 'Loading…' };
   }) : resolved.tags.map(tag => ({ id: tag, label: labels.labelAt(styleAt)(tag).name, color: lines.find(line => line.tag === tag)?.color }));
   const title = `Experience, ${MEASURE_LABELS[measure].toLowerCase()}`;
   return <div className="experience" ref={setRoots}>

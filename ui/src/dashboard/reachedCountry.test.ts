@@ -18,6 +18,9 @@ test('a choice follows the identity holding its tag at the hour it was made, thr
     'after it ends, a later holder of the tag never takes the choice');
   assert.equal(at('GER', 250, 50).country.absent, true, 'the later holder chosen later is not the earlier country');
   assert.equal(at('GER', 250, 250).country.tag, 'GER');
+  for (const hour of [-1, 301]) assert.deepEqual(at('GER', 250, hour).country,
+    { chosen: 'GER', tag: null, absent: false, reason: 'This time is outside the recording.' },
+    `at ${hour}, outside the branch, the country is not called absent: the time is outside the recording`);
 });
 
 test('the binding is the stored dated choice, so it survives reloads', () => {

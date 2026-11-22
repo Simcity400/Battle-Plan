@@ -43,7 +43,9 @@ const doctrine = { folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null,
 const replies: Record<string, (hour: number, query: Record<string, unknown>) => unknown> = { 'nuclear-arsenal': arsenalAt,
   'air-aces': hour => ({ readHour: hour, missing: null, aces: [], warnings: [] }),
   'doctrine-mastery': (_hour, query) => query.country === 'ENG' ? { folders: [], warnings: [] } : doctrine,
-  wargoals: (_hour, query) => ({ asked: query.country, branchId: query.branchId, tag: query.country, warnings: [], stateNames: [], standings: [], goals: [], justifications: [] }) };
+  wargoals: (hour, query) => ({ asked: query.country, branchId: query.branchId, tag: query.country, warnings: [], stateNames: [], standings: [], goals: [],
+    justifications: [{ id: '1', ordinal: 0, name: 'Conquest', actor: 'GER', recipient: 'GER', states: [], total: '100000', daily: '1000', payUpfront: false,
+      start: null, completion: hour, paused: false }] }) };
 registerWidgets([{ ...warGoals, render: WarGoalsWidget }]);
 const date = { since: 0, through: HOURS - 1 };
 const feed: PanelFeed = { view: 'nuclear-arsenal', offset: 0, structure: arsenalStructure(reply), reply, date };
@@ -253,10 +255,12 @@ const stateOf = (selector: string) => document.querySelector<HTMLElement>(select
 function framed(id: string) {
   const root = document.getElementById(id);
   if (!root) return null;
-  if ([...root.querySelectorAll('.war-goals')].some(element => element.checkVisibility())) return 'content';
+  const content = [...root.querySelectorAll('.war-goals')].find(element => element.checkVisibility());
+  if (content) return `content: ${content.querySelector('[data-completion]')?.textContent}`;
   const state = [...root.querySelectorAll<HTMLElement>('.widget-state')].find(element => element.checkVisibility());
   return state ? `${state.dataset.state}: ${state.textContent}` : null;
 }
+const goalsAt = (hour: number) => `content: completes ${dayLabel(hour)}`;
 function tip() {
   const open = tooltipStore.get();
   return open?.owner === DOCTRINE_TIPS ? open.content.rows?.find(row => row.label === 'As of')?.value ?? '' : null;
@@ -410,14 +414,15 @@ export const fixture = {
   heldRewind: (hour: number) => heldSeek(hour, () => currentOf(panelPresent(), racePresent()) && readEmptied()),
   step: () => watch(() => clock.step(1), () => until(() => landed(clock.getHour()))),
   async pastShortEnd() {
-    createRoot(document.body.appendChild(document.createElement('div'))).render(<div style={{ display: 'flex', gap: '8px' }}>
+    createRoot(document.body.appendChild(document.createElement('div'))).render(<div style={{ display: 'flex', gap: '8px', position: 'fixed', top: 0, right: 0 }}>
       <div id="goals" style={{ ...box, display: 'flex', flexDirection: 'column' }}><WidgetBody {...goals} /></div>
       <div id="short-goals" style={{ ...box, display: 'flex', flexDirection: 'column' }}><WidgetBody {...shortGoals} /></div></div>);
     clock.seek(SHORT_END);
-    await until(() => landed(SHORT_END) && shown().shortAces === 'empty' && shown().goals === 'content' && shown().shortGoals === 'content');
+    const end = goalsAt(SHORT_END), past = goalsAt(SHORT_END + 1);
+    await until(() => landed(SHORT_END) && shown().shortAces === 'empty' && shown().goals === end && shown().shortGoals === end);
     const before = shown();
-    const seen = await watch(() => clock.step(1), () => until(() => landed(SHORT_END + 1) && shown().goals === 'content'));
-    return { before, seen, after: seen.at(-1)! };
+    const seen = await watch(() => clock.step(1), () => until(() => landed(SHORT_END + 1) && shown().goals === past));
+    return { before, seen, after: seen.at(-1)!, end, past };
   },
   staleStep,
   raceHold,

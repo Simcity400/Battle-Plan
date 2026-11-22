@@ -14,7 +14,7 @@ import { canonical } from './follow/canonical.ts';
 import { repliedCells } from './follow/liveCells.ts';
 import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
-import { OutsideHeadsContext } from './outsideHeads.ts';
+import { WidgetTimeContext } from './widgetTime.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
 import type { PlaybackController } from './playback';
@@ -69,6 +69,12 @@ export function watchBoundary(clock: PlaybackController, holds: () => boolean, c
   };
 }
 
+export function useOutsideTime(clock: PlaybackController, bounded: boolean, hourAt: (clockHour: number) => number | null): boolean {
+  const outsideNow = useCallback(() => bounded && hourAt(clock.getHour()) === null, [bounded, hourAt, clock]);
+  const watchClock = useCallback((changed: () => void) => bounded ? watchBoundary(clock, outsideNow, changed) : () => {}, [bounded, clock, outsideNow]);
+  return useSyncExternalStore(watchClock, outsideNow, outsideNow);
+}
+
 export const heldPanel = (entry: FollowEntry | null): Landed | undefined => entry && !entry.panel ? entry.landed ?? undefined : undefined;
 
 export interface HeldReading<T> { data: T; hour: number; through: number; live: Live<LiveValues<number>> }
@@ -113,6 +119,7 @@ export interface HeadProduct<T> extends ProductState<T> {
   root: (element: Element | null) => void;
   read: 'followed' | 'asked' | 'fallback' | 'off';
   reason?: string;
+  outside: boolean;
   hour: number | null;
   at: number | null;
   atNow: () => number | null;
@@ -179,14 +186,14 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     if (data !== undefined) return latest.current.paint?.(data);
   }, []);
   const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
-  const bounded = !!track && !!params;
-  const outsideNow = useCallback(() => bounded && hourAt(runtime.clock.getHour()) === null, [bounded, hourAt, runtime.clock]);
-  const watchClock = useCallback((changed: () => void) => bounded ? watchBoundary(runtime.clock, outsideNow, changed) : () => {}, [bounded, runtime.clock, outsideNow]);
-  const outside = useSyncExternalStore(watchClock, outsideNow, outsideNow);
-  const heads = useContext(OutsideHeadsContext);
+  const outside = useOutsideTime(runtime.clock, !!track, hourAt);
+  const heads = useContext(WidgetTimeContext)?.heads;
   const [token] = useState(() => ({}));
-  useLayoutEffect(() => { heads?.set(token, bounded ? outside : null); }, [heads, token, bounded, outside]);
-  useLayoutEffect(() => () => heads?.set(token, null), [heads, token]);
+  useLayoutEffect(() => {
+    if (!heads || !active) return;
+    heads.set(token, true);
+    return () => heads.set(token, false);
+  }, [heads, token, active]);
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);
   const idle = source === 'idle';
@@ -230,7 +237,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
     exact: async () => recordedPanelRows(product, await exactRead(committedHour)),
   } : undefined);
   return {
-    data, error, retry: asked.retry, root, hour, live,
+    data, error, retry: asked.retry, root, hour, live, outside,
     exactRead, held: outside ? undefined : heldReading,
     workerFollow: pushed && runtime.client.openFollow ? entry?.id : undefined,
     at: outside ? null : pushed ? entry?.panel ? entry.hour : null : dataAt,

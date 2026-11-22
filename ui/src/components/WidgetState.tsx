@@ -3,10 +3,12 @@ import { failureText, RefusedError, type Failure } from '../dashboard/queryError
 import { Icon } from './Icons';
 import type { IconName } from './Icons';
 import { isNoMembers } from '../dashboard/noMembers.ts';
+import { useOutsideRecording } from '../dashboard/widgetTime.ts';
 import '../charts/charts.css';
 
 export type WidgetStateProps =
   | { kind: 'loading'; label: string }
+  | { kind: 'outside' }
   | { kind: 'empty'; message: string; detail?: ReactNode; icon?: IconName }
   | { kind: 'error'; what?: string; failure?: Failure; onRetry?: () => void }
   | { kind: 'unavailable'; message?: string; detail?: ReactNode; reason?: string };
@@ -14,7 +16,9 @@ export type WidgetStateProps =
 export default function WidgetState(props: WidgetStateProps) {
   switch (props.kind) {
     case 'loading':
-      return <div className="widget-state" data-state="loading" role="status" aria-label={props.label}><span className="skeleton skeleton-chart" aria-hidden="true" /></div>;
+      return <Loading label={props.label} />;
+    case 'outside':
+      return <Outside />;
     case 'empty':
       return <div className="widget-state" data-state="empty">{props.icon && <Icon name={props.icon} />}<span>{props.message}</span>{props.detail && <small>{props.detail}</small>}</div>;
     case 'error':
@@ -24,4 +28,15 @@ export default function WidgetState(props: WidgetStateProps) {
       if (isNoMembers(props.message)) return <WidgetState kind="empty" message={props.message!} detail={props.detail} />;
       return <div className="widget-state" data-state="unavailable" data-tooltip={props.reason}><Icon name="info" /><span>{props.message ?? 'Not in this recording.'}</span>{props.detail && <small>{props.detail}</small>}</div>;
   }
+}
+
+function Outside() {
+  const { detail } = useOutsideRecording();
+  return <WidgetState kind="unavailable" message="This time is outside the recording." detail={detail} />;
+}
+
+function Loading({ label }: { label: string }) {
+  const { outside } = useOutsideRecording();
+  if (outside) return <Outside />;
+  return <div className="widget-state" data-state="loading" role="status" aria-label={label}><span className="skeleton skeleton-chart" aria-hidden="true" /></div>;
 }

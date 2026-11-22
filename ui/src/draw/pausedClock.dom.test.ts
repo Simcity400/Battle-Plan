@@ -90,13 +90,13 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     mounts = back.mounts;
     assert.ok(at(back, 30) && back.strict === 30 && back.listed === '30', `30:00 is painted at full strength: ${show(back)}`);
     assert.equal(back.asks, asks, 'every move after the first push was read from pushes: no widget dropped its follow while it had nothing to show');
-    const { before: atEnd, seen: stepping, after: pastEnd } = await act<{ before: Shown; seen: Shown[]; after: Shown }>('pastShortEnd()');
+    const { before: atEnd, seen: stepping, after: pastEnd, end, past } = await act<{ before: Shown; seen: Shown[]; after: Shown; end: string; past: string }>('pastShortEnd()');
     assert.ok(atEnd.shortAces === 'empty' && pastEnd.aces === 'empty' && pastEnd.shortAces === 'unavailable',
       `a step past the end of one track's branch, while another runs on, shows that track's Aces outside the recording, never loading: ${show(pastEnd)}`);
-    assert.ok(atEnd.goals === 'content' && atEnd.shortGoals === 'content' && pastEnd.goals === 'content'
+    assert.ok(end !== past && atEnd.goals === end && atEnd.shortGoals === end && pastEnd.goals === past
       && pastEnd.shortGoals === 'unavailable: This time is outside the recording.',
-      `the widget host shows War goals stepped past its track's end outside the recording, while the main track's War goals shows 101: ${show(pastEnd)}`);
-    assert.equal(stepping.find(state => state.shortGoals !== 'content' && state.shortGoals !== pastEnd.shortGoals), undefined,
+      `War goals stepped past its track's end shows outside the recording, while the main track's War goals shows 101's completion: ${show(pastEnd)}`);
+    assert.equal(stepping.find(state => state.shortGoals !== end && state.shortGoals !== pastEnd.shortGoals), undefined,
       'stepping War goals past its track\'s end never shows loading');
     for (const [hour, gone, said] of [[120, false, 'GER at 120'], [144, true, 'GER is no longer in the ranking']] as const) {
       const { before, seen, pending, done } = await act<{ before: Shown; seen: Shown[]; pending: Shown; done: Shown }>(`raceHold(${hour}, ${gone})`);
