@@ -1,7 +1,7 @@
 
 use crate::{
     Query,
-    identity::{Holder, HolderRun, Holders},
+    identity::{self, Holders},
     timeline::{Join, Stretch, Timeline, Unheld},
 };
 use replay::{
@@ -9,12 +9,12 @@ use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
     spool::Record,
 };
-use replay_columnar::envelope::UNIT_ORDINALS;
+use replay_columnar::envelope::{SPAN_BLOCKS, UNIT_ORDINALS};
 use replay_data::{
     identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryExperienceRow, CountryFuelConsumerRow, CountryLinkRow, CountryResourceRow, CountryRow,
-        FactionMemberRow, FactionRow, MarketEventRow, NavalSupremacyRow, ProvinceRow, RowCodec, StateRow, TableId, TableRows, WorldTensionRow,
+        CampaignRow, ClockRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
+        ProvinceRow, RowCodec, StateRow, TableId, TableRows, WorldTensionRow,
     },
 };
 use replay_frame::{
@@ -134,11 +134,7 @@ fn sample<R: RowCodec>(frame: &mut Synthetic, table: TableId, rows: &[R]) -> io:
     frame.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit })
 }
 
-fn unavailable<R: RowCodec>(frame: &mut Synthetic, table: TableId) -> io::Result<()> {
-    frame.table::<R>(table, Input::Unavailable { reason: "outside the fixture", read: false, sample: Sample::FromReadBit })
-}
-
-fn power_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
+fn country_rows(frame: &mut Synthetic, hour: i32, with_power: bool) -> io::Result<()> {
     let countries: Vec<_> = [(9001, 7), (9002, 8)]
         .into_iter()
         .filter(|&(id, _)| exists(id, hour))
@@ -146,7 +142,7 @@ fn power_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
             id,
             canonical_slot,
             tag: tag_of(id).as_bytes().to_vec(),
-            political_power_raw: power(id, hour),
+            political_power_raw: if with_power { power(id, hour) } else { None },
             ..CountryRow::default()
         })
         .collect();
@@ -157,9 +153,7 @@ fn power_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
 
 fn resource_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
     let rows: Vec<_> = [9001, 9002].into_iter().flat_map(|id| resources(id, hour).into_iter().map(move |held| resource(id, held, hour))).collect();
-    sample(frame, TableId::CountryResources, &rows)?;
-    unavailable::<CountryExperienceRow>(frame, TableId::CountryExperience)?;
-    unavailable::<CountryFuelConsumerRow>(frame, TableId::CountryFuelConsumers)
+    sample(frame, TableId::CountryResources, &rows)
 }
 
 fn market_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
@@ -171,7 +165,6 @@ fn market_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
 }
 
 fn faction_rows(frame: &mut Synthetic, hour: i32) -> io::Result<()> {
-    power_rows(frame, hour)?;
     let (ger, ita) = (states(9001, hour), states(9002, hour));
     let held: Vec<_> = (1..=STATES)
         .map(|id| {
@@ -253,20 +246,28 @@ impl Fixture {
         Self::with_gap(data, FIRST..=LAST, FIRST + FIRST_HOURS..=SECOND - 1)
     }
 
+    pub fn campaign_with_sealed_span(data: Data) -> Self {
+        let gap = FIRST + (SPAN_BLOCKS as i32 + 1) * UNIT_HOURS;
+        let second = gap + GAP;
+        let fixture = Self::with_gap(data, FIRST..=second + 240, gap..=second - 1);
+        assert_eq!(fixture.replay.recording().run(0).unwrap().directory().spans.len(), 1);
+        fixture
+    }
+
     fn record(data: Data, hours: RangeInclusive<i32>, gap: Option<RangeInclusive<i32>>) -> Self {
         let (first, last) = hours.into_inner();
         let campaign = CampaignRow { id: b"tiles".to_vec() };
         let replay = Replay::from_synthetic(campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
+            if !matches!(data, Data::Tension) {
+                country_rows(frame, hour, matches!(data, Data::Power))?;
+            }
             match data {
-                Data::Power => power_rows(frame, hour),
+                Data::Power => Ok(()),
                 Data::Resources => resource_rows(frame, hour),
                 Data::Market => market_rows(frame, hour),
-                Data::Tension => {
-                    unavailable::<NavalSupremacyRow>(frame, TableId::NavalSupremacy)?;
-                    sample(frame, TableId::WorldTension, &[WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }])
-                }
+                Data::Tension => sample(frame, TableId::WorldTension, &[WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }]),
                 Data::Faction => faction_rows(frame, hour),
             }
         }).unwrap();
@@ -280,22 +281,9 @@ impl Fixture {
             stretches.push(Stretch { run: 0, first: gap_last + 1, last, join: Join::Break });
             unheld.push(Unheld { first: gap_first, last: gap_last, reason: GAP_REASON.into() });
         }
-        let tags = TAGS
-            .into_iter()
-            .zip([(7, 9001, first), (8, 9002, ITA_FROM)])
-            .map(|(tag, (slot, id, appears))| {
-                let runs = stretches.iter().filter_map(|stretch| {
-                    let first = stretch.first.max(appears);
-                    (first <= stretch.last).then_some(HolderRun { first, last: stretch.last, holder: Holder::Found { slot, id }, starts_segment: true })
-                }).collect();
-                (tag.to_owned(), runs)
-            })
-            .collect();
-        Self {
-            replay,
-            timeline: Arc::new(Timeline { id: 1, first, last, stretches, unheld }),
-            holders: Arc::new(Holders::new(tags, Vec::new())),
-        }
+        let timeline = Arc::new(Timeline { id: 1, first, last, stretches, unheld });
+        let holders = Arc::new(identity::holders(replay.recording(), &timeline).unwrap());
+        Self { replay, timeline, holders }
     }
 
     pub fn query(&self) -> Query<'_> {

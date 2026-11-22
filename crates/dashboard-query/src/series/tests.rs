@@ -238,7 +238,7 @@ fn a_pair_listed_under_other_raw_ids_of_its_countries_is_its_line() {
 }
 
 fn tension_fixture() -> Fixture {
-    let end = FIRST + UNIT_HOURS;
+    let end = FIRST + UNIT_HOURS - 1;
     Fixture::with_gap(Data::Tension, FIRST..=end + GAP + 24, end + 1..=end + GAP)
 }
 
@@ -249,6 +249,9 @@ fn the_next_read_of_a_table_is_the_next_hour_it_was_read_across_a_gap_and_never_
     let end = query.timeline.stretches[0].last;
     let second = query.timeline.stretches[1].first;
     let last = query.timeline.last;
+    let run = query.replay.recording().run(0).unwrap();
+    let block = |hour| run.place(run.ordinal(hour).unwrap()).0;
+    assert_eq!(block(second), block(end) + 1);
     let tension = TableId::WorldTension;
     let step = |origin: Option<i32>, key| next_read(&query, tension, origin, key, (FIRST, last)).unwrap();
     let still = (FIRST + 30..).find(|hour| fixture::tension(*hour) == fixture::tension(hour + 1)).unwrap();
@@ -267,11 +270,13 @@ fn the_next_read_of_a_table_is_the_next_hour_it_was_read_across_a_gap_and_never_
 
 #[test]
 fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
-    let fixture = Fixture::campaign(Data::Resources);
+    let fixture = Fixture::campaign_with_sealed_span(Data::Resources);
     let query = fixture.query();
     let line = resources_line(&query, "produced");
     let tags = ["GER".to_owned(), "ITA".to_owned()];
-    for (from, to) in [(FIRST, LAST), (FIRST + 3_000, FIRST + 4_000), (FIRST + 5_500, SECOND + 100)] {
+    let second = query.timeline.stretches[1].first;
+    let last = query.timeline.last;
+    for (from, to) in [(FIRST, last), (FIRST + 3_000, FIRST + 4_000), (FIRST + 5_500, second + 100)] {
         let owners = line.part_lives(&tags, from, to).unwrap();
         for (owner, id) in owners.iter().zip([9001, 9002]) {
             let mut wanted: BTreeMap<u32, (i32, i32)> = BTreeMap::new();
@@ -287,7 +292,7 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
             assert_eq!(got, wanted, "{}'s parts over {from}..{to}", owner.country);
             assert!(owner.parts.iter().all(|life| life.id.as_deref() == Some(life.part.as_str())), "a resource part names its resource");
         }
-        if to > FIRST + FIRST_HOURS {
+        if to >= second {
             assert!(owners[0].missing.iter().any(|span| span.reason == GAP_REASON));
         }
     }
@@ -386,14 +391,17 @@ fn a_rank_at_an_hour_of_a_computed_column_ranks_the_formula_of_each_row() {
 
 #[test]
 fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key() {
-    let fixture = Fixture::campaign(Data::Power);
+    let fixture = Fixture::campaign_with_sealed_span(Data::Power);
     let query = fixture.query();
+    let end = query.timeline.stretches[0].last;
+    let second = query.timeline.stretches[1].first;
+    let last = query.timeline.last;
     let ask = |product: &str, extra: serde_json::Value| {
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         answer(&query, product, &params).unwrap().unwrap()
     };
-    for hour in HOURS {
+    for hour in HOURS[..6].iter().copied().chain([end, second + 17, last]) {
         let reply: SeriesStateReply = serde_json::from_value(ask("series-state", serde_json::json!({ "top": 1, "hour": hour }))).unwrap();
         let mut wanted: Vec<(i64, &str)> = [9001, 9002]
             .into_iter()
@@ -404,7 +412,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         let got: Vec<(i64, &str)> = reply.states.iter().map(|state| (state.run.as_ref().unwrap().value_raw.parse().unwrap(), state.country.tag().unwrap())).collect();
         assert_eq!(got, wanted.into_iter().take(1).collect::<Vec<_>>(), "the top country at {hour}");
     }
-    let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": LAST, "width": 64 }))).unwrap();
+    let chart: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": last, "width": 64 }))).unwrap();
     assert!(!chart.lines.is_empty());
     for line in &chart.lines {
         assert!(!line.membership.is_empty() && !line.parts.is_empty(), "{} ranks somewhere and is held there", line.tag);
@@ -414,7 +422,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         }
     }
     let mut checked = 0;
-    for to in (FIRST + 300..FIRST + FIRST_HOURS - 10).filter(|hour| (hour + 1).rem_euclid(6) != 0).take(24) {
+    for to in (FIRST + 300..end - 9).filter(|hour| (hour + 1).rem_euclid(6) != 0).take(24) {
         let edge: ranked::SeriesRankedReply = serde_json::from_value(ask("series-summary", serde_json::json!({ "top": 1, "from": FIRST, "to": to, "width": 64 }))).unwrap();
         for line in &edge.lines {
             let Some(Some(bucket)) = line.summary.buckets.last() else { continue };
@@ -428,7 +436,6 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         }
     }
     assert!(checked > 10, "{checked} views whose member holds a value at the view's last hour");
-    let end = FIRST + FIRST_HOURS - 1;
     let scale = 10f64.powi(i32::from(chart.decimals));
     let mut ends = 0;
     for line in &chart.lines {
@@ -441,7 +448,7 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
         ends += 1;
     }
     assert_eq!(ends, 1, "the leader at the stretch's last hour draws its bin");
-    let tiles = serde_json::json!({ "top": null, "from": FIRST, "to": LAST, "width": 64, "countries": ["GER"] });
+    let tiles = serde_json::json!({ "top": null, "from": FIRST, "to": last, "width": 64, "countries": ["GER"] });
     assert!(answer(&query, "series-summary", &{
         let mut params = serde_json::json!({ "branchId": "1", "family": { "kind": "country-measure", "measure": "politicalPower" } });
         params.as_object_mut().unwrap().extend(tiles.as_object().unwrap().clone());
@@ -449,9 +456,9 @@ fn a_ranked_series_answers_its_top_countries_at_an_hour_over_a_view_and_by_key()
     })
     .is_err(), "chosen lines are tiles");
     let origin = ITA_FROM + 10;
-    let next: SeriesKeyReply = serde_json::from_value(ask("series-next-change", serde_json::json!({ "top": 1, "key": "ArrowRight", "from": origin, "firstHour": FIRST, "lastHour": LAST }))).unwrap();
+    let next: SeriesKeyReply = serde_json::from_value(ask("series-next-change", serde_json::json!({ "top": 1, "key": "ArrowRight", "from": origin, "firstHour": FIRST, "lastHour": last }))).unwrap();
     let leader = line_of(&query).rank_at(origin, 1).unwrap();
-    let wanted = line_of(&query).navigate(&leader, &[dashboard_declare::series("country-measure").unwrap().measure("politicalPower").unwrap()], Some(origin), NavigationKey::ArrowRight, (FIRST, LAST)).unwrap();
+    let wanted = line_of(&query).navigate(&leader, &[dashboard_declare::series("country-measure").unwrap().measure("politicalPower").unwrap()], Some(origin), NavigationKey::ArrowRight, (FIRST, last)).unwrap();
     assert_eq!(next.hour, wanted.map(f64::from));
     assert!(next.hour.is_some_and(|hour| hour > f64::from(origin)));
 }
@@ -554,13 +561,19 @@ fn a_ranked_short_stretch_reads_its_winner_only_over_its_tags_hours() {
 
 #[test]
 fn a_factions_line_is_its_row_and_its_bins_hold_its_members_exact_sums() {
-    let (from, to) = (ITA_FROM - UNIT_HOURS, ITA_FROM + UNIT_HOURS);
-    let fixture = Fixture::new(Data::Faction, from..=to);
+    let bucket_hours = replay_columnar::summary::bucket_hours(1) as i32;
+    let edge_first = ((ITA_FROM + UNIT_HOURS).div_euclid(bucket_hours) + 1) * bucket_hours;
+    let (from, to) = (ITA_FROM - UNIT_HOURS, edge_first + 12);
+    let last = edge_first + bucket_hours - 1;
+    let fixture = Fixture::new(Data::Faction, from..=last);
     let query = fixture.query();
     let totals = dashboard_declare::series("faction-totals").unwrap();
     let line = Line::new(&query, totals, totals.measure("controlledStates").unwrap()).unwrap();
     let width = 7;
     let charts = line.summaries(&[FACTION.to_string()], from, to, width).unwrap();
+    let edge = charts[0].0.buckets.iter().rev().flatten().next().unwrap();
+    assert_eq!(edge.last_hour, to);
+    assert!((to + 1..=last).filter_map(faction_sum).any(|sum| sum as f64 > edge.max_value));
     let mut checked = 0;
     for bucket in charts[0].0.buckets.iter().flatten() {
         let sums: Vec<i64> = (bucket.first_hour..=bucket.last_hour).filter_map(faction_sum).collect();

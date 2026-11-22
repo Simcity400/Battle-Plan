@@ -155,8 +155,8 @@ mod tests {
 
     #[test]
     fn a_top_is_the_countries_greatest_at_the_hour_and_every_column_is_read_for_them() {
-        let hour = both_recorded();
-        let fixture = Fixture::new(Data::Power, hour..=hour);
+        let hour = both_recorded() + 1;
+        let fixture = Fixture::new(Data::Power, hour - 1..=hour + 1);
         let query = fixture.query();
         let columns = [power_column(&query), Column { line: line(&query, "commandPower"), partial: Some(line(&query, "politicalPower")) }];
         let board = at(&columns, Rows::Top { by: 0, n: 2, least: false }, hour).unwrap();
@@ -164,7 +164,9 @@ mod tests {
         wanted.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         let tags: Vec<&str> = board.rows.iter().map(|row| row.tag.as_str()).collect();
         assert_eq!(tags, wanted.iter().map(|(_, id)| tag_of(*id)).collect::<Vec<_>>());
-        for (row, (value, _)) in board.rows.iter().zip(&wanted) {
+        for (row, (value, id)) in board.rows.iter().zip(&wanted) {
+            assert_ne!(power(*id, hour - 1), Some(*value));
+            assert_ne!(power(*id, hour + 1), Some(*value));
             assert_eq!(row.cells[0], Cell { value_raw: Some(value.to_string()), missing: None, partial: false });
             assert_eq!(row.cells[1], Cell { value_raw: Some("0".into()), missing: None, partial: *value != 0 });
         }

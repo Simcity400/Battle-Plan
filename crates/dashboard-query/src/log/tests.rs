@@ -90,7 +90,11 @@ fn walks_in_any_order_read_each_ranges_rows() {
 
 #[test]
 fn a_pass_over_a_run_gives_each_row_it_inserted_once_as_a_read_does() {
-    let fixture = Fixture::new(Data::Market, ITA_FROM - UNIT_HOURS..=ITA_FROM + UNIT_HOURS);
+    let first = ITA_FROM - UNIT_HOURS;
+    let (event_hour, event_key) = (first + 2 * UNIT_HOURS..).find_map(|hour| {
+        fixture::market(hour).first().map(|&(key, ..)| (hour, u128::from(key)))
+    }).unwrap();
+    let fixture = Fixture::new(Data::Market, first..=event_hour);
     let query = fixture.query();
     let reader = market(&query);
     let run = reader.select(&[], query.timeline.first, query.timeline.last).unwrap().patterns[0].run;
@@ -102,6 +106,7 @@ fn a_pass_over_a_run_gives_each_row_it_inserted_once_as_a_read_does() {
     }).unwrap();
     assert!(reader.walked.lock().unwrap().is_empty());
     assert!(got.windows(2).all(|pair| pair[0].hour <= pair[1].hour));
+    assert!(got.iter().any(|row| row.hour == event_hour && row.key == event_key));
     got.sort_by_key(|row| (row.hour, row.key));
     let wanted = reader.inserted(run, &[(first as i32, last as i32)]).unwrap();
     assert!(!wanted.is_empty());
@@ -120,8 +125,10 @@ fn a_page_reads_only_the_buckets_holding_its_rows() {
 
 #[test]
 fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
-    let fixture = Fixture::campaign(Data::Market);
+    let fixture = Fixture::campaign_with_sealed_span(Data::Market);
     let query = fixture.query();
+    let last = query.timeline.last;
+    let second = query.timeline.stretches[1].first;
     let reader = market(&query);
     let kinds = FacetFilter { name: "kind".into(), values: vec![1, 7], countries: Vec::new() };
     let countries = FacetFilter { name: "country".into(), values: Vec::new(), countries: vec!["ITA".into(), "GER".into()] };
@@ -130,13 +137,13 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
         (vec![countries.clone()], Box::new(|_: i32, _: u8, _: u32| true)),
         (vec![kinds.clone(), countries.clone()], Box::new(|_: i32, kind: u8, _: u32| kind == 1 || kind == 7)),
     ] {
-        let selection = reader.select(&filters, query.timeline.first, LAST).unwrap();
-        let wanted = events(&query, FIRST, LAST, &keep);
+        let selection = reader.select(&filters, query.timeline.first, last).unwrap();
+        let wanted = events(&query, FIRST, last, &keep);
         let tagged = filters.iter().any(|filter| !filter.countries.is_empty());
         let groups = selection.groups.len();
         let (mut rows, mut cursor) = (Vec::new(), 0);
         loop {
-            let page = reader.page(&selection.patterns, groups, FIRST, LAST, cursor, 256).unwrap();
+            let page = reader.page(&selection.patterns, groups, FIRST, last, cursor, 256).unwrap();
             assert_eq!(page.total(), wanted.len() as u64);
             rows.extend(page.rows.iter().cloned());
             match page.cursor() {
@@ -149,7 +156,7 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
         ordered.sort_by_key(|event| (event.0, group_of(event.3), event.1));
         let got: Vec<(i32, u128)> = rows.iter().map(|paged| (paged.row.hour, paged.row.key)).collect();
         assert_eq!(got, ordered.iter().map(|event| (event.0, event.1)).collect::<Vec<_>>());
-        let every: Vec<(i32, u128)> = market(&query).every(&selection.patterns, FIRST, LAST).unwrap().iter().map(|(_, row)| (row.hour, row.key)).collect();
+        let every: Vec<(i32, u128)> = market(&query).every(&selection.patterns, FIRST, last).unwrap().iter().map(|(_, row)| (row.hour, row.key)).collect();
         assert_eq!(every, got, "every row of {filters:?}");
         let mut own = vec![0u64; groups];
         for (paged, event) in rows.iter().zip(&ordered) {
@@ -158,7 +165,7 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
             own[paged.group] += 1;
         }
         for bin_hours in [3, 6, 96] {
-            let (first, last) = (FIRST + 700, SECOND + 200);
+            let (first, last) = (FIRST + 700, second + 200);
             let counts = reader.counts(&selection.patterns, groups, first, last, bin_hours).unwrap();
             let first_bin = i64::from(first).div_euclid(bin_hours) * bin_hours;
             for (group, counts) in counts.iter().enumerate() {
@@ -172,8 +179,8 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
             }
         }
     }
-    assert!(reader.select(&[FacetFilter { name: "kind".into(), values: Vec::new(), countries: vec!["GER".into()] }], FIRST, LAST).is_err(), "a kind holds no country");
-    assert!(reader.select(&[FacetFilter { name: "nope".into(), ..FacetFilter::default() }], FIRST, LAST).is_err());
+    assert!(reader.select(&[FacetFilter { name: "kind".into(), values: Vec::new(), countries: vec!["GER".into()] }], FIRST, last).is_err(), "a kind holds no country");
+    assert!(reader.select(&[FacetFilter { name: "nope".into(), ..FacetFilter::default() }], FIRST, last).is_err());
 }
 
 #[test]

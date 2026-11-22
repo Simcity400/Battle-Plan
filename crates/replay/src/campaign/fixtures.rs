@@ -8,7 +8,7 @@ use crate::{
     frame::{DecodedFrame, FrameDecoder, FrameInput, TableInput, TableView},
     identity::IdentityCodec,
     native_frame::FrameWriter,
-    rows::TABLE_COUNT,
+    rows::{TABLE_COUNT, TableId},
     spool::{ControlRecord, Record, Recovery, encode_record},
 };
 use replay_columnar::{
@@ -36,6 +36,11 @@ impl Replay {
         use crate::columnar_frames::synthetic::Synthetic;
 
         let (id, first) = (branch.id, branch.first_hour);
+        let mode = session.capture_mode;
+        let format = FormatVersion::CURRENT.version();
+        let in_scope: Vec<_> = TableId::ALL.into_iter().filter(|&table| {
+            table.last_change().present(format) && crate::scope::records(mode, table)
+        }).collect();
         let records = Records { sessions: vec![session], branches: vec![branch], ..Records::default() };
         let identity = identity_of(campaign_id, &records)?;
         let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
@@ -44,6 +49,7 @@ impl Replay {
         file.start_run(id, envelope::epoch::START, first)?;
         for hour in first..=last {
             write(&mut synthetic, hour)?;
+            synthetic.unavailable_unwritten(&in_scope, b"outside the fixture")?;
             synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections))??;
         }
         let mut file = file.finish()?;
