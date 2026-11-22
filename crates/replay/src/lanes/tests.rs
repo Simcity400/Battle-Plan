@@ -3,14 +3,14 @@ use crate::columnar_frames::fixtures;
 
 #[test]
 fn lifetimes_read_past_levels_a_run_closes_no_piece_of() {
-    let recording = Recording::open(fixtures::native_recording(20, |_| {})).unwrap();
+    let recording = Recording::open(fixtures::native_recording(recorder_derive::writers(), 20, |_| {})).unwrap();
     let lives = lifetimes(&recording, 0, TableId::Countries).unwrap();
     assert!(!lives.is_empty());
 }
 
 #[test]
 fn coarse_chart_names_level_zero_buckets() {
-    let recording = Recording::open(fixtures::native_recording(20, |_| {})).unwrap();
+    let recording = Recording::open(fixtures::native_recording(recorder_derive::writers(), 20, |_| {})).unwrap();
     let source = crate::summaries::registry()
         .unwrap()
         .into_iter()
@@ -83,7 +83,7 @@ fn stepped(recording: &Recording, run: u32, table: TableId, column: usize, from:
 #[test]
 fn runs_and_next_from_tracks_are_the_hours_stepped() {
     const RUNS: [(u64, i32, u32); 3] = [(1, 100, 5), (2, 50_000, 3), (1, 100 + 5 * UNIT_ORDINALS as i32, 2)];
-    let (bytes, _) = fixtures::churned(&RUNS);
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &RUNS);
     let recording = Recording::open(bytes).unwrap();
     let field = |table: TableId, name: &str| (0..table.field_count()).find(|&field| table.field_name(field) == Some(name)).unwrap();
     let columns = [
@@ -122,7 +122,7 @@ fn a_row_inserted_inside_a_block_runs_from_the_cells_it_was_inserted_with() {
         rows::CountryRow,
     };
     const RUNS: [(u64, i32, u32); 1] = [(1, 100, 3)];
-    let (bytes, _) = fixtures::written(b"inserted synthetic", &RUNS, &[TableId::Countries], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"inserted synthetic", &RUNS, &[TableId::Countries], |synthetic, _, ordinal| {
         let mut rows = vec![CountryRow { id: 1, stability_raw: 1, political_power_raw: Some(5), ..Default::default() }];
         if (37..90).contains(&(ordinal % 100)) {
             rows.push(CountryRow { id: 2, stability_raw: 70_000 + i64::from(ordinal / 100), political_power_raw: Some(-3_225), ..Default::default() });
@@ -157,7 +157,7 @@ fn ranked_recording() -> Recording {
         rows::CountryRow,
     };
     const RUNS: [(u64, i32, u32); 2] = [(1, 103, 20), (2, 60_001, 3)];
-    let (bytes, _) = fixtures::written(b"ranked synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"ranked synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
         let input = if run == 0 && (3000..3200).contains(&ordinal) {
             synthetic.table::<CountryRow>(TableId::Countries, Input::Unavailable { reason: "refused", read: false, sample: Sample::FromReadBit })
         } else {
@@ -232,7 +232,7 @@ fn reads_from_page_entries_are_the_hours_stepped_sampled_at_themselves() {
         rows::CountryRow,
     };
     const RUNS: [(u64, i32, u32); 2] = [(1, 100, 4), (2, 40_000, 2)];
-    let (bytes, _) = fixtures::written(b"read hours synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"read hours synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
         let rows = [CountryRow { id: 1, stability_raw: 1 + i64::from(ordinal / 24), ..Default::default() }];
         let snapshot = |read: bool, sample: Sample| Input::Snapshot { rows: &rows, partial: None, read, sample };
         let input = match ordinal {
@@ -269,7 +269,7 @@ fn histories() -> Recording {
         rows::{CountryRow, FleetRow, Recorded},
     };
     const RUNS: [(u64, i32, u32); 2] = [(1, 100, 3), (2, 40_000, 2)];
-    let (bytes, _) = fixtures::written(b"histories synthetic", &RUNS, &[TableId::Countries, TableId::Fleets], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"histories synthetic", &RUNS, &[TableId::Countries, TableId::Fleets], |synthetic, _, ordinal| {
         let tag = match ordinal {
             0..=99 => "first".to_owned(),
             100 => "second".to_owned(),
@@ -533,7 +533,7 @@ fn a_logs_history_of_some_keys_reads_every_block_its_rows_are_in() {
     };
     let falls = |country: u32| -> &'static [u32] { if country == 7 { &[50, 900, 1700] } else { &[50, 900, 1300, 1700] } };
     let streams = [TableId::Countries, TableId::CountryLinks, TableId::OperationCompletions];
-    let (bytes, _) = fixtures::written(b"log synthetic", &[(1, 100, 3)], &streams, |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"log synthetic", &[(1, 100, 3)], &streams, |synthetic, _, ordinal| {
         let countries: Vec<CountryRow> = [7, 9]
             .map(|id| {
                 let fallen = falls(id).iter().filter(|&&at| at <= ordinal).count() as i64;
@@ -648,7 +648,7 @@ fn statuses_from_page_entries_are_the_statuses_stepped() {
         rows::CountryRow,
     };
     const RUNS: [(u64, i32, u32); 2] = [(1, 100, 4), (2, 40_000, 2)];
-    let (bytes, _) = fixtures::written(b"status runs synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"status runs synthetic", &RUNS, &[TableId::Countries], |synthetic, run, ordinal| {
         let rows = [CountryRow { id: 1, stability_raw: 1, ..Default::default() }, CountryRow { id: 2, stability_raw: 2, ..Default::default() }];
         let input = match ordinal {
             300..=305 | 1_600 => Input::Snapshot { rows: &rows, partial: Some(1), read: true, sample: Sample::FromReadBit },

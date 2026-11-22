@@ -56,7 +56,7 @@ fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a
     let saved = std::env::temp_dir().join(format!("place-names-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&saved).unwrap();
     let path = saved.join("synthetic.battleplan");
-    Replay::from_records(CAMPAIGN.into(), &[input]).unwrap().write_atomic(&path).unwrap();
+    Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[input]).unwrap().write_atomic(&path).unwrap();
     let folders = recording_upgrade::Folders { games: vec![folder.0.clone()], user: folder.0.join("user"), cache: folder.0.join("cache") };
     recording_upgrade::upgrade(&path, &folders).unwrap();
     let replay = Replay::open_newest(&path).unwrap().into_timelines(&Default::default()).unwrap();

@@ -9,7 +9,7 @@ const TABLES: [TableId; 2] = [TableId::Countries, TableId::WorldTension];
 
 fn recording() -> Recording {
     const RUNS: [(u64, i32, u32); 2] = [(1, 100, 5), (2, 50_000, 3)];
-    Recording::open(fixtures::churned(&RUNS).0).unwrap()
+    Recording::open(fixtures::churned(recorder_derive::writers(), &RUNS).0).unwrap()
 }
 
 fn ordinals(ordinals: u32) -> Vec<u32> {
@@ -206,7 +206,7 @@ fn shown(frame: &DecodedFrame) -> Option<(Vec<CountryRow>, Option<u32>)> {
 
 #[test]
 fn a_frame_over_partial_and_refused_hours_is_the_seek_filtered() {
-    let recording = Recording::open(fixtures::edited(3).0).unwrap();
+    let recording = Recording::open(fixtures::edited(recorder_derive::writers(), 3).0).unwrap();
     let held = recording.run(0).unwrap();
     let asked = [3_u128, 12, 150, 999];
     let filters: [(Keys<'_>, fn(u128) -> bool); 2] = [(Keys::These(&asked), |key| [3, 12, 150].contains(&key)), (Keys::Range(5, 15), |key| (5..=15).contains(&key))];
@@ -249,7 +249,7 @@ fn a_read_of_some_columns_decodes_those_fields_alone() {
         RaidAirScoreRow { country: 9, region: 3, friendly: 120, enemy: 80, impact: Recorded::Value(5), friendly_missions: 2, enemy_missions: 1, air_spotting_scale: Some(6), menu: Recorded::Value(Some(Arc::new(menu))) },
         RaidAirScoreRow { country: 9, region: 4, friendly: 0, enemy: 30, impact: Recorded::Value(0), friendly_missions: 0, enemy_missions: 3, air_spotting_scale: None, menu: Recorded::Value(None) },
     ];
-    let (bytes, _) = fixtures::written(b"some columns", &[(1, 100, 2)], &[table], |synthetic, _, _| {
+    let (bytes, _) = fixtures::written(recorder_derive::writers(), b"some columns", &[(1, 100, 2)], &[table], |synthetic, _, _| {
         synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
     });
     let recording = Recording::open(bytes).unwrap();
@@ -271,7 +271,7 @@ fn readers_left_by_one_recording_are_not_taken_up_by_another_of_its_shape() {
     use crate::columnar_frames::synthetic::{Input, Sample};
     let table = TableId::Countries;
     let shaped = |offset: i64| {
-        let (bytes, _) = fixtures::written(b"same shape", &[(1, 100, 2)], &[table], |synthetic, _, ordinal| {
+        let (bytes, _) = fixtures::written(recorder_derive::writers(), b"same shape", &[(1, 100, 2)], &[table], |synthetic, _, ordinal| {
             let rows = [CountryRow { id: 1, stability_raw: offset + i64::from(ordinal), ..Default::default() }];
             synthetic.table(table, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         });

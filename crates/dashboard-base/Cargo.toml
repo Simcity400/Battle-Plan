@@ -11,9 +11,10 @@ doctest = false
 
 [features]
 export-types = []
-test-support = ["replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
+test-support = ["dep:recorder-derive", "replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
 
 [dependencies]
+recorder-derive = { workspace = true, optional = true }
 replay-columnar.workspace = true
 dashboard-follow = { path = "../dashboard-follow" }
 playhead = { path = "../playhead" }
@@ -59,6 +60,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [dev-dependencies]
+recorder-derive.workspace = true
 engine-heap.workspace = true
 content-reader-abilities = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }

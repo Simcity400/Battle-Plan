@@ -172,7 +172,7 @@ fn a_window_reply_carries_the_windows_its_index_names() {
     use replay::campaign::Replay;
     use std::sync::Arc;
     let frames = (1_000..=1_100).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(crate::SourceKey { source_id: "casualties".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let load = LoadContext { content: None };
     let cancelled = AtomicBool::new(false);

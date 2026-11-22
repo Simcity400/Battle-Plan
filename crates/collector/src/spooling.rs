@@ -4516,7 +4516,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let replay = replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+            let replay = replay::campaign::Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap();
             let row_path = directory.join("paused.battleplan");
             replay.write_atomic(&row_path).unwrap();
             let history = replay.into_history().unwrap();
@@ -4599,7 +4599,7 @@ mod tests {
                 )
             })
             .collect();
-        let replay = replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+        let replay = replay::campaign::Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap();
         let row_path = directory.join("reactivated.battleplan");
         replay.write_atomic(&row_path).unwrap();
         for path in [row_path] {
@@ -4718,7 +4718,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let row = Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+            let row = Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap();
             assert_eq!(row.branches.len(), 2);
             assert_eq!(
                 row.recorded_hours(current).unwrap().len(),
@@ -4845,6 +4845,7 @@ mod tests {
             ["session", "branch", "hour 30", "detach"]
         );
         let replay = replay::campaign::Replay::from_recovered(
+            recorder_derive::writers(),
             ID.to_vec(),
             &[
                 (
@@ -6506,7 +6507,7 @@ mod tests {
             .iter()
             .map(|(&index, bytes)| (index, recover_prefix(bytes)))
             .collect();
-        let replay = Replay::from_recovered(ID.to_vec(), &recovered).unwrap();
+        let replay = Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &recovered).unwrap();
         assert_eq!(replay.recorded_hours(first).unwrap(), vec![10, 11]);
         assert!(matches!(
             replay.seek(first, 11).unwrap(),
@@ -6569,7 +6570,7 @@ mod tests {
             .iter()
             .map(|(&index, bytes)| (index, recover_prefix(bytes)))
             .collect();
-        let replay = Replay::from_recovered(ID.to_vec(), &recovered).unwrap();
+        let replay = Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &recovered).unwrap();
         assert_eq!(replay.recorded_hours(first).unwrap(), vec![10, 11, 12]);
         assert_eq!(replay.recorded_hours(reloaded).unwrap(), vec![11]);
         assert_eq!(
@@ -6633,7 +6634,7 @@ mod tests {
             .iter()
             .map(|(&index, bytes)| (index, recover_prefix(bytes)))
             .collect();
-        let replay = Replay::from_recovered(ID.to_vec(), &recovered).unwrap();
+        let replay = Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &recovered).unwrap();
         assert_eq!(replay.recorded_hours(branch).unwrap(), vec![10]);
         assert!(replay.gaps.is_empty());
         assert!(replay.controls.iter().any(|record| matches!(record,
@@ -6647,7 +6648,7 @@ mod tests {
             .iter()
             .map(|(&index, bytes)| (index, recover_prefix(bytes)))
             .collect();
-        Replay::from_recovered(ID.to_vec(), &recovered).unwrap()
+        Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &recovered).unwrap()
     }
 
     fn event_losses(replay: &Replay) -> Vec<(BranchId, i32, i32)> {

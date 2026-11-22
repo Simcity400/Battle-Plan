@@ -196,7 +196,7 @@ pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
 
 pub fn replay() -> &'static Replay {
     static HELD: OnceLock<Replay> = OnceLock::new();
-    HELD.get_or_init(|| Replay::from_records(b"tiles".to_vec(), &[segment(1, FIRST, LAST - FIRST + 1)]).unwrap())
+    HELD.get_or_init(|| Replay::from_records(recorder_derive::writers(), b"tiles".to_vec(), &[segment(1, FIRST, LAST - FIRST + 1)]).unwrap())
 }
 
 pub fn query() -> Query<'static> {

@@ -35,7 +35,7 @@ fn lane(pages: &Arc<dyn Pages>, run: usize) -> Lane {
 
 #[test]
 fn a_format_12_recording_seeks_inside_and_at_the_end_of_a_block_and_steps_as_written() {
-    let (bytes, _) = fixtures::churned(&RUNS);
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &RUNS);
     let opened = WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap();
     let wanted: Vec<Piece> = RUNS.iter().enumerate().map(|(run, &(_, first, blocks))| Piece { run, first, last: first + (blocks * BLOCK) as i32 - 1 }).collect();
     assert_eq!(opened.pieces(), wanted.as_slice());
@@ -62,7 +62,7 @@ fn a_format_12_recording_seeks_inside_and_at_the_end_of_a_block_and_steps_as_wri
 
 #[test]
 fn a_span_of_hours_reads_back_to_its_restores_and_plays_only_the_span() {
-    let (bytes, _) = fixtures::churned(&RUNS);
+    let (bytes, _) = fixtures::churned(recorder_derive::writers(), &RUNS);
     let (first, from) = (RUNS[1].1, RUNS[1].1 + BLOCK as i32 + 300);
     let opened = WorldPages::over(Recording::open(bytes).unwrap(), Span::Hours { from, hours: 50 }).unwrap();
     assert_eq!(opened.pieces(), &[Piece { run: 0, first: from, last: from + 49 }]);
@@ -83,7 +83,7 @@ fn a_recording_of_an_earlier_format_plays_what_it_held_and_withholds_the_tables_
     let runs = [(1, 0, 2)];
     let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];
     let partial = |ordinal: u32| ordinal % BLOCK >= BLOCK - 10;
-    let (bytes, _) = fixtures::written_at(format, b"format 141", &runs, &[TableId::Countries], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers(), format, b"format 141", &runs, &[TableId::Countries], |synthetic, _, ordinal| {
         let rows: Vec<CountryRow> = countries(ordinal).into_iter().map(|(id, stability)| CountryRow { id: id as u32, stability_raw: stability, ..Default::default() }).collect();
         synthetic.table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
         let input = match partial(ordinal) {
@@ -140,7 +140,7 @@ fn a_recording_of_an_earlier_format_crosses_its_piece_boundary_without_the_colum
     let runs = [(1, 0, 1), (2, 10_000, 1)];
     let division = |id: u64, province: u32| DivisionRowAt141 { id: (id << 32) | 1, province, ..Default::default() };
     let pieces = [[division(3, 11), division(4, 12)], [division(3, 13), division(5, 14)]];
-    let (bytes, _) = fixtures::written_at(CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &runs, &[table], |synthetic, run, _| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers(), CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &runs, &[table], |synthetic, run, _| {
         synthetic.table(table, Input::Snapshot { rows: &pieces[run as usize], partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
     });
     let pages: Arc<dyn Pages> = Arc::new(WorldPages::over(Recording::open(bytes).unwrap(), Span::Whole).unwrap());

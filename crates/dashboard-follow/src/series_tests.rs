@@ -104,7 +104,7 @@ fn replay() -> &'static Replay {
             input.scope_to(CaptureMode::Full);
             records.push(Record::Frame(encoder.encode_input(input, false).unwrap()));
         }
-        Replay::from_records(b"follow".to_vec(), &[records]).unwrap()
+        Replay::from_records(recorder_derive::writers(), b"follow".to_vec(), &[records]).unwrap()
     })
 }
 

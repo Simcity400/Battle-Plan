@@ -103,7 +103,7 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
             records.push(Record::Frame(frame));
         }
     }
-    let replay = Replay::from_records(id.to_vec(), &[records]).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), id.to_vec(), &[records]).unwrap();
     let expected = (
         Some(99),
         Some(2),
@@ -126,7 +126,7 @@ fn an_older_layout_recording_is_left_as_it_is_and_the_campaign_records_anew() {
     fs::create_dir_all(&root).unwrap();
     let session = session();
     let replay =
-        Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
+        Replay::from_records(recorder_derive::writers(), id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
     let session = SessionStart { id: 2, ..session };
     let path = root.join(format!("{id}.battleplan"));
     let older = [b"H4RP".as_slice(), &94_u16.to_le_bytes(), id.as_bytes()].concat();
@@ -160,7 +160,7 @@ fn a_campaigns_recording_is_found_by_its_header_whatever_its_name() {
     fs::create_dir_all(&root).unwrap();
     let session = session();
     let replay =
-        Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
+        Replay::from_records(recorder_derive::writers(), id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
     let session = SessionStart { id: 2, ..session };
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
     fs::write(root.join("Germany 1936.battleplan"), replay.bytes()).unwrap();
@@ -194,6 +194,7 @@ fn only_a_campaigns_own_unambiguous_unsaved_recording_stands_in_for_its_saved_on
     let session = session();
     let recording = |campaign: &str| {
         Replay::from_records(
+            recorder_derive::writers(),
             campaign.into(),
             &[vec![Record::SessionStart(session.clone())]],
         )
@@ -325,6 +326,7 @@ fn completion_sequence_seed_keeps_finalized_keys_across_reattach_and_branches() 
     let mut first = FrameEncoder::new();
     let mut second = FrameEncoder::new();
     let replay = Replay::from_records(
+        recorder_derive::writers(),
         id.to_vec(),
         &[
             vec![
@@ -390,6 +392,7 @@ fn resumed_politics_epoch_includes_observed_rows_when_coverage_is_unavailable() 
         )
         .unwrap();
     let replay = Replay::from_records(
+        recorder_derive::writers(),
         b"politics-history".to_vec(),
         &[vec![
             Record::SessionStart(session),
@@ -487,7 +490,7 @@ fn naval_sequence_prepares_every_retained_branch_before_resuming_same_process() 
                 }));
             }
         }
-        Replay::from_records(campaign.as_bytes().to_vec(), &[records]).unwrap()
+        Replay::from_records(recorder_derive::writers(), campaign.as_bytes().to_vec(), &[records]).unwrap()
     };
     let retained = replay(id, &[(1, 10, &[3, 80]), (2, 5, &[7])]);
     assert_eq!(naval_result_sequence(&retained).unwrap(), 80);
@@ -642,7 +645,7 @@ fn market_and_other_event_ledger_sequences_restore_all_retained_prefixes_before_
                 },
             )
             .collect();
-        Replay::from_records(campaign.as_bytes().to_vec(), &segments).unwrap()
+        Replay::from_records(recorder_derive::writers(), campaign.as_bytes().to_vec(), &segments).unwrap()
     };
     let retained = replay(id, &[(1, 10, 0, 5, 3, false), (2, 5, 80, 9, 0, true)]);
     assert!(retained.index.len() >= 2);
@@ -807,6 +810,7 @@ fn the_history_load_leaves_no_thread_it_started_running() {
         TableView::Complete(TableRows::Campaign(vec![CampaignRow { id: campaign.into() }]));
     let frame = DecodedFrame { branch: 1, hour: 100, tables: tables.map(Into::into), metrics: Metrics::default() };
     let replay = Replay::from_records(
+        recorder_derive::writers(),
         campaign.into(),
         &[vec![
             Record::SessionStart(session()),

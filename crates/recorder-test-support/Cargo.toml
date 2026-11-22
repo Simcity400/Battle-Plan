@@ -10,6 +10,7 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+recorder-derive.workspace = true
 replay = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }

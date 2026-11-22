@@ -935,7 +935,7 @@ pub(super) mod tests {
             };
             records.push(Record::Frame(encoder.encode(frame, false).unwrap()));
         }
-        Arc::new(Replay::from_records(b"campaign".to_vec(), &[records]).unwrap())
+        Arc::new(Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &[records]).unwrap())
     }
 
     fn answered(rosters: &PassRosters, hour: Hour, slot: u32) -> Answer {

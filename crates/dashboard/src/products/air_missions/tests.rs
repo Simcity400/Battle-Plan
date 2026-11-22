@@ -111,7 +111,8 @@ fn a_region_s_wings_are_the_owner_s_registrations_each_once_in_registration_orde
 
 #[test]
 fn a_region_s_wings_from_its_table_are_the_raw_rows_roster() {
-    use recorder_derive::{air_missions::AirMissions, framework::Writers, testing};
+    use recorder_derive_air::air_missions::AirMissions;
+    use recorder_derive_framework::{framework::Writers, testing};
     use replay_columnar::manifest::Status;
     use replay_data::rows::AirMissionWingRow;
     let texts: &[&[u8]] = &[b"x"];

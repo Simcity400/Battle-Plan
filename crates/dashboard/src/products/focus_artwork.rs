@@ -602,7 +602,7 @@ mod tests {
         for table in [TableId::States, TableId::Provinces] {
             frame.tables[table.index()] = TableView::Complete(TableRows::empty(table)).into();
         }
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
         let (source, context, _folders) = icon_product_source(replay);
         let cancelled = AtomicBool::new(false);
         let basic = read_frame(source.replay_ref(), 1, 100, false, &cancelled).unwrap();
@@ -680,7 +680,7 @@ mod tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = focus_scale_frame(100, 4, 2, &["static"]);
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
         let (source, context, _folders) = icon_product_source(replay);
         let cancelled = AtomicBool::new(false);
         for (text_only, include_descriptions, icons_only) in [
@@ -746,7 +746,7 @@ mod tests {
             let (catalogue, folder) =
                 crate::catalogue::tests::folder_catalogue(&database_files(refused));
             let frame = focus_scale_frame(100, 4, 2, &["shared"]);
-            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+            let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
             let (source, context) = product_source_with_catalogue(replay, catalogue, &folder.0);
             let cancelled = AtomicBool::new(false);
             let tag = String::from_utf8(scale_tag(2)).unwrap();
@@ -835,7 +835,7 @@ mod tests {
             {
                 rows[2].continuous = Some(b"shared".to_vec());
             }
-            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])])
+            let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])])
                 .unwrap()
                 .into_timelines(&Default::default())
                 .unwrap();
@@ -917,7 +917,7 @@ mod tests {
             reason: "synthetic party read failed".into(),
         }
         .into();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap();
         let (source, context, _folders) = icon_product_source(replay);
         let cancelled = AtomicBool::new(false);
         let shared = shared_frames(&source);
@@ -992,6 +992,7 @@ mod tests {
             time::Duration,
         };
         let replay = Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(
                 1,
@@ -1064,6 +1065,7 @@ mod tests {
     #[test]
     fn failed_or_cancelled_focus_misses_release_admission_without_retaining_a_frame() {
         let replay = Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 10, Some(100))])],
         )
@@ -1125,7 +1127,7 @@ mod tests {
                 country
             })
             .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
         let mut cache = FrameCache::default();
         let cancelled = AtomicBool::new(false);
         let first = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
@@ -1144,6 +1146,7 @@ mod tests {
     #[test]
     fn a_branch_keeps_its_latest_focus_hour_and_reads_an_earlier_one_again() {
         let replay = Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(
                 1,
@@ -1172,7 +1175,7 @@ mod tests {
         let mut first = source(1, 10, Some(100));
         first.tables[TableId::ActiveIdeas.index()] =
             TableView::Complete(TableRows::ActiveIdeas(Vec::new())).into();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first])]).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, vec![first])]).unwrap();
         let mut cache = FrameCache::default();
         let cancelled = AtomicBool::new(false);
         let narrow = cache.at(&replay, 1, 10, false, &cancelled).unwrap();
@@ -1207,6 +1210,7 @@ mod tests {
     #[test]
     fn focus_frame_reuse_keeps_branch_hour_gaps_and_cancellation_distinct() {
         let replay = Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[
                 records(1, vec![source(1, 10, Some(100)), source(1, 12, Some(120))]),
@@ -1254,6 +1258,7 @@ mod tests {
         }
         .into();
         let mut replay = Replay::from_records(
+            recorder_derive::writers(),
             CAMPAIGN.into(),
             &[records(1, vec![source(1, 10, Some(100)), target.clone()])],
         )

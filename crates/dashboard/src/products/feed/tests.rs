@@ -362,7 +362,7 @@ fn the_naming_readers_warmed_at_open_are_kept_at_the_head_for_the_first_page() {
     use replay::campaign::Replay;
     use std::sync::{Arc, PoisonError, atomic::AtomicBool};
     let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = crate::Source::from_replay(crate::SourceKey { source_id: "feed-naming".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let kept = super::kept_naming(&source);
     assert!(kept.lock().unwrap_or_else(PoisonError::into_inner).positions().is_empty(), "nothing is kept before the open reads ahead");
@@ -376,7 +376,7 @@ fn the_scope_index_warmed_at_open_holds_every_run_of_the_timeline() {
     use replay::campaign::Replay;
     use std::sync::{Arc, atomic::AtomicBool};
     let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = crate::Source::from_replay(crate::SourceKey { source_id: "feed-scope-warm".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     assert!(super::scope::kept(&source).is_empty(), "nothing is kept before the open reads ahead");
     super::scope::warm(&source, 1).unwrap();
@@ -396,7 +396,7 @@ fn each_page_keeps_its_naming_readers_where_it_stopped_and_the_next_takes_the_ne
     use replay::campaign::Replay;
     use std::sync::{Arc, PoisonError, atomic::AtomicBool};
     let frames = (100..=140).map(|hour| source(1, hour, Some(1))).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = crate::Source::from_replay(crate::SourceKey { source_id: "feed-naming-pages".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let query = crate::answer::query(&source, 1).unwrap();
     let run = query.timeline.stretches[0].run;

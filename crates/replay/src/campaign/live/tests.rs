@@ -395,7 +395,7 @@ fn the_encoders_block_count_follows_each_committed_block_across_short_runs_and_a
     let encode = |host: &mut Everything, until: Option<u64>| {
         let mut writer = folder.open(0);
         let tables = TableId::ALL.len();
-        let mut source = Multiplied::open(&folder.journal(), 0, Factors { factor: vec![1; tables], in_phase: vec![false; tables] }, None).unwrap();
+        let mut source = Multiplied::open(&folder.journal(), 0, Factors { factor: vec![1; tables], in_phase: vec![false; tables] }, None, &recorder_derive::writers().tables()).unwrap();
         source.start(writer.segments()).unwrap();
         host.blocks = source.blocks_before(writer.segments());
         let first_hours = source.hours_before(writer.segments());
@@ -442,7 +442,7 @@ fn an_encoding_is_taken_up_only_by_a_run_reading_its_journal_alike() {
     records.extend(hours(2, 2_000..=2_099, 23));
     records.push(detach(2_099));
     fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records], true).unwrap();
-    let open = |source: &str| open_encoded(&folder.recording(), &folder.state(), 0, Settings::LOW, source);
+    let open = |source: &str| open_encoded(&folder.recording(), &folder.state(), 0, Settings::LOW, source, recorder_derive::writers());
     let started = encoder_source(false, Some(0));
     assert_eq!(started, "journal-encode --start=0");
     let mut writer = open(&started).unwrap();
@@ -749,7 +749,7 @@ fn an_hour_naming_another_campaign_is_refused_as_it_is_written() {
     records.push(Spooled::Frame(other));
     records.push(detach(104));
     fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records], true).unwrap();
-    let mut writer = LiveWriter::open(&folder.recording(), &folder.state(), SOURCE, 0, Settings::LOW, Vec::new()).unwrap();
+    let mut writer = LiveWriter::open_with(&folder.recording(), &folder.state(), SOURCE, 0, Settings::LOW, Vec::new(), recorder_derive::writers()).unwrap();
     let mut journal = Journal::open(&folder.journal(), 0);
     journal.start(writer.segments()).unwrap();
     let error = writer.advance(&mut journal, &mut Deciding::everything(true), &|| false).unwrap_err();
@@ -896,7 +896,7 @@ fn another_owner_adds_its_extents_and_resume_state_to_each_revision() {
     records.extend(hours(2, 200..=201, 19));
     fixtures::write_journal(&folder.journal(), 0, CAMPAIGN, &[records], true).unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
-    let open = || LiveWriter::open(&folder.recording(), &folder.state(), SOURCE, 0, Settings::LOW, vec![Box::new(Counting(Arc::clone(&seen)))]).unwrap();
+    let open = || LiveWriter::open_with(&folder.recording(), &folder.state(), SOURCE, 0, Settings::LOW, vec![Box::new(Counting(Arc::clone(&seen)))], recorder_derive::writers()).unwrap();
     let mut host = Deciding::everything(true);
     let mut writer = open();
     let mut journal = Journal::open(&folder.journal(), 0);
@@ -923,19 +923,19 @@ fn another_owner_adds_its_extents_and_resume_state_to_each_revision() {
 type Handed = (Vec<(u128, Vec<String>)>, Vec<((u128, u16), String)>);
 
 struct Probe {
-    reads: &'static [recorder_derive::framework::Read],
+    reads: &'static [recorder_derive_framework::framework::Read],
     seen: Arc<Mutex<BTreeMap<Hour, Handed>>>,
 }
 
 impl Probe {
     fn new(table: TableId, seen: &Arc<Mutex<BTreeMap<Hour, Handed>>>) -> Self {
-        use recorder_derive::framework::{Columns, Read, Watch};
+        use recorder_derive_framework::framework::{Columns, Read, Watch};
         let reads = Box::leak(Box::new([Read { table, columns: Columns::Every, watch: Watch::Dropped, required: false }]));
         Self { reads, seen: Arc::clone(seen) }
     }
 }
 
-impl recorder_derive::framework::Writer for Probe {
+impl recorder_derive_framework::framework::Writer for Probe {
     fn name(&self) -> &'static str {
         "Probe"
     }
@@ -944,17 +944,17 @@ impl recorder_derive::framework::Writer for Probe {
         1
     }
 
-    fn tables(&self) -> &'static [recorder_derive::framework::Output] {
+    fn tables(&self) -> &'static [recorder_derive_framework::framework::Output] {
         &[]
     }
 
-    fn reads(&self) -> &'static [recorder_derive::framework::Read] {
+    fn reads(&self) -> &'static [recorder_derive_framework::framework::Read] {
         self.reads
     }
 
     fn start(&mut self) {}
 
-    fn hour(&mut self, hour: &recorder_derive::framework::Hour<'_>, _: &mut recorder_derive::framework::Rows) -> io::Result<()> {
+    fn hour(&mut self, hour: &recorder_derive_framework::framework::Hour<'_>, _: &mut recorder_derive_framework::framework::Rows) -> io::Result<()> {
         use replay_columnar::store::{Kept as Cell, Value};
         let table = self.reads[0].table;
         let shown = |kept: &Cell| match kept.value() {
@@ -1033,12 +1033,12 @@ fn a_writer_reading_kept_cells_taken_up_at_a_commit_is_handed_what_an_unbroken_o
 const EVENTS_ROW: u128 = u128::MAX;
 
 struct Ledger {
-    table: &'static [recorder_derive::framework::Output],
+    table: &'static [recorder_derive_framework::framework::Output],
     column: usize,
     columns: usize,
 }
 
-impl recorder_derive::framework::Writer for Ledger {
+impl recorder_derive_framework::framework::Writer for Ledger {
     fn name(&self) -> &'static str {
         "Ledger"
     }
@@ -1047,19 +1047,19 @@ impl recorder_derive::framework::Writer for Ledger {
         1
     }
 
-    fn tables(&self) -> &'static [recorder_derive::framework::Output] {
+    fn tables(&self) -> &'static [recorder_derive_framework::framework::Output] {
         self.table
     }
 
-    fn reads(&self) -> &'static [recorder_derive::framework::Read] {
-        use recorder_derive::framework::{Columns, Read, Watch};
+    fn reads(&self) -> &'static [recorder_derive_framework::framework::Read] {
+        use recorder_derive_framework::framework::{Columns, Read, Watch};
         &[Read { table: TableId::NuclearStrikes, columns: Columns::Every, watch: Watch::Appended, required: false }]
     }
 
     fn start(&mut self) {}
 
-    fn hour(&mut self, hour: &recorder_derive::framework::Hour<'_>, out: &mut recorder_derive::framework::Rows) -> io::Result<()> {
-        use recorder_derive::framework::Value as Set;
+    fn hour(&mut self, hour: &recorder_derive_framework::framework::Hour<'_>, out: &mut recorder_derive_framework::framework::Rows) -> io::Result<()> {
+        use recorder_derive_framework::framework::Value as Set;
         let (log, table) = (TableId::NuclearStrikes, self.table[0].table());
         let forgotten = hour.forgotten(log);
         let gone = |ordinal: u64| forgotten.iter().any(|range| range.contains(&ordinal));
@@ -1092,7 +1092,7 @@ impl recorder_derive::framework::Writer for Ledger {
     }
 }
 
-fn push_ledger(writers: &mut recorder_derive::Writers) {
+fn push_ledger(writers: &mut recorder_derive_framework::framework::Writers) {
     let kinds = schema().unwrap();
     let derived = writers.keyed();
     let summarized: Vec<usize> = crate::summaries::registry().unwrap().iter().map(|(table, _)| *table).collect();
@@ -1107,7 +1107,7 @@ fn push_ledger(writers: &mut recorder_derive::Writers) {
         })
         .find_map(|table| kinds[table].iter().position(|&kind| kind == Column::U64).map(|column| (table, column)))
         .expect("a state table with a U64 column");
-    let table: &'static [recorder_derive::framework::Output] = Box::leak(Box::new([recorder_derive::framework::Output::State(TableId::ALL[table])]));
+    let table: &'static [recorder_derive_framework::framework::Output] = Box::leak(Box::new([recorder_derive_framework::framework::Output::State(TableId::ALL[table])]));
     writers.push(Box::new(Ledger { table, column, columns: kinds[table[0].table().index()].len() }));
 }
 
@@ -1159,15 +1159,15 @@ mod definitions {
 
     const FIRST: Hour = 100;
 
-    const LEVEL: recorder_derive::framework::definitions::Define =
-        recorder_derive::framework::definitions::Define { section: "NTest", name: "LEVEL", form: recorder_derive::framework::definitions::Form::Int32 };
+    const LEVEL: recorder_derive_framework::framework::definitions::Define =
+        recorder_derive_framework::framework::definitions::Define { section: "NTest", name: "LEVEL", form: recorder_derive_framework::framework::definitions::Form::Int32 };
 
     const PACK: &[u8] = b"7";
 
-    fn levels(facts: &recorder_derive::Facts, _: &Identity, _: &[recorder_derive::framework::Definition]) -> recorder_derive::Definitions {
+    fn levels(facts: &recorder_derive_framework::framework::Facts, _: &Identity, _: &[recorder_derive_framework::framework::Definition]) -> recorder_derive_framework::framework::Definitions {
         let mut pack = vec![0; facts.length as usize];
         let level = facts.read_at(0, &mut pack).ok().and_then(|()| std::str::from_utf8(&pack).ok()?.parse::<i64>().ok()).ok_or_else(|| "not a level".to_owned());
-        recorder_derive::Definitions::read_none().with_define(LEVEL, level)
+        recorder_derive_framework::framework::Definitions::read_none().with_define(LEVEL, level)
     }
 
     fn level_table() -> (usize, usize) {
@@ -1185,12 +1185,12 @@ mod definitions {
     }
 
     struct Leveled {
-        table: &'static [recorder_derive::framework::Output],
+        table: &'static [recorder_derive_framework::framework::Output],
         column: usize,
         columns: usize,
     }
 
-    impl recorder_derive::framework::Writer for Leveled {
+    impl recorder_derive_framework::framework::Writer for Leveled {
         fn name(&self) -> &'static str {
             "Leveled"
         }
@@ -1199,11 +1199,11 @@ mod definitions {
             1
         }
 
-        fn tables(&self) -> &'static [recorder_derive::framework::Output] {
+        fn tables(&self) -> &'static [recorder_derive_framework::framework::Output] {
             self.table
         }
 
-        fn reads(&self) -> &'static [recorder_derive::framework::Read] {
+        fn reads(&self) -> &'static [recorder_derive_framework::framework::Read] {
             &[]
         }
 
@@ -1211,14 +1211,14 @@ mod definitions {
             true
         }
 
-        fn definitions(&self) -> &'static [recorder_derive::framework::Uses] {
-            &[recorder_derive::framework::Uses { definition: recorder_derive::framework::Definition::Define(LEVEL), required: true }]
+        fn definitions(&self) -> &'static [recorder_derive_framework::framework::Uses] {
+            &[recorder_derive_framework::framework::Uses { definition: recorder_derive_framework::framework::Definition::Define(LEVEL), required: true }]
         }
 
         fn start(&mut self) {}
 
-        fn hour(&mut self, hour: &recorder_derive::framework::Hour<'_>, out: &mut recorder_derive::framework::Rows) -> io::Result<()> {
-            use recorder_derive::framework::Value as Set;
+        fn hour(&mut self, hour: &recorder_derive_framework::framework::Hour<'_>, out: &mut recorder_derive_framework::framework::Rows) -> io::Result<()> {
+            use recorder_derive_framework::framework::Value as Set;
             let level = hour.definitions().define(LEVEL.section, LEVEL.name).map_err(|why| invalid(why.to_owned()))?;
             let mut cells = vec![Set::Unrecorded; self.columns];
             cells[self.column] = Set::U64(level as u64 * 1_000_000 + hour.hour as u64);
@@ -1235,10 +1235,10 @@ mod definitions {
         }
     }
 
-    fn leveled(mut writers: recorder_derive::Writers) -> recorder_derive::Writers {
+    fn leveled(mut writers: recorder_derive_framework::framework::Writers) -> recorder_derive_framework::framework::Writers {
         let (table, column) = level_table();
         let columns = schema().unwrap()[table].len();
-        writers.push(Box::new(Leveled { table: Box::leak(Box::new([recorder_derive::framework::Output::State(TableId::ALL[table])])), column, columns }));
+        writers.push(Box::new(Leveled { table: Box::leak(Box::new([recorder_derive_framework::framework::Output::State(TableId::ALL[table])])), column, columns }));
         writers.read_definitions_with(levels);
         writers
     }

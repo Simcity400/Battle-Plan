@@ -243,7 +243,7 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
         .filter(|((campaign, _), _)| campaign == ID)
         .map(|((_, index), bytes)| (*index, recover_prefix(bytes)))
         .collect::<Vec<_>>();
-    replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
+    replay::campaign::Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap()
 }
 pub(crate) fn idle_sync_refused() {
     let (mut processor, store) = processor();

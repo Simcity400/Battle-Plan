@@ -4,4 +4,4 @@
 
 `FactionTotals` uses current membership. A faction without a member has no row. Each territory column uses the corresponding territory total by canonical slot and factory measures use the live raw country's factory row with the game's counting rule. Exclude the human-player group. A missing member's operand or incomplete roster withholds affected totals instead of giving smaller numbers. Recompute all faction sums when a roster or country identity changes. When only factory or territory rows change, reevaluate their factions. The member rosters and sums are rebuilt from table inputs after a resume.
 
-[Account ownership](../../crates/recorder-derive/src/faction_accounts.rs) · [Faction totals](../../crates/recorder-derive/src/faction_totals.rs)
+[Account ownership](../../crates/recorder-derive-politics/src/faction_accounts.rs) · [Faction totals](../../crates/recorder-derive-politics/src/faction_totals.rs)

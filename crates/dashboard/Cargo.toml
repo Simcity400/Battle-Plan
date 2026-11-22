@@ -86,6 +86,10 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
+recorder-derive-air.workspace = true
+recorder-derive-framework = { workspace = true, features = ["test-support"] }
+recorder-derive-land.workspace = true
+recorder-derive-world.workspace = true
 dashboard = { workspace = true, features = ["export-types"] }
 dashboard-base = { workspace = true, features = ["test-support"] }
 engine-research.workspace = true

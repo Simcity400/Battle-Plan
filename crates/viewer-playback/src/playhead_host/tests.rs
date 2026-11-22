@@ -677,7 +677,7 @@ fn a_mirror_of_an_earlier_format_reads_the_columns_added_since_not_recorded() {
     use replay_data::rows::{DivisionRowAt141, compatibility::CAPTURE_ADDITIONS_FORMAT};
     let table = TableId::Divisions;
     let divisions = [DivisionRowAt141 { id: (3_u64 << 32) | 1, province: 11, ..Default::default() }, DivisionRowAt141 { id: (4_u64 << 32) | 1, province: 12, ..Default::default() }];
-    let (bytes, _) = fixtures::written_at(CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &[(1, 0, 1)], &[table], |synthetic, _, ordinal| {
+    let (bytes, _) = fixtures::written_at(recorder_derive::writers(), CAPTURE_ADDITIONS_FORMAT - 1, b"format 141", &[(1, 0, 1)], &[table], |synthetic, _, ordinal| {
         let rows = &divisions[..if ordinal < 20 { 1 } else { 2 }];
         synthetic.table(table, Input::Snapshot { rows, partial: None, read: true, sample: Sample::FromReadBit }).unwrap();
     });

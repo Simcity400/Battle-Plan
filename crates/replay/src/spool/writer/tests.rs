@@ -1297,7 +1297,7 @@ fn two_loads_during_disk_outage_preserve_fresh_and_resumed_branch_gaps() {
         assert_eq!(recovered.records, context);
         let earlier = recover_prefix(&abandoned);
         let replay =
-            Replay::from_recovered(b"campaign".to_vec(), &[(0, earlier), (2, recovered)]).unwrap();
+            Replay::from_recovered(recorder_derive::writers(), b"campaign".to_vec(), &[(0, earlier), (2, recovered)]).unwrap();
         assert_eq!(
             replay
                 .branches

@@ -17,7 +17,7 @@ struct Applied {
 
 impl Applied {
     fn new(tables: &[TableId], mode: CaptureMode) -> Self {
-        Self { writer: fixtures::writer(fixtures::identity(b"native frame", mode.byte()), |_| {}), tables: tables.to_vec(), mode, running: false }
+        Self { writer: fixtures::writer(recorder_derive::writers(), fixtures::identity(b"native frame", mode.byte()), |_| {}), tables: tables.to_vec(), mode, running: false }
     }
 
     fn cut(&mut self) {

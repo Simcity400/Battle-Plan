@@ -265,6 +265,14 @@ job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay", default-features = false }
 replay-looks = { path = "crates/replay-looks" }
 recorder-derive = { path = "crates/recorder-derive" }
+recorder-derive-air = { path = "crates/recorder-derive-air" }
+recorder-derive-economy = { path = "crates/recorder-derive-economy" }
+recorder-derive-equipment = { path = "crates/recorder-derive-equipment" }
+recorder-derive-framework = { path = "crates/recorder-derive-framework" }
+recorder-derive-land = { path = "crates/recorder-derive-land" }
+recorder-derive-naval = { path = "crates/recorder-derive-naval" }
+recorder-derive-politics = { path = "crates/recorder-derive-politics" }
+recorder-derive-world = { path = "crates/recorder-derive-world" }
 app-update = { path = "crates/app-update" }
 replay-data = { path = "crates/replay-data" }
 replay-rows = { path = "crates/replay-rows" }

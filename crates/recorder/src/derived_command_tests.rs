@@ -207,6 +207,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
             }
         }
         let replay = Replay::from_records(
+            recorder_derive::writers(),
             crate::test_support::ALLOCATION_CAMPAIGN.to_vec(),
             &[records],
         )

@@ -69,7 +69,7 @@ fn recorded_capture(folder: &Path, capture: u32) -> Recorded {
     let controls = journaled_controls(folder, capture);
     let path = folder.join(format!("recorded.{capture}.battleplan"));
     let state = folder.join(format!("recorded.{capture}.state"));
-    let mut writer = LiveWriter::open(&path, &state, "session", capture, Settings::LOW, Vec::new()).unwrap();
+    let mut writer = LiveWriter::open_with(&path, &state, "session", capture, Settings::LOW, Vec::new(), recorder_derive::writers()).unwrap();
     let mut journal = Journal::open(folder, capture);
     journal.start(writer.segments()).unwrap();
     assert_eq!(writer.advance(&mut journal, &mut Every, &|| false).unwrap(), Progress::Finished);

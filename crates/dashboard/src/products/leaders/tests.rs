@@ -97,7 +97,8 @@ fn a_leaders_battles_from_its_totals_sum_its_handles_and_runs() {
 
 #[test]
 fn trait_dates_from_their_table_are_the_fold_of_the_gain_rows_over_runs() {
-    use recorder_derive::{framework::Writers, leader_traits::LeaderTraits, testing};
+    use recorder_derive_framework::{framework::Writers, testing};
+    use recorder_derive_land::leader_traits::LeaderTraits;
     use replay_columnar::{manifest::Status, store::Store, unit::Discard};
     use replay_data::rows::{TableId, UnitLeaderRow};
     const LEADER: u64 = 11 << 32 | 5;
@@ -156,7 +157,7 @@ fn a_leader_whose_role_may_have_conditions_reads_its_character_first_and_the_tri
     use replay_data::rows::{TableId, TableRows, UnitLeaderRow};
     use replay_frame::frame::TableView;
     use std::sync::{Arc, atomic::AtomicBool};
-    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, (100..=101).map(|hour| source(1, hour, Some(1_000))).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (100..=101).map(|hour| source(1, hour, Some(1_000))).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let recording = crate::Source::from_replay(crate::SourceKey { source_id: "leader-reads".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let run = crate::answer::query(&recording, 1).unwrap().timeline.stretches[0].run;
     let context = LeadersContext::load(&recording, &LoadContext { content: None }).unwrap();

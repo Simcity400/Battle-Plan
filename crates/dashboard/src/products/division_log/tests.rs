@@ -106,7 +106,7 @@ fn templates_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
 #[test]
 fn a_runs_templates_are_named_by_their_first_row_in_the_log() {
     let frames = (1_000..=2_600).map(templates_frame).collect();
-    let replay = replay::campaign::Replay::from_records(crate::test_fixtures::CAMPAIGN.into(), &[crate::test_fixtures::records(1, frames)]).unwrap();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), crate::test_fixtures::CAMPAIGN.into(), &[crate::test_fixtures::records(1, frames)]).unwrap();
     let seen = run_templates(replay.recording(), 0).unwrap();
     let named = |id: u32, hour: i32, literal: &[u8]| SeenTemplate { id, hour, literal: literal.to_vec(), key: None, country: Some(9001) };
     assert_eq!(seen, vec![named(1, 1_900, b"1. Infanterie"), named(2, 1_100, b"2. Panzer")]);

@@ -12,6 +12,7 @@ use crate::{
     scope::CaptureMode,
     spool::{self, ControlRecord},
 };
+use recorder_derive_framework::framework::{Definitions, Facts, Writers};
 use replay_columnar::{
     container::{self, ContainerWriter, Open, Revision, SectionKey, SectionKind, StateEntry, StateFile, Tags, schema as sections, state_file},
     envelope::{self, Kind, SPAN_BLOCKS, UNIT_ORDINALS},
@@ -523,7 +524,7 @@ pub struct LiveWriter {
     columns: Vec<usize>,
     store: Store,
     adapter: Adapter,
-    writers: recorder_derive::Writers,
+    writers: Writers,
     writer_ns: u64,
     summaries: Summaries,
     block: Option<OpenBlock>,
@@ -535,25 +536,14 @@ pub struct LiveWriter {
 }
 
 impl LiveWriter {
-    pub fn open(
+    pub fn open_with(
         path: &Path,
         state_path: &Path,
         source: &str,
         capture: u32,
         settings: Settings,
         parts: Vec<Box<dyn Part>>,
-    ) -> io::Result<Self> {
-        Self::open_with(path, state_path, source, capture, settings, parts, recorder_derive::writers())
-    }
-
-    pub(crate) fn open_with(
-        path: &Path,
-        state_path: &Path,
-        source: &str,
-        capture: u32,
-        settings: Settings,
-        parts: Vec<Box<dyn Part>>,
-        writers: recorder_derive::Writers,
+        writers: Writers,
     ) -> io::Result<Self> {
         let kinds = schema()?;
         let columns = kinds.iter().map(Vec::len).collect();
@@ -745,9 +735,9 @@ impl LiveWriter {
             if !self.writers.wanted().is_empty() {
                 let _label = label("definitions");
                 match (reading(&self.path), self.known.sessions.last()) {
-                    (Ok(file), Some(session)) => self.writers.define_from(&recorder_derive::Facts::stored(file, extent.offset, extent.stored), &session.identity),
-                    (Ok(_), None) => self.writers.define(recorder_derive::Definitions::absent("the recording's game facts name no session")),
-                    (Err(error), _) => self.writers.define(recorder_derive::Definitions::absent(format!("the recording's game facts cannot be read: {error}"))),
+                    (Ok(file), Some(session)) => self.writers.define_from(&Facts::stored(file, extent.offset, extent.stored), &session.identity),
+                    (Ok(_), None) => self.writers.define(Definitions::absent("the recording's game facts name no session")),
+                    (Err(error), _) => self.writers.define(Definitions::absent(format!("the recording's game facts cannot be read: {error}"))),
                 }
             }
             self.defined = true;
@@ -1582,7 +1572,7 @@ impl LiveWriter {
                 let pack = Arc::new(pack);
                 if !self.defined {
                     let _label = label("definitions");
-                    self.writers.define_from(&recorder_derive::Facts::held(Arc::clone(&pack)), identity);
+                    self.writers.define_from(&Facts::held(Arc::clone(&pack)), identity);
                     self.defined = true;
                 }
                 self.file()?.container().put(Kind::Facts, Tags::default(), pack.len() as u64, &pack[..])?
@@ -1590,7 +1580,7 @@ impl LiveWriter {
             GivenFacts::Placed(FactsFile { mut file, offset, length }) => {
                 if !self.defined {
                     let _label = label("definitions");
-                    self.writers.define_from(&recorder_derive::Facts::stored(file.try_clone()?, offset, length), identity);
+                    self.writers.define_from(&Facts::stored(file.try_clone()?, offset, length), identity);
                     self.defined = true;
                 }
                 file.seek(SeekFrom::Start(offset))?;

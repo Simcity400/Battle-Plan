@@ -10,9 +10,10 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["content-reader-core/test-support"]
+test-support = ["dep:recorder-derive", "content-reader-core/test-support", "replay/test-support"]
 
 [dependencies]
+recorder-derive = { workspace = true, optional = true }
 replay.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
@@ -28,6 +29,7 @@ ts-rs = "11.1"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+recorder-derive.workspace = true
 engine-heap.workspace = true
 content-reader-core = { workspace = true, features = ["test-support"] }
 

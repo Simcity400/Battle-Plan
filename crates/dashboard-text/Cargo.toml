@@ -56,6 +56,7 @@ shader-pipeline = { path = "../shader-pipeline" }
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+recorder-derive.workspace = true
 engine-heap.workspace = true
 content-reader-abilities = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }

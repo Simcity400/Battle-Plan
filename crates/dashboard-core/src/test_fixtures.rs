@@ -506,7 +506,7 @@ pub fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
 }
 
 pub fn replay(frames: Vec<DecodedFrame>) -> replay::campaign::Replay {
-    replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+    replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
 
 pub fn equipment_types(texts: &[&[u8]]) -> std::io::Result<content_reader_core::equipment::Database> {

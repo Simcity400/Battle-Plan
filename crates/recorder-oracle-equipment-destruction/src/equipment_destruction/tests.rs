@@ -895,7 +895,7 @@ fn history_replay(branches: Vec<Vec<(DecodedFrame, bool)>>) -> Replay {
             records.push(Record::Frame(encoder.encode(frame, keyframe).unwrap()));
         }
     }
-    Replay::from_records(b"synthetic-history".to_vec(), &[records]).unwrap()
+    Replay::from_records(recorder_derive::writers(), b"synthetic-history".to_vec(), &[records]).unwrap()
 }
 
 #[test]
