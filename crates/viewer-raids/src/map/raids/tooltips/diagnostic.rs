@@ -1423,5 +1423,43 @@ mod tests {
             Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
             "{flag_lines:?}"
         );
+        kind.launchable = parse(
+            "if = { limit = { has_global_flag = oilfield } always = yes } hidden_trigger = { set_temp_variable = { x = 7 } } if = { limit = { check_variable = { temp_var:x = 7 } } always = no }",
+        );
+        let (result, definite_lines) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert!(
+            definite_lines
+                .iter()
+                .any(|(key, entry)| key == "raid launchable: if" && entry.is_err()),
+            "{definite_lines:?}"
+        );
+        assert_eq!(
+            definite_lines.last(),
+            Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+            "{definite_lines:?}"
+        );
+        kind.launchable = parse(
+            "OR = { has_global_flag = oilfield hidden_trigger = { set_temp_variable = { y = 1 } } } hidden_trigger = { set_temp_variable = { x = 7 } } if = { limit = { has_global_flag = oilfield } set_temp_variable = { x = 8 } } if = { limit = { check_variable = { temp_var:x = 7 } } always = no } always = no",
+        );
+        let (result, retainted_lines) =
+            context.conditions(&kind, &RaidScope::default(), scopes, true, None);
+        assert_eq!(result, Eval::False);
+        assert_eq!(
+            retainted_lines
+                .iter()
+                .filter(|(key, entry)| {
+                    key == "raid launchable: always" && entry.as_deref() == Ok("-never\n")
+                })
+                .count(),
+            1,
+            "{retainted_lines:?}"
+        );
+        assert_eq!(
+            retainted_lines.last(),
+            Some(&("raid launchable: always".into(), Ok("-never\n".into()))),
+            "{retainted_lines:?}"
+        );
     }
 }

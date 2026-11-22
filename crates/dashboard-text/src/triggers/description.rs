@@ -473,6 +473,8 @@ impl<'a> Formatter<'_, '_, 'a> {
                     if let Some(why) = &branch.refused {
                         return Err(why.clone().to_string());
                     }
+                    let before = self.evaluator.variable_session();
+                    let had_taint = self.evaluator.temps_written().is_some();
                     match self.evaluator.all(&branch.limit, scopes).decided() {
                         Ok(true) => {
                             return Ok(self.and(
@@ -487,24 +489,30 @@ impl<'a> Formatter<'_, '_, 'a> {
                         }
                         Ok(false) => {}
                         Err(why) => {
-                            let before = self.evaluator.variable_session();
-                            let had_taint = self.evaluator.temps_written().is_some();
-                            let _ = self.evaluator.maybe(true, || {
-                                let _ = self.evaluator.all(&branch.body, scopes);
-                                self.evaluator.branches(&chain[index + 1..], scopes)
-                            });
-                            let tainted_now = !had_taint
-                                && self.evaluator.temps_written().is_some();
-                            self.evaluator.restore_variable_session(&before);
-                            if tainted_now
-                                || chain[index + 1..]
-                                    .iter()
-                                    .any(|later| later.refused.is_some())
-                            {
-                                return Err(why);
-                            }
                             sink.push_err("if".into(), why.clone());
-                            return Ok(Eval::unknown(why));
+                            self.evaluator.restore_variable_session(&before);
+                            let outcome = self.evaluator.branches(&chain[index..], scopes);
+                            let later_refused = chain[index + 1..]
+                                .iter()
+                                .any(|later| later.refused.is_some());
+                            if later_refused {
+                                self.evaluator.taint_temps(
+                                    crate::triggers::Failure::from(why).context(|why| {
+                                        format!("trigger tooltip session is uncertain: {why}")
+                                    }),
+                                );
+                            } else if !had_taint
+                                && self.evaluator.temps_written().is_some()
+                                && self.evaluator.local_temps.borrow().is_empty()
+                            {
+                                self.evaluator.clear_temp_writer();
+                                self.evaluator.taint_temps(
+                                    crate::triggers::Failure::from(why).context(|why| {
+                                        format!("trigger tooltip session is uncertain: {why}")
+                                    }),
+                                );
+                            }
+                            return Ok(outcome);
                         }
                     }
                 }

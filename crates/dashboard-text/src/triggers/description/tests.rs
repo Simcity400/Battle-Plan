@@ -486,6 +486,23 @@ fn hidden_trigger_writes_temps_and_malformed_or_unknown_logic_preserves_siblings
         undecided_write.contains("session is uncertain"),
         "{undecided_write}"
     );
+    let definite_after_if = run_synthetic(
+        "if={limit={has_global_flag=missing_flag} always=yes} hidden_trigger={set_temp_variable={x=7}} if={limit={check_variable={temp_var:x=7}} always=no}",
+    )
+    .unwrap_err();
+    assert!(
+        definite_after_if.contains("[no]Never\n"),
+        "{definite_after_if}"
+    );
+    assert!(
+        definite_after_if.contains("ScriptFlags is unavailable"),
+        "{definite_after_if}"
+    );
+    let retainted = run_synthetic(
+        "OR={has_global_flag=missing_flag hidden_trigger={set_temp_variable={y=1}}} hidden_trigger={set_temp_variable={x=7}} if={limit={has_global_flag=missing_flag} set_temp_variable={x=8}} if={limit={check_variable={temp_var:x=7}} always=no} always=no",
+    )
+    .unwrap_err();
+    assert_eq!(retainted.matches("[no]Never\n").count(), 1, "{retainted}");
     let or_refused = run_synthetic("OR={always=no synthetic_unported_trigger=yes}").unwrap_err();
     assert!(or_refused.contains("   Never\n"), "{or_refused}");
     assert!(
