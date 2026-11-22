@@ -1975,6 +1975,33 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
         Ok(Some(Icon::Sprite("GFX_a".into())))
     );
 
+    let mut shared_token_frame = diff_country_frame.clone();
+    *shared_token_frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        vec![
+            StateRow {
+                id: 1,
+                continent: Recorded::Value(Some(777)),
+                ..Default::default()
+            },
+            StateRow {
+                id: 2,
+                continent: Recorded::Value(Some(777)),
+                ..Default::default()
+            },
+        ],
+    ));
+    let shared_token_hour =
+        IconHour::read(&shared_token_frame, &shared_capital_content).unwrap();
+    assert_eq!(
+        chosen(
+            &shared_capital_content,
+            &shared_token_hour,
+            &shared_capital_variant,
+            "tanks_1"
+        ),
+        Ok(Some(Icon::Sprite("GFX_a".into())))
+    );
+
     let masked_error_pools = equipment_graphics::Content::from_texts(
         &[br#"
             default = {

@@ -124,6 +124,35 @@ impl IconChoice {
             }
             outcomes.push(outcome.unwrap_or_else(|| branch.otherwise.clone().map(|()| None)));
         }
+        let mut first_ok: Option<&Option<Icon>> = None;
+        let mut disagrees = false;
+        let mut first_err: Option<&String> = None;
+        for outcome in &outcomes {
+            match outcome {
+                Ok(icon) => match first_ok {
+                    None => first_ok = Some(icon),
+                    Some(seen) if seen != icon => {
+                        disagrees = true;
+                        break;
+                    }
+                    Some(_) => {}
+                },
+                Err(error) => {
+                    if first_err.is_none() {
+                        first_err = Some(error);
+                    }
+                }
+            }
+        }
+        if !disagrees {
+            if let Some(error) = first_err {
+                return Err(error.clone());
+            }
+            return Ok(first_ok.cloned().flatten());
+        }
+        if self.reasons.len() == 1 {
+            return Err(self.reasons[0].clone());
+        }
         for index in 0..self.reasons.len() {
             for a in 0..self.branches.len() {
                 let Ok(left_icon) = &outcomes[a] else {
@@ -175,14 +204,11 @@ impl IconChoice {
                     .unwrap_or_else(|| "continent unknown".to_owned()));
             }
         }
-        let mut agreed: Option<&Option<Icon>> = None;
-        for outcome in &outcomes {
-            match outcome {
-                Ok(icon) => agreed = Some(icon),
-                Err(error) => return Err(error.clone()),
-            }
-        }
-        Ok(agreed.cloned().flatten())
+        Err(self
+            .reasons
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "continent unknown".to_owned()))
     }
 
     pub fn shown(&self, catalogue: &Catalogue) -> Result<Option<Icon>, String> {
@@ -868,6 +894,7 @@ impl IconHour {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum ContinentFact {
+    Token(u32),
     State(u32),
     Slot(u32),
 }
@@ -1225,8 +1252,9 @@ fn pool(
             let prepared = hour.prepared.as_ref().map_err(Clone::clone)?;
             let place = prepared.context(raw)?;
             let continent_fact = prepared
-                .capital_state(raw)
-                .map(ContinentFact::State)
+                .capital_continent_token(raw)
+                .map(ContinentFact::Token)
+                .or_else(|| prepared.capital_state(raw).map(ContinentFact::State))
                 .or_else(|| prepared.slot(raw).map(ContinentFact::Slot));
             let country_tag = if place.is_some() {
                 Some(hour.witnessed_tag(raw)?)

@@ -488,7 +488,7 @@ pub(super) fn convoy_weapon_bound_from_database(
                 let mut pure_add_range = [equipment.stats[stat], equipment.stats[stat]];
                 let mut pure_mul_range = [0_i64, 0_i64];
                 let mut pure_avg_by_ratio: BTreeMap<(i64, i64), (i64, i64)> = BTreeMap::new();
-                let mut pure_avg_exact_by_key: BTreeMap<(i64, i64), usize> = BTreeMap::new();
+                let mut pure_avg_exact_by_key: BTreeMap<i64, usize> = BTreeMap::new();
                 let mut pure_avg_pos_sum = 0_i64;
                 let mut pure_avg_neg_sum = 0_i64;
                 struct CorrelatedGroup {
@@ -554,9 +554,7 @@ pub(super) fn convoy_weapon_bound_from_database(
                         entry.1 = entry.1.checked_add(mod_avg_cnt)?;
                         entry.0.checked_mul(100_000)?;
                         entry.1.checked_mul(100_000)?;
-                        let exact = pure_avg_exact_by_key
-                            .entry((mod_avg_sum, mod_avg_cnt))
-                            .or_insert(0);
+                        let exact = pure_avg_exact_by_key.entry(mod_avg_sum).or_insert(0);
                         *exact = exact.checked_add(1)?;
                         continue;
                     }
@@ -717,11 +715,10 @@ pub(super) fn convoy_weapon_bound_from_database(
                 }
                 let mut avg_add_groups: Vec<AvgAddGroup> =
                     Vec::with_capacity(non_mul.len() + pure_avg_exact_by_key.len());
-                for ((avg_sum, avg_cnt), count) in pure_avg_exact_by_key {
+                for (avg, count) in pure_avg_exact_by_key {
                     avg_add_groups.push(AvgAddGroup {
                         add: 0,
-                        avg_sum,
-                        avg_cnt,
+                        avg,
                         count,
                     });
                 }
@@ -762,8 +759,7 @@ pub(super) fn convoy_weapon_bound_from_database(
                         });
                         avg_add_groups.push(AvgAddGroup {
                             add: group.add,
-                            avg_sum: group.avg_sum,
-                            avg_cnt: group.avg_cnt,
+                            avg: group.avg_sum,
                             count: group.count,
                         });
                     }
@@ -954,8 +950,7 @@ pub(super) fn convoy_weapon_bound_from_database(
 #[derive(Clone, Copy)]
 struct AvgAddGroup {
     add: i64,
-    avg_sum: i64,
-    avg_cnt: i64,
+    avg: i64,
     count: usize,
 }
 
@@ -971,12 +966,269 @@ fn ceil_div_i128(n: i128, d: i128) -> i128 {
     if r > 0 { q + 1 } else { q }
 }
 
-fn cmp_ratio_i128(w_a: i128, c_a: i128, w_b: i128, c_b: i128) -> std::cmp::Ordering {
-    let qa = w_a.div_euclid(c_a);
-    let ra = w_a.rem_euclid(c_a);
-    let qb = w_b.div_euclid(c_b);
-    let rb = w_b.rem_euclid(c_b);
-    qa.cmp(&qb).then_with(|| (ra * c_b).cmp(&(rb * c_a)))
+fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        let r = a % b;
+        a = b;
+        b = r;
+    }
+    a.max(1)
+}
+
+struct CountSlice<'a> {
+    groups: &'a [AvgAddGroup],
+    k: usize,
+    d: i128,
+    base_sum: i128,
+}
+
+impl CountSlice<'_> {
+    fn extremal(
+        &self,
+        p: i128,
+        q: i128,
+        maximize: bool,
+        scored: &mut Vec<(i128, i128, i128, usize)>,
+    ) -> Option<(i128, i128)> {
+        scored.clear();
+        let qd = q.checked_mul(self.d)?;
+        let qp = q.checked_sub(p)?;
+        for group in self.groups {
+            let a = i128::from(group.add);
+            let u = i128::from(group.avg);
+            let s = qd.checked_mul(a)?.checked_add(qp.checked_mul(u)?)?;
+            scored.push((s, -u, a, group.count));
+        }
+        scored.sort_by(|x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(&y.1)));
+        let mut rem = self.k;
+        let mut sum_a = 0_i128;
+        let mut sum_u = self.base_sum;
+        if maximize {
+            for &(_, neg_u, a, count) in scored.iter().rev() {
+                if rem == 0 {
+                    break;
+                }
+                let take = rem.min(count) as i128;
+                sum_a = sum_a.checked_add(a.checked_mul(take)?)?;
+                sum_u = sum_u.checked_add((-neg_u).checked_mul(take)?)?;
+                rem -= take as usize;
+            }
+        } else {
+            for &(_, neg_u, a, count) in scored.iter() {
+                if rem == 0 {
+                    break;
+                }
+                let take = rem.min(count) as i128;
+                sum_a = sum_a.checked_add(a.checked_mul(take)?)?;
+                sum_u = sum_u.checked_add((-neg_u).checked_mul(take)?)?;
+                rem -= take as usize;
+            }
+        }
+        let r = self.d.checked_mul(sum_a)?.checked_add(sum_u)?;
+        Some((r, sum_u))
+    }
+
+    fn prove_neg_avg_upper(
+        &self,
+        target: i128,
+        scored: &mut Vec<(i128, i128, i128, usize)>,
+    ) -> bool {
+        let Some(limit) = self.d.checked_mul(target) else {
+            return false;
+        };
+        let Some((mut r_l, mut u_l)) = self.extremal(0, 1, true, scored) else {
+            return false;
+        };
+        if r_l <= limit {
+            return true;
+        }
+        if u_l < 0 {
+            return false;
+        }
+        let mut right: Option<(i128, i128)> = None;
+        let mut step_p = 1_i128;
+        for _ in 0..60 {
+            let Some((r, u)) = self.extremal(step_p, 1, true, scored) else {
+                return false;
+            };
+            let Some(m) = step_p.checked_mul(u).and_then(|pu| r.checked_sub(pu)) else {
+                return false;
+            };
+            if let Some(cert) = m.checked_sub(step_p)
+                && cert <= limit
+            {
+                return true;
+            }
+            if u < 0 {
+                if r > limit {
+                    return false;
+                }
+                right = Some((r, u));
+                break;
+            }
+            r_l = r;
+            u_l = u;
+            let Some(next_p) = step_p.checked_mul(2) else {
+                return false;
+            };
+            step_p = next_p;
+        }
+        let Some((mut r_r, mut u_r)) = right else {
+            return false;
+        };
+        for _ in 0..32 {
+            let Some(p_raw) = r_l.checked_sub(r_r) else {
+                return false;
+            };
+            let Some(q_raw) = u_l.checked_sub(u_r) else {
+                return false;
+            };
+            if p_raw <= 0 || q_raw <= 0 {
+                return false;
+            }
+            let g = gcd_u128(p_raw as u128, q_raw as u128) as i128;
+            let p = p_raw / g;
+            let q = q_raw / g;
+            let Some((r_m, u_m)) = self.extremal(p, q, true, scored) else {
+                return false;
+            };
+            let Some(m) = q
+                .checked_mul(r_m)
+                .and_then(|qr| p.checked_mul(u_m).and_then(|pu| qr.checked_sub(pu)))
+            else {
+                return false;
+            };
+            let Some(rhs) = q.checked_mul(limit) else {
+                return false;
+            };
+            if let Some(cert) = m.checked_sub(p)
+                && cert <= rhs
+            {
+                return true;
+            }
+            if u_m < 0 && r_m > limit {
+                return false;
+            }
+            let Some(line_val) = q
+                .checked_mul(r_l)
+                .and_then(|qr| p.checked_mul(u_l).and_then(|pu| qr.checked_sub(pu)))
+            else {
+                return false;
+            };
+            if m <= line_val {
+                return false;
+            }
+            if u_m >= 0 {
+                r_l = r_m;
+                u_l = u_m;
+            } else {
+                r_r = r_m;
+                u_r = u_m;
+            }
+        }
+        false
+    }
+
+    fn prove_pos_avg_lower(
+        &self,
+        target: i128,
+        scored: &mut Vec<(i128, i128, i128, usize)>,
+    ) -> bool {
+        let Some(limit) = self.d.checked_mul(target) else {
+            return false;
+        };
+        let Some((mut r_l, mut u_l)) = self.extremal(0, 1, false, scored) else {
+            return false;
+        };
+        if r_l >= limit {
+            return true;
+        }
+        if u_l > 0 {
+            return false;
+        }
+        let mut right: Option<(i128, i128)> = None;
+        let mut step_p = 1_i128;
+        for _ in 0..60 {
+            let Some((r, u)) = self.extremal(step_p, 1, false, scored) else {
+                return false;
+            };
+            let Some(m) = step_p.checked_mul(u).and_then(|pu| r.checked_sub(pu)) else {
+                return false;
+            };
+            if let Some(cert) = m.checked_add(step_p)
+                && cert >= limit
+            {
+                return true;
+            }
+            if u > 0 {
+                if r < limit {
+                    return false;
+                }
+                right = Some((r, u));
+                break;
+            }
+            r_l = r;
+            u_l = u;
+            let Some(next_p) = step_p.checked_mul(2) else {
+                return false;
+            };
+            step_p = next_p;
+        }
+        let Some((mut r_r, mut u_r)) = right else {
+            return false;
+        };
+        for _ in 0..32 {
+            let Some(p_raw) = r_r.checked_sub(r_l) else {
+                return false;
+            };
+            let Some(q_raw) = u_r.checked_sub(u_l) else {
+                return false;
+            };
+            if p_raw <= 0 || q_raw <= 0 {
+                return false;
+            }
+            let g = gcd_u128(p_raw as u128, q_raw as u128) as i128;
+            let p = p_raw / g;
+            let q = q_raw / g;
+            let Some((r_m, u_m)) = self.extremal(p, q, false, scored) else {
+                return false;
+            };
+            let Some(m) = q
+                .checked_mul(r_m)
+                .and_then(|qr| p.checked_mul(u_m).and_then(|pu| qr.checked_sub(pu)))
+            else {
+                return false;
+            };
+            let Some(rhs) = q.checked_mul(limit) else {
+                return false;
+            };
+            if let Some(cert) = m.checked_add(p)
+                && cert >= rhs
+            {
+                return true;
+            }
+            if u_m > 0 && r_m < limit {
+                return false;
+            }
+            let Some(line_val) = q
+                .checked_mul(r_l)
+                .and_then(|qr| p.checked_mul(u_l).and_then(|pu| qr.checked_sub(pu)))
+            else {
+                return false;
+            };
+            if m >= line_val {
+                return false;
+            }
+            if u_m <= 0 {
+                r_l = r_m;
+                u_l = u_m;
+            } else {
+                r_r = r_m;
+                u_r = u_m;
+            }
+        }
+        false
+    }
 }
 
 fn coupled_non_mul_bound(
@@ -994,26 +1246,15 @@ fn coupled_non_mul_bound(
     if groups.is_empty() {
         return Some(best);
     }
-    let mut total_cnt_i64 = 0_i64;
-    let mut all_unit = true;
-    for group in groups {
-        if group.avg_cnt != 1 {
-            all_unit = false;
-        }
-        let count = i64::try_from(group.count).ok()?;
-        total_cnt_i64 = total_cnt_i64.checked_add(group.avg_cnt.checked_mul(count)?)?;
-    }
-    if all_unit
-        && let Ok(total_cnt) = usize::try_from(total_cnt_i64)
-        && total_cnt <= 256
-        && (allow_heavy || total_cnt.saturating_mul(groups.len()) <= 4096)
-    {
-        let mut by_avg: Vec<(i64, usize)> = groups
-            .iter()
-            .map(|group| (group.avg_sum, group.count))
-            .collect();
+    let total_cnt = groups
+        .iter()
+        .try_fold(0_usize, |acc, group| acc.checked_add(group.count))?;
+    if total_cnt <= 256 && (allow_heavy || total_cnt.saturating_mul(groups.len()) <= 4096) {
+        let mut by_avg: Vec<(i64, usize)> =
+            groups.iter().map(|group| (group.avg, group.count)).collect();
         by_avg.sort_by_key(|&(avg, _)| avg);
         let mut weighted: Vec<(i128, usize)> = Vec::with_capacity(groups.len());
+        let mut scored: Vec<(i128, i128, i128, usize)> = Vec::with_capacity(groups.len());
         for k in 1..=total_cnt {
             let d = i128::from(base_cnt).checked_add(k as i128)?;
             let mut rem = k;
@@ -1040,7 +1281,7 @@ fn coupled_non_mul_bound(
             for group in groups {
                 let w = d
                     .checked_mul(i128::from(group.add))?
-                    .checked_add(i128::from(group.avg_sum))?;
+                    .checked_add(i128::from(group.avg))?;
                 weighted.push((w, group.count));
             }
             weighted.sort_by_key(|&(w, _)| w);
@@ -1064,162 +1305,33 @@ fn coupled_non_mul_bound(
                 r_max = r_max.checked_add(w.checked_mul(take as i128)?)?;
                 rem -= take;
             }
-            let lo_k = if u_max <= 0 {
-                ceil_div_i128(r_min, d)
-            } else {
-                floor_div_i128(r_min, d)
+            let slice = CountSlice {
+                groups,
+                k,
+                d,
+                base_sum: i128::from(base_sum),
             };
-            let hi_k = if u_min >= 0 {
-                floor_div_i128(r_max, d)
+            let lo_floor = floor_div_i128(r_min, d);
+            let lo_ceil = ceil_div_i128(r_min, d);
+            let lo_k = if u_max <= 0 || lo_floor == lo_ceil {
+                lo_ceil
+            } else if u_min >= 0 {
+                lo_floor
+            } else if slice.prove_pos_avg_lower(lo_ceil, &mut scored) {
+                lo_ceil
             } else {
-                ceil_div_i128(r_max, d)
+                lo_floor
             };
-            best = [
-                best[0].min(i64::try_from(lo_k).ok()?),
-                best[1].max(i64::try_from(hi_k).ok()?),
-            ];
-        }
-        return Some(best);
-    }
-    if allow_heavy
-        && let Ok(total_cnt) = usize::try_from(total_cnt_i64)
-        && total_cnt <= 256
-    {
-        let mut items: Vec<(i128, i128, usize)> = Vec::new();
-        for group in groups {
-            let mut rem = group.count;
-            let mut chunk = 1_usize;
-            while rem > 0 {
-                let take = rem.min(chunk);
-                let c = usize::try_from(group.avg_cnt).ok()?.checked_mul(take)?;
-                let a = i128::from(group.add).checked_mul(take as i128)?;
-                let u = i128::from(group.avg_sum).checked_mul(take as i128)?;
-                items.push((a, u, c));
-                rem -= take;
-                chunk = chunk.saturating_mul(2);
-            }
-        }
-        let mut u_bounds: Vec<Option<(i128, i128)>> = vec![None; total_cnt + 1];
-        u_bounds[0] = Some((0, 0));
-        for &(_, u, c) in &items {
-            for w in (c..=total_cnt).rev() {
-                if let Some((prev_lo, prev_hi)) = u_bounds[w - c] {
-                    let cand_lo = prev_lo.checked_add(u)?;
-                    let cand_hi = prev_hi.checked_add(u)?;
-                    u_bounds[w] = Some(match u_bounds[w] {
-                        Some((lo, hi)) => (lo.min(cand_lo), hi.max(cand_hi)),
-                        None => (cand_lo, cand_hi),
-                    });
-                }
-            }
-        }
-        let use_exact_dp = items
-            .len()
-            .saturating_mul(total_cnt)
-            .saturating_mul(total_cnt)
-            <= 1_000_000;
-        let mut order: Vec<(i128, i128, usize)> = Vec::with_capacity(groups.len());
-        for (k, bound) in u_bounds.iter().enumerate().skip(1) {
-            let Some((raw_u_min, raw_u_max)) = *bound else {
-                continue;
-            };
-            let d = i128::from(base_cnt).checked_add(k as i128)?;
-            let u_min = i128::from(base_sum).checked_add(raw_u_min)?;
-            let u_max = i128::from(base_sum).checked_add(raw_u_max)?;
-            let (r_min, r_max) = if use_exact_dp {
-                let mut dp: Vec<Option<(i128, i128)>> = vec![None; k + 1];
-                dp[0] = Some((0, 0));
-                for &(a, u, c) in &items {
-                    if c > k {
-                        continue;
-                    }
-                    let val = d.checked_mul(a)?.checked_add(u)?;
-                    for w in (c..=k).rev() {
-                        if let Some((prev_lo, prev_hi)) = dp[w - c] {
-                            let cand_lo = prev_lo.checked_add(val)?;
-                            let cand_hi = prev_hi.checked_add(val)?;
-                            dp[w] = Some(match dp[w] {
-                                Some((lo, hi)) => (lo.min(cand_lo), hi.max(cand_hi)),
-                                None => (cand_lo, cand_hi),
-                            });
-                        }
-                    }
-                }
-                let (s_min, s_max) = dp[k]?;
-                (
-                    i128::from(base_sum).checked_add(s_min)?,
-                    i128::from(base_sum).checked_add(s_max)?,
-                )
+            let hi_floor = floor_div_i128(r_max, d);
+            let hi_ceil = ceil_div_i128(r_max, d);
+            let hi_k = if u_min >= 0 || hi_floor == hi_ceil {
+                hi_floor
+            } else if u_max <= 0 {
+                hi_ceil
+            } else if slice.prove_neg_avg_upper(hi_floor, &mut scored) {
+                hi_floor
             } else {
-                order.clear();
-                for group in groups {
-                    let w = d
-                        .checked_mul(i128::from(group.add))?
-                        .checked_add(i128::from(group.avg_sum))?;
-                    order.push((w, i128::from(group.avg_cnt), group.count));
-                }
-                order.sort_by(|&(w_a, c_a, _), &(w_b, c_b, _)| cmp_ratio_i128(w_a, c_a, w_b, c_b));
-                let mut rem = k as i128;
-                let mut r_min = i128::from(base_sum);
-                for &(w, c, count) in &order {
-                    if rem == 0 {
-                        break;
-                    }
-                    let cap = c.checked_mul(count as i128)?;
-                    if rem >= cap {
-                        r_min = r_min.checked_add(w.checked_mul(count as i128)?)?;
-                        rem -= cap;
-                    } else {
-                        let full = rem / c;
-                        let part = rem % c;
-                        r_min = r_min.checked_add(w.checked_mul(full)?)?;
-                        if part > 0 {
-                            let q = w / c;
-                            let r = w % c;
-                            let frac = q
-                                .checked_mul(part)?
-                                .checked_add(floor_div_i128(r.checked_mul(part)?, c))?;
-                            r_min = r_min.checked_add(frac)?;
-                        }
-                        rem = 0;
-                    }
-                }
-                let mut rem = k as i128;
-                let mut r_max = i128::from(base_sum);
-                for &(w, c, count) in order.iter().rev() {
-                    if rem == 0 {
-                        break;
-                    }
-                    let cap = c.checked_mul(count as i128)?;
-                    if rem >= cap {
-                        r_max = r_max.checked_add(w.checked_mul(count as i128)?)?;
-                        rem -= cap;
-                    } else {
-                        let full = rem / c;
-                        let part = rem % c;
-                        r_max = r_max.checked_add(w.checked_mul(full)?)?;
-                        if part > 0 {
-                            let q = w / c;
-                            let r = w % c;
-                            let frac = q
-                                .checked_mul(part)?
-                                .checked_add(ceil_div_i128(r.checked_mul(part)?, c))?;
-                            r_max = r_max.checked_add(frac)?;
-                        }
-                        rem = 0;
-                    }
-                }
-                (r_min, r_max)
-            };
-            let lo_k = if u_max <= 0 {
-                ceil_div_i128(r_min, d)
-            } else {
-                floor_div_i128(r_min, d)
-            };
-            let hi_k = if u_min >= 0 {
-                floor_div_i128(r_max, d)
-            } else {
-                ceil_div_i128(r_max, d)
+                hi_ceil
             };
             best = [
                 best[0].min(i64::try_from(lo_k).ok()?),
@@ -1251,10 +1363,9 @@ fn coupled_non_mul_bound(
         }
         min_single = min_single.min(group.add);
         max_single = max_single.max(group.add);
-        let ratio = group.avg_sum.checked_mul(100_000)? / group.avg_cnt.checked_mul(100_000)?;
         avg_range = Some(match avg_range {
-            Some([lo, hi]) => [lo.min(ratio), hi.max(ratio)],
-            None => [ratio, ratio],
+            Some([lo, hi]) => [lo.min(group.avg), hi.max(group.avg)],
+            None => [group.avg, group.avg],
         });
     }
     let min_nonempty_add = if has_neg { neg_sum } else { min_single };

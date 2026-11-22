@@ -988,6 +988,66 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
         bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
         Some(0)
     );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            m1 = { add_stats = { lg_attack = 0.074 } add_average_stats = { lg_attack = 0.046 } }
+            m2 = { add_stats = { lg_attack = 0.075 } add_average_stats = { lg_attack = 0.046 } }
+            m3 = { add_stats = { lg_attack = 0.076 } add_average_stats = { lg_attack = 0.046 } }
+            m4 = { add_stats = { lg_attack = 0.077 } add_average_stats = { lg_attack = 0.046 } }
+            m5 = { add_stats = { lg_attack = 0.078 } add_average_stats = { lg_attack = 0.046 } }
+            m6 = { add_stats = { lg_attack = 0.079 } add_average_stats = { lg_attack = 0.046 } }
+            m7 = { add_stats = { lg_attack = 0.080 } add_average_stats = { lg_attack = 0.04599 } }
+            m8 = { add_stats = { lg_attack = 0.081 } add_average_stats = { lg_attack = 0.04599 } }
+            m9 = { add_stats = { lg_attack = 0.082 } add_average_stats = { lg_attack = 0.04599 } }
+            m10 = { add_stats = { lg_attack = 0.083 } add_average_stats = { lg_attack = 0.04599 } }
+            m11 = { add_stats = { lg_attack = 0.084 } add_average_stats = { lg_attack = 0.04599 } }
+            m12 = { add_stats = { lg_attack = 0.085 } add_average_stats = { lg_attack = 0.04599 } }
+            m13 = { add_stats = { lg_attack = 0.001 } add_average_stats = { lg_attack = -0.6 } }
+         }
+         equipments = {
+            thirteen_mixed_sign_avg = { type = convoy
+                default_modules = {
+                    s1 = m1 s2 = m2 s3 = m3 s4 = m4 s5 = m5 s6 = m6 s7 = m7
+                    s8 = m8 s9 = m9 s10 = m10 s11 = m11 s12 = m12 s13 = m13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-59_900, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            a1 = { add_stats = { lg_attack = 0.08327 } add_average_stats = { lg_attack = 0.00004 } }
+            a2 = { add_stats = { lg_attack = 0.08328 } add_average_stats = { lg_attack = 0.00004 } }
+            a3 = { add_stats = { lg_attack = 0.08329 } add_average_stats = { lg_attack = 0.00004 } }
+            a4 = { add_stats = { lg_attack = 0.08330 } add_average_stats = { lg_attack = 0.00004 } }
+            a5 = { add_stats = { lg_attack = 0.08331 } add_average_stats = { lg_attack = 0.00004 } }
+            a6 = { add_stats = { lg_attack = 0.08332 } add_average_stats = { lg_attack = 0.00004 } }
+            a7 = { add_stats = { lg_attack = 0.08334 } add_average_stats = { lg_attack = 0.00003 } }
+            a8 = { add_stats = { lg_attack = 0.08335 } add_average_stats = { lg_attack = 0.00003 } }
+            a9 = { add_stats = { lg_attack = 0.08336 } add_average_stats = { lg_attack = 0.00003 } }
+            a10 = { add_stats = { lg_attack = 0.08337 } add_average_stats = { lg_attack = 0.00003 } }
+            a11 = { add_stats = { lg_attack = 0.08338 } add_average_stats = { lg_attack = 0.00003 } }
+            a12 = { add_stats = { lg_attack = 0.08339 } add_average_stats = { lg_attack = 0.00003 } }
+            a13 = { add_stats = { lg_attack = 0.08333 } add_average_stats = { lg_attack = -1.08332 } }
+         }
+         equipments = {
+            thirteen_mixed_sign_high_add = { type = convoy
+                default_modules = {
+                    s1 = a1 s2 = a2 s3 = a3 s4 = a4 s5 = a5 s6 = a6 s7 = a7
+                    s8 = a8 s9 = a9 s10 = a10 s11 = a11 s12 = a12 s13 = a13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-99_999, 99_999]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
 }
 
 #[test]

@@ -133,6 +133,7 @@ pub struct Prepared {
     slots: BTreeMap<u32, u32>,
     contexts: BTreeMap<u32, CountryContext>,
     capital_states: BTreeMap<u32, u32>,
+    capital_continent_tokens: BTreeMap<u32, u32>,
 }
 
 impl Prepared {
@@ -140,6 +141,7 @@ impl Prepared {
         let text = |text: &String| std::mem::size_of::<String>() + text.len();
         self.slots.len() * 2 * std::mem::size_of::<u32>()
             + self.capital_states.len() * 2 * std::mem::size_of::<u32>()
+            + self.capital_continent_tokens.len() * 2 * std::mem::size_of::<u32>()
             + self
                 .contexts
                 .values()
@@ -245,6 +247,7 @@ impl Prepared {
         }
         let mut contexts = BTreeMap::new();
         let mut capital_states = BTreeMap::new();
+        let mut capital_continent_tokens = BTreeMap::new();
         for (country_slot, tag) in tags {
             let capital = *capital_by_slot
                 .get(&country_slot)
@@ -255,23 +258,26 @@ impl Prepared {
                 capital_states.insert(country_slot, capital as u32);
                 match state.continent {
                     Recorded::Value(Some(0)) => Ok(None),
-                    Recorded::Value(Some(token)) => match &lexical {
-                        Ok(tokens) => match tokens.get(&token) {
-                            Some(literal) => std::str::from_utf8(literal)
-                                .map(|text| Some(text.to_ascii_lowercase()))
-                                .map_err(|_| {
-                                    format!(
-                                        "capital state {capital} continent token {token} is not UTF-8"
-                                    )
-                                }),
-                            None => Err(format!(
-                                "capital state {capital} continent token {token} has no recorded spelling"
+                    Recorded::Value(Some(token)) => {
+                        capital_continent_tokens.insert(country_slot, token);
+                        match &lexical {
+                            Ok(tokens) => match tokens.get(&token) {
+                                Some(literal) => std::str::from_utf8(literal)
+                                    .map(|text| Some(text.to_ascii_lowercase()))
+                                    .map_err(|_| {
+                                        format!(
+                                            "capital state {capital} continent token {token} is not UTF-8"
+                                        )
+                                    }),
+                                None => Err(format!(
+                                    "capital state {capital} continent token {token} has no recorded spelling"
+                                )),
+                            },
+                            Err(why) => Err(format!(
+                                "capital state {capital} continent spelling is unavailable: {why}"
                             )),
-                        },
-                        Err(why) => Err(format!(
-                            "capital state {capital} continent spelling is unavailable: {why}"
-                        )),
-                    },
+                        }
+                    }
                     Recorded::Value(None) => Err(format!(
                         "capital state {capital} continent capture unavailable"
                     )),
@@ -301,6 +307,7 @@ impl Prepared {
             slots,
             contexts,
             capital_states,
+            capital_continent_tokens,
         })
     }
 
@@ -314,6 +321,11 @@ impl Prepared {
     pub fn capital_state(&self, country_ref: u32) -> Option<u32> {
         let slot = self.slot(country_ref)?;
         self.capital_states.get(&slot).copied()
+    }
+
+    pub fn capital_continent_token(&self, country_ref: u32) -> Option<u32> {
+        let slot = self.slot(country_ref)?;
+        self.capital_continent_tokens.get(&slot).copied()
     }
 
     pub fn context(&self, country_ref: u32) -> Result<Option<&CountryContext>, String> {
@@ -362,6 +374,7 @@ mod tests {
             )]
             .into(),
             capital_states: BTreeMap::new(),
+            capital_continent_tokens: BTreeMap::new(),
         };
         assert_eq!(prepared.context(0), Ok(None));
         assert_eq!(prepared.context(u32::MAX), Ok(None));
