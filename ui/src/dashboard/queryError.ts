@@ -20,7 +20,8 @@ export class ShownError extends Error {
 
 export type Failure = Error;
 
-export function queryFailure(error: QueryError): Failure {
+export function queryFailure(error: QueryError | string): Failure {
+  if (typeof error === 'string') return new ShownError(plainFailure(error).text, error);
   switch (error.kind) {
     case 'refused': return new RefusedError(error.text);
     case 'failed': return new Error(error.message);

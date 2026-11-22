@@ -23,7 +23,7 @@ function cancelled(): DOMException {
 }
 
 async function rawInvoke<T>(command: string, args: Record<string, unknown>, timing?: QueryTiming, dropped?: AbortSignal): Promise<T> {
-  const result = await invoke<unknown>(command, args).catch((error: QueryError) => { throw queryFailure(error); });
+  const result = await invoke<unknown>(command, args).catch((error: QueryError | string) => { throw queryFailure(error); });
   if (timing) timing.received = performance.now();
   if (dropped?.aborted) throw cancelled();
   if (!(result instanceof ArrayBuffer || result instanceof Uint8Array)) return result as T;

@@ -296,6 +296,7 @@ fn main() {
         }
     };
     let app = tauri::Builder::default()
+        .invoke_system(include_str!("ipc.js"))
         .register_asynchronous_uri_scheme_protocol("push", move |context, request, responder| {
             use tauri::http::{StatusCode, header};
             if request.headers().get(header::ORIGIN).and_then(|origin| origin.to_str().ok()) != Some(&page_origin) {
