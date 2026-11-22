@@ -2593,4 +2593,37 @@ fn variant_stats_oracle_checks_published_invariants_and_reports_withheld_lanes()
         "{:?}",
         bad.differences
     );
+
+    let TableView::Complete(TableRows::VariantDefinitions(defs)) =
+        &mut *frame.tables[TableId::VariantDefinitions.index()]
+    else {
+        unreachable!()
+    };
+    defs[0].classifier_flags = 0x400;
+    let TableView::Complete(TableRows::VariantStats(rows)) =
+        &mut *frame.tables[TableId::VariantStats.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].values[VariantStatsRow::MAXIMUM_SPEED] = Some(100_000);
+    rows[0].values[VariantStatsRow::AIR_DEFENCE] = Some(50_000);
+    rows[0].values[VariantStatsRow::AIR_AGILITY] = Some(50_000);
+    let mut fighter_bad = Report::default();
+    compare_variants(&frame, &saved, &links, &tokens, &mut fighter_bad).unwrap();
+    assert!(
+        fighter_bad
+            .differences
+            .iter()
+            .any(|line| line.contains("air_defence plane minimum")),
+        "{:?}",
+        fighter_bad.differences
+    );
+    assert!(
+        fighter_bad
+            .differences
+            .iter()
+            .any(|line| line.contains("air_agility plane minimum")),
+        "{:?}",
+        fighter_bad.differences
+    );
 }

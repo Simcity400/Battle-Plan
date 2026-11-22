@@ -1,5 +1,5 @@
 
-use super::schema;
+use super::{schema, schema_at};
 use crate::{
     native_columns::{RowCells, TableInput, table_hour},
     rows::{RowCodec, TABLE_COUNT, TableId},
@@ -21,6 +21,7 @@ pub struct Synthetic {
     strings: Strings,
     cells: RowCells,
     columns: Vec<usize>,
+    format: u16,
     branch: u64,
     hour: i32,
     written: [bool; TABLE_COUNT],
@@ -36,9 +37,24 @@ impl Synthetic {
     }
 
     pub fn framed(branch: u64, hour: i32, columns: Vec<usize>) -> io::Result<Self> {
+        Self::framed_at(
+            branch,
+            hour,
+            crate::format::FormatVersion::CURRENT.version(),
+            columns,
+        )
+    }
+
+    pub fn framed_at(
+        branch: u64,
+        hour: i32,
+        format: u16,
+        columns: Vec<usize>,
+    ) -> io::Result<Self> {
         let tables = columns.len();
         Ok(Self {
             columns,
+            format,
             writers: HashMap::new(),
             strings: Strings::new(),
             cells: RowCells::default(),
@@ -61,7 +77,7 @@ impl Synthetic {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let held = *self.columns.get(index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{table:?} is past the schema written")))?;
-                entry.insert(TableWriter::new(&schema()?[index][..held])?)
+                entry.insert(TableWriter::new(&schema_at(self.format)?[index][..held])?)
             }
         };
         let written = table_hour(writer, &mut self.strings, &mut self.cells, input)?;

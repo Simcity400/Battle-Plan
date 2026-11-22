@@ -1620,6 +1620,18 @@ fn column_context(error: io::Error, key: u128, column: &str) -> io::Error {
 macro_rules! typed_codec {
     ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
      { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr) => {
+        $crate::typed_codec!(
+            $ty,
+            $bits,
+            |$row| $key,
+            |$key_name| $initial,
+            { $($index => ($($field)+): $kind $(@ $step)?),+ },
+            |$checked| $check,
+            |_withheld_row, _withheld_format| {}
+        );
+    };
+    ($ty:ident, $bits:literal, |$row:ident| $key:expr, |$key_name:ident| $initial:expr,
+     { $($index:literal => ($($field:tt)+) : $kind:ident $(@ $step:path)?),+ $(,)? }, |$checked:ident| $check:expr, |$wrow:ident, $wfmt:ident| $withhold:expr) => {
         $crate::row!($ty, |$key_name| $initial, { $(($($field)+): $kind),+ });
         #[cfg(any(test, feature = "test-support"))]
         impl $crate::checkpoint::endpoint::sparse::SparseReference for $ty {
@@ -1773,6 +1785,11 @@ macro_rules! typed_codec {
                 let $key_name = key;
                 let mut row = $initial;
                 $(row.$($field)+ = read_stepped_field($index, Kind::$kind, $crate::display_step!($($step)?), input)?;)+
+                {
+                    let $wrow = &mut row;
+                    let $wfmt = input.format;
+                    $withhold
+                }
                 Ok(row)
             }
             fn patch_from_wire<'a>(&mut self, mask: u64, wire: &mut dyn FnMut(usize) -> io::Result<Field<'a>>) -> io::Result<bool> {
@@ -1825,6 +1842,11 @@ macro_rules! typed_codec {
 
                 $(if delta.mask & (1_u64 << $index) != 0 { apply_stepped_value(&mut row.$($field)+, Kind::$kind, $crate::display_step!($($step)?), &mut input)?; })+
                 input.finish()?;
+                {
+                    let $wrow = &mut row;
+                    let $wfmt = delta.format;
+                    $withhold
+                }
                 Ok(row)
             }
         }

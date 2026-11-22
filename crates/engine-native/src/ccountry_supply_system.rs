@@ -329,17 +329,19 @@ impl<'a, M: Memory> TruckDemandWitness<'a, M> {
     }
 
     fn load_context(&self) -> Result<TruckWitnessContext, &'static str> {
-        let define_at = engine_sites::at(
+        let define_at = engine_sites::resolve(
             self.base,
             crate::supply_companion::SUPPLY_HUB_FULL_MOTORIZATION_TRUCK_COST_RVA,
         )
+        .ok()
         .ok_or("supply truck cost define site unlocated")?;
         let truck_cost_raw =
             read::<i64>(self.memory, define_at).ok_or("supply truck cost define unreadable")?;
         if truck_cost_raw < 0 {
             return Err("supply truck cost define negative");
         }
-        let province_vtable = engine_sites::at(self.base, crate::cprovince::VTABLE_RVA)
+        let province_vtable = engine_sites::resolve(self.base, crate::cprovince::VTABLE_RVA)
+            .ok()
             .ok_or("supply truck witness province vtable unlocated")?;
         let provinces = self
             .state

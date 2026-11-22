@@ -1129,6 +1129,7 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     struct PlaneMemory<'a> {
         bytes: &'a [u8],
         thrust_factor: Option<i64>,
+        dlc_mask: Option<u32>,
     }
     impl Memory for PlaneMemory<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -1137,6 +1138,14 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
                     return false;
                 };
                 output.copy_from_slice(&factor.to_le_bytes());
+                return true;
+            }
+            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            {
+                let Some(mask) = self.dlc_mask else {
+                    return false;
+                };
+                output.copy_from_slice(&mask.to_le_bytes());
                 return true;
             }
             SliceMemory {
@@ -1148,14 +1157,14 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     }
 
     struct RecordingWitness {
-        tokens: [Result<Option<(u64, u64)>, &'static str>; 2],
+        tokens: [Result<(u64, u64), &'static str>; 2],
         calls: Cell<usize>,
         withheld: Vec<(&'static str, &'static str)>,
     }
     impl RecordingWitness {
         fn new(
-            before: Result<Option<(u64, u64)>, &'static str>,
-            after: Result<Option<(u64, u64)>, &'static str>,
+            before: Result<(u64, u64), &'static str>,
+            after: Result<(u64, u64), &'static str>,
         ) -> Self {
             Self {
                 tokens: [before, after],
@@ -1165,7 +1174,7 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
         }
     }
     impl StatWitness for RecordingWitness {
-        fn quiet(&self) -> Result<Option<(u64, u64)>, &'static str> {
+        fn quiet(&self) -> Result<(u64, u64), &'static str> {
             let call = self.calls.get();
             self.calls.set(call + 1);
             self.tokens[call.min(1)]
@@ -1179,7 +1188,7 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     let author = (912_u64 << 32) | 79;
     bytes[INDUSTRIAL_ORGANISATION..INDUSTRIAL_ORGANISATION + 8]
         .copy_from_slice(&author.to_le_bytes());
-    bytes[CLASSIFIER_FLAGS..CLASSIFIER_FLAGS + 8].copy_from_slice(&(1_u64 << 20).to_le_bytes());
+    bytes[CLASSIFIER_FLAGS..CLASSIFIER_FLAGS + 8].copy_from_slice(&0x400_u64.to_le_bytes());
     let base_values = [
         100_000_000_i64,
         1_200_000,
@@ -1206,10 +1215,11 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     let variant = source(&bytes);
 
     let mut rows = Vec::new();
-    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    let mut witness = RecordingWitness::new(Ok((1, 7)), Ok((1, 7)));
     let memory = PlaneMemory {
         bytes: &bytes,
         thrust_factor: Some(50_000),
+        dlc_mask: Some(0x100),
     };
     assert_eq!(
         walk_stats_carried(&memory, 0, &[variant], &mut rows, &mut (), &mut witness),
@@ -1224,12 +1234,13 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     let mut stale = bytes.clone();
     stale[WEIGHT_STAT..WEIGHT_STAT + 8].copy_from_slice(&1_234_567_i64.to_le_bytes());
     stale[BUILD_COST..BUILD_COST + 8].copy_from_slice(&9_999_999_i64.to_le_bytes());
-    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    let mut witness = RecordingWitness::new(Ok((1, 7)), Ok((1, 7)));
     assert_eq!(
         walk_stats_carried(
             &PlaneMemory {
                 bytes: &stale,
                 thrust_factor: Some(50_000),
+                dlc_mask: Some(0x100),
             },
             0,
             &[variant],
@@ -1249,12 +1260,13 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     modified[MODULES + 8 + 12..MODULES + 8 + 16].copy_from_slice(&1_u32.to_le_bytes());
     modified[AIR_DEFENCE_STAT..AIR_DEFENCE_STAT + 8].copy_from_slice(&50_000_i64.to_le_bytes());
     modified[MAXIMUM_SPEED_STAT..MAXIMUM_SPEED_STAT + 8].copy_from_slice(&(-1_i64).to_le_bytes());
-    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    let mut witness = RecordingWitness::new(Ok((1, 7)), Ok((1, 7)));
     assert_eq!(
         walk_stats_carried(
             &PlaneMemory {
                 bytes: &modified,
                 thrust_factor: Some(50_000),
+                dlc_mask: Some(0x100),
             },
             0,
             &[variant],
@@ -1264,20 +1276,19 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
         ),
         Outcome::Rows { len: 1 }
     );
-    assert_eq!(rows[0].values[0], Some(100_000_000));
-    assert_eq!(rows[0].values[1], None);
-    assert_eq!(rows[0].values[4], None);
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
     assert!(witness.withheld.iter().any(|(lane, _)| *lane == "air_defence"));
     assert!(witness.withheld.iter().any(|(lane, _)| *lane == "maximum_speed"));
 
     let mut bad_def = bytes.clone();
     bad_def[0x500] ^= 1;
-    let mut witness = RecordingWitness::new(Ok(Some((1, 7))), Ok(Some((1, 7))));
+    let mut witness = RecordingWitness::new(Ok((1, 7)), Ok((1, 7)));
     assert_eq!(
         walk_stats_carried(
             &PlaneMemory {
                 bytes: &bad_def,
                 thrust_factor: Some(50_000),
+                dlc_mask: Some(0x100),
             },
             0,
             &[variant],
@@ -1292,8 +1303,8 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
     assert_eq!(witness.withheld.len(), STAT_LANE_COUNT);
 
     for (before, after) in [
-        (Err("variant stat writer active"), Ok(Some((1, 7)))),
-        (Ok(Some((1, 7))), Ok(Some((1, 8)))),
+        (Err("variant stat writer active"), Ok((1, 7))),
+        (Ok((1, 7)), Ok((1, 8))),
     ] {
         let mut witness = RecordingWitness::new(before, after);
         assert_eq!(
@@ -1304,4 +1315,310 @@ fn cached_stat_lane_witnesses_reject_mislabeled_and_unverified_values() {
         assert_eq!(rows[0].organisation.author, author);
         assert_eq!(witness.withheld.len(), STAT_LANE_COUNT);
     }
+}
+
+#[test]
+fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and_no_taint() {
+    struct World<'a> {
+        bytes: &'a [u8],
+        thrust_factor: Option<i64>,
+        dlc_mask: Option<u32>,
+        blocked: Option<usize>,
+    }
+    impl Memory for World<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.blocked.is_some_and(|at| {
+                (address..address.saturating_add(output.len())).contains(&at)
+            }) {
+                return false;
+            }
+            if address == THRUST_WEIGHT_AGILITY_FACTOR_RVA.0 && output.len() == 8 {
+                return self.thrust_factor.is_some_and(|value| {
+                    output.copy_from_slice(&value.to_le_bytes());
+                    true
+                });
+            }
+            if address == crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA.0 && output.len() == 4
+            {
+                return self.dlc_mask.is_some_and(|value| {
+                    output.copy_from_slice(&value.to_le_bytes());
+                    true
+                });
+            }
+            let base = self.bytes.as_ptr() as usize;
+            let Some(offset) = address.checked_sub(base) else {
+                return false;
+            };
+            let Some(slice) = self.bytes.get(offset..offset.saturating_add(output.len())) else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+
+    struct RecordingWitness {
+        tokens: std::cell::Cell<
+            (
+                Result<(u64, u64), &'static str>,
+                Result<(u64, u64), &'static str>,
+            ),
+        >,
+        calls: std::cell::Cell<usize>,
+        withheld: Vec<(&'static str, &'static str)>,
+    }
+    impl RecordingWitness {
+        fn quiet() -> Self {
+            Self {
+                tokens: std::cell::Cell::new((Ok((1, 7)), Ok((1, 7)))),
+                calls: std::cell::Cell::new(0),
+                withheld: Vec::new(),
+            }
+        }
+    }
+    impl StatWitness for RecordingWitness {
+        fn quiet(&self) -> Result<(u64, u64), &'static str> {
+            let (first, second) = self.tokens.get();
+            let call = self.calls.get();
+            self.calls.set(call + 1);
+            if call == 0 { first } else { second }
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.withheld.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    let mut bytes = vec![0_u8; 0x3000];
+    let base_ptr = bytes.as_ptr() as usize;
+    let var0 = 0x0;
+    let var1 = 0x600;
+    let def_off = 0xc00;
+    let mod_entry_off = 0x1200;
+    let mod_obj_off = 0x1300;
+    let mod_add_off = 0x1600;
+    let author = (5_u64 << 32) | 412;
+    let base_values = [
+        100_000_000_i64,
+        1_200_000,
+        1_800_000,
+        4_500_000,
+        42_000_000,
+        80_000,
+        1_000_000,
+        1_500_000,
+        21_000,
+        2_400_000,
+    ];
+    let def_ptr = (base_ptr + def_off) as u64;
+    bytes[def_off..def_off + 8].copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+    bytes[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4]
+        .copy_from_slice(&77_u32.to_le_bytes());
+    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+        let off = def_off + cequipment_type::STATS_BASE + lane.stat_index * 8;
+        bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    let init_variant = |buf: &mut [u8], off: usize, id: u32, agility: i64| {
+        buf[off..off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+        buf[off + TYPE..off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+        buf[off + ID..off + ID + 4].copy_from_slice(&id.to_le_bytes());
+        buf[off + EQUIPMENT_TOKEN..off + EQUIPMENT_TOKEN + 4].copy_from_slice(&77_u32.to_le_bytes());
+        buf[off + DEFINITION..off + DEFINITION + 8].copy_from_slice(&def_ptr.to_le_bytes());
+        buf[off + INDUSTRIAL_ORGANISATION..off + INDUSTRIAL_ORGANISATION + 8]
+            .copy_from_slice(&author.to_le_bytes());
+        buf[off + CLASSIFIER_FLAGS..off + CLASSIFIER_FLAGS + 8]
+            .copy_from_slice(&0x400_u64.to_le_bytes());
+        for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+            let v = if lane.offset == AIR_AGILITY_STAT {
+                agility
+            } else {
+                value
+            };
+            buf[off + lane.offset..off + lane.offset + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        buf[off + BUILD_COST..off + BUILD_COST + 8].copy_from_slice(&2_400_000_i64.to_le_bytes());
+    };
+    init_variant(&mut bytes, var0, 1, 4_500_000);
+    init_variant(&mut bytes, var1, 2, 4_750_000);
+
+    let v0 = RegistryRow {
+        id: (1_u64 << 32) | u64::from(REFERENCE_TYPE),
+        address: base_ptr + var0,
+    };
+    let v1 = RegistryRow {
+        id: (2_u64 << 32) | u64::from(REFERENCE_TYPE),
+        address: base_ptr + var1,
+    };
+
+    let mut rows = Vec::new();
+    let mut witness = RecordingWitness::quiet();
+    let world = World {
+        bytes: &bytes,
+        thrust_factor: Some(50_000),
+        dlc_mask: Some(0x100),
+        blocked: None,
+    };
+    assert_eq!(
+        walk_stats_carried(&world, 0, &[v0, v1], &mut rows, &mut (), &mut witness),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows[0].values[3], None);
+    assert_eq!(rows[1].values[3], Some(4_750_000));
+
+    let mut witness = RecordingWitness::quiet();
+    let no_bba = World {
+        bytes: &bytes,
+        thrust_factor: Some(50_000),
+        dlc_mask: Some(0),
+        blocked: None,
+    };
+    assert_eq!(
+        walk_stats_carried(&no_bba, 0, &[v0, v1], &mut rows, &mut (), &mut witness),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows[0].values[3], Some(4_500_000));
+    assert_eq!(rows[1].values[3], None);
+
+    let mut bad_token = bytes.clone();
+    let bt_base = bad_token.as_ptr() as usize;
+    bad_token[var1 + DEFINITION..var1 + DEFINITION + 8]
+        .copy_from_slice(&((bt_base + def_off) as u64).to_le_bytes());
+    bad_token[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4]
+        .copy_from_slice(&99_u32.to_le_bytes());
+    let bt_v1 = RegistryRow {
+        id: v1.id,
+        address: bt_base + var1,
+    };
+    let mut witness = RecordingWitness::quiet();
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &bad_token,
+                thrust_factor: Some(50_000),
+                dlc_mask: Some(0x100),
+                blocked: None,
+            },
+            0,
+            &[bt_v1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+
+    let mut witness = RecordingWitness::quiet();
+    let partial = World {
+        bytes: &bytes,
+        thrust_factor: Some(50_000),
+        dlc_mask: Some(0x100),
+        blocked: Some(base_ptr + var0 + MAXIMUM_SPEED_STAT),
+    };
+    assert_eq!(
+        walk_stats_carried(&partial, 0, &[v0, v1], &mut rows, &mut (), &mut witness),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows[0].values[0], Some(100_000_000));
+    assert_eq!(rows[0].values[4], None);
+    assert_eq!(rows[0].organisation.author, author);
+    assert_eq!(rows[1].values[4], Some(42_000_000));
+    assert_eq!(rows[1].organisation.author, author);
+
+    let mut modified = bytes.clone();
+    let m_base = modified.as_ptr() as usize;
+    let m_def_ptr = (m_base + def_off) as u64;
+    modified[var1 + DEFINITION..var1 + DEFINITION + 8].copy_from_slice(&m_def_ptr.to_le_bytes());
+    modified[var1 + MODULES + 8..var1 + MODULES + 16]
+        .copy_from_slice(&((m_base + mod_entry_off) as u64).to_le_bytes());
+    modified[var1 + MODULES + 16..var1 + MODULES + 20].copy_from_slice(&1_u32.to_le_bytes());
+    modified[var1 + MODULES + 20..var1 + MODULES + 24].copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_entry_off + 8..mod_entry_off + 16]
+        .copy_from_slice(&((m_base + mod_obj_off) as u64).to_le_bytes());
+    modified[mod_obj_off..mod_obj_off + 8]
+        .copy_from_slice(&(crate::cequipment_module::VTABLE_RVA.0 as u64).to_le_bytes());
+    modified[mod_obj_off + 0x138..mod_obj_off + 0x140]
+        .copy_from_slice(&((m_base + mod_add_off) as u64).to_le_bytes());
+    modified[mod_obj_off + 0x140..mod_obj_off + 0x144].copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_obj_off + 0x144..mod_obj_off + 0x148].copy_from_slice(&1_u32.to_le_bytes());
+    modified[mod_add_off..mod_add_off + 4].copy_from_slice(&62_i32.to_le_bytes());
+    modified[mod_add_off + 8..mod_add_off + 16].copy_from_slice(&5_000_000_i64.to_le_bytes());
+    modified[var1 + MAXIMUM_SPEED_STAT..var1 + MAXIMUM_SPEED_STAT + 8]
+        .copy_from_slice(&999_999_i64.to_le_bytes());
+    let mv1 = RegistryRow {
+        id: v1.id,
+        address: m_base + var1,
+    };
+    let mut witness = RecordingWitness::quiet();
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &modified,
+                thrust_factor: Some(50_000),
+                dlc_mask: Some(0x100),
+                blocked: None,
+            },
+            0,
+            &[mv1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[4], None);
+    modified[var1 + MAXIMUM_SPEED_STAT..var1 + MAXIMUM_SPEED_STAT + 8]
+        .copy_from_slice(&47_000_000_i64.to_le_bytes());
+    let mut witness = RecordingWitness::quiet();
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &modified,
+                thrust_factor: Some(50_000),
+                dlc_mask: Some(0x100),
+                blocked: None,
+            },
+            0,
+            &[mv1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[4], Some(47_000_000));
+
+    let _ = engine_sites::take_taint();
+    let overflow_base = usize::MAX - 0x0330_0000;
+    let mut no_taint_bytes = bytes.clone();
+    let nt_base = no_taint_bytes.as_ptr() as usize;
+    let nt_def_ptr = (nt_base + def_off) as u64;
+    no_taint_bytes[var1 + DEFINITION..var1 + DEFINITION + 8]
+        .copy_from_slice(&nt_def_ptr.to_le_bytes());
+    no_taint_bytes[def_off..def_off + 8].copy_from_slice(
+        &(overflow_base.wrapping_add(cequipment_type::VTABLE_RVA.0) as u64).to_le_bytes(),
+    );
+    let nt_v1 = RegistryRow {
+        id: v1.id,
+        address: nt_base + var1,
+    };
+    let mut witness = RecordingWitness::quiet();
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &no_taint_bytes,
+                thrust_factor: None,
+                dlc_mask: None,
+                blocked: None,
+            },
+            overflow_base,
+            &[nt_v1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 1 }
+    );
+    assert_eq!(rows[0].values[3], None);
+    assert_eq!(rows[0].values[0], Some(100_000_000));
+    assert_eq!(engine_sites::take_taint(), None);
 }

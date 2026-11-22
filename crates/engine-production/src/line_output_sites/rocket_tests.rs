@@ -6,7 +6,9 @@ const ROCKET: usize = 0x100;
 const STATUS: usize = 0x400;
 const COUNTRY: usize = 0x1000;
 const VARIANT: usize = 0x3000;
+const DEFINITION: usize = 0x3800;
 const DESIGN: u64 = 0x99_0000_0046;
+const EQUIP_TOKEN: u32 = 41;
 
 struct World {
     bytes: Vec<u8>,
@@ -55,9 +57,20 @@ impl World {
             (COUNTRY + ccountry::PRODUCTION_STATUS, STATUS as u64),
             (VARIANT, (BASE + cequipment_variant::VTABLE_RVA.0) as u64),
             (VARIANT + VARIANT_HANDLE, DESIGN),
+            (VARIANT + cequipment_variant::DEFINITION, DEFINITION as u64),
+            (
+                DEFINITION,
+                (BASE + engine_native::cequipment_type::VTABLE_RVA.0) as u64,
+            ),
         ] {
             world.word(address, value);
         }
+        world.bytes[VARIANT + cequipment_variant::EQUIPMENT_TOKEN
+            ..VARIANT + cequipment_variant::EQUIPMENT_TOKEN + 4]
+            .copy_from_slice(&EQUIP_TOKEN.to_le_bytes());
+        world.bytes[DEFINITION + engine_native::cequipment_type::TOKEN
+            ..DEFINITION + engine_native::cequipment_type::TOKEN + 4]
+            .copy_from_slice(&EQUIP_TOKEN.to_le_bytes());
         world
     }
 
@@ -98,6 +111,11 @@ fn rocket_instant_input_is_the_native_signed_maximum() {
     for speed in [i64::MIN, -175_003, 0, 175_003, i64::MAX] {
         world.word(ROCKET + ROCKET_SPEED, speed as u64);
         for cost in [i64::MIN, -950_009, 0, 950_009, i64::MAX] {
+            world.word(
+                DEFINITION + engine_native::cequipment_type::BUILD_COST_IC,
+                cost as u64,
+            );
+            world.word(VARIANT + cequipment_variant::BUILD_COST, cost as u64);
             world.word(
                 VARIANT + cequipment_variant::BUILD_COST_IC_STAT,
                 cost as u64,
@@ -158,6 +176,10 @@ fn rocket_short_reads_keep_independent_scope_and_never_zero_the_input() {
     assert_eq!(world.tick().failure, RocketFailure::Instant);
     world.instant = Some(1);
     world.blocked = Some(VARIANT + cequipment_variant::BUILD_COST_IC_STAT);
+    assert_eq!(world.tick().failure, RocketFailure::Instant);
+    world.blocked = None;
+    world.word(VARIANT + cequipment_variant::BUILD_COST_IC_STAT, 999_999);
+    assert_eq!(world.tick().failure, RocketFailure::Instant);
     assert_eq!(
         world.tick(),
         RocketTick {

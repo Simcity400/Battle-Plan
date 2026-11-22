@@ -1556,3 +1556,26 @@ fn events_and_watches_past_prepared_storage_grow_where_they_are_written() {
     assert_eq!(interests.organisations.len(), 3);
     assert_eq!(interests.organisation_pointers.len(), 3);
 }
+
+#[test]
+fn stat_timing_quiet_refuses_when_design_hooks_are_disabled() {
+    if !isolated() {
+        return;
+    }
+    ENABLED.store(false, Ordering::Release);
+    ACTIVE.store(0, Ordering::Release);
+    assert_eq!(
+        stat_timing_quiet(),
+        Err("variant stat writer hooks disabled")
+    );
+    let mut witness = StatLaneWitness;
+    native::StatWitness::record_withheld(&mut witness, 4, "variant stat writer hooks disabled");
+    let reported = stat_witness_snapshot();
+    assert_eq!(reported.last_lane, Some("maximum_speed"));
+    assert_eq!(
+        reported.last_reason,
+        Some("variant stat writer hooks disabled")
+    );
+    assert!(reported.by_lane[4] >= 1);
+    assert!(reported.total_withheld >= 1);
+}

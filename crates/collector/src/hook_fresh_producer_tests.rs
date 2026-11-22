@@ -285,6 +285,10 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
             &i64::from(value).to_le_bytes(),
         );
         memory.put(
+            object + variant::ORGANISATION_TRAIT_COUNT,
+            &value.to_le_bytes(),
+        );
+        memory.put(
             0x6100 + equipment_upgrade_entry::LEVEL_STORAGE,
             &[value as u8],
         );
@@ -345,7 +349,8 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
         else {
             panic!("wrong stat table")
         };
-        assert!(stats[0].values.contains(&Some(i64::from(value))));
+        assert_eq!(stats[0].values, [None; 10]);
+        assert_eq!(stats[0].organisation_trait_count, value);
         let TableRows::VariantModules(modules) =
             complete(&frame.tables[TableId::VariantModules.index()])
         else {

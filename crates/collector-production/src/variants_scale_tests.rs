@@ -8,7 +8,7 @@ use engine_native::{
 use replay_data::rows::TableSchema;
 
 const VARIANT: usize = (cequipment_variant::DESIGN_TEAM_TRAITS + 4).next_multiple_of(16);
-const DEFINITION: usize = 0x40;
+const DEFINITION: usize = (cequipment_module::MULTIPLY_STATS + 16).next_multiple_of(16);
 const TYPE_DEFINITION: usize = cequipment_type::ARCHETYPE + 8;
 const TYPES: usize = 200;
 const MODULES: usize = 300;
@@ -399,7 +399,7 @@ fn digest(views: &[TableView; 4]) -> u64 {
 
 #[test]
 fn scaled_variant_rows_match_the_recorded_digests() {
-    for (countries, golden) in [(2, 0x2c7f_d34e_f94a_b028), (440, 0xbf2c_c7f7_2f11_b253)] {
+    for (countries, golden) in [(2, 0xb6db_8a07_3fc3_fea7), (440, 0x2e8d_591a_edac_0413)] {
         let space = space(countries, 16);
         let (views, _) = capture(&space.memory(), &space, countries * 16);
         assert!(

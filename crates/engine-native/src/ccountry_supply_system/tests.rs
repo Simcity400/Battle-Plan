@@ -1902,4 +1902,56 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
         report.required_trucks_withheld,
         Some("supply truck cost define unreadable")
     );
+
+    let overflow_base = usize::MAX - 0x0330_0000;
+    let mut taint_bytes = bytes.clone();
+    put(
+        &mut taint_bytes,
+        ROOT,
+        &((overflow_base.wrapping_add(csupply_system::VTABLE_RVA.0)) as u64).to_le_bytes(),
+    );
+    put(
+        &mut taint_bytes,
+        ROOT + 8,
+        &((overflow_base.wrapping_add(csupply_system::SECONDARY_VTABLE_RVA.0)) as u64).to_le_bytes(),
+    );
+    for (country, system) in [(0x3000_usize, 0x5000_usize), (0x4000, 0x5300)] {
+        put(
+            &mut taint_bytes,
+            country,
+            &((overflow_base.wrapping_add(ccountry::VTABLE_RVA.0)) as u64).to_le_bytes(),
+        );
+        put(
+            &mut taint_bytes,
+            system,
+            &((overflow_base.wrapping_add(VTABLE_RVA.0)) as u64).to_le_bytes(),
+        );
+        put(
+            &mut taint_bytes,
+            system + SECONDARY_BASE,
+            &((overflow_base.wrapping_add(SECONDARY_VTABLE_RVA.0)) as u64).to_le_bytes(),
+        );
+    }
+    let _ = engine_sites::take_taint();
+    let mut rows = vec![TrainRow::default(); 2];
+    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut access = vec![0; 3];
+    let mut runs = vec![[0; 2]; 2];
+    let report = walk_trains(
+        &TrainMemory::new(&taint_bytes),
+        overflow_base,
+        GAME,
+        &mut rows,
+        &mut entries,
+        &mut access,
+        &mut runs,
+    );
+    assert_eq!(report.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].required_trucks_raw, None);
+    assert_eq!(rows[0].allocated_trucks, Some(100));
+    assert_eq!(
+        report.required_trucks_withheld,
+        Some("supply truck cost define site unlocated")
+    );
+    assert_eq!(engine_sites::take_taint(), None);
 }

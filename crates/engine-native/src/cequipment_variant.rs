@@ -662,15 +662,703 @@ pub const ORGANISATION_BONUSES: usize = 0x498;
 pub const ORGANISATION_BONUSES_COUNT: usize = 0x4a4;
 pub const ORGANISATION_TRAIT_COUNT: usize = 0x4b0;
 pub const STAT_FIXED_ONE: i64 = 100_000;
+pub const AIRCRAFT_DESIGNER_PLANE_MASK: u64 = 0x1d00_26fc_00;
+pub const BY_BLOOD_ALONE_MASK: u32 = 0x0000_0100;
+const DLC_FEATURE_MASK_RVA: Rva = crate::modifier_definition::TRADE_FEATURE_FLAGS_RVA;
 
 pub trait StatWitness {
-    fn quiet(&self) -> Result<Option<(u64, u64)>, &'static str> {
-        Ok(None)
+    fn quiet(&self) -> Result<(u64, u64), &'static str> {
+        Err("variant stat writer witness unavailable")
     }
     fn record_withheld(&mut self, _lane: usize, _reason: &'static str) {}
 }
 
 impl StatWitness for () {}
+
+#[cfg(test)]
+struct TestQuietWitness;
+
+#[cfg(test)]
+impl StatWitness for TestQuietWitness {
+    fn quiet(&self) -> Result<(u64, u64), &'static str> {
+        Ok((0, 0))
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct StatAccumulator {
+    add: i64,
+    avg_sum: i64,
+    avg_count: i32,
+    mult: i64,
+}
+
+impl StatAccumulator {
+    fn finalize(self) -> Option<i64> {
+        let mut value = self.add;
+        if self.avg_count > 0 {
+            value = value.checked_add(self.avg_sum / i64::from(self.avg_count))?;
+        }
+        if self.mult == 0 {
+            return Some(value);
+        }
+        let factor = i128::from(self.mult).checked_add(i128::from(STAT_FIXED_ONE))?;
+        let scaled = i128::from(value).checked_mul(factor)? / i128::from(STAT_FIXED_ONE);
+        i64::try_from(scaled).ok()
+    }
+}
+
+fn lane_for_stat_index(stat_index: i32) -> Option<usize> {
+    match stat_index {
+        46 => Some(0),
+        47 => Some(1),
+        48 => Some(2),
+        49 => Some(3),
+        62 => Some(4),
+        65 => Some(5),
+        67 => Some(6),
+        68 => Some(7),
+        69 => Some(8),
+        77 => Some(9),
+        _ => None,
+    }
+}
+
+struct WitnessSites {
+    rebuild_located: bool,
+    def_vtable: Option<usize>,
+    null_def_vtable: Option<usize>,
+    module_vtable: Option<usize>,
+    upgrade_vtable: Option<usize>,
+    specific_bonus_vtable: Option<usize>,
+    trait_bonus_vtable: Option<usize>,
+    dlc_mask: Option<Option<u32>>,
+    thrust_factor: Option<Option<i64>>,
+}
+
+impl WitnessSites {
+    fn resolve(base: usize) -> Self {
+        Self {
+            rebuild_located: engine_sites::resolve(base, mutations::REBUILD_STATS_RVA).is_ok(),
+            def_vtable: engine_sites::resolve(base, cequipment_type::VTABLE_RVA).ok(),
+            null_def_vtable: engine_sites::resolve(base, cequipment_type::NULL_VTABLE_RVA).ok(),
+            module_vtable: engine_sites::resolve(base, crate::cequipment_module::VTABLE_RVA).ok(),
+            upgrade_vtable: engine_sites::resolve(base, crate::cequipment_upgrade::VTABLE_RVA).ok(),
+            specific_bonus_vtable: engine_sites::resolve(base, SPECIFIC_BONUS_VTABLE_RVA).ok(),
+            trait_bonus_vtable: engine_sites::resolve(base, TRAIT_BONUS_VTABLE_RVA).ok(),
+            dlc_mask: None,
+            thrust_factor: None,
+        }
+    }
+
+    fn dlc_mask(&mut self, memory: &impl Memory, base: usize) -> Option<u32> {
+        *self.dlc_mask.get_or_insert_with(|| {
+            engine_sites::resolve(base, DLC_FEATURE_MASK_RVA)
+                .ok()
+                .and_then(|at| read::<u32>(memory, at))
+        })
+    }
+
+    fn thrust_factor(&mut self, memory: &impl Memory, base: usize) -> Option<i64> {
+        *self.thrust_factor.get_or_insert_with(|| {
+            engine_sites::resolve(base, THRUST_WEIGHT_AGILITY_FACTOR_RVA)
+                .ok()
+                .and_then(|at| read::<i64>(memory, at))
+        })
+    }
+}
+
+fn stat_pair_array(
+    memory: &impl Memory,
+    object: usize,
+    offset: usize,
+    reason: &'static str,
+) -> Result<Array, &'static str> {
+    Array::read(memory, at(object, offset)?, 16).ok_or(reason)
+}
+
+fn read_stat_pair(
+    memory: &impl Memory,
+    array: Array,
+    index: u32,
+    reason: &'static str,
+) -> Result<(i32, i64), &'static str> {
+    let entry = array.element(index, 16).ok_or(reason)?;
+    let bytes = read::<[u8; 16]>(memory, entry).ok_or(reason)?;
+    Ok((
+        i32::from_le_bytes(bytes[..4].try_into().unwrap()),
+        i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+    ))
+}
+
+fn module_stat_factor(
+    memory: &impl Memory,
+    multipliers: Array,
+    stat_index: i32,
+) -> Result<i64, &'static str> {
+    for index in 0..multipliers.count {
+        let (candidate, factor) = read_stat_pair(
+            memory,
+            multipliers,
+            index,
+            "variant stat module multiplier unreadable",
+        )?;
+        if candidate == stat_index {
+            return Ok(factor);
+        }
+    }
+    Ok(0)
+}
+
+fn scale_fixed(value: i64, factor: i64) -> Result<i64, &'static str> {
+    let scale = i128::from(factor)
+        .checked_add(i128::from(STAT_FIXED_ONE))
+        .ok_or("variant stat arithmetic overflow")?;
+    let scaled = i128::from(value)
+        .checked_mul(scale)
+        .ok_or("variant stat arithmetic overflow")?
+        / i128::from(STAT_FIXED_ONE);
+    i64::try_from(scaled).map_err(|_| "variant stat arithmetic overflow")
+}
+
+#[derive(Clone, Copy)]
+struct VariantStatMeta {
+    upgrades: u32,
+    modules: u32,
+    bonus_sources: u32,
+    named_bonuses: u32,
+    org_bonuses: u32,
+    resource_build_cost: i64,
+    definition: usize,
+    classifier_flags: u64,
+    equipment_token: u32,
+}
+
+impl VariantStatMeta {
+    fn from_record(field: &[u8]) -> Self {
+        Self {
+            upgrades: u32::from_le_bytes(field[80..84].try_into().unwrap()),
+            modules: u32::from_le_bytes(field[84..88].try_into().unwrap()),
+            bonus_sources: u32::from_le_bytes(field[88..92].try_into().unwrap()),
+            named_bonuses: u32::from_le_bytes(field[92..96].try_into().unwrap()),
+            org_bonuses: u32::from_le_bytes(field[96..100].try_into().unwrap()),
+            resource_build_cost: i64::from_le_bytes(field[100..108].try_into().unwrap()),
+            definition: usize::try_from(u64::from_le_bytes(field[108..116].try_into().unwrap()))
+                .unwrap_or(0),
+            classifier_flags: u64::from_le_bytes(field[116..124].try_into().unwrap()),
+            equipment_token: u32::from_le_bytes(field[124..128].try_into().unwrap()),
+        }
+    }
+
+    fn read_individually(memory: &impl Memory, pointer: usize) -> Option<Self> {
+        Some(Self {
+            upgrades: read::<u32>(memory, pointer.checked_add(UPGRADES_COUNT)?)?,
+            modules: read::<u32>(memory, pointer.checked_add(MODULES_COUNT)?)?,
+            bonus_sources: read::<u32>(memory, pointer.checked_add(BONUS_SOURCES + 0x0c)?)?,
+            named_bonuses: read::<u32>(memory, pointer.checked_add(NAMED_BONUSES + 0x0c)?)?,
+            org_bonuses: read::<u32>(memory, pointer.checked_add(ORGANISATION_BONUSES_COUNT)?)?,
+            resource_build_cost: read::<i64>(memory, pointer.checked_add(BUILD_COST)?)?,
+            definition: usize::try_from(read::<u64>(memory, pointer.checked_add(DEFINITION)?)?)
+                .unwrap_or(0),
+            classifier_flags: read::<u64>(memory, pointer.checked_add(CLASSIFIER_FLAGS)?)?,
+            equipment_token: read::<u32>(memory, pointer.checked_add(EQUIPMENT_TOKEN)?)?,
+        })
+    }
+}
+
+fn compute_modified_lanes(
+    memory: &impl Memory,
+    variant: usize,
+    meta: VariantStatMeta,
+    base_stats: &[i64; STAT_LANE_COUNT],
+    type_rel_bonuses: i32,
+    sites: &WitnessSites,
+) -> Result<[i64; STAT_LANE_COUNT], &'static str> {
+    let mut acc = [StatAccumulator::default(); STAT_LANE_COUNT];
+    for (dst, &base_val) in acc.iter_mut().zip(base_stats) {
+        dst.add = base_val;
+    }
+    if meta.named_bonuses > 0 {
+        let handles = Array::read(memory, at(variant, NAMED_BONUSES)?, 4)
+            .ok_or("variant stat named equipment bonus unreadable")?;
+        for index in 0..handles.count {
+            let entry = handles
+                .element(index, 4)
+                .ok_or("variant stat named equipment bonus unreadable")?;
+            let handle = read::<i32>(memory, entry)
+                .ok_or("variant stat named equipment bonus unreadable")?;
+            if handle != -1 {
+                return Err("variant stat named equipment bonus unverified");
+            }
+        }
+    }
+    if meta.org_bonuses > 0 {
+        let bonuses = stat_pair_array(
+            memory,
+            variant,
+            ORGANISATION_BONUSES,
+            "variant stat organisation bonus unreadable",
+        )?;
+        for index in 0..bonuses.count {
+            let (_, value) = read_stat_pair(
+                memory,
+                bonuses,
+                index,
+                "variant stat organisation bonus unreadable",
+            )?;
+            if value != 0 {
+                return Err("variant stat organisation bonus unverified");
+            }
+        }
+    }
+    if meta.bonus_sources > 0 {
+        let (Some(specific_vtable), Some(trait_vtable)) =
+            (sites.specific_bonus_vtable, sites.trait_bonus_vtable)
+        else {
+            return Err("variant stat bonus source site unlocated");
+        };
+        let sources = Array::read(memory, at(variant, BONUS_SOURCES)?, 8)
+            .ok_or("variant stat bonus source array unreadable")?;
+        for index in 0..sources.count {
+            let entry = sources
+                .element(index, 8)
+                .ok_or("variant stat bonus source pointer unreadable")?;
+            let bonus = usize::try_from(
+                read::<u64>(memory, entry).ok_or("variant stat bonus source pointer unreadable")?,
+            )
+            .ok()
+            .filter(|&ptr| ptr != 0)
+            .ok_or("variant stat bonus source pointer null")?;
+            let vtable =
+                read::<u64>(memory, bonus).ok_or("variant stat bonus source vtable unreadable")?;
+            if vtable != specific_vtable as u64 && vtable != trait_vtable as u64 {
+                return Err("variant stat bonus source identity mismatch");
+            }
+            let stats = stat_pair_array(
+                memory,
+                bonus,
+                BONUS_STATS,
+                "variant stat bonus source stats unreadable",
+            )?;
+            for stat_i in 0..stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    stats,
+                    stat_i,
+                    "variant stat bonus source stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    acc[lane].mult = acc[lane]
+                        .mult
+                        .checked_add(value)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+        }
+    }
+    if meta.upgrades > 0 {
+        let upgrade_vtable = sites
+            .upgrade_vtable
+            .ok_or("variant stat upgrade site unlocated")?;
+        let entries = Array::read(memory, at(variant, UPGRADES + 8)?, 16)
+            .ok_or("variant stat upgrade array unreadable")?;
+        for index in 0..entries.count {
+            let entry = entries
+                .element(index, 16)
+                .ok_or("variant stat upgrade entry unreadable")?;
+            let raw = read::<[u8; 16]>(memory, entry)
+                .ok_or("variant stat upgrade entry unreadable")?;
+            let upgrade = usize::try_from(u64::from_le_bytes(raw[..8].try_into().unwrap()))
+                .ok()
+                .filter(|&ptr| ptr != 0)
+                .ok_or("variant stat upgrade pointer null")?;
+            let level = i64::from(raw[8]);
+            let vtable =
+                read::<u64>(memory, upgrade).ok_or("variant stat upgrade vtable unreadable")?;
+            if vtable != upgrade_vtable as u64 {
+                return Err("variant stat upgrade vtable mismatch");
+            }
+            let add_stats = stat_pair_array(
+                memory,
+                upgrade,
+                crate::cequipment_upgrade::ADD_STATS,
+                "variant stat upgrade stats unreadable",
+            )?;
+            for stat_i in 0..add_stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    add_stats,
+                    stat_i,
+                    "variant stat upgrade stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    let delta = level
+                        .checked_mul(value)
+                        .ok_or("variant stat arithmetic overflow")?;
+                    acc[lane].add = acc[lane]
+                        .add
+                        .checked_add(delta)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+            let mult_stats = stat_pair_array(
+                memory,
+                upgrade,
+                crate::cequipment_upgrade::MULTIPLY_STATS,
+                "variant stat upgrade stats unreadable",
+            )?;
+            for stat_i in 0..mult_stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    mult_stats,
+                    stat_i,
+                    "variant stat upgrade stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    let delta = level
+                        .checked_mul(value)
+                        .ok_or("variant stat arithmetic overflow")?;
+                    acc[lane].mult = acc[lane]
+                        .mult
+                        .checked_add(delta)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+            let avg_stats = stat_pair_array(
+                memory,
+                upgrade,
+                crate::cequipment_upgrade::AVERAGE_STATS,
+                "variant stat upgrade stats unreadable",
+            )?;
+            for stat_i in 0..avg_stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    avg_stats,
+                    stat_i,
+                    "variant stat upgrade stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    let delta = level
+                        .checked_mul(value)
+                        .ok_or("variant stat arithmetic overflow")?;
+                    acc[lane].avg_sum = acc[lane]
+                        .avg_sum
+                        .checked_add(delta)
+                        .ok_or("variant stat arithmetic overflow")?;
+                    acc[lane].avg_count = acc[lane]
+                        .avg_count
+                        .checked_add(1)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+        }
+    }
+    if meta.modules > 0 {
+        let module_vtable = sites
+            .module_vtable
+            .ok_or("variant stat module site unlocated")?;
+        let add_mults = stat_pair_array(
+            memory,
+            meta.definition,
+            cequipment_type::MODULE_ADD_MULTIPLIERS,
+            "variant stat module multiplier array unreadable",
+        )?;
+        let mult_mults = stat_pair_array(
+            memory,
+            meta.definition,
+            cequipment_type::MODULE_MULT_MULTIPLIERS,
+            "variant stat module multiplier array unreadable",
+        )?;
+        let entries = Array::read(memory, at(variant, MODULES + 8)?, 16)
+            .ok_or("variant stat module array unreadable")?;
+        for index in 0..entries.count {
+            let entry = entries
+                .element(index, 16)
+                .ok_or("variant stat module entry unreadable")?;
+            let raw =
+                read::<[u8; 16]>(memory, entry).ok_or("variant stat module entry unreadable")?;
+            let module = usize::try_from(u64::from_le_bytes(raw[8..16].try_into().unwrap()))
+                .ok()
+                .filter(|&ptr| ptr != 0)
+                .ok_or("variant stat module pointer null")?;
+            let vtable =
+                read::<u64>(memory, module).ok_or("variant stat module vtable unreadable")?;
+            if vtable != module_vtable as u64 {
+                return Err("variant stat module vtable mismatch");
+            }
+            let add_stats = stat_pair_array(
+                memory,
+                module,
+                crate::cequipment_module::ADD_STATS,
+                "variant stat module stats unreadable",
+            )?;
+            for stat_i in 0..add_stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    add_stats,
+                    stat_i,
+                    "variant stat module stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    let factor = module_stat_factor(memory, add_mults, stat_idx)?;
+                    let delta = scale_fixed(value, factor)?;
+                    acc[lane].add = acc[lane]
+                        .add
+                        .checked_add(delta)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+            let mult_stats = stat_pair_array(
+                memory,
+                module,
+                crate::cequipment_module::MULTIPLY_STATS,
+                "variant stat module stats unreadable",
+            )?;
+            for stat_i in 0..mult_stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    mult_stats,
+                    stat_i,
+                    "variant stat module stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    let factor = module_stat_factor(memory, mult_mults, stat_idx)?;
+                    let delta = scale_fixed(value, factor)?;
+                    acc[lane].mult = acc[lane]
+                        .mult
+                        .checked_add(delta)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+            let avg_stats = stat_pair_array(
+                memory,
+                module,
+                crate::cequipment_module::AVERAGE_STATS,
+                "variant stat module stats unreadable",
+            )?;
+            for stat_i in 0..avg_stats.count {
+                let (stat_idx, value) = read_stat_pair(
+                    memory,
+                    avg_stats,
+                    stat_i,
+                    "variant stat module stats unreadable",
+                )?;
+                if let Some(lane) = lane_for_stat_index(stat_idx) {
+                    let factor = module_stat_factor(memory, add_mults, stat_idx)?;
+                    let delta = scale_fixed(value, factor)?;
+                    acc[lane].avg_sum = acc[lane]
+                        .avg_sum
+                        .checked_add(delta)
+                        .ok_or("variant stat arithmetic overflow")?;
+                    acc[lane].avg_count = acc[lane]
+                        .avg_count
+                        .checked_add(1)
+                        .ok_or("variant stat arithmetic overflow")?;
+                }
+            }
+        }
+    }
+    if type_rel_bonuses != 0 {
+        let rel = acc[5]
+            .finalize()
+            .ok_or("variant stat arithmetic overflow")?
+            .clamp(0, STAT_FIXED_ONE);
+        let bonuses = stat_pair_array(
+            memory,
+            meta.definition,
+            cequipment_type::RELIABILITY_BONUSES,
+            "variant stat reliability bonus array unreadable",
+        )?;
+        for index in 0..bonuses.count {
+            let (stat_idx, value) = read_stat_pair(
+                memory,
+                bonuses,
+                index,
+                "variant stat reliability bonus array unreadable",
+            )?;
+            if let Some(lane) = lane_for_stat_index(stat_idx) {
+                let scaled = i128::from(value)
+                    .checked_mul(i128::from(rel))
+                    .ok_or("variant stat arithmetic overflow")?
+                    / i128::from(STAT_FIXED_ONE);
+                let delta = i64::try_from(scaled).map_err(|_| "variant stat arithmetic overflow")?;
+                acc[lane].add = acc[lane]
+                    .add
+                    .checked_add(delta)
+                    .ok_or("variant stat arithmetic overflow")?;
+            }
+        }
+    }
+    let mut expected = [0_i64; STAT_LANE_COUNT];
+    for (dst, entry) in expected.iter_mut().zip(acc) {
+        *dst = entry
+            .finalize()
+            .ok_or("variant stat arithmetic overflow")?;
+    }
+    Ok(expected)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Lane verification passes the shared memory, site cache, expected stat block and variant metadata explicitly."
+)]
+fn verify_lane(
+    memory: &impl Memory,
+    base: usize,
+    sites: &mut WitnessSites,
+    lane: usize,
+    val: i64,
+    expected: &[i64; STAT_LANE_COUNT],
+    classifier_flags: u64,
+    no_design_parts: bool,
+    resource_build_cost: i64,
+) -> Result<(), &'static str> {
+    let is_plane = (classifier_flags & cequipment_type::PLANE_MASK) != 0;
+    match lane {
+        1 if is_plane && val < STAT_FIXED_ONE => {
+            return Err("variant stat air_defence below plane minimum");
+        }
+        3 if is_plane && val < STAT_FIXED_ONE => {
+            return Err("variant stat air_agility below plane minimum");
+        }
+        4 if val < 0 => return Err("variant stat maximum_speed is negative"),
+        5 if val < 0 => return Err("variant stat reliability is negative"),
+        _ => {}
+    }
+    if lane == 9 && no_design_parts && val != resource_build_cost {
+        return Err("variant stat build_cost_ic disagrees with resource build cost");
+    }
+    let base_val = expected[lane];
+    let matches = match lane {
+        1 => {
+            val == if is_plane {
+                base_val.max(STAT_FIXED_ONE)
+            } else {
+                base_val
+            }
+        }
+        3 => {
+            let no_thrust = if is_plane {
+                base_val.max(STAT_FIXED_ONE)
+            } else {
+                base_val
+            };
+            let is_aircraft_designer_plane =
+                (classifier_flags & AIRCRAFT_DESIGNER_PLANE_MASK) != 0;
+            if is_aircraft_designer_plane && expected[6] < expected[7] {
+                let Some(dlc_mask) = sites.dlc_mask(memory, base) else {
+                    return Err("variant stat dlc feature mask unreadable");
+                };
+                if (dlc_mask & BY_BLOOD_ALONE_MASK) != 0 {
+                    let Some(factor) = sites.thrust_factor(memory, base) else {
+                        return Err("variant stat thrust agility factor unreadable");
+                    };
+                    let Some(with_thrust) = expected[7]
+                        .checked_sub(expected[6])
+                        .and_then(|diff| i128::from(diff).checked_mul(i128::from(factor)))
+                        .map(|prod| prod / i128::from(STAT_FIXED_ONE))
+                        .and_then(|bonus| i64::try_from(bonus).ok())
+                        .and_then(|bonus| bonus.checked_add(base_val))
+                        .map(|v| v.max(STAT_FIXED_ONE))
+                    else {
+                        return Err("variant stat arithmetic overflow");
+                    };
+                    val == with_thrust
+                } else {
+                    val == no_thrust
+                }
+            } else {
+                val == no_thrust
+            }
+        }
+        4 => val == base_val.max(0),
+        5 => val == base_val.clamp(0, STAT_FIXED_ONE) || val == base_val.max(0),
+        _ => val == base_val,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(STAT_LANES[lane].mismatch_reason)
+    }
+}
+
+pub fn verified_cached_stat(
+    memory: &impl Memory,
+    base: usize,
+    variant: usize,
+    lane: usize,
+) -> Result<i64, &'static str> {
+    if lane >= STAT_LANE_COUNT {
+        return Err("variant stat lane index out of bounds");
+    }
+    let expected_vtable = engine_sites::resolve(base, VTABLE_RVA)
+        .ok()
+        .ok_or("variant vtable site unlocated")?;
+    let header = read::<[u8; 16]>(memory, variant).ok_or("variant identity unreadable")?;
+    identity_header(expected_vtable, header)?;
+    let mut sites = WitnessSites::resolve(base);
+    if !sites.rebuild_located {
+        return Err("variant stat rebuild site unlocated");
+    }
+    let meta = VariantStatMeta::read_individually(memory, variant)
+        .ok_or("variant stat metadata unreadable")?;
+    if meta.definition == 0 {
+        return Err("variant definition unverified for stat cache");
+    }
+    let def_vtable =
+        read::<u64>(memory, meta.definition).ok_or("variant definition unverified for stat cache")?;
+    let def_vtable_ok = sites
+        .def_vtable
+        .zip(sites.null_def_vtable)
+        .is_some_and(|(expected, null)| def_vtable == expected as u64 || def_vtable == null as u64);
+    let def_token = read::<u32>(memory, at(meta.definition, cequipment_type::TOKEN)?)
+        .ok_or("variant definition unverified for stat cache")?;
+    if !def_vtable_ok || def_token != meta.equipment_token {
+        return Err("variant definition unverified for stat cache");
+    }
+    let mut base_stats = [0_i64; STAT_LANE_COUNT];
+    for (dst, stat_lane) in base_stats.iter_mut().zip(STAT_LANES) {
+        *dst = read::<i64>(
+            memory,
+            at(
+                meta.definition,
+                cequipment_type::STATS_BASE + stat_lane.stat_index * 8,
+            )?,
+        )
+        .ok_or("variant definition unverified for stat cache")?;
+    }
+    let type_rel_bonuses = read::<i32>(
+        memory,
+        at(meta.definition, cequipment_type::RELIABILITY_BONUS_COUNT)?,
+    )
+    .ok_or("variant definition unverified for stat cache")?;
+    let unmodified = meta.upgrades == 0
+        && meta.modules == 0
+        && meta.bonus_sources == 0
+        && meta.named_bonuses == 0
+        && meta.org_bonuses == 0
+        && type_rel_bonuses == 0;
+    let expected = if unmodified {
+        base_stats
+    } else {
+        compute_modified_lanes(memory, variant, meta, &base_stats, type_rel_bonuses, &sites)?
+    };
+    let val = read::<i64>(memory, at(variant, STAT_LANES[lane].offset)?)
+        .ok_or("variant stat lane unreadable")?;
+    let no_design_parts = meta.upgrades == 0 && meta.modules == 0 && type_rel_bonuses == 0;
+    verify_lane(
+        memory,
+        base,
+        &mut sites,
+        lane,
+        val,
+        &expected,
+        meta.classifier_flags,
+        no_design_parts,
+        meta.resource_build_cost,
+    )?;
+    Ok(val)
+}
 
 pub trait OrganisationCarry {
     fn fresh(&mut self, index: usize, source: &RegistryRow) -> Result<bool, &'static str>;
@@ -723,7 +1411,14 @@ pub fn walk_stats(
     variants: &[RegistryRow],
     output: &mut Vec<StatsRow>,
 ) -> Outcome {
-    walk_stats_carried(memory, base, variants, output, &mut (), &mut ())
+    walk_stats_carried(
+        memory,
+        base,
+        variants,
+        output,
+        &mut (),
+        &mut TestQuietWitness,
+    )
 }
 
 #[allow(clippy::too_many_arguments, reason = "Variant stat capture keeps preallocated output, organisation carry and live stat witness explicit.")]
@@ -741,13 +1436,10 @@ pub fn walk_stats_carried(
                 .map_err(|_| "variant stat allocation failed")?;
             output.resize(variants.len(), StatsRow::default());
         }
-        let rebuild_located = engine_sites::at(base, mutations::REBUILD_STATS_RVA).is_some();
-        let def_vtable = engine_sites::at(base, cequipment_type::VTABLE_RVA);
-        let null_def_vtable = engine_sites::at(base, cequipment_type::NULL_VTABLE_RVA);
-        let mut thrust_factor: Option<Option<i64>> = None;
+        let mut sites = WitnessSites::resolve(base);
         let mut len = 0;
         const BATCH: usize = 64;
-        const FIELDS: [RecordField; 13] = [
+        const FIELDS: [RecordField; 14] = [
             RecordField {
                 source_offset: AIR_RANGE_STAT,
                 destination_offset: 0,
@@ -813,9 +1505,14 @@ pub fn walk_stats_carried(
                 destination_offset: 116,
                 len: 8,
             },
+            RecordField {
+                source_offset: EQUIPMENT_TOKEN,
+                destination_offset: 124,
+                len: 4,
+            },
         ];
-        const STRIDE: usize = 124;
-        const DEF_FIELDS: [RecordField; 7] = [
+        const STRIDE: usize = 128;
+        const DEF_FIELDS: [RecordField; 8] = [
             RecordField {
                 source_offset: 0,
                 destination_offset: 0,
@@ -851,8 +1548,13 @@ pub fn walk_stats_carried(
                 destination_offset: 88,
                 len: 4,
             },
+            RecordField {
+                source_offset: cequipment_type::TOKEN,
+                destination_offset: 92,
+                len: 4,
+            },
         ];
-        const DEF_STRIDE: usize = 92;
+        const DEF_STRIDE: usize = 96;
         const LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&FIELDS, STRIDE).expect("valid record layout");
         const DEF_LAYOUT: RecordLayout<'static> =
@@ -861,29 +1563,53 @@ pub fn walk_stats_carried(
         let mut fields = [0; BATCH * STRIDE];
         let mut definitions = [0; BATCH];
         let mut def_bytes = [0; BATCH * DEF_STRIDE];
+        let mut raw_batch = [[0_i64; STAT_LANE_COUNT]; BATCH];
+        let mut lane_readable = [[false; STAT_LANE_COUNT]; BATCH];
+        let mut metas: [Option<VariantStatMeta>; BATCH] = [None; BATCH];
         for sources in variants.chunks(BATCH) {
             for (pointer, source) in pointers.iter_mut().zip(sources) {
                 *pointer = source.pointer();
             }
             let before = witness.quiet();
-            if memory.copy_records(
+            let copied = memory.copy_records(
                 RecordSources::Pointers(&pointers[..sources.len()]),
                 &LAYOUT,
                 &mut fields,
-            ) != sources.len() * FIELDS.len()
-            {
-                return Err("variant stat cache unreadable");
-            }
-            for (pointer, field) in definitions
-                .iter_mut()
-                .zip(fields.chunks_exact(STRIDE))
-                .take(sources.len())
-            {
-                *pointer = usize::try_from(u64::from_le_bytes(field[108..116].try_into().unwrap()))
-                    .unwrap_or(0);
+            );
+            if copied == sources.len() * FIELDS.len() {
+                for (slot, field) in fields.chunks_exact(STRIDE).take(sources.len()).enumerate() {
+                    for (lane, bytes) in field[..80].chunks_exact(8).enumerate() {
+                        raw_batch[slot][lane] = i64::from_le_bytes(bytes.try_into().unwrap());
+                        lane_readable[slot][lane] = true;
+                    }
+                    let meta = VariantStatMeta::from_record(field);
+                    definitions[slot] = meta.definition;
+                    metas[slot] = Some(meta);
+                }
+            } else {
+                for (slot, source) in sources.iter().enumerate() {
+                    let pointer = source.pointer();
+                    for (lane, stat_lane) in STAT_LANES.into_iter().enumerate() {
+                        match pointer
+                            .checked_add(stat_lane.offset)
+                            .and_then(|addr| read::<i64>(memory, addr))
+                        {
+                            Some(value) => {
+                                raw_batch[slot][lane] = value;
+                                lane_readable[slot][lane] = true;
+                            }
+                            None => {
+                                lane_readable[slot][lane] = false;
+                            }
+                        }
+                    }
+                    metas[slot] = VariantStatMeta::read_individually(memory, pointer);
+                    definitions[slot] = metas[slot].map_or(0, |meta| meta.definition);
+                }
             }
             let mut def_valid = [false; BATCH];
-            if rebuild_located && def_vtable.is_some() && null_def_vtable.is_some() {
+            if sites.rebuild_located && sites.def_vtable.is_some() && sites.null_def_vtable.is_some()
+            {
                 let batch_copied = memory.copy_records(
                     RecordSources::Pointers(&definitions[..sources.len()]),
                     &DEF_LAYOUT,
@@ -906,7 +1632,7 @@ pub fn walk_stats_carried(
                 }
             }
             let after = witness.quiet();
-            let batch_refusal: Option<&'static str> = if !rebuild_located {
+            let batch_refusal: Option<&'static str> = if !sites.rebuild_located {
                 Some("variant stat rebuild site unlocated")
             } else {
                 match (before, after) {
@@ -915,40 +1641,30 @@ pub fn walk_stats_carried(
                     (Ok(_), Ok(_)) => None,
                 }
             };
-            for (slot, (source, field)) in
-                sources.iter().zip(fields.chunks_exact(STRIDE)).enumerate()
-            {
-                let mut raw = [0_i64; STAT_LANE_COUNT];
-                for (value, bytes) in raw.iter_mut().zip(field[..80].chunks_exact(8)) {
-                    *value = i64::from_le_bytes(bytes.try_into().unwrap());
-                }
+            for (slot, source) in sources.iter().enumerate() {
                 let mut values = [None; STAT_LANE_COUNT];
                 if let Some(reason) = batch_refusal {
                     for lane in 0..STAT_LANE_COUNT {
                         witness.record_withheld(lane, reason);
                     }
-                } else {
+                } else if let Some(meta) = metas[slot] {
                     let def_slice = &def_bytes[slot * DEF_STRIDE..(slot + 1) * DEF_STRIDE];
+                    let def_token = u32::from_le_bytes(def_slice[92..96].try_into().unwrap());
                     let def_vtable_ok = def_valid[slot]
-                        && def_vtable.zip(null_def_vtable).is_some_and(|(expected, null)| {
-                            let vtable = u64::from_le_bytes(def_slice[..8].try_into().unwrap());
-                            vtable == expected as u64 || vtable == null as u64
-                        });
+                        && def_token == meta.equipment_token
+                        && sites.def_vtable.zip(sites.null_def_vtable).is_some_and(
+                            |(expected, null)| {
+                                let vtable =
+                                    u64::from_le_bytes(def_slice[..8].try_into().unwrap());
+                                vtable == expected as u64 || vtable == null as u64
+                            },
+                        );
                     if !def_vtable_ok {
                         for lane in 0..STAT_LANE_COUNT {
-                            witness.record_withheld(lane, "variant definition unverified for stat cache");
+                            witness
+                                .record_withheld(lane, "variant definition unverified for stat cache");
                         }
                     } else {
-                        let upgrades = u32::from_le_bytes(field[80..84].try_into().unwrap());
-                        let modules = u32::from_le_bytes(field[84..88].try_into().unwrap());
-                        let bonus_sources = u32::from_le_bytes(field[88..92].try_into().unwrap());
-                        let named_bonuses = u32::from_le_bytes(field[92..96].try_into().unwrap());
-                        let org_bonuses = u32::from_le_bytes(field[96..100].try_into().unwrap());
-                        let build_cost_3d0 =
-                            i64::from_le_bytes(field[100..108].try_into().unwrap());
-                        let classifier_flags =
-                            u64::from_le_bytes(field[116..124].try_into().unwrap());
-                        let is_plane = (classifier_flags & cequipment_type::PLANE_MASK) != 0;
                         let type_rel_bonuses =
                             i32::from_le_bytes(def_slice[88..92].try_into().unwrap());
                         let mut base_stats = [0_i64; STAT_LANE_COUNT];
@@ -956,81 +1672,66 @@ pub fn walk_stats_carried(
                         {
                             *dst = i64::from_le_bytes(bytes.try_into().unwrap());
                         }
-                        let unmodified = upgrades == 0
-                            && modules == 0
-                            && bonus_sources == 0
-                            && named_bonuses == 0
-                            && org_bonuses == 0
+                        let unmodified = meta.upgrades == 0
+                            && meta.modules == 0
+                            && meta.bonus_sources == 0
+                            && meta.named_bonuses == 0
+                            && meta.org_bonuses == 0
                             && type_rel_bonuses == 0;
-                        let no_design_parts =
-                            upgrades == 0 && modules == 0 && type_rel_bonuses == 0;
-                        for lane in 0..STAT_LANE_COUNT {
-                            let val = raw[lane];
-                            let refusal: Option<&'static str> = match lane {
-                                1 if is_plane && val < STAT_FIXED_ONE => {
-                                    Some("variant stat air_defence below plane minimum")
+                        let expected = if unmodified {
+                            Ok(base_stats)
+                        } else {
+                            compute_modified_lanes(
+                                memory,
+                                source.pointer(),
+                                meta,
+                                &base_stats,
+                                type_rel_bonuses,
+                                &sites,
+                            )
+                        };
+                        match expected {
+                            Err(reason) => {
+                                for lane in 0..STAT_LANE_COUNT {
+                                    witness.record_withheld(lane, reason);
                                 }
-                                3 if is_plane && val < STAT_FIXED_ONE => {
-                                    Some("variant stat air_agility below plane minimum")
-                                }
-                                4 if val < 0 => Some("variant stat maximum_speed is negative"),
-                                5 if val < 0 => Some("variant stat reliability is negative"),
-                                _ => None,
-                            };
-                            if let Some(reason) = refusal {
-                                witness.record_withheld(lane, reason);
-                                continue;
                             }
-                            if lane == 9 && no_design_parts && val != build_cost_3d0 {
-                                witness.record_withheld(
-                                    lane,
-                                    "variant stat build_cost_ic disagrees with resource build cost",
-                                );
-                                continue;
-                            }
-                            if unmodified {
-                                let base_val = base_stats[lane];
-                                let matches = match lane {
-                                    1 => val == if is_plane { base_val.max(STAT_FIXED_ONE) } else { base_val },
-                                    3 => {
-                                        let no_thrust = if is_plane {
-                                            base_val.max(STAT_FIXED_ONE)
-                                        } else {
-                                            base_val
-                                        };
-                                        if val == no_thrust {
-                                            true
-                                        } else if is_plane && raw[6] < raw[7] {
-                                            let factor = *thrust_factor.get_or_insert_with(|| {
-                                                engine_sites::at(base, THRUST_WEIGHT_AGILITY_FACTOR_RVA)
-                                                    .and_then(|at| read::<i64>(memory, at))
-                                            });
-                                            factor.and_then(|factor| {
-                                                raw[7]
-                                                    .checked_sub(raw[6])?
-                                                    .checked_mul(factor)?
-                                                    .checked_div(STAT_FIXED_ONE)?
-                                                    .checked_add(base_val)
-                                                    .map(|v| v.max(STAT_FIXED_ONE))
-                                            }) == Some(val)
-                                        } else {
-                                            false
-                                        }
+                            Ok(expected) => {
+                                let no_design_parts = meta.upgrades == 0
+                                    && meta.modules == 0
+                                    && type_rel_bonuses == 0;
+                                for lane in 0..STAT_LANE_COUNT {
+                                    if !lane_readable[slot][lane] {
+                                        witness.record_withheld(lane, "variant stat lane unreadable");
+                                        continue;
                                     }
-                                    4 => val == base_val.max(0),
-                                    5 => {
-                                        val == base_val.clamp(0, STAT_FIXED_ONE)
-                                            || val == base_val.max(0)
+                                    let val = raw_batch[slot][lane];
+                                    match verify_lane(
+                                        memory,
+                                        base,
+                                        &mut sites,
+                                        lane,
+                                        val,
+                                        &expected,
+                                        meta.classifier_flags,
+                                        no_design_parts,
+                                        meta.resource_build_cost,
+                                    ) {
+                                        Ok(()) => values[lane] = Some(val),
+                                        Err(reason) => witness.record_withheld(lane, reason),
                                     }
-                                    _ => val == base_val,
-                                };
-                                if !matches {
-                                    witness.record_withheld(lane, STAT_LANES[lane].mismatch_reason);
-                                    continue;
                                 }
                             }
-                            values[lane] = Some(val);
                         }
+                    }
+                } else {
+                    for lane in 0..STAT_LANE_COUNT {
+                        let reason = if lane_readable[slot][lane] {
+                            "variant stat metadata unreadable"
+                        } else {
+                            "variant stat lane unreadable"
+                        };
+                        witness.record_withheld(lane, reason);
                     }
                 }
                 if carry.fresh(len, source)? {

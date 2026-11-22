@@ -276,9 +276,9 @@ pub fn read_rocket_spending(
     match instant {
         Some(0) => tick.spent_raw = speed,
         Some(_) => {
-            let cost = variant
-                .and_then(|variant| variant.checked_add(cequipment_variant::BUILD_COST_IC_STAT))
-                .and_then(|address| read::<i64>(memory, address));
+            let cost = variant.and_then(|variant| {
+                cequipment_variant::verified_cached_stat(memory, base, variant, 9).ok()
+            });
             if let Some(cost) = cost {
                 tick.instant_raw = speed.max(cost);
             } else {

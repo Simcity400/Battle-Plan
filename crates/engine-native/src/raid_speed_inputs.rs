@@ -91,6 +91,7 @@ fn effective(
 
 fn transports(
     memory: &impl Memory,
+    base: usize,
     pool: usize,
     arena: &mut crate::walk::Buffer<'_, i64>,
     len: &mut usize,
@@ -116,7 +117,7 @@ fn transports(
         if flags & AIR_TRANSPORT == 0 {
             continue;
         }
-        let speed: i64 = field(memory, variant, TRANSPORT_SPEED_STAT)?;
+        let speed = cequipment_variant::verified_cached_stat(memory, base, variant, 4)?;
         if speed < 0 {
             return Err("raid transport speed stat negative");
         }
@@ -182,6 +183,7 @@ fn read_row(
         .ok_or("raid pool address overflow")?;
     let mut found = transports(
         memory,
+        base,
         pool,
         arena,
         &mut walk.transport_len,
@@ -197,6 +199,7 @@ fn read_row(
                 .ok_or("stockpile address overflow")?;
             found = transports(
                 memory,
+                base,
                 stockpile,
                 arena,
                 &mut walk.transport_len,
@@ -509,6 +512,7 @@ mod tests {
     const ACE: usize = 0x4_0000;
     const ACE_TYPE: usize = 0x4_8000;
     const TRANSPORT: usize = 0x5_0000;
+    const TRANSPORT_DEF: usize = 0x5_4000;
     const RIFLE: usize = 0x5_8000;
     const DEFINITIONS: usize = 0x10_0000;
     const ARMY_HANDLE: u64 = (1 << 32) | 4713;
@@ -539,6 +543,21 @@ mod tests {
         m.u64(0x6108, 5);
         m.u64(0x6110, RIFLE as u64);
         m.u64(0x6118, 7);
+        m.put(TRANSPORT, &[0; 0x500]);
+        m.put(TRANSPORT_DEF, &[0; 0x500]);
+        m.u64(TRANSPORT, cequipment_variant::VTABLE_RVA.0 as u64);
+        m.u64(
+            TRANSPORT + cequipment_variant::TYPE,
+            (41_u64 << 32) | u64::from(cequipment_variant::REFERENCE_TYPE),
+        );
+        m.u32(TRANSPORT + cequipment_variant::EQUIPMENT_TOKEN, 41);
+        m.u64(TRANSPORT + cequipment_variant::DEFINITION, TRANSPORT_DEF as u64);
+        m.u64(TRANSPORT_DEF, crate::cequipment_type::VTABLE_RVA.0 as u64);
+        m.u32(TRANSPORT_DEF + crate::cequipment_type::TOKEN, 41);
+        m.u64(
+            TRANSPORT_DEF + crate::cequipment_type::STATS_BASE + 62 * 8,
+            300_000,
+        );
         m.u64(
             TRANSPORT + cequipment_variant::CLASSIFIER_FLAGS,
             AIR_TRANSPORT | 1,
@@ -635,6 +654,16 @@ mod tests {
             (Some(3), Some(3))
         );
         memory.u64(ACE + cace::OWNER_COUNTRY, COUNTRY as u64 + 8);
+        assert!(matches!(
+            run(&memory).0.outcome,
+            Outcome::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn raid_transport_refuses_unverified_cached_speed_stat() {
+        let mut memory = fixture();
+        memory.u64(TRANSPORT + TRANSPORT_SPEED_STAT, 999_999);
         assert!(matches!(
             run(&memory).0.outcome,
             Outcome::Unavailable { .. }

@@ -35,9 +35,9 @@ fn setup(population: usize) -> (Space, Vec<native::RegistryRow>, Variants) {
     for row in &registry {
         unsafe { std::ptr::write_unaligned((row.pointer() + native::ORIGIN_LINK) as *mut i32, 0) };
     }
-    let variants = acquire(&space, &registry);
     BASE.store(space.base, Ordering::Release);
     ENABLED.store(true, Ordering::Release);
+    let variants = acquire(&space, &registry);
     begin_full();
     begin_read();
     prepare(&registry, &variants);
@@ -112,6 +112,12 @@ unsafe extern "system-unwind" fn edited(
     _: usize,
 ) -> usize {
     unsafe {
+        let definition =
+            std::ptr::read_unaligned((pointer + native::DEFINITION) as *const usize);
+        std::ptr::write_unaligned(
+            (definition + engine_native::cequipment_type::STATS_BASE + 46 * 8) as *mut i64,
+            value as i64,
+        );
         std::ptr::write_unaligned((pointer + native::AIR_RANGE_STAT) as *mut i64, value as i64);
         std::ptr::write((pointer + native::HIGHLIGHT) as *mut u8, value as u8);
     }
