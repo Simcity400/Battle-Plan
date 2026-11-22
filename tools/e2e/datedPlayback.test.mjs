@@ -14,8 +14,8 @@ test('sweep input coverage marks gestures at the boundary and excludes hidden in
     'pin widget is assigned after the pinned widget appears');
   assert.ok(source.indexOf("await mark('pin');") < source.indexOf("await s.click(time, { text: 'Pinned' })"),
     'pin is marked at the click');
-  assert.match(source, /pinWidget = await app\.evaluate\(`document\.querySelector\('\$\{article\}\[data-fixed-hour\]'\)\?\.dataset\.widget[^`]*`\);\s*await app\.evaluate\(`__e2e\.setPinWidget\(\$\{JSON\.stringify\(pinWidget\)\}\)`\)/,
-    'the pin action carries its applied widget');
+  assert.match(source, /pinWidget = owners\[index\];\s*await app\.evaluate\(`__e2e\.setPinWidget\(\$\{JSON\.stringify\(pinWidget\)\}\)`\)/,
+    'the pin action carries the widget whose settings were clicked');
   assert.match(source, /if \(c\.hidden \|\| !c\.checkVisibility\(/, 'hidden worker canvases are not input pictures');
   assert.match(source, /querySelectorAll\('canvas\[data-surface\]'\)/, 'mounted hidden worker surfaces stay declared');
   assert.doesNotMatch(source, /canvas\[data-surface\]:not\(\[hidden\]\)/, 'surface inventory does not discard hidden declarations');
