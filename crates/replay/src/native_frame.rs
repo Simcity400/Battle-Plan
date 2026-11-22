@@ -1168,20 +1168,17 @@ impl RowsPairVisit for Diff<'_> {
             match (current, held_key) {
                 (Some(_), Some(_)) => {
                     if rows[at] != last[before] {
-                        engine_allocation::reserve(pairs, 1)?;
-                        pairs.push((row, Some(previous)));
+                        push_item(pairs, (row, Some(previous)))?;
                     }
                     at += 1;
                     before += 1;
                 }
                 (Some(_), None) => {
-                    engine_allocation::reserve(pairs, 1)?;
-                    pairs.push((row, None));
+                    push_item(pairs, (row, None))?;
                     at += 1;
                 }
                 (None, Some(old)) => {
-                    engine_allocation::reserve(removed, 1)?;
-                    removed.push(old);
+                    push_item(removed, old)?;
                     before += 1;
                 }
                 (None, None) => unreachable!("one side has a row"),
@@ -1209,6 +1206,15 @@ impl RowsPairVisit for Written<'_> {
     }
 }
 
+#[inline]
+fn push_item<T>(values: &mut Vec<T>, value: T) -> io::Result<()> {
+    if values.len() == values.capacity() {
+        engine_allocation::reserve(values, 1)?;
+    }
+    values.push(value);
+    Ok(())
+}
+
 fn gallop<R>(rows: &[R], holds: impl Fn(&R) -> bool) -> usize {
     let mut low = 0;
     let mut high = 1;
@@ -1233,32 +1239,27 @@ fn merge_slice_diff<R: RowCodec>(
         match rows[at].key().cmp(&last[before].key()) {
             std::cmp::Ordering::Equal => {
                 if rows[at] != last[before] {
-                    engine_allocation::reserve(pairs, 1)?;
-                    pairs.push((index(at)?, Some(index(before)?)));
+                    push_item(pairs, (index(at)?, Some(index(before)?)))?;
                 }
                 at += 1;
                 before += 1;
             }
             std::cmp::Ordering::Less => {
-                engine_allocation::reserve(pairs, 1)?;
-                pairs.push((index(at)?, None));
+                push_item(pairs, (index(at)?, None))?;
                 at += 1;
             }
             std::cmp::Ordering::Greater => {
-                engine_allocation::reserve(removed, 1)?;
-                removed.push(last[before].key());
+                push_item(removed, last[before].key())?;
                 before += 1;
             }
         }
     }
     while at < new_span.end {
-        engine_allocation::reserve(pairs, 1)?;
-        pairs.push((index(at)?, None));
+        push_item(pairs, (index(at)?, None))?;
         at += 1;
     }
     while before < old_span.end {
-        engine_allocation::reserve(removed, 1)?;
-        removed.push(last[before].key());
+        push_item(removed, last[before].key())?;
         before += 1;
     }
     Ok(())
@@ -1319,17 +1320,14 @@ impl RowsPairVisit for SliceDiff<'_> {
                 match (at, before) {
                     (Some(at), Some(before)) => {
                         if rows[at] != last[before] {
-                            engine_allocation::reserve(pairs, 1)?;
-                            pairs.push((index(at)?, Some(index(before)?)));
+                            push_item(pairs, (index(at)?, Some(index(before)?)))?;
                         }
                     }
                     (Some(at), None) => {
-                        engine_allocation::reserve(pairs, 1)?;
-                        pairs.push((index(at)?, None));
+                        push_item(pairs, (index(at)?, None))?;
                     }
                     (None, Some(_)) => {
-                        engine_allocation::reserve(removed, 1)?;
-                        removed.push(key);
+                        push_item(removed, key)?;
                     }
                     (None, None) => {}
                 }

@@ -520,19 +520,45 @@ struct Staged<'s> {
     pending: &'s mut Pending,
     unrecord: &'s mut Vec<u32>,
     dirty: bool,
+    has_new: bool,
 }
 
 impl Staged<'_> {
+    #[inline]
+    fn all_recorded(&self) -> bool {
+        self.cells.unrecorded.is_empty()
+            && self.cells.kept.is_empty()
+            && self.marked.is_none()
+            && !self.has_new
+    }
+
     #[inline]
     fn each(
         &mut self,
         mut change: impl FnMut(&mut Pending, usize, u32, bool) -> io::Result<bool>,
     ) -> io::Result<()> {
-        let mut skipped = self.cells.unrecorded.iter().copied().peekable();
-        let mut kept = self.cells.kept.iter().copied().peekable();
+        let unrecorded = self.cells.unrecorded.as_slice();
+        let kept = self.cells.kept.as_slice();
+        let mut unrecorded_at = 0usize;
+        let mut kept_at = 0usize;
+        let mut next_unrecorded = unrecorded.first().copied().unwrap_or(u32::MAX);
+        let mut next_kept = kept.first().copied().unwrap_or(u32::MAX);
         for (row, &slot) in (0u32..).zip(self.slots) {
-            let recorded = skipped.next_if_eq(&row).is_none();
-            if kept.next_if_eq(&row).is_some() || slot == NEW {
+            let recorded = if next_unrecorded == row {
+                unrecorded_at += 1;
+                next_unrecorded = unrecorded.get(unrecorded_at).copied().unwrap_or(u32::MAX);
+                false
+            } else {
+                true
+            };
+            let is_kept = if next_kept == row {
+                kept_at += 1;
+                next_kept = kept.get(kept_at).copied().unwrap_or(u32::MAX);
+                true
+            } else {
+                false
+            };
+            if is_kept || slot == NEW {
                 continue;
             }
             let was = !self.marked.is_some_and(|bits| bits.get(slot));
@@ -549,6 +575,20 @@ impl Staged<'_> {
     }
 
     fn scalars<T: Word>(&mut self, held: &Paged<T>) -> io::Result<()> {
+        if self.all_recorded() {
+            for (&slot, &new) in self.slots.iter().zip(&self.cells.words) {
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                if value.word() == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::plain(new), Some(T::plain(value.word())))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -564,6 +604,20 @@ impl Staged<'_> {
     }
 
     fn bools(&mut self, held: &Bools) -> io::Result<()> {
+        if self.all_recorded() {
+            for (&slot, &new) in self.slots.iter().zip(&self.cells.words) {
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                if value.word() == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, bool::plain(new), Some(bool::plain(value.word())))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -579,6 +633,23 @@ impl Staged<'_> {
     }
 
     fn optionals<T: Present>(&mut self, held: &Paged<T>, presence: &PagedBits) -> io::Result<()> {
+        if self.all_recorded() {
+            let cells = self.cells;
+            for (row, (&slot, &word)) in self.slots.iter().zip(&cells.words).enumerate() {
+                let value = *held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let old = presence.get(slot).then(|| value.word());
+                let new = cells.present(row).then_some(word);
+                if old == new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::optional(new), Some(T::optional(old)))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = *held
@@ -595,6 +666,24 @@ impl Staged<'_> {
     }
 
     fn lists<T: Items>(&mut self, held: &Lists<T>, items: &[T]) -> io::Result<()> {
+        if self.all_recorded() {
+            let mut start = 0usize;
+            for (&slot, &end) in self.slots.iter().zip(&self.cells.words) {
+                let end = end as usize;
+                let value = held
+                    .get(slot as usize)
+                    .ok_or_else(|| invalid_static("A held slot is past its column"))?;
+                let new = &items[start..end];
+                start = end;
+                if *value == *new {
+                    continue;
+                }
+                self.dirty = true;
+                self.pending
+                    .change(slot, T::cell(new), Some(T::cell(value)))?;
+            }
+            return Ok(());
+        }
         let cells = self.cells;
         self.each(|pending, row, slot, was| {
             let value = held
@@ -636,6 +725,14 @@ fn span(start: usize, len: usize) -> io::Result<(u32, u32)> {
         .filter(|&end| u32::try_from(end).is_ok())
         .ok_or_else(|| invalid_static("Cell items exceed 32 bits"))?;
     Ok((start as u32, (end - start) as u32))
+}
+
+#[inline]
+fn reserve<T>(values: &mut Vec<T>, additional: usize) -> io::Result<()> {
+    if values.capacity() - values.len() < additional {
+        engine_allocation::reserve(values, additional)?;
+    }
+    Ok(())
 }
 
 #[inline]
@@ -930,9 +1027,9 @@ impl Pending {
             _ => {}
         }
         let (word, present) = word(cell);
-        engine_allocation::reserve(&mut self.at, 1)?;
-        engine_allocation::reserve(&mut self.words, 1)?;
-        engine_allocation::reserve(&mut self.present, 1)?;
+        reserve(&mut self.at, 1)?;
+        reserve(&mut self.words, 1)?;
+        reserve(&mut self.present, 1)?;
         self.at.push(at);
         self.words.push(word);
         self.present.push(present);
@@ -1305,7 +1402,7 @@ fn see(seen: &mut [u64], visited: &mut Vec<u32>, slot: u32) -> io::Result<()> {
     if *word & bit != 0 {
         return Err(invalid_static("An hour visits a row twice"));
     }
-    engine_allocation::reserve(visited, 1)?;
+    reserve(visited, 1)?;
     *word |= bit;
     visited.push(slot);
     Ok(())
@@ -1860,8 +1957,7 @@ impl Hour<'_> {
                     match cell {
                         None if recorded => {
                             mark_dirty(&mut self.writer.dirty, column);
-                            engine_allocation::reserve(&mut self.writer.unrecord[column], 1)?;
-                            self.writer.unrecord[column].push(slot);
+                            push(&mut self.writer.unrecord[column], slot)?;
                         }
                         None => {}
                         Some(cell) => {
@@ -1881,18 +1977,13 @@ impl Hour<'_> {
             }
             None => {
                 let index = self.inserted;
-                engine_allocation::reserve(&mut self.writer.new_keys, 1)?;
-                self.writer.new_keys.push(key);
+                push(&mut self.writer.new_keys, key)?;
                 mark_all_dirty(&mut self.writer.dirty, cells.len());
                 for (column, &input) in cells.iter().enumerate() {
                     let cell = match self.resolve(column, input)? {
                         Some(cell) => cell,
                         None => {
-                            engine_allocation::reserve(
-                                &mut self.writer.insert_unrecorded[column],
-                                1,
-                            )?;
-                            self.writer.insert_unrecorded[column].push(index);
+                            push(&mut self.writer.insert_unrecorded[column], index)?;
                             placeholder(self.writer.kinds[column])
                         }
                     };
@@ -1947,7 +2038,7 @@ impl Hour<'_> {
             extend(slots, &order.slots)?;
             self.ordered = true;
         } else {
-            engine_allocation::reserve(slots, rows)?;
+            reserve(slots, rows)?;
             for (row, &key) in (0u32..).zip(&batch.keys) {
                 if !removed.is_empty() && removed.binary_search(&key).is_ok() {
                     return Err(invalid_static("A row key is both changed and removed"));
@@ -1970,12 +2061,13 @@ impl Hour<'_> {
         if rows == 0 {
             return Ok(());
         }
-        if !insert_rows.is_empty() {
+        let has_new = !insert_rows.is_empty();
+        if has_new {
             mark_all_dirty(dirty, kinds.len());
         }
         let slots = slots.as_slice();
         for (column, (&kind, cells)) in kinds.iter().zip(columns).enumerate() {
-            if kind == Kind::Bytes {
+            if kind == Kind::Bytes || (!has_new && cells.kept.len() == rows) {
                 continue;
             }
             let held = table
@@ -1992,6 +2084,7 @@ impl Hour<'_> {
                 pending: &mut updates[column],
                 unrecord: &mut unrecord[column],
                 dirty: false,
+                has_new,
             };
             let compared = match held {
                 Column::U8(values) => staged.scalars(values),
@@ -2032,7 +2125,9 @@ impl Hour<'_> {
                 inserts[column].push(index, cell)?;
             }
         }
-        if texts.is_empty() {
+        if texts.is_empty()
+            || (!has_new && texts.iter().all(|&column| columns[column].kept.len() == rows))
+        {
             return Ok(());
         }
         cursors.clear();
@@ -2100,9 +2195,7 @@ impl Hour<'_> {
             return Err(invalid_static("NOOP names a column past the schema"));
         }
         mark_dirty(&mut self.writer.dirty, column);
-        engine_allocation::reserve(&mut self.writer.noops[column], 1)?;
-        self.writer.noops[column].push(slot);
-        Ok(())
+        push(&mut self.writer.noops[column], slot)
     }
 
     pub fn touch(&mut self, key: u128) -> io::Result<()> {
@@ -2113,9 +2206,7 @@ impl Hour<'_> {
         let slot = self
             .held_slot(key)
             .ok_or_else(|| invalid_static("Touch names a row key that is not held"))?;
-        engine_allocation::reserve(&mut self.writer.touched, 1)?;
-        self.writer.touched.push(slot);
-        Ok(())
+        push(&mut self.writer.touched, slot)
     }
 
     pub fn finish(self) -> io::Result<Prepared> {
@@ -2166,7 +2257,7 @@ impl Hour<'_> {
             }
             Coverage::Complete | Coverage::Partial => {}
             Coverage::Changes { .. } => {
-                engine_allocation::reserve(deleted, writer.removed.len())?;
+                reserve(deleted, writer.removed.len())?;
                 for &key in &writer.removed {
                     let slot = writer
                         .table
@@ -2183,7 +2274,7 @@ impl Hour<'_> {
             read.sort_unstable();
         }
         sorted_keys.clear();
-        engine_allocation::reserve(sorted_keys, writer.new_keys.len())?;
+        reserve(sorted_keys, writer.new_keys.len())?;
         sorted_keys.extend(
             writer
                 .new_keys
@@ -2202,12 +2293,12 @@ impl Hour<'_> {
             return Err(invalid_static("Row slots exceed 32 bits"));
         }
         by_index.clear();
-        engine_allocation::reserve(by_index, inserted as usize)?;
+        reserve(by_index, inserted as usize)?;
         by_index.resize(inserted as usize, 0);
         by_slot.clear();
-        engine_allocation::reserve(by_slot, sorted_keys.len())?;
+        reserve(by_slot, sorted_keys.len())?;
         popped.clear();
-        engine_allocation::reserve(popped, sorted_keys.len())?;
+        reserve(popped, sorted_keys.len())?;
         {
             let mut reused = deleted.iter().copied().peekable();
             let mut next = extent;
@@ -2241,13 +2332,13 @@ impl Hour<'_> {
         }
         by_slot.sort_unstable_by_key(|entry| entry.0);
         inserted_slots.clear();
-        engine_allocation::reserve(inserted_slots, by_slot.len())?;
+        reserve(inserted_slots, by_slot.len())?;
         inserted_slots.extend(by_slot.iter().map(|entry| entry.0));
         keys.clear();
-        engine_allocation::reserve(keys, by_slot.len())?;
+        reserve(keys, by_slot.len())?;
         keys.extend(by_slot.iter().map(|entry| entry.1));
         insert_order.clear();
-        engine_allocation::reserve(insert_order, by_slot.len())?;
+        reserve(insert_order, by_slot.len())?;
         insert_order.extend(by_slot.iter().map(|entry| entry.2));
         let mut live_after = None;
         for column in dirty_columns(&writer.dirty) {
@@ -2257,21 +2348,25 @@ impl Hour<'_> {
             if pending.len() == 0 && noops.is_empty() {
                 continue;
             }
-            engine_allocation::reserve(&mut runs.order, pending.len())?;
+            reserve(&mut runs.order, pending.len())?;
             runs.order.extend(0..pending.len() as u32);
-            runs.order
-                .sort_unstable_by_key(|&entry| pending.at[entry as usize]);
+            if !pending.at.windows(2).all(|pair| pair[0] < pair[1]) {
+                runs.order
+                    .sort_unstable_by_key(|&entry| pending.at[entry as usize]);
+            }
             let slot_of = |entry: &u32| pending.at[*entry as usize];
-            noops.sort_unstable();
-            noops.dedup();
-            noops.retain(|slot| runs.order.binary_search_by_key(slot, slot_of).is_err());
+            if !noops.is_empty() {
+                noops.sort_unstable();
+                noops.dedup();
+                noops.retain(|slot| runs.order.binary_search_by_key(slot, slot_of).is_err());
+            }
             if pending.uniform && pending.len() >= FILL_MINIMUM {
                 let live = *live_after.get_or_insert_with(|| {
                     writer.table.live().count() - deleted.len() + inserted_slots.len()
                 });
                 if pending.len() * 2 >= live {
                     runs.fill = true;
-                    engine_allocation::reserve(&mut runs.except, live - pending.len())?;
+                    reserve(&mut runs.except, live - pending.len())?;
                     exceptions(
                         writer.table.live(),
                         deleted.as_slice(),
@@ -2289,7 +2384,7 @@ impl Hour<'_> {
             } else {
                 &writer.updates[column].at[..]
             };
-            engine_allocation::reserve(
+            reserve(
                 changed,
                 set.len() + writer.unrecord[column].len() + writer.noops[column].len(),
             )?;
@@ -2297,8 +2392,10 @@ impl Hour<'_> {
             changed.extend_from_slice(&writer.unrecord[column]);
             changed.extend_from_slice(&writer.noops[column]);
         }
-        changed.sort_unstable();
-        changed.dedup();
+        if !changed.windows(2).all(|pair| pair[0] < pair[1]) {
+            changed.sort_unstable();
+            changed.dedup();
+        }
         if changed.iter().any(|&slot| !seen(slot)) {
             return Err(invalid_static(
                 "A row has a NOOP but was not visited this hour",
@@ -2312,10 +2409,30 @@ impl Hour<'_> {
         if partial && !deleted.is_empty() {
             return Err(invalid_static("A partial read deletes no row"));
         }
-        writer.touched.sort_unstable();
-        writer.touched.dedup();
+        if !writer.touched.is_empty() {
+            writer.touched.sort_unstable();
+            writer.touched.dedup();
+        }
         let changed = changed.as_slice();
-        let position = |slot: u32| changed.binary_search(&slot).expect("changed slot") as u32;
+        let next_position = |pos: &mut usize, slot: u32| -> u32 {
+            if changed.get(*pos) == Some(&slot) {
+                let found = *pos as u32;
+                *pos += 1;
+                return found;
+            }
+            let mut step = 1usize;
+            while *pos + step < changed.len() && changed[*pos + step] < slot {
+                *pos += step;
+                step <<= 1;
+            }
+            let end = (*pos + step + 1).min(changed.len());
+            *pos += changed[*pos..end]
+                .binary_search(&slot)
+                .expect("changed slot");
+            let found = *pos as u32;
+            *pos += 1;
+            found
+        };
         let mut census = Census::default();
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
@@ -2327,8 +2444,12 @@ impl Hour<'_> {
                 census.fill_exceptions += runs.except.len() as u64;
             } else {
                 let uniform = pending.uniform && pending.len() > 1;
+                let mut pos = 0usize;
                 for &entry in &runs.order {
-                    let (entry, at) = (entry as usize, position(pending.at[entry as usize]));
+                    let (entry, at) = (
+                        entry as usize,
+                        next_position(&mut pos, pending.at[entry as usize]),
+                    );
                     let op = if uniform { Op::Set } else { pending.ops[entry] };
                     match op {
                         Op::Add => {
@@ -2354,9 +2475,13 @@ impl Hour<'_> {
                 census.add += runs.add_positions.len() as u64;
                 census.patch += runs.patch_positions.len() as u64;
             }
-            engine_allocation::reserve(&mut runs.noop_positions, writer.noops[column].len())?;
-            runs.noop_positions
-                .extend(writer.noops[column].iter().map(|&slot| position(slot)));
+            let noops = &writer.noops[column];
+            if !noops.is_empty() {
+                reserve(&mut runs.noop_positions, noops.len())?;
+                let mut noop_pos = 0usize;
+                runs.noop_positions
+                    .extend(noops.iter().map(|&slot| next_position(&mut noop_pos, slot)));
+            }
             let order = insert_order.as_slice();
             writer.insert_outs[column].fill(kind, &writer.inserts[column], order)?;
         }
@@ -2364,7 +2489,7 @@ impl Hour<'_> {
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
             let column_runs = &writer.runs[column];
-            engine_allocation::reserve(&mut runs, 5)?;
+            reserve(&mut runs, 5)?;
             if column_runs.fill {
                 runs.push(Run {
                     column,
@@ -2422,7 +2547,7 @@ impl Hour<'_> {
         }
         let mut inserts: Vec<Values<'_>> = recycle(std::mem::take(insert_list));
         if !inserted_slots.is_empty() {
-            engine_allocation::reserve(&mut inserts, columns)?;
+            reserve(&mut inserts, columns)?;
             inserts.extend(
                 (0..columns).map(|column| writer.insert_outs[column].values(writer.kinds[column])),
             );
@@ -2430,10 +2555,11 @@ impl Hour<'_> {
         for column in dirty_columns(&writer.dirty) {
             let slots = &mut unrecorded_slots[column];
             slots.clear();
-            engine_allocation::reserve(
-                slots,
-                writer.unrecord[column].len() + writer.insert_unrecorded[column].len(),
-            )?;
+            let needed = writer.unrecord[column].len() + writer.insert_unrecorded[column].len();
+            if needed == 0 {
+                continue;
+            }
+            reserve(slots, needed)?;
             slots.extend_from_slice(&writer.unrecord[column]);
             slots.extend(
                 writer.insert_unrecorded[column]
@@ -2447,7 +2573,7 @@ impl Hour<'_> {
         let marked = dirty_columns(&writer.dirty)
             .filter(|&column| !unrecorded_slots[column].is_empty())
             .count();
-        engine_allocation::reserve(&mut unrecorded, marked)?;
+        reserve(&mut unrecorded, marked)?;
         for column in dirty_columns(&writer.dirty) {
             if !unrecorded_slots[column].is_empty() {
                 unrecorded.push((column, unrecorded_slots[column].as_slice()));
@@ -2455,7 +2581,7 @@ impl Hour<'_> {
         }
         let mut column_bits = std::mem::take(spare_columns);
         column_bits.clear();
-        engine_allocation::reserve(&mut column_bits, columns.div_ceil(64))?;
+        reserve(&mut column_bits, columns.div_ceil(64))?;
         column_bits.resize(columns.div_ceil(64), 0);
         for run in &runs {
             column_bits[run.column / 64] |= 1 << (run.column % 64);

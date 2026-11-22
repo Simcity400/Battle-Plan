@@ -158,11 +158,25 @@ impl Hostility {
             + self.pairs.capacity() * (size_of::<((u32, u32), bool)>() + 1)
     }
 
+    #[cfg(test)]
     fn attacking(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game: usize,
+        last: Result<u32, &'static str>,
+        logical: Option<u32>,
+    ) -> Result<bool, &'static str> {
+        let mut countries = None;
+        self.attacking_with(memory, base, game, &mut countries, last, logical)
+    }
+
+    fn attacking_with<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        game: usize,
+        countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
         last: Result<u32, &'static str>,
         logical: Option<u32>,
     ) -> Result<bool, &'static str> {
@@ -207,13 +221,54 @@ impl Hostility {
         if let Some(&hostile) = self.pairs.get(&pair) {
             return Ok(hostile);
         }
-        let hostile = ccountry::movement_enemy(memory, base, game, pair.0, pair.1)?;
+        let reader = countries
+            .get_or_insert_with(|| ccountry::Reader::new(memory, base, game))
+            .as_ref()
+            .map_err(|reason| *reason)?;
+        let hostile = ccountry::movement_enemy_with(memory, base, reader, pair.0, pair.1)?;
         if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.pairs, 1))
             .is_ok()
         {
             self.pairs.insert(pair, hostile);
         }
         Ok(hostile)
+    }
+}
+
+#[derive(Default)]
+struct Scratch {
+    ids: Vec<u32>,
+    states: Vec<usize>,
+    templates: Vec<usize>,
+    #[allow(
+        clippy::type_complexity,
+        reason = "reused per-hour scratch for deduplicated state movement term keys"
+    )]
+    wanted_states: Vec<(u32, u32, u32, usize, u32, bool)>,
+    #[allow(
+        clippy::type_complexity,
+        reason = "reused per-hour scratch for owner-controller movement relation branches"
+    )]
+    branches: Vec<((u32, u32), Result<u8, &'static str>)>,
+    wanted_rivers: Vec<(u32, u32)>,
+    pointers: Vec<usize>,
+    located: Vec<(usize, u32)>,
+    wanted_transport: Vec<(u32, usize)>,
+    indices: Vec<usize>,
+}
+
+impl Scratch {
+    fn allocated_bytes(&self) -> usize {
+        self.ids.capacity() * size_of::<u32>()
+            + self.states.capacity() * size_of::<usize>()
+            + self.templates.capacity() * size_of::<usize>()
+            + self.wanted_states.capacity() * size_of::<(u32, u32, u32, usize, u32, bool)>()
+            + self.branches.capacity() * size_of::<((u32, u32), Result<u8, &'static str>)>()
+            + self.wanted_rivers.capacity() * size_of::<(u32, u32)>()
+            + self.pointers.capacity() * size_of::<usize>()
+            + self.located.capacity() * size_of::<(usize, u32)>()
+            + self.wanted_transport.capacity() * size_of::<(u32, usize)>()
+            + self.indices.capacity() * size_of::<usize>()
     }
 }
 
@@ -247,6 +302,7 @@ pub(super) struct SpeedTerms {
     regions: Vec<TransportRegion>,
     transport_demand: Vec<(u32, usize)>,
     speed_cache: SpeedCache,
+    scratch: Scratch,
     held: owned::Loan,
     settle_pending: bool,
     changes: &'static dyn Changes,
@@ -283,6 +339,7 @@ impl Default for SpeedTerms {
             regions: Vec::new(),
             transport_demand: Vec::new(),
             speed_cache: SpeedCache::default(),
+            scratch: Scratch::default(),
             held: owned::Loan::default(),
             settle_pending: false,
             changes: &changes::Observer,
@@ -314,8 +371,12 @@ fn memo<K: Ord + Copy, V: Copy>(memo: &[(K, V)], key: K) -> Option<V> {
         .map(|at| memo[at].1)
 }
 
+#[inline]
 fn reserve<T>(vec: &mut Vec<T>, additional: usize) -> Result<(), &'static str> {
-    engine_allocation::reserve(vec, additional).map_err(|_| ALLOCATION)
+    if vec.capacity() - vec.len() < additional {
+        engine_allocation::reserve(vec, additional).map_err(|_| ALLOCATION)?;
+    }
+    Ok(())
 }
 
 impl SpeedTerms {
@@ -346,6 +407,7 @@ impl SpeedTerms {
             + self.regions.capacity() * size_of::<TransportRegion>()
             + self.transport_demand.capacity() * size_of::<(u32, usize)>()
             + self.speed_cache.allocated_bytes()
+            + self.scratch.allocated_bytes()
             + self.held.bytes()
     }
 
@@ -566,9 +628,10 @@ impl SpeedTerms {
             }
         };
         let start = qpc();
+        let mut countries = None;
         let prepared = {
             let _reads = crate::read_accounting::table(TABLES[0]);
-            self.prepare(memory, base, game, seeds)
+            self.prepare_with(memory, base, game, &mut countries, seeds)
         };
         if let Err(reason) = prepared {
             self.outcomes = [Outcome::Unavailable { reason }; N];
@@ -580,11 +643,10 @@ impl SpeedTerms {
             self.combat_captured = self.capture_combat(memory, base, seeds).is_ok();
             if !self.combat_captured {
                 self.combat.clear();
-        self.combat_order.clear();
+                self.combat_order.clear();
                 self.counts[COMBAT] = [0, 0, seeds.len() as u64];
             }
         }
-        let countries = ccountry::Reader::new(memory, base, game);
         let mut lap = |slot: usize, at: &mut i64| {
             let now = qpc();
             ticks[slot] += now.saturating_sub(*at).max(0) as u64;
@@ -593,22 +655,23 @@ impl SpeedTerms {
         let mut at = start;
         self.outcomes[0] = {
             let _reads = crate::read_accounting::table(TABLES[0]);
-            self.capture_states(memory, base, game)
+            self.capture_states_with(memory, base, game, &mut countries)
         };
         lap(0, &mut at);
         self.outcomes[1] = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            self.capture_access(memory, base, game)
+            self.capture_access_with(memory, base, game, &mut countries)
         };
         lap(1, &mut at);
+        let countries = countries.get_or_insert_with(|| ccountry::Reader::new(memory, base, game));
         self.outcomes[2] = {
             let _reads = crate::read_accounting::table(TABLES[2]);
-            self.acquire_entries(memory, &countries, take)
+            self.acquire_entries(memory, countries, take)
         };
         lap(2, &mut at);
         self.outcomes[3] = {
             let _reads = crate::read_accounting::table(TABLES[3]);
-            self.capture_rivers(memory, base, game, &countries)
+            self.capture_rivers(memory, base, game, countries)
         };
         lap(3, &mut at);
         self.outcomes[4] = {
@@ -644,23 +707,23 @@ impl SpeedTerms {
         base: usize,
         seeds: &[DivisionSeed],
     ) -> Result<(), &'static str> {
-        let list = |seed: &DivisionSeed| -> Result<Option<Array>, &'static str> {
-            let demand = memo(&self.combat_demand, seed.division).unwrap_or(Ok(false));
-            if demand == Ok(false) || seed.withdrawal.is_some_and(|value| value != 0) {
-                return Ok(None);
-            }
-            let list = seed
-                .combat
-                .and_then(|header| Array::from_header(header, 8))
-                .ok_or("division combat list unreadable")?;
-            if list.count == 0 {
-                return Ok(None);
-            }
-            match seed.withdrawal.ok_or("division withdrawal unreadable")? {
-                0 => demand.map(|needed| needed.then_some(list)),
-                _ => Ok(None),
-            }
-        };
+        let list =
+            |seed: &DivisionSeed, demand: Result<bool, &'static str>| -> Result<Option<Array>, &'static str> {
+                if demand == Ok(false) || seed.withdrawal.is_some_and(|value| value != 0) {
+                    return Ok(None);
+                }
+                let list = seed
+                    .combat
+                    .and_then(|header| Array::from_header(header, 8))
+                    .ok_or("division combat list unreadable")?;
+                if list.count == 0 {
+                    return Ok(None);
+                }
+                match seed.withdrawal.ok_or("division withdrawal unreadable")? {
+                    0 => demand.map(|needed| needed.then_some(list)),
+                    _ => Ok(None),
+                }
+            };
         let combat_at = |list: Array, index: u32| {
             list.element(index, 8)
                 .and_then(|at| engine_native::read::<u64>(memory, at))
@@ -673,8 +736,9 @@ impl SpeedTerms {
         reserve(&mut self.combat, seeds.len())?;
         reserve(&mut self.combat_order, seeds.len())?;
         for seed in seeds {
+            let demand = memo(&self.combat_demand, seed.division).unwrap_or(Ok(false));
             let value = (|| -> Result<Option<i64>, &'static str> {
-                let Some(list) = list(seed)? else {
+                let Some(list) = list(seed, demand)? else {
                     return Ok(None);
                 };
                 for index in 0..list.count {
@@ -721,7 +785,7 @@ impl SpeedTerms {
                 }
                 Ok(None)
             })();
-            if memo(&self.combat_demand, seed.division).unwrap_or(Ok(false)) != Ok(false) {
+            if demand != Ok(false) {
                 self.counts[COMBAT][usize::from(value.is_err()) * 2] += 1;
             }
             self.combat.push((seed.division, value.ok()));
@@ -732,11 +796,24 @@ impl SpeedTerms {
         Ok(())
     }
 
+    #[cfg(test)]
     fn prepare(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game: usize,
+        seeds: &[DivisionSeed],
+    ) -> Result<(), &'static str> {
+        let mut countries = None;
+        self.prepare_with(memory, base, game, &mut countries, seeds)
+    }
+
+    fn prepare_with<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        game: usize,
+        countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
         seeds: &[DivisionSeed],
     ) -> Result<(), &'static str> {
         self.movers.clear();
@@ -792,8 +869,9 @@ impl SpeedTerms {
                 route,
             });
         }
-        let mut ids: Vec<u32> = Vec::new();
-        reserve(&mut ids, self.movers.len() + self.route.len())?;
+        let ids = &mut self.scratch.ids;
+        ids.clear();
+        reserve(ids, self.movers.len() + self.route.len())?;
         ids.extend(self.movers.iter().filter_map(|mover| mover.location.ok()));
         ids.extend(self.route.iter().filter_map(|id| id.ok()));
         ids.sort_unstable();
@@ -805,7 +883,7 @@ impl SpeedTerms {
             .ok_or("movement province array invalid");
         match provinces {
             Ok(provinces) => {
-                cprovince::movement_provinces(memory, base, provinces, &ids, |id, facts| {
+                cprovince::movement_provinces(memory, base, provinces, ids, |id, facts| {
                     self.provinces.push((id, facts))
                 })
             }
@@ -813,9 +891,10 @@ impl SpeedTerms {
                 .provinces
                 .extend(ids.iter().map(|&id| (id, Err(reason)))),
         }
-        self.prepare_land_demand(memory, base, game)?;
-        let mut states: Vec<usize> = Vec::new();
-        reserve(&mut states, self.movers.len())?;
+        self.prepare_land_demand_with(memory, base, game, countries)?;
+        let states = &mut self.scratch.states;
+        states.clear();
+        reserve(states, self.movers.len())?;
         states.extend(
             self.movers
                 .iter()
@@ -830,14 +909,15 @@ impl SpeedTerms {
         states.sort_unstable();
         states.dedup();
         reserve(&mut self.state_facts, states.len())?;
-        for &state in &states {
+        for &state in states.iter() {
             self.state_facts.push((
                 state,
                 engine_native::cstate::id_and_controller(memory, state),
             ));
         }
-        let mut templates: Vec<usize> = Vec::new();
-        reserve(&mut templates, self.movers.len())?;
+        let templates = &mut self.scratch.templates;
+        templates.clear();
+        reserve(templates, self.movers.len())?;
         templates.extend(
             self.movers
                 .iter()
@@ -847,7 +927,7 @@ impl SpeedTerms {
         templates.sort_unstable();
         templates.dedup();
         reserve(&mut self.templates, templates.len())?;
-        for &template in &templates {
+        for &template in templates.iter() {
             let start = self.keys.len();
             if engine_native::carmy::movement_speed_key_demands(
                 memory,
@@ -865,13 +945,24 @@ impl SpeedTerms {
         Ok(())
     }
 
+    #[cfg(test)]
     fn prepare_land_demand(
         &mut self,
         memory: &impl Memory,
         base: usize,
         game: usize,
     ) -> Result<(), &'static str> {
-        let countries = ccountry::Reader::new(memory, base, game);
+        let mut countries = None;
+        self.prepare_land_demand_with(memory, base, game, &mut countries)
+    }
+
+    fn prepare_land_demand_with<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        game: usize,
+        countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+    ) -> Result<(), &'static str> {
         for mover in &mut self.movers {
             mover.land = (|| {
                 if mover.transfer == Some(true) {
@@ -900,6 +991,7 @@ impl SpeedTerms {
                 mover.transfer.ok_or("division naval transfer unreadable")?;
                 if mover.strategic.ok_or("division redeployment unreadable")? != 0 {
                     let owner = countries
+                        .get_or_insert_with(|| ccountry::Reader::new(memory, base, game))
                         .as_ref()
                         .map_err(|reason| *reason)?
                         .resolve(mover.owner.ok_or("division speed owner unreadable")?)?;
@@ -924,7 +1016,7 @@ impl SpeedTerms {
                     .and_then(|path| path.last().copied().unwrap_or(Err("division route empty")));
                 mover.attacking = self
                     .hostility
-                    .attacking(memory, base, game, last, mover.logical);
+                    .attacking_with(memory, base, game, countries, last, mover.logical);
             }
             if mover.land.is_err() {
                 for family in &mut self.counts[..4] {
@@ -941,11 +1033,27 @@ impl SpeedTerms {
         Ok(())
     }
 
-    #[allow(clippy::type_complexity)]
+    #[cfg(test)]
     fn capture_states(&mut self, memory: &impl Memory, base: usize, game: usize) -> Outcome {
+        let mut countries = None;
+        self.capture_states_with(memory, base, game, &mut countries)
+    }
+
+    #[allow(
+        clippy::type_complexity,
+        reason = "block memo tuple pairs state movement key with inputs result"
+    )]
+    fn capture_states_with<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        game: usize,
+        countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+    ) -> Outcome {
         let result = (|| -> Result<usize, &'static str> {
-            let mut wanted: Vec<(u32, u32, u32, usize, u32, bool)> = Vec::new();
-            reserve(&mut wanted, self.movers.len())?;
+            let wanted = &mut self.scratch.wanted_states;
+            wanted.clear();
+            reserve(wanted, self.movers.len())?;
             for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
                 let key =
                     (|| -> Result<Option<(u32, u32, u32, usize, u32, bool)>, &'static str> {
@@ -979,8 +1087,9 @@ impl SpeedTerms {
                 kept.5 |= later.5;
                 true
             });
-            let mut branches: Vec<((u32, u32), Result<u8, &'static str>)> = Vec::new();
-            reserve(&mut branches, wanted.len())?;
+            let branches = &mut self.scratch.branches;
+            branches.clear();
+            reserve(branches, wanted.len())?;
             branches.extend(
                 wanted
                     .iter()
@@ -988,29 +1097,47 @@ impl SpeedTerms {
             );
             branches.sort_unstable_by_key(|entry| entry.0);
             branches.dedup_by_key(|entry| entry.0);
-            for ((owner, controller), branch) in &mut branches {
-                *branch = (|| -> Result<u8, &'static str> {
-                    Ok(
-                        if ccountry::movement_friendly(memory, base, game, *owner, *controller)? {
-                            StateMovementTerms::FRIENDLY
-                        } else if ccountry::movement_enemy(memory, base, game, *owner, *controller)?
-                        {
-                            StateMovementTerms::ENEMY
-                        } else {
-                            StateMovementTerms::NEITHER
-                        },
-                    )
-                })();
+            if !branches.is_empty() {
+                let countries = countries.get_or_insert_with(|| ccountry::Reader::new(memory, base, game));
+                for ((owner, controller), branch) in branches.iter_mut() {
+                    *branch = countries
+                        .as_ref()
+                        .map_err(|reason| *reason)
+                        .and_then(|reader| {
+                            Ok(
+                                match ccountry::movement_relation_with(
+                                    memory,
+                                    base,
+                                    reader,
+                                    *owner,
+                                    *controller,
+                                )? {
+                                    ccountry::MovementRelation::Friendly => {
+                                        StateMovementTerms::FRIENDLY
+                                    }
+                                    ccountry::MovementRelation::Enemy => StateMovementTerms::ENEMY,
+                                    ccountry::MovementRelation::Neither => {
+                                        StateMovementTerms::NEITHER
+                                    }
+                                },
+                            )
+                        });
+                }
             }
+            let links = countries
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .map(|reader| reader.arrays()[1]);
+            let mut acc_cache: Option<((usize, u32), Result<usize, &'static str>)> = None;
             let mut block: Option<(
                 (usize, u32, u8, bool),
                 Result<owned::StateInputs, &'static str>,
             )> = None;
             reserve(&mut self.states, wanted.len())?;
             reserve(&mut self.observed_rows.states, wanted.len())?;
-            for &(state_id, roster, owner, state, controller, attacking) in &wanted {
+            for &(state_id, roster, owner, state, controller, attacking) in wanted.iter() {
                 let branch =
-                    memo(&branches, (owner, controller)).ok_or("movement branch unread")?;
+                    memo(branches, (owner, controller)).ok_or("movement branch unread")?;
                 let terms = branch.and_then(|branch| {
                     let key = (state, roster, branch, attacking);
                     if let Some((held, terms)) = block
@@ -1019,9 +1146,17 @@ impl SpeedTerms {
                         return terms;
                     }
                     let terms = (|| {
-                        let at = engine_native::cstate::country_modifier_accumulator(
-                            memory, game, state, roster,
-                        )?;
+                        let at = match acc_cache {
+                            Some((cached, at)) if cached == (state, roster) => at,
+                            _ => {
+                                let at =
+                                    engine_native::cstate::country_modifier_accumulator_with_links(
+                                        memory, links, state, roster,
+                                    );
+                                acc_cache = Some(((state, roster), at));
+                                at
+                            }
+                        }?;
                         let (selected, len) = state_keys(branch);
                         let army = accumulator::lookup_requested_at(memory, at, selected[0])?;
                         let relation = if len == 2 {
@@ -1055,7 +1190,19 @@ impl SpeedTerms {
         self.finish(result, 0)
     }
 
+    #[cfg(test)]
     fn capture_access(&mut self, memory: &impl Memory, base: usize, game: usize) -> Outcome {
+        let mut countries = None;
+        self.capture_access_with(memory, base, game, &mut countries)
+    }
+
+    fn capture_access_with<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        game: usize,
+        countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+    ) -> Outcome {
         let mut wanted = std::mem::take(&mut self.observed_rows.access);
         let mut areas = std::mem::take(&mut self.observed_rows.access_areas);
         wanted.clear();
@@ -1085,8 +1232,36 @@ impl SpeedTerms {
             }
             areas.sort_unstable_by_key(|entry| entry.0);
             areas.dedup_by_key(|entry| entry.0);
-            for ((owner, area), access) in &mut areas {
-                *access = ccountry::has_core_supply_access(memory, base, game, *owner, *area);
+            if !areas.is_empty() {
+                let mut first_unhooked = areas.len();
+                for (index, ((owner, area), access)) in areas.iter_mut().enumerate() {
+                    if let Some(result) = memory.core_supply_access(base, game, *owner, *area) {
+                        *access = result;
+                    } else {
+                        first_unhooked = index;
+                        break;
+                    }
+                }
+                if first_unhooked < areas.len() {
+                    let reader = countries
+                        .get_or_insert_with(|| ccountry::Reader::new(memory, base, game));
+                    match reader {
+                        Ok(reader) => {
+                            let mut cache =
+                                ccountry::CoreSupplyAccessCache::new(memory, base, game, reader);
+                            for ((owner, area), access) in &mut areas[first_unhooked..] {
+                                *access = cache.has_access(*owner, *area);
+                            }
+                        }
+                        Err(reason) => {
+                            for ((owner, area), access) in &mut areas[first_unhooked..] {
+                                *access = memory
+                                    .core_supply_access(base, game, *owner, *area)
+                                    .unwrap_or(Err(*reason));
+                            }
+                        }
+                    }
+                }
             }
             reserve(&mut self.access, wanted.len())?;
             ready = true;
@@ -1280,7 +1455,8 @@ impl SpeedTerms {
         mut crossing: impl FnMut(u32, u32) -> Result<Option<u8>, &'static str>,
     ) -> Outcome {
         let result = (|| -> Result<usize, &'static str> {
-            let mut wanted: Vec<(u32, u32)> = Vec::new();
+            let wanted = &mut self.scratch.wanted_rivers;
+            wanted.clear();
             for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
                 let Ok(route) = route(&self.route, mover) else {
                     self.counts[3][2] += 1;
@@ -1309,7 +1485,7 @@ impl SpeedTerms {
                     })();
                     match edge {
                         Ok(Some(key)) => {
-                            reserve(&mut wanted, 1)?;
+                            reserve(wanted, 1)?;
                             wanted.push(key);
                         }
                         Ok(None) => {}
@@ -1323,7 +1499,7 @@ impl SpeedTerms {
             reserve(&mut self.rivers, wanted.len())?;
             reserve(&mut self.observed_rows.rivers, wanted.len())?;
             let mut owner: Option<(u32, Result<ccountry::Country, &'static str>)> = None;
-            for &(raw, controller) in &wanted {
+            for &(raw, controller) in wanted.iter() {
                 let country = match owner {
                     Some((known, country)) if known == raw => country,
                     _ => {
@@ -1374,16 +1550,18 @@ impl SpeedTerms {
             let demand = &mut self.transport_demand;
             demand.sort_unstable();
             demand.dedup();
-            let mut pointers: Vec<usize> = Vec::new();
-            reserve(&mut pointers, demand.len())?;
+            let pointers = &mut self.scratch.pointers;
+            pointers.clear();
+            reserve(pointers, demand.len())?;
             pointers.extend(demand.iter().map(|&(_, region)| region));
             pointers.sort_unstable();
             pointers.dedup();
             self.regions.clear();
             reserve(&mut self.regions, pointers.len())?;
-            let mut located: Vec<(usize, u32)> = Vec::new();
-            reserve(&mut located, pointers.len())?;
-            for &pointer in &pointers {
+            let located = &mut self.scratch.located;
+            located.clear();
+            reserve(located, pointers.len())?;
+            for &pointer in pointers.iter() {
                 match engine_native::cstrategic_region::id(memory, base, pointer) {
                     Ok(Some(id)) => {
                         self.regions.push(TransportRegion { id, pointer });
@@ -1394,10 +1572,11 @@ impl SpeedTerms {
             }
             self.regions.sort_unstable_by_key(|region| region.id);
             self.regions.dedup_by_key(|region| region.id);
-            let mut wanted: Vec<(u32, usize)> = Vec::new();
-            reserve(&mut wanted, demand.len())?;
+            let wanted = &mut self.scratch.wanted_transport;
+            wanted.clear();
+            reserve(wanted, demand.len())?;
             for &(owner, pointer) in demand.iter() {
-                let Some(id) = memo(&located, pointer) else {
+                let Some(id) = memo(located, pointer) else {
                     continue;
                 };
                 let index = self
@@ -1414,8 +1593,9 @@ impl SpeedTerms {
                 return Ok(0);
             }
             self.speed_cache.begin(self.regions.len())?;
-            let mut indices: Vec<usize> = Vec::new();
-            reserve(&mut indices, self.regions.len())?;
+            let indices = &mut self.scratch.indices;
+            indices.clear();
+            reserve(indices, self.regions.len())?;
             let (transport, cache) = (
                 &mut self.observed_rows.transport,
                 &mut self.speed_cache,

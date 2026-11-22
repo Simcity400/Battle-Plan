@@ -273,6 +273,16 @@ pub fn country_modifier_accumulator(
                 .ok_or("state movement country links invalid")?,
         )
     };
+    country_modifier_accumulator_with_links(memory, links, state, owner_raw)
+}
+
+pub fn country_modifier_accumulator_with_links(
+    memory: &impl Memory,
+    links: Option<Array>,
+    state: usize,
+    owner_raw: u32,
+) -> Result<usize, &'static str> {
+    let links = links.filter(|_| owner_raw != 0);
     let header_address = state
         .checked_add(COUNTRY_MODIFIERS)
         .ok_or("state movement hash address overflow")?;

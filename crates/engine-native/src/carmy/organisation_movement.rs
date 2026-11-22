@@ -185,6 +185,7 @@ impl StatusPacket {
     ) -> u64 {
         let mut refused = 0;
         let mut threshold = None;
+        let mut countries = None;
         self.organisation_memo.clear();
         for index in 0..self.units.len() {
             let value = (|| -> Result<Option<[i64; 2]>, &'static str> {
@@ -237,7 +238,11 @@ impl StatusPacket {
                     } else {
                         roster()?
                     };
-                    let owner = ccountry::Reader::new(memory, base, state)?.resolve(raw)?;
+                    let owner = countries
+                        .get_or_insert_with(|| ccountry::Reader::new(memory, base, state))
+                        .as_ref()
+                        .map_err(|reason| *reason)?
+                        .resolve(raw)?;
                     let inputs = strategic_action::read_inputs(
                         memory,
                         base,
