@@ -205,8 +205,6 @@ mod tests {
         use dashboard_production::products::{construction, production};
         use dashboard_wars::products::{casualties, diplomacy, wars};
         use dashboard_world::products::{groups, land_owners, styles, subjects};
-        use replay_data::rows::{TableId, TableRows};
-        use replay_frame::frame::TableView;
 
         fn warm<'a, T: 'a>(name: impl std::fmt::Display + 'a, read: impl Fn() -> Arc<T> + 'a) -> Box<dyn FnOnce() + 'a> {
             let first = read();
@@ -216,16 +214,7 @@ mod tests {
 
         let hour = 100;
         let branch = 1;
-        let frames = [hour, hour + 1].map(|hour| {
-            let mut frame = source(branch, hour, None);
-            for table in TableId::ALL {
-                let view = &mut frame.tables[table.index()];
-                if matches!(view.held(), TableView::Unavailable { .. }) {
-                    *view = TableView::Complete(TableRows::empty(table));
-                }
-            }
-            frame
-        });
+        let frames = [hour, hour + 1].map(|hour| source(branch, hour, None));
         let replay = replay(frames.into()).into_timelines(&Default::default()).unwrap();
         let cancelled = AtomicBool::new(false);
         let source = Source::from_replay(
