@@ -37,9 +37,7 @@ fn prepared_metadata_inputs_keep_mount_order_and_archive_files_as_single_inputs(
     fs::remove_dir_all(root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn verified_prefix_retains_only_the_header_and_checks_the_remaining_payload() {
     let root = std::env::temp_dir().join(format!("verified-prefix-{}", std::process::id()));
     fs::create_dir_all(root.join("map")).unwrap();
@@ -500,9 +498,7 @@ fn coverage_policy_four_hashes_and_verifies_event_tooltip_font_effect_and_volume
     fs::remove_dir_all(root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn older_coverage_policies_verify_their_own_roots_and_leave_newer_roots_uncovered() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_older_coverage_{}_{:?}",
@@ -1363,9 +1359,7 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn descriptor_paths_list_nested_files_in_layer_order_and_honour_replace_path() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_descriptors_{}_{:?}",
@@ -1900,9 +1894,7 @@ fn uncovered_members(vector: &[u8]) -> Vec<u8> {
     bytes
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn a_dollar_opens_an_encrypted_record_with_its_password() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_zip_password_{}_{:?}",
@@ -1956,9 +1948,7 @@ fn a_dollar_opens_an_encrypted_record_with_its_password() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn central_password_metadata_is_part_of_an_encrypted_records_identity() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_zip_central_time_{}_{:?}",
@@ -2003,9 +1993,7 @@ fn central_password_metadata_is_part_of_an_encrypted_records_identity() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn a_password_for_a_plain_record_passes_to_the_layers_below() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_zip_mixed_{}_{:?}",
@@ -2065,9 +2053,7 @@ fn flagged_encrypted(opens: bool) -> Vec<u8> {
     bytes
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn a_password_that_stops_opening_after_verification_is_a_change() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_zip_changed_{}_{:?}",
@@ -2190,9 +2176,7 @@ fn password_stack(root: &Path, path: &Path) -> ResolvedLayers {
     layers
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_zip_memo_changed_{}_{:?}",
@@ -2232,6 +2216,117 @@ fn a_memoized_password_read_of_a_changed_payload_is_a_change() {
             .contains("content file changed since verification"),
         "{error}"
     );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn verified_encrypted_archive_reads_verify_and_decrypt_in_a_single_read() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_content_reader_zip_single_read_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let stored = root.join("stored.zip");
+    let deflated = root.join("deflated.zip");
+    let mixed = root.join("mixed.zip");
+    fs::write(&stored, covered_encrypted_descriptor()).unwrap();
+    fs::write(&deflated, include_bytes!("testdata/zipcrypto_deflated.zip")).unwrap();
+    fs::write(&mixed, include_bytes!("testdata/zipcrypto_mixed.zip")).unwrap();
+    let base = folder_of(
+        "base",
+        &root.join("base"),
+        &[("gfx/interface/plain.dds$secret", b"lower plain")],
+    );
+    let mut layers = ResolvedLayers {
+        layers: vec![
+            base,
+            archive_layer("stored", &stored, &[]),
+            archive_layer("deflated", &deflated, &[]),
+            archive_layer("mixed", &mixed, &[]),
+        ],
+        ..ResolvedLayers::default()
+    };
+    layers.finish().unwrap();
+    assert!(covered_path(b"gfx/descriptor1.gfx"));
+    assert!(covered_path(b"gfx/fonts/x.fnt"));
+    assert!(covered_path(b"gfx/interface/plain.dds"));
+    LOADS.with(|loads| loads.set(0));
+    assert_eq!(
+        layers
+            .read_uncovered_path(b"gfx/descriptor1.gfx$secret")
+            .unwrap(),
+        b"encrypted stored texture"
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 1);
+    LOADS.with(|loads| loads.set(0));
+    assert_eq!(
+        layers.read_uncovered_path(b"gfx/fonts/x.fnt$secret").unwrap(),
+        b"info face=\"x\" size=12\n".repeat(20)
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 1);
+    LOADS.with(|loads| loads.set(0));
+    assert_eq!(
+        layers.layers[3]
+            .archive_open(b"gfx/interface/plain.dds$secret", &mut ReadObservation::default())
+            .unwrap(),
+        None
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 1);
+    assert_eq!(
+        layers.read_path(b"gfx/interface/plain.dds$secret").unwrap(),
+        b"lower plain"
+    );
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn uncovered_password_probe_refuses_a_changed_covered_archive_opening() {
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_content_reader_zip_probe_opening_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("encrypted.zip");
+    fs::write(&path, covered_encrypted_descriptor()).unwrap();
+    let mut layers = password_stack(&root, &path);
+    LOADS.with(|loads| loads.set(0));
+    assert!(layers.has_file("gfx/descriptor1.gfx$secret").unwrap());
+    assert_eq!(LOADS.with(|loads| loads.get()), 0);
+    let mut header_tampered = covered_encrypted_descriptor();
+    let data_offset = 30 + b"gfx/descriptor1.gfx".len();
+    header_tampered[data_offset] ^= 0xFF;
+    fs::write(&path, &header_tampered).unwrap();
+    layers.layers[1].archive_stamp = Some(Stamp::read(&path).unwrap());
+    let error = layers
+        .has_file("gfx/descriptor1.gfx$secret")
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("content file changed since verification"),
+        "{error}"
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 0);
+    let mut sig_tampered = covered_encrypted_descriptor();
+    sig_tampered[0] ^= 0xFF;
+    fs::write(&path, &sig_tampered).unwrap();
+    layers.layers[1].archive_stamp = Some(Stamp::read(&path).unwrap());
+    let error = layers
+        .has_file("gfx/descriptor1.gfx$secret")
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("content file changed since verification"),
+        "{error}"
+    );
+    assert_eq!(LOADS.with(|loads| loads.get()), 0);
     fs::remove_dir_all(&root).unwrap();
 }
 
@@ -2511,9 +2606,7 @@ fn a_recorded_folder_layer_refuses_a_junction() {
 }
 
 #[cfg(windows)]
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
@@ -2525,12 +2618,17 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     ));
     let (base, top) = (root.join("base"), root.join("top"));
     let name = "gfx/Élementlongname.gfx";
+    let unopened = "gfx/Unopenedlongname.gfx";
     let mut layers = ResolvedLayers {
         layers: vec![
             folder_of(
                 "base",
                 &base,
-                &[(name, b"verified"), ("gfx/älternate.gfx", b"base")],
+                &[
+                    (name, b"verified"),
+                    (unopened, b"never opened"),
+                    ("gfx/älternate.gfx", b"base"),
+                ],
             ),
             folder_of("top", &top, &[("gfx/Älternate.gfx", b"top")]),
         ],
@@ -2538,26 +2636,40 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     };
     layers.finish().unwrap();
     assert_eq!(layers.read("gfx/älternate.gfx").unwrap(), b"top");
+    let short_name_of = |file_path: PathBuf| -> String {
+        let wide: Vec<_> = file_path
+            .as_os_str()
+            .encode_wide()
+            .chain([0])
+            .collect();
+        let mut short = vec![0; 32768];
+        let length =
+            unsafe { GetShortPathNameW(wide.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
+        assert!(length > 0 && (length as usize) < short.len());
+        let short = PathBuf::from(std::ffi::OsString::from_wide(&short[..length as usize]));
+        short.file_name().unwrap().to_str().unwrap().to_owned()
+    };
     let mut aliases = vec![
         format!("{name}."),
         format!("{name} "),
         "gfx/éLEMENTLONGNAME.GFX".into(),
     ];
     assert!(!covered(&aliases[0]) && !covered(&aliases[1]));
-    let path: Vec<_> = base
-        .join(name)
-        .as_os_str()
-        .encode_wide()
-        .chain([0])
-        .collect();
-    let mut short = vec![0; 32768];
-    let length =
-        unsafe { GetShortPathNameW(path.as_ptr(), short.as_mut_ptr(), short.len() as u32) };
-    assert!(length > 0 && (length as usize) < short.len());
-    let short = PathBuf::from(std::ffi::OsString::from_wide(&short[..length as usize]));
-    let short_name = short.file_name().unwrap().to_str().unwrap();
+    let short_name = short_name_of(base.join(name));
     if !short_name.eq_ignore_ascii_case("Élementlongname.gfx") {
         aliases.push(format!("gfx/{short_name}"));
+    }
+    let unopened_short = short_name_of(base.join(unopened));
+    fs::remove_file(base.join(unopened)).unwrap();
+    if !unopened_short.eq_ignore_ascii_case("Unopenedlongname.gfx") {
+        let short_alias = format!("gfx/{unopened_short}");
+        for error in [
+            layers.read_uncovered(&short_alias).unwrap_err(),
+            layers.read(&short_alias).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains(unopened), "{short_alias}: {error}");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
     }
     for alias in &aliases {
         for _ in 0..2 {
@@ -2580,10 +2692,15 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
         }
     }
     fs::remove_file(base.join(name)).unwrap();
-    assert_eq!(
-        layers.read_uncovered(&aliases[0]).unwrap_err().kind(),
-        io::ErrorKind::InvalidData
-    );
+    for alias in &aliases {
+        for error in [
+            layers.read_uncovered(alias).unwrap_err(),
+            layers.read(alias).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains(name), "{alias}: {error}");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+    }
     fs::write(base.join(name), b"verified").unwrap();
     fs::write(top.join(name), b"appeared").unwrap();
     assert_eq!(
@@ -2611,6 +2728,58 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
         )
     );
     fs::remove_dir_all(&root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn short_name_enumeration_propagates_unexpected_win32_errors() {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
+    };
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_content_reader_short_enum_err_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let missing = root.join("missing");
+    check_find_error(
+        &missing,
+        io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32),
+        ERROR_FILE_NOT_FOUND,
+    )
+    .unwrap();
+    check_find_error(
+        &missing,
+        io::Error::from_raw_os_error(ERROR_NO_MORE_FILES as i32),
+        ERROR_NO_MORE_FILES,
+    )
+    .unwrap();
+    let denied = check_find_error(
+        &missing,
+        io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32),
+        ERROR_NO_MORE_FILES,
+    )
+    .unwrap_err();
+    assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+    assert!(
+        denied.to_string().contains(&missing.display().to_string()),
+        "{denied}"
+    );
+    let mut files = BTreeMap::new();
+    files.insert(
+        b"sub/file.gfx".to_vec(),
+        Member {
+            archive_entry: None,
+            size: 0,
+            stamp: None,
+        },
+    );
+    let error = collect_folder_short_names(&missing, &files).unwrap_err();
+    assert!(
+        error.to_string().contains(&missing.display().to_string()),
+        "{error}"
+    );
 }
 
 #[test]
@@ -3235,9 +3404,7 @@ fn has_file_sees_covered_and_uncovered_files_the_loader_reads() {
     fs::remove_dir_all(&root).unwrap();
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn has_file_dollar_lookup_precedes_the_effective_file_without_payload_reads() {
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_has_file_dollar_{}_{:?}",
@@ -3587,9 +3754,7 @@ fn stored_deflate_fixture(name: &[u8]) -> Vec<u8> {
     bytes
 }
 
-// quarantine: #144 content verification refuses files the test never changed
 #[test]
-#[ignore = "quarantined under #144"]
 fn malformed_deflate_reads_keep_distinct_archive_input_evidence_and_identical_errors() {
     use std::sync::{Arc, Mutex};
     let root = std::env::temp_dir().join(format!(
@@ -3711,6 +3876,144 @@ fn password_decode_failure_records_its_own_input_not_the_prior_verification_read
         }
     );
     drop(reads);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn verified_encrypted_read_refuses_bytes_outside_its_record_digest() {
+    let root = std::env::temp_dir().join(format!(
+        "verified-encrypted-suffix-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    for (name, raw, request) in [
+        (
+            "stored.zip",
+            include_bytes!("testdata/zipcrypto_stored.zip").as_slice(),
+            "gfx/interface/e.dds$secret",
+        ),
+        (
+            "deflated.zip",
+            include_bytes!("testdata/zipcrypto_deflated.zip").as_slice(),
+            "gfx/fonts/x.fnt$secret",
+        ),
+    ] {
+        let mut bytes = raw.to_vec();
+        let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+        let compressed =
+            u32::from_le_bytes(bytes[central + 20..central + 24].try_into().unwrap()) - 4;
+        bytes[18..22].copy_from_slice(&compressed.to_le_bytes());
+        bytes[central + 20..central + 24].copy_from_slice(&compressed.to_le_bytes());
+        let path = root.join(name);
+        fs::write(&path, &bytes).unwrap();
+        let layers =
+            ResolvedLayers::from_test_layers(vec![archive_layer(name, &path, &[])]).unwrap();
+        let error = layers.read(request).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{name}: {error}");
+        assert!(
+            error
+                .to_string()
+                .contains("reads past its verified stored range"),
+            "{name}: {error}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn truncated_encrypted_stored_member_preserves_short_read_error_and_header_evidence() {
+    use std::sync::{Arc, Mutex};
+    let root = std::env::temp_dir().join(format!(
+        "traced-truncated-stored-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("truncated.zip");
+    let mut bytes = include_bytes!("testdata/zipcrypto_stored.zip").to_vec();
+    let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+    let compressed = 4_u32;
+    let size = bytes.len() as u32 + 16;
+    bytes[18..22].copy_from_slice(&compressed.to_le_bytes());
+    bytes[central + 20..central + 24].copy_from_slice(&compressed.to_le_bytes());
+    bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("truncated", &path, &[])]).unwrap();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = reads.clone();
+    let traced = layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
+    let error = traced.read("gfx/interface/e.dds$secret").unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("its stored data ends before its uncompressed size"),
+        "{error}"
+    );
+    let data = 30
+        + u16::from_le_bytes(bytes[26..28].try_into().unwrap()) as usize
+        + u16::from_le_bytes(bytes[28..30].try_into().unwrap()) as usize;
+    let expected = [&bytes[..30], &bytes[data..data + 12]].concat();
+    let reads = reads.lock().unwrap();
+    assert_eq!(reads.len(), 1);
+    assert_eq!(
+        reads[0].outcome,
+        ReadOutcome::Error {
+            kind: "InvalidData".into(),
+            message: error.to_string(),
+            payload: Some(ReadPayload {
+                length: expected.len() as u64,
+                digest: Sha256::digest(&expected).into(),
+            }),
+        }
+    );
+    drop(reads);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn multi_chunk_encrypted_deflate_matches_direct_reader_under_verification() {
+    let root = std::env::temp_dir().join(format!(
+        "verified-encrypted-multichunk-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("large.zip");
+    let plain = vec![b'A'; 65_536 + 10];
+    assert!(plain.len() > 0x10000);
+    let deflated = miniz_oxide::deflate::compress_to_vec(&plain, 6);
+    let mut stream = Vec::with_capacity(12 + deflated.len());
+    stream.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0]);
+    stream.extend_from_slice(&deflated);
+    let encrypted = physfs_zip::encrypt_zipcrypto(b"secret", &stream);
+    let mut bytes = raw_zip(&[(b"gfx/fonts/large.fnt", 0, &encrypted)]);
+    let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+    let size = plain.len() as u32;
+    bytes[6..8].copy_from_slice(&1u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&8u16.to_le_bytes());
+    bytes[14..18].copy_from_slice(&0u32.to_le_bytes());
+    bytes[22..26].copy_from_slice(&size.to_le_bytes());
+    bytes[central + 8..central + 10].copy_from_slice(&1u16.to_le_bytes());
+    bytes[central + 10..central + 12].copy_from_slice(&8u16.to_le_bytes());
+    bytes[central + 16..central + 20].copy_from_slice(&0u32.to_le_bytes());
+    bytes[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+    fs::write(&path, &bytes).unwrap();
+    let mut archive = physfs_zip::Archive::open(&path).unwrap();
+    let mounted = archive.mount().unwrap();
+    let (entry, password) = mounted.lookup(b"gfx/fonts/large.fnt$secret").unwrap();
+    let direct = archive.read(entry, password).unwrap().unwrap();
+    assert_eq!(direct, plain);
+    let layers =
+        ResolvedLayers::from_test_layers(vec![archive_layer("large", &path, &[])]).unwrap();
+    let verified = layers.read("gfx/fonts/large.fnt$secret").unwrap();
+    assert_eq!(verified.as_ref(), direct.as_slice());
     fs::remove_dir_all(root).unwrap();
 }
 

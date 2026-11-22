@@ -1,16 +1,13 @@
-
-use crate::extended::characters::{CharacterConversion, CharacterShadow};
-use crate::extended::intel::{
-    IntelConversion, IntelShadow, ScriptVariableComparison,
-};
+#[cfg(test)]
+use collector_projection::table_conversion::table_iter;
+use crate::extended::intel::{IntelConversion, IntelShadow, ScriptVariableComparison};
 use crate::extended::lexical::{LexicalConversion, LexicalConversionStats};
 use crate::history::PreparedCampaigns;
 use crate::projection::{Projection, ProjectionScratch, project_table, scalar_table};
 use crate::sampling::{Captured, LossBatch, LostObservation};
 use crate::status::status;
-use engine_native::{
-    cgame_state::Clock, walk::Outcome,
-};
+use collector_characters::extended::characters::{CharacterConversion, CharacterShadow};
+use engine_native::{cgame_state::Clock, walk::Outcome};
 #[cfg(test)]
 use replay::spool::SegmentedSpool;
 use replay::{spool::ControlRecord, spool::FileBackend, spool::Record, spool::SegmentBackend};
@@ -423,7 +420,7 @@ fn character_cache(
     cached_branch: Option<BranchId>,
     branch: BranchId,
 ) -> [Option<&Arc<TableRows>>; 4] {
-    crate::extended::characters::SHADOW_TABLES.map(|table| {
+    collector_characters::extended::characters::SHADOW_TABLES.map(|table| {
         if cached_branch != Some(branch) {
             return None;
         }
@@ -472,7 +469,7 @@ fn validation_refusal(
             column: column.map(engine_allocation::string).transpose()?,
             reason: engine_allocation::string(reason)?,
         });
-        crate::hook_failures::log(
+        collector_hook_failures::log(
             directory.parent().unwrap_or(directory),
             format_args!("spool validation refused at hour {hour}: {detail}"),
         )?;
@@ -508,7 +505,7 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     pending_slices: Vec<(TableId, Arc<replay_data::sliced::SliceUpdate>)>,
     retired: Vec<replay_frame::frame::Retired>,
     line_output: crate::extended::line_output::Totals,
-    operation_outcomes: crate::extended::operation_outcomes::Ledger,
+    operation_outcomes: collector_operation_outcomes::extended::operation_outcomes::Ledger,
     map_events: crate::extended::map_events::Ledger,
     politics: crate::extended::politics::Ledger,
     construction_ic: crate::extended::construction_ic::Totals,
@@ -955,7 +952,7 @@ impl<B: SegmentBackend> Campaign<B> {
             let index = table.index();
             let may_carry = replay_data::cadence::is_staggered(table);
             let conversion_cache = table == TableId::LexicalTokens
-                || crate::extended::characters::SHADOW_TABLES.contains(&table);
+                || collector_characters::extended::characters::SHADOW_TABLES.contains(&table);
             if !may_carry && !conversion_cache {
                 continue;
             }
@@ -985,12 +982,10 @@ impl<B: SegmentBackend> Campaign<B> {
                 {
                 } else if let Some(cached @ CachedTable::Complete(_)) = cached {
                     *input = cached.input()?;
-                } else if let Some(rows) = self.encoder.keyframe_carry(
-                    table,
-                    source.branch,
-                    source.hour,
-                    restarting,
-                ) {
+                } else if let Some(rows) =
+                    self.encoder
+                        .keyframe_carry(table, source.branch, source.hour, restarting)
+                {
                     let rows = Arc::new(rows.try_clone()?);
                     self.staggered_cache
                         .insert(table, CachedTable::Complete(Arc::clone(&rows)));
@@ -1662,7 +1657,8 @@ pub(crate) struct PreparedFrame {
     unpublished_families: u32,
     work: WorkSample,
     sampled: CapturedStatistics,
-    operation_publication: Option<crate::extended::operation_outcomes::Publication>,
+    operation_publication:
+        Option<collector_operation_outcomes::extended::operation_outcomes::Publication>,
     map_event_publication: Option<crate::extended::map_events::Publication>,
     event_feed_publication: Option<crate::event_feed_history::Prepared>,
 }
@@ -1731,9 +1727,13 @@ impl CapturedStatistics {
     fn record(self, stats: &mut Statistics) -> io::Result<()> {
         stats.total_ns = self.total_ns;
         stats.callback.record_ns(self.total_ns);
-        stats
-            .callback_tail
-            .record(self.total_ns, self.hour, self.seq, &self.phases, self.tables)?;
+        stats.callback_tail.record(
+            self.total_ns,
+            self.hour,
+            self.seq,
+            &self.phases,
+            self.tables,
+        )?;
         stats.pool_bytes = self.pool_bytes;
         stats.dropped_frames = self.dropped_frames;
         stats.truncated_tables = self.truncated_tables;
@@ -1760,7 +1760,8 @@ struct QueuedFrame {
     clock: Clock,
     qpc: i64,
     sampled: CapturedStatistics,
-    operation_publication: Option<crate::extended::operation_outcomes::Publication>,
+    operation_publication:
+        Option<collector_operation_outcomes::extended::operation_outcomes::Publication>,
     map_event_publication: Option<crate::extended::map_events::Publication>,
     event_feed_publication: PublicationReceipt,
     viewed: Option<ViewedFlag>,
@@ -2450,7 +2451,10 @@ impl Processor {
         )?;
         let retry = retry_table(&source.tables);
         if let Some(table) = retry {
-            RETRY_CAUSE.store(table.index() as u16 + 1, std::sync::atomic::Ordering::Relaxed);
+            RETRY_CAUSE.store(
+                table.index() as u16 + 1,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         } else if sliced_retry {
             RETRY_CAUSE.store(RETRY_SLICED, std::sync::atomic::Ordering::Relaxed);
         }
@@ -2537,7 +2541,7 @@ impl Processor {
             pool: &self.helpers,
             backlogged: self.backlogged,
         });
-        crate::hook_failures::apply(&mut source)?;
+        collector_hook_failures::apply(&mut source)?;
         crate::site_withholding::apply(&mut source)?;
         crate::spool_compare::compare_frame(
             &campaign.encoder,
@@ -2799,7 +2803,7 @@ impl Processor {
             }
         }
         if lost {
-            crate::extended::operation_outcomes::reset_admitted();
+            collector_operation_outcomes::extended::operation_outcomes::reset_admitted();
             crate::extended::map_events::reset_admitted();
         }
         if failed {
@@ -3566,7 +3570,7 @@ pub(super) fn campaign_name(bytes: &[u8]) -> io::Result<String> {
     engine_allocation::string(std::str::from_utf8(bytes).expect("validated UUID is ASCII"))
 }
 
-pub(crate) use crate::table_conversion::{table, table_iter, unavailable};
+pub(crate) use crate::table_conversion::{table, unavailable};
 
 fn area_node(
     nodes: &engine_native::controller_areas::Output,
@@ -3628,7 +3632,13 @@ fn state_table(
         &captured.states,
         |state| u128::from(state.id),
         |state| StateRow {
-            infrastructure: replay_data::rows::Recorded::Value(state.infrastructure.map(|value| replay_data::rows::StateInfrastructure { building_type: value.building_type, level: value.level, maximum: value.maximum })),
+            infrastructure: replay_data::rows::Recorded::Value(state.infrastructure.map(|value| {
+                replay_data::rows::StateInfrastructure {
+                    building_type: value.building_type,
+                    level: value.level,
+                    maximum: value.maximum,
+                }
+            })),
             id: state.id,
             owner: state.owner,
             controller: state.controller,
@@ -3743,7 +3753,9 @@ fn mark_reads(source: &mut FrameInput, skipped: &[bool; TABLE_COUNT]) {
     for ((input, ns), &skipped) in source.tables.iter().zip(&mut source.metrics.table_ns).zip(skipped) {
         let read = !skipped
             && match input {
-                TableInput::Sampled(TableView::Unavailable { .. } | TableView::NotRecorded { .. }) => *ns != 0,
+                TableInput::Sampled(
+                    TableView::Unavailable { .. } | TableView::NotRecorded { .. },
+                ) => *ns != 0,
                 _ => true,
             };
         if !read {
@@ -3814,13 +3826,13 @@ fn decoded_with_costs(
             .state_inputs
             .occupation
             .input(conversion.projection.as_deref_mut());
-        for (table, value) in crate::faction_companions::TABLES
+        for (table, value) in collector_factions::faction_companions::TABLES
             .into_iter()
             .zip(captured.faction_companions.inputs())
         {
             tables[table.index()] = value;
         }
-        for (table, value) in crate::faction_goals::TABLES
+        for (table, value) in collector_factions::faction_goals::TABLES
             .into_iter()
             .zip(captured.faction_goals.inputs())
         {
@@ -4116,7 +4128,14 @@ fn convert_with_helper(
         let span = HELPER.span(Phase::ConvertCore);
         let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
-        view.convert_queued(&queue, hour, projection.as_mut(), &lent, &mut packs, &mut costs);
+        view.convert_queued(
+            &queue,
+            hour,
+            projection.as_mut(),
+            &lent,
+            &mut packs,
+            &mut costs,
+        );
         costs.thread(started);
         span.finish();
         take_in(&converted, map, &mut packs, Some(&costs));
@@ -4980,9 +4999,14 @@ mod tests {
             report: None,
         };
         let end = |writers: replay_io::Live, folder: &Path| {
-            let ended = replay_io::finalize_session_ahead(folder, &target, &|| Ok(()), writers, naming, &|_| {
-                replay_io::Destination::Recording
-            })
+            let ended = replay_io::finalize_session_ahead(
+                folder,
+                &target,
+                &|| Ok(()),
+                writers,
+                naming,
+                &|_| replay_io::Destination::Recording,
+            )
             .unwrap();
             assert!(ended.errors.is_empty(), "{:?}", ended.errors);
             ended.replays[0].clone()
@@ -5106,7 +5130,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-
     #[test]
     fn a_halted_native_capture_gaps_every_later_hour_without_a_full_refresh() {
         let directory =
@@ -5210,8 +5233,8 @@ mod tests {
 
     #[test]
     fn a_map_session_holds_full_s_tables_for_every_table_map_records() {
-        use crate::acquisition_jobs::Role;
         use crate::sampling::capture_scope_test_kit::{self as kit, Fixture};
+        use collector_workers::roles::Role;
         use replay_data::scope::{self, CaptureMode};
         use replay_frame::frame::FrameDecoder;
         crate::spooling::keep_every_table();
@@ -5613,12 +5636,7 @@ mod tests {
         assert_eq!(first["callback_work"]["calls"], 3);
         assert_eq!(first["callback_work"]["total_ns"], 600);
         let repeated = processor.json();
-        for field in [
-            "hours",
-            "total_ns",
-            "p95_ns",
-            "callback_work",
-        ] {
+        for field in ["hours", "total_ns", "p95_ns", "callback_work"] {
             assert_eq!(repeated[field], first[field], "{field}");
         }
 
@@ -8404,7 +8422,7 @@ mod tests {
         hour: i32,
         progress: u8,
     ) -> FrameInput {
-        let native = crate::extended::characters::character_shadow_fixture(progress);
+        let native = collector_characters::extended::characters::character_shadow_fixture(progress);
         let mut reuse = CharacterConversion::new(
             branch,
             &mut campaign.character_shadow,
@@ -8417,7 +8435,8 @@ mod tests {
             .enumerate()
         {
             if matches!(index, 0 | 1 | 2 | 4) {
-                frame.tables[crate::extended::characters::TABLES[index].index()] = input;
+                frame.tables[collector_characters::extended::characters::TABLES[index].index()] =
+                    input;
             }
         }
         frame
@@ -8584,7 +8603,7 @@ mod tests {
 
     #[test]
     fn character_shadow_reuse_never_overrides_primary_failure_or_missing_clock() {
-        for table in crate::extended::characters::SHADOW_TABLES {
+        for table in collector_characters::extended::characters::SHADOW_TABLES {
             for failure in 0..2 {
                 let (mut campaign, _) = campaign();
                 let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -8868,7 +8887,13 @@ mod tests {
                 assert_eq!(**rows, daily_rows(1));
             }
             campaign
-                .write(input, 1000 + i64::from(hour), Some(1), 0, &mut WorkSample::default())
+                .write(
+                    input,
+                    1000 + i64::from(hour),
+                    Some(1),
+                    0,
+                    &mut WorkSample::default(),
+                )
                 .unwrap();
             if hour == keyframe + 1 {
                 assert!(campaign.encoder.can_carry(table, branch, hour + 1, false));
@@ -9076,7 +9101,9 @@ mod tests {
             }
             assert_eq!(input.metrics.table_ns[anchor.index()], 5);
             let prepared = writer.hour(&input).unwrap();
-            let read = |table: TableId| prepared.read()[table.index() / 64] >> (table.index() % 64) & 1 != 0;
+            let read = |table: TableId| {
+                prepared.read()[table.index() / 64] >> (table.index() % 64) & 1 != 0
+            };
             assert_eq!((read(fuel), read(output)), (!skip, !skip), "hour {hour}");
             writer.commit(prepared).unwrap();
             let sampled = if skip { 0 } else { hour };

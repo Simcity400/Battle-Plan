@@ -14,9 +14,11 @@ impl Gate {
     fn wait(&self) {
         let (open, timeout) = self
             .changed
-            .wait_timeout_while(self.open.lock().unwrap(), crate::TEST_HANG_GUARD, |open| {
-                !*open
-            })
+            .wait_timeout_while(
+                self.open.lock().unwrap(),
+                collector_test_support::TEST_HANG_GUARD,
+                |open| !*open,
+            )
             .unwrap();
         assert!(
             *open && !timeout.timed_out(),
@@ -34,22 +36,31 @@ impl engine_native::Memory for Unreadable {
 
 fn request() -> acquisition::PresentationRequest {
     let mut captured =
-        extended::division_presentation::Captured::with_capacities(&Default::default());
+        collector_divisions::extended::division_presentation::Captured::with_capacities(
+            &Default::default(),
+        );
     captured.status_workers = 3;
     acquisition::PresentationRequest {
         dispatch: Default::default(),
         countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
-        context: extended::division_presentation::CaptureContext {
+        context: collector_divisions::extended::division_presentation::CaptureContext {
             base: 0,
             game_state: 0,
             hour: 1,
         },
         captured,
-        inputs: Some(engine_allocation::shared(crate::division_census::UnitInputs::fixture(
-            vec![engine_native::carmy::DivisionSeed::default(); 1_536],
-            engine_native::walk::Outcome::Rows { len: 1_536 },
-        )).unwrap()),
-        army_stats: Some(extended::division_presentation::held_store::Loan::fixture(Box::new(extended::attack_stats::ArmyStatStore::new()))),
+        inputs: Some(
+            engine_allocation::shared(collector_divisions::division_census::UnitInputs::fixture(
+                vec![engine_native::carmy::DivisionSeed::default(); 1_536],
+                engine_native::walk::Outcome::Rows { len: 1_536 },
+            ))
+            .unwrap(),
+        ),
+        army_stats: Some(
+            collector_divisions::extended::division_presentation::held_store::Loan::fixture(
+                Box::new(extended::attack_stats::ArmyStatStore::new()),
+            ),
+        ),
     }
 }
 
@@ -117,7 +128,9 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
         }),
         ..Default::default()
     };
-    running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    running
+        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+        .unwrap();
     for index in 0..2 {
         let pending = unsafe { submit_acquisition(&shared, &mut batch, unrelated(index)) };
         crate::test_support::with_allocations_denied(|| unsafe {
@@ -133,7 +146,9 @@ fn presentation_readiness_never_joins_preparation_before_unrelated_dispatches() 
         presentation.advance(&shared, &mut batch);
     });
     for _ in 0..3 {
-        range_running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        range_running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
     }
     batch.wait_ready(|batch| {
         (presentation
@@ -316,7 +331,9 @@ fn presentation_second_preparation_yields_to_unrelated_dispatches() {
         batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
         unsafe { presentation.advance(&shared, &mut batch) };
     }
-    running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    running
+        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+        .unwrap();
     let pending = unsafe { submit_acquisition(&shared, &mut batch, unrelated(0)) };
     unsafe {
         presentation.wait_for(&shared, &mut batch, Some(&pending));
@@ -354,7 +371,7 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
                 acquisition::Job::PresentationStatus(request)
                     if matches!(
                         &request.part,
-                        Some(extended::division_presentation::StatusWork::Preparation { .. })
+                        Some(collector_divisions::extended::division_presentation::StatusWork::Preparation { .. })
                     ) =>
                 {
                     let index = preparations.fetch_add(1, Ordering::Relaxed);
@@ -369,7 +386,7 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
                 acquisition::Job::PresentationStatus(request)
                     if matches!(
                         &request.part,
-                        Some(extended::division_presentation::StatusWork::Status { .. })
+                        Some(collector_divisions::extended::division_presentation::StatusWork::Status { .. })
                     ) =>
                 {
                     let index = finals.fetch_add(1, Ordering::Relaxed);
@@ -404,13 +421,19 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
         ..Default::default()
     };
     for _ in 0..3 {
-        preparing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        preparing
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
     }
     assert!(settling.try_recv().is_err(), "a prefix cannot admit Settle");
     last_preparation.open();
-    settling.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+    settling
+        .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+        .unwrap();
     for _ in 0..3 {
-        running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
     }
     assert_eq!(pool.calibration().executor.uncollected, 8);
     assert!(presentation.pending.is_none());
@@ -432,8 +455,8 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
     );
     let calibration = pool.calibration();
     for role in [
-        acquisition::Role::PresentationPreparation,
-        acquisition::Role::PresentationStatus,
+        collector_workers::roles::Role::PresentationPreparation,
+        collector_workers::roles::Role::PresentationStatus,
     ] {
         let counters = calibration.roles[role as usize].counters;
         assert_eq!(counters.accepted, 3);
@@ -441,9 +464,9 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
         assert_eq!((counters.rejected, counters.inline_completed), (0, 0));
     }
     for role in [
-        acquisition::Role::PresentationPrepare,
-        acquisition::Role::PresentationSettle,
-        acquisition::Role::Presentation,
+        collector_workers::roles::Role::PresentationPrepare,
+        collector_workers::roles::Role::PresentationSettle,
+        collector_workers::roles::Role::Presentation,
     ] {
         let counters = calibration.roles[role as usize].counters;
         assert_eq!((counters.accepted, counters.completed), (1, 1));
@@ -460,7 +483,7 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
         let (started, running) = mpsc::channel();
         let pool = acquisition::Pool::with_test_runner(3, move |job| {
             if matches!(job, acquisition::Job::PresentationStatus(request)
-                if matches!(&request.part, Some(extended::division_presentation::StatusWork::Status { .. })))
+                if matches!(&request.part, Some(collector_divisions::extended::division_presentation::StatusWork::Status { .. })))
             {
                 started.send(()).unwrap();
             }
@@ -473,14 +496,20 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
             let request = request();
             inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
             presentation.prepare = Some(unsafe {
-                submit_acquisition(&shared, &mut batch, acquisition::Job::PresentationPrepare(request))
+                submit_acquisition(
+                    &shared,
+                    &mut batch,
+                    acquisition::Job::PresentationPrepare(request),
+                )
             });
             for _ in 0..2 {
                 batch.wait_ready(|batch| presentation.ready(batch).then_some(()));
                 unsafe { presentation.advance(&shared, &mut batch) };
             }
             for _ in 0..3 {
-                running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                running
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap();
             }
             assert!(presentation.prepare.is_some());
             assert!(presentation.parts.iter().all(Option::is_none));
@@ -535,9 +564,10 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
         });
         let mut request = request();
         let inputs = engine_allocation::SharedBox::clone(request.inputs.as_ref().unwrap());
-        let slot = extended::division_presentation::held_store::Slot::new(Box::new(
-            extended::attack_stats::ArmyStatStore::new(),
-        )).unwrap();
+        let slot = collector_divisions::extended::division_presentation::held_store::Slot::new(
+            Box::new(extended::attack_stats::ArmyStatStore::new()),
+        )
+        .unwrap();
         request.army_stats = slot.take();
         let lent = request.army_stats.as_deref().unwrap() as *const extended::attack_stats::ArmyStatStore;
         {
@@ -552,16 +582,20 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
                 )
             };
             for _ in 0..3 {
-                running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+                running
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap();
             }
             assert_eq!(
-                pool.calibration().roles[acquisition::Role::PresentationPreparation as usize]
+                pool.calibration().roles
+                    [collector_workers::roles::Role::PresentationPreparation as usize]
                     .counters
                     .accepted,
                 3
             );
             assert_eq!(
-                pool.calibration().roles[acquisition::Role::PresentationStatus as usize]
+                pool.calibration().roles
+                    [collector_workers::roles::Role::PresentationStatus as usize]
                     .counters
                     .accepted,
                 0
@@ -587,21 +621,22 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
                 role.role
             );
         }
-        let ranges = stats.roles[acquisition::Role::PresentationPreparation as usize].counters;
+        let ranges =
+            stats.roles[collector_workers::roles::Role::PresentationPreparation as usize].counters;
         assert_eq!((ranges.accepted, ranges.completed), (3, 3));
         assert_eq!(
             (ranges.panicked, ranges.stopped),
             (u64::from(fail_child), 0)
         );
         assert_eq!(
-            stats.roles[acquisition::Role::PresentationPrepare as usize]
+            stats.roles[collector_workers::roles::Role::PresentationPrepare as usize]
                 .counters
                 .panicked,
             u64::from(fail_parent)
         );
         if fail_parent {
             assert_eq!(
-                stats.roles[acquisition::Role::PresentationSettle as usize]
+                stats.roles[collector_workers::roles::Role::PresentationSettle as usize]
                     .counters
                     .accepted,
                 0
@@ -731,10 +766,8 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
             request.inputs = None;
             batch.arm_presentation(&mut request);
             let dispatch = batch.arm_presentation_inputs(request, 1, None, false);
-            let countries = engine_allocation::shared(
-                Cache::try_with_capacity(0).unwrap(),
-            )
-            .unwrap();
+            let countries =
+                engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap();
             let mut payload = DivisionsJob::new_worker();
             payload.slots = Some((1, 2));
             payload.presentation = Some(Arc::clone(&dispatch));
@@ -758,12 +791,14 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                         base: kit::BASE,
                         game_state: kit::GAME_STATE,
                         slots: (2, u32::MAX),
-                        census: Box::new(crate::division_census::Census::new_worker()),
+                        census: Box::new(collector_divisions::division_census::Census::new_worker()),
                         presentation: Some((Arc::clone(&dispatch), 0)),
                     }),
                 )
             };
-            running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            running
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                .unwrap();
             assert!(preparing.try_recv().is_err());
             let mut master = Some(master);
             let early = collect_early.then(|| unsafe {
@@ -771,7 +806,9 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
             });
             assert!(preparing.try_recv().is_err());
             last.open();
-            preparing.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+            preparing
+                .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                .unwrap();
             if !drain {
                 let master = early.unwrap_or_else(|| unsafe {
                     finish_acquisition(&shared, &mut batch, master.take().unwrap())
@@ -812,11 +849,7 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                 ));
                 let consumers = [
                     unsafe {
-                        submit_acquisition(
-                            &shared,
-                            &mut batch,
-                            acquisition::Job::Divisions(master),
-                        )
+                        submit_acquisition(&shared, &mut batch, acquisition::Job::Divisions(master))
                     },
                     unsafe {
                         submit_acquisition(
@@ -834,15 +867,19 @@ fn input_publishers_release_presentation_before_callback_collection_and_drain_on
                     },
                 ];
                 let mut roles: Vec<_> = (0..3)
-                    .map(|_| consuming.recv_timeout(crate::TEST_HANG_GUARD).unwrap())
+                    .map(|_| {
+                        consuming
+                            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                            .unwrap()
+                    })
                     .collect();
                 roles.sort_by_key(|role| *role as usize);
                 assert_eq!(
                     roles,
                     [
-                        acquisition::Role::Divisions,
-                        acquisition::Role::PresentationMovement,
-                        acquisition::Role::PresentationSpeedTerms,
+                        collector_workers::roles::Role::Divisions,
+                        collector_workers::roles::Role::PresentationMovement,
+                        collector_workers::roles::Role::PresentationSpeedTerms,
                     ]
                 );
                 prepare.open();
@@ -926,14 +963,14 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
                     base: kit::BASE,
                     game_state: kit::GAME_STATE,
                     slots: (2, u32::MAX),
-                    census: Box::new(crate::division_census::Census::new_worker()),
+                    census: Box::new(collector_divisions::division_census::Census::new_worker()),
                     presentation: Some((Arc::clone(&dispatch), 0)),
                 }),
             )
         };
         let master = unsafe { finish_acquisition(&shared, &mut batch, master) };
         let part = unsafe { finish_acquisition(&shared, &mut batch, part) };
-        let deadline = std::time::Instant::now() + crate::TEST_HANG_GUARD;
+        let deadline = std::time::Instant::now() + collector_test_support::TEST_HANG_GUARD;
         while pool.calibration().executor.active != 0 {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -984,8 +1021,8 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
     assert_eq!(
         seen,
         [
-            acquisition::Role::DivisionInputParts,
-            acquisition::Role::DivisionInputs
+            collector_workers::roles::Role::DivisionInputParts,
+            collector_workers::roles::Role::DivisionInputs
         ]
     );
     assert_eq!(pool.calibration().executor.uncollected, 0);
@@ -1033,7 +1070,9 @@ fn final_status_worker_failure_returns_the_original_loan_without_stitch_or_retry
         unsafe { presentation.advance(&shared, &mut batch) };
     }
     for _ in 0..3 {
-        running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
+        running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap();
     }
     release.open();
     let (request, report) = unsafe { presentation.finish(&shared, &mut batch) };

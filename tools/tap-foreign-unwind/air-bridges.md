@@ -59,7 +59,7 @@ with the virtual-unwind tests:
 ```powershell
 $proofOutput = Join-Path $env:TEMP 'battleplan-tap-foreign-probe'
 $env:BATTLEPLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
-cargo test -p collector --lib --features tap-foreign-probe foreign_unwind_retains_stranded_observation_and_restores_call -- --ignored --nocapture --test-threads=1
+cargo test -p collector-observers --lib --features tap-foreign-probe foreign_unwind_retains_stranded_observation_and_restores_call -- --ignored --nocapture --test-threads=1
 ```
 
 Require both tests to pass and four `PASS` case lines: air-loss C++/SEH and

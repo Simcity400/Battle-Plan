@@ -345,12 +345,14 @@ mod tests {
         assert_eq!(contain(&lost, || Err::<(), _>("closed".to_owned())), expected);
     }
 
-    // quarantine: #1453 needs a GPU adapter
     #[test]
-    #[ignore = "needs a GPU adapter"]
     fn a_map_started_after_another_ended_builds_on_a_device_of_its_own() {
         let _gpu = viewer_foundation::map::test_support::serial();
-        let (first, _) = driver::map_device(None).unwrap();
+        let (first, _) = driver::map_device(None).unwrap_or_else(|reason| {
+            panic!(
+                "a_map_started_after_another_ended_builds_on_a_device_of_its_own requires a usable GPU or WARP adapter: {reason}"
+            )
+        });
         let kept = first.device.clone();
         let made = viewer_foundation::map::device_shared::shared(&first.device, "restart probe", || 1_u32);
         drop(first);
@@ -365,13 +367,31 @@ mod tests {
         drop(made);
     }
 
-    // quarantine: #1453 needs a GPU adapter
     #[test]
-    #[ignore = "needs a GPU adapter"]
     fn a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic() {
         let _gpu = viewer_foundation::map::test_support::serial();
         let instance = shader_pipeline::gpu::instance();
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).unwrap();
+        let adapter = pollster::block_on(async {
+            match instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+            {
+                Ok(adapter) => Ok(adapter),
+                Err(_) => {
+                    instance
+                        .request_adapter(&wgpu::RequestAdapterOptions {
+                            force_fallback_adapter: true,
+                            ..Default::default()
+                        })
+                        .await
+                }
+            }
+        })
+        .unwrap_or_else(|error| {
+            panic!(
+                "a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic requires a GPU or WARP adapter: {error}"
+            )
+        });
         let (device, _queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
         let lost = Lost::default();
         let (woke, woken) = mpsc::channel();

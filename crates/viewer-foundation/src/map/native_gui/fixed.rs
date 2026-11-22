@@ -498,6 +498,7 @@ impl Walk<'_> {
             self.regions.push(Region {
                 path: window.path.clone(),
                 owner: self.region_owner.clone(),
+                background_index: None,
                 scroll: None,
                 slide: None,
                 rect: [

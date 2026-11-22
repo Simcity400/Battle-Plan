@@ -424,6 +424,7 @@ impl Walk<'_> {
             self.regions.push(Region {
                 path: path.clone(),
                 owner: self.region_owner.clone(),
+                background_index: None,
                 scroll: None,
                 slide: None,
                 rect: [x, y, frame_width as f32, h],
@@ -435,6 +436,7 @@ impl Walk<'_> {
         self.parts.push(Part {
             path: path.clone(),
             child: self.top,
+            background_index: None,
             kind: PartKind::TextSprite {
                 sprite: name.to_vec(),
                 bake: Box::new(TextBake {

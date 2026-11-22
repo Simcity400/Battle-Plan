@@ -313,10 +313,21 @@ impl SubUnits {
         }
         let mut keys = Vec::new();
         let mut scalar_categories = Vec::new();
-        let support_bit = equipment::category_mask("support")
-            .expect("equipment categories define the support category");
+        let support_bit = match engine_executable::executable_tables::current() {
+            Some(tables) => match tables
+                .auxiliary
+                .as_ref()
+                .and_then(|auxiliary| auxiliary.category_names.as_ref())
+            {
+                Ok(_) => Ok(equipment::category_mask("support")
+                    .expect("equipment categories define the support category")),
+                Err(withheld) => Err(withheld.to_string()),
+            },
+            None => Ok(equipment::category_mask("support")
+                .expect("equipment categories define the support category")),
+        };
         let category = |text: &[u8], kind: Kind| {
-            if kind == Kind::Bare {
+            if kind == Kind::Bare && support_bit.is_ok() {
                 equipment::category_mask(c_string(text)).unwrap_or(0)
             } else {
                 0
@@ -461,11 +472,14 @@ impl SubUnits {
             );
             self.support.insert(
                 identity(entry.key.as_deref().unwrap_or_default()),
-                Ok(categories & support_bit != 0),
+                support_bit
+                    .as_ref()
+                    .map(|bit| categories & bit != 0)
+                    .map_err(Clone::clone),
             );
             self.categories_by_unit.insert(
                 identity(entry.key.as_deref().unwrap_or_default()),
-                Ok(categories),
+                support_bit.as_ref().map(|_| categories).map_err(Clone::clone),
             );
         }
         for misread in &read.misreads {

@@ -343,12 +343,23 @@ fn stepped_to(entry: &Arc<crate::playhead_host::Entry>, attached: bool, last: i3
     side
 }
 
+fn take_batch_frame(side: &mut MapSide, hour: i32) -> crate::playhead_host::Frame {
+    for _ in 0..50_000_000u64 {
+        let frame = side.frame(hour).unwrap();
+        if frame.steps > 0 {
+            return frame;
+        }
+        std::thread::yield_now();
+    }
+    panic!("no frame consumed steps through hour {hour}: {}", recorded::seen(side));
+}
+
 #[test]
 fn three_steps_in_one_frame_decide_the_first_steps_events_from_its_own_rows() {
     let entry = open(record_with(|_| true, relinked), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, true, 5);
     entry.playhead().wait_newest(8).expect("the steps through hour 8 built");
-    let frame = side.frame(8).unwrap();
+    let frame = take_batch_frame(&mut side, 8);
     assert_eq!((frame.steps, frame.applied), (3, Some(8)), "hours 6, 7 and 8 in one frame");
     side.settle_all().unwrap();
     let pending = layer(&side).pending();
@@ -417,10 +428,8 @@ fn paradropped(at: u32, store: &mut Store) {
 fn two_steps_in_one_frame_decide_the_first_steps_paradrop_by_its_own_hours_fog() {
     let entry = open(record_with(|_| true, paradropped), Settings { step_threads: 1, fetch_threads: 1, ahead: 4, ring: 6, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     let mut side = stepped_to(&entry, true, 5);
-    while entry.playhead().newest().is_none_or(|newest| newest < 7) {
-        std::thread::yield_now();
-    }
-    let frame = side.frame(7).unwrap();
+    entry.playhead().wait_newest(7).expect("the steps through hour 7 built");
+    let frame = take_batch_frame(&mut side, 7);
     assert_eq!((frame.steps, frame.applied), (2, Some(7)), "hours 6 and 7 in one frame");
     side.settle_all().unwrap();
     let vision = side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<vision::Vision>()).unwrap();
@@ -443,7 +452,7 @@ fn two_steps_in_one_frame_decide_the_first_steps_events_for_its_own_hours_viewer
     let ours = |side: &MapSide| side.parts().unwrap().1.iter().find_map(|layer| layer.any().downcast_ref::<vision::Vision>()).unwrap().ours();
     let before = ours(&side);
     entry.playhead().wait_newest(7).expect("the steps through hour 7 built");
-    let frame = side.frame(7).unwrap();
+    let frame = take_batch_frame(&mut side, 7);
     assert_eq!((frame.steps, frame.applied), (2, Some(7)), "hours 6 and 7 in one frame");
     side.settle_all().unwrap();
     assert!(before.is_some() && ours(&side) != before, "the settled vision is hour 7's viewer, not hour 5's");
