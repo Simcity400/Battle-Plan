@@ -3319,8 +3319,7 @@ pub mod tests {
         let mut other =
             unsafe { Hook::new(other_site, other_callback as *const () as usize, other_bytes) }
                 .unwrap();
-        // SAFETY: The fixture owns the taps and keeps them live through publication.
-        assert_eq!(unsafe { other.set_enabled(true) }, Ok(true));
+        assert_eq!(other.set_enabled(true), Ok(true));
         let saved = unsafe { std::ptr::read(site as *const u8) };
         unsafe { std::ptr::write(site as *mut u8, saved ^ 0xff) };
         {
@@ -3331,14 +3330,12 @@ pub mod tests {
                 let mut batch = collector_hooks::hook::restoration::Batch::collect().unwrap();
                 // SAFETY: The fixture owns the taps and keeps them live through publication.
                 assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(false));
-                // SAFETY: The fixture owns the taps and keeps them live through publication.
-                assert_eq!(unsafe { other.set_enabled(false) }, Ok(false));
+                assert_eq!(other.set_enabled(false), Ok(false));
                 collector_hooks::hook::fail_flushes(1);
                 assert_eq!(batch.publish(), 0);
                 // SAFETY: The fixture owns the taps and keeps them live through publication.
                 assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(false));
-                // SAFETY: The fixture owns the taps and keeps them live through publication.
-                assert_eq!(unsafe { other.set_enabled(false) }, Ok(false));
+                assert_eq!(other.set_enabled(false), Ok(false));
             }
         }
         assert_eq!(live.failed.load(Ordering::Acquire), 1);
@@ -3352,8 +3349,7 @@ pub mod tests {
         unsafe { std::ptr::write(site as *mut u8, saved) };
         // SAFETY: The fixture owns the taps and keeps them live through publication.
         assert_eq!(unsafe { hooks.set_enabled(false) }, Ok(true));
-        // SAFETY: The fixture owns the taps and keeps them live through publication.
-        assert_eq!(unsafe { other.set_enabled(false) }, Ok(true));
+        assert_eq!(other.set_enabled(false), Ok(true));
     }
 
     #[test]
