@@ -1,4 +1,4 @@
-import { clockGeneration, drawClock, drawPost, onDraw, surfaceId } from '../../dashboard/pulled.ts';
+import { clockGeneration, drawClock, drawPost, onDraw, onSurface, surfaceId } from '../../dashboard/pulled.ts';
 import { noticeMatchesAnchor } from '../anchorGeneration.ts';
 import { perfLog } from '../../shell/perf.ts';
 
@@ -57,25 +57,25 @@ export function attachTable(body: HTMLElement, clock: PlaybackController,
     asked = { seek: now.seekSequence, playing: now.playing };
     if (shown) own(true, true);
   });
-  const off = onDraw(message => {
-    if (message.type === 'failed' && (message.page === -1 || message.page === id)) { own(false, true); return; }
-    if (message.type === 'hit' && message.id === id && message.owner === owner && shown) hover(at ? message.key : null, at ?? undefined);
-    if (message.type === 'tableRows' && message.id === id && message.owner === owner) { extend(message.count); drawnRows?.(message.count, message.empty); }
-    if (message.type === 'tableColumns' && message.id === id && message.owner === owner) drawnWidths?.(message.widths);
-    if (message.type === 'tableRead' && message.id === id) {
-      reads.get(message.request)?.(message.owner === owner ? message.reading : null);
-      reads.delete(message.request);
+  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) own(false, true); });
+  const off = onSurface(id, notice => {
+    if (notice.type === 'failed') { own(false, true); return; }
+    if (notice.type === 'hit') { if (notice.owner === owner && shown) hover(at ? notice.key : null, at ?? undefined); return; }
+    if (notice.type === 'tableRows') { if (notice.owner === owner) { extend(notice.count); drawnRows?.(notice.count, notice.empty); } return; }
+    if (notice.type === 'tableColumns') { if (notice.owner === owner) drawnWidths?.(notice.widths); return; }
+    if (notice.type === 'tableRead') {
+      reads.get(notice.request)?.(notice.owner === owner ? notice.reading : null);
+      reads.delete(notice.request);
+      return;
     }
-    if (message.type !== 'present') return;
-    for (const surface of message.surfaces) {
-      if (surface.id !== id || surface.owner !== owner || surface.seek !== clock.getSnapshot().seekSequence
-        || !noticeMatchesAnchor(surface.generation, clockGeneration(clock))) continue;
-      const now = surface.readHour !== undefined;
-      if (now !== shown) perfLog?.ink(id, now);
-      shown = now;
-      own(shown, !shown);
-      if (!shown) hover(null);
-    }
+    if (notice.type !== 'present') return;
+    const surface = notice.surface;
+    if (surface.owner !== owner || surface.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(surface.generation, clockGeneration(clock))) return;
+    const now = surface.readHour !== undefined;
+    if (now !== shown) perfLog?.ink(id, now);
+    shown = now;
+    own(shown, !shown);
+    if (!shown) hover(null);
   });
   const point = () => {
     if (!at) return;
@@ -96,7 +96,7 @@ export function attachTable(body: HTMLElement, clock: PlaybackController,
   });
   return { refresh, read, close() {
     if (closed) return;
-    closed = true; own(false); hover(null); off(); stopClock(); stopFit(); observer.disconnect();
+    closed = true; own(false); hover(null); off(); offPage(); stopClock(); stopFit(); observer.disconnect();
     for (const resolve of reads.values()) resolve(null);
     reads.clear();
     body.removeEventListener('pointermove', pointer); body.removeEventListener('pointerleave', leave); body.removeEventListener('scroll', onScroll);

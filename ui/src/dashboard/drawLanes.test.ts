@@ -72,10 +72,37 @@ test('a picture audit is answered once, from every lane’s records, done when e
 });
 
 test('page-wide news comes from the first lane alone; a surface’s from any', () => {
-  const { draw, heard } = lanes(2);
+  const { draw, heard } = lanes(2), told: string[] = [];
+  draw.listen(3, notice => told.push(notice.type));
   draw.receive(1, { type: 'displayRate', hz: 120 });
   draw.receive(1, { type: 'structure', updates: [] });
   draw.receive(1, { type: 'tableRows', id: 3, owner: 1, count: 2 });
   draw.receive(0, { type: 'displayRate', hz: 60 });
-  assert.deepEqual(heard.map(message => message.type), ['tableRows', 'displayRate']);
+  assert.deepEqual([heard.map(message => message.type), told], [['displayRate'], ['tableRows']]);
+});
+
+test('the page tells the lane that sent structure it has taken it, so that lane sends the next', () => {
+  const { draw, heard, types } = lanes(2);
+  draw.receive(0, { type: 'structure', updates: [] });
+  draw.receive(1, { type: 'structureLead', updates: [] });
+  assert.deepEqual([types(0), types(1), heard.map(message => message.type)], [['structureTaken'], [], ['structure']]);
+});
+
+test('what a worker says of a surface reaches that surface alone, once, however many surfaces listen', () => {
+  const { draw, heard } = lanes(2), told = new Map<number, string[]>();
+  for (let id = 1; id <= 1500; id++) draw.listen(id, notice => {
+    const kind = notice.type === 'present' ? 'present:' + notice.surface.owner : notice.type;
+    told.set(id, [...told.get(id) ?? [], kind]);
+  });
+  const present = (id: number, owner: number) => ({ id, owner, seek: 0, generation: 0 });
+  draw.receive(0, { type: 'present', surfaces: [present(7, 2), present(900, 5)] });
+  draw.receive(1, { type: 'hit', id: 7, owner: 2, key: null });
+  draw.receive(1, { type: 'failed', page: 900, reason: 'Panel drawing surface unavailable' });
+  draw.receive(0, { type: 'failed', page: -1, reason: 'worker stopped' });
+  assert.deepEqual([...told], [[7, ['present:2', 'hit']], [900, ['present:5', 'failed']]]);
+  assert.deepEqual(heard, [{ type: 'failed', page: -1, reason: 'worker stopped' }]);
+  const stop = draw.listen(7, () => assert.fail('a replaced listener is not told'));
+  stop();
+  draw.receive(0, { type: 'present', surfaces: [present(7, 3)] });
+  assert.deepEqual(told.get(7), ['present:2', 'hit'], 'a surface that stopped listening hears nothing');
 });

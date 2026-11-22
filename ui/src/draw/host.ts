@@ -1,4 +1,4 @@
-import { clockGeneration, drawClock, drawPost, onDraw, surfaceId } from '../dashboard/pulled.ts';
+import { clockGeneration, drawClock, drawPost, onDraw, onSurface, surfaceId } from '../dashboard/pulled.ts';
 import type { PlaybackController } from '../dashboard/playback';
 import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
@@ -44,19 +44,19 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     };
   };
   const refresh = () => { if (!closed) { owner++; invalidateGeometry(measure); } };
-  const off = onDraw(message => {
-    if (message.type === 'failed' && (message.page === -1 || message.page === id)) release();
-    if (message.type === 'hit' && message.id === id && message.owner === owner && !canvas.hidden) hit(message.key);
-    if (message.type !== 'present') return;
-    for (const p of message.surfaces) {
-      if (p.id !== id || p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(p.generation, clockGeneration(clock))) continue;
-      const clockHour = clock.positionAt(shownTime(p.shown));
-      if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); continue; }
-      const hour = pictureHour(p.date, clockHour, fixed);
-      visible(hour !== null);
-      own(hour !== null, hour === null);
-      if (hour === null) hit(null);
-    }
+  const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) release(); });
+  const off = onSurface(id, notice => {
+    if (notice.type === 'failed') { release(); return; }
+    if (notice.type === 'hit') { if (notice.owner === owner && !canvas.hidden) hit(notice.key); return; }
+    if (notice.type !== 'present') return;
+    const p = notice.surface;
+    if (p.owner !== owner || p.seek !== clock.getSnapshot().seekSequence || !noticeMatchesAnchor(p.generation, clockGeneration(clock))) return;
+    const clockHour = clock.positionAt(shownTime(p.shown));
+    if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); return; }
+    const hour = pictureHour(p.date, clockHour, fixed);
+    visible(hour !== null);
+    own(hour !== null, hour === null);
+    if (hour === null) hit(null);
   });
   const point = (e: PointerEvent) => {
     if (canvas.hidden || !e.isTrusted) return;
@@ -76,7 +76,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
   });
   refresh();
   return { refresh, close() {
-    closed = true; cancelGeometry(measure); release(); off(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
+    closed = true; cancelGeometry(measure); release(); off(); offPage(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');
   } };

@@ -1,5 +1,5 @@
 import type { FromWorker, ToWorker } from '../draw/kit';
-import type { DrawSample } from '../draw/notifications';
+import type { DrawSample, Present } from '../draw/notifications';
 import { ROW_HEIGHT } from '../draw/tables/logic.ts';
 
 export interface DrawLane { postMessage(message: ToWorker, transfer: Transferable[]): void }
@@ -7,6 +7,8 @@ export interface DrawLane { postMessage(message: ToWorker, transfer: Transferabl
 const SURFACE = new Set<ToWorker['type']>(['surface', 'table', 'dateFace', 'race', 'pointer', 'tablePointer', 'tableScroll', 'tableRead',
   'racePointer', 'inspectRace', 'detach', 'closeRace']);
 const PAGE_WIDE = new Set<FromWorker['type']>(['displayRate', 'structure', 'structureLead', 'followFailure']);
+
+export type SurfaceNotice = Extract<FromWorker, { id: number }> | { type: 'present'; surface: Present } | { type: 'failed'; page: number; reason: string };
 
 function painted(message: ToWorker): number {
   if (message.type === 'surface') return Math.max(1, message.model.cells?.length ?? 0);
@@ -22,6 +24,7 @@ function painted(message: ToWorker): number {
 
 export class DrawLanes {
   private readonly owner = new Map<number, { lane: number; weight: number; table: boolean }>();
+  private readonly surfaces = new Map<number, (notice: SurfaceNotice) => void>();
   private readonly lanes: readonly DrawLane[];
   private readonly emit: (message: FromWorker) => void;
   private readonly load: number[];
@@ -68,6 +71,11 @@ export class DrawLanes {
 
   postTo(lane: number, message: ToWorker, transfer: Transferable[] = []) { this.lanes[lane]!.postMessage(message, transfer); }
 
+  listen(id: number, listener: (notice: SurfaceNotice) => void): () => void {
+    this.surfaces.set(id, listener);
+    return () => { if (this.surfaces.get(id) === listener) this.surfaces.delete(id); };
+  }
+
   receive(lane: number, message: FromWorker) {
     if (message.type === 'audit') {
       const audit = this.audit;
@@ -78,6 +86,10 @@ export class DrawLanes {
       this.emit({ type: 'audit', records: audit.records, done: audit.done });
       return;
     }
+    if (message.type === 'present') { for (const surface of message.surfaces) this.surfaces.get(surface.id)?.({ type: 'present', surface }); return; }
+    if (message.type === 'failed' && message.page !== -1) { this.surfaces.get(message.page)?.(message); return; }
+    if ('id' in message) { this.surfaces.get(message.id)?.(message); return; }
+    if (message.type === 'structure') this.lanes[lane]!.postMessage({ type: 'structureTaken' }, []);
     if (lane !== 0 && PAGE_WIDE.has(message.type)) return;
     this.emit(message);
   }

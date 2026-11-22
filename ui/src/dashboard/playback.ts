@@ -2,6 +2,7 @@ import { startTransition, useEffect, useRef, useState } from 'react';
 import type { HourWindow } from './model';
 import { OUTSIDE, perfLog } from '../shell/perf.ts';
 import { engine } from '../engine/frame.ts';
+import { commitInFrame } from './frameUpdates.ts';
 import type { EngineTask, FrameEngine } from '../engine/frame.ts';
 
 export const MIN_PLAYBACK_SPEED = 0.25;
@@ -153,7 +154,7 @@ export class PlaybackController {
     if (!this.snapshot.playing) return;
     this.paintTask = this.engine.every('paint', frame => {
       this.framing = frame.now;
-      try { this.tellFrame(); } finally { this.framing = OUTSIDE; }
+      try { this.tellFrame(); commitInFrame(); } finally { this.framing = OUTSIDE; }
       return false;
     });
     this.stepTask = this.engine.every('clock', frame => {

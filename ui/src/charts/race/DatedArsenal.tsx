@@ -1,5 +1,5 @@
 import { useId, useLayoutEffect, useRef } from 'react';
-import { clockGeneration, drawClock, drawPost, onDraw, surfaceId } from '../../dashboard/pulled.ts';
+import { clockGeneration, drawClock, drawPost, onDraw, onSurface, surfaceId } from '../../dashboard/pulled.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { measuredWidget } from '../../dashboard/widgetPerf.ts';
 import { hideTooltip, showTooltip, tooltipText } from '../tooltip.ts';
@@ -61,8 +61,9 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       first = false; canvas.setAttribute('aria-label', latest.current.label);
     };
     update.current = send;
-    const stop = onDraw(m => {
-      if (m.type === 'failed' || m.type === 'followFailure') { clear(); return; }
+    const stopPage = onDraw(m => { if (m.type === 'failed' || m.type === 'followFailure') clear(); });
+    const stop = onSurface(id, m => {
+      if (m.type === 'failed') { clear(); return; }
       if ((m.type !== 'racePresent' && m.type !== 'raceInspection' && m.type !== 'raceHover') || m.id !== id || m.owner !== version || m.seek !== clock.getSnapshot().seekSequence ||
           (m.type === 'racePresent' && !noticeMatchesAnchor(m.generation, clockGeneration(clock)))) return;
       if (m.type === 'raceHover') {
@@ -127,7 +128,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     canvas.addEventListener('focus', focus); canvas.addEventListener('blur', leave); canvas.addEventListener('pointerleave', leave); canvas.addEventListener('keydown', key);
     scroller.addEventListener('scroll', send, { passive: true });
     clear(); send();
-    return () => { clear(); stop(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
+    return () => { clear(); stop(); stopPage(); stopClock(); anchor(); stopClockAnchor(); resize.disconnect(); scroller.removeEventListener('scroll', send); canvas.remove();
       drawPost({ type: 'closeRace', id }); update.current = undefined; };
   }, [owner, props.clock, props.active, props.model.follow, props.model.fixed, props.resetKey, widget]);
   useLayoutEffect(() => { update.current?.(); }, [props.model]);

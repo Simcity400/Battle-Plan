@@ -4,6 +4,7 @@ import type { ClockAnchor, FromWorker, ToWorker } from './kit';
 import { Followed, type Answered } from './followed.ts';
 import type { FollowItem } from '../dashboard/follow/message';
 import { stretch } from './weakCpu.ts';
+import { StructureOutbox } from './structureOutbox.ts';
 import { PictureDate, pictureHour } from './pictureDate.ts';
 import { HeldPointer } from './pointer.ts';
 import { PanelProgram } from './retained/panel.ts';
@@ -18,6 +19,7 @@ import { buildDetail, buildStretch, buildTable, type BuiltTable } from './tables
 import { repliedCells } from '../dashboard/follow/liveCells.ts';
 
 const post = (message: FromWorker) => self.postMessage(message);
+const outbox = new StructureOutbox(updates => post({ type: 'structure', updates }));
 const wall = () => performance.timeOrigin + performance.now();
 interface Panel {
   kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D;
@@ -426,8 +428,7 @@ function frame(at: number) {
   }
   followed.drain(head);
   if (lane === 0) {
-    const updates = [...followed.structures(anchor.playing)];
-    if (updates.length) post({ type: 'structure', updates });
+    outbox.add([...followed.structures(anchor.playing)]);
   }
   while (scheduledChanges.length && scheduledChanges.at(-1)!.at <= head) dirty.add(scheduledChanges.pop()!.surface);
   const changed = audit && new Set<string>();
@@ -504,6 +505,7 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
         followed.land(data, anchor.playing && lane === 0 ? post : undefined); wake();
       };
       return;
+    case 'structureTaken': outbox.taken(); return;
     case 'add': followed.add(m.id, m.branch, m.product); return;
     case 'remove': followed.remove(m.id); break;
     case 'seek': followed.seek(m.branch, m.seek, m.retainThrough); break;

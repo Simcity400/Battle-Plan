@@ -159,7 +159,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
     return () => { cancel(); stop(); node.removeEventListener('pointermove', inspect, true); node.removeEventListener('focusin', inspect, true);
       node.removeEventListener('focusout', cancel); node.removeEventListener('pointerleave', cancel);
       reconcile.current = undefined; handles.forEach(handle => handle.close()); };
-  }, [element, !!feed, active, clock, widget, root, feed?.view, feed?.offset, feed?.follow, feed?.fixed]);
+  }, [element, !!feed, active, clock, widget, root, feed?.view]);
   useLayoutEffect(() => { reconcile.current?.(); },
     [element, !!feed, active, clock, widget, root, feed?.view, feed?.offset, feed?.follow, feed?.fixed, feed?.structure, feed?.reply,
       feed?.follow === undefined ? feed?.date?.through : undefined]);

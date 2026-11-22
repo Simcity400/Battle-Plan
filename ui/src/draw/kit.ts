@@ -71,6 +71,7 @@ export type ToWorker =
   | { type: 'racePointer'; id: number; owner: number; point?: { x: number; y: number } }
   | { type: 'inspectRace'; id: number; owner: number; request: number; target?: import('./arsenal').RaceTarget }
   | { type: 'inspect'; id: number; request: number }
+  | { type: 'structureTaken' }
   | { type: 'options'; rate: number; measured: boolean; cap: number; lane: number };
 
 export type FromWorker = { type: 'displayRate'; hz: number } | import('./notifications').Notice

@@ -5,6 +5,7 @@ import { APPEARANCE_EVENT } from '../shell/appearance/events.ts';
 import { perfLog } from '../shell/perf.ts';
 import { pageClock } from './widgetClock.ts';
 import { DrawLanes } from './drawLanes.ts';
+import type { SurfaceNotice } from './drawLanes.ts';
 
 const listeners = new Set<(message: FromWorker) => void>();
 let drawing: DrawLanes | undefined;
@@ -41,6 +42,9 @@ export function drawPost(message: ToWorker, transfer: Transferable[] = []) {
 export function onDraw(listener: (message: FromWorker) => void) {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
+}
+export function onSurface(id: number, listener: (notice: SurfaceNotice) => void) {
+  return lanes().listen(id, listener);
 }
 
 let nextSurface = 1;

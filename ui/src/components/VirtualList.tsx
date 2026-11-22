@@ -3,6 +3,10 @@ import type { CSSProperties, HTMLAttributes, ReactNode, RefObject } from 'react'
 import { flushSync } from 'react-dom';
 import { VirtualListIndex } from './virtualListIndex';
 
+function sameList<T>(held: readonly T[], next: readonly T[]): readonly T[] {
+  return held.length === next.length && held.every((value, at) => value === next[at]) ? held : next;
+}
+
 function focusables(node: HTMLElement) {
   return [...node.querySelectorAll<HTMLElement>('*')].filter(target => {
     if (target.tabIndex < 0 || target.matches(':disabled, input[type="hidden"]') || target.closest('[inert]')) return false;
@@ -40,7 +44,8 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const sequential = useRef<{ key: string; target: HTMLElement; keys: readonly string[]; gap: number; pointer?: boolean } | null>(null);
   const [resume, setResume] = useState<string | null>(null);
   const resuming = useRef(false);
-  const keys = useMemo(() => items.map(itemKey), [items]);
+  const keysHeld = useRef<readonly string[]>([]);
+  const keys = useMemo(() => keysHeld.current = sameList(keysHeld.current, items.map(itemKey)), [items]);
   const positions = useMemo(() => new Map(keys.map((key, at) => [key, at])), [keys]);
   useLayoutEffect(() => {
     const cursor = sequential.current;
@@ -56,11 +61,12 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     }
     cursor.keys = keys;
   }, [keys, positions]);
+  const eligibleHeld = useRef<readonly number[]>([]);
   const eligible = useMemo(() => {
     if (!isInteractive) return null;
     const positions: number[] = [];
     items.forEach((item, at) => { if (isInteractive(item, at)) positions.push(at); });
-    return positions;
+    return eligibleHeld.current = sameList(eligibleHeld.current, positions);
   }, [items, isInteractive]);
   const destination = (at: number, direction: 1 | -1) => {
     if (!eligible) return at >= 0 && at < items.length ? at : null;

@@ -125,7 +125,6 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
         }
         if (message.type === 'structureLead' && clock.getSnapshot().playing) {
           for (const r of message.updates) if (owners.get(r.id)?.seek === r.seek) structures.add(r);
-          drain();
           if (structures.pending) stopFrame ??= clock.subscribeFrame(drain);
         }
         if (message.type === 'inspection') {
