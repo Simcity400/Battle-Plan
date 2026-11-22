@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { engineHour } from '../dashboard/calendar.ts';
-import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, panelStage, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
+import { askedPrompt, askQuestion, captureModeFixed, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptTitle, recordingName, recordsAutomatically, savedText, sessionLength,
   settingsQueue, spanText, spoolText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { RecorderSettings, Snapshot, UnsavedRecording } from './status.ts';
 
@@ -148,6 +148,15 @@ test('every window, the compact stop prompt included, shows the connecting state
   assert.equal(panelStage(recording(), null), 'pending');
   assert.equal(panelStage(recording(), true), 'panel');
   assert.equal(panelStage(recording(), false), 'panel');
+});
+
+test('a panel still connecting shows a window it couldn’t fit, with that failure’s Try again', () => {
+  const retry = () => {};
+  const unshown = { text: 'Couldn’t show the recorder panel.', detail: 'the request failed', retry };
+  assert.deepEqual(pendingFailure(null, unshown), { title: unshown.text, detail: unshown.detail, retry });
+  const unopened = { title: PANEL_UNOPENED, detail: 'the recorder is not running', retry() {} };
+  assert.equal(pendingFailure(unopened, unshown), unopened, 'a panel that can’t reach the recorder says so first');
+  assert.equal(pendingFailure(null, null), null);
 });
 
 test('campaign choices follow the global default until set', () => {

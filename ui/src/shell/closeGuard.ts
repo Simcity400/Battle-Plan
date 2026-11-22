@@ -34,13 +34,14 @@ export const UNCLOSED = 'Couldn’t close BattlePlan.';
 export const UNKEPT = 'Couldn’t tell BattlePlan to stay open for your unsaved changes.';
 export const UNANSWERED_SAVED = 'Couldn’t tell BattlePlan your changes are saved, so its update waits.';
 export const UNANSWERED_UNSAVED = 'Couldn’t tell BattlePlan you have unsaved changes, so its update waits.';
+export const UNJUDGED = 'Couldn’t check for unsaved changes, so BattlePlan’s close and update questions wait.';
 
 const unanswered = (about: CloseAbout, stays: boolean) =>
   about === 'close' ? stays ? UNKEPT : UNCLOSED : stays ? UNANSWERED_UNSAVED : UNANSWERED_SAVED;
 const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close' : 'update';
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
-  let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1;
+  let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1, complete = false;
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
   const judged = new Set<number>();
@@ -79,18 +80,25 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     }, cause => { if (!ended && live.has(id)) fail(key, unanswered(about, stays), cause, () => send(id, about, stays, basis)); });
   };
 
-  const judge = () => {
+  const judge = (): boolean => {
+    complete = false;
     for (const { id, about } of waiting) {
-      if (ended) return;
+      if (ended) return false;
       if (judged.has(id)) continue;
-      const unsaved = page.unsaved();
+      let unsaved: boolean, confirmed: boolean;
+      try {
+        unsaved = page.unsaved();
+        confirmed = about === 'install' && page.confirmed();
+      } catch (cause) {
+        fail('judge', UNJUDGED, cause, judge);
+        return false;
+      }
       const now = leaving();
       if (about === 'query') {
         judged.add(id);
         send(id, about, !now && unsaved, []);
         continue;
       }
-      const confirmed = about === 'install' && page.confirmed();
       if (!now && unsaved && !confirmed) {
         judged.add(id);
         if (about === 'close') page.prompt();
@@ -105,6 +113,9 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
       show();
       send(id, about, false, basis);
     }
+    complete = true;
+    clear('judge');
+    return true;
   };
 
   const leave = () => {
@@ -117,7 +128,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
 
   const requests = host.requests(batch => {
     if (ended) return false;
-    if (batch.seq <= applied) return true;
+    if (batch.seq <= applied) return complete || judge();
     applied = batch.seq;
     live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
@@ -132,8 +143,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     }
     waiting = batch.waiting;
     show();
-    judge();
-    return true;
+    return judge();
   });
   const watch = () => {
     if (ended || watching || watched) return;

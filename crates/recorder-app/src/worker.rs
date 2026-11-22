@@ -158,7 +158,7 @@ impl Inner {
         self.shown_prompt = Some(self.shown_prompt.map_or(prompt, |shown| shown.max(prompt)));
     }
 
-    fn panel_gone(&mut self, stopping: bool) -> bool {
+    fn panel_gone(&mut self, stopping: bool, declined: bool) -> bool {
         self.panel_open = false;
         let issued = self.closing_itself.take();
         let shown = self.shown_prompt.take();
@@ -173,7 +173,7 @@ impl Inner {
             self.result = false;
             self.sticky = None;
         }
-        self.prompts.pending(self.live_session()).is_some()
+        !declined && self.prompts.pending(self.live_session()).is_some()
     }
 }
 
@@ -677,10 +677,10 @@ impl Recorder {
         self.lock().closing_itself = None;
     }
 
-    pub fn panel_closed(&self, app: &AppHandle) {
+    pub fn panel_closed(&self, app: &AppHandle, declined: bool) {
         let stopping = self.control.stopping();
         let mut unseen = false;
-        self.update(app, |inner| unseen = inner.panel_gone(stopping));
+        self.update(app, |inner| unseen = inner.panel_gone(stopping, declined));
         self.wake.notify_all();
         if unseen {
             panel::open(app, None, true);
@@ -1821,14 +1821,30 @@ mod tests {
         let quit = inner.ask(session, true);
         let before = inner.snapshot.clone();
         inner.publish(&before);
-        assert!(inner.panel_gone(false), "the Quit the panel never showed needs a panel");
+        assert!(inner.panel_gone(false, false), "the Quit the panel never showed needs a panel");
         assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id));
         assert_eq!(inner.quit_after_stop, Some(quit.id), "closing the panel doesn’t cancel a Quit it never showed");
 
         inner.prompt_shown(quit.id);
-        assert!(!inner.panel_gone(false));
+        assert!(!inner.panel_gone(false, false));
         assert_eq!(inner.prompts.pending(Some(session)), None, "closing a panel cancels what it showed");
         assert_eq!(inner.quit_after_stop, None);
+    }
+
+    #[test]
+    fn a_panel_the_user_chose_not_to_show_isnt_opened_again_and_its_prompt_waits_for_the_tray() {
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        inner.new_session();
+        let session = inner.snapshot.session_key.unwrap();
+        let quit = inner.ask(session, true);
+        assert!(!inner.panel_gone(false, true), "Cancel on the message that the panel couldn’t be shown opens no other panel");
+        assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id), "the Quit waits for the tray to open the panel");
+        assert_eq!(inner.quit_after_stop, Some(quit.id));
+        assert!(inner.panel_gone(false, false), "a panel that closes any other way before showing the Quit asks again");
     }
 
     #[test]
@@ -1846,7 +1862,7 @@ mod tests {
         let before = inner.snapshot.clone();
         inner.publish(&before);
         inner.prompt_shown(quit.id);
-        assert!(inner.panel_gone(false), "the Quit that arrived before the window went asks again");
+        assert!(inner.panel_gone(false, false), "the Quit that arrived before the window went asks again");
         assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id));
         assert_eq!(inner.quit_after_stop, Some(quit.id));
     }
@@ -1866,7 +1882,7 @@ mod tests {
         let carried = inner.prompts.pending(Some(session)).expect("the Quit asks about the new session");
         assert_ne!(carried.id, quit.id);
         assert_eq!(inner.quit_after_stop, Some(carried.id));
-        assert!(inner.panel_gone(false), "closing the panel doesn’t cancel a Quit about a session it never showed");
+        assert!(inner.panel_gone(false, false), "closing the panel doesn’t cancel a Quit about a session it never showed");
         assert_eq!(inner.quit_after_stop, Some(carried.id));
     }
 

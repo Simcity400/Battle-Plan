@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuard, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNKEPT } from './closeGuard.ts';
+import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuard, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNJUDGED, UNKEPT } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import { unsavedDrafts } from '../dashboard/layoutDrafts.ts';
 import { loadLayouts } from '../dashboard/storage.ts';
@@ -218,6 +218,28 @@ test('a batch older than one the page has applied changes nothing, so a crossing
   assert.deepEqual([host.answers.length, locked()], [2, 'close']);
 });
 
+test('a batch the page couldn’t finish judging is reported unhandled, and an older batch carrying its question judges it instead of passing over', async () => {
+  let readable = false;
+  const { host, start, batch, deliver, shown } = desktop(() => { if (!readable) throw new Error('the drafts couldn’t be read'); return false; });
+  start();
+  await flush();
+  const older = batch({ id: 9, about: 'install' });
+  const newer = batch();
+  assert.equal(deliver(newer), false, 'the install wasn’t judged, so the host doesn’t count it heard');
+  assert.equal(deliver(older), false, 'nor the older batch that carries it');
+  assert.deepEqual([host.answers, shown().map(({ message }) => message)], [[], [UNJUDGED]], 'the failure is shown by name');
+  readable = true;
+  shown()[0]!.retry();
+  assert.deepEqual([host.answers, shown()], [[[9, false]], []], 'Try again judges the question');
+  assert.equal(deliver(older), true, 'a batch the page has now judged in full is covered');
+  readable = false;
+  const later = batch({ id: 10, about: 'query' });
+  assert.equal(deliver(later), false);
+  readable = true;
+  assert.equal(deliver(older), true, 'an older batch arriving once the drafts read judges what the newer one couldn’t');
+  assert.deepEqual([host.answers.at(-1), shown()], [[10, false], []]);
+});
+
 test('a page that loads while BattlePlan holds a leave is locked by the first batch it hears', async () => {
   const { host, start, send, hold, locked } = desktop();
   hold(9, 'install');
@@ -371,7 +393,7 @@ type Traced = [string, ...unknown[]];
 type Out = [[number, boolean, number[]][], 0 | 1 | 2, number, string[] | null];
 
 async function replay(seed: number, trace: Traced[]) {
-  const facts = { dirty: false, confirmed: false };
+  const facts: { dirty: boolean | null; confirmed: boolean } = { dirty: false, confirmed: false };
   interface Entry {
     guard?: CloseGuard; onBatch?: (batch: CloseBatch) => boolean; watches: { resolve(): void; reject(cause: unknown): void }[];
     answers: { id: number; resolve(heard: boolean): void; reject(cause: unknown): void }[]; failures: readonly CloseGuardFailure[]; locked: LeavingFor | null; prompts: number;
@@ -393,7 +415,7 @@ async function replay(seed: number, trace: Traced[]) {
           return new Promise<boolean>((resolve, reject) => { entry.answers.push({ id, resolve, reject }); });
         },
         leave: () => Promise.resolve(),
-      }, { unsaved: () => facts.dirty, confirmed: () => facts.confirmed, prompt: () => { entry.prompts++; }, leaving: leaving => { entry.locked = leaving; } },
+      }, { unsaved: () => { if (facts.dirty === null) throw new Error('the drafts couldn’t be read'); return facts.dirty; }, confirmed: () => facts.confirmed, prompt: () => { entry.prompts++; }, leaving: leaving => { entry.locked = leaving; } },
       failures => { entry.failures = failures; });
       continue;
     }
@@ -409,12 +431,12 @@ async function replay(seed: number, trace: Traced[]) {
       await flush();
       out = expected;
     } else if (kind === 'b') {
-      const [, , dirty, confirmed, seq, waiting, holds, returned, expected] = event as [string, number, boolean, boolean, number, [number, CloseAbout][], [number, CloseAbout][], boolean, Out];
+      const [, , dirty, confirmed, seq, waiting, holds, returned, expected] = event as [string, number, boolean | null, boolean, number, [number, CloseAbout][], [number, CloseAbout][], boolean, Out];
       Object.assign(facts, { dirty, confirmed });
       assert.equal(entry.onBatch!({ seq, waiting: asks(waiting), holds: asks(holds) }), returned, `${where}: what the callback returned`);
       out = expected;
     } else if (kind === 'r') {
-      const [, , dirty, confirmed, id, reply, expected] = event as [string, number, boolean, boolean, number, boolean | null, Out];
+      const [, , dirty, confirmed, id, reply, expected] = event as [string, number, boolean | null, boolean, number, boolean | null, Out];
       Object.assign(facts, { dirty, confirmed });
       const pending = entry.answers.shift();
       assert.equal(pending?.id, id, `${where}: the answer replied to`);
@@ -422,7 +444,7 @@ async function replay(seed: number, trace: Traced[]) {
       await flush();
       out = expected;
     } else if (kind === 't') {
-      const [, , dirty, confirmed, key, expected] = event as [string, number, boolean, boolean, string, Out];
+      const [, , dirty, confirmed, key, expected] = event as [string, number, boolean | null, boolean, string, Out];
       Object.assign(facts, { dirty, confirmed });
       const failure = entry.failures.find(shown => shown.key === key);
       assert.ok(failure, `${where}: the failure retried is shown`);

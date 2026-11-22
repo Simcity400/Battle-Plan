@@ -16,7 +16,7 @@ mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
-use leaving::{Answered, Batch, Closing, Leaving, Reach, Unanswered};
+use leaving::{Answered, Batch, Closing, Leaving, Reach, Stop, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::http::HeaderValue;
@@ -335,8 +335,22 @@ fn offer_to_close(app: &tauri::AppHandle, why: Unanswered) {
     }
 }
 
+fn stop_page(window: WebviewWindow) -> Stop {
+    Arc::new(move || {
+        let stopped = window.with_webview(|webview| {
+            if let Err(error) = unsafe { webview.controller().CoreWebView2().and_then(|page| page.Stop()) } {
+                eprintln!("BattlePlan couldn’t stop its page’s reload while it leaves: {error}");
+            }
+        });
+        if let Err(error) = stopped {
+            eprintln!("BattlePlan couldn’t stop its page’s reload while it leaves: {error}");
+        }
+    })
+}
+
 fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
+    app.state::<Leaving>().follow(stop_page(window.clone()));
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,

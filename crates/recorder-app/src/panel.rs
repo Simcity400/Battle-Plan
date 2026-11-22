@@ -7,11 +7,12 @@ use std::{
 };
 use tauri::{
     AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Rect, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent, webview::PageLoadEvent,
 };
 
 pub const LABEL: &str = "panel";
 const WIDTH: f64 = 360.0;
+const OPENING_HEIGHT: f64 = 120.0;
 const MARGIN: f64 = 12.0;
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
 const REPLAY_IDENTIFIER: &str = "local.battleplan.replay";
@@ -78,6 +79,7 @@ struct State {
     focused: bool,
     shown: bool,
     unseen: bool,
+    declined: bool,
     opening: bool,
     recordings_panel: Option<String>,
 }
@@ -186,7 +188,7 @@ fn builder(
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("recorder.html".into()))
         .title("BattlePlan Recorder")
-        .inner_size(WIDTH, 120.0)
+        .inner_size(WIDTH, OPENING_HEIGHT)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -195,7 +197,14 @@ fn builder(
         .always_on_top(true)
         .skip_taskbar(true)
         .visible(false)
-        .focused(true);
+        .focused(true)
+        .on_page_load(|window, payload| {
+            if payload.event() == PageLoadEvent::Finished
+                && let Err(error) = loaded(window.app_handle(), &window)
+            {
+                eprintln!("The recorder panel couldn’t be placed once its page loaded: {error}");
+            }
+        });
     match shared {
         Some(directory) => builder.data_directory(directory),
         None => builder,
@@ -231,17 +240,17 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
             }
         }
         WindowEvent::Destroyed => {
-            let panel = {
+            let (panel, declined) = {
                 let mut state = state(&handle);
                 state.closed_at = Some(Instant::now());
                 state.focused = false;
                 state.shown = false;
-                state.recordings_panel.take()
+                (state.recordings_panel.take(), std::mem::take(&mut state.declined))
             };
             if let Some(panel) = panel {
                 handle.state::<crate::recordings::Library>().close(&panel);
             }
-            handle.state::<Arc<Recorder>>().panel_closed(&handle);
+            handle.state::<Arc<Recorder>>().panel_closed(&handle, declined);
         }
         _ => {}
     });
@@ -268,6 +277,15 @@ pub fn opening(app: &AppHandle, panel: &str) -> bool {
 pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Result<()> {
     let shown = state(app).shown;
     reveal(shown, || place(app, window, height), || show(app, window))
+}
+
+fn loaded(app: &AppHandle, window: &WebviewWindow) -> tauri::Result<()> {
+    let shown = state(app).shown;
+    uncover(shown, || place(app, window, OPENING_HEIGHT), || show(app, window))
+}
+
+fn uncover<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+    if shown { Ok(()) } else { reveal(false, place, show) }
 }
 
 fn reveal<E>(shown: bool, place: impl FnOnce() -> Result<(), E>, show: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
@@ -303,6 +321,7 @@ fn unseen(app: &AppHandle, error: &tauri::Error) {
         state(&handle).unseen = false;
         let Some(window) = handle.get_webview_window(LABEL) else { return };
         if !retry {
+            state(&handle).declined = true;
             let _ = window.destroy();
         } else if show(&handle, &window).is_err() {
             eprintln!("The recorder panel still couldn’t be shown.");
@@ -745,6 +764,17 @@ mod tests {
         assert_eq!(shown, ["show"], "the hidden window is shown though it couldn’t be sized");
         assert_eq!(reveal(false, || Ok(()), || Err("no show")), Err("no show"));
         assert_eq!(reveal(true, || Err("no size"), || unreachable!("a shown panel isn’t shown again")), Err("no size"));
+    }
+
+    #[test]
+    fn a_panel_is_shown_once_its_page_loads_whether_or_not_the_page_reaches_the_recorder() {
+        let mut shown = Vec::new();
+        assert_eq!(uncover(false, || Err("no size"), || { shown.push("show"); Ok(()) }), Err("no size"));
+        assert_eq!(shown, ["show"], "a page whose fit request never arrives is still seen, with its failure");
+        assert_eq!(
+            uncover(true, || -> Result<(), &str> { unreachable!("a panel its page already fitted isn’t resized to its opening height") }, || unreachable!()),
+            Ok(())
+        );
     }
 
     #[test]

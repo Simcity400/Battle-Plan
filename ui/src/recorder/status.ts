@@ -307,6 +307,10 @@ export interface PanelFailure { title: string; detail: string; retry(): void }
 export interface PromptFailure { text: string; detail?: string; retry(): void }
 export const PANEL_UNOPENED = 'Couldn’t reach the recorder.';
 
+export function pendingFailure(opened: PanelFailure | null, fit: PromptFailure | null): PanelFailure | null {
+  return opened ?? (fit && { title: fit.text, detail: fit.detail || fit.text, retry: fit.retry });
+}
+
 export function askedPrompt(snapshot: Snapshot | null, opened: boolean): AskedPrompt | null {
   if (!snapshot || snapshot.phase !== 'recording' || snapshot.stopping || snapshot.sessionKey == null) return null;
   if (snapshot.prompt) return snapshot.prompt;

@@ -13,7 +13,7 @@ import { AUTO_COMPRESS_HIGH } from '../shell/RecordingCompressionSetting';
 import { newId } from '../shell/ids';
 import * as api from './api';
 import type { SettingsPatch } from './api';
-import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, promptTitle, recordingName,
+import { askedPrompt, askQuestion, captureModeFixed, compressDetail, compressOffered, compressText, dateText, discardConsequence, discardDetail, followStatus, head, nextLoad, PANEL_UNOPENED, panelStage, pendingFailure, promptTitle, recordingName,
   recordsAutomatically, sessionLength, settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion,
   whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, PanelFailure, PromptFailure, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
@@ -659,7 +659,8 @@ export default function RecorderPanel() {
   }, [compact, snapshot, settled, closeSelf]);
 
   if (stage === 'pending') {
-    if (openFailure) return <PanelPending root={root} title={openFailure.title} failure={openFailure.detail} retry={openFailure.retry} />;
+    const pending = pendingFailure(openFailure, fitFailure);
+    if (pending) return <PanelPending root={root} title={pending.title} failure={pending.detail} retry={pending.retry} />;
     return <PanelPending root={root} failure={snapshot ? null : statusFailure} retry={() => { setStatusFailure(null); retryStatus.current?.(); }} />;
   }
   if (!snapshot || compact == null) return <div ref={root} className="recorder" />;
