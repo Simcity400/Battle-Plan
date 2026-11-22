@@ -5,12 +5,12 @@ use crate::availability::{Verified, Withheld};
 use crate::build::ExecutableIdentity;
 
 use super::{
-    ExecutableTables, FOLDING, auxiliary, commands, folding, keywords, leak_string, numeric,
-    registries, variables,
+    CURSORS, ExecutableTables, FOLDING, auxiliary, commands, cursors, folding, keywords,
+    leak_string, numeric, registries, variables,
 };
 
 const MAGIC: &[u8; 4] = b"H4XT";
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 
 pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
     let mut out = Out(Vec::with_capacity(1 << 20));
@@ -31,6 +31,9 @@ pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
             out.u32(**point);
             out.u8(**letter);
         });
+    });
+    out.verified(&tables.cursors, |out, table| {
+        out.list(&table.paths, |out, path| out.str(path));
     });
     out.0
 }
@@ -69,6 +72,11 @@ pub fn decode(bytes: &[u8]) -> io::Result<ExecutableTables> {
                         .into_iter(),
                 )
             })?
+        },
+        cursors: if version < 3 {
+            Err(Withheld::new(CURSORS, "not recorded in this recording"))
+        } else {
+            input.verified(|input| cursors::CursorTable::from_paths(input.list(In::string)?))?
         },
     };
     if !input.0.is_empty() {
@@ -620,7 +628,10 @@ impl<'a> In<'a> {
 mod tests {
     use super::*;
 
-    fn tables(folding: Verified<folding::FoldingTable>) -> ExecutableTables {
+    fn tables(
+        folding: Verified<folding::FoldingTable>,
+        cursors: Verified<cursors::CursorTable>,
+    ) -> ExecutableTables {
         fn withheld<T>(part: &'static str) -> Verified<T> {
             Err(Withheld::new(part, "synthetic"))
         }
@@ -637,24 +648,53 @@ mod tests {
             numeric: withheld("numeric"),
             commands: withheld("commands"),
             folding,
+            cursors,
         }
     }
 
     #[test]
     fn the_folding_table_round_trips_and_an_earlier_recording_lacks_it_by_name() {
         let table = folding::FoldingTable::from_pairs([(0x100, 0x61), (0x1e9e, 0x53)]).unwrap();
-        let encoded = encode(&tables(Ok(table.clone())));
-        assert_eq!(decode(&encoded).unwrap().folding, Ok(table));
-        let withheld = Withheld::new(FOLDING, "no run");
-        let decoded = decode(&encode(&tables(Err(withheld.clone())))).unwrap();
-        assert_eq!(decoded.folding, Err(withheld));
+        let cursor_table = cursors::CursorTable::from_paths([
+            "gfx/cursors/alpha.cur".to_owned(),
+            "gfx/alt/beta.ani".to_owned(),
+        ])
+        .unwrap();
+        let encoded = encode(&tables(Ok(table.clone()), Ok(cursor_table.clone())));
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(decoded.folding, Ok(table));
+        assert_eq!(decoded.cursors, Ok(cursor_table));
+
+        let withheld_folding = Withheld::new(FOLDING, "no run");
+        let withheld_cursors = Withheld::new(CURSORS, "no anchor");
+        let decoded = decode(&encode(&tables(
+            Err(withheld_folding.clone()),
+            Err(withheld_cursors.clone()),
+        )))
+        .unwrap();
+        assert_eq!(decoded.folding, Err(withheld_folding));
+        assert_eq!(decoded.cursors, Err(withheld_cursors));
         assert_eq!(decoded.identity().sha256, [3; 32]);
 
-        let mut earlier = encoded[..encoded.len() - (1 + 4 + 2 * 5)].to_vec();
-        earlier[4..6].copy_from_slice(&1_u16.to_le_bytes());
-        let folding = decode(&earlier).unwrap().folding.unwrap_err();
-        assert_eq!(folding.part, FOLDING);
-        assert_eq!(folding.reason, "not recorded in this recording");
+        let cursor_tail = 1 + 4 + (4 + "gfx/cursors/alpha.cur".len()) + (4 + "gfx/alt/beta.ani".len());
+        let mut version_two = encoded[..encoded.len() - cursor_tail].to_vec();
+        version_two[4..6].copy_from_slice(&2_u16.to_le_bytes());
+        let decoded_v2 = decode(&version_two).unwrap();
+        assert!(decoded_v2.folding.is_ok());
+        let cursors_v2 = decoded_v2.cursors.unwrap_err();
+        assert_eq!(cursors_v2.part, CURSORS);
+        assert_eq!(cursors_v2.reason, "not recorded in this recording");
+
+        let mut version_one = version_two[..version_two.len() - (1 + 4 + 2 * 5)].to_vec();
+        version_one[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        let decoded_v1 = decode(&version_one).unwrap();
+        let folding_v1 = decoded_v1.folding.unwrap_err();
+        assert_eq!(folding_v1.part, FOLDING);
+        assert_eq!(folding_v1.reason, "not recorded in this recording");
+        let cursors_v1 = decoded_v1.cursors.unwrap_err();
+        assert_eq!(cursors_v1.part, CURSORS);
+        assert_eq!(cursors_v1.reason, "not recorded in this recording");
+
         let mut later = encoded.clone();
         later[4..6].copy_from_slice(&(VERSION + 1).to_le_bytes());
         assert!(decode(&later).is_err());

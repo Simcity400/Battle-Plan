@@ -7,6 +7,7 @@ use engine_executable::executable_tables::{
     self, Tables,
     auxiliary::{AIR_GRAPH_DISPLAYS, AuxiliaryTables},
     commands::{Kind, Target, Token},
+    cursors::CursorTable,
     folding::FoldingTable,
     numeric::{NumericIdentity, NumericProperty, NumericScope, NumericTables},
     registries::{RegistryTables, TriggerReader},
@@ -24,6 +25,7 @@ pub enum Part {
     Numeric,
     Commands,
     Folding,
+    Cursors,
 }
 
 impl Part {
@@ -37,6 +39,7 @@ impl Part {
             Self::Numeric => "numeric property table",
             Self::Commands => "player command table",
             Self::Folding => "diacritic folding table",
+            Self::Cursors => "map cursor registry",
         }
     }
 }
@@ -54,6 +57,7 @@ pub struct Executable {
     commands: Vec<Kind>,
     objects: Vec<(u32, u32)>,
     folding: Vec<(u32, u32)>,
+    cursors: Vec<String>,
     withheld: BTreeMap<Part, String>,
 }
 
@@ -100,6 +104,7 @@ impl Executable {
             commands: Vec::new(),
             objects: Vec::new(),
             folding: Vec::new(),
+            cursors: Vec::new(),
             withheld: BTreeMap::new(),
         }
     }
@@ -318,6 +323,11 @@ impl Executable {
         self
     }
 
+    pub fn cursors<S: Into<String>>(mut self, paths: impl IntoIterator<Item = S>) -> Self {
+        self.cursors.extend(paths.into_iter().map(Into::into));
+        self
+    }
+
     pub fn withhold(mut self, part: Part, reason: &str) -> Self {
         self.withheld.insert(part, reason.to_owned());
         self
@@ -341,6 +351,8 @@ impl Executable {
         objects.sort_unstable();
         let folding = FoldingTable::from_pairs(self.folding.iter().copied())
             .expect("synthetic folding pairs are folded points and letters");
+        let cursors = CursorTable::from_paths(self.cursors)
+            .expect("synthetic cursor paths are valid relative cursor file paths");
         Parts {
             identity: self.identity.clone(),
             version: present(withheld(Part::Version), || self.version.clone()),
@@ -361,6 +373,7 @@ impl Executable {
                 synthetic::command_table(commands, objects)
             }),
             folding: present(withheld(Part::Folding), || folding),
+            cursors: present(withheld(Part::Cursors), || cursors),
         }
         .assemble()
     }

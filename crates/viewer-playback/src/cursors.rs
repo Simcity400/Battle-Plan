@@ -1,54 +1,6 @@
 use eframe::egui::CustomCursorImage;
+use engine_executable::executable_tables::{Tables, cursors::CursorTable};
 use std::io;
-
-pub const GAME_LIST: [&str; 39] = [
-    "normal.cur",
-    "busy.ani",
-    "cant_move.cur",
-    "dragselect.ani",
-    "selected.cur",
-    "no_move.ani",
-    "friendly_move.ani",
-    "attack_move.ani",
-    "embark.cur",
-    "move_to_enemy_province.ani",
-    "select_hint.ani",
-    "add_units.cur",
-    "build_buildings.ani",
-    "brush.cur",
-    "brush_detach.cur",
-    "brush_detach_disabled.ico",
-    "brush_front.cur",
-    "brush_move.cur",
-    "brush_delete.cur",
-    "assign_air.ani",
-    "chain_move.cur",
-    "chain_move_naval.cur",
-    "observe_country.cur",
-    "assign_air.ani",
-    "ping_offensive.cur",
-    "ping_defensive.cur",
-    "attach_air.cur",
-    "operatives_build_intel_network.cur",
-    "operatives_quiet_intel_network.cur",
-    "operatives_counter_intelligence.cur",
-    "operatives_root_out_resistance.cur",
-    "operatives_boost_ideology.cur",
-    "operatives_control_trade.cur",
-    "operatives_diplomatic_pressure.cur",
-    "operatives_propaganda.cur",
-    "take_state_cursor.cur",
-    "puppet_state_cursor.cur",
-    "liberate_state_cursor.cur",
-    "change_government_cursor.cur",
-];
-
-pub fn path(name: &str) -> Option<String> {
-    GAME_LIST
-        .iter()
-        .find(|file| file.rsplit_once('.').is_some_and(|(stem, _)| stem == name))
-        .map(|file| format!("gfx/cursors/{file}"))
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapCursor {
@@ -100,6 +52,7 @@ impl MapCursor {
     }
 }
 
+#[derive(Debug)]
 pub struct Animated {
     frames: Vec<CustomCursorImage>,
     steps: Vec<(usize, f64)>,
@@ -115,7 +68,8 @@ impl Animated {
             size: [cursor.image.width as u16, cursor.image.height as u16],
             hotspot: cursor.hotspot,
         };
-        let (frames, steps) = if path.ends_with(".ani") {
+        let extension = path.rsplit_once('.').map(|(_, extension)| extension);
+        let (frames, steps) = if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("ani")) {
             let animated = content_reader_image::cursor::decode_ani(bytes)?;
             let steps = animated
                 .steps
@@ -123,8 +77,16 @@ impl Animated {
                 .map(|&(frame, jiffies)| (frame as usize, f64::from(jiffies) * JIFFY))
                 .collect();
             (animated.frames.into_iter().map(image).collect(), steps)
+        } else if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("cur")) {
+            (
+                vec![image(content_reader_image::cursor::decode(bytes)?)],
+                vec![(0, f64::INFINITY)],
+            )
         } else {
-            (vec![image(content_reader_image::cursor::decode(bytes)?)], vec![(0, f64::INFINITY)])
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "unsupported cursor file format",
+            ));
         };
         let period = steps.iter().map(|&(_, seconds)| seconds).sum();
         Ok(Self { frames, steps, period })
@@ -149,14 +111,41 @@ impl Animated {
 pub struct Cursors([Result<Animated, String>; MapCursor::ALL.len()]);
 
 impl Cursors {
-    pub fn load<B: AsRef<[u8]>>(read: impl Fn(&str) -> io::Result<B>) -> Self {
-        Self(MapCursor::ALL.map(|cursor| Self::read(cursor.name(), &read)))
+    pub fn load_from_tables<B: AsRef<[u8]>>(
+        tables: Option<Tables>,
+        read: impl Fn(&str) -> io::Result<B>,
+    ) -> Self {
+        match tables {
+            Some(tables) => match &tables.cursors {
+                Ok(registry) => Self::load(Ok(registry), read),
+                Err(withheld) => {
+                    let why = withheld.to_string();
+                    Self::load(Err(why.as_str()), read)
+                }
+            },
+            None => Self::load(
+                Err("map cursor registry withheld: the recording's executable tables are not loaded"),
+                read,
+            ),
+        }
     }
 
-    pub fn read<B: AsRef<[u8]>>(name: &str, read: impl Fn(&str) -> io::Result<B>) -> Result<Animated, String> {
-        let path = path(name).ok_or_else(|| format!("{name}: not in the game's cursor list"))?;
-        read(&path)
-            .and_then(|bytes| Animated::decode(&path, bytes.as_ref()))
+    pub fn load<B: AsRef<[u8]>>(
+        registry: Result<&CursorTable, &str>,
+        read: impl Fn(&str) -> io::Result<B>,
+    ) -> Self {
+        Self(MapCursor::ALL.map(|cursor| Self::read(registry, cursor.name(), &read)))
+    }
+
+    pub fn read<B: AsRef<[u8]>>(
+        registry: Result<&CursorTable, &str>,
+        name: &str,
+        read: impl Fn(&str) -> io::Result<B>,
+    ) -> Result<Animated, String> {
+        let registry = registry.map_err(|why| format!("{name}: {why}"))?;
+        let path = registry.path(name)?;
+        read(path)
+            .and_then(|bytes| Animated::decode(path, bytes.as_ref()))
             .map_err(|error| format!("{path}: {error}"))
     }
 
@@ -175,6 +164,57 @@ mod tests {
 
     fn frame(red: u8) -> CustomCursorImage {
         CustomCursorImage { rgba: vec![red, 0, 0, 255].into(), size: [1, 1], hotspot: [0, 0] }
+    }
+
+    fn cur_bytes(colour: [u8; 4], hotspot: [u16; 2]) -> Vec<u8> {
+        let mut image = Vec::new();
+        for value in [40u32, 1, 2] {
+            image.extend_from_slice(&value.to_le_bytes());
+        }
+        image.extend_from_slice(&1u16.to_le_bytes());
+        image.extend_from_slice(&32u16.to_le_bytes());
+        image.extend_from_slice(&[0; 24]);
+        image.extend_from_slice(&[colour[2], colour[1], colour[0], colour[3]]);
+        image.extend_from_slice(&[0; 4]);
+        let mut file = Vec::new();
+        for value in [0u16, 2, 1] {
+            file.extend_from_slice(&value.to_le_bytes());
+        }
+        file.extend_from_slice(&[1, 1, 0, 0]);
+        file.extend_from_slice(&hotspot[0].to_le_bytes());
+        file.extend_from_slice(&hotspot[1].to_le_bytes());
+        file.extend_from_slice(&(image.len() as u32).to_le_bytes());
+        file.extend_from_slice(&22u32.to_le_bytes());
+        file.extend_from_slice(&image);
+        file
+    }
+
+    fn ani_bytes(colours: &[[u8; 4]], jiffies: u32) -> Vec<u8> {
+        let chunk = |id: &[u8; 4], body: &[u8]| -> Vec<u8> {
+            let mut out = id.to_vec();
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            out.extend_from_slice(body);
+            if body.len() % 2 == 1 {
+                out.push(0);
+            }
+            out
+        };
+        let words = |values: &[u32]| -> Vec<u8> {
+            values.iter().flat_map(|v| v.to_le_bytes()).collect()
+        };
+        let count = colours.len() as u32;
+        let anih = chunk(b"anih", &words(&[36, count, count, 0, 0, 0, 0, jiffies, 1]));
+        let mut fram = b"fram".to_vec();
+        for &colour in colours {
+            fram.extend_from_slice(&chunk(b"icon", &cur_bytes(colour, [1, 2])));
+        }
+        let list = chunk(b"LIST", &fram);
+        let body = [anih, list].concat();
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(body.len() as u32 + 4).to_le_bytes());
+        out.extend_from_slice(b"ACON");
+        out.extend_from_slice(&body);
+        out
     }
 
     #[test]
@@ -199,19 +239,119 @@ mod tests {
 
     #[test]
     fn a_cursor_that_does_not_read_is_refused_by_its_path() {
-        let cursors = Cursors::load(|_: &str| Err::<Vec<u8>, _>(io::Error::other("absent")));
+        let registry = CursorTable::from_paths([
+            "gfx/cursors/dragselect.ani".to_owned(),
+            "gfx/cursors/normal.cur".to_owned(),
+        ])
+        .unwrap();
+        let cursors = Cursors::load(Ok(&registry), |_: &str| Err::<Vec<u8>, _>(io::Error::other("absent")));
         assert_eq!(cursors.get(MapCursor::DragSelect).err(), Some("gfx/cursors/dragselect.ani: absent"));
+        assert_eq!(cursors.get(MapCursor::Normal).err(), Some("gfx/cursors/normal.cur: absent"));
+        assert_eq!(
+            cursors.get(MapCursor::PingOffensive).err(),
+            Some("ping_offensive: not in the recorded cursor registry")
+        );
         assert_eq!(cursors.refusals().count(), MapCursor::ALL.len());
     }
 
     #[test]
-    fn every_cursor_is_named_by_the_games_list() {
-        for cursor in MapCursor::ALL {
-            assert!(path(cursor.name()).is_some(), "{cursor:?}");
-        }
-        assert_eq!(path("ping_offensive").as_deref(), Some("gfx/cursors/ping_offensive.cur"));
-        assert_eq!(path("dragselect").as_deref(), Some("gfx/cursors/dragselect.ani"));
-        let refused = Cursors::read("no_such_cursor", |_| Ok::<Vec<u8>, io::Error>(Vec::new())).err();
-        assert!(refused.is_some_and(|why| why.contains("not in the game's cursor list")));
+    fn two_recorded_registries_on_the_same_installation_resolve_distinct_bindings_and_withhold_unsupported_ones() {
+        let root = std::env::temp_dir().join(format!("bp_cursors_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("gfx/cursors")).unwrap();
+        std::fs::create_dir_all(root.join("gfx/alt")).unwrap();
+        std::fs::write(
+            root.join("gfx/cursors/normal.cur"),
+            cur_bytes([255, 0, 0, 255], [1, 1]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("gfx/cursors/dragselect.ani"),
+            ani_bytes(&[[200, 10, 0, 255], [200, 20, 0, 255]], 6),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("gfx/cursors/assign_air.ani"),
+            ani_bytes(&[[0, 180, 0, 255]], 6),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("gfx/alt/normal.cur"),
+            cur_bytes([0, 0, 255, 255], [4, 5]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("gfx/alt/dragselect.cur"),
+            cur_bytes([0, 255, 0, 255], [2, 3]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("gfx/alt/ping_defensive.ico"),
+            cur_bytes([50, 50, 50, 255], [0, 0]),
+        )
+        .unwrap();
+
+        let layers = content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
+            .unwrap();
+        let read = |path: &str| layers.read_uncovered(path);
+
+        let first_tables = synthetic_game::Executable::empty()
+            .cursors([
+                "gfx/cursors/normal.cur",
+                "gfx/cursors/dragselect.ani",
+                "gfx/cursors/assign_air.ani",
+                "gfx/cursors/assign_air.ani",
+            ])
+            .build();
+        let second_tables = synthetic_game::Executable::empty()
+            .cursors([
+                "gfx/alt/normal.cur",
+                "gfx/alt/dragselect.cur",
+                "gfx/cursors/attack_move.cur",
+                "gfx/alt/attack_move.ani",
+                "gfx/alt/ping_defensive.ico",
+            ])
+            .build();
+
+        let first = Cursors::load_from_tables(Some(first_tables), read);
+        let second = Cursors::load_from_tables(Some(second_tables), read);
+
+        assert_eq!(first.get(MapCursor::Normal).unwrap().at(0.0).0.rgba.as_ref(), &[255, 0, 0, 255]);
+        assert_eq!(first.get(MapCursor::Normal).unwrap().at(0.0).0.hotspot, [1, 1]);
+        assert!(first.get(MapCursor::DragSelect).unwrap().at(0.0).1.is_some());
+        assert_eq!(first.get(MapCursor::AssignAir).unwrap().at(0.0).0.rgba.as_ref(), &[0, 180, 0, 255]);
+        assert!(first.get(MapCursor::PingOffensive).unwrap_err().contains("ping_offensive"));
+
+        assert_eq!(second.get(MapCursor::Normal).unwrap().at(0.0).0.rgba.as_ref(), &[0, 0, 255, 255]);
+        assert_eq!(second.get(MapCursor::Normal).unwrap().at(0.0).0.hotspot, [4, 5]);
+        assert_eq!(second.get(MapCursor::DragSelect).unwrap().at(0.0).0.rgba.as_ref(), &[0, 255, 0, 255]);
+        assert!(second.get(MapCursor::DragSelect).unwrap().at(0.0).1.is_none());
+        assert!(second.get(MapCursor::AttackMove).unwrap_err().contains("attack_move"));
+        assert!(second.get(MapCursor::AttackMove).unwrap_err().contains("multiple paths"));
+        assert!(second.get(MapCursor::PingDefensive).unwrap_err().contains("gfx/alt/ping_defensive.ico"));
+        assert!(second.get(MapCursor::PingDefensive).unwrap_err().contains("unsupported"));
+        assert!(second.get(MapCursor::AssignAir).unwrap_err().contains("assign_air"));
+
+        let withheld_tables = synthetic_game::Executable::empty()
+            .withhold(synthetic_game::Part::Cursors, "not recorded in this recording")
+            .build();
+        let withheld = Cursors::load_from_tables(Some(withheld_tables), read);
+        assert_eq!(withheld.refusals().count(), MapCursor::ALL.len());
+        assert!(
+            withheld
+                .get(MapCursor::Normal)
+                .unwrap_err()
+                .contains("not recorded in this recording")
+        );
+
+        let absent = Cursors::load_from_tables(None, read);
+        assert_eq!(absent.refusals().count(), MapCursor::ALL.len());
+        assert!(
+            absent
+                .get(MapCursor::DragSelect)
+                .unwrap_err()
+                .contains("dragselect")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
