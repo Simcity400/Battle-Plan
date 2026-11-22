@@ -173,7 +173,13 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
         defines.sealed = true;
         (defines, digests)
     };
-    *cache.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(CachedDefines {
+    let mut guard = cache.0.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(cached) = guard.as_ref()
+        && cached.scripts == digests
+    {
+        return Ok(cached.defines.clone());
+    }
+    *guard = Some(CachedDefines {
         defines: defines.clone(),
         scripts: digests,
     });
@@ -833,6 +839,48 @@ mod tests {
                 .number("Synthetic", "Value")
                 .is_err()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_unscoped_defines_reads_share_the_winning_lua_state() {
+        use std::sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let root = std::env::temp_dir().join(format!(
+            "concurrent-unscoped-defines-{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("common/defines")).unwrap();
+        std::fs::write(
+            root.join("common/defines/test.lua"),
+            b"NDefines = {} NDefines.Synthetic = { Id = tostring(NDefines) }",
+        )
+        .unwrap();
+        let layers = crate::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let arrivals = Arc::new(AtomicUsize::new(0));
+        let wait_barrier = Arc::clone(&barrier);
+        let wait_arrivals = Arc::clone(&arrivals);
+        let traced = layers.with_read_trace(Arc::new(move |_| {
+            if wait_arrivals.fetch_add(1, Ordering::AcqRel) < 2 {
+                wait_barrier.wait();
+            }
+        }));
+        let (first, second) = std::thread::scope(|scope| {
+            let a = scope.spawn(|| super::read(&traced).unwrap());
+            let b = scope.spawn(|| super::read(&traced).unwrap());
+            (a.join().unwrap(), b.join().unwrap())
+        });
+        let first_id = first.text("Synthetic", "Id").unwrap();
+        assert!(first_id.starts_with("table:"), "{first_id}");
+        assert_eq!(first_id, second.text("Synthetic", "Id").unwrap());
+        let third = super::read(&traced).unwrap();
+        assert_eq!(first_id, third.text("Synthetic", "Id").unwrap());
+        assert_eq!(arrivals.load(Ordering::Acquire), 3);
         std::fs::remove_dir_all(root).unwrap();
     }
 

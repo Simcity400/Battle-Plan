@@ -505,12 +505,13 @@ fn deferred_watch_arming_forces_sweep_and_catches_pre_scope_changes() {
         std::thread::current().id()
     ));
     let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(root.join("gfx/world")).unwrap();
+    let layer_root = root.join("layer");
+    fs::create_dir_all(layer_root.join("gfx/world")).unwrap();
     let extra = root.join("extra");
     fs::create_dir_all(&extra).unwrap();
-    let file = root.join("gfx/world/a.mesh");
+    let file = layer_root.join("gfx/world/a.mesh");
     fs::write(&file, b"old").unwrap();
-    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&layer_root, &[])]).unwrap();
     assert_eq!(layers.read_uncovered("gfx/world/a.mesh").unwrap(), b"old");
     layers.admit_generation().unwrap();
     rewrite_preserving_modified_time(&file, b"new");
@@ -518,7 +519,7 @@ fn deferred_watch_arming_forces_sweep_and_catches_pre_scope_changes() {
         let _scope = layers.enter_generation();
         assert!(layers.admit_generation().is_err());
     }
-    let fresh = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let fresh = ResolvedLayers::from_folders(&[(&layer_root, &[])]).unwrap();
     assert_eq!(fresh.read_uncovered("gfx/world/a.mesh").unwrap(), b"new");
     {
         let _scope = fresh.enter_generation();
@@ -538,7 +539,7 @@ fn deferred_watch_arming_forces_sweep_and_catches_pre_scope_changes() {
             validations
         );
     }
-    let mid = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let mid = ResolvedLayers::from_folders(&[(&layer_root, &[])]).unwrap();
     assert_eq!(mid.read_uncovered("gfx/world/a.mesh").unwrap(), b"new");
     assert!(mid.generation.has_unwatched_roots());
     mid.admit_generation().unwrap();
