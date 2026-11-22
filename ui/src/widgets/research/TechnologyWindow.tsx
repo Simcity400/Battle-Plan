@@ -9,7 +9,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { TechnologyEffects as TechnologyEffectsReply } from '../../generated/dashboard';
 import EntityStatsWindow from './EntityStatsWindow';
-import { GameBlocks, type EntityLink } from './GameText';
+import { GameArtFor, GameBlocks, type EntityLink } from './GameText';
 import { technologyEffectsStructure, validateTechnologyEffects } from './technologyEffects';
 import { useTechnologyArtwork } from './useTechnologyArtwork';
 import '../../components/Dossier.css';
@@ -24,7 +24,7 @@ export function LinkWindow({ link, onClose, ...shown }: Shown & { link: EntityLi
 }
 
 export function OpenedLink({ opened, onClose, ...shown }: Shown & { opened: EntityLink | null; onClose: () => void }) {
-  return opened && <LinkWindow key={`${opened.kind}:${opened.token}`} {...shown} link={opened} onClose={onClose} />;
+  return opened && <LinkWindow key={JSON.stringify([opened.kind, opened.token, opened.databaseIndex])} {...shown} link={opened} onClose={onClose} />;
 }
 
 export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { token: string; databaseIndex: number | null }) {
@@ -35,7 +35,7 @@ export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { 
   const [opened, setOpened] = useState<EntityLink | null>(null);
   const { data, error, retry } = effects;
   const refusals = Object.entries(data?.refusals ?? {});
-  return <section className="dossier-section" ref={effects.root}>
+  return <GameArtFor runtime={runtime} widget={widget} active={active}><section className="dossier-section" ref={effects.root}>
     <h4>Effects</h4>
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
       : !data ? <p className="dossier-missing">Loading effects…</p>
@@ -45,14 +45,15 @@ export function TechnologyEffects({ token, databaseIndex, ...shown }: Shown & { 
           {refusals.map(([reason, count]) => <p className="dossier-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
         </>}
     <OpenedLink {...shown} opened={opened} onClose={() => setOpened(null)} />
-  </section>;
+  </section></GameArtFor>;
 }
 
 export default function TechnologyWindow({ link, onClose, ...shown }: Shown & { link: EntityLink; onClose: () => void }) {
   const { runtime, widget, active } = shown;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tokens = useMemo(() => [link.token], [link.token]);
-  const read = useTechnologyArtwork(runtime.client, track, tokens, active);
+  const recorded = useMemo(() => link.databaseIndex === null ? undefined : new Map([[link.token, [link.databaseIndex]]]), [link.token, link.databaseIndex]);
+  const read = useTechnologyArtwork(runtime.client, track, tokens, active, recorded);
   const art = read.artwork.get(link.token), failed = read.failures.get(link.token);
   const name = contentTitle(failed ?? art?.name, link.token, 'Technology name unavailable', !art && !failed);
   return <FloatingPanel title="Technology" label={`${name} technology`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="technology-window">
@@ -64,7 +65,7 @@ export default function TechnologyWindow({ link, onClose, ...shown }: Shown & { 
         </div>
       </header>
       <div className="dossier-body">
-        <TechnologyEffects {...shown} token={link.token} databaseIndex={null} />
+        <TechnologyEffects {...shown} token={link.token} databaseIndex={link.databaseIndex} />
       </div>
     </div>
   </FloatingPanel>;

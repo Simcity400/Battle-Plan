@@ -8,7 +8,7 @@ import { validateTechnologyEffects } from './technologyEffects.ts';
 const runs: GameRun[] = [
   { kind: 'icon', sprite: 'GFX_unit_icon|1' },
   { kind: 'text', text: 'Enables ', tone: null },
-  { kind: 'link', entity: 'equipment', token: 'infantry_equipment_1', text: 'Infantry Equipment I', tone: 'H' },
+  { kind: 'link', entity: 'equipment', token: 'infantry_equipment_1', databaseIndex: null, text: 'Infantry Equipment I', tone: 'H' },
   { kind: 'text', text: '\n   Soft:', tone: null },
   { kind: 'text', text: '+0.17', tone: 'G' },
 ];
@@ -16,10 +16,13 @@ const runs: GameRun[] = [
 test('game text runs validate every run shape and refuse unknown ones', () => {
   assert.equal(validGameRuns(runs), true);
   assert.equal(validGameRuns([{ kind: 'flag', tag: 'GER' }]), true);
-  assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', text: 'Gun Carriages', tone: null }]), true);
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', databaseIndex: null, text: 'Gun Carriages', tone: null }]), true);
   assert.equal(validGameRuns([{ kind: 'text', text: 'x', tone: 'GG' }]), false);
-  assert.equal(validGameRuns([{ kind: 'link', entity: 'planet', token: 'x', text: 'x', tone: null }]), false);
-  assert.equal(validGameRuns([{ kind: 'link', entity: 'module', token: '', text: 'x', tone: null }]), false);
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'planet', token: 'x', databaseIndex: null, text: 'x', tone: null }]), false);
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'module', token: '', databaseIndex: null, text: 'x', tone: null }]), false);
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', databaseIndex: 6, text: 'Second', tone: null }]), true, 'a link names the template it resolved');
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', databaseIndex: 0, text: 'x', tone: null }]), false);
+  assert.equal(validGameRuns([{ kind: 'link', entity: 'technology', token: 'mod_technology', text: 'x', tone: null }]), false);
   assert.equal(validGameRuns([{ kind: 'bold', text: 'x' }]), false);
   assert.equal(plainRuns(runs), 'Enables Infantry Equipment I\n   Soft:+0.17');
 });

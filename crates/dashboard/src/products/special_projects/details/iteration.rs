@@ -170,7 +170,7 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     }
     let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
     let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project iteration hour is not recorded"))?.run;
-    let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder, run, hour: at.hour };
+    let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: at.hour };
     let project = match supplied_project(frame, &reads, params.owner, params.project) {
         Ok((project, _)) => project,
         Err(why) => return Ok(Err(why)),

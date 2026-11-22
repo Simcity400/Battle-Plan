@@ -519,7 +519,7 @@ pub(crate) fn remaining(row: &ResearchInputRow, rate: i128) -> Option<(u32, i128
         return None;
     }
     let left = (base_cost(row)? - i128::from(row.progress_raw)).max(0);
-    Some((u32::try_from((left + rate - 1) / rate).ok()?, left.checked_mul(100_000)? / rate))
+    Some((u32::try_from((left + rate - 1) / rate).ok()?, (left.checked_mul(100_000)? + rate - 1) / rate))
 }
 
 pub(crate) fn valid_inputs(inputs: &[&ResearchInputRow]) -> bool {

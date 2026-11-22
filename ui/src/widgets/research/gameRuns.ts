@@ -13,7 +13,8 @@ function run(value: unknown): boolean {
     case 'text': return typeof value.text === 'string' && tone(value.tone);
     case 'icon': return typeof value.sprite === 'string';
     case 'flag': return typeof value.tag === 'string';
-    case 'link': return entityKind(value.entity) && typeof value.token === 'string' && value.token !== '' && typeof value.text === 'string' && tone(value.tone);
+    case 'link': return entityKind(value.entity) && typeof value.token === 'string' && value.token !== '' && typeof value.text === 'string' && tone(value.tone)
+      && (value.databaseIndex === null || (Number.isInteger(value.databaseIndex) && (value.databaseIndex as number) > 0 && (value.databaseIndex as number) <= 2147483647));
     default: return false;
   }
 }

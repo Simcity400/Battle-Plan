@@ -1,7 +1,7 @@
 import type { ResearchHistory, ResearchSlotHistory, ResearchSlotsAt } from '../research/types';
 import { isUnjoinedResearch, researchAt, researchEntryAt } from '../research/researchData.ts';
 import { coverageAt, researchDate } from '../research/researchLayout.ts';
-import type { ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
+import type { ResearchDefinitionText, ResearchEntry, ResearchSlotNow } from '../../generated/dashboard';
 
 export type ActiveSlot =
   | { kind: 'researching'; slot: ResearchSlotHistory; read: ResearchSlotNow; entry: ResearchEntry | null; token: string; databaseIndex: number }
@@ -9,13 +9,13 @@ export type ActiveSlot =
   | { kind: 'unavailable'; slot: ResearchSlotHistory; reason: string };
 
 export type OpenedResearch = { slot: number; token: string; databaseIndex: number }
-  & ({ firstObservedHour: number; readHour: null } | { firstObservedHour: null; readHour: number });
+  & ({ firstObservedHour: number; readHour: null } | { firstObservedHour: null; readHour: number; definition: ResearchDefinitionText | null });
 
 type Researching = Extract<ActiveSlot, { kind: 'researching' }>;
 
 export const openedResearch = ({ slot, token, databaseIndex, entry, read }: Researching): OpenedResearch => entry
   ? { slot: slot.index, token, databaseIndex, firstObservedHour: entry.firstObservedHour, readHour: null }
-  : { slot: slot.index, token, databaseIndex, firstObservedHour: null, readHour: read.state.firstHour };
+  : { slot: slot.index, token, databaseIndex, firstObservedHour: null, readHour: read.state.firstHour, definition: read.definition };
 
 export const isOpenedResearch = (item: Researching, opened: OpenedResearch) => item.slot.index === opened.slot && item.token === opened.token
   && item.databaseIndex === opened.databaseIndex

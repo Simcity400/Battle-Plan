@@ -22,7 +22,7 @@ use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, Rowset};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
@@ -482,6 +482,7 @@ struct PieceRows {
     projects: Vec<History>,
     histories: Vec<History>,
     programs: History,
+    reads: History,
     owners: BTreeMap<u32, Vec<(i32, i32)>>,
     projects_available: Vec<(i32, i32)>,
     history_available: Vec<(i32, i32)>,
@@ -513,17 +514,21 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
             }
         }
     }
+    let reads: Vec<u128> = owners.keys().flat_map(|&raw| [read_key(TableId::Projects, raw), read_key(TableId::ProjectHistory, raw)]).collect();
+    let sample = read_columns()?;
+    let reads = dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::SliceReads, &sample, Keys::These(&reads), piece.first, piece.last))?;
     let programs: Vec<u128> = programs.into_iter().collect();
     let programs = if programs.is_empty() {
         History::default()
     } else {
         dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, Keys::These(&programs), piece.first, piece.last))?
     };
-    at_hour::count_rows(|| projects.iter().chain(&histories).chain([&programs]).flat_map(|h| &h.keys).map(|(_, steps)| steps.len() as u64).sum());
+    at_hour::count_rows(|| projects.iter().chain(&histories).chain([&programs, &reads]).flat_map(|h| &h.keys).map(|(_, steps)| steps.len() as u64).sum());
     Ok(PieceRows {
         projects,
         histories,
         programs,
+        reads,
         owners,
         projects_available: available(query, piece.run, TableId::Projects, piece.first, piece.last)?,
         history_available: available(query, piece.run, TableId::ProjectHistory, piece.first, piece.last)?,
@@ -549,9 +554,25 @@ fn boundaries(first: i32, last: i32, histories: &[&History], spans: &[&[(i32, i3
     hours
 }
 
+pub(super) fn read_columns() -> io::Result<[usize; 1]> {
+    Ok([dashboard_declare::field(TableId::SliceReads, "sample_hour")?])
+}
+
+pub(super) fn read_key(table: TableId, raw: u32) -> u128 {
+    (table.index() as u128) << 32 | u128::from(raw)
+}
+
+pub(super) fn supplied(owners: &BTreeMap<u32, Vec<(i32, i32)>>, raw: u32, read: Option<i32>) -> bool {
+    read.is_some_and(|read| owners.get(&raw).is_some_and(|spans| within(spans, read)))
+}
+
+pub(super) fn sample(cells: Option<&[Cell]>) -> Option<i32> {
+    cells.and_then(|cells| cells.first().copied()).and_then(number).and_then(|hour| i32::try_from(hour).ok())
+}
+
 fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut Vec<(i32, i32)>, cancelled: &AtomicBool) -> io::Result<()> {
     let mut histories: Vec<&History> = read.projects.iter().chain(&read.histories).collect();
-    histories.push(&read.programs);
+    histories.extend([&read.programs, &read.reads]);
     let mut spans: Vec<&[(i32, i32)]> = read.owners.values().map(Vec::as_slice).collect();
     spans.extend([read.projects_available.as_slice(), read.history_available.as_slice()]);
     let hours = boundaries(piece.first, piece.last, &histories, &spans);
@@ -566,6 +587,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         }
     }
     let mut programs: HashMap<u32, Cursor<'_>> = read.programs.keys.iter().map(|(key, steps)| (*key as u32, Cursor::new(steps))).collect();
+    let mut reads: HashMap<u128, Cursor<'_>> = read.reads.keys.iter().map(|(key, steps)| (*key, Cursor::new(steps))).collect();
     for (at, &first) in hours.iter().enumerate() {
         crate::metadata::check_cancel(cancelled)?;
         let last = hours.get(at + 1).map_or(piece.last, |next| next - 1);
@@ -573,10 +595,14 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
             continue;
         }
         let history_known = within(&read.history_available, first);
+        let mut supplies = |table: TableId, raw: u32| supplied(&read.owners, raw, sample(reads.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(first))));
+        let histories: HashSet<u32> = read.owners.keys().copied().filter(|&raw| supplies(TableId::ProjectHistory, raw)).collect();
+        let projects_read: HashSet<u32> = read.owners.keys().copied().filter(|&raw| supplies(TableId::Projects, raw)).collect();
         let mut history: HashMap<(u32, u32), Vec<Entry>> = HashMap::new();
         for (owner, project, ordinal, cursor) in &mut entries {
             if let Some(entry) = cursor.at(first).and_then(|cells| history_entry(*ordinal, cells))
                 && history_known
+                && histories.contains(owner)
             {
                 history.entry((*owner, *project)).or_default().push(entry);
             }
@@ -584,9 +610,8 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         let mut rows: Vec<(u32, Row, Option<Option<&[Cell]>>)> = Vec::new();
         for (raw, local, cursor) in &mut projects {
             let (raw, local) = (*raw, *local);
-            let linked = read.owners.get(&raw).is_some_and(|spans| within(spans, first));
             if let Some(row) = cursor.at(first).and_then(|cells| project_row(raw, local, cells))
-                && linked
+                && projects_read.contains(&raw)
             {
                 let program = (row.program as u32 == PROGRAM_REFERENCE).then(|| (row.program >> 32) as u32);
                 let scientist = program.map(|id| programs.get_mut(&id).and_then(|cursor| cursor.at(first)));
@@ -597,7 +622,7 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
             .iter()
             .map(|(raw, row, scientist)| Observed {
                 row,
-                history: history_known.then(|| history.get(&(*raw, row.local)).map_or(&[][..], Vec::as_slice)),
+                history: (history_known && histories.contains(raw)).then(|| history.get(&(*raw, row.local)).map_or(&[][..], Vec::as_slice)),
                 person: person(row.program, *scientist),
             })
             .collect();

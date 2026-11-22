@@ -3,6 +3,7 @@ use content_reader_localisation::localisation::{Piece, pieces};
 const OPEN: char = '\u{1}';
 const NAME: char = '\u{2}';
 const CLOSE: char = '\u{3}';
+const INDEX: char = '\u{4}';
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EntityKind {
@@ -39,12 +40,19 @@ impl EntityKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Span<'a> {
     Piece(Piece<'a>),
-    Open { kind: EntityKind, token: &'a str },
+    Open { kind: EntityKind, token: &'a str, index: Option<i32> },
     Close,
 }
 
 pub(super) fn mark(kind: EntityKind, token: &str, name: &str) -> String {
     format!("{OPEN}{}{token}{NAME}{name}{CLOSE}", kind.code())
+}
+
+pub(super) fn mark_at(kind: EntityKind, token: &str, index: Option<i32>, name: &str) -> String {
+    match index {
+        Some(index) => format!("{OPEN}{}{token}{INDEX}{index}{NAME}{name}{CLOSE}", kind.code()),
+        None => mark(kind, token, name),
+    }
 }
 
 pub(super) fn unmark(text: &str) -> String {
@@ -80,10 +88,14 @@ pub fn spans(text: &str) -> Result<Vec<Span<'_>>, String> {
                 .into_iter()
                 .find(|kind| kind.code() == code)
                 .ok_or_else(|| format!("an entity link names the unknown kind {code:?}"))?;
-            out.push(Span::Open {
-                kind,
-                token: header.as_str(),
-            });
+            let (token, index) = match header.as_str().split_once(INDEX) {
+                Some((token, index)) => (
+                    token,
+                    Some(index.parse::<i32>().ok().filter(|&index| index > 0).ok_or_else(|| format!("an entity link names the template {index:?}"))?),
+                ),
+                None => (header.as_str(), None),
+            };
+            out.push(Span::Open { kind, token, index });
             open = true;
             rest = &body[end + NAME.len_utf8()..];
         } else {
@@ -121,7 +133,8 @@ mod tests {
                 Span::Piece(Piece::Colour('H')),
                 Span::Open {
                     kind: EntityKind::Equipment,
-                    token: "mod_equipment"
+                    token: "mod_equipment",
+                    index: None,
                 },
                 Span::Piece(Piece::Text("Alpha")),
                 Span::Close,
@@ -129,14 +142,16 @@ mod tests {
                 Span::Piece(Piece::Text(", ")),
                 Span::Open {
                     kind: EntityKind::Tactic,
-                    token: "mod_tactic"
+                    token: "mod_tactic",
+                    index: None,
                 },
                 Span::Piece(Piece::Text("Beta")),
                 Span::Close,
                 Span::Piece(Piece::Text(", ")),
                 Span::Open {
                     kind: EntityKind::Technology,
-                    token: "mod_technology"
+                    token: "mod_technology",
+                    index: None,
                 },
                 Span::Piece(Piece::Text("Gamma")),
                 Span::Close,

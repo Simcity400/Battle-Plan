@@ -94,7 +94,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
           <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} />
           <strong className="special-project-name is-open" data-panel-label={card.project.id} onClick={event => open(card, event)}>{card.info.name}</strong>
           <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
-          <span className="special-project-when">{dayLabel(card.run.completion!.hour)}</span>
+          <span className="special-project-when">{projectDate(card.run.completion!)}</span>
         </div>)}
         {earlier.length > 0 && <details className="special-project-earlier">
           <summary className="special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>

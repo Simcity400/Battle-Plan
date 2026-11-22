@@ -419,7 +419,7 @@ struct Followed<P: AtHour> {
     context: P::Context,
     content_warnings: Vec<String>,
     live: Option<Live>,
-    answered: Option<(Option<Owner>, Vec<replay_frame::frame::SharedView>, PanelData)>,
+    answered: Option<(Option<Owner>, Vec<replay_frame::frame::SharedView>)>,
     executable: Option<engine_executable::executable_tables::Tables>,
     product: PhantomData<fn() -> P>,
 }
@@ -429,17 +429,16 @@ impl<P: AtHour> Panel for Followed<P> {
         &self.tables
     }
 
+    fn unchanged(&mut self, frame: &DecodedFrame) -> bool {
+        let Some((owner, views)) = &self.answered else { return false };
+        !P::CLOCK_DEPENDENT
+            && holder::<P>(&self.holders, &self.params, frame.hour).ok().is_some_and(|held| held == *owner)
+            && self.tables.iter().zip(views).all(|(table, view)| replay_frame::frame::SharedView::ptr_eq(&frame.tables[table.index()], view))
+    }
+
     fn data(&mut self, frame: &DecodedFrame) -> PanelData {
-        let views: Vec<_> = self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect();
-        let held = holder::<P>(&self.holders, &self.params, frame.hour).ok();
-        if !P::CLOCK_DEPENDENT
-            && let (Some(owner), Some((answered_owner, answered_views, data))) = (held, &self.answered)
-            && owner == *answered_owner
-            && views.iter().zip(answered_views).all(|(view, answered)| replay_frame::frame::SharedView::ptr_eq(view, answered))
-        {
-            return data.clone();
-        }
         self.answered = None;
+        let held = holder::<P>(&self.holders, &self.params, frame.hour).ok();
         let cancelled = AtomicBool::new(false);
         let mut own = OwnRefusals::default();
         let cells = Cells::default();
@@ -453,11 +452,11 @@ impl<P: AtHour> Panel for Followed<P> {
         let mut reply = made.map_err(|error| error.to_string())?;
         finish(reply.warnings_mut(), &own, &self.content_warnings);
         self.live = Some(cells.finish()).filter(|live| !live.is_empty());
-        let data = serde_json::to_value(&reply).map_err(|error| error.to_string());
+        let data = serde_json::to_value(&reply).map_err(|error| error.to_string())?;
         if !P::CLOCK_DEPENDENT && let Some(owner) = held {
-            self.answered = Some((owner, views, data.clone()));
+            self.answered = Some((owner, self.tables.iter().map(|table| frame.tables[table.index()].clone()).collect()));
         }
-        data
+        Ok(data)
     }
 
     fn live(&self) -> Option<&Live> {

@@ -5,7 +5,8 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import { useHeadProduct } from '../../dashboard/headProduct';
 import type { WidgetSpec } from '../../dashboard/model';
 import type { EntityStats } from '../../generated/dashboard';
-import { GameRuns } from './GameText';
+import { useMemo } from 'react';
+import { GameArtFor, GameIcons, GameRuns } from './GameText';
 import type { EntityLink } from './GameText';
 import { entityStatsStructure, validateEntityStats } from './entityStats';
 import { ENTITY_LABELS, trimLabel, trimValue } from './gameRuns';
@@ -20,8 +21,9 @@ export default function EntityStatsWindow({ runtime, widget, link, active, onClo
   const kind = ENTITY_LABELS[link.kind];
   const refusals = Object.entries(data?.refusals ?? {});
   const name = link.text.trim() || link.token;
+  const runs = useMemo(() => data?.stats.flatMap(stat => [...stat.label, ...stat.value]) ?? [], [data]);
   return <FloatingPanel title={kind} label={`${kind} ${name} stats`} anchor={{ x: link.x, y: link.y }} onClose={onClose} className="entity-stats-window">
-    <div className="entity-stats" ref={stats.root}>
+    <GameArtFor runtime={runtime} widget={widget} active={active}><GameIcons runs={runs}><div className="entity-stats" ref={stats.root}>
       <h3 data-tooltip={contentTitleHint(link.token)}>{name}</h3>
       {error ? <WidgetState kind="error" failure={error} onRetry={retry} />
         : !data ? <p className="entity-stats-missing">Loading stats…</p>
@@ -36,6 +38,6 @@ export default function EntityStatsWindow({ runtime, widget, link, active, onClo
             {!data.unavailable && !data.stats.length && !refusals.length && <p className="entity-stats-missing">No stats recorded.</p>}
             {refusals.map(([reason, count]) => <p className="entity-stats-missing" key={reason}>Not recorded: {reason}{(count ?? 0) > 1 ? ` (${count})` : ''}</p>)}
           </>}
-    </div>
+    </div></GameIcons></GameArtFor>
   </FloatingPanel>;
 }

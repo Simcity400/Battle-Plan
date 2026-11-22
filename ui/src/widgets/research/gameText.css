@@ -5,8 +5,9 @@
 .game-text-run.is-strong { font-weight: 600; }
 .game-text-run.is-accent { color: var(--accent-ink); }
 .game-text-run.is-muted { color: var(--muted); }
-.game-text-icon { display: inline-block; width: 0.42em; height: 0.42em; margin-inline: 0.1em 0.45em; border-radius: 50%; vertical-align: 0.12em;
-  background: color-mix(in srgb, var(--muted) 55%, transparent); }
+.game-text-icon { display: inline-block; width: auto; height: 1.15em; margin-inline: 0.1em 0.3em; vertical-align: -0.2em; }
+.game-text-icon.is-missing { height: auto; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--quiet);
+  font-size: 0.75em; vertical-align: 0.05em; }
 .game-text-flag { padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--muted); font-size: 0.85em; }
 .game-text-link { display: inline; margin: 0; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--accent-ink); font: inherit; font-weight: 600;
   text-decoration: underline 1px color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 2px; cursor: pointer;

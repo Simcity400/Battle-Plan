@@ -263,6 +263,7 @@ pub struct Context {
     visibility: visibility::Cache,
     scoped_details: std::sync::atomic::AtomicBool,
     coverage: std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
+    links: std::sync::Mutex<HashMap<(u32, u32, u32), (i32, Result<(), String>)>>,
 }
 
 fn context(source: &Source, load: &LoadContext) -> Context {
@@ -273,6 +274,7 @@ fn context(source: &Source, load: &LoadContext) -> Context {
         visibility: visibility::Cache::default(),
         scoped_details: false.into(),
         coverage: Default::default(),
+        links: Default::default(),
     }
 }
 
@@ -308,6 +310,7 @@ struct Coverage {
 struct Reads<'r, 'q> {
     query: &'r Query<'q>,
     coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
+    links: &'r std::sync::Mutex<HashMap<(u32, u32, u32), (i32, Result<(), String>)>>,
     tag: &'r Country,
     holder: Owner,
     run: u32,
@@ -339,12 +342,18 @@ impl Reads<'_, '_> {
     }
 
     fn owned(&self, owner: u32, read: i32) -> Result<(), String> {
-        let frame = dashboard_base::products::at_hour::frame(self.query, read, &[Read::all(TableId::CountryLinks)], "Project owners").map_err(|why| why.to_string())?;
-        if owners_of(&frame, self.holder.slot).map_err(|why| format!("Country links are unavailable: {why}"))?.contains(&owner) {
-            Ok(())
-        } else {
-            Err(OTHER_OWNER.into())
+        let key = (self.run, self.holder.slot, owner);
+        if let Some((at, known)) = self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key)
+            && *at == read
+        {
+            return known.clone();
         }
+        let known = dashboard_base::products::at_hour::frame(self.query, read, &[Read::all(TableId::CountryLinks)], "Project owners")
+            .map_err(|why| why.to_string())
+            .and_then(|frame| owners_of(&frame, self.holder.slot).map_err(|why| format!("Country links are unavailable: {why}")))
+            .and_then(|owners| if owners.contains(&owner) { Ok(()) } else { Err(OTHER_OWNER.into()) });
+        self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, (read, known.clone()));
+        known
     }
 
     fn follows(&self, read: i32, until: i32) -> bool {
@@ -587,7 +596,7 @@ impl AtHour for SpecialProjectDetailsAt {
         if !edits.only_columns(TableId::SliceReads, dashboard_base::products::at_hour::field_mask(TableId::SliceReads, &["sample_hour"])) || at.context.scoped_details.load(std::sync::atomic::Ordering::Relaxed) { return Ok(false); }
         let Some(holder) = at.owner else { return Ok(false) };
         let q = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
-        let reads = Reads { query: &q, coverage: &at.context.coverage, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
+        let reads = Reads { query: &q, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run: q.timeline.at(at.hour).unwrap().run, hour: at.hour };
         let Some(previous) = data["hour"].as_i64().and_then(|h| i32::try_from(h).ok()) else { return Ok(false) };
         for (table, group, what) in [(TableId::ProjectPrograms, "programs", "Program assignments"), (TableId::ProjectBreakthroughs, "breakthroughs", "Specialization progress points")] {
             let Some(read) = reads.continued(previous, table, what) else { return Ok(false) };
@@ -654,7 +663,7 @@ impl AtHour for SpecialProjectDetailsAt {
                     Read { table: TableId::Projects, keys: owner_ranges(&owners, 32) },
                     Read { table: TableId::ProjectHistory, keys: owner_ranges(&owners, 64) },
                     Read { table: TableId::ProjectBreakthroughs, keys: owner_ranges(&owners, 32) },
-                    Read::these(TableId::SliceReads, owners.iter().map(|&owner| slice_read(TableId::Projects, owner))),
+                    Read::these(TableId::SliceReads, owners.iter().flat_map(|&owner| [slice_read(TableId::Projects, owner), slice_read(TableId::ProjectHistory, owner)])),
                     Read::these(TableId::ScientistDaily, roster.iter().map(|&id| u128::from(id))),
                     Read { table: TableId::ScientistSkills, keys: owner_ranges(&roster, 32) },
                     Read::these(TableId::CharacterRoleTraits, roster.iter().map(|&id| u128::from(id) << 40 | u128::from(CharacterRoleTraitRow::SCIENTIST) << 32)),
@@ -679,7 +688,7 @@ impl AtHour for SpecialProjectDetailsAt {
         let owner = at.owner.ok_or_else(|| dashboard_core::refused("Special project details name no country"))?;
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project details hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
+        let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
         let mut namer = Namer::new(&at.context.content, &query, at.hour, owner.slot);
         let mut out = SpecialProjectDetails { hour: at.hour, scientists: None, programs: None, breakthroughs: None, projects: None, unavailable: Vec::new(), warnings: Vec::new() };
         if let Some(why) = &namer.missing {
@@ -880,6 +889,23 @@ fn pending(frame: &DecodedFrame, runtime: &ProjectRuntime, project_token: Result
     }
 }
 
+pub(super) fn option_name(options: &[content_reader_core::special_projects::PrototypeOption], option: &str) -> Result<Option<String>, String> {
+    let mut chosen = options.iter().filter(|candidate| candidate.token.eq_ignore_ascii_case(option));
+    let first = chosen.next().ok_or_else(|| format!("Chosen option {option} is absent from recorded content"))?;
+    if chosen.any(|other| other.name != first.name) {
+        return Err(format!("Chosen option {option} shares its token with an option of another name"));
+    }
+    Ok(first.name.clone())
+}
+
+fn history_read(frame: &DecodedFrame, reads: &Reads<'_, '_>, owner: u32, projects: i32) -> Result<(), String> {
+    let read = owner_read(frame, TableId::ProjectHistory, owner)
+        .ok()
+        .filter(|&read| reads.supplies(read))
+        .ok_or("Project choice history was not read in the day up to this hour while this country held the tag")?;
+    if read == projects { Ok(()) } else { reads.owned(owner, read) }
+}
+
 fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProjectChoice>> {
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| unavailable.push(format!("Project choice history is unavailable: {why}"))).ok()?;
     let first = rows.partition_point(|row| (row.owner, row.project) < (project.owner, project.local_id));
@@ -899,13 +925,7 @@ fn choices(frame: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_,
                     (Some(content), Ok(project), Some(reward)) => content.definitions.reward_named(project, reward).map_err(|why| unavailable.push(why)).ok(),
                     _ => None,
                 };
-                let option_key = authored.zip(option.as_deref()).and_then(|(found, option)| {
-                    let chosen = found.options.iter().find(|candidate| candidate.token.eq_ignore_ascii_case(option));
-                    if chosen.is_none() {
-                        unavailable.push(format!("Chosen option {option} is absent from recorded content"));
-                    }
-                    chosen.map(|chosen| chosen.name.clone())
-                });
+                let option_key = authored.zip(option.as_deref()).and_then(|(found, option)| option_name(&found.options, option).map_err(|why| unavailable.push(why)).ok());
                 (row, namer.named(reward, row.prototype_reward_handle, authored.map(|found| found.name.clone())), namer.named(option, row.option_handle, option_key))
             })
             .map(|(row, reward, option)| ProjectChoice {
@@ -959,6 +979,13 @@ fn projects(
     }
     let mut out = Vec::new();
     for (&owner, &read) in &read_of {
+        let history = history_read(frame, reads, owner, read);
+        if let Err(why) = &history
+            && !prefixed(rows, owner, |row| row.owner).is_empty()
+            && !unavailable.contains(why)
+        {
+            unavailable.push(why.clone());
+        }
         for project in prefixed(rows, owner, |row| row.owner) {
             let token = spelled(frame, project.definition_id);
             if let Err(why) = &token {
@@ -988,7 +1015,7 @@ fn projects(
                 pending: runtime.and_then(|runtime| runtime.pending_reward.map(|id| pending(frame, runtime, token.as_deref().map_err(String::as_str), id, namer))),
                 seed: runtime.and_then(|runtime| runtime.variables.as_ref()).map(|store| store.seed),
                 variables,
-                choices: choices(frame, project, namer, unavailable),
+                choices: history.is_ok().then(|| choices(frame, project, namer, unavailable)).flatten(),
             });
         }
     }
@@ -1088,7 +1115,7 @@ impl AtHour for SpecialProjectEffectsAt {
         }
         let query = at.context.index.query(&at.context.replay, branch(&params.branch_id)?)?;
         let run = query.timeline.at(at.hour).ok_or_else(|| dashboard_core::refused("Special project effects hour is not recorded"))?.run;
-        let reads = Reads { query: &query, coverage: &at.context.coverage, tag: &params.country, holder: owner, run, hour: at.hour };
+        let reads = Reads { query: &query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder: owner, run, hour: at.hour };
         let project = match supplied_project(frame, &reads, params.owner, params.project) {
             Ok((project, read)) => {
                 out.read_hour = Some(read);

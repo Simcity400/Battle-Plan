@@ -30,6 +30,10 @@ pub struct SpriteFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recorded: Option<String>,
+    #[doc = " True for an authored `£` text icon: `key` is its name, and the game's text-icon rule chooses the sprite."]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, TS)]
@@ -47,6 +51,10 @@ pub struct SpriteImage {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub recorded: Option<String>,
+    #[doc = " The asked frame's `text`, as it was asked."]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub text: Option<bool>,
     #[doc = " An artwork URL, or null with a named, counted refusal."]
     pub icon: Option<String>,
 }
@@ -102,6 +110,14 @@ fn frame_png(catalogue: &Catalogue, key: &str, frame: u32) -> io::Result<String>
     )
 }
 
+fn asked_png(catalogue: &Catalogue, key: &str, asked: &SpriteFrame) -> io::Result<String> {
+    if asked.text != Some(true) {
+        return frame_png(catalogue, key, asked.frame);
+    }
+    let sprite = dashboard_text::catalogue::text_icon_sprite(&catalogue.sprites, key)?;
+    frame_png(catalogue, &sprite.name, asked.frame)
+}
+
 impl Product for SpriteArtwork {
     const KEY: &'static str = "sprite-artwork";
     const CONTENT_DEPENDENT: bool = true;
@@ -113,7 +129,7 @@ impl Product for SpriteArtwork {
         let invalid = |key: &str| key.is_empty() || key.contains('\0');
         if params.sprites.is_empty()
             || params.sprites.iter().any(|sprite| {
-                invalid(&sprite.key) || sprite.recorded.as_deref().is_some_and(invalid)
+                invalid(&sprite.key) || sprite.recorded.as_deref().is_some_and(invalid) || sprite.text == Some(false)
             })
         {
             return Err("Invalid sprite keys");
@@ -160,7 +176,7 @@ fn images(
         let key = &asked.key;
         let result = match &asked.recorded {
             Some(recorded) if recorded == key => {
-                frame_png(catalogue.recorded().map_or(catalogue, |recorded| &**recorded), key, asked.frame)
+                asked_png(catalogue.recorded().map_or(catalogue, |recorded| &**recorded), key, asked)
             }
             recorded => catalogue::draw(
                 || format!("sprite {key}"),
@@ -170,7 +186,7 @@ fn images(
                         Some(recorded) if !std::ptr::eq(drawing, catalogue) => recorded,
                         _ => key,
                     };
-                    frame_png(drawing, key, asked.frame).map_err(|error| error.to_string())
+                    asked_png(drawing, key, asked).map_err(|error| error.to_string())
                 },
             )
             .get()
@@ -191,6 +207,7 @@ fn images(
             key: key.clone(),
             frame: asked.frame,
             recorded: asked.recorded.clone(),
+            text: asked.text,
             icon,
         });
         check_reply_budget(&reply)?;
@@ -223,6 +240,7 @@ mod tests {
             key: key.into(),
             frame,
             recorded: None,
+            text: None,
         }
     }
 
@@ -266,10 +284,14 @@ mod tests {
             .into_iter()
             .map(|key| frame(key, 0))
             .chain([frame("GFX_Mixed_Mod", 1)])
+            .chain(["Mixed_Mod", "Absent_Icon"].map(|key| SpriteFrame { text: Some(true), ..frame(key, 0) }))
             .collect(),
         };
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
-        assert_eq!(reply.items.len(), 4);
+        assert_eq!(reply.items.len(), 6);
+        let text = |key: &str| reply.items.iter().find(|art| art.key == key).unwrap().icon.as_deref();
+        assert_eq!(from_url(text("Mixed_Mod").unwrap()).pixels, image.pixels, "a text icon is drawn from the sprite its name declares");
+        assert_eq!(text("Absent_Icon"), None, "an undeclared text icon is refused by name");
         let art = reply
             .items
             .iter()

@@ -348,9 +348,10 @@ fn a_followed_product_that_reads_neither_tables_nor_the_hour_answers_once_for_ev
         executable: None,
         product: PhantomData,
     };
-    let first = followed(&source, &mut panel, FIRST);
+    assert!(followed(&source, &mut panel, FIRST).is_ok());
     for hour in FIRST + 1..=FIRST + 3 {
-        assert_eq!(followed(&source, &mut panel, hour), first, "hour {hour}");
+        let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&[][..])).unwrap() else { panic!("hour {hour} is recorded") };
+        assert!(panel.unchanged(&frame), "hour {hour}");
     }
     assert_eq!(panel.context.load(std::sync::atomic::Ordering::Relaxed), 1, "an unchanged input is answered once, not again at every published frame");
 }

@@ -10,7 +10,7 @@ import type { TooltipContent } from '../../charts/tooltip';
 import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
-import { researchArt, researchArtwork, researchLatestProgress, researchRecordedTemplates } from '../research/researchData';
+import { researchArt, researchArtwork, researchLatestProgress, researchReadName, researchRecordedTemplates } from '../research/researchData';
 import { researchDate } from '../research/researchLayout';
 import { slotNumbers, slotsStructure } from '../research/researchSlots';
 import { historyTokens, useResearchReply, useResearchSlots } from '../research/useResearch';
@@ -46,8 +46,9 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const failure = history.error ?? now.error;
   if (failure && (!data || !reply)) return <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
   if (!data || !reply) return <ListSkeleton label="Loading research..." />;
-  const describe = ({ token, databaseIndex }: OpenedResearch) =>
-    ({ name: contentTitle(researchArt(artwork, token, databaseIndex)?.name, token, 'Technology name unavailable'), icon: artwork.get(token)?.icon ?? undefined });
+  const describe = (research: OpenedResearch) => ({ icon: artwork.get(research.token)?.icon ?? undefined,
+    name: contentTitle(research.firstObservedHour === null ? research.definition?.name : researchArt(artwork, research.token, research.databaseIndex)?.name,
+      research.token, 'Technology name unavailable') });
   const open = (item: Extract<ActiveSlot, { kind: 'researching' }>, x: number, y: number) => { untip(); setOpened({ tag, research: openedResearch(item), x, y }); };
   const researching = rows.filter((item): item is Extract<ActiveSlot, { kind: 'researching' }> => item.kind === 'researching');
   const row = (item: ActiveSlot) => {
@@ -58,9 +59,8 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     if (item.kind === 'idle') return <div key={key} className="active-row is-quiet" role="status" data-research-slot={item.slot.index}>
       <span className="active-row-art is-icon"><Icon name="pause" /></span><span className="active-row-name is-idle">Idle</span>
       <span className="active-row-saved" data-paint="saved">{numbers.saved}</span></div>;
-    const { token, databaseIndex, slot } = item;
-    const art = researchArt(artwork, token, databaseIndex);
-    const name = contentTitle(art?.name, token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
+    const { token, slot } = item;
+    const name = contentTitle(researchReadName(artwork, item.read), token, 'Technology name unavailable'), icon = artwork.get(token)?.icon ?? undefined;
     const click = (event: MouseEvent<HTMLElement>) => open(item, event.clientX, event.clientY);
     const content = (): TooltipContent => {
       const at = latest.current ?? reply, hour = at.hour, current = at.slots.find(read => read.index === slot.index) ?? item.read;

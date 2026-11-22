@@ -124,14 +124,20 @@ export function shownCard(data: SpecialProjectsReply, hour: number, id: string):
   return running.find(card => card.project.id === id) ?? completed.find(card => card.project.id === id) ?? earlier.find(card => card.project.id === id) ?? null;
 }
 
-export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number): ProjectRuntimeDetails | string | null {
+export function episodeThrough(reply: SpecialProjectsReply, project: ProjectEpisode, through: number | null): number {
+  const last = project.runs[project.runs.length - 1].lastHour;
+  return through !== null && through > last && last === reply.available.at(-1)?.lastHour ? through : last;
+}
+
+export function runtimeProject(details: SpecialProjectDetails, card: ProjectCard, hour: number,
+  end = card.project.runs[card.project.runs.length - 1].lastHour): ProjectRuntimeDetails | string | null {
   if (details.hour > hour) return null;
   if (!details.projects) return 'Project rewards and output were not read at this time.';
-  const { owner, local, start, runs } = card.project;
+  const { owner, local, start } = card.project;
   const found = details.projects.find(project => project.owner === owner && project.id === local);
   if (!found) return 'Project rewards and output were not recorded for this project at this time.';
   if (found.readHour < start.hour) return 'Project rewards and output were last read before this project began.';
-  if (found.readHour > runs[runs.length - 1].lastHour) return 'Project rewards and output were read after this project ended.';
+  if (found.readHour > end) return 'Project rewards and output were read after this project ended.';
   return found;
 }
 

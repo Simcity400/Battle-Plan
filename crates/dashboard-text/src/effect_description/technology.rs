@@ -468,20 +468,21 @@ impl Renderer<'_, '_, '_> {
         &self,
         operand: &[u8],
         scopes: Scopes,
-    ) -> Result<Option<&content_reader_core::technology::Definition>, String> {
+    ) -> Result<Option<(&content_reader_core::technology::Definition, Option<i32>)>, String> {
         let catalog = self.technology_catalog()?;
         if let Some(template) = catalog.get(operand)? {
-            return Ok(Some(template));
+            return Ok(Some((template, None)));
         }
         if !operand.starts_with(b"var:") {
             return Ok(None);
         }
         let handle = (self.scoped_value(operand, scopes)? / 100_000) as u32;
         let rows = self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY)?;
-        match find(rows, |row| row.technology_handle == handle)? {
-            Some(row) => catalog.get(&row.id),
-            None => Ok(None),
-        }
+        let Some(row) = find(rows, |row| row.technology_handle == handle)? else { return Ok(None) };
+        let template = catalog.template(row.database_index, &row.id)?.ok_or_else(|| {
+            format!("technology {}: recorded template {} is absent from the content", String::from_utf8_lossy(&row.id), row.database_index)
+        })?;
+        Ok(Some((template, Some(row.database_index))))
     }
 
     fn technology_country_name(
@@ -552,13 +553,13 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .filter(|field| !field.keyword_is("popup"))
         {
-            let Some(template) =
+            let Some((template, index)) =
                 self.technology_template(field.key.as_deref().unwrap_or_default(), scopes)?
             else {
                 continue;
             };
             let name = self.technology_name(template, country, scopes, false)?;
-            let name = self.technology_entity(EntityKind::Technology, &template.id, name)?;
+            let name = self.technology_entity_at(EntityKind::Technology, &template.id, index, name)?;
             out.push_str(&self.linked_text(&name, |name| {
                 self.char_native_line(
                     b"EFFECT_GIVE_TECHNOLOGY",
@@ -651,11 +652,11 @@ impl Renderer<'_, '_, '_> {
         };
         let mut list = String::new();
         for (index, entry) in technology.iter().enumerate() {
-            if let Some(template) =
+            if let Some((template, template_index)) =
                 self.technology_template(entry.value.scalar().unwrap_or_default(), scopes)?
             {
                 let name = self.technology_name(template, country, scopes, true)?;
-                list.push_str(&self.technology_entity(EntityKind::Technology, &template.id, name)?);
+                list.push_str(&self.technology_entity_at(EntityKind::Technology, &template.id, template_index, name)?);
                 if index + 1 < technology.len() || !category.is_empty() {
                     list.push_str(", ");
                 }

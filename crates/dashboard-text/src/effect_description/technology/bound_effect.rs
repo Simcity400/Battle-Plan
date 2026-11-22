@@ -1,5 +1,5 @@
 use super::*;
-use crate::effect_description::entity_links::{EntityKind, mark, unmark};
+use crate::effect_description::entity_links::{EntityKind, mark_at, unmark};
 use content_reader_core::{parser::c_string, tokens::Token};
 
 const TECHNOLOGY_ID: u64 = mask::<replay_data::rows::TechnologyDefinitionRow>(&["id"]);
@@ -453,6 +453,16 @@ impl Renderer<'_, '_, '_> {
         token: &[u8],
         name: String,
     ) -> Result<String, String> {
+        self.technology_entity_at(kind, token, None, name)
+    }
+
+    pub(super) fn technology_entity_at(
+        &self,
+        kind: EntityKind,
+        token: &[u8],
+        index: Option<i32>,
+        name: String,
+    ) -> Result<String, String> {
         if !self.context.entity_links {
             return Ok(name);
         }
@@ -462,7 +472,7 @@ impl Renderer<'_, '_, '_> {
                 String::from_utf8_lossy(token)
             )
         })?;
-        Ok(mark(kind, token, &name))
+        Ok(mark_at(kind, token, index, &name))
     }
 
     fn technology_join(

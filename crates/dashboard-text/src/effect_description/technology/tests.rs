@@ -21,7 +21,8 @@ fn fixture() -> (Fixture, Folder) {
                 "mod_tech={parent=mod_parent enable_equipments={mod_equipment}} mod_small={parent=mod_parent force_use_small_tech_layout=yes enable_equipments={mod_equipment}} ",
                 "mod_callback={mod_unit={soft_attack=0.17} enable_equipments={missing_equipment mod_equipment} enable_equipment_modules={mod_module mod_module mod_second_module mod_denied_module} max_level=5 enable_building={building=mod_lab} enable_subunits={limit={always=yes} mod_unit} enable_tactic=mod_tactic enable_tactic=MOD_TACTIC on_research_complete_limit={always=yes} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} modifier={custom_modifier_tooltip=TECH_MODIFIER}} ",
                 "mod_conditional={on_research_complete_limit={always=no} on_research_complete={limit={} custom_effect_tooltip=TECH_COMPLETE} enable_subunits={limit={always=no} mod_unit} enable_subunits={limit={always=yes} mod_unit}} ",
-                "mod_repeated={enable_building={building=mod_lab} enable_building={building=mod_lab level=2} enable_building={building=mod_store level=3} enable_building={building=MOD_LAB level=4} enable_tactic=mod_tactic enable_tactic=mod_tactic enable_tactic=mod_other_tactic enable_tactic=mod_tactic}}"
+                "mod_repeated={enable_building={building=mod_lab} enable_building={building=mod_lab level=2} enable_building={building=mod_store level=3} enable_building={building=MOD_LAB level=4} enable_tactic=mod_tactic enable_tactic=mod_tactic enable_tactic=mod_other_tactic enable_tactic=mod_tactic} ",
+                "MOD_TECH={parent=mod_other}}"
             ),
         ),
         ("common/units/synthetic.txt", "sub_units={mod_unit={}}"),
@@ -140,8 +141,14 @@ fn fixture() -> (Fixture, Folder) {
         TableView::Complete(TableRows::TechnologyDefinitions(vec![
             TechnologyDefinitionRow {
                 technology_handle: 42,
-                database_index: 7,
+                database_index: 1,
                 id: b"mod_tech".to_vec(),
+                ..Default::default()
+            },
+            TechnologyDefinitionRow {
+                technology_handle: 43,
+                database_index: 6,
+                id: b"MOD_TECH".to_vec(),
                 ..Default::default()
             },
             TechnologyDefinitionRow {
@@ -209,6 +216,10 @@ fn fixture() -> (Fixture, Folder) {
                 ScriptVariableEntry {
                     name: b"mod_handle".to_vec(),
                     value_raw: 4_200_000,
+                },
+                ScriptVariableEntry {
+                    name: b"mod_second_handle".to_vec(),
+                    value_raw: 4_300_000,
                 },
             ],
             ..Default::default()
@@ -338,6 +349,11 @@ fn technology_description_cases() {
             "technology_handle_uses_handle_not_database_index",
             "set_technology={var:mod_handle=0}",
             "Give Alpha parent\n",
+        ),
+        (
+            "technology_handle_keeps_its_recorded_template",
+            "set_technology={var:mod_second_handle=0}",
+            "Give Other\n",
         ),
         (
             "technology_bonus_runtime_equipment_name",
@@ -630,7 +646,7 @@ fn bound_technology_entity_links_mark_every_unlock_only_when_asked() {
     let mut open = None;
     for span in spans(&linked.text).unwrap() {
         match span {
-            Span::Open { kind, token } => open = Some((kind, token, String::new())),
+            Span::Open { kind, token, .. } => open = Some((kind, token, String::new())),
             Span::Close => links.push(open.take().unwrap()),
             Span::Piece(piece) => {
                 let text = match piece {
@@ -674,16 +690,21 @@ fn technology_names_link_to_their_technology_only_when_asked() {
         .unwrap()
         .effects()
         .unwrap();
-    for (body, expected, name) in [
-        ("set_technology={mod_tech=1}", "Give Alpha parent\n", "Alpha parent"),
+    for (body, expected, token, index, name) in [
+        ("set_technology={mod_tech=1}", "Give Alpha parent\n", "mod_tech", None, "Alpha parent"),
+        ("set_technology={var:mod_second_handle=0}", "Give Other\n", "MOD_TECH", Some(6), "Other"),
         (
             "add_tech_bonus={technology=mod_tech bonus=0.5 uses=2}",
             "Bonus 0.50/2 uses:Alpha equipment\n",
+            "mod_tech",
+            None,
             "Alpha equipment",
         ),
         (
             "custom_effect_tooltip={localization_key=MOD_UNLOCK_TECH TECH=mod_tech}",
             "Unlocks \u{11}HMod technology\u{11}!.",
+            "mod_tech",
+            None,
             "Mod technology",
         ),
     ] {
@@ -706,13 +727,13 @@ fn technology_names_link_to_their_technology_only_when_asked() {
         let links: Vec<_> = spans
             .windows(3)
             .filter_map(|window| match window {
-                [Span::Open { kind, token }, Span::Piece(Piece::Text(text)), Span::Close] => {
-                    Some((*kind, *token, *text))
+                [Span::Open { kind, token, index }, Span::Piece(Piece::Text(text)), Span::Close] => {
+                    Some((*kind, *token, *index, *text))
                 }
                 _ => None,
             })
             .collect();
-        assert_eq!(links, [(EntityKind::Technology, "mod_tech", name)], "{body}");
+        assert_eq!(links, [(EntityKind::Technology, token, index, name)], "{body}");
     }
     let items = content_reader_core::effect_keys::read_body(
         b"custom_effect_tooltip={localization_key=MOD_UNLOCK_LOWER TECH=mod_tech}",

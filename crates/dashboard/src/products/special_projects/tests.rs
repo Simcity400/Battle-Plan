@@ -151,3 +151,24 @@ fn a_reply_spells_only_the_projects_and_scientists_that_first_appeared_since_the
     assert!(matches!(respell(Some((&defs, &chars)), &at(&[(40, START - 24), (41, START + 24)]), &chars), Respell::All), "a project first seen earlier is spelled again where it now starts");
     assert!(matches!(respell(Some((&defs, &chars)), &at(&[(40, START)]), &chars), Respell::All), "a project gone leaves its refusals behind unless all are spelled again");
 }
+
+#[test]
+fn a_row_read_while_its_owner_was_linked_to_another_country_is_never_this_countrys() {
+    let steps = |reads: &[(i32, [i64; 6])]| reads.iter().map(|(hour, cells)| Step { hour: *hour, cells: Some(cells.iter().map(|&value| Cell::Number(value)).collect()) }).collect::<Vec<_>>();
+    let samples = |hours: &[i32]| hours.iter().map(|&hour| Step { hour, cells: Some(Box::new([Cell::Number(i64::from(hour))])) }).collect::<Vec<_>>();
+    let rows = |keys: Vec<(u128, Vec<Step>)>| History { keys, ..History::default() };
+    let read = PieceRows {
+        projects: vec![rows(vec![((11_u128 << 32) | 3, steps(&[(47, [40, 0, 1, 0x18, 1, 17]), (50, [40, 0, 1, 0x18, 1, 20])]))])],
+        histories: vec![History::default()],
+        programs: History::default(),
+        reads: rows(vec![(read_key(TableId::Projects, 11), samples(&[47, 50]))]),
+        owners: BTreeMap::from([(11, vec![(49, 60)])]),
+        projects_available: vec![(40, 60)],
+        history_available: Vec::new(),
+    };
+    let mut fold = Fold::new(0);
+    fold_piece(&mut fold, &Piece { run: 0, first: 40, last: 60, slot: 6, id: 1 }, &read, &mut Vec::new(), &AtomicBool::new(false)).unwrap();
+    let shown: Vec<_> = fold.episodes.iter().map(|episode| (episode.start.hour, episode.runs.iter().map(|run| (run.first_hour, run.progress)).collect::<Vec<_>>())).collect();
+    assert_eq!(shown, [(50, vec![(50, 20)])], "the read at 47 was of another country's project, so the first of its own is at 50");
+    assert!(!supplied(&read.owners, 11, None), "a row whose read is not recorded is not admitted");
+}

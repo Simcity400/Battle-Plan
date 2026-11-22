@@ -24,6 +24,7 @@ const MOVED_OWNER: u32 = 9002;
 const MOVED_READS: [i32; 3] = [47, 50, 53];
 const MOVED_HELD: std::ops::Range<i32> = 49..53;
 const MOVED_ITERATION: i32 = 51;
+const HISTORY_UNSTAMPED: i32 = 35;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
     *frame.tables[table.index()] = TableView::Complete(rows);
@@ -79,6 +80,7 @@ fn frame(hour: i32) -> DecodedFrame {
         .into_iter()
         .filter_map(|(owner, read)| read.map(|sample_hour| [TableId::Projects, TableId::ProjectHistory].map(|table| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
         .flatten()
+        .filter(|row| hour != HISTORY_UNSTAMPED || row.table != TableId::ProjectHistory.index() as u32)
         .collect();
     slices.sort_by_key(|row| (row.table, row.owner));
     set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
@@ -132,6 +134,18 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     assert!(has(&reply, "77"), "an unspelled definition keeps its project, named as missing: {reply}");
     assert_eq!(project["choices"].as_array().unwrap().len(), 2, "the completion marker is not a chosen option");
     assert_eq!(details(&source, 53)["programs"][0]["readHour"], json!(52), "the next day's read supplies the next day");
+    let unstamped = details(&source, HISTORY_UNSTAMPED);
+    assert_eq!(unstamped["projects"][0]["choices"], Value::Null, "a complete history table with no proven read is not an empty one: {unstamped}");
+    assert!(has(&unstamped, "Project choice history was not read"), "{unstamped}");
+}
+
+#[test]
+fn a_chosen_option_sharing_its_token_with_an_option_of_another_name_is_withheld_by_name() {
+    use content_reader_core::special_projects::PrototypeOption;
+    let option = |token: &str, name: Option<&str>| PrototypeOption { token: token.into(), name: name.map(Into::into), ..Default::default() };
+    assert_eq!(option_name(&[option("first", Some("first_name")), option("FIRST", Some("first_name"))], "first"), Ok(Some("first_name".into())));
+    assert!(option_name(&[option("first", Some("first_name")), option("first", None)], "first").unwrap_err().contains("another name"));
+    assert!(option_name(&[option("other", None)], "first").unwrap_err().contains("absent"));
 }
 
 #[test]
@@ -185,9 +199,9 @@ fn project_output_is_the_game_text_with_its_links_and_names_what_it_cannot_show(
             "runs": [
                 { "kind": "text", "text": "On research completed:\n", "tone": null },
                 { "kind": "text", "text": "Unlocks ", "tone": "H" },
-                { "kind": "link", "entity": "technology", "token": "mod_tech", "text": "Gun Carriages", "tone": "H" },
+                { "kind": "link", "entity": "technology", "token": "mod_tech", "databaseIndex": null, "text": "Gun Carriages", "tone": "H" },
                 { "kind": "text", "text": "\nSub units: ", "tone": null },
-                { "kind": "link", "entity": "subUnit", "token": "mod_unit", "text": "Super-Heavy Artillery", "tone": null },
+                { "kind": "link", "entity": "subUnit", "token": "mod_unit", "databaseIndex": null, "text": "Super-Heavy Artillery", "tone": null },
                 { "kind": "text", "text": "\n", "tone": null },
             ],
             "refusals": { "Scope unavailable": 2 },

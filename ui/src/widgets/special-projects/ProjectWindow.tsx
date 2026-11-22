@@ -14,12 +14,12 @@ import type { PanelFeed } from '../../dashboard/panelFeed';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useProduct } from '../../dashboard/products';
 import { OpenedLink } from '../research/TechnologyWindow';
-import GameText, { GameBlocks, GameRuns, type EntityLink } from '../research/GameText';
+import GameText, { GameArtFor, GameBlocks, GameIcons, GameRuns, type EntityLink } from '../research/GameText';
 import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { detailsStructure, detailTexts, effectsRead, effectsStructure, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
-import { projectDate, runtimeProject, scientistName } from './specialProjectsData';
+import { episodeThrough, projectDate, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
 
@@ -31,10 +31,10 @@ type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | nu
 
 export default function ProjectWindow({ reply, card, hour, through, missing, feed, anchor, onClose, onWarnings, ...asked }: WindowProps) {
   return <FloatingPanel title="Special project" label="special project details" anchor={anchor} onClose={onClose} className="project-window">
-    {card ? <div className="dossier is-blueprint">
+    <GameArtFor runtime={asked.runtime} widget={asked.widget} active={asked.active}>{card ? <div className="dossier is-blueprint">
       <Summary reply={reply} card={card} feed={feed} active={asked.active} clock={asked.runtime.clock} />
-      <Runtime {...asked} card={card} hour={hour} through={through} onWarnings={onWarnings} />
-    </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}
+      <Runtime {...asked} reply={reply} card={card} hour={hour} through={through} onWarnings={onWarnings} />
+    </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}</GameArtFor>
   </FloatingPanel>;
 }
 
@@ -67,8 +67,8 @@ function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsR
   </>;
 }
 
-function Runtime({ runtime, widget, tag, active, card, hour, through, onWarnings }: Asked & {
-  card: ProjectCard; hour: number; through: () => number | null; onWarnings: (warnings: readonly string[]) => void;
+function Runtime({ runtime, widget, tag, active, reply, card, hour, through, onWarnings }: Asked & {
+  reply: SpecialProjectsReply; card: ProjectCard; hour: number; through: () => number | null; onWarnings: (warnings: readonly string[]) => void;
 }) {
   const box = useRef<HTMLDivElement | null>(null);
   const head = useHeadProduct<SpecialProjectDetails>(runtime, widget, 'special-project-details', { country: countryFromKey(tag) },
@@ -86,7 +86,7 @@ function Runtime({ runtime, widget, tag, active, card, hour, through, onWarnings
   useEffect(() => {
     if (due !== null) return whenDue(due, current, runtime.clock.subscribeFrame, () => wake(n => n + 1));
   }, [due, current, runtime.clock]);
-  const match = data ? runtimeProject(data, card, current()) : null;
+  const match = data ? runtimeProject(data, card, current(), episodeThrough(reply, card.project, through())) : null;
   return <div className="dossier-body" ref={ref}>
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data || !match ? <WidgetState kind="loading" label="Loading project rewards…" />
       : typeof match === 'string' ? <p className="dossier-missing">{match}</p>
@@ -170,10 +170,11 @@ function IterationOutput({ runtime, track, tag, active, project, choice, onOpen 
   if (data.unavailable) return <p className="project-window-withheld" title={data.unavailable}>Not recorded</p>;
   if (data.noChanges) return <div className="project-window-output"><p className="game-text">No changes</p></div>;
   return <>
-    {data.sections.length > 0 && <div className="project-window-output">{data.sections.map((section, at) => <div key={at}>
-      {section.heading && <span className="project-window-output-label"><GameRuns runs={trimLabel(section.heading)} /></span>}
-      <GameText runs={trimValue(section.runs)} onOpen={onOpen} />
-    </div>)}</div>}
+    {data.sections.length > 0 && <GameIcons runs={data.sections.flatMap(section => [...section.heading ?? [], ...section.runs])}>
+      <div className="project-window-output">{data.sections.map((section, at) => <div key={at}>
+        {section.heading && <span className="project-window-output-label"><GameRuns runs={trimLabel(section.heading)} /></span>}
+        <GameText runs={trimValue(section.runs)} onOpen={onOpen} />
+      </div>)}</div></GameIcons>}
     {refusals.length > 0 && <p className="project-window-withheld" title={refusals.join('\n')}>Part of this reward can't be shown</p>}
   </>;
 }

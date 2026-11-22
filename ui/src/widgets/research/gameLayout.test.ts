@@ -21,7 +21,7 @@ test('stat lines become label and value pairs under their heading, bullets drop 
 });
 
 test('sentences stay whole, linked ones in full colour and plain notes quiet, and a long or wordy colon line is not a stat', () => {
-  const link: GameRun = { kind: 'link', entity: 'module', token: 'mod_belt', text: '350mm Belt', tone: 'H' };
+  const link: GameRun = { kind: 'link', entity: 'module', token: 'mod_belt', databaseIndex: null, text: '350mm Belt', tone: 'H' };
   const blocks = gameBlocks([
     text('Enables '), link, text('\n\n'), text('Mounting a better '), text('Armor', 'Y'), text(' module improves things.\nA second note line.\n'),
     text('Note: this changes how the ship works in combat.\n'),

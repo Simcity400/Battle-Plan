@@ -14,11 +14,11 @@ fn game_text_keeps_lines_tones_icons_and_unlock_links() {
             text("Infantry\n   Soft:", None),
             text("0.17", Some("G")),
             text("\nEnables ", None),
-            GameRun::Link { entity: EntityKind::Equipment, token: "equipment_a".into(), text: "Rifle".into(), tone: Some("H".into()) },
+            GameRun::Link { entity: EntityKind::Equipment, token: "equipment_a".into(), database_index: None, text: "Rifle".into(), tone: Some("H".into()) },
             text(" and ", None),
             GameRun::Flag { tag: "GER".into() },
             text("\nUnlocks ", None),
-            GameRun::Link { entity: EntityKind::Technology, token: "tech_a".into(), text: "Gun Carriages".into(), tone: None },
+            GameRun::Link { entity: EntityKind::Technology, token: "tech_a".into(), database_index: None, text: "Gun Carriages".into(), tone: None },
             text("\n", None),
         ]
     );

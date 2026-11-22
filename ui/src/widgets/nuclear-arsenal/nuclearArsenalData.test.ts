@@ -36,7 +36,8 @@ test('a held empty stockpile is dated at the displayed hour, including a later d
   const expected = 'No nuclear stockpile recorded on 13 Aug 1939.';
   assert.notEqual(dayLabel(read.hour), dayLabel(shownAt));
   assert.equal(arsenalNotice(read, shownAt), expected);
-  assert.equal(panelViews['nuclear-arsenal']!.values(read, null, shownAt, 'empty')?.get('empty'), expected);
+  const view = panelViews['nuclear-arsenal']!;
+  assert.equal(view.values(read, null, shownAt, view.structure!(read, shownAt))?.get('empty'), expected);
   const ink: string[] = [], cleared: number[][] = [];
   const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }),
     fillText: (text: string) => ink.push(text), clearRect: (...rect: number[]) => cleared.push(rect) }, {

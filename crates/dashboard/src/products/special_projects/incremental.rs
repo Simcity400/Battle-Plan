@@ -68,7 +68,18 @@ struct Current {
     programs: BTreeSet<u128>,
     projects: Track,
     history: Track,
+    reads: Track,
     scientists: Option<Track>,
+}
+
+fn read_of(known: &BTreeSet<u32>, key: u128) -> bool {
+    known.contains(&(key as u32)) && [TableId::Projects, TableId::ProjectHistory].iter().any(|table| key >> 32 == table.index() as u128)
+}
+
+impl Current {
+    fn supplies(&self, table: TableId, raw: u32) -> bool {
+        supplied(&self.owners, raw, sample(self.reads.rows.get(&read_key(table, raw)).map(AsRef::as_ref)))
+    }
 }
 
 struct Episodes {
@@ -107,6 +118,7 @@ impl Episodes {
             Some(Current {
                 projects: Track::new(r, &piece, TableId::Projects, &PROJECT_COLUMNS, |k| known.contains(&((k >> 32) as u32)), count)?,
                 history: Track::new(r, &piece, TableId::ProjectHistory, &HISTORY_COLUMNS, |k| known.contains(&((k >> 64) as u32)), count)?,
+                reads: Track::new(r, &piece, TableId::SliceReads, &read_columns()?, |k| read_of(&known, k), count)?,
                 scientists: open_programs(&programs, || Track::new(r, &piece, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| programs.contains(&k), count))?,
                 piece, owners, known, programs,
             })
@@ -129,15 +141,19 @@ impl Episodes {
                 if linked && c.known.insert(*raw) {
                     c.projects.include(|k| (k >> 32) as u32 == *raw, count);
                     c.history.include(|k| (k >> 64) as u32 == *raw, count);
+                    c.reads.include(|k| k as u32 == *raw && read_of(&c.known, k), count);
                 }
                 boundary |= linked != within(runs, before);
             }
             boundary |= c.projects.step(r, |k| c.known.contains(&((k >> 32) as u32)), count)?;
             boundary |= c.history.step(r, |k| c.known.contains(&((k >> 64) as u32)), count)?;
+            boundary |= c.reads.step(r, |k| read_of(&c.known, k), count)?;
             if let Some(track) = &mut c.scientists { boundary |= track.step(r, |k| c.programs.contains(&k), count)?; }
             observed_change |= boundary;
             if c.projects.reader.available() {
                 if boundary {
+                    let histories: BTreeSet<u32> = c.known.iter().copied().filter(|&raw| c.supplies(TableId::ProjectHistory, raw)).collect();
+                    let read: BTreeSet<u32> = c.known.iter().copied().filter(|&raw| c.supplies(TableId::Projects, raw)).collect();
                     let mut history: BTreeMap<u128, Vec<Entry>> = BTreeMap::new();
                     for (&key, cells) in &c.history.rows {
                         if let Some(entry) = history_entry(key as u32, cells) { history.entry(key >> 32).or_default().push(entry); }
@@ -151,12 +167,12 @@ impl Episodes {
                                 c.scientists = Some(Track::new(r, &at, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, |k| c.programs.contains(&k), count)?);
                             }
                         }
-                        if within(&c.owners[&((key >> 32) as u32)], next) && let Some(row) = project_row((key >> 32) as u32, key as u32, cells) {
+                        if read.contains(&((key >> 32) as u32)) && let Some(row) = project_row((key >> 32) as u32, key as u32, cells) {
                             rows.push((key, row));
                         }
                     }
                     let shown: Vec<_> = rows.iter().map(|(key, row)| Observed {
-                        row, history: c.history.reader.available().then(|| history.get(key).map_or(&[][..], Vec::as_slice)),
+                        row, history: (c.history.reader.available() && histories.contains(&row.owner)).then(|| history.get(key).map_or(&[][..], Vec::as_slice)),
                         person: person(row.program, (row.program as u32 == PROGRAM_REFERENCE).then(|| c.scientists.as_ref().and_then(|t| t.rows.get(&u128::from(row.program >> 32))).map(AsRef::as_ref))),
                     }).collect();
                     self.fold.observe((piece.slot, piece.id), next, next, &shown);

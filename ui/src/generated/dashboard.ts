@@ -657,12 +657,20 @@ frame: number,
  * Absent where recorded facts name the sprite (or both choose the same one); a sprite the
  * selection cannot draw is then the recording's of that name.
  */
-recorded?: string, };
+recorded?: string,
+/**
+ * True for an authored `£` text icon: `key` is its name, and the game's text-icon rule chooses the sprite.
+ */
+text?: boolean, };
 export type SpriteImage = { key: string, frame: number,
 /**
  * The asked frame's `recorded` choice, as it was asked.
  */
 recorded?: string,
+/**
+ * The asked frame's `text`, as it was asked.
+ */
+text?: boolean,
 /**
  * An artwork URL, or null with a named, counted refusal.
  */
@@ -5276,7 +5284,11 @@ state: ResearchSlotState,
 /**
  * The joined assignment's progress at the read; none while idle.
  */
-progress: ResearchProgress | null, };
+progress: ResearchProgress | null,
+/**
+ * The text of the definition an unjoined read names, looked up by its template; none when idle or joined.
+ */
+definition: ResearchDefinitionText | null, };
 export type ResearchSlotState = { firstHour: number, lastHour: number, token: string | null,
 /**
  * The technology's template occurrence as read; none while idle.
@@ -5847,7 +5859,7 @@ runs: Array<GameRun>,
  * Why parts of the text were withheld, with how often each was met.
  */
 refusals: { [key in string]?: number }, unavailable: string | null, warnings: Array<string>, };
-export type GameRun = { "kind": "text", text: string, tone: string | null, } | { "kind": "icon", sprite: string, } | { "kind": "flag", tag: string, } | { "kind": "link", entity: EntityKind, token: string, text: string, tone: string | null, };
+export type GameRun = { "kind": "text", text: string, tone: string | null, } | { "kind": "icon", sprite: string, } | { "kind": "flag", tag: string, } | { "kind": "link", entity: EntityKind, token: string, databaseIndex: number | null, text: string, tone: string | null, };
 export type EntityKind = "equipment" | "module" | "subUnit" | "building" | "tactic" | "technology";
 export type TechnologyEffectsParamsAtHour = TechnologyEffectsParams & { hour: number };
 export type EntityStatsParams = { branchId: string, kind: EntityKind, token: string, };

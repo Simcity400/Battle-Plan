@@ -110,11 +110,12 @@ function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }:
   }
   const token = entry?.token ?? read.state.token!;
   const databaseIndex = read.state.databaseIndex;
-  const name = text.name(token, databaseIndex);
+  const name = entry ? text.name(token, databaseIndex) : contentTitle(read.definition?.name, token, 'Technology name unavailable');
+  const named: ResearchText = entry ? text : { ...text, name: () => name };
   const content = () => {
     const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;
     const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, reply.hour);
-    return currentTooltip(token, slot.index, progress, slotNumbers(current, reply.hour).left, !!entry, text, null, databaseIndex);
+    return currentTooltip(token, slot.index, progress, slotNumbers(current, reply.hour).left, !!entry, named, null, databaseIndex);
   };
   const body = <>
     <Art icon={text.icon(token)} className="research-now-art" /><b>{name}</b>

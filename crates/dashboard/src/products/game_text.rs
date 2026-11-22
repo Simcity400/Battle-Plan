@@ -42,8 +42,8 @@ pub enum GameRun {
     Icon { sprite: String },
     #[doc = " An inline country flag."]
     Flag { tag: String },
-    #[doc = " The highlighted name of a thing the text unlocks, which names that thing's content token."]
-    Link { entity: EntityKind, token: String, text: String, tone: Option<String> },
+    #[doc = " The highlighted name of a thing the text unlocks, which names that thing's content token, and its recorded template where the text resolved one."]
+    Link { entity: EntityKind, token: String, database_index: Option<i32>, text: String, tone: Option<String> },
 }
 
 #[derive(Default)]
@@ -83,17 +83,17 @@ fn unshowable(piece: Piece<'_>) -> String {
 pub fn runs(text: &str) -> Result<Vec<GameRun>, String> {
     let mut out = Vec::new();
     let mut tones = Tones::default();
-    let mut link: Option<(EntityKind, &str, String, Option<String>)> = None;
+    let mut link: Option<(EntityKind, &str, Option<i32>, String, Option<String>)> = None;
     for span in spans(text)? {
         match span {
-            Span::Open { kind, token } => link = Some((kind.into(), token, String::new(), None)),
+            Span::Open { kind, token, index } => link = Some((kind.into(), token, index, String::new(), None)),
             Span::Close => {
-                let (entity, token, text, tone) = link.take().ok_or("an entity link closes without opening")?;
-                out.push(GameRun::Link { entity, token: token.to_owned(), text, tone });
+                let (entity, token, database_index, text, tone) = link.take().ok_or("an entity link closes without opening")?;
+                out.push(GameRun::Link { entity, token: token.to_owned(), database_index, text, tone });
             }
             Span::Piece(Piece::Colour(code)) => tones.apply(code),
             Span::Piece(Piece::Text(piece)) => match &mut link {
-                Some((_, _, text, tone)) => {
+                Some((_, _, _, text, tone)) => {
                     if text.is_empty() {
                         *tone = tones.current();
                     }

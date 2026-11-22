@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { detailsStructure, detailTexts, effectsRead, optionEffects, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData.ts';
+import { panelStructure, panelViews } from '../../draw/panels/views.ts';
 import type { ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects } from '../../generated/dashboard';
 
 const person = { assigned: true, id: 7, name: 'Scientist', portrait: null, missing: null };
@@ -30,13 +31,13 @@ test('project details keep duplicate traits, supporting assignments, pending cho
   assert.throws(() => validateProjectDetails({ ...reply, programs: [{ ...reply.programs[0], readHour: 25 }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, projects: [{ ...reply.projects[0], pendingKnown: false }] }), /Invalid/);
   assert.throws(() => validateProjectDetails({ ...reply, warnings: undefined }), /Invalid/);
-  const runs = [{ kind: 'text', text: 'Unlocks ', tone: 'H' }, { kind: 'link', entity: 'technology', token: 'mod_technology', text: 'Gun Carriages', tone: 'H' }];
+  const runs = [{ kind: 'text', text: 'Unlocks ', tone: 'H' }, { kind: 'link', entity: 'technology', token: 'mod_technology', databaseIndex: null, text: 'Gun Carriages', tone: 'H' }];
   const effects = { hour: 24, readHour: 24, output: { runs, refusals: { 'Scope unavailable': 1 } },
     pending: { reward: 'mod_project', ordinal: 0, options: [{ token: 'mod_project', effects: { runs: [], refusals: {} } }] }, unavailable: null, warnings: [] };
   assert.equal(validateProjectEffects(effects), effects);
   assert.throws(() => validateProjectEffects({ ...effects, output: { runs, refusals: { reason: 0 } } }), /Invalid/);
   assert.throws(() => validateProjectEffects({ ...effects, output: { text: 'Output', refusals: {} } }), /Invalid/, 'plain text is no longer the output');
-  assert.throws(() => validateProjectEffects({ ...effects, pending: { ...effects.pending, options: [{ token: 'mod_project', effects: { runs: [{ kind: 'link', entity: 'technology', token: '', text: 'x', tone: null }], refusals: {} } }] } }), /Invalid/);
+  assert.throws(() => validateProjectEffects({ ...effects, pending: { ...effects.pending, options: [{ token: 'mod_project', effects: { runs: [{ kind: 'link', entity: 'technology', token: '', databaseIndex: null, text: 'x', tone: null }], refusals: {} } }] } }), /Invalid/);
   assert.throws(() => validateProjectEffects({ ...effects, pending: { ...effects.pending, options: [{ runs: [], refusals: {} }] } }), /Invalid/, 'an option without its identity');
   assert.throws(() => validateProjectEffects({ ...effects, readHour: 25 }), /Invalid/, 'a read after the hour shown');
   assert.throws(() => validateProjectEffects({ ...effects, readHour: null }), /Invalid/, 'effects with no supplying read');
@@ -67,7 +68,7 @@ test('an iteration reply is the game\'s headed output read at that iteration\'s 
   const iteration = { hour: 23, heading: [text('Output(s)')], refusals: { 'special-project iteration effect scientist effects: Unknown scientist reference type': 1 },
     sections: [
       { heading: null, runs: [text('Project progress '), text('+15.00%', 'H'), text('\nNavy experience '), text('+15', 'G')] },
-      { heading: [text('Equipment(s)')], runs: [{ kind: 'link' as const, entity: 'equipment' as const, token: 'mod_equipment', text: 'Rifle', tone: null }] },
+      { heading: [text('Equipment(s)')], runs: [{ kind: 'link' as const, entity: 'equipment' as const, token: 'mod_equipment', databaseIndex: null, text: 'Rifle', tone: null }] },
     ], noChanges: false, unavailable: null, warnings: [] };
   assert.equal(validateProjectIteration(iteration, 23), iteration);
   const unchanged = { ...iteration, heading: null, sections: [], noChanges: true, refusals: {} };
@@ -76,13 +77,13 @@ test('an iteration reply is the game\'s headed output read at that iteration\'s 
   assert.throws(() => validateProjectIteration({ ...iteration, noChanges: undefined }, 23), /Invalid/);
   assert.throws(() => validateProjectIteration(iteration, 24), /Invalid/, 'a reply read at another hour is not this iteration\'s');
   assert.throws(() => validateProjectIteration({ ...iteration, sections: [] }, 23), /Invalid/, 'no output carries no heading');
-  assert.throws(() => validateProjectIteration({ ...iteration, sections: [{ heading: null, runs: [{ kind: 'link', entity: 'equipment', token: '', text: 'Rifle', tone: null }] }] }, 23), /Invalid/);
+  assert.throws(() => validateProjectIteration({ ...iteration, sections: [{ heading: null, runs: [{ kind: 'link', entity: 'equipment', token: '', databaseIndex: null, text: 'Rifle', tone: null }] }] }, 23), /Invalid/);
   assert.throws(() => validateProjectIteration({ ...iteration, refusals: { reason: 0 } }, 23), /Invalid/);
   const missing = { hour: 23, heading: null, sections: [], noChanges: false, refusals: {}, unavailable: 'This iteration\'s choice was not read within a day of its hour', warnings: [] };
   assert.equal(validateProjectIteration(missing, 23), missing, 'not recorded is a named state, never an empty output');
 });
 
-test('a daily read moves only painted texts: its read date, counts and values never change the structure that renders', () => {
+test('a daily read moves only painted texts and the read it came from: its counts and values never change the structure that renders', () => {
   const next = { ...reply, hour: 48,
     scientists: [{ ...reply.scientists[0], active: 0, injuryDays: 6, injuryHour: 48, visibilityHour: 48, skills: [{ ...reply.scientists[0].skills[0], level: -2, experienceRaw: '100000' }] }],
     breakthroughs: [{ ...reply.breakthroughs[0], points: 20000, readHour: 48 }],
@@ -90,6 +91,9 @@ test('a daily read moves only painted texts: its read date, counts and values ne
       assignments: [{ ...reply.programs[0].assignments[0], current: 3 }, reply.programs[0].assignments[1]] }],
     projects: [{ ...reply.projects[0], readHour: 48, variables: [{ name: 'mod_array^0', valueRaw: '5' }] }] } satisfies SpecialProjectDetails;
   assert.equal(detailsStructure(next), detailsStructure(reply));
+  assert.notEqual(panelStructure('special-project-details', next, 48), panelStructure('special-project-details', reply, 24),
+    'the page is given each read its project rewards are joined on');
+  assert.equal(panelViews['special-project-details']!.values(next, null, 48, panelStructure('special-project-details', reply, 24)), null);
   const reseeded = { ...next, projects: [{ ...next.projects[0], seed: 123 }] };
   assert.equal(detailsStructure(reseeded), detailsStructure(next));
   assert.equal(detailTexts(reseeded).get('j:5:1:seed'), '123');

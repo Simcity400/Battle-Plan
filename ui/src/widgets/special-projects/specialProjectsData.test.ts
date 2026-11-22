@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeThrough, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -427,4 +427,11 @@ test('a project window joins its runtime project on the episode owner and local 
   assert.equal(runtimeProject(details([runtime(9,3,'Mod project name')],121),card,120), null, 'a reply from after the displayed hour waits');
   assert.match(runtimeProject(details([]),card,120) as string, /not recorded/);
   assert.match(runtimeProject(details(null),card,120) as string, /not read/);
+  const open={...data,available:[{firstHour:100,lastHour:147}],projects:[{...data.projects[0],runs:[data.projects[0].runs[0]]}]};
+  const running=shownCard(open,147,open.projects[0].id)!;
+  assert.match(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeThrough(open,running.project,null)) as string, /after this project ended/,
+    'never past what the list covers');
+  assert.deepEqual(runtimeProject(details([runtime(9,3,'Mod project name',160)],160),running,160,episodeThrough(open,running.project,170)), runtime(9,3,'Mod project name',160),
+    'a running project the list still covers takes its later read');
+  assert.equal(episodeThrough(data,card.project,170), 199, 'an ended episode keeps its end');
 });

@@ -26,6 +26,14 @@ test('a frame with the recording\'s own choice is asked and answered apart from 
   assert.throws(() => spriteIcons({ items: [{ key: 'GFX_b', frame: 1, recorded: 'GFX_c', icon: png }], warnings: [] }, asked), /malformed/u);
 });
 
+test('a text icon is asked and answered apart from the sprite of the same key', () => {
+  const asked = spriteFrames([{ key: 'pol_power', frame: 0, text: true }, { key: 'pol_power', frame: 0 }]);
+  assert.equal(asked.length, 2);
+  const icons = spriteIcons({ items: [{ key: 'pol_power', frame: 0, text: true, icon: png }, { key: 'pol_power', frame: 0, icon: null }], warnings: [] }, asked);
+  assert.equal(icons.get(spriteId({ key: 'pol_power', frame: 0, text: true })), png);
+  assert.equal(icons.get(spriteId({ key: 'pol_power', frame: 0 })), null);
+});
+
 test('frame ids keep their parts apart whatever the keys hold', () => {
   assert.notEqual(spriteId({ key: 'GFX_a:x', frame: 0, recorded: 'GFX_b' }), spriteId({ key: 'GFX_a', frame: 0, recorded: 'x:GFX_b' }));
   assert.notEqual(spriteId({ key: 'GFX_a', frame: 0 }), spriteId({ key: 'GFX_a', frame: 0, recorded: 'null' }));

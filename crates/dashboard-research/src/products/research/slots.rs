@@ -1,7 +1,7 @@
 
 use dashboard_base::products::{Country, validate_country};
 use super::{
-    BONUSES, INPUTS, Joined, MODIFIERS, ResearchProgress, ResearchSlotState, assignment_keys, coverage_keys,
+    BONUSES, INPUTS, Joined, MODIFIERS, ResearchDefinitionText, ResearchProgress, ResearchSlotState, assignment_keys, coverage_keys,
     grants::{self, GrantInventory},
     slice_key, slot_read, valid_inputs,
 };
@@ -52,6 +52,8 @@ pub struct ResearchSlotNow {
     pub state: ResearchSlotState,
     #[doc = " The joined assignment's progress at the read; none while idle."]
     pub progress: Option<ResearchProgress>,
+    #[doc = " The text of the definition an unjoined read names, looked up by its template; none when idle or joined."]
+    pub definition: Option<ResearchDefinitionText>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -232,7 +234,8 @@ impl AtHour for ResearchSlots {
             reply.warnings.push(format!("Research names are unavailable: {error}"));
         }
         match slots(frame, owner, at.hour, &localise, at.live) {
-            Ok((read, slots, inventory)) => {
+            Ok((read, mut slots, inventory)) => {
+                defined(&mut slots, &|token, index| at.context.as_ref().map_or((None, None), |art| art.definition_text(token, index)));
                 reply.read_hour = Some(read);
                 reply.slots = slots;
                 reply.grants = inventory;
@@ -240,6 +243,19 @@ impl AtHour for ResearchSlots {
             Err(missing) => reply.missing = Some(missing),
         }
         Ok(reply)
+    }
+}
+
+pub(crate) fn defined(slots: &mut [ResearchSlotNow], text: &dyn Fn(&str, u32) -> (Option<String>, Option<String>)) {
+    for slot in slots {
+        let state = &slot.state;
+        slot.definition = match (&state.token, state.database_index, state.entry_first_observed_hour) {
+            (Some(token), Some(index), None) => u32::try_from(index).ok().map(|index| {
+                let (name, description) = text(token, index);
+                ResearchDefinitionText { token: token.clone(), database_index: index, name, description }
+            }),
+            _ => None,
+        };
     }
 }
 
@@ -299,7 +315,7 @@ pub(crate) fn slots(frame: &DecodedFrame, owner: Owner, hour: i32, localise: &dy
         if slot.progress.as_ref().is_some_and(|progress| progress.base_days_raw.is_some()) {
             progress_cell(input, live);
         }
-        out.push(ResearchSlotNow { index: input.index, state: slot.state, progress: slot.progress });
+        out.push(ResearchSlotNow { index: input.index, state: slot.state, progress: slot.progress, definition: None });
     }
     let inventory = match modifiers {
         None => GrantInventory::unavailable("Research grants are not recorded at this hour"),
