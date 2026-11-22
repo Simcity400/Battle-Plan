@@ -214,7 +214,8 @@ class Crates(unittest.TestCase):
                 "crates/core/Cargo.toml": '[package]\nname = "core"\n[dependencies]\nserde = { workspace = true }\n',
                 "crates/mid/Cargo.toml": '[package]\nname = "mid"\n[dev-dependencies]\nshared-core = { workspace = true }\n',
                 "crates/top/Cargo.toml": '[package]\nname = "top"\n[target."cfg(windows)".dependencies]\nm = { package = "mid", path = "../mid" }\n'
-                                         '[dependencies]\ntao = { path = "../../vendor/tao" }\n',
+                                         '[dependencies]\ntao = { path = "../../vendor/tao" }\n'
+                                         '[target.\'cfg(all())\'.dev-dependencies]\nshared-core = { workspace = true, features = ["x"] }\n',
                 "crates/gone/Cargo.toml": '[package]\nname = "gone"\n',
             }
             for name, text in files.items():
