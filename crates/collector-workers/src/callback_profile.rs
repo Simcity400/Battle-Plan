@@ -131,6 +131,7 @@ impl Sample {
 pub struct Stamp {
     qpc_begin: i64,
     cycles: Option<u64>,
+    _thread: std::marker::PhantomData<*const ()>,
 }
 
 impl Stamp {
@@ -138,6 +139,7 @@ impl Stamp {
         Self {
             qpc_begin: collector_primitives::clock::qpc(),
             cycles: thread_cycles(),
+            _thread: std::marker::PhantomData,
         }
     }
 

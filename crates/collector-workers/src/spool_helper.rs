@@ -92,6 +92,7 @@ impl Shared {
 }
 
 pub struct SpoolHelper {
+    submission: Mutex<()>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
     thread_id: u32,
@@ -122,6 +123,7 @@ impl SpoolHelper {
             .recv()
             .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
         Ok(Self {
+            submission: Mutex::new(()),
             shared,
             thread: Some(thread),
             thread_id,
@@ -132,7 +134,11 @@ impl SpoolHelper {
         self.thread_id
     }
 
-    pub fn join<'a, R>(&self, _backlogged: bool, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
+    fn join<'a, R>(&self, _backlogged: bool, job: &'a Job<'a>, own: impl FnOnce() -> R) -> R {
+        let _submission = self
+            .submission
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         // SAFETY: erases the borrow of `job`; `Finish` below waits for the
         // helper before this frame can return or unwind.
         let erased =

@@ -185,7 +185,7 @@ pub fn stop_before_thread_exit() {
         control.stop_join();
     }
 }
-pub fn creation(handle: HANDLE) -> Option<u64> {
+pub(crate) fn creation(handle: HANDLE) -> Option<u64> {
     let [mut created, mut exited, mut kernel, mut user] = [FILETIME {
         dwLowDateTime: 0,
         dwHighDateTime: 0,

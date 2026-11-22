@@ -10,8 +10,9 @@ including chained fragments. A function is attributed by its own start address,
 never by the nearest preceding symbol. Names come from the PDB's procedure records
 when it has debug information, otherwise from its publics; functions with neither
 show as `<0xADDRESS>`. A `--release` build names the roots; for every name, build
-the same code with `--config profile.release.package.collector.debug=2`. A
-`--profile release-lto` build keeps the collector's line tables, which name its functions.
+the same code with `--config crates/collector/profile-symbols.toml`. The config
+keeps full debug symbols for the DLL and its collector crates. A
+`--profile release-lto` build keeps their line tables, which name their functions.
 
 --check follows direct calls and tail jumps from each root (GAME_THREAD_ROOTS: the
 hourly hook, which runs acquisition on the game's main thread). It fails when a
@@ -33,7 +34,7 @@ import sys
 
 MAX_FRAME = 64 * 1024
 MAX_DEPTH = 384 * 1024
-GAME_THREAD_ROOTS = ("collector::sampling::tick",)
+GAME_THREAD_ROOTS = ("collector_capture::sampling::tick",)
 
 LLVM_DIRS = (r"C:\Program Files\LLVM\bin",)
 

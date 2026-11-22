@@ -246,16 +246,14 @@ fn decode_refused(ordinal: usize) {
     let shared =
         collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()).unwrap();
     let index = shared.take_frame(&mut 0).unwrap();
-    let baseline =
-        collector_capture::decode::refusal_exercise(&shared, index, 20, decode_work(u64::MAX));
+    let baseline = unsafe {
+        collector_capture::decode::refusal_exercise(&shared, index, 20, decode_work(u64::MAX))
+    };
     assert!(!baseline.terminal && baseline.published, "{baseline:?}");
     assert!(!baseline.projects.contains(&by_name) && baseline.capitulation != by_name);
-    let refused = collector_capture::decode::refusal_exercise(
-        &shared,
-        index,
-        21,
-        decode_work(ordinal as u64),
-    );
+    let refused = unsafe {
+        collector_capture::decode::refusal_exercise(&shared, index, 21, decode_work(ordinal as u64))
+    };
     if ordinal == usize::MAX {
         assert_eq!(refused.projects, baseline.projects);
         assert_eq!(refused.capitulation, baseline.capitulation);
@@ -287,23 +285,24 @@ fn decode_refused(ordinal: usize) {
     } else {
         assert_eq!(refused.projects, baseline.projects);
     }
-    let next =
-        collector_capture::decode::refusal_exercise(&shared, index, 22, decode_work(u64::MAX));
+    let next = unsafe {
+        collector_capture::decode::refusal_exercise(&shared, index, 22, decode_work(u64::MAX))
+    };
     assert!(!next.terminal && next.published, "{next:?}");
     assert_eq!(next.projects, baseline.projects);
     assert_eq!(next.capitulation, baseline.capitulation);
-    shared.recycle_frame(index);
+    unsafe { shared.recycle_frame(index) };
     println!("collector-decode-refused=contained");
 }
 
 fn payload_pools_refused() {
     collector_memory::terminal::reset();
     collector_memory::terminal::install_hooks();
-    drop(collector_capture::decode::prepare_payload_pools(true).unwrap());
+    drop(unsafe { collector_capture::decode::prepare_payload_pools(true) }.unwrap());
     let prepare = |ordinal: usize| {
         let scope = collector_memory::terminal::enter(Phase::Bootstrap);
         let guard = NullGuard::new(ordinal);
-        let prepared = collector_capture::decode::prepare_payload_pools(true);
+        let prepared = unsafe { collector_capture::decode::prepare_payload_pools(true) };
         let attempts = ATTEMPTS.load(Ordering::Relaxed);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
@@ -355,7 +354,7 @@ fn frame_build_refused() {
         .map(|_| shared.take_frame(&mut 0).unwrap())
         .collect();
     let extra = shared.take_frame(&mut 0).unwrap();
-    drop(shared.frames.vacate(extra));
+    drop(unsafe { shared.frames.vacate_for_test(extra) });
     let context = Context {
         campaign_id: Some(*CAMPAIGN),
         branch: None,
@@ -369,7 +368,11 @@ fn frame_build_refused() {
         let built = shared.take_frame(&mut 0);
         let count = ATTEMPTS.load(Ordering::Relaxed);
         drop(guard);
-        drop(shared.frames.vacate(built.expect("an unrefused frame")));
+        drop(unsafe {
+            shared
+                .frames
+                .vacate_for_test(built.expect("an unrefused frame"))
+        });
         count
     };
     assert!(!collector_memory::terminal::failed());
@@ -416,9 +419,9 @@ fn frame_build_refused() {
     assert!(!complete);
     assert!(!shared.recording.load(Ordering::Acquire));
     assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
-    assert!(unsafe { &*shared.pending.get() }.iter().next().is_none());
+    assert!(unsafe { shared.pending_losses_empty_for_test() });
     for index in held {
-        shared.recycle_frame(index);
+        unsafe { shared.recycle_frame(index) };
     }
     collector_memory::terminal::clear_handle();
     println!("collector-allocation-count={built}");
@@ -532,9 +535,9 @@ fn frame_growth_refused() {
     assert!(!complete);
     assert!(!shared.recording.load(Ordering::Acquire));
     assert_eq!(shared.dropped.load(Ordering::Relaxed), 0);
-    assert!(unsafe { &*shared.pending.get() }.iter().next().is_none());
+    assert!(unsafe { shared.pending_losses_empty_for_test() });
     for index in held {
-        shared.recycle_frame(index);
+        unsafe { shared.recycle_frame(index) };
     }
     collector_memory::terminal::clear_handle();
     println!("collector-frame-growth-refused=ok");
@@ -1454,9 +1457,9 @@ fn exercise_pipeline(
                                 &mut divisions,
                                 &mut [0; 6],
                             );
-                            contained |= collector_capture::decode::allocation_exercise(
-                                &shared, index, hour,
-                            );
+                            contained |= unsafe {
+                                collector_capture::decode::allocation_exercise(&shared, index, hour)
+                            };
                         }
                     }
                     Phase::Extended => {

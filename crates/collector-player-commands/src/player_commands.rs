@@ -138,7 +138,7 @@ struct Producer {
 struct Live {
     base: usize,
     capture: u64,
-    sample_roster: fn(&LiveMemory, usize),
+    sample_roster: unsafe fn(&LiveMemory, usize),
     kinds: Vec<Descriptor>,
     catalog: Vec<Kind>,
     inputs: native::Inputs,
@@ -169,7 +169,7 @@ impl Live {
     fn new(
         memory: &impl Memory,
         base: usize,
-        sample_roster: fn(&LiveMemory, usize),
+        sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> io::Result<Self> {
         let tables = engine_executable::executable_tables::commands()?;
         let mut kinds = engine_allocation::vec(tables.kinds.len())?;
@@ -706,7 +706,8 @@ impl Live {
         let time = u64::try_from(qpc()).map_err(|_| "command clock negative")?;
         let world = collector_lifetime::world_lifetime::observed_generation().unwrap_or(0);
         self.observe_at(&memory, registers, site, world, time, |state| {
-            (self.sample_roster)(&memory, state)
+            // SAFETY: the hook is admitted and keeps the native state and capture alive.
+            unsafe { (self.sample_roster)(&memory, state) }
         })
     }
 
@@ -942,11 +943,12 @@ pub fn status() -> impl serde::Serialize {
 }
 
 pub fn urgent() -> bool {
-    let pointer = LIVE.load(Ordering::Acquire);
-    if pointer.is_null() {
+    let store = STORE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(live) = store.as_ref() else {
         return false;
-    }
-    let live = unsafe { &*pointer };
+    };
     live.events().pending() >= live.events().len() * 3 / 4
         || live.metadata().pending() >= live.metadata().len() * 3 / 4
 }
@@ -979,11 +981,12 @@ pub struct Drain {
 
 impl Drain {
     pub fn take(&mut self, final_drain: bool) -> io::Result<Vec<Drained>> {
-        let pointer = LIVE.load(Ordering::Acquire);
-        if pointer.is_null() {
+        let store = STORE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(live) = store.as_ref() else {
             return Ok(Vec::new());
-        }
-        let live = unsafe { &*pointer };
+        };
         self.take_live(live, final_drain)
     }
 
@@ -1223,11 +1226,12 @@ impl Drain {
     }
 
     pub fn catalog() -> io::Result<Vec<Kind>> {
-        let pointer = LIVE.load(Ordering::Acquire);
-        if pointer.is_null() {
+        let store = STORE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(live) = store.as_ref() else {
             return Ok(Vec::new());
-        }
-        let live = unsafe { &*pointer };
+        };
         let mut kinds = engine_allocation::vec(live.catalog.len())?;
         for kind in &live.catalog {
             kinds.push(Kind {
@@ -1253,7 +1257,7 @@ impl Hooks {
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
-        sample_roster: fn(&LiveMemory, usize),
+        sample_roster: unsafe fn(&LiveMemory, usize),
     ) -> Self {
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];
@@ -1321,7 +1325,9 @@ impl Hooks {
         self.taps.iter().flat_map(Tap::executable_ranges)
     }
 
-    pub fn release_after_quiet(&mut self) {
+    /// # Safety
+    /// All command taps must be restored and their in-flight callbacks must have quiesced.
+    pub unsafe fn release_after_quiet(&mut self) {
         self.publication_attempted = false;
         LIVE.store(std::ptr::null_mut(), Ordering::Release);
         STORE
@@ -1334,7 +1340,8 @@ impl Hooks {
 impl Drop for Hooks {
     fn drop(&mut self) {
         if !self.publication_attempted {
-            self.release_after_quiet();
+            // SAFETY: publication was never attempted, so no command tap entered.
+            unsafe { self.release_after_quiet() };
         }
     }
 }

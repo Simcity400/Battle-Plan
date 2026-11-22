@@ -143,6 +143,7 @@ pub struct OwnPriority {
     lowest: Option<bool>,
     eco_qos: Option<bool>,
     confined: Option<bool>,
+    _thread: std::marker::PhantomData<*const ()>,
 }
 
 impl OwnPriority {
@@ -153,6 +154,7 @@ impl OwnPriority {
             lowest: None,
             eco_qos: None,
             confined: None,
+            _thread: std::marker::PhantomData,
         }
     }
 

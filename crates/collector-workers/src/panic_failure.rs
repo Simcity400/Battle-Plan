@@ -121,17 +121,20 @@ impl Drop for HookGuard {
     }
 }
 
-pub struct Scope(Option<Context>);
+pub struct Scope(Option<Context>, std::marker::PhantomData<*const ()>);
 
 impl Scope {
     pub fn worker(worker: &'static str) -> Self {
         PANIC.set(None);
-        Self(CONTEXT.replace(Some(Context {
-            worker,
-            stage: "idle",
-            part: None,
-            frame: None,
-        })))
+        Self(
+            CONTEXT.replace(Some(Context {
+                worker,
+                stage: "idle",
+                part: None,
+                frame: None,
+            })),
+            std::marker::PhantomData,
+        )
     }
 
     pub fn frame(frame: Frame) -> Self {
@@ -142,7 +145,7 @@ impl Scope {
             part: None,
             frame: Some(frame),
         }));
-        Self(old)
+        Self(old, std::marker::PhantomData)
     }
 
     pub fn identity(load_signal: Option<i64>, world_generation: u64) {

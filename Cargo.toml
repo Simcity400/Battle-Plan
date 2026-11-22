@@ -473,19 +473,19 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [profile.release-lto.package.collector-capture]
-debug = 2
+debug = "line-tables-only"
 
 [profile.release-lto.package.collector-map-capture]
-debug = 2
+debug = "line-tables-only"
 
 [profile.release-lto.package.collector-player-commands]
-debug = 2
+debug = "line-tables-only"
 
 [profile.release-lto.package.collector-spool]
-debug = 2
+debug = "line-tables-only"
 
 [profile.release-lto.package.collector-runtime]
-debug = 2
+debug = "line-tables-only"
 
 [profile.release-lto.package.collector-workers]
 debug = "line-tables-only"

@@ -94,7 +94,7 @@ impl Plan {
         self.helpers
     }
 
-    pub fn queue(&self) -> Queue<'_> {
+    pub(crate) fn queue(&self) -> Queue<'_> {
         Queue {
             order: &self.order,
             next: AtomicUsize::new(0),
@@ -102,13 +102,13 @@ impl Plan {
     }
 }
 
-pub struct Queue<'a> {
+pub(crate) struct Queue<'a> {
     order: &'a [u8],
     next: AtomicUsize,
 }
 
 impl Queue<'_> {
-    pub fn take(&self) -> Option<usize> {
+    pub(crate) fn take(&self) -> Option<usize> {
         let at = self.next.fetch_add(1, Ordering::Relaxed);
         self.order.get(at).map(|&pack| usize::from(pack))
     }

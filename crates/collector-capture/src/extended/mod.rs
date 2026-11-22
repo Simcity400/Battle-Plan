@@ -516,11 +516,17 @@ impl Captured {
                     }
                 }
             }
-            pub fn helper_view(&self) -> HelperView<'_> {
-                HelperView(self)
+            /// # Safety
+            /// Until all uses of the view finish, no other view or direct access may use the
+            /// non-`Sync` helper packs. The caller's own table conversion must skip helper packs.
+            pub unsafe fn helper_view<'a>(
+                &'a self,
+                plan: &'a crate::pack_conversion::Plan,
+            ) -> HelperView<'a> {
+                HelperView(self, plan.queue())
             }
         }
-        pub struct HelperView<'a>(&'a Captured);
+        pub struct HelperView<'a>(&'a Captured, crate::pack_conversion::Queue<'a>);
         // SAFETY: threads convert through this view only while the spool
         // thread is inside `Helpers::join_some`, which orders each helper's
         // accesses with the spool thread's through its mutex. `@helper` and
@@ -536,14 +542,12 @@ impl Captured {
         // packs therefore has exclusive use, as if it held `&mut`. No other
         // pack is reachable through the view.
         unsafe impl Sync for HelperView<'_> {}
-        unsafe impl Send for HelperView<'_> {}
         impl<'a> HelperView<'a> {
             fn sync_pack<T: Sync>(pack: &'a T) -> &'a T {
                 pack
             }
             pub fn convert_queued<'cache>(
                 &self,
-                queue: &crate::pack_conversion::Queue<'_>,
                 hour: i32,
                 mut projection: Option<&mut collector_projection::projection::Projection<'cache>>,
                 lent: &std::sync::Mutex<LentCaches<'_, 'cache>>,
@@ -553,7 +557,7 @@ impl Captured {
                 let _allocation_phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
                 let _clock = collector_projection::table_clock::arm();
                 let mut spare = intel::ScriptVariableComparison::default();
-                while let Some(index) = queue.take() {
+                while let Some(index) = self.1.take() {
                     let conversion = &mut HelperConversion {
                         projection: projection.as_deref_mut(),
                         characters: None,

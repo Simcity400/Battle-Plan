@@ -66,7 +66,9 @@ impl Memory for Traced<'_> {
     }
 }
 
-pub fn capture(
+/// # Safety
+/// Run this synthetic capture without another runtime or test using the global decode pools.
+pub unsafe fn capture(
     mode: CaptureMode,
     fixture: Fixture,
     refuse: bool,
@@ -102,7 +104,7 @@ pub fn capture(
         reads: Mutex::new(Vec::new()),
         roles: Mutex::new(Vec::new()),
     });
-    let _payloads = decode::prepare_payload_pools(true).unwrap();
+    let _payloads = unsafe { decode::prepare_payload_pools(true) }.unwrap();
     let mut sizing = crate::country_scale::Sizing::for_slots(5);
     sizing.core[1] = 8;
     sizing.core[3] = 8;
@@ -186,7 +188,7 @@ pub fn capture(
             );
         }
         visit(frame, &spans, &roles);
-        shared.recycle_frame_prepared(index);
+        unsafe { shared.recycle_frame_prepared(index) };
     }
     let pool = shared.acquisition.get().unwrap();
     pool.shutdown().unwrap();

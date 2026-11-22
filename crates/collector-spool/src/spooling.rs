@@ -4088,7 +4088,9 @@ fn convert_with_helper(
         .as_ref()
         .map(|projection| **projection);
     let hour = clock.hour;
-    let view = captured.extended.helper_view();
+    // SAFETY: this is the only helper view for this frame. The spool conversion skips the
+    // helper packs, and merging starts after the helpers have joined.
+    let view = unsafe { captured.extended.helper_view(&split.plan) };
     let map = &captured.map;
     let context = collector_memory::terminal::context();
     let SpoolConversion {
@@ -4121,7 +4123,6 @@ fn convert_with_helper(
         packs: [const { None }; TABLE_COUNT],
         costs: collector_capture::pack_conversion::HourCosts::EMPTY,
     });
-    let queue = split.plan.queue();
     let helper = |index: usize| {
         let started = std::time::Instant::now();
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
@@ -4132,14 +4133,7 @@ fn convert_with_helper(
         let span = HELPER.span(Phase::ConvertCore);
         let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
-        view.convert_queued(
-            &queue,
-            hour,
-            projection.as_mut(),
-            &lent,
-            &mut packs,
-            &mut costs,
-        );
+        view.convert_queued(hour, projection.as_mut(), &lent, &mut packs, &mut costs);
         costs.thread(started);
         span.finish();
         take_in(&converted, map, &mut packs, Some(&costs));
@@ -4158,7 +4152,6 @@ fn convert_with_helper(
             .insert_tables(clock.hour, tables, conversion, true, costs);
         let mut packs = [const { None }; TABLE_COUNT];
         view.convert_queued(
-            &queue,
             hour,
             conversion.projection.as_deref_mut(),
             &lent,
@@ -5391,58 +5384,61 @@ mod tests {
             let mut processor =
                 Processor::new(&directory, PreparedCampaigns::default(), start).unwrap();
             collector_map_events::interval::begin(0, 0).unwrap();
-            kit::capture(mode, fixture, refuse, |frame, trace, roles| {
-                let hour = frame.clock.as_ref().unwrap().hour;
-                if mode == CaptureMode::Map {
-                    assert!(
-                        roles.iter().all(|role| !exclusive_roles.contains(role)),
-                        "{fixture:?} hour {hour}: {roles:?}"
-                    );
-                    assert!(trace.iter().all(|span| {
-                        span.role
-                            .is_none_or(|role| !exclusive_roles.contains(&role))
-                    }));
-                    for &table in &exclusive_tables {
-                        assert_eq!(
-                            frame.table_reads[table.index()],
-                            engine_native::memory::ReadCounts::ZERO,
-                            "{fixture:?} hour {hour} {table:?}"
-                        );
-                    }
-                } else if hour == 0 {
-                    for role in [Role::Research, Role::Intel, Role::AirStats] {
-                        assert!(roles.contains(&role), "Full must exercise {role:?}");
-                    }
-                }
-                for field in [
-                    engine_native::cgame_state::GLOBAL_FLAGS,
-                    engine_native::cgame_state::GLOBAL_VARIABLES,
-                ] {
-                    let field = frame.clock.as_ref().unwrap().game_state as usize + field;
-                    let touched = trace.iter().any(|span| {
-                        span.address < field + 8 && field < span.address.saturating_add(span.len)
-                    });
+            unsafe {
+                kit::capture(mode, fixture, refuse, |frame, trace, roles| {
+                    let hour = frame.clock.as_ref().unwrap().hour;
                     if mode == CaptureMode::Map {
                         assert!(
-                            !touched,
-                            "omitted script source read at hour {hour}: {trace:?}"
+                            roles.iter().all(|role| !exclusive_roles.contains(role)),
+                            "{fixture:?} hour {hour}: {roles:?}"
                         );
+                        assert!(trace.iter().all(|span| {
+                            span.role
+                                .is_none_or(|role| !exclusive_roles.contains(&role))
+                        }));
+                        for &table in &exclusive_tables {
+                            assert_eq!(
+                                frame.table_reads[table.index()],
+                                engine_native::memory::ReadCounts::ZERO,
+                                "{fixture:?} hour {hour} {table:?}"
+                            );
+                        }
                     } else if hour == 0 {
-                        assert!(touched, "Full did not exercise the script source");
+                        for role in [Role::Research, Role::Intel, Role::AirStats] {
+                            assert!(roles.contains(&role), "Full must exercise {role:?}");
+                        }
                     }
-                }
-                if matches!(fixture, Fixture::Divisions) {
-                    if refuse && matches!(hour, 2 | 13) {
-                        assert!(matches!(
-                            frame.divisions_result,
-                            Outcome::Unavailable { .. }
-                        ));
-                    } else {
-                        assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+                    for field in [
+                        engine_native::cgame_state::GLOBAL_FLAGS,
+                        engine_native::cgame_state::GLOBAL_VARIABLES,
+                    ] {
+                        let field = frame.clock.as_ref().unwrap().game_state as usize + field;
+                        let touched = trace.iter().any(|span| {
+                            span.address < field + 8
+                                && field < span.address.saturating_add(span.len)
+                        });
+                        if mode == CaptureMode::Map {
+                            assert!(
+                                !touched,
+                                "omitted script source read at hour {hour}: {trace:?}"
+                            );
+                        } else if hour == 0 {
+                            assert!(touched, "Full did not exercise the script source");
+                        }
                     }
-                }
-                processor.frame(frame).unwrap();
-            });
+                    if matches!(fixture, Fixture::Divisions) {
+                        if refuse && matches!(hour, 2 | 13) {
+                            assert!(matches!(
+                                frame.divisions_result,
+                                Outcome::Unavailable { .. }
+                            ));
+                        } else {
+                            assert_eq!(frame.divisions_result, Outcome::Rows { len: 3 });
+                        }
+                    }
+                    processor.frame(frame).unwrap();
+                })
+            };
             processor.detach().unwrap();
             let campaign = processor
                 .campaigns

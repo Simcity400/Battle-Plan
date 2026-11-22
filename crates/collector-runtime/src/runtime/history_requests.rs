@@ -846,13 +846,13 @@ mod tests {
             assert_eq!(shared.frames.len(), 0);
             for &index in &held {
                 spool.poll_with(|_| panic!("worker is blocked outside the handoff"));
-                shared.recycle_frame(index);
+                unsafe { shared.recycle_frame(index) };
                 let mut wait = u64::MAX;
                 assert_eq!(shared.take_frame(&mut wait), Some(index));
                 assert_eq!(wait, 0);
             }
             for index in held {
-                shared.recycle_frame(index);
+                unsafe { shared.recycle_frame(index) };
             }
             assert_eq!(shared.frames.len(), collector_capture::sampling::BUFFERS);
             release.send(()).unwrap();

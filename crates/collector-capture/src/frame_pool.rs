@@ -256,7 +256,7 @@ impl FramePool {
             .is_ok()
     }
 
-    pub fn take(&self, index: usize, keep: usize) -> bool {
+    pub(crate) fn take(&self, index: usize, keep: usize) -> bool {
         if index >= self.made() || self.slot(index).state.load(Ordering::Acquire) != FREE {
             return false;
         }
@@ -276,7 +276,7 @@ impl FramePool {
         false
     }
 
-    pub fn push(&self, index: usize) -> Result<(), usize> {
+    pub(crate) fn push(&self, index: usize) -> Result<(), usize> {
         if index >= self.made() {
             return Err(index);
         }
@@ -285,7 +285,7 @@ impl FramePool {
         self.restore(index)
     }
 
-    pub fn restore(&self, index: usize) -> Result<(), usize> {
+    pub(crate) fn restore(&self, index: usize) -> Result<(), usize> {
         if index >= self.made()
             || self.slot(index).frame.load(Ordering::Acquire).is_null()
             || self
@@ -300,7 +300,7 @@ impl FramePool {
         Ok(())
     }
 
-    pub fn vacant(&self) -> io::Result<usize> {
+    pub(crate) fn vacant(&self) -> io::Result<usize> {
         loop {
             let made = self.made();
             for index in 0..made {
@@ -342,7 +342,7 @@ impl FramePool {
         }
     }
 
-    pub fn install(&self, index: usize, frame: Box<Captured>) {
+    pub(crate) fn install(&self, index: usize, frame: Box<Captured>) {
         let slot = self.slot(index);
         debug_assert!(slot.frame.load(Ordering::Relaxed).is_null());
         slot.bytes
@@ -395,7 +395,7 @@ impl FramePool {
         self.live() > STEADY && self.len() > AHEAD
     }
 
-    pub fn vacate(&self, index: usize) -> Box<Captured> {
+    pub(crate) fn vacate(&self, index: usize) -> Box<Captured> {
         let slot = self.slot(index);
         let frame = slot.frame.swap(ptr::null_mut(), Ordering::AcqRel);
         assert!(!frame.is_null(), "a vacated slot held a frame");
@@ -473,12 +473,26 @@ impl FramePool {
         clippy::mut_from_ref,
         reason = "the holder of the index owns the job alone"
     )]
-    pub unsafe fn job(&self, index: usize) -> &mut DecodeJob {
+    pub(crate) unsafe fn job(&self, index: usize) -> &mut DecodeJob {
         unsafe { &mut *self.slot(index).job.get() }
     }
 
-    pub fn push_decode(&self, index: usize) {
+    pub(crate) fn push_decode(&self, index: usize) {
         self.enqueue(&self.decode, index);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// The caller exclusively owns the occupied slot and transfers it to the decode queue.
+    pub unsafe fn push_decode_for_test(&self, index: usize) {
+        self.push_decode(index);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// The caller exclusively owns the occupied slot and relinquishes it here.
+    pub unsafe fn vacate_for_test(&self, index: usize) -> Box<Captured> {
+        self.vacate(index)
     }
 
     pub fn pop_decode(&self) -> Option<usize> {

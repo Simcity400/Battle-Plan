@@ -227,8 +227,8 @@ fn decode_detach_keeps_worker_panic_after_drain_panic_and_a_later_empty_drain() 
         failure::worker(|| panic!("original worker failure"));
     }));
     sampling::SHARED.store((&shared as *const Shared).cast_mut(), Ordering::Release);
-    let first = detach_drain(|_| panic!("later detach progress failure")).unwrap_err();
-    let later = detach_drain(|_| unreachable!());
+    let first = unsafe { detach_drain(|_| panic!("later detach progress failure")) }.unwrap_err();
+    let later = unsafe { detach_drain(|_| unreachable!()) };
     sampling::SHARED.store(std::ptr::null_mut(), Ordering::Release);
     assert!(first.contains("original worker failure"), "{first}");
     assert!(!first.contains("later detach progress failure"), "{first}");
@@ -3485,7 +3485,7 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
                 .len(),
             3
         );
-        shared.recycle_frame_prepared(index);
+        unsafe { shared.recycle_frame_prepared(index) };
     }
     assert!((shared.frames.decode_len() == 0) && shared.frames.ready_is_empty());
     assert_eq!(memory.reads.get(), reads);
@@ -3514,7 +3514,7 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
         assert_eq!(kit::encoded(frame.extended.projects_pilot()), bytes);
     }
     assert_eq!(memory.reads.get(), reads);
-    shared.recycle_frame_prepared(index);
+    unsafe { shared.recycle_frame_prepared(index) };
     let recycled = shared.frames.pop().unwrap();
     assert_eq!(recycled, index);
     shared
@@ -3529,7 +3529,7 @@ fn project_variables_survive_production_fifo_recycling_and_terminal_decode_denia
     assert_eq!(shared.frames.pop_ready(), Some(recycled));
     let frame = unsafe { &mut *shared.frames[recycled].load(Ordering::Acquire) };
     assert!(kit::variables(frame.extended.projects_pilot()).is_none());
-    shared.recycle_frame_prepared(recycled);
+    unsafe { shared.recycle_frame_prepared(recycled) };
     let index = shared.frames.pop().unwrap();
     assert_eq!(index, recycled);
     shared
@@ -3600,7 +3600,7 @@ fn payload_pools_keep_a_payload_for_every_frame_a_backlog_holds_and_trim_back() 
     }
     let held = CAPITULATION_JOB_POOL.lock().unwrap().len();
     for index in frames {
-        shared.recycle_frame(index);
+        unsafe { shared.recycle_frame(index) };
     }
     assert_eq!(shared.frames.live(), crate::frame_pool::STEADY);
     release_capitulation_job(sized());

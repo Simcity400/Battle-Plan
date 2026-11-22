@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    marker::PhantomData,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
@@ -35,10 +36,10 @@ pub(crate) fn copy_only(copy_only: bool) {
 }
 
 pub fn gated() -> Gated {
-    Gated(COPY_ONLY.replace(false))
+    Gated(COPY_ONLY.replace(false), PhantomData)
 }
 
-pub struct Gated(bool);
+pub struct Gated(bool, PhantomData<*const ()>);
 
 impl Drop for Gated {
     fn drop(&mut self) {

@@ -149,6 +149,7 @@ impl Steps {
             collector_primitives::clock::qpc(),
             #[cfg(feature = "phase_cpu")]
             thread_cycles(),
+            std::marker::PhantomData,
         )
     }
 
@@ -168,6 +169,7 @@ pub struct Span<'a>(
     Phase,
     i64,
     #[cfg(feature = "phase_cpu")] Option<u64>,
+    std::marker::PhantomData<*const ()>,
 );
 
 pub fn thread_cycles() -> Option<u64> {

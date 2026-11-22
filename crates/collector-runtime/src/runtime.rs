@@ -6,7 +6,6 @@ use history_requests::{HistoryWorker, SpoolHistory};
 use collector_capture::acquisition_jobs as acquisition;
 use collector_capture::decode;
 use collector_capture::sampling;
-use collector_capture::sampling::ACTIVE;
 use collector_capture::sampling::Shared;
 use collector_capture::sampling::{SHARED, SharedSlot};
 use collector_hooks::hook::Hook;
@@ -1277,7 +1276,8 @@ fn run(
         .acquisition
         .set(acquisition)
         .map_err(|_| "acquisition pool already initialized")?;
-    let _payload_pools = decode::prepare_payload_pools(config.game_score)
+    // SAFETY: the runtime owns the pools and retains them until its hooks and workers quiesce.
+    let _payload_pools = unsafe { decode::prepare_payload_pools(config.game_score) }
         .map_err(|e| error_reason(e, "payload pools allocation failed"))?;
     if config.cancel_file.exists() || detach.signaled() {
         return Err("recording cancelled before hook installation");
@@ -1361,7 +1361,8 @@ fn run(
         })
         .map_err(|e| error_reason(e, "collector bootstrap I/O failed"))?;
     let decode_panic_hook = collector_workers::panic_failure::HookGuard::install();
-    let mut installation_error = decode::start_worker().err();
+    // SAFETY: no capture is published yet. This runtime will join and drain this worker.
+    let mut installation_error = unsafe { decode::start_worker() }.err();
     while spool_id.load(Ordering::Acquire) == 0 && !spool.is_finished() {
         std::thread::yield_now();
     }
@@ -1934,12 +1935,15 @@ fn run(
     }
     progress.step("acquisition_joined", None);
     let mut logged = Instant::now();
-    let decode_outcome = decode::detach_drain(|count| {
-        if logged.elapsed() >= Duration::from_secs(1) {
-            logged = Instant::now();
-            progress.step("decode_draining", Some(count));
-        }
-    });
+    // SAFETY: capture and acquisition have stopped, and the runtime retains state and pools.
+    let decode_outcome = unsafe {
+        decode::detach_drain(|count| {
+            if logged.elapsed() >= Duration::from_secs(1) {
+                logged = Instant::now();
+                progress.step("decode_draining", Some(count));
+            }
+        })
+    };
     progress.step("decode_drained", None);
     shared.stop_spool.store(true, Ordering::Release);
     shared.wake_spool();
@@ -2006,7 +2010,8 @@ fn run(
             hooks.release_after_quiet();
         }
         if let Some(hooks) = command_hooks.inner.as_mut() {
-            hooks.release_after_quiet();
+            // SAFETY: the command taps are restored and their callbacks have quiesced.
+            unsafe { hooks.release_after_quiet() };
         }
         let _ = match event_feed_hooks
             .inner
@@ -2178,7 +2183,7 @@ impl ObserverState for RestoreFamily {
                 "command observers did not quiesce; collector retained",
             ),
             Self::Hourly => (
-                ACTIVE.load(Ordering::SeqCst) != 0,
+                sampling::active(),
                 "hourly callbacks did not quiesce; collector retained",
             ),
             Self::EquipmentDestruction => (
@@ -2669,7 +2674,8 @@ impl HookLifetime<'_> {
     fn release<T>(self, hooks: T, wait: impl FnOnce()) {
         self.wait_quiet(wait);
         if self.restored {
-            self.shared.clear();
+            // SAFETY: restoration succeeded and the quiescence wait completed.
+            unsafe { self.shared.clear() };
             drop(hooks);
         } else {
             std::mem::forget(hooks);
@@ -4041,29 +4047,26 @@ fn grow_combat_hints(
     }
     let mut refused = false;
     for index in 0..made {
-        if !shared.take_idle_frame_for_growth(index) {
-            continue;
-        }
-        let generation = generation(index);
-        let mut state = applied.get(index, generation);
-        let hint = hints.pending(capacities, &state);
-        if hint.land.is_none() && hint.naval.is_none() {
-            shared.restore_idle_frame_prepared(index);
-            continue;
-        }
-        let frame = unsafe { shared.frames[index].captured_mut() };
-        let success = frame
-            .extended
-            .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
-        refused |= (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
-        if success[0] {
-            state.land = hint.land;
-        }
-        if success[1] {
-            state.naval = hint.naval;
-        }
-        applied.set(index, generation, state);
-        shared.restore_idle_frame_prepared(index);
+        shared.grow_idle_frame(index, |frame| {
+            let generation = generation(index);
+            let mut state = applied.get(index, generation);
+            let hint = hints.pending(capacities, &state);
+            if hint.land.is_none() && hint.naval.is_none() {
+                return;
+            }
+            let success = frame
+                .extended
+                .apply_combat_hints(hint.land.as_ref(), hint.naval.as_ref());
+            refused |=
+                (hint.land.is_some() && !success[0]) || (hint.naval.is_some() && !success[1]);
+            if success[0] {
+                state.land = hint.land;
+            }
+            if success[1] {
+                state.naval = hint.naval;
+            }
+            applied.set(index, generation, state);
+        });
     }
     refused
 }
@@ -4075,17 +4078,14 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         .combat_progress
         .presize(&live, shared.base);
     for idle_index in 0..shared.frames.made() {
-        if !shared.take_idle_frame_for_growth(idle_index) {
-            continue;
-        }
-        #[cfg(test)]
-        if let Some(check) = lock(&sizing.before_idle_frame_growth).take() {
-            check(sizing, shared);
-        }
-        let idle = unsafe { shared.frames[idle_index].captured_mut() };
-        capacities.grow_frame(idle);
-        sizing.account_homes(shared);
-        shared.restore_idle_frame_prepared(idle_index);
+        shared.grow_idle_frame(idle_index, |idle| {
+            #[cfg(test)]
+            if let Some(check) = lock(&sizing.before_idle_frame_growth).take() {
+                check(sizing, shared);
+            }
+            capacities.grow_frame(idle);
+            sizing.account_homes(shared);
+        });
     }
 }
 
@@ -4237,10 +4237,7 @@ fn verify_content_roster(
     processor: &mut Processor,
     writer: &crate::status_writer::StatusHandle,
 ) -> Result<(), &'static str> {
-    if !shared.roster_ready.load(Ordering::Acquire) {
-        return Ok(());
-    }
-    if let Some(roster) = unsafe { (&mut *shared.roster.get()).take() } {
+    if let Some(roster) = shared.take_sampled_roster() {
         shared
             .pool_bytes
             .fetch_sub(roster.allocated_bytes() as u64, Ordering::Relaxed);
@@ -4346,7 +4343,7 @@ fn spool_loop(
                     .map(|clock| clock.play_session_started_at),
                 failed_hour: frame.clock.as_ref().map(|clock| clock.hour),
             });
-            if !shared.roster_ready.load(Ordering::Acquire) {
+            if !shared.roster_ready() {
                 startup_unknown = startup_unknown
                     .saturating_add(1)
                     .saturating_add(frame.dropped_before.unknown_count)
@@ -4357,7 +4354,8 @@ fn spool_loop(
                             .map(|loss| loss.count)
                             .sum::<u64>(),
                     );
-                shared.recycle_frame_prepared(index);
+                // SAFETY: this ready slot belongs to the spool and no borrow is used afterward.
+                unsafe { shared.recycle_frame_prepared(index) };
                 continue;
             }
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
@@ -4581,7 +4579,8 @@ fn spool_loop(
                 collector_memory::terminal::enter(collector_memory::terminal::Phase::Teardown);
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
             collector_memory::terminal::attempted_hour(None);
-            let pending = unsafe { std::mem::take(&mut *shared.pending.get()) };
+            // SAFETY: the runtime stops the spool after all capture callbacks have drained.
+            let pending = unsafe { shared.take_pending_losses() };
             match processor.prepare_losses(&pending) {
                 Err(error) => add_terminal_error(
                     &mut drain_result,
@@ -4861,7 +4860,8 @@ impl SizingShared {
                     shared.offer_country_cache(required_cells);
                 }
             }
-            shared.prepare_frame_for_reuse(index);
+            // SAFETY: the spool still owns the occupied slot and has released its frame borrow.
+            unsafe { shared.prepare_frame_for_reuse(index) };
             self.account_homes(shared);
             #[cfg(test)]
             if let Some(check) = lock(&self.before_recycle_publish).take() {
@@ -4870,7 +4870,8 @@ impl SizingShared {
             let mut capacities = self.capacities.lock();
             self.merge_capacities(&mut capacities, proposal);
             if *capacities == proposal {
-                let surplus = shared.recycle_frame_unfreed(index);
+                // SAFETY: the spool transfers the occupied slot and no longer accesses the frame.
+                let surplus = unsafe { shared.recycle_frame_unfreed(index) };
                 if let Some(generation) = admitted
                     && collector_lifetime::world_lifetime::token() == Some(generation)
                 {
@@ -5760,7 +5761,7 @@ mod tests {
         let taken: Vec<_> = (0..hours)
             .map(|_| {
                 let index = shared.take_frame(&mut 0).unwrap();
-                shared.frames.push_decode(index);
+                unsafe { shared.frames.push_decode_for_test(index) };
                 index
             })
             .collect();
@@ -5786,13 +5787,13 @@ mod tests {
         assert_eq!(ahead["frames"]["ahead_ready"], built);
         assert_eq!(ahead["frames"]["free"], built);
         let index = shared.take_frame(&mut 0).unwrap();
-        shared.frames.push_decode(index);
+        unsafe { shared.frames.push_decode_for_test(index) };
         let taken_ahead = status(&shared);
         assert_eq!(taken_ahead["frames"]["ahead_taken"], 1);
         assert_eq!(taken_ahead["frames"]["ahead_ready"], built - 1);
         assert_eq!(taken_ahead["frames"]["grown"], hours as u64 - steady);
         while let Some(index) = shared.frames.pop_decode() {
-            shared.recycle_frame(index);
+            unsafe { shared.recycle_frame(index) };
         }
         let caught_up = status(&shared);
         assert_eq!(caught_up["frames"]["in_flight"], 0);
@@ -6842,7 +6843,7 @@ mod tests {
             } else {
                 assert!(frame.wars.len() < wars);
             }
-            shared.recycle_frame(index);
+            unsafe { shared.recycle_frame(index) };
         }
         sizing.grow_idle(&shared);
         assert_idle_war_and_faction_capacities(&shared, sizing);
@@ -6890,7 +6891,7 @@ mod tests {
             assert!(frame(index).wars.len() >= wars);
         }
         for index in held {
-            shared.recycle_frame_prepared(index);
+            unsafe { shared.recycle_frame_prepared(index) };
         }
         assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
@@ -6980,7 +6981,7 @@ mod tests {
                 builder.end(|| "the frame builder, stopped,".into());
                 assert!(thread.sizing.failure.get().is_none());
                 for index in held {
-                    shared.recycle_frame_prepared(index);
+                    unsafe { shared.recycle_frame_prepared(index) };
                 }
                 let gauge = shared.frames.gauge();
                 assert_eq!(
@@ -7045,7 +7046,7 @@ mod tests {
                 steps.at("idle growth, released");
                 worker.end(|| "idle growth, released,".into());
                 for index in others.into_iter().chain(Some(returning)) {
-                    shared.recycle_frame_prepared(index);
+                    unsafe { shared.recycle_frame_prepared(index) };
                 }
                 assert_eq!(shared.frames.len(), sampling::BUFFERS);
             },
@@ -7146,7 +7147,7 @@ mod tests {
                 spool.end(|| "the spool's free, released,".into());
                 let hours_held = hours_taken.into_iter().flat_map(|(index, _)| index);
                 for index in taken.into_iter().chain(hours_held) {
-                    shared.recycle_frame(index);
+                    unsafe { shared.recycle_frame(index) };
                 }
                 let gauge = shared.frames.gauge();
                 assert_eq!(
@@ -7233,7 +7234,7 @@ mod tests {
         });
         assert_eq!(shared.pool_owned() - pool_before, added as u64);
         for index in held {
-            shared.recycle_frame_prepared(index);
+            unsafe { shared.recycle_frame_prepared(index) };
         }
     }
 
@@ -7758,7 +7759,7 @@ mod tests {
         );
         assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(bytes(), before);
-        shared.recycle_frame_prepared(held[0]);
+        unsafe { shared.recycle_frame_prepared(held[0]) };
         assert!(!grow_combat_hints(
             &shared,
             &capacities,
@@ -7769,7 +7770,7 @@ mod tests {
             assert!(applied[index].land.is_some() && applied[index].naval.is_some());
         }
         for index in held.into_iter().skip(1) {
-            shared.recycle_frame_prepared(index);
+            unsafe { shared.recycle_frame_prepared(index) };
         }
         assert_eq!(shared.frames.len(), sampling::BUFFERS);
     }
@@ -7833,7 +7834,7 @@ mod tests {
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        shared.recycle_frame(held);
+        unsafe { shared.recycle_frame(held) };
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied[held].land != previous.land);

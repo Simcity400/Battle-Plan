@@ -321,7 +321,9 @@ fn prepare_retirement() -> std::io::Result<()> {
     Ok(())
 }
 
-pub struct PayloadPools;
+pub struct PayloadPools {
+    _private: (),
+}
 
 impl Drop for PayloadPools {
     fn drop(&mut self) {
@@ -405,8 +407,11 @@ impl Drop for PayloadPools {
     }
 }
 
-pub fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
-    let pools = PayloadPools;
+/// # Safety
+/// The caller owns the decode pools for the session. Prepare and release them without another
+/// owner, and drop the returned guard only after hooks, decode and retirement users quiesce.
+pub unsafe fn prepare_payload_pools(game_score: bool) -> std::io::Result<PayloadPools> {
+    let pools = PayloadPools { _private: () };
     prepare_retirement()?;
     for _ in 0..JOB_POOL_STEADY {
         if collector_memory::terminal::failed() {
@@ -519,7 +524,7 @@ pub fn enqueue(shared: &Shared, mut job: DecodeJob) -> Option<DecodeJob> {
     None
 }
 
-pub fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
+pub(crate) fn enqueue_reserved(shared: &Shared, mut reserved: Reserved<'_>) -> bool {
     if collector_memory::terminal::failed() {
         recycle_payloads(reserved.job());
         return false;
@@ -810,7 +815,9 @@ fn exercise_projects() -> Option<ProjectsJob> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
+/// # Safety
+/// The test owns the initialized decode pools and the occupied slot for this exercise.
+pub unsafe fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> bool {
     let Some(payload) = exercise_projects() else {
         return false;
     };
@@ -845,7 +852,9 @@ pub struct RefusalHour {
 }
 
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
-pub fn refusal_exercise(
+/// # Safety
+/// The test exclusively owns the occupied slot and the initialized decode pools.
+pub unsafe fn refusal_exercise(
     shared: &Shared,
     index: usize,
     hour: i32,
@@ -879,12 +888,15 @@ pub fn refusal_exercise(
     if !hour.terminal {
         let _setup =
             collector_memory::terminal::enter(collector_memory::terminal::Phase::Bootstrap);
-        shared.prepare_frame_for_reuse(index);
+        unsafe { shared.prepare_frame_for_reuse(index) };
     }
     hour
 }
 
-pub fn start_worker() -> Result<(), &'static str> {
+/// # Safety
+/// The runtime owner starts decode once, before publishing capture, and joins it during detach.
+/// Do not start a new worker while another owner is draining or retiring the decode pools.
+pub unsafe fn start_worker() -> Result<(), &'static str> {
     let mut slot = WORKER.lock().map_err(|_| "decode worker lock poisoned")?;
     if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
         return Err("decode worker already running");
@@ -1508,7 +1520,10 @@ fn decode_presentation(shared: &Shared, index: usize) {
     }
 }
 
-pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
+/// # Safety
+/// The runtime owner must have stopped all producers and must keep the published capture and
+/// decode pools alive until the worker has joined and this drain finishes. There is one drainer.
+pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     let _failure = failure::Scope::worker("decode detach drain");
     STOP.store(true, Ordering::Release);
     let (worker, mut error) = match WORKER.lock() {
@@ -1572,11 +1587,11 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     panic_failure().or(error).map_or(Ok(()), Err)
 }
 
-pub fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
+pub(crate) fn reserve(shared: &Shared, index: usize) -> Reserved<'_> {
     Reserved { shared, index }
 }
 
-pub fn pop(shared: &Shared) -> Option<DecodeJob> {
+fn pop(shared: &Shared) -> Option<DecodeJob> {
     let index = shared.frames.pop_decode()?;
     // SAFETY: popping the index hands its frame, and so its job, to this consumer.
     Some(std::mem::take(unsafe { shared.frames.job(index) }))
@@ -1589,13 +1604,13 @@ pub fn push(shared: &Shared, job: DecodeJob) {
     reserved.publish();
 }
 
-pub struct Reserved<'a> {
+pub(crate) struct Reserved<'a> {
     shared: &'a Shared,
     index: usize,
 }
 
 impl Reserved<'_> {
-    pub fn job(&mut self) -> &mut DecodeJob {
+    pub(crate) fn job(&mut self) -> &mut DecodeJob {
         // SAFETY: this reservation's caller holds the frame.
         unsafe { self.shared.frames.job(self.index) }
     }
@@ -1636,7 +1651,7 @@ impl Drop for Reserved<'_> {
 pub(crate) fn reset_for_test() {
     prepare_retirement().unwrap();
     reclaim_payloads();
-    std::mem::forget(prepare_payload_pools(false).unwrap());
+    std::mem::forget(unsafe { prepare_payload_pools(false) }.unwrap());
     SEQ.store(0, Ordering::Relaxed);
 }
 

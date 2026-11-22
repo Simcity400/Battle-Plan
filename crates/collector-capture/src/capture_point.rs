@@ -296,13 +296,22 @@ pub fn set_beside(beside: bool) {
     BESIDE.store(beside && !FAILED.load(Ordering::SeqCst), Ordering::SeqCst);
 }
 
+static THREAD_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct Thread {
+    _owner: std::sync::MutexGuard<'static, ()>,
     handle: Option<JoinHandle<()>>,
     id: u32,
 }
 
 impl Thread {
     pub fn start(stack_bytes: usize) -> io::Result<Self> {
+        let owner = THREAD_OWNER.try_lock().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "a capture thread already owns the work slot",
+            )
+        })?;
         capture_gate::on_wait(hurry);
         WORK.store(IDLE, Ordering::Release);
         let handle = std::thread::Builder::new()
@@ -317,6 +326,7 @@ impl Thread {
             id,
         );
         Ok(Self {
+            _owner: owner,
             handle: Some(handle),
             id,
         })

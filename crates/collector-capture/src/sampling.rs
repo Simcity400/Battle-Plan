@@ -81,13 +81,16 @@ impl SharedSlot {
     }
 
     #[doc = "# Safety"]
-    #[doc = "Keep the shared state alive until the slot is cleared and all users have quiesced."]
+    #[doc = "Only the runtime owner may publish, from an empty slot. Keep the shared state alive until all users have quiesced and the slot has been cleared."]
     pub unsafe fn publish(&self, shared: &Shared) {
         self.0
             .store(std::ptr::from_ref(shared).cast_mut(), Ordering::Release);
     }
 
-    pub fn clear(&self) {
+    /// # Safety
+    /// All hooks and workers that can use the published state must have quiesced.
+    /// The caller must prevent any new access until the next publication.
+    pub unsafe fn clear(&self) {
         self.0.store(ptr::null_mut(), Ordering::Release);
     }
 
@@ -129,7 +132,7 @@ impl SharedIdentity {
     }
 }
 
-pub static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug, Default)]
 struct CadenceState {
     initialized: bool,
@@ -783,10 +786,11 @@ pub struct Shared {
     pub stop_spool: AtomicBool,
     pub spool_waker: OnceLock<std::thread::Thread>,
     pub(crate) decode_waker: OnceLock<std::thread::Thread>,
-    pub roster: UnsafeCell<Option<Box<Roster>>>,
-    pub roster_ready: AtomicBool,
+    roster: UnsafeCell<Option<Box<Roster>>>,
+    roster_ready: AtomicBool,
+    roster_taken: AtomicBool,
     roster_sampling: AtomicBool,
-    pub pending: UnsafeCell<LossBatch>,
+    pending: UnsafeCell<LossBatch>,
     clock_capture: UnsafeCell<ClockCapture>,
     clock_required: AtomicUsize,
     clock_frames: AtomicUsize,
@@ -875,7 +879,7 @@ pub struct Shared {
     pub forget_families: std::sync::atomic::AtomicU32,
     pub lexical_max: AtomicI32,
     pub fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
-    pub fixed_layout_buffer: UnsafeCell<Vec<u8>>,
+    fixed_layout_buffer: UnsafeCell<Vec<u8>>,
     pub modifier_table: [AtomicU64; 2],
     pub division_mark: AtomicU64,
     pub country_cache_swap: Mutex<CountryCacheSwap>,
@@ -1167,6 +1171,7 @@ impl Shared {
             decode_waker: OnceLock::new(),
             roster: UnsafeCell::new(Some(roster)),
             roster_ready: AtomicBool::new(false),
+            roster_taken: AtomicBool::new(false),
             roster_sampling: AtomicBool::new(false),
             pending: UnsafeCell::new(LossBatch::default()),
             clock_capture: UnsafeCell::new(ClockCapture::default()),
@@ -1457,7 +1462,7 @@ impl Shared {
         self.frames.stage(index, stage, qpc() as u64);
     }
 
-    pub fn take_idle_frame_for_growth(&self, index: usize) -> bool {
+    fn take_idle_frame_for_growth(&self, index: usize) -> bool {
         if !self.frames.take(index, crate::frame_pool::AHEAD) {
             return false;
         }
@@ -1509,7 +1514,9 @@ impl Shared {
             )
     }
 
-    pub fn prepare_frame_for_reuse(&self, index: usize) {
+    /// # Safety
+    /// The caller exclusively owns the occupied slot at this index and retains ownership afterward.
+    pub unsafe fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
         frame.reset_verdicts();
         frame.verdicts_reset = true;
@@ -1524,22 +1531,39 @@ impl Shared {
         self.return_frame(index, Return::Kept);
     }
 
-    pub fn recycle_frame_prepared(&self, index: usize) {
-        self.prepare_frame_for_reuse(index);
-        self.recycle_frame(index);
+    /// # Safety
+    /// The caller must exclusively own the occupied slot and relinquishes it here.
+    pub unsafe fn recycle_frame_prepared(&self, index: usize) {
+        // SAFETY: the caller transfers its occupied slot for preparation and return.
+        unsafe {
+            self.prepare_frame_for_reuse(index);
+            self.recycle_frame(index);
+        }
     }
 
-    pub fn restore_idle_frame_prepared(&self, index: usize) {
-        self.prepare_frame_for_reuse(index);
+    pub fn grow_idle_frame(&self, index: usize, grow: impl FnOnce(&mut Captured)) {
+        if !self.take_idle_frame_for_growth(index) {
+            return;
+        }
+        // SAFETY: taking the idle slot grants exclusive access until its return.
+        unsafe {
+            grow(self.frames[index].captured_mut());
+            self.prepare_frame_for_reuse(index);
+        }
         self.return_frame(index, Return::Idle);
     }
 
-    pub fn recycle_frame(&self, index: usize) {
-        self.free_surplus(self.recycle_frame_unfreed(index));
+    /// # Safety
+    /// The caller must exclusively own the occupied slot and relinquishes it here.
+    pub unsafe fn recycle_frame(&self, index: usize) {
+        // SAFETY: the caller transfers its occupied slot for return.
+        self.free_surplus(unsafe { self.recycle_frame_unfreed(index) });
     }
 
     #[must_use]
-    pub fn recycle_frame_unfreed(&self, index: usize) -> Option<Box<Captured>> {
+    /// # Safety
+    /// The caller must exclusively own the occupied slot and relinquishes it here.
+    pub unsafe fn recycle_frame_unfreed(&self, index: usize) -> Option<Box<Captured>> {
         self.return_frame(index, Return::Newest)
     }
 
@@ -1729,6 +1753,33 @@ impl Shared {
         self.sample_content_roster(memory, clock.map(|clock| clock.hour));
     }
 
+    pub fn roster_ready(&self) -> bool {
+        self.roster_ready.load(Ordering::Acquire)
+    }
+
+    pub fn take_sampled_roster(&self) -> Option<Box<Roster>> {
+        if !self.roster_ready() || self.roster_taken.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        // SAFETY: publication ends all sampling access and the swap grants one consumer.
+        unsafe { (&mut *self.roster.get()).take() }
+    }
+
+    /// # Safety
+    /// The capture callback and every other user of its pending loss buffer must have quiesced.
+    pub unsafe fn take_pending_losses(&self) -> LossBatch {
+        // SAFETY: the caller owns the loss buffer after the capture has quiesced.
+        unsafe { std::mem::take(&mut *self.pending.get()) }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// # Safety
+    /// No capture or loss drain may access the pending loss buffer while it is inspected.
+    pub unsafe fn pending_losses_empty_for_test(&self) -> bool {
+        // SAFETY: the caller excludes mutations of the loss buffer.
+        unsafe { &*self.pending.get() }.iter().next().is_none()
+    }
+
     pub(crate) fn sample_content_roster(&self, memory: &impl Memory, hour: Option<i32>) {
         if hour.is_none()
             || self.roster_ready.load(Ordering::Acquire)
@@ -1749,6 +1800,10 @@ impl Shared {
         self.roster_sampling.store(false, Ordering::Release);
         self.wake_spool();
     }
+}
+
+pub fn active() -> bool {
+    ACTIVE.load(Ordering::SeqCst) != 0
 }
 
 pub fn completed_callback_ticks(base: &AtomicI64, tail: &AtomicI64) -> Option<i64> {
@@ -6988,7 +7043,9 @@ mod tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod capture_scope_test_kit;
 
-pub fn sample_command_roster(memory: &LiveMemory, state: usize) {
+/// # Safety
+/// Call from an admitted command hook, while its native state and the published capture remain live.
+pub unsafe fn sample_command_roster(memory: &LiveMemory, state: usize) {
     let shared = SHARED.load(Ordering::Acquire);
     if !shared.is_null() {
         let shared = unsafe { &*shared };

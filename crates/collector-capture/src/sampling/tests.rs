@@ -1243,7 +1243,7 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
             unsafe { (*shared.frames[index].load(Ordering::Acquire)).qpc },
             hour as i64
         );
-        shared.recycle_frame(index);
+        unsafe { shared.recycle_frame(index) };
     }
     assert_eq!(shared.frames.pop_decode(), None);
     let caught_up = shared.frames.gauge();
@@ -1256,7 +1256,7 @@ fn a_stalled_spool_never_holds_the_game_and_the_pool_returns_to_its_steady_frame
     let mut grow_ns = u64::MAX;
     let index = shared.take_frame(&mut grow_ns).unwrap();
     assert_eq!(grow_ns, 0);
-    shared.recycle_frame(index);
+    unsafe { shared.recycle_frame(index) };
 }
 
 #[test]
@@ -1368,7 +1368,7 @@ fn a_slowed_builder_keeps_a_spare_ahead_so_the_game_thread_never_builds_a_frame(
             );
             for index in held.drain(..) {
                 steps.at(format_args!("recycling frame {index}; {}", gauge()));
-                shared.recycle_frame(index);
+                unsafe { shared.recycle_frame(index) };
             }
             let caught_up = shared.frames.gauge();
             assert_eq!(
@@ -2626,7 +2626,7 @@ fn no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
     let losses = unsafe { &*shared.pending.get() };
     let run = losses.iter().next().unwrap();
     assert_eq!((run.first_hour, run.last_hour, run.count), (41, 41, 1));
-    shared.recycle_frame(held);
+    unsafe { shared.recycle_frame(held) };
 }
 
 #[test]
@@ -2747,7 +2747,7 @@ fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_de
     });
     assert_eq!(pending.iter().count(), 2);
     assert_eq!(frame.allocated_bytes(), before);
-    shared.recycle_frame(index);
+    unsafe { shared.recycle_frame(index) };
 }
 
 #[test]
@@ -2784,7 +2784,7 @@ fn frame_growth_refused_a_slot_segment_gives_up_without_aborting() {
     let grown = shared.take_frame(&mut grow_ns).unwrap();
     assert!(grow_ns > 0);
     for index in held.into_iter().chain(Some(grown)) {
-        shared.recycle_frame(index);
+        unsafe { shared.recycle_frame(index) };
     }
     assert_eq!(
         (shared.frames.made(), shared.frames.live()),
@@ -2806,7 +2806,7 @@ fn campaign_clock_preparation_grows_on_the_game_thread_without_waiting() {
     let frames = collector_test_support::with_allocations_denied(|| {
         let frames: [Option<usize>; BUFFERS] = std::array::from_fn(|_| shared.take_frame(&mut 0));
         for index in frames.into_iter().flatten() {
-            shared.recycle_frame(index);
+            unsafe { shared.recycle_frame(index) };
         }
         frames
     });
@@ -2883,7 +2883,7 @@ fn an_hour_needing_a_longer_clock_never_waits_for_the_spool_s_clock_preparation(
             spool.end(|| "the spool's clock preparation, released,".into());
             assert_eq!((hour, epoch), (42, 1));
             assert_eq!(campaign_id, vec![b'a'; 5_001]);
-            shared.recycle_frame(index);
+            unsafe { shared.recycle_frame(index) };
         },
     );
 }
@@ -2900,7 +2900,7 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
     let _ = unsafe { shared.prepared_clock_capture(&long) };
     shared.prepare_frame_clocks(&long);
     for index in held {
-        shared.recycle_frame_prepared(index);
+        unsafe { shared.recycle_frame_prepared(index) };
     }
     collector_test_support::with_allocations_denied(|| {
         let capture = unsafe { shared.prepared_clock_capture(&long) };
@@ -2915,7 +2915,7 @@ fn campaign_clock_in_service_frames_prepare_before_republication() {
             );
         }
         for index in held {
-            shared.recycle_frame(index);
+            unsafe { shared.recycle_frame(index) };
         }
     });
 }
@@ -3034,7 +3034,7 @@ fn buffer_return_runs_on_a_small_stack() {
                 .map(|_| worker.take_frame(&mut 0).unwrap())
                 .collect();
             for index in held {
-                worker.recycle_frame_prepared(index);
+                unsafe { worker.recycle_frame_prepared(index) };
             }
             worker.frames.len()
         })
@@ -3054,10 +3054,10 @@ fn buffers_backlogged_with_one_free_buffer() {
     let third = shared.take_frame(&mut 0).unwrap();
     assert_eq!(shared.frames.len(), 1);
     assert!(shared.buffers_backlogged());
-    shared.recycle_frame_prepared(first);
+    unsafe { shared.recycle_frame_prepared(first) };
     assert!(!shared.buffers_backlogged());
-    shared.recycle_frame_prepared(second);
-    shared.recycle_frame_prepared(third);
+    unsafe { shared.recycle_frame_prepared(second) };
+    unsafe { shared.recycle_frame_prepared(third) };
     assert_eq!(shared.frames.len(), BUFFERS);
 }
 
