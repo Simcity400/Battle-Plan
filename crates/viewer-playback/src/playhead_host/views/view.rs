@@ -5,10 +5,36 @@ use replay_data::rows::{Field, List, Opaque, RowChanges, TableId};
 use replay_frame::frame::TableView;
 use std::io;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HeadFailureKind {
+    BuildError(String),
+    Panicked(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadFailure {
+    pub table: TableId,
+    pub kind: HeadFailureKind,
+}
+
+impl HeadFailure {
+    pub fn format(&self) -> String {
+        match &self.kind {
+            HeadFailureKind::BuildError(error) => {
+                format!("{:?}'s rows at the head could not be made: {error}", self.table)
+            }
+            HeadFailureKind::Panicked(detail) => {
+                format!("{:?}'s rows at the head could not be made ({detail})", self.table)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Made {
     pub rows: usize,
     pub untold: u64,
+    pub failure: Option<HeadFailureKind>,
 }
 
 pub fn make(table: TableId, mirror: &Mirror, held: (&[Kind], u64), gap: bool, order: &mut Vec<(u128, u32)>) -> (TableView, Made) {
@@ -29,7 +55,13 @@ pub fn make_of(table: TableId, mirror: &Mirror, (kinds, declared): (&[Kind], u64
                 Status::Truncated { missing } => TableView::Truncated { rows, missing },
                 _ => TableView::Complete(rows),
             },
-            Err(error) => TableView::Unavailable { reason: format!("{table:?}'s rows at the head could not be made: {error}") },
+            Err(error) => {
+                let kind = HeadFailureKind::BuildError(error.to_string());
+                made.failure = Some(kind.clone());
+                TableView::Unavailable {
+                    reason: HeadFailure { table, kind }.format(),
+                }
+            }
         },
     };
     (view, made)
