@@ -357,7 +357,7 @@ fn frame_build_refused() {
         .map(|_| shared.take_frame_for_test(&mut 0).unwrap())
         .collect();
     let extra = shared.take_frame_for_test(&mut 0).unwrap();
-    drop(unsafe { shared.frames.vacate_for_test(extra) });
+    drop(unsafe { shared.frames().vacate_for_test(extra) });
     let context = Context {
         campaign_id: Some(*CAMPAIGN),
         branch: None,
@@ -373,14 +373,14 @@ fn frame_build_refused() {
         drop(guard);
         drop(unsafe {
             shared
-                .frames
+                .frames()
                 .vacate_for_test(built.expect("an unrefused frame"))
         });
         count
     };
     assert!(!collector_memory::terminal::failed());
-    let live = shared.frames.live();
-    let grown = shared.frames.gauge().grown;
+    let live = shared.frames().live();
+    let grown = shared.frames().gauge().grown;
     for ordinal in 1..=built {
         collector_memory::terminal::reset();
         collector_memory::terminal::install_hooks();
@@ -408,8 +408,8 @@ fn frame_build_refused() {
             (Phase::Callback as u8, Code::Reserve as u8, Some(41)),
             "allocation {ordinal} of {built}"
         );
-        assert_eq!(shared.frames.live(), live);
-        assert_eq!(shared.frames.gauge().grown, grown);
+        assert_eq!(shared.frames().live(), live);
+        assert_eq!(shared.frames().gauge().grown, grown);
     }
     let complete = unsafe {
         collector_capture::sampling::synthetic_callback(
@@ -527,8 +527,11 @@ fn frame_growth_refused() {
     assert_eq!(witness.phase, Phase::Callback as u8);
     assert_eq!(witness.code, Code::Reserve as u8);
     assert_eq!(witness.failed_hour, Some(41));
-    assert_eq!(shared.frames.live(), collector_capture::frame_pool::STEADY);
-    assert_eq!(shared.frames.gauge().grown, 0);
+    assert_eq!(
+        shared.frames().live(),
+        collector_capture::frame_pool::STEADY
+    );
+    assert_eq!(shared.frames().gauge().grown, 0);
     let complete = unsafe {
         collector_capture::sampling::synthetic_callback(
             &shared,
@@ -1587,7 +1590,7 @@ fn exercise_pipeline(
             }));
     let incomplete_published = failed
         && phase == Phase::Decode
-        && (shared.frames.slot(index).decode_completed() || !shared.frames.ready_is_empty());
+        && (shared.frames().slot(index).decode_completed() || !shared.frames().ready_is_empty());
     let mut admitted_after_failure = false;
     unsafe {
         collector_capture::sampling::synthetic_callback(

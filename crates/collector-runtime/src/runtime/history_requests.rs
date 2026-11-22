@@ -827,9 +827,9 @@ mod tests {
             assert!(!path.with_extension("ack").exists());
             let shared = collector_capture::sampling::Shared::new(0, 0, 1);
             let held: Vec<_> = (0..collector_capture::sampling::BUFFERS)
-                .map(|_| shared.frames.pop_free_for_test().unwrap())
+                .map(|_| shared.frames().pop_free_for_test().unwrap())
                 .collect();
-            assert_eq!(shared.frames.len(), 0);
+            assert_eq!(shared.frames().len(), 0);
             for &index in &held {
                 spool.poll_with(|_| panic!("worker is blocked outside the handoff"));
                 unsafe { shared.recycle_frame(index) };
@@ -840,7 +840,7 @@ mod tests {
             for index in held {
                 unsafe { shared.recycle_frame(index) };
             }
-            assert_eq!(shared.frames.len(), collector_capture::sampling::BUFFERS);
+            assert_eq!(shared.frames().len(), collector_capture::sampling::BUFFERS);
             release.send(()).unwrap();
             worker.join().unwrap();
         });

@@ -3,7 +3,6 @@ use collector_operation_outcomes::operation_outcomes::{
     LaneCursor, handoff_buffer, invalidate,
     tests::{Fixture, complete, new_log, prime, serial},
 };
-use std::sync::atomic::Ordering;
 
 #[test]
 fn table_retry_preserves_admitted_operation_completion() {
@@ -16,8 +15,7 @@ fn table_retry_preserves_admitted_operation_completion() {
     let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
     let shared = collector_capture::sampling::Shared::new(0, 0, 1);
     shared.request_retry_full();
-    let recovery = shared.force_next.swap(false, Ordering::AcqRel);
-    let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+    let (recovery, refresh) = shared.take_retry_for_test();
     if recovery {
         invalidate();
     }
@@ -28,5 +26,5 @@ fn table_retry_preserves_admitted_operation_completion() {
     assert_eq!(events[0].definition_token, 0xfabc_1234);
     assert_eq!(&bytes[..drained.bytes], b"modded outcome");
     assert!(refresh);
-    assert!(!shared.force_next.load(Ordering::Acquire));
+    assert!(!shared.retry_pending_for_test().0);
 }

@@ -1326,8 +1326,10 @@ fn run(
         return Err("collector allocation failed before hooks");
     }
     let mut owned_workers = acquisition.thread_ids();
+    // SAFETY: the attach owner starts the reconciler and registers the helper roles.
+    let pipeline = unsafe { shared.priority_pipeline() };
     let mut priority_reconciler =
-        collector_workers::frame_priority::Reconciler::start(shared.frame_priority.clone())?;
+        collector_workers::frame_priority::Reconciler::start(pipeline.clone())?;
     owned_workers.push(priority_reconciler.thread_id());
     let (mut history_worker, history_handoff) = HistoryWorker::start(
         config.output_dir.clone(),
@@ -1338,7 +1340,7 @@ fn run(
     owned_workers.push(history_worker.thread_id());
     for index in 0..collector_workers::spool_helper::pool_size() {
         let Ok(helper) = collector_workers::spool_helper::SpoolHelper::start(Some((
-            shared.frame_priority.clone(),
+            pipeline.clone(),
             collector_workers::frame_priority::Role::Helper(index),
         ))) else {
             break;
@@ -2006,7 +2008,7 @@ fn run(
     unsafe { shared.stop_spool() };
     let mut pending = usize::MAX;
     while !spool.is_finished() {
-        let ready = shared.frames.ready_len();
+        let ready = shared.frames().ready_len();
         if ready != pending {
             pending = ready;
             progress.step("spool_draining", Some(ready as u64));
@@ -2033,7 +2035,7 @@ fn run(
     if shared.acquisition_failed() {
         add_terminal_error(&mut spool_result, "game-thread acquisition failed");
     }
-    if shared.frame_priority.failed() {
+    if shared.priority_failed() {
         add_terminal_error(&mut spool_result, "frame priority reconciler failed");
     }
     if let Err(error) = decode_outcome {
@@ -4092,8 +4094,8 @@ fn grow_combat_hints(
     hints: &CombatHints,
     applied: &mut AppliedHints,
 ) -> bool {
-    let generation = |index: usize| shared.frames.slot(index).generation();
-    let made = shared.frames.made();
+    let generation = |index: usize| shared.frames().slot(index).generation();
+    let made = shared.frames().made();
     if (0..made).all(|index| {
         let hint = hints.pending(capacities, &applied.get(index, generation(index)));
         hint.land.is_none() && hint.naval.is_none()
@@ -4135,7 +4137,7 @@ fn grow_idle_frames(shared: &Shared, sizing: &SizingShared, capacities: &mut Buf
         .extended
         .combat_progress
         .presize(&live, shared.base);
-    for idle_index in 0..shared.frames.made() {
+    for idle_index in 0..shared.frames().made() {
         // SAFETY: the runtime sizing pass only grows this idle frame.
         unsafe {
             shared.grow_idle_frame(idle_index, |idle| {
@@ -4163,7 +4165,7 @@ fn acquisition_work(shared: &Shared) -> impl serde::Serialize {
         collector_workers::private_heap::PRIVATE_HEAP.hold(),
         collector_workers::private_heap::PRIVATE_HEAP.other(),
     );
-    let frames = shared.frames.gauge();
+    let frames = shared.frames().gauge();
     collector_status::status::status!({
         "buffer_wait_calls": 0,
         "buffer_wait_ns": 0,
@@ -4254,7 +4256,7 @@ fn spool_status<'a>(
         session: session.id,
         pool_bytes: shared.pool_total(),
         dropped_frames: shared.dropped.load(Ordering::Relaxed),
-        dropped_spool_stalled: shared.frames.stalled_drops(),
+        dropped_spool_stalled: shared.frames().stalled_drops(),
         drain_complete,
         warning: warning.or(teardown.restoration_error),
         error: error.or(teardown.installation_error),
@@ -4353,12 +4355,11 @@ fn spool_loop(
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
     let mut reported = Instant::now() - Duration::from_secs(1);
+    // SAFETY: this is the runtime-owned spool worker and uses its assigned role.
+    let pipeline = unsafe { shared.priority_pipeline() };
     let mut priority = OwnPriority::frame_pipeline();
-    priority.follow_pipeline(
-        &shared.frame_priority,
-        collector_workers::frame_priority::Role::Spool,
-    );
-    let _ = shared.spool_waker.set(std::thread::current());
+    priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Spool);
+    processor.owner().register_thread(shared);
     let phases = &collector_workers::spool_phases::SPOOL;
     loop {
         if collector_memory::terminal::failed() {
@@ -4370,15 +4371,12 @@ fn spool_loop(
         }
         span.finish();
         verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
-        priority.follow_pipeline(
-            &shared.frame_priority,
-            collector_workers::frame_priority::Role::Spool,
-        );
+        priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Spool);
         let mut received = false;
         while let Some(index) = processor.owner().pop_ready(shared) {
             shared.frame_stage(index, sampling::FrameStage::Spool);
             let watch = collector_spool::slow_hours::SpoolWatch::start();
-            let watched_hour = unsafe { shared.frames[index].captured() }
+            let watched_hour = unsafe { shared.frames()[index].captured() }
                 .clock
                 .as_ref()
                 .map(|clock| clock.hour);
@@ -4386,13 +4384,10 @@ fn spool_loop(
             if collector_memory::terminal::failed() {
                 return Err("collector allocation failed");
             }
-            priority.follow_pipeline(
-                &shared.frame_priority,
-                collector_workers::frame_priority::Role::Spool,
-            );
+            priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Spool);
             let span = phases.span(Phase::Receive);
-            let elapsed = wait_completed_callback(shared.frames.slot(index))?;
-            let frame = unsafe { shared.frames[index].captured_mut() };
+            let elapsed = wait_completed_callback(shared.frames().slot(index))?;
+            let frame = unsafe { shared.frames()[index].captured_mut() };
             frame.total_ns = shared.ns(elapsed);
             collector_memory::terminal::set_context(collector_memory::terminal::Context {
                 campaign_id: frame
@@ -4426,7 +4421,7 @@ fn spool_loop(
             while let Err(error) = processor.prepare(frame) {
                 if !stalled {
                     stalled = true;
-                    shared.spool_stalled(true);
+                    processor.owner().set_stalled(shared, true);
                 }
                 collector_memory::terminal::observe(&error);
                 if collector_memory::terminal::failed() {
@@ -4445,7 +4440,7 @@ fn spool_loop(
                             "state":"campaign spool unavailable", "session":session.id,
                             "warning":last_warning, "drain_complete":false,
                             "dropped_frames":shared.dropped.load(Ordering::Relaxed),
-                            "dropped_spool_stalled":shared.frames.stalled_drops(),
+                            "dropped_spool_stalled":shared.frames().stalled_drops(),
                         }),
                     )
                     .map_err(|e| error_reason(e, "spool status allocation failed"))?;
@@ -4457,7 +4452,7 @@ fn spool_loop(
                 std::thread::sleep(Duration::from_millis(100));
             }
             if stalled {
-                shared.spool_stalled(false);
+                processor.owner().set_stalled(shared, false);
             }
             if startup_unknown != 0 {
                 processor.unknown_loss(std::mem::take(&mut startup_unknown));
@@ -4624,7 +4619,7 @@ fn spool_loop(
             .end_spool_frame(between.finish(None, |ticks| shared.ns(ticks)))
             .map_err(|_| "spool slow-frame allocation failed")?;
         if shared.spool_stopping() {
-            if !shared.frames.ready_is_empty() {
+            if !shared.frames().ready_is_empty() {
                 continue;
             }
             let _teardown =
@@ -4695,7 +4690,7 @@ fn spool_loop(
                 directories,
             });
         }
-        if shared.frames.ready_is_empty() {
+        if shared.frames().ready_is_empty() {
             let _span = phases.span(Phase::Wait);
             std::thread::park_timeout(SPOOL_IDLE_WAIT);
         }
@@ -4799,7 +4794,7 @@ impl SizingShared {
         Self {
             capacities: published,
             idle_growth_requested: AtomicBool::new(false),
-            country_intel_accounted: AtomicUsize::new(shared.country_intel.allocated_bytes()),
+            country_intel_accounted: AtomicUsize::new(shared.country_intel_bytes()),
             template_home_accounted: AtomicUsize::new(0),
             naval_combat_home_accounted: AtomicUsize::new(0),
             pass_requested: AtomicBool::new(false),
@@ -4868,20 +4863,10 @@ impl SizingShared {
 
     fn account_homes(&self, shared: &Shared) {
         for (bytes, accounted) in [
+            (shared.country_intel_bytes(), &self.country_intel_accounted),
+            (shared.template_home_bytes(), &self.template_home_accounted),
             (
-                shared.country_intel.allocated_bytes(),
-                &self.country_intel_accounted,
-            ),
-            (
-                collector_division_templates::extended::division_templates::home_allocated_bytes(
-                    &shared.template_home,
-                ),
-                &self.template_home_accounted,
-            ),
-            (
-                collector_naval_details::naval_combat_sources::home_allocated_bytes(
-                    &shared.naval_combat_home,
-                ),
+                shared.naval_combat_home_bytes(),
                 &self.naval_combat_home_accounted,
             ),
         ] {
@@ -4903,15 +4888,16 @@ impl SizingShared {
                 .presize(&live, shared.base);
         }
         let admitted = {
-            let frame = unsafe { shared.frames[index].captured() };
+            let frame = unsafe { shared.frames()[index].captured() };
             frame.clock.is_some().then_some(frame.world_generation)
         };
         loop {
             {
-                let frame = unsafe { shared.frames[index].captured_mut() };
+                let frame = unsafe { shared.frames()[index].captured_mut() };
                 proposal.grow_frame(frame);
                 if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
-                    shared.offer_country_cache(required_cells);
+                    // SAFETY: this sizing pass owns recycling of the occupied frame.
+                    unsafe { shared.offer_country_cache(required_cells) };
                 }
             }
             // SAFETY: the spool still owns the occupied slot and has released its frame borrow.
@@ -5113,12 +5099,11 @@ fn handle_id(thread: &std::thread::JoinHandle<()>) -> Option<u32> {
 
 fn frame_builder(shared: &Shared, sizing: &SizingShared) {
     let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Spool);
+    // SAFETY: this is the runtime-owned frame builder worker and uses its assigned role.
+    let pipeline = unsafe { shared.priority_pipeline() };
     let mut priority = OwnPriority::frame_pipeline();
     let built = shared.build_ahead_until(&sizing.stop, || {
-        priority.follow_pipeline(
-            &shared.frame_priority,
-            collector_workers::frame_priority::Role::Builder,
-        );
+        priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Builder);
         collector_memory::terminal::set_context(*lock(&sizing.context));
     });
     if let Err(error) = built {
@@ -5137,17 +5122,13 @@ fn sizing_loop(shared: &Shared, sizing: &SizingShared) {
         return;
     };
     let phases = &collector_workers::spool_phases::SIZING;
+    // SAFETY: this is the runtime-owned sizing worker and uses its assigned role.
+    let pipeline = unsafe { shared.priority_pipeline() };
     let mut priority = OwnPriority::frame_pipeline();
-    priority.follow_pipeline(
-        &shared.frame_priority,
-        collector_workers::frame_priority::Role::Sizing,
-    );
+    priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Sizing);
     let mut next_pass = Instant::now();
     while !sizing.stop.load(Ordering::Acquire) && !collector_memory::terminal::failed() {
-        priority.follow_pipeline(
-            &shared.frame_priority,
-            collector_workers::frame_priority::Role::Sizing,
-        );
+        priority.follow_pipeline(pipeline, collector_workers::frame_priority::Role::Sizing);
         collector_memory::terminal::set_context(*lock(&sizing.context));
         let retired = std::mem::take(&mut *lock(&sizing.retired));
         if !retired.is_empty() {
@@ -5305,13 +5286,13 @@ fn sizing_pass(
             &live,
             base,
             registry.slots,
-            shared.frames.live(),
+            shared.frames().live(),
         ) {
             collector_politics::politics_changes::resize(entries, 0);
         }
         collector_fuel_awards::fuel_awards::presize(&live, base);
     }
-    let frames = shared.frames.live().max(sampling::BUFFERS);
+    let frames = shared.frames().live().max(sampling::BUFFERS);
     if frames > state.politics_frames
         && let Some(entries) = collector_capture::country_scale::observe_politics_demand(
             &live,
@@ -5399,7 +5380,7 @@ fn sizing_pass(
                 &live,
                 base,
                 slots,
-                shared.frames.live(),
+                shared.frames().live(),
             )
             .unwrap_or(slots),
             sizing
@@ -5429,7 +5410,8 @@ fn sizing_pass(
             capacities.extended = raised.extended;
             raised.country_cells
         });
-        shared.offer_country_cache(country_cells);
+        // SAFETY: this is the runtime sizing pass.
+        unsafe { shared.offer_country_cache(country_cells) };
     }
     if once_a_second {
         if let Err(reason) = collector_output::construction_ic::presize_from_live(&live, base) {
@@ -5824,7 +5806,7 @@ mod tests {
         let taken: Vec<_> = (0..hours)
             .map(|_| {
                 let index = shared.take_frame_for_test(&mut 0).unwrap();
-                unsafe { shared.frames.push_decode_for_test(index) };
+                unsafe { shared.frames().push_decode_for_test(index) };
                 index
             })
             .collect();
@@ -5835,7 +5817,7 @@ mod tests {
         assert_eq!(behind["frames"]["grown"], hours as u64 - steady);
         let bytes: u64 = taken
             .iter()
-            .map(|&index| shared.frames.slot(index).allocated_bytes())
+            .map(|&index| shared.frames().slot(index).allocated_bytes())
             .sum();
         assert!(bytes > 0);
         assert_eq!(behind["frames"]["in_flight_bytes"], bytes);
@@ -5850,12 +5832,12 @@ mod tests {
         assert_eq!(ahead["frames"]["ahead_ready"], built);
         assert_eq!(ahead["frames"]["free"], built);
         let index = shared.take_frame_for_test(&mut 0).unwrap();
-        unsafe { shared.frames.push_decode_for_test(index) };
+        unsafe { shared.frames().push_decode_for_test(index) };
         let taken_ahead = status(&shared);
         assert_eq!(taken_ahead["frames"]["ahead_taken"], 1);
         assert_eq!(taken_ahead["frames"]["ahead_ready"], built - 1);
         assert_eq!(taken_ahead["frames"]["grown"], hours as u64 - steady);
-        while let Some(index) = shared.frames.pop_decode_for_test() {
+        while let Some(index) = shared.frames().pop_decode_for_test() {
             unsafe { shared.recycle_frame(index) };
         }
         let caught_up = status(&shared);
@@ -5874,7 +5856,9 @@ mod tests {
             serde_json::to_value(acquisition_work(shared)).unwrap()["frames"].clone()
         };
         let steady = collector_capture::frame_pool::STEADY;
-        shared.spool_stalled(true);
+        // SAFETY: this test owns its isolated fixture.
+        let mut owner = unsafe { sampling::SpoolOwner::fixture() };
+        owner.set_stalled(&shared, true);
         let taken: Vec<_> = (0..2 * steady + 1)
             .map(|_| shared.take_frame_for_test(&mut 0))
             .collect();
@@ -5894,7 +5878,7 @@ mod tests {
         assert_eq!(stalled["grown"], 0);
         assert_eq!(stalled["built_ahead"], 0);
         assert_eq!(stalled["dropped_spool_stalled"], steady as u64 + 1);
-        shared.spool_stalled(false);
+        owner.set_stalled(&shared, false);
         assert!(shared.take_frame_for_test(&mut 0).is_some());
         let resumed = frames(&shared);
         assert_eq!(resumed["grown"], 1);
@@ -6781,13 +6765,13 @@ mod tests {
         let capacities = *sizing.capacities.lock();
         assert!(capacities.extended.naval_result_sources >= 64);
         assert!(capacities.extended.equipment_destruction >= 64);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames().len(), sampling::BUFFERS);
     }
 
     fn assert_idle_war_and_faction_capacities(shared: &Shared, sizing: &SizingShared) {
         let capacities = *sizing.capacities.lock();
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
-        for slot in shared.frames.slots() {
+        assert_eq!(shared.frames().len(), sampling::BUFFERS);
+        for slot in shared.frames().slots() {
             let frame = unsafe { slot.captured() };
             assert!(frame.wars.len() >= capacities.core[5]);
             assert!(frame.factions.len() >= capacities.core[6]);
@@ -6869,7 +6853,7 @@ mod tests {
         let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
         let factions = initial.core[6] + 8;
-        let frame = unsafe { shared.frames[returning].captured_mut() };
+        let frame = unsafe { shared.frames()[returning].captured_mut() };
         frame.wars_result = engine_native::walk::Outcome::Truncated {
             len: 0,
             unread_rows: wars as u32,
@@ -6882,8 +6866,8 @@ mod tests {
         let check_seen = Arc::clone(&checked);
         *lock(&sizing.before_recycle_publish) = Some(Box::new(move |sizing, shared| {
             assert!(sizing.capacities.try_lock().is_some());
-            assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
-            let frame = unsafe { shared.frames[returning].captured() };
+            assert_eq!(shared.frames().len(), sampling::BUFFERS - 1);
+            let frame = unsafe { shared.frames()[returning].captured() };
             assert!(frame.wars.len() >= wars);
             let grown_wars = frame.wars.len();
             std::thread::scope(|scope| {
@@ -6908,10 +6892,10 @@ mod tests {
         assert!(capacities.core[6] >= factions);
         assert_eq!(capacities.extended.equipment_destruction, 24);
         let free: [_; sampling::BUFFERS] =
-            std::array::from_fn(|_| shared.frames.pop_free_for_test().unwrap());
+            std::array::from_fn(|_| shared.frames().pop_free_for_test().unwrap());
         assert!(free.contains(&returning));
         for index in free {
-            let frame = unsafe { shared.frames[index].captured() };
+            let frame = unsafe { shared.frames()[index].captured() };
             if index == returning {
                 assert!(frame.wars.len() >= capacities.core[5]);
                 assert!(frame.factions.len() >= capacities.core[6]);
@@ -6933,7 +6917,7 @@ mod tests {
         let idle: Vec<_> = (0..sampling::BUFFERS)
             .filter(|index| !held.contains(index))
             .collect();
-        let frame = |index: usize| unsafe { shared.frames[index].captured() };
+        let frame = |index: usize| unsafe { shared.frames()[index].captured() };
         let bytes = || {
             idle.iter()
                 .map(|&index| frame(index).allocated_bytes())
@@ -6946,9 +6930,9 @@ mod tests {
             panic!("sizing leased the game's next frame or its spare for growth");
         }));
         let pool_before = shared.pool_owned();
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(shared.frames().len(), collector_capture::frame_pool::AHEAD);
         sizing.grow_idle(&shared);
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(shared.frames().len(), collector_capture::frame_pool::AHEAD);
         assert_eq!(shared.pool_owned(), pool_before);
         assert_eq!(bytes(), before);
         let mut taken: Vec<_> = (0..collector_capture::frame_pool::AHEAD)
@@ -6968,7 +6952,7 @@ mod tests {
         for index in held {
             unsafe { shared.recycle_frame_prepared(index) };
         }
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames().len(), sampling::BUFFERS);
     }
 
     #[test]
@@ -6995,7 +6979,7 @@ mod tests {
         assert!(installed.is_ok());
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
-            move || format!("{:?}", watching.0.frames.gauge()),
+            move || format!("{:?}", watching.0.frames().gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let sizing = &*thread.sizing;
@@ -7028,13 +7012,13 @@ mod tests {
                 pass_entered
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| panic!("the pass never leased an idle frame"));
-                assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
+                assert_eq!(shared.frames().len(), sampling::BUFFERS - 1);
                 let held: Vec<_> = (0..sampling::BUFFERS - 2)
                     .map(|hour| {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         let mut grow_ns = u64::MAX;
                         let index = shared.take_frame_for_test(&mut grow_ns).unwrap();
-                        assert_eq!(grow_ns, 0, "hour {hour}: {:?}", shared.frames.gauge());
+                        assert_eq!(grow_ns, 0, "hour {hour}: {:?}", shared.frames().gauge());
                         index
                     })
                     .collect();
@@ -7042,13 +7026,16 @@ mod tests {
                 spare
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap_or_else(|_| {
-                        panic!("the spare waited for the pass: {:?}", shared.frames.gauge())
+                        panic!(
+                            "the spare waited for the pass: {:?}",
+                            shared.frames().gauge()
+                        )
                     });
                 assert!(
                     !pass.is_finished(),
                     "the pass ended before the spare was built"
                 );
-                let gauge = shared.frames.gauge();
+                let gauge = shared.frames().gauge();
                 assert_eq!((gauge.grown, gauge.built_ahead), (0, 1), "{gauge:?}");
                 drop(end);
                 steps.at("the pass, released, and the builder, stopped");
@@ -7058,7 +7045,7 @@ mod tests {
                 for index in held {
                     unsafe { shared.recycle_frame_prepared(index) };
                 }
-                let gauge = shared.frames.gauge();
+                let gauge = shared.frames().gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.in_flight, gauge.freed),
                     (sampling::BUFFERS, sampling::BUFFERS, 0, 1),
@@ -7080,13 +7067,13 @@ mod tests {
         let (release, resume) = std::sync::mpsc::channel::<()>();
         *lock(&sizing.before_idle_frame_growth) = Some(Box::new(move |sizing, shared| {
             assert!(sizing.capacities.try_lock().is_some());
-            assert_eq!(shared.frames.len(), sampling::BUFFERS - 2);
+            assert_eq!(shared.frames().len(), sampling::BUFFERS - 2);
             leased.send(()).unwrap();
             let _ = resume.recv_timeout(collector_test_support::TEST_HANG_GUARD);
         }));
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
-            move || format!("{:?}", watching.0.frames.gauge()),
+            move || format!("{:?}", watching.0.frames().gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let sizing = &thread.sizing;
@@ -7110,7 +7097,7 @@ mod tests {
                         index
                     })
                     .collect();
-                assert_eq!(shared.frames.len(), 0);
+                assert_eq!(shared.frames().len(), 0);
                 steps.at("the spool recycling while idle growth is held");
                 sizing.recycle_frame(shared, returning);
                 steps.at("the game reusing the recycled frame");
@@ -7123,7 +7110,7 @@ mod tests {
                 for index in others.into_iter().chain(Some(returning)) {
                     unsafe { shared.recycle_frame_prepared(index) };
                 }
-                assert_eq!(shared.frames.len(), sampling::BUFFERS);
+                assert_eq!(shared.frames().len(), sampling::BUFFERS);
             },
         );
     }
@@ -7147,7 +7134,7 @@ mod tests {
         assert!(installed.is_ok());
         let watching = Arc::clone(&fixture);
         collector_test_support::watched(
-            move || format!("{:?}", watching.0.frames.gauge()),
+            move || format!("{:?}", watching.0.frames().gauge()),
             move |steps| {
                 let (shared, thread) = &*fixture;
                 let release = release;
@@ -7156,7 +7143,7 @@ mod tests {
                         steps.at(format_args!("hour {hour}: taking its frame"));
                         shared
                             .take_frame_for_test(&mut 0)
-                            .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames.gauge()))
+                            .unwrap_or_else(|| panic!("hour {hour}: {:?}", shared.frames().gauge()))
                     })
                     .collect();
                 for _ in 0..=AHEAD {
@@ -7164,7 +7151,7 @@ mod tests {
                     steps.at(format_args!("the spool returning frame {index}"));
                     thread.sizing.recycle_frame(shared, index);
                 }
-                let gauge = shared.frames.gauge();
+                let gauge = shared.frames().gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.grown),
                     (BUFFERS + 1, AHEAD + 1, 1),
@@ -7183,7 +7170,7 @@ mod tests {
                     .unwrap_or_else(|_| {
                         panic!(
                             "the spool never freed a surplus frame: {:?}",
-                            shared.frames.gauge()
+                            shared.frames().gauge()
                         )
                     });
                 let hours = AHEAD + 2;
@@ -7202,7 +7189,7 @@ mod tests {
                 let hours_taken = game.end(|| {
                     format!(
                         "the hours, while the spool freed a surplus frame, ({:?})",
-                        shared.frames.gauge()
+                        shared.frames().gauge()
                     )
                 });
                 assert!(
@@ -7210,7 +7197,11 @@ mod tests {
                     "the spool's free ended before the hours did"
                 );
                 for (hour, &(index, grow_ns)) in hours_taken.iter().enumerate() {
-                    assert!(index.is_some(), "hour {hour}: {:?}", shared.frames.gauge());
+                    assert!(
+                        index.is_some(),
+                        "hour {hour}: {:?}",
+                        shared.frames().gauge()
+                    );
                     assert_eq!(
                         grow_ns > 0,
                         hour == hours - 1,
@@ -7224,7 +7215,7 @@ mod tests {
                 for index in taken.into_iter().chain(hours_held) {
                     unsafe { shared.recycle_frame(index) };
                 }
-                let gauge = shared.frames.gauge();
+                let gauge = shared.frames().gauge();
                 assert_eq!(
                     (gauge.live, gauge.free, gauge.in_flight, gauge.freed),
                     (BUFFERS, BUFFERS, 0, 2),
@@ -7240,17 +7231,17 @@ mod tests {
         let sizing = &thread.sizing;
         let allocated_bytes = || {
             shared
-                .frames
+                .frames()
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
-                + shared.country_intel.allocated_bytes()
+                + shared.country_intel_bytes()
         };
         let allocated_before = allocated_bytes();
         let pool_before = shared.pool_owned();
-        let shared_before = shared.country_intel.allocated_bytes();
+        let shared_before = shared.country_intel_bytes();
         let returning = shared.take_frame_for_test(&mut 0).unwrap();
-        let frame = unsafe { shared.frames[returning].captured() };
+        let frame = unsafe { shared.frames()[returning].captured() };
         let before_frame_bytes = frame.allocated_bytes();
         let initial = *sizing.capacities.lock();
         let wars = initial.core[5] + 8;
@@ -7261,9 +7252,9 @@ mod tests {
             capacities.extended.raise_for_country_intel(intel_rows);
         });
         sizing.grow_idle(&shared);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS - 1);
+        assert_eq!(shared.frames().len(), sampling::BUFFERS - 1);
         assert_eq!(frame.allocated_bytes(), before_frame_bytes);
-        let shared_after_idle = shared.country_intel.allocated_bytes();
+        let shared_after_idle = shared.country_intel_bytes();
         assert!(shared_after_idle > shared_before);
         let allocated_after_idle = allocated_bytes();
         assert!(allocated_after_idle - allocated_before > shared_after_idle - shared_before);
@@ -7274,7 +7265,7 @@ mod tests {
         );
 
         sizing.recycle_frame(&shared, returning);
-        assert_eq!(shared.country_intel.allocated_bytes(), shared_after_idle);
+        assert_eq!(shared.country_intel_bytes(), shared_after_idle);
         let allocated_after_return = allocated_bytes();
         assert!(allocated_after_return > allocated_after_idle);
         let pool_after_return = shared.pool_owned();
@@ -7294,12 +7285,11 @@ mod tests {
         let (shared, thread) = sizing_fixture();
         let sizing = &thread.sizing;
         let held: [_; 2] = std::array::from_fn(|_| shared.take_frame_for_test(&mut 0).unwrap());
-        let before = shared.country_intel.allocated_bytes();
+        let before = shared.country_intel_bytes();
         let pool_before = shared.pool_owned();
         let mut rows = sizing.capacities.lock().extended.intel.rows[15] + 8;
-        let mut loan = collector_intel::daily_intel::Loan::new(shared.country_intel.clone());
-        loan.grow(&mut rows);
-        let added = shared.country_intel.allocated_bytes() - before;
+        shared.grow_country_intel_for_test(&mut rows);
+        let added = shared.country_intel_bytes() - before;
         assert!(added > 0);
         std::thread::scope(|scope| {
             for _ in held {
@@ -7788,7 +7778,7 @@ mod tests {
                 .all(|state| state.land.is_some() && state.naval.is_some())
         );
         assert!(shared.pool_owned() > before);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames().len(), sampling::BUFFERS);
     }
 
     #[test]
@@ -7814,19 +7804,19 @@ mod tests {
         };
         let bytes = || {
             idle.iter()
-                .map(|&index| unsafe { shared.frames[index].captured() }.allocated_bytes())
+                .map(|&index| unsafe { shared.frames()[index].captured() }.allocated_bytes())
                 .collect::<Vec<_>>()
         };
         let before = bytes();
         let pool_before = shared.pool_owned();
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(shared.frames().len(), collector_capture::frame_pool::AHEAD);
         assert!(!grow_combat_hints(
             &shared,
             &capacities,
             &hints,
             &mut applied
         ));
-        assert_eq!(shared.frames.len(), collector_capture::frame_pool::AHEAD);
+        assert_eq!(shared.frames().len(), collector_capture::frame_pool::AHEAD);
         assert!(
             applied
                 .iter()
@@ -7847,7 +7837,7 @@ mod tests {
         for index in held.into_iter().skip(1) {
             unsafe { shared.recycle_frame_prepared(index) };
         }
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames().len(), sampling::BUFFERS);
     }
 
     #[test]
@@ -7858,7 +7848,7 @@ mod tests {
         let accounted = shared.pool_owned();
         let frame_bytes = || {
             shared
-                .frames
+                .frames()
                 .slots()
                 .map(|slot| unsafe { slot.captured() }.allocated_bytes())
                 .sum::<usize>()
@@ -7898,7 +7888,7 @@ mod tests {
         check_accounting();
         assert!(applied == grown);
 
-        let held = shared.frames.pop_free_for_test().unwrap();
+        let held = shared.frames().pop_free_for_test().unwrap();
         let previous = applied[held];
         hints.land.as_mut().unwrap().rows = 1200;
         hints.naval.as_mut().unwrap().rows = 257;
@@ -7918,7 +7908,7 @@ mod tests {
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         check_accounting();
         assert!(applied == grown);
-        assert_eq!(shared.frames.len(), sampling::BUFFERS);
+        assert_eq!(shared.frames().len(), sampling::BUFFERS);
     }
 
     #[test]

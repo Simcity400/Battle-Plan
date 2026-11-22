@@ -1018,8 +1018,8 @@ impl Captured {
 }
 
 pub(crate) struct Homes {
-    pub country_intel: daily_intel::Home,
-    pub templates: division_templates::Home,
+    pub(crate) country_intel: daily_intel::Home,
+    pub(crate) templates: division_templates::Home,
     pub(crate) naval_combat: naval_combat_sources::Home,
 }
 
@@ -1043,7 +1043,7 @@ impl Captured {
     }
 
     #[cfg(test)]
-    pub fn naval_combat_home(&self) -> Option<naval_combat_sources::Home> {
+    pub(crate) fn naval_combat_home(&self) -> Option<naval_combat_sources::Home> {
         self.naval_combat_sources.home()
     }
 
@@ -1052,7 +1052,7 @@ impl Captured {
     }
 
     #[cfg(test)]
-    pub fn template_home(&self) -> Option<division_templates::Home> {
+    pub(crate) fn template_home(&self) -> Option<division_templates::Home> {
         self.division_templates.home()
     }
 

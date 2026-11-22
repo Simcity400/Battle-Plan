@@ -309,6 +309,7 @@ method:prepare_clock_capture
 method:prepare_roster
 method:presize
 method:presize_live_inputs
+method:priority_pipeline
 method:publish
 method:push
 method:raise

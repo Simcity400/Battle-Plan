@@ -716,7 +716,7 @@ impl Writer {
     pub(crate) fn resume_after_failure(&self) {
         self.shared.lock().blocked = false;
     }
-    pub(crate) fn completion(&self) -> Option<Completion> {
+    pub(crate) fn completion(&mut self) -> Option<Completion> {
         let mut state = self.shared.lock();
         let completion = state.completions.pop_front();
         Shared::reconcile(&mut state);

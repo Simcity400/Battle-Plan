@@ -787,6 +787,14 @@ impl SpoolOwner {
         Self { live: false }
     }
 
+    pub fn register_thread(&mut self, shared: &Shared) {
+        let _ = shared.spool_waker.set(std::thread::current());
+    }
+
+    pub fn set_stalled(&mut self, shared: &Shared, stalled: bool) {
+        shared.spool_stalled(stalled);
+    }
+
     pub fn prepare_frame_clocks(&mut self, shared: &Shared, memory: &impl engine_native::Memory) {
         shared.prepare_frame_clocks(memory);
     }
@@ -828,16 +836,17 @@ pub struct Shared {
     pub game_score_enabled: bool,
     pub capture_mode: replay_data::scope::CaptureMode,
     pub tick_idle: Option<collector_workers::event::Event>,
-    pub frames: crate::frame_pool::FramePool,
+    pub(crate) frames: crate::frame_pool::FramePool,
     frame_capacities: engine_allocation::SharedBox<crate::frame_capacities::Capacities>,
     history_frames: collector_workers::frame_fence::Frames,
     pub heap_waits: WaitCounter,
-    pub frame_priority: engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
+    pub(crate) frame_priority:
+        engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline>,
     pub dropped: AtomicU64,
     pub pool_bytes: engine_allocation::SharedBox<AtomicU64>,
     recording: AtomicBool,
     stop_spool: AtomicBool,
-    pub spool_waker: OnceLock<std::thread::Thread>,
+    spool_waker: OnceLock<std::thread::Thread>,
     pub(crate) decode_waker: OnceLock<std::thread::Thread>,
     roster: UnsafeCell<Option<Box<Roster>>>,
     roster_ready: AtomicBool,
@@ -927,20 +936,20 @@ pub struct Shared {
     appearance_store:
         UnsafeCell<Option<Box<collector_country_counters::country_appearance::AppearanceStore>>>,
     appearance_store_bytes: AtomicU64,
-    pub force_next: AtomicBool,
-    pub refresh_next: AtomicBool,
+    force_next: AtomicBool,
+    refresh_next: AtomicBool,
     forget_families: std::sync::atomic::AtomicU32,
-    pub lexical_max: AtomicI32,
-    pub fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
+    lexical_max: AtomicI32,
+    fixed_layout: OnceLock<engine_fixed_layout::fixed_layout::Report>,
     fixed_layout_buffer: UnsafeCell<Vec<u8>>,
-    pub modifier_table: [AtomicU64; 2],
-    pub division_mark: AtomicU64,
+    modifier_table: [AtomicU64; 2],
+    division_mark: AtomicU64,
     pub(crate) country_cache_swap: Mutex<CountryCacheSwap>,
-    pub country_cache_cells: AtomicUsize,
-    pub country_intel: collector_intel::daily_intel::Home,
-    pub template_home: collector_division_templates::extended::division_templates::Home,
-    pub naval_combat_home: collector_naval_details::naval_combat_sources::Home,
-    pub weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
+    pub(crate) country_cache_cells: AtomicUsize,
+    country_intel: collector_intel::daily_intel::Home,
+    template_home: collector_division_templates::extended::division_templates::Home,
+    naval_combat_home: collector_naval_details::naval_combat_sources::Home,
+    pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(any(test, feature = "test-support"))]
     pub build_ahead_seam: OnceLock<Box<dyn Fn(BuildAhead) + Send + Sync>>,
@@ -966,6 +975,57 @@ enum Return {
 unsafe impl Sync for Shared {}
 
 impl Shared {
+    pub fn frames(&self) -> &crate::frame_pool::FramePool {
+        &self.frames
+    }
+
+    pub fn country_intel_bytes(&self) -> usize {
+        self.country_intel.allocated_bytes()
+    }
+
+    pub fn template_home_bytes(&self) -> usize {
+        collector_division_templates::extended::division_templates::home_allocated_bytes(
+            &self.template_home,
+        )
+    }
+
+    pub fn naval_combat_home_bytes(&self) -> usize {
+        collector_naval_details::naval_combat_sources::home_allocated_bytes(&self.naval_combat_home)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn grow_country_intel_for_test(&self, rows: &mut usize) {
+        self.frames.assert_test_access();
+        collector_intel::daily_intel::Loan::new(self.country_intel.clone()).grow(rows);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn retry_pending_for_test(&self) -> (bool, bool) {
+        self.frames.assert_test_access();
+        (
+            self.force_next.load(Ordering::Acquire),
+            self.refresh_next.load(Ordering::Acquire),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_retry_for_test(&self) -> (bool, bool) {
+        self.frames.assert_test_access();
+        (
+            self.force_next.swap(false, Ordering::AcqRel),
+            self.refresh_next.swap(false, Ordering::AcqRel),
+        )
+    }
+
+    /// # Safety
+    /// Only the runtime's attach owner and its designated spool, sizing, and
+    /// frame-builder workers may obtain the live pipeline for their assigned roles.
+    pub unsafe fn priority_pipeline(
+        &self,
+    ) -> &engine_allocation::SharedBox<collector_workers::frame_priority::Pipeline> {
+        &self.frame_priority
+    }
+
     pub fn is_recording(&self) -> bool {
         self.recording.load(Ordering::Acquire)
     }
@@ -976,6 +1036,10 @@ impl Shared {
 
     pub fn request_forget_families(&self, families: u32) {
         self.forget_families.fetch_or(families, Ordering::Release);
+    }
+
+    pub fn priority_failed(&self) -> bool {
+        self.frame_priority.failed()
     }
 
     pub fn acquisition_calibration(&self) -> Option<acquisition::Calibration> {
@@ -1375,7 +1439,14 @@ impl Shared {
         Ok(shared)
     }
 
-    pub fn offer_country_cache(&self, cells: usize) {
+    /// # Safety
+    /// Only the runtime sizing and frame-recycle paths may offer or retire a
+    /// live cache. Those two paths share the exchange lock.
+    pub unsafe fn offer_country_cache(&self, cells: usize) {
+        self.offer_country_cache_inner(cells);
+    }
+
+    pub(crate) fn offer_country_cache_inner(&self, cells: usize) {
         let Ok(mut swap) = self.country_cache_swap.lock() else {
             return;
         };
@@ -1480,7 +1551,9 @@ impl Shared {
         stop: &AtomicBool,
         mut follow: impl FnMut(),
     ) -> std::io::Result<()> {
-        let _ = self.builder_waker.set(std::thread::current());
+        self.builder_waker
+            .set(std::thread::current())
+            .map_err(|_| std::io::ErrorKind::AlreadyExists)?;
         loop {
             follow();
             if stop.load(Ordering::Acquire) || self.acquisition_failed() {
@@ -1550,7 +1623,7 @@ impl Shared {
         Some(index)
     }
 
-    pub fn spool_stalled(&self, stalled: bool) {
+    fn spool_stalled(&self, stalled: bool) {
         self.frames.set_spool_stalled(stalled);
         if !stalled {
             self.wake_builder();

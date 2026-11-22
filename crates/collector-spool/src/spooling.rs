@@ -5898,12 +5898,9 @@ mod tests {
         if prepared.needs_retry() {
             shared.request_retry_full();
         }
-        assert!(
-            shared
-                .refresh_next
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
-        assert!(!shared.force_next.load(std::sync::atomic::Ordering::Acquire));
+        let (recovery, refresh) = shared.retry_pending_for_test();
+        assert!(refresh);
+        assert!(!recovery);
     }
 
     #[test]

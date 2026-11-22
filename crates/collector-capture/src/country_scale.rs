@@ -2445,14 +2445,14 @@ mod tests {
         let installed = shared.country_cache_cells.load(Ordering::Acquire);
         let cells = Cache::cells_for_countries(COUNTRIES + 1, MIN_COUNTRY_CELLS);
         assert!(cells > installed);
-        shared.offer_country_cache(cells);
+        shared.offer_country_cache_inner(cells);
         let pool = shared.pool_bytes.load(Ordering::Relaxed);
-        shared.offer_country_cache(cells);
+        shared.offer_country_cache_inner(cells);
         assert_eq!(shared.pool_bytes.load(Ordering::Relaxed), pool);
         shared.install_offered_country_cache();
         assert_eq!(shared.country_cache_cells.load(Ordering::Acquire), cells);
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_some());
-        shared.offer_country_cache(0);
+        shared.offer_country_cache_inner(0);
         assert!(shared.country_cache_swap.lock().unwrap().retired.is_none());
     }
 
