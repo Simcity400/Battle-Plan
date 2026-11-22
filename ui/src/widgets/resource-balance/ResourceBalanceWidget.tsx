@@ -347,7 +347,7 @@ function ResourcesOverTime({ widget, runtime, active, onDiagnostics, within, tag
   const chosenInfo = useMemo(() => chosen.flatMap(token => resources.filter(item => item.token === token)), [chosen, resources]);
   const keys = useMemo(() => chosenInfo.map(resource => ({ tag, part: String(resource.id) })), [chosenInfo, tag]);
   const membership = useMemo(() => within ? new Map(keys.map(key => [keyId(key), within])) : undefined, [keys, within]);
-  const spec = (family: typeof SUPPLY | typeof DEMAND) => keys.length ? { source: track.source, branchId: track.branch.id, family, keys, partBits: 32,
+  const spec = (family: typeof SUPPLY | typeof DEMAND) => keys.length ? { source: track.source, branch: track.branch, family, keys, partBits: 32,
     within: membership, lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null;
   const head = following ? null : playhead ?? extent[1];
   const supply = useKeyedSeries(runtime.client, runtime.clock, spec(SUPPLY), head, hoverHour, following, active, root);

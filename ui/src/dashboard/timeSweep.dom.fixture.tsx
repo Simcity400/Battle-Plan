@@ -46,12 +46,14 @@ const pending = new Promise<never>(() => {});
 const requests: string[] = [];
 const asked: { product: string; hour: number }[] = [];
 const reply = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
+const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? value.flatMap(item => hoursIn(item, key))
+  : value && typeof value === 'object' ? Object.entries(value).flatMap(([name, item]) => hoursIn(item, name))
+  : typeof value === 'number' && key === 'hour' ? [value] : [];
 const makeClient = (replies: Replies) => ({
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string; params?: unknown }) => {
     requests.push(`${request.product} ${JSON.stringify(request.params)}`.slice(0, 300));
-    const hour = (request.params as { hour?: unknown } | undefined)?.hour;
-    if (typeof hour === 'number') asked.push({ product: request.product, hour });
+    if (request.product !== 'follow' && request.product !== 'follow-clock') for (const hour of new Set(hoursIn(request.params))) asked.push({ product: request.product, hour });
     if (request.product === 'follow') return reply(request, { available: false, reason: 'not followed in the sweep' });
     if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(request, null);
     if (request.product === 'country-groups') return reply(request, groups);

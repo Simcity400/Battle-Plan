@@ -69,7 +69,7 @@ export default function ResourceBreakdown({ runtime, track, active, tag, resourc
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const element = useMemo(() => ({ current: root }), [root]);
   const keys = useMemo(() => [{ tag, part: String(resource.id) }], [tag, resource.id]);
-  const spec = (index: number) => ({ source: track.source, branchId: track.branch.id, family: PART_FAMILIES[index], keys, partBits: 32, lastHour: track.branch.lastHour });
+  const spec = (index: number) => ({ source: track.source, branch: track.branch, family: PART_FAMILIES[index], keys, partBits: 32, lastHour: track.branch.lastHour });
   const head = following ? null : hour;
   const series = [
     useKeyedSeries(runtime.client, runtime.clock, spec(0), head, hoverHour, following, active, element),

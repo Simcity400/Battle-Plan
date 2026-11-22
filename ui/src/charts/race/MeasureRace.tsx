@@ -242,7 +242,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
 
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const onReach = useCallback((hour: number | null) => { setHoverHour(hour); onHover?.(hour); }, [onHover]);
-  const series = useMeasureSeries(runtime.client, track?.source, track?.branch.id, measure.kind, measure.measure, raceView === 'lines' && asked ? tags : [],
+  const series = useMeasureSeries(runtime.client, track?.source, track?.branch, measure.kind, measure.measure, raceView === 'lines' && asked ? tags : [],
     followedHead ? null : moment, hoverHour, active && raceView === 'lines', false, membership ?? undefined, lastHour, following);
   const lineEntry = raceView === 'lines' && followedHead ? followed.entry : null;
   useEffect(() => {
@@ -265,7 +265,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
   }, [top, rankedKey, series.onSummaryView]);
   const lineTags = useMemo(() => top == null ? tags : (rankedLines.data?.lines ?? []).filter(line => !positiveOnly || holds(line.summary)).map(line => line.tag),
     [top, tags, rankedLines.data, positiveOnly]);
-  const seconds = useMeasureSeries(runtime.client, track?.source, track?.branch.id, secondMeasure?.kind ?? measure.kind, secondMeasure?.measure ?? measure.measure,
+  const seconds = useMeasureSeries(runtime.client, track?.source, track?.branch, secondMeasure?.kind ?? measure.kind, secondMeasure?.measure ?? measure.measure,
     raceView === 'lines' && secondMeasure ? lineTags : [], null, null, active && raceView === 'lines' && !!secondMeasure, false,
     top == null ? membership ?? undefined : undefined, lastHour, following);
   const secondQuery = useMemo(() => active && following && track && secondMeasure && raceView === 'lines' && asked

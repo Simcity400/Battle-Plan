@@ -1,4 +1,5 @@
 import { resolveWindow, type BoundTrack, type WidgetSpec } from './model.ts';
+import { recordedHour } from './regionTime.ts';
 
 export function settledHour(hours: readonly number[], hour: number): number {
   let low = 0, high = hours.length - 1, found = -1;
@@ -10,6 +11,5 @@ export function settledHour(hours: readonly number[], hour: number): number {
 }
 
 export function trackHourOf(widget: WidgetSpec, track: BoundTrack | undefined, tracks: BoundTrack[], clockHour: number): number | null {
-  const hour = track ? resolveWindow(widget, track, tracks, clockHour)?.lastHour : undefined;
-  return hour === undefined || !track || hour < track.branch.firstHour || hour > track.branch.lastHour ? null : Math.floor(hour);
+  return recordedHour(track, track ? resolveWindow(widget, track, tracks, clockHour)?.lastHour : undefined);
 }

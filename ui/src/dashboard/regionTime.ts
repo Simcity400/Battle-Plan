@@ -20,7 +20,8 @@ export const FOLLOW: RegionAction = { kind: 'follow' };
 export const axisHour = (clock: { getHour(): number }): AxisHour => clock.getHour() as AxisHour;
 export const axisAt = (position: number): AxisHour => position as AxisHour;
 
-type Branch = { branch: Pick<BoundTrack['branch'], 'firstHour' | 'lastHour' | 'gaps'> };
+export type CoveredBranch = Pick<BoundTrack['branch'], 'firstHour' | 'lastHour' | 'gaps'>;
+type Branch = { branch: CoveredBranch };
 
 interface GapIndex { gaps: readonly RecordingGap[]; reach: readonly number[] }
 const gapIndexes = new WeakMap<readonly RecordingGap[], GapIndex>();

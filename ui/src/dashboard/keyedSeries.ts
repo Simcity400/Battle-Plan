@@ -12,6 +12,7 @@ import { useHeldFailure } from './heldFailures.ts';
 import { loadProduct, loadTransientProduct, useProduct } from './products.ts';
 import { type Failure, asFailure } from './queryError.ts';
 import { useViewRead } from './viewRead.ts';
+import { recordedHour, type CoveredBranch } from './regionTime.ts';
 import { followStore } from './follow/connection.ts';
 import { rowAmount } from './follow/painters.ts';
 import { followsHead, useFollow } from './follow/useFollow.ts';
@@ -26,7 +27,7 @@ import type { KeyedStates, SeriesKey, SeriesParts } from './keyedSeriesData';
 
 export interface KeyedSeriesSpec {
   source: DashboardSource;
-  branchId: string;
+  branch: CoveredBranch & { id: string };
   family: Readonly<Record<string, unknown>>;
   keys: readonly SeriesKey[];
   partBits: number;
@@ -38,18 +39,18 @@ export interface KeyedSeriesSpec {
 
 const NO_PAINT = () => {};
 
-const keyedLane = (spec: KeyedSeriesSpec) => `${spec.source.id}|${spec.source.revision}|${spec.branchId}|${JSON.stringify(spec.family)}|keyed`;
+const keyedLane = (spec: KeyedSeriesSpec) => `${spec.source.id}|${spec.source.revision}|${spec.branch.id}|${JSON.stringify(spec.family)}|keyed`;
 
 export function useKeyedSeries(client: DashboardClient, clock: PlaybackController, spec: KeyedSeriesSpec | null, headHour: number | null,
   hoverHour: number | null, following: boolean, active: boolean, root: { readonly current: Element | null }) {
   const enabled = !!spec && spec.keys.length > 0;
   const ids = useMemo(() => spec?.keys.map(keyId) ?? [], [spec?.keys]);
-  const ownerKey = spec ? JSON.stringify([spec.source.id, spec.source.revision, spec.branchId, spec.family, ids, spec.within && [...spec.within]]) : null;
+  const ownerKey = spec ? JSON.stringify([spec.source.id, spec.source.revision, spec.branch.id, spec.family, ids, spec.within && [...spec.within]]) : null;
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
   const alive = useRef(owner); alive.current = owner;
   const latest = useRef(spec); latest.current = spec;
   const request = (product: string, params: Record<string, unknown>): ProductRequest => ({ sourceId: spec!.source.id, revision: spec!.source.revision,
-    product, params: { branchId: spec!.branchId, family: spec!.family, ...params } });
+    product, params: { branchId: spec!.branch.id, family: spec!.family, ...params } });
 
   const tileKey = spec ? JSON.stringify([ownerKey, spec.lastHour, spec.marks === true]) : null;
   const [tiles, setTiles] = useState<{ key: string; lines: ReadonlyMap<string, TiledLine> | null; error: unknown }>();
@@ -97,14 +98,14 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   }, [lines]);
 
   const store: FollowStore | null = useMemo(() => spec ? followStore(client, spec.source, clock, spec.axisOffset) : null, [client, clock, spec?.source, spec?.axisOffset]);
-  const headQuery = useMemo(() => following && active && enabled ? { product: 'series-state', params: { branchId: spec!.branchId, family: spec!.family,
+  const headQuery = useMemo(() => following && active && enabled ? { product: 'series-state', params: { branchId: spec!.branch.id, family: spec!.family,
     reads: [...new Set(spec!.keys.map(({ tag }) => tag))].map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
   [following, active, enabled, ownerKey]);
   const followed = useFollow(store, headQuery, root, NO_PAINT);
   const headFollowed = following && followsHead(followed);
   const content = useContentRevision(client);
   const reads = (spec?.keys ?? []).flatMap(key => {
-    const hours = new Set([...(headFollowed || headHour === null ? [] : [Math.floor(headHour)]), ...(hoverHour === null ? [] : [Math.floor(hoverHour)])]);
+    const hours = new Set([headFollowed ? null : headHour, hoverHour].map(hour => recordedHour(spec ?? undefined, hour)).filter(hour => hour !== null));
     return [...hours].map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
   });
   const stateRead = useViewRead<typeof reads, KeyedStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,

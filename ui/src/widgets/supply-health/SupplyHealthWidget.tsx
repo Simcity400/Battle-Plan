@@ -100,7 +100,7 @@ export default function SupplyHealthWidget({ widget, runtime, active, headerSlot
   }, [identities, groups.data]);
   const [tip, setTip] = useChangedState<{ tag: string; hour: number } | null>(null);
   const reads = useMemo(() => tip ? [tip] : [], [tip]);
-  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch.id, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
+  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch, countries.tags, countries.membership ?? undefined, lastHour, active, reads,
     following, body, track?.axisOffset);
   useShownEachFrame(runtime.clock, () => supply.drawn ? following ? Math.min(Math.floor(clockHead.read()), lastHour) : head : null);
   const { error, retry } = supply;

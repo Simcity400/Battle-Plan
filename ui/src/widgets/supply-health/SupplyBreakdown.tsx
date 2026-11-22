@@ -54,7 +54,7 @@ export default function SupplyBreakdown({ runtime, track, active, options, count
   const within = useMemo(() => tag ? new Map([[tag, spans]]) : undefined, [tag, spans]);
   const reads = useMemo(() => tag ? [...(liveHead ? [] : [{ tag, hour: Math.floor(hour) }]), ...(tipHour === null ? [] : [{ tag, hour: tipHour }])] : [],
     [tag, hour, tipHour, liveHead]);
-  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch.id, tags, within, track?.branch.lastHour ?? 0, active && !!identities, reads,
+  const supply = useSupplySeries(runtime.client, runtime.clock, track?.source, track?.branch, tags, within, track?.branch.lastHour ?? 0, active && !!identities, reads,
     liveHead !== undefined, root, track?.axisOffset);
   const { error, retry } = supply;
   useEffect(() => { onWarnings(error ? [`Supply could not be loaded: ${error.message}`] : []); return () => onWarnings([]); }, [error, onWarnings]);

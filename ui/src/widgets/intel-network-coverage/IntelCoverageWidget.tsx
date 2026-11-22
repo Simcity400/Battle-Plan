@@ -100,7 +100,7 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
-  if (saved) return <PairHistory {...props} pair={null} hour={hour} />;
+  if (saved) return head.outside ? <WidgetState kind="outside" read={head} /> : <PairHistory {...props} pair={null} hour={hour} />;
   if (head.read === 'off') return <WidgetState kind="outside" />;
   if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   if (filtered && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;

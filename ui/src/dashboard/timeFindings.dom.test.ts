@@ -16,6 +16,7 @@ const TRANSFORMS: Record<string, (code: string) => string> = {
   '/charts/TimeChart.tsx': capture('TimeChart'),
   '/charts/timeline/Timeline.tsx': capture('Timeline'),
   '/charts/heat/HeatMatrix.tsx': capture('HeatMatrix'),
+  '/charts/heat/HeatChart.tsx': capture('HeatChart'),
   '/charts/race/CountryRaceView.tsx': capture('CountryRaceView'),
   '/components/CountryPicker.tsx': capture('CountryPicker'),
   '/charts/flow/FlowDiagram.tsx': capture('FlowDiagram'),
@@ -29,7 +30,8 @@ const stubs = { name: 'time-findings', enforce: 'pre' as const, transform(code: 
 
 interface Ask { product: string; hour: number | null; params: Record<string, unknown> | null }
 interface Read { text: string; drillOpen: boolean; drill: string; day: string | null; asks: Ask[]; options: [string, unknown][]; buttons: string[]; errors: string[] }
-const KINDS = ['training-queue', 'occupation-trend', 'diplomatic-relations', 'general-career', 'navy-size', 'fuel', 'raid-tally', 'volunteers', 'equipment-produced'];
+const KINDS = ['training-queue', 'occupation-trend', 'diplomatic-relations', 'general-career', 'navy-size', 'fuel', 'raid-tally', 'volunteers', 'equipment-produced',
+  'stability', 'weather-by-region'];
 const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<void>) => withNativePage('time-findings', '/ui/src/dashboard/timeFindings.dom.fixture.tsx',
   page => page.stage('time findings', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.findings.${expression}`);
@@ -92,6 +94,20 @@ test('4. Fuel’s saved consumption breakdown pinned at 105, the page at 110: Fo
   assert.ok(back.asks.some(ask => ask.product === 'country-fuel' && ask.hour === 105), `it reads the playback hour: ${JSON.stringify(back.asks)}`);
 }));
 
+test('5. Stability’s saved breakdown following playback, mounted at 95 before its 100–109 track: it asks nothing there, binds GER when the clock enters the track, and says loading while its parts are pending', () => onPage(async act => {
+  const before = await act<Read>(scene({ kind: 'stability', time: { mode: 'follow' }, hour: 95, countries: GER, options: { show: 'stability' }, groups: groupsOf(['GER']) }));
+  assert.ok(before.text.includes(OUTSIDE), `at 95 the breakdown is outside the recording: ${before.text}`);
+  assert.deepEqual(before.asks.filter(ask => ask.product === 'series-parts' || ask.hour !== null && (ask.hour < 100 || ask.hour > 109)), [],
+    `nothing is asked for an hour before the track: ${JSON.stringify(before.asks)}`);
+  const inside = await act<Read>('seek(105)');
+  assert.ok(!inside.text.includes('Selected country unavailable') && !inside.text.includes(OUTSIDE), `GER is bound at 105: ${inside.text}`);
+  assert.ok(inside.asks.some(ask => ask.product === 'series-parts'), `the breakdown asks GER’s parts: ${JSON.stringify(inside.asks)}`);
+  assert.ok(inside.text.includes('Loading the breakdown') && !inside.text.includes('No breakdown was recorded'), `a pending reply is loading: ${inside.text}`);
+  const failed = await act<Read>(scene({ kind: 'stability', time: { mode: 'follow' }, hour: 105, countries: GER, options: { show: 'stability' }, groups: groupsOf(['GER']),
+    failures: ['series-parts'] }));
+  assert.ok(failed.text.includes('couldn’t be read') && !failed.text.includes('No breakdown was recorded'), `a failed reply is a failure: ${failed.text}`);
+}));
+
 const PAIR_OWNERS = '({ owners: [{ tag: "GER", countryId: 101, known: true, reason: null }, { tag: "ENG", countryId: 102, known: true, reason: null }], warnings: [] })';
 
 test('6. Diplomatic relations’ pair picked at 105 keeps its own date and stays mounted when the following matrix moves to 108 and leaves the track at 110', () => onPage(async act => {
@@ -129,4 +145,24 @@ test('8. Equipment produced: a country breakdown opened at 105 shows its own rea
   assert.ok(!/Loading equipment/.test(opened.drill), `the parent’s pending read is not the breakdown’s state: ${opened.drill}`);
   const moved = await act<Read>('seek(110)');
   assert.ok(moved.drillOpen, 'the breakdown stays mounted when the page leaves the track');
+}));
+
+const WEATHER = `({ firstHour: 100, lastHour: 109, dayHours: 1, temperature: 'available', regions: [{ id: 'r1', name: 'Region one' }], flags: [], modifiers: [], warnings: [],
+  columns: { days: 1, columns: [{ firstHour: 100, lastHour: 109, recorded: 1, sampledHour: 105, readHour: 105 }], regions: [{ id: 'r1', clear: [1], observed: [1], measures: [] }] } })`;
+const PROVINCES = '({ readHour: hour, region: params.region, warnings: [], provinces: [{ id: "p1", name: "Province one", snow: null, mud: null, temperature: null }] })';
+
+test('9. Weather pinned at 108: a province breakdown picked at 103 keeps its own day as the page leaves the track, and Follow playback reads the playback hour through coverage', () => onPage(async act => {
+  await act(scene({ kind: 'weather-by-region', time: pinAt(108), hour: 105, replies: { 'regional-weather': WEATHER, 'regional-weather-provinces': PROVINCES } }));
+  const opened = await act<Read & { called: boolean }>('call("HeatChart", "onPick", { id: "r1" }, null, 103)');
+  const day = await act<string>('day(103)');
+  assert.ok(opened.called && opened.drillOpen && opened.day === day, `the region opens at 103: ${opened.day} ${opened.drill}`);
+  assert.ok(opened.asks.some(ask => ask.product === 'regional-weather-provinces' && ask.hour === 103), `its provinces are read at 103: ${JSON.stringify(opened.asks)}`);
+  const left = await act<Read>('seek(110)');
+  assert.ok(left.drillOpen && left.day === day && !left.drill.includes(OUTSIDE), `at 110 the region is still at 103: ${left.day} ${left.drill}`);
+  const followed = await act<Read & { pressed: boolean }>('press("Follow playback")');
+  assert.ok(followed.pressed && followed.drill.includes(OUTSIDE), `following the page at 110 is outside: ${followed.drill}`);
+  assert.deepEqual(followed.asks.filter(ask => ask.product === 'regional-weather-provinces' && ask.hour !== null && ask.hour > 109), [], 'nothing is asked past the track');
+  const back = await act<Read>('seek(104)');
+  assert.ok(back.drillOpen && !back.drill.includes(OUTSIDE), `back inside, still following: ${back.drill}`);
+  assert.ok(back.asks.some(ask => ask.product === 'regional-weather-provinces' && ask.hour === 104), `it reads the playback hour: ${JSON.stringify(back.asks)}`);
 }));

@@ -11,7 +11,9 @@ A widget shows more than one time at once. Its main view reads the widget's own 
 3. **Group membership.** Members at the region's hour. Membership changes and identity runs are boundaries of the region's hour, so a member joining at 1005 is present after a 1003 anchor.
 4. **The read.** Only now is the region's data asked, at the region's hour.
 
-The first stage that does not hold decides the region's state (`GateState` renders it): outside, not recorded, choose a country, choose a holder, absent at this date, no members, failed, loading. Displayed facts are dated by the reply's own hour; frame work uses the one page hour.
+The first stage that does not hold decides the region's state (`GateState` renders it): outside, not recorded, choose a country, choose a holder, absent at this date, no members, failed, loading. Displayed facts are dated by the reply's own hour; frame work uses the one page hour. A closed gate also releases the read's follow subscription.
+
+Point reads outside `useHeadProduct` use the same coverage. The shared series hooks (`useMeasureSeries`, `useKeyedSeries`, `useSupplySeries`) take the track's branch and never send a head or hover hour that `coverageAt` does not cover. `trackHourOf` and the intel `shownHour` return no hour for an uncovered hour instead of clamping to the branch's ends. A saved breakdown checks its widget's coverage before it renders a dated view.
 
 **Drills.** Every drill uses one reducer and action set (`charts/drill/drillState.ts`) through `useDrill`, and every `DrillHost` takes that control. A drill's region is its own: a saved breakdown reads its widget's time until the user picks or follows; Follow, Pause and pick act on the same state whether the breakdown is saved or opened. A drill opens following playback only under a following widget, when playing or opened near the playhead. The drill's hour, coverage, day and pin come from its own region, and `DrillHost` shows the drill's outside state itself, so a drill's data, date, state and mount never depend on its parent's hour, availability or loading. A parent leaving the track keeps the drill mounted.
 

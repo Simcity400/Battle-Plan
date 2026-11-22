@@ -160,9 +160,9 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const dayText = useMemo(() => liveTexts(runtime.clock, () => Math.floor(clockHead.read()), hour => new Map([['day', dayLabel(hour)]])), [runtime.clock, clockHead]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const membership = resolved.membership ?? undefined;
-  const stability = useMeasureSeries(runtime.client, track?.source, track?.branch.id, FAMILY, 'stability', resolved.tags,
+  const stability = useMeasureSeries(runtime.client, track?.source, track?.branch, FAMILY, 'stability', resolved.tags,
     headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.stability !== false, false, membership, lastHour, following);
-  const warSupport = useMeasureSeries(runtime.client, track?.source, track?.branch.id, FAMILY, 'warSupport', resolved.tags,
+  const warSupport = useMeasureSeries(runtime.client, track?.source, track?.branch, FAMILY, 'warSupport', resolved.tags,
     headFollowed ? null : head, hoverHour, active && !pinnedMeasure && options.warSupport !== false, false, membership, lastHour, following);
   const series = { stability, warSupport } as const;
   const decimals = stability.decimals ?? warSupport.decimals ?? 0;
@@ -347,7 +347,7 @@ export default function StabilityWidget({ widget, runtime, active, countrySlot, 
   const groupNotice = widget.countries.kind === 'group' && groups.error && groupData ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (resolved.reason) return <>{groupNotice}<WidgetState kind="empty" message={resolved.reason} /></>;
   const drill_ = (measure: Measure, onMeasure: ((measure: Measure) => void) | undefined, onPick: (hour: number) => void) =>
-    <StabilityDrill client={runtime.client} clock={runtime.clock} source={track.source} branchId={track.branch.id} lastHour={lastHour}
+    <StabilityDrill client={runtime.client} clock={runtime.clock} source={track.source} branch={track.branch} lastHour={lastHour}
       tag={shownTag} measure={measure} onMeasure={onMeasure} hour={drillAt} following={drillFollows} liveHead={drillFollows ? clockHead : undefined}
       playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }}
       within={drillWithin} extent={extent} onPick={onPick} onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}

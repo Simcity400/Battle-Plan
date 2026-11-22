@@ -2,29 +2,37 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withNativePage } from '../../../tools/native-page.ts';
 
-interface Shown { hour: number; early: (string | null)[]; late: (string | null)[]; renders: number }
+interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean }
+interface Frame { hour: number; widgets: Record<string, { state: string; renders: number }> }
 const OUTSIDE = 'unavailable: This time is outside the recording.';
+const NOT_PLAYING = "isn't playing back yet";
 
-test('114 widgets playing at 1,440 h/s across their tracks’ ends: the host shows outside the recording on the frame that crosses, clears it on the frame that enters, and renders nothing on frames within', async () => {
+test('every registered widget kind through the production host, half on a track ending at 100 and half on one starting at 101, playing at 1,440 h/s: frames between boundary crossings render nothing, and on the frame that crosses every widget playing back dated says outside for the track it leaves and clears it for the track it enters', async () => {
   await withNativePage('outside-recording', '/ui/src/dashboard/outsideRecording.dom.fixture.tsx', page => page.stage('outside recording', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.outsideFixture.${expression}`);
-    const start = await act<Shown>('start(95)');
-    assert.deepEqual([start.early, start.late], [['loading'], [OUTSIDE]], `at 95 the early track is read and the late one is outside: ${JSON.stringify(start)}`);
-    const [within, crossed, after] = await act<Shown[]>('play(1440, 3, 2.5)');
-    assert.ok(within.hour <= 100 && within.renders === 0 && within.early[0] === 'loading' && within.late[0] === OUTSIDE,
-      `a frame inside both tracks’ states renders nothing: ${JSON.stringify(within)}`);
-    assert.ok(crossed.hour > 100, `one frame crosses both boundaries: ${JSON.stringify(crossed)}`);
-    assert.deepEqual([crossed.early, crossed.late], [[OUTSIDE], ['loading']],
-      `on the crossing frame every early widget is outside the recording and every late widget waits on its read: ${JSON.stringify(crossed)}`);
-    assert.ok(after.renders === 0 && after.early[0] === OUTSIDE && after.late[0] === 'loading', `later frames render nothing: ${JSON.stringify(after)}`);
-  }, 120_000));
+    const { mounted } = await act<{ mounted: Mounted[] } & Frame>('start(95)');
+    assert.equal(mounted.length, 114, 'one of each registered widget kind is mounted');
+    const [within, crossed, after] = await act<Frame[]>('play(1440, 3, 2.5)');
+    const rendered = (frame: Frame) => mounted.filter(item => frame.widgets[item.id].renders > 0).map(item => `${item.kind}: ${frame.widgets[item.id].renders}`);
+    assert.ok(within.hour > 95 && within.hour <= 100 && crossed.hour > 101 && after.hour > crossed.hour, `one frame crosses both ends: ${within.hour}, ${crossed.hour}, ${after.hour}`);
+    assert.deepEqual(rendered(within), [], `a frame inside every widget’s state renders nothing at ${within.hour}`);
+    assert.deepEqual(rendered(after), [], `a frame after the crossing renders nothing at ${after.hour}`);
+    const dated = mounted.filter(item => !crossed.widgets[item.id].state.includes(NOT_PLAYING));
+    assert.ok(dated.some(item => item.track === 'early') && dated.some(item => item.track === 'late'), `widgets playing back dated on both tracks: ${dated.map(item => item.kind)}`);
+    const wrong = dated.flatMap(item => {
+      const before = within.widgets[item.id].state, at = crossed.widgets[item.id].state;
+      const leaves = item.track === 'early';
+      return before.includes(OUTSIDE) === leaves || at.includes(OUTSIDE) !== leaves ? [`${item.kind} on ${item.track}: ${before} → ${at}`] : [];
+    });
+    assert.deepEqual(wrong, [], 'the crossing frame says outside for the track left and clears it for the track entered');
+  }, 240_000));
 });
 
 const STUBS: Record<string, string> = {
   '/widgets/land-battles/CombatLogDetails.tsx': 'export default () => null;',
   '/widgets/equipment-losses/lossesSource.ts': `export const stretchWindow = (_reply, window) => ({ ...window, since: null }); export const exactLossHour = () => true;
     export const useLossHistory = () => ({ data: globalThis.__fixture.losses, retry() {}, onSummaryView() {}, onHover() {}, navigate() {}, exactAt: async () => undefined });`,
-  '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: { countryIdentities: globalThis.__fixture.identities }, complete: true, retry() {} });',
+  '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__fixture.groups, complete: true, retry() {} });',
   '/charts/sunburst/Sunburst.tsx': 'export default () => null;',
   '/charts/drill/DrillHost.tsx': 'export default props => props.main;',
   '/widgets/trade-flows/useTradeFlows.ts': `export const tradeFlowsRequest = () => null; export const useTradeWindows = () => ({ data: undefined, retry() {} });

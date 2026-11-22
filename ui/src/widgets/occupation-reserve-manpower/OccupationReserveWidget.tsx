@@ -103,7 +103,7 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   const none = grouped ? noMembersAt(widget.countries, resolved, groups.data, moment, track?.branch.lastHour ?? 0) : null;
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...unnamed ? [`${unnamed} holders the recording names no tag for are not shown.`] : [], ...groups.data?.warnings ?? []] : null);
   if (!track) return <WidgetState kind="empty" icon="flag" message="Load a campaign to see occupation manpower." />;
-  if (pinned) return <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} liveHead={liveHead} />;
+  if (pinned) return head.outside ? <WidgetState kind="outside" read={head} /> : <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} liveHead={liveHead} />;
   if (head.read === 'off') return <WidgetState kind="outside" />;
   if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;

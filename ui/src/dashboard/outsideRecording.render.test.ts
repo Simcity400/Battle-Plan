@@ -35,6 +35,8 @@ const clockAt = (bounds: { firstHour: number; lastHour: number }, hour: number) 
   return clock;
 };
 const markup = (node: ReactNode) => renderToStaticMarkup(node as never);
+type Gated = { outside: { message: string; detail: string | undefined } | null };
+const gated = (_runtime: never, gate: Gated) => head(gate.outside ? { outside: true, outsideMessage: gate.outside.message, outsideDetail: gate.outside.detail } : {});
 
 test('a market drill asking recorded hour 105, inside a widget whose range ends past its track, waits on its read: it never says the time is outside', async () => {
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct') });
@@ -44,9 +46,9 @@ test('a market drill asking recorded hour 105, inside a widget whose range ends 
     const widget = { id: 'ledger', kind: 'market-ledger', trackIds: ['main'], countries: { kind: 'all' }, time: { mode: 'range', firstOffset: 5, lastOffset: 10 }, options: {} };
     const heads = new time.ActiveHeads();
     heads.set({}, true);
-    host.__stub = { useHeadProduct: (_runtime: never, _widget: never, _product: never, _params: never, options: { time?: { kind: string } }) => head({ outside: options.time?.kind !== 'at' }) };
+    host.__stub = { useHeadProduct: gated };
     const runtime = { tracks: [track(100, 109)], client: {}, clock: clockAt({ firstHour: 100, lastHour: 200 }, 150) };
-    const drawn = markup(createElement(time.RegionContext.Provider, { value: { heads, outside: true, detail: time.SETTINGS_DETAIL, key: 'main' } as never },
+    const drawn = markup(createElement(time.RegionContext.Provider, { value: { heads, outside: { message: OUTSIDE, detail: time.SETTINGS_DETAIL }, key: 'main' } },
       createElement(MarketDrill, { runtime, widget, time: { kind: 'at', hour: 105 }, tags: ['GER'], selected: null, active: true })));
     assert.ok(drawn.includes('data-state="loading"') && !drawn.includes(OUTSIDE), `the drill reads 105, inside the track, so it is loading: ${drawn}`);
   } finally { delete host.__stub; await close(); }
@@ -61,8 +63,7 @@ test('a fuel consumption drill told to follow playback, in a widget pinned at 10
     const widget = { id: 'fuel', kind: 'fuel', trackIds: ['main'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'pin', windows: { main: { firstOffset: 5, lastOffset: 5 } } }, options: {} };
     const clock = clockAt({ firstHour: 100, lastHour: 200 }, 110);
     host.__stub = {
-      useHeadProduct: (runtime: { clock: PlaybackController }, _spec: never, _product: never, _params: never, options: { time?: { kind: string } }) =>
-        head({ outside: options.time?.kind === 'follow' && runtime.clock.getHour() > 109 }),
+      useHeadProduct: gated,
       usePartSeries: () => ({ summaries: [], onSummaryView() {}, error: undefined, retry() {}, owner: null }),
     };
     const drawn = markup(createElement(Breakdown, { runtime: { tracks: [shortTrack], client: {}, clock }, widget, track: shortTrack, tag: 'GER', hour: null, follows: true,
@@ -80,7 +81,7 @@ test('on a track aligned 100 hours later, following playback at axis hour 8 read
     const aligned = track(100, 109, 100);
     const groups = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
       unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 101, firstHour: 100, lastHour: 105 }] }] };
-    host.__stub = { useHeadProduct: () => head(), useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
+    host.__stub = { useHeadProduct: gated, useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
     const country = datedCountryToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset: 0 });
     const render = (time: Record<string, unknown>) => markup(createElement(Widget, { widget: { id: 'queue', kind: 'training-queue', trackIds: ['main'],
       countries: { kind: 'tags', tags: ['GER'] }, time, options: { country } }, runtime: { tracks: [aligned], client: {}, clock: clockAt({ firstHour: 0, lastHour: 9 }, 8) },
@@ -102,7 +103,7 @@ test('two humans recorded through 109, counted at this hour: at 110 Diplomatic r
       humans: [{ tag: 'GER', firstHour: 100, lastHour: 109 }, { tag: 'ENG', firstHour: 100, lastHour: 109 }], unobserved: { humans: [], factions: [], wars: [] },
       countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, identities: [{ slot: index + 1, countryId: index + 101, firstHour: 100, lastHour: 109 }] })) };
     const runtime = { tracks: [shortTrack], client: {}, clock: clockAt({ firstHour: 100, lastHour: 200 }, 150), addWidgetBelow() {} };
-    host.__stub = { useHeadProduct: () => head({ outside: true, outsideDetail: 'Choose another time in widget settings.', read: 'off' }),
+    host.__stub = { useHeadProduct: gated,
       useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
     const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
     const { default: Relations } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx');
@@ -128,7 +129,7 @@ test('a named leader growing with playback, at 99 before its branch 100–109: t
     const career = { reference: '1', name: 'Leader 1', portraitHour: null, runs: [{ firstHour: 100, lastHour: 109, role, skill: 3, components: [1, 1, 1, 1] }],
       traitGains: [[104, 0, 1]], traits: [{ token: 'a', name: 'A', icon: null, missing: null }], commands: [{ firstHour: 102, lastHour: 108, formation: '7', kind: 'army', name: null }],
       battles: [], observed: [[100, 109]], battlesPartialFrom: null, resultsMissing: '', missing: null, warnings: [] };
-    host.__stub = { useHeadProduct: () => head({ outside: true, read: 'off' }), useProduct: (_client: never, request: { product: string } | null) => request?.product === 'unit-leader-career' ? { data: career, retry() {} } : undefined,
+    host.__stub = { useHeadProduct: gated, useProduct: (_client: never, request: { product: string } | null) => request?.product === 'unit-leader-career' ? { data: career, retry() {} } : undefined,
       useLeaderPortraits: () => ({ at: () => undefined, warnings: [] }) };
     const html = markup(createElement(CareerView, { reference: '1', widget: { id: 'career', kind: 'general-career', trackIds: ['main'], countries: { kind: 'all' },
       time: { mode: 'follow' }, options: { leader: '1', growWithPlayback: true } }, runtime: { tracks: [track(100, 109)], client: {}, clock: clockAt({ firstHour: 0, lastHour: 200 }, 99) },

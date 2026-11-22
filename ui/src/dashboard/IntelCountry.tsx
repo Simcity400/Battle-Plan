@@ -6,14 +6,14 @@ import type { WidgetRuntime } from './definitions';
 import type { HeadProduct } from './headProduct';
 import type { WidgetSpec } from './model';
 import { resolveWindow } from './model.ts';
+import { recordedHour } from './regionTime.ts';
 import { usePushedLooksHour } from './pushedLooks.ts';
 import type { Country } from '../generated/dashboard';
 
 export function shownHour(runtime: WidgetRuntime, widget: WidgetSpec, head: Pick<HeadProduct<unknown>, 'hour'>): number | null {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   if (!track) return null;
-  const hour = head.hour ?? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
-  return hour === undefined ? null : Math.max(track.branch.firstHour, Math.min(Math.floor(hour), track.branch.lastHour));
+  return recordedHour(track, head.hour ?? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour);
 }
 
 export function useIntelLabels(runtime: WidgetRuntime, widget: WidgetSpec, tags: readonly string[], hour: number | null, active: boolean, pushed = false): CountryLabel {

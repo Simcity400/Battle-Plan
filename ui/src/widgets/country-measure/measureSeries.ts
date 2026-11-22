@@ -15,12 +15,14 @@ import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
 import { useTiles } from '../../dashboard/tiles/useTiles';
+import { recordedHour, type CoveredBranch } from '../../dashboard/regionTime';
 
 export type MeasureFamily = string;
 
-export function useMeasureSeries(client: DashboardClient, source: DashboardSource | undefined, branchId: string | undefined,
+export function useMeasureSeries(client: DashboardClient, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
   family: MeasureFamily, measure: string, tags: readonly string[], headHour: number | null, hoverHour: number | null, active: boolean,
   withMarks: boolean, within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, live: boolean) {
+  const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, family, measure, tags, within && [...within]]);
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
@@ -46,8 +48,8 @@ export function useMeasureSeries(client: DashboardClient, source: DashboardSourc
     return marked.current.marks.get(tag) ?? null;
   }, [readLines]);
   const tileDecimals = tiles.lines?.values().next().value?.decimals;
-  const reads = tags.flatMap(tag => [...new Set([...(headHour === null ? [] : [Math.floor(headHour)]), ...(hoverHour === null ? [] : [Math.floor(hoverHour)])])]
-    .map(hour => ({ tag, hour })));
+  const hours = [...new Set([headHour, hoverHour].map(hour => recordedHour(branch && { branch }, hour)).filter(hour => hour !== null))];
+  const reads = tags.flatMap(tag => hours.map(hour => ({ tag, hour })));
   const stateRead = useViewRead<typeof reads, MeasureStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
       signal, validateMeasureStates, source, restart, publish), client);

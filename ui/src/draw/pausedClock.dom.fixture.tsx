@@ -98,10 +98,11 @@ function push() {
   for (const [id, query] of followed) {
     if (pushedAt.get(id) === at || query.branchId === shortTrack.branch.id && asked.hour > SHORT_END) continue;
     pushedAt.set(id, at);
-    const item = decoder.item(datedPanel(id, asked.hour, replies[String(query.panel)]!(asked.hour, query), asked.seek).buffer);
+    const item = decoder.item(datedPanel(id, asked.hour, replies[String(query.panel)]!(asked.hour, query), asked.seek, routeOf(query)).buffer);
     for (const port of ports) port.postMessage([item]);
   }
 }
+const routeOf = (query: Record<string, unknown>) => query.branchId === shortTrack.branch.id ? 10 : 9;
 const answer = (product: string, params: Record<string, unknown>): unknown => {
   if (product === 'follow') {
     const { id, query } = params as { id: number; query: Record<string, unknown> };
@@ -110,7 +111,7 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
     if (panel === 'nuclear-arsenal') native.id = id;
     followed.set(id, query);
     if (!native.hold) push();
-    return { available: true, route: 9 };
+    return { available: true, route: routeOf(query) };
   }
   if (product === 'follow-clock') {
     const { playing, hour, seek } = params as { playing: boolean; hour: number; seek: number };

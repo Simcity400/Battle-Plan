@@ -26,7 +26,7 @@ export default function PairHistory({ widget, runtime, active, pair, hour }: Wid
   const keys = useMemo(() => chosen ? [{ tag: chosen.owner, part: String(chosen.targetId) }] : [], [chosen?.owner, chosen?.targetId]);
   const family = useMemo(() => ({ kind: 'intel-networks', measure: field }), [field]);
   const [hoverHour, setHoverHour] = useState<number | null>(null);
-  const series = useKeyedSeries(runtime.client, runtime.clock, track && keys.length ? { source: track.source, branchId: track.branch.id, family, keys, partBits: 32,
+  const series = useKeyedSeries(runtime.client, runtime.clock, track && keys.length ? { source: track.source, branch: track.branch, family, keys, partBits: 32,
     lastHour: track.branch.lastHour, axisOffset: track.axisOffset } : null, hour, hoverHour, false, active, root);
   const layers = useMemo<ChartLayer[]>(() => keys.map(key => ({
     draw: (ctx, frame, chartTokens, state) => {

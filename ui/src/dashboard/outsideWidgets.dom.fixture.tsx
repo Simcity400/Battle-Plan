@@ -32,7 +32,8 @@ const trade: TradeFlowsReply = {
     deliveredRaw: ['1000000'], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] }],
   warnings: [],
 };
-Object.assign(globalThis, { __fixture: { losses, trade, identities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }] } });
+Object.assign(globalThis, { __fixture: { losses, trade, groups: { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
+  unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities: [{ slot: 1, countryId: 1, firstHour: 100, lastHour: 109 }] }] } } });
 
 const waiting = new Promise<never>(() => {});
 const client = {

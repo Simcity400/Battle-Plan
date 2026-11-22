@@ -42,7 +42,7 @@ export function usePartSeries(runtime: WidgetRuntime, track: BoundTrack, kind: s
   within: ReadonlyMap<string, readonly HourSpan[]> | undefined, active: boolean) {
   const args = (at: number) => {
     const measure = measures[at] ?? null;
-    return [runtime.client, measure && tag ? track.source : undefined, track.branch.id, kind, measure ?? '', tag ? [tag] : [],
+    return [runtime.client, measure && tag ? track.source : undefined, track.branch, kind, measure ?? '', tag ? [tag] : [],
       null, null, active && !!measure && !!tag, false, within, track.branch.lastHour, false] as const;
   };
   const s0 = useMeasureSeries(...args(0)), s1 = useMeasureSeries(...args(1)), s2 = useMeasureSeries(...args(2)), s3 = useMeasureSeries(...args(3));

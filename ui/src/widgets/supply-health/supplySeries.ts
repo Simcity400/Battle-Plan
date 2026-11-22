@@ -10,6 +10,7 @@ import { loadProduct, loadTransientProduct } from '../../dashboard/products';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import { useViewRead } from '../../dashboard/viewRead';
+import { recordedHour, type CoveredBranch } from '../../dashboard/regionTime';
 import { useTiles } from '../../dashboard/tiles/useTiles';
 import { validateMeasureStates } from '../country-measure/measureSeriesData';
 import type { LiveShares } from '../../charts/share';
@@ -23,9 +24,10 @@ import type { SupplyAt } from './supplyHealthData';
 
 const NO_RUNS: ShareRun[] = [];
 
-export function useSupplySeries(client: DashboardClient, clock: PlaybackController, source: DashboardSource | undefined, branchId: string | undefined,
+export function useSupplySeries(client: DashboardClient, clock: PlaybackController, source: DashboardSource | undefined, branch: (CoveredBranch & { id: string }) | undefined,
   tags: readonly string[], within: ReadonlyMap<string, readonly HourSpan[]> | undefined, lastHour: number, active: boolean,
   reads: readonly { tag: string; hour: number }[], following = false, root: { readonly current: Element | null } = { current: null }, axisOffset = 0) {
+  const branchId = branch?.id;
   const enabled = !!source && !!branchId && tags.length > 0;
   const ownerKey = JSON.stringify([source?.id, source?.revision, branchId, tags, within && [...within]]);
   const owner = useMemo(() => ({ client, key: ownerKey }), [client, ownerKey]);
@@ -69,7 +71,10 @@ export function useSupplySeries(client: DashboardClient, clock: PlaybackControll
   const request = (product: string, measure: string, params: Record<string, unknown>) => ({ sourceId: source!.id, revision: source!.revision,
     product, params: { branchId, family: { kind: SUPPLY_FAMILY, measure }, ...params } });
   const content = useContentRevision(client);
-  const asked = useMemo(() => [...new Map(reads.map(read => [`${read.tag}\u0000${read.hour}`, read])).values()], [JSON.stringify(reads)]);
+  const asked = useMemo(() => [...new Map(reads.flatMap(read => {
+    const hour = recordedHour(branch && { branch }, read.hour);
+    return hour === null ? [] : [[`${read.tag}\u0000${hour}`, { tag: read.tag, hour }] as const];
+  })).values()], [JSON.stringify(reads), branch]);
   const stateRead = useViewRead<typeof asked, readonly (readonly SeriesState[])[]>(enabled && asked.length ? JSON.stringify([ownerKey, content]) : null,
     asked, JSON.stringify(asked), active, (at, signal, _publish, restart) => Promise.all(STATES.map(measure =>
       loadProduct(client, request('series-state', measure, { reads: at }), signal, validateMeasureStates, source, restart)

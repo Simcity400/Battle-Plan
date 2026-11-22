@@ -112,9 +112,9 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
   const membership = resolved.membership ?? undefined;
-  const balances = useMeasureSeries(runtime.client, track?.source, track?.branch.id, 'country-measure', config.measure, resolved.tags,
+  const balances = useMeasureSeries(runtime.client, track?.source, track?.branch, 'country-measure', config.measure, resolved.tags,
     followedHead ? null : head, hoverHour, active, options.spendTicks === true, membership, lastHour, following);
-  const ceiling = useMeasureSeries(runtime.client, showCeiling ? track?.source : undefined, track?.branch.id, 'country-stability', 'maxCommandPower',
+  const ceiling = useMeasureSeries(runtime.client, showCeiling ? track?.source : undefined, track?.branch, 'country-stability', 'maxCommandPower',
     resolved.tags, ceilingHead ? null : head, hoverHour, active && showCeiling, false, membership, lastHour, following);
   const [hoverCluster, setHoverCluster] = useChangedState<{ owner: unknown; cluster: MarkCluster | null } | null>(null);
   const [changeList, setChangeList] = useState<{ owner: unknown; id: number; tag: string; first: string; end?: string } | null>(null);

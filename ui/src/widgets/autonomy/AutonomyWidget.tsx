@@ -114,7 +114,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const lanesData = useMemo(() => data ? autonomyLanes(data, filter.tags, bySubject) : [], [data, filter.tags, bySubject]);
   const tags = useMemo(() => lanesData.map(lane => lane.tag), [lanesData]);
   const within = useMemo(() => new Map(lanesData.map(lane => [lane.tag, lane.within])), [lanesData]);
-  const series = useMeasureSeries(runtime.client, track?.source, track?.branch.id, 'autonomy', 'progress', tags,
+  const series = useMeasureSeries(runtime.client, track?.source, track?.branch, 'autonomy', 'progress', tags,
     following && !followsClock ? head : null, hoverHour, active, false, within, lastHour, followsClock);
   const axisOffset = track?.axisOffset ?? 0;
   const tilesLanded = series.subscribe;

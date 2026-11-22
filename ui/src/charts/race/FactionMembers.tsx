@@ -47,7 +47,7 @@ export default function FactionMembers({ runtime, track, active, options, kind, 
   const tags = useMemo(() => [...spans.keys()].sort(), [spans]);
   const at = useMemo(() => faction ? factionMembersAt(faction, hour) : [], [faction, hour]);
   const atKey = at.join(',');
-  const lines = useMeasureSeries(runtime.client, track.source, track.branch.id, kind, measure, tags, null, null, active, false, spans, track.branch.lastHour, head !== null);
+  const lines = useMeasureSeries(runtime.client, track.source, track.branch, kind, measure, tags, null, null, active, false, spans, track.branch.lastHour, head !== null);
   const looks = useCountryLooks(runtime.client, track, tags, hour, active);
   const colours = useMemo(() => partColours(tags.map(tag => ({ id: tag, label: tag })), tokens.categories), [tags, tokens.categories]);
   const asked = useProduct<SeriesStateReply>(runtime.client, head === null && at.length && recordedHour(track, hour) !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'series-state',

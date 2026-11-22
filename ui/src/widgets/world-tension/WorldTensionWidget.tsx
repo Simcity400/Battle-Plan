@@ -28,6 +28,7 @@ import { useHeadProduct } from '../../dashboard/headProduct';
 import { useGate } from '../../dashboard/regionGate';
 import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { resolveWindow } from '../../dashboard/model';
+import { trackHourOf } from '../../dashboard/settledHour';
 import type { WidgetSpec } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
@@ -278,19 +279,20 @@ function ThreatEventsView({ widget, runtime, active, onDiagnostics, setOption }:
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'threat-events', params: { branchId: track.branch.id } } : null;
   const reply = useProduct<ThreatEventsReply>(runtime.client, request, active, validateThreatEvents, track?.source);
-  const trackHour = (clockHour: number) => Math.floor((track && resolveWindow(widget, track, runtime.tracks, clockHour)?.lastHour) ?? track?.branch.lastHour ?? 0);
+  const trackHour = (clockHour: number) => trackHourOf(widget, track, runtime.tracks, clockHour);
   useAtHead(runtime.clock, active && widget.time.mode === 'follow', clockHour => {
     const at = trackHour(clockHour);
+    if (at === null) return -1;
     let count = 0;
     for (const event of reply.data?.events ?? []) if (event.firstRead <= at) count += 1 + event.added.filter(added => added.hour <= at).length + (event.lastRead < at ? 1 : 0);
     return count;
   });
   const hour = trackHour(runtime.clock.getHour());
   useEffect(() => { shown(reply.data ? hour : null); }, [reply.data, hour, shown]);
-  const rows = useMemo(() => reply.data ? eventsThrough(reply.data, hour) : [], [reply.data, hour]);
+  const rows = useMemo(() => reply.data && hour !== null ? eventsThrough(reply.data, hour) : [], [reply.data, hour]);
   const [visible, setVisible] = useState<readonly ThreatEvent[]>([]);
   const labels = useCountryLabelsAt(runtime.client, track, useMemo(() => visible.flatMap(event => event.tag ? [{ tag: event.tag, hour: event.firstRead }] : []), [visible]), active);
-  const columns = useMemo<readonly TableColumn<ThreatEvent>[]>(() => [
+  const columns = useMemo<readonly TableColumn<ThreatEvent>[]>(() => hour === null ? [] : [
     { key: 'date', header: 'Created', label: 'Created', value: event => event.hour, render: event => dayLabel(event.hour), width: 'max-content' },
     { key: 'country', header: 'Country', label: 'Country', width: 'minmax(var(--table-country-min), 1fr)',
       value: event => event.tag, render: event => event.tag ? contributorName(event.tag, event.remembered, tag => labels.labelAt(event.firstRead)(tag).name) : 'Unknown country' },
@@ -306,6 +308,7 @@ function ThreatEventsView({ widget, runtime, active, onDiagnostics, setOption }:
     return () => onDiagnostics(NO_WARNINGS);
   }, [reply.data, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see its threat events." />;
+  if (hour === null) return <WidgetState kind="outside" />;
   if (reply.error) return <WidgetState kind="error" failure={reply.error} onRetry={reply.retry} />;
   if (!reply.data) return <WidgetState kind="loading" label="Loading threat events…" />;
   if (!rows.length) return <WidgetState kind="empty" icon="alert" message={`No threat event recorded by ${dayLabel(hour)}.`} />;

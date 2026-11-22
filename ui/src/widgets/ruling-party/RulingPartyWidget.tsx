@@ -78,7 +78,7 @@ export default function RulingPartyWidget({ widget, runtime, active, onDiagnosti
   const keys = useMemo(() => bandKeys(ordered), [ordered]);
   const rulingShown = data ? rulingAt(data, head) : null;
   const list = useMemo(() => rulingFirst(ordered, rulingShown), [ordered, rulingShown]);
-  const spec = useMemo(() => track && keys.length ? { source: track.source, branchId: track.branch.id, family: POPULARITY_FAMILY, keys,
+  const spec = useMemo(() => track && keys.length ? { source: track.source, branch: track.branch, family: POPULARITY_FAMILY, keys,
     partBits: POPULARITY_PART_BITS, lastHour: track.branch.lastHour } : null, [track?.source, track?.branch.id, track?.branch.lastHour, keys]);
   const popularity = useKeyedSeries(runtime.client, runtime.clock, spec, live ? null : head, hover, live, active, root);
   const names = useMemo(() => {

@@ -117,14 +117,14 @@ export default function FuelWidget({ widget, runtime, active, countrySlot, onDia
   const lastHour = track?.branch.lastHour ?? 0;
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const live = following && !saved;
-  const fuel = useMeasureSeries(runtime.client, track?.source, track?.branch.id, COUNTRY_FUEL, 'fuel', tags, fuelHead ? null : head, hoverHour, active && !saved,
+  const fuel = useMeasureSeries(runtime.client, track?.source, track?.branch, COUNTRY_FUEL, 'fuel', tags, fuelHead ? null : head, hoverHour, active && !saved,
     false, membership, lastHour, live);
-  const capacity = useMeasureSeries(runtime.client, showCapacity ? track?.source : undefined, track?.branch.id, COUNTRY_FUEL, 'capacity', tags,
+  const capacity = useMeasureSeries(runtime.client, showCapacity ? track?.source : undefined, track?.branch, COUNTRY_FUEL, 'capacity', tags,
     capacityHead ? null : head, hoverHour, active && !saved && showCapacity, false, membership, lastHour, live);
   const withStrip = single && options.strip !== false && !saved;
-  const gain = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch.id, FUEL_DAYS, 'stripGain', tags, null, null,
+  const gain = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch, FUEL_DAYS, 'stripGain', tags, null, null,
     active && withStrip, false, membership, lastHour, live);
-  const burn = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch.id, FUEL_DAYS, 'stripBurn', tags, null, null,
+  const burn = useMeasureSeries(runtime.client, withStrip ? track?.source : undefined, track?.branch, FUEL_DAYS, 'stripBurn', tags, null, null,
     active && withStrip, false, membership, lastHour, live);
   useEffect(() => { if (!fuelHead && !saved) shown(tags.length && tags.every(tag => fuel.hourLoaded(tag, Math.floor(head))) ? head : null); });
   const styles = useCountryLineStyles(runtime.client, track, tags, Math.floor(head), active && !single && !saved);

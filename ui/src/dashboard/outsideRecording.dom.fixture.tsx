@@ -1,17 +1,28 @@
-﻿import { createRoot } from 'react-dom/client';
-import WidgetState from '../components/WidgetState';
+﻿import { Profiler } from 'react';
+import { createRoot } from 'react-dom/client';
+import '../styles.css';
+import '../widgets';
+import { loadWidgetRenderer } from '../widgets/rendererLoaders';
 import type { EngineFrame, FrameEngine } from '../engine/frame';
 import { PHASES } from '../engine/frame';
-import { registerWidgets } from './definitions';
-import type { WidgetProps, WidgetRuntime } from './definitions';
-import { useHeadProduct } from './headProduct';
-import { useGate } from './regionGate';
-import type { WidgetSpec } from './model';
+import { widgetDefinitions } from './definitions';
+import type { WidgetRuntime } from './definitions';
+import { createWidget } from './model';
+import type { BoundTrack, WidgetSpec } from './model';
 import { PlaybackController } from './playback';
+import { MapViewsStore } from './geometry';
 import { WidgetBody } from './widgets';
-import { definition as warGoals } from '../widgets/war-goals/definition';
 
-const WIDGETS = 114;
+class OnScreen {
+  private readonly heard: IntersectionObserverCallback;
+  constructor(heard: IntersectionObserverCallback) { this.heard = heard; }
+  observe(target: Element) { queueMicrotask(() => this.heard([{ target, isIntersecting: true, intersectionRatio: 1 } as unknown as IntersectionObserverEntry], this as never)); }
+  unobserve() {}
+  disconnect() {}
+  takeRecords() { return []; }
+}
+Object.assign(window, { IntersectionObserver: OnScreen });
+
 let now = 1000;
 performance.now = () => now;
 const tasks = new Map<string, (frame: EngineFrame) => boolean | void>();
@@ -22,45 +33,40 @@ const engine = { every: (phase: string, run: (frame: EngineFrame) => boolean | v
 const clock = new PlaybackController(engine);
 clock.setBounds({ firstHour: 0, lastHour: 500 });
 
-const renders = { count: 0 };
-function Probe({ widget, runtime, active }: WidgetProps) {
-  renders.count++;
-  const head = useHeadProduct(runtime, useGate(runtime, widget), 'probe-moment', {}, { active, validate: value => value });
-  return head.data !== undefined ? <p>read</p> : <WidgetState kind="loading" label="Loading the probeâ€¦" />;
-}
-registerWidgets([{ ...warGoals, playsBackDated: true, render: Probe }]);
-
 const waiting = new Promise<never>(() => {});
+const reply = (request: { sourceId: string; revision: string; product: string }, data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
 const client = {
   available: true,
   product: async (request: { sourceId: string; revision: string; product: string; params: Record<string, unknown> }) => {
-    if (request.product === 'follow') return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: { available: false, reason: 'not followed here' } };
-    if (request.product === 'follow-clock' || request.product === 'unfollow') return { sourceId: request.sourceId, revision: request.revision, product: request.product, data: null };
+    if (request.product === 'follow') return reply(request, { available: false, reason: 'not followed here' });
+    if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(request, null);
     return waiting;
   },
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
 };
-const source = { id: 'outside', revision: '1', metadata: { countries: [], captureMode: 'full' } };
-const track = (id: string, firstHour: number, lastHour: number) => ({ id, roleId: id, label: id, branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: 'GER', source,
-  branch: { id, firstHour, lastHour, gaps: [] } });
-const tracks = [track('early', 0, 100), track('late', 101, 500)];
-const runtime = { tracks, campaignTracks: [], defaultRoleId: null, clock, client, addWidgetBelow() {}, campaigns: [], recordings: [], requestSeek() {} } as unknown as WidgetRuntime;
-const widgets = Array.from({ length: WIDGETS }, (_, index) => ({ id: `probe-${index}`, kind: 'war-goals', configVersion: 1, title: 'Probe',
-  trackIds: [index % 2 ? 'late' : 'early'], countries: { kind: 'tags', tags: ['GER'] }, time: { mode: 'follow' }, options: {} }) as unknown as WidgetSpec);
+const branch = (id: string, firstHour: number, lastHour: number) => ({ id, sessionId: id, firstHour, lastHour, main: id === 'early', fork: null, joins: [], sampleBoundary: '', gaps: [] });
+const branches = [branch('early', 0, 100), branch('late', 101, 500)];
+const source = { id: 'outside', path: 'outside.battleplan', revision: '1', metadata: { path: 'outside.battleplan', name: 'Outside', format: 1, captureMode: 'full',
+  campaignKey: 'campaign', branches, countries: [{ id: '1', tag: 'GER', name: 'Germany', observedBranchId: 'early', observedHour: 0 }], playerCountryId: '1',
+  contentVerified: true, partial: null, warnings: [], buildWarnings: [], revision: '1' } };
+const tracks = branches.map((held, index) => ({ id: held.id, roleId: held.id, label: held.id, branchIndex: index, anchorOffset: null, axisOffset: 0, selectedTag: 'GER',
+  selectedSlot: 1, source, branch: held })) as unknown as BoundTrack[];
+const runtime = { tracks, campaignTracks: [], defaultRoleId: null, clock, client, maps: new MapViewsStore(client as never, clock), onMapBranch() {}, alignment: 'anchors',
+  nativeHidden: false, addWidgetBelow() {}, campaigns: [], recordings: [], assignCampaign: async () => {}, requestSeek: () => false } as unknown as WidgetRuntime;
 
-const host = document.body.appendChild(document.createElement('div'));
-createRoot(host).render(<>{widgets.map(widget => <div key={widget.id} id={widget.id}><WidgetBody widget={widget} runtime={runtime} /></div>)}</>);
+export interface Mounted { id: string; kind: string; track: 'early' | 'late'; follows: boolean }
+let mounted: Mounted[] = [];
+const renders = new Map<string, number>();
+const counted = (id: string) => () => { renders.set(id, (renders.get(id) ?? 0) + 1); };
 
 const settle = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 const stateOf = (id: string) => {
-  const state = document.getElementById(id)?.querySelector<HTMLElement>('.widget-state');
-  return state ? `${state.dataset.state}${state.textContent ? `: ${state.textContent}` : ''}` : null;
+  const element = document.getElementById(id);
+  const state = element?.querySelector<HTMLElement>('.widget-state, .dash-empty');
+  return state ? `${state.dataset.state ?? 'empty'}: ${state.textContent ?? ''}` : (element?.textContent ?? '').slice(0, 120);
 };
-const shown = () => {
-  const by = { early: new Set<string | null>(), late: new Set<string | null>() };
-  widgets.forEach((widget, index) => by[index % 2 ? 'late' : 'early'].add(stateOf(widget.id)));
-  return { hour: clock.getHour(), early: [...by.early], late: [...by.late], renders: renders.count };
-};
+const shown = (before: ReadonlyMap<string, number>) => ({ hour: clock.getHour(),
+  widgets: Object.fromEntries(mounted.map(item => [item.id, { state: stateOf(item.id), renders: (renders.get(item.id) ?? 0) - (before.get(item.id) ?? 0) }])) });
 const tick = (ms: number) => {
   now += ms;
   for (const phase of PHASES) tasks.get(phase)?.({ now, dt: ms, index: 0, phase } as EngineFrame);
@@ -69,16 +75,32 @@ const tick = (ms: number) => {
 async function frames(count: number, ms: number) {
   const seen = [];
   for (let frame = 0; frame < count; frame++) {
-    const before = renders.count;
+    const before = new Map(renders);
     tick(ms);
     await settle();
-    seen.push({ ...shown(), renders: renders.count - before });
+    seen.push(shown(before));
   }
   return seen;
 }
 
 Object.assign(window, { outsideFixture: {
-  async start(hour: number) { clock.seek(hour); await settle(); await settle(); return shown(); },
+  async start(hour: number) {
+    const definitions = widgetDefinitions();
+    await Promise.all(definitions.map(definition => loadWidgetRenderer(definition.kind)));
+    clock.seek(hour);
+    mounted = definitions.map((definition, index) => ({ id: `widget-${definition.kind}`, kind: definition.kind, track: index % 2 ? 'late' : 'early',
+      follows: definition.timeModes.includes('follow') }));
+    const specs = mounted.map(item => {
+      const made = createWidget(item.kind, item.track, item.id);
+      return { ...made, campaign: 'tracks', trackIds: [item.track], time: item.follows ? { mode: 'follow' } : made.time } as WidgetSpec;
+    });
+    createRoot(document.body.appendChild(document.createElement('div'))).render(<>{specs.map(widget =>
+      <section key={widget.id} id={widget.id} style={{ width: 480, height: 320, overflow: 'hidden', position: 'relative' }}>
+        <Profiler id={widget.id} onRender={counted(widget.id)}><WidgetBody widget={widget} runtime={runtime} /></Profiler>
+      </section>)}</>);
+    for (let turn = 0; turn < 20; turn++) await settle();
+    return { mounted, ...shown(new Map(renders)) };
+  },
   async play(speed: number, count: number, ms: number) {
     clock.setSpeed(speed);
     clock.setPlaying(true);
