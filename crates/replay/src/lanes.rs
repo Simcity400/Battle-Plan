@@ -796,19 +796,41 @@ fn uncovered(recording: &Recording, run: u32, blocks: std::ops::Range<u32>, cove
     let held = recording.run(run)?;
     let first_hour = i64::from(held.first_hour);
     let mut out: Vec<(u32, u32)> = Vec::new();
+    let mut remain: Vec<(i64, i64)> = Vec::new();
+    let mut next: Vec<(i64, i64)> = Vec::new();
     for block in blocks {
         let (start, hours) = held.block(block as usize);
-        let (from, to) = (first_hour + i64::from(start), first_hour + i64::from(start + hours));
-        if covered.iter().any(|&(begin, end)| begin <= from && to <= end) {
-            continue;
-        }
         let (a, b) = (start.max(first), (start + hours - 1).min(last));
         if a > b {
             continue;
         }
-        match out.last_mut() {
-            Some((_, end)) if *end + 1 == a => *end = b,
-            _ => out.push((a, b)),
+        remain.clear();
+        remain.push((first_hour + i64::from(a), first_hour + i64::from(b) + 1));
+        for &(begin, end) in covered {
+            if remain.is_empty() {
+                break;
+            }
+            next.clear();
+            for &(lo, hi) in &remain {
+                if end <= lo || begin >= hi {
+                    next.push((lo, hi));
+                } else {
+                    if lo < begin {
+                        next.push((lo, begin));
+                    }
+                    if end < hi {
+                        next.push((end, hi));
+                    }
+                }
+            }
+            std::mem::swap(&mut remain, &mut next);
+        }
+        for &(lo, hi) in &remain {
+            let (a, b) = ((lo - first_hour) as u32, (hi - 1 - first_hour) as u32);
+            match out.last_mut() {
+                Some((_, end)) if *end + 1 == a => *end = b,
+                _ => out.push((a, b)),
+            }
         }
     }
     Ok(out)
@@ -1656,13 +1678,14 @@ fn top_with(
         return Ok(vec![Vec::new(); bins]);
     }
     let (read_from, min_bucket_hour) = match valid_hour {
-        Some(valid) => {
+        Some(valid) if from < valid => {
             let aligned = first_bin_hour + ((i64::from(valid) - first_bin_hour + bin_hours - 1) / bin_hours) * bin_hours;
             if aligned > i64::from(to) {
                 return Ok(vec![Vec::new(); bins]);
             }
             (aligned as i32, aligned)
         }
+        Some(valid) => (from, i64::from(valid)),
         None => (from, i64::MIN),
     };
     let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);

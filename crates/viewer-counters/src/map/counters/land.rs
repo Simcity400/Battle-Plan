@@ -1342,7 +1342,7 @@ pub(super) struct DivisionStatuses {
 struct KeyedStatuses {
     frame: Arc<DecodedFrame>,
     recorded: bool,
-    looked: std::sync::Mutex<std::collections::HashMap<u64, Option<DivisionStatus>>>,
+    looked: std::sync::Mutex<std::collections::HashMap<u64, DivisionStatus>>,
     lookups: super::Lookups,
 }
 
@@ -1398,44 +1398,24 @@ impl DivisionStatuses {
     pub(super) fn get(&self, division: u64) -> DivisionStatus {
         match &self.by_key {
             Some(keyed) => keyed.get(division),
-            None => self.by_division.get(&division).copied(),
-        }
-        .unwrap_or(DivisionStatus {
-            exercising: self.witnessed(division),
-            naval_transfer: self.transfer(division),
-            ..Self::MISSING
-        })
-    }
-
-    fn witnessed(&self, division: u64) -> Option<bool> {
-        match &self.by_key {
-            Some(keyed) if !keyed.recorded => keyed.witnessed(division),
-            Some(_) => None,
-            None => self.witnessed.get(&division).copied().flatten(),
-        }
-    }
-
-    fn transfer(&self, division: u64) -> Option<bool> {
-        match &self.by_key {
-            Some(keyed) => keyed.transfer(division),
-            None => self.transfers.get(&division).copied(),
+            None => self.by_division.get(&division).copied().unwrap_or_else(|| DivisionStatus {
+                exercising: self.witnessed.get(&division).copied().flatten(),
+                naval_transfer: self.transfers.get(&division).copied(),
+                ..Self::MISSING
+            }),
         }
     }
 
     pub(super) fn recorded(&self, division: u64) -> bool {
         match &self.by_key {
-            Some(keyed) => keyed.get(division),
-            None => self.by_division.get(&division).copied(),
+            Some(keyed) => keyed.get(division).maxima.is_some(),
+            None => self.by_division.get(&division).is_some_and(|status| status.maxima.is_some()),
         }
-        .is_some_and(|status| status.maxima.is_some())
     }
 }
 
 impl KeyedStatuses {
-    fn get(&self, division: u64) -> Option<DivisionStatus> {
-        if !self.recorded {
-            return None;
-        }
+    fn get(&self, division: u64) -> DivisionStatus {
         let mut looked = self.looked.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(&status) = looked.get(&division) {
             self.lookups.kept();
@@ -1443,23 +1423,29 @@ impl KeyedStatuses {
         }
         self.lookups.made();
         let frame = &*self.frame;
-        let status = keyed::<tables::DivisionStatus>(frame, division, |row| row.division).map(|row| {
-            let panel = keyed::<tables::DivisionPanelStats>(frame, division, |row| row.division);
-            let movement = keyed::<tables::DivisionMovement>(frame, division, |row| row.division);
-            status_of(row, panel, movement)
-        });
+        let movement = keyed::<tables::DivisionMovement>(frame, division, |row| row.division);
+        let status = if self.recorded {
+            match keyed::<tables::DivisionStatus>(frame, division, |row| row.division) {
+                Some(row) => {
+                    let panel = keyed::<tables::DivisionPanelStats>(frame, division, |row| row.division);
+                    status_of(row, panel, movement)
+                }
+                None => DivisionStatus {
+                    naval_transfer: movement.map(|row| row.naval_transfer != 0),
+                    ..DivisionStatus::MISSING
+                },
+            }
+        } else {
+            let exercising = keyed::<tables::DivisionModelInputs>(frame, division, |row| row.division)
+                .and_then(|row| row.exercising.map(|value| value != 0));
+            DivisionStatus {
+                exercising,
+                naval_transfer: movement.map(|row| row.naval_transfer != 0),
+                ..DivisionStatus::MISSING
+            }
+        };
         looked.insert(division, status);
         status
-    }
-
-    fn witnessed(&self, division: u64) -> Option<bool> {
-        self.lookups.made();
-        keyed::<tables::DivisionModelInputs>(&self.frame, division, |row| row.division).and_then(|row| row.exercising.map(|value| value != 0))
-    }
-
-    fn transfer(&self, division: u64) -> Option<bool> {
-        self.lookups.made();
-        keyed::<tables::DivisionMovement>(&self.frame, division, |row| row.division).map(|row| row.naval_transfer != 0)
     }
 }
 

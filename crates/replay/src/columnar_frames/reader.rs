@@ -269,28 +269,7 @@ impl Recording {
         recording.columns = framing.columns.into();
         recording.tables = framing.tables;
         recording.format = framing.format;
-        recording.withheld = framing.withheld.into();
-        let mut derived_coverage = Vec::new();
-        for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {
-            let index = table.index();
-            if index >= recording.tables || recording.withheld_reason(index).is_some() {
-                continue;
-            }
-            let key = SectionKey::derived(index as u32);
-            let Some(section) = recording.root.section(key) else { continue };
-            if section.version < required || section.is_empty() {
-                continue;
-            }
-            let extents = recording.section(key, section.version).map_err(unlocated)?;
-            let [extent] = extents.as_slice() else {
-                return Err(unlocated(invalid(format!("{key} holds {} extents; expected 1", extents.len()))));
-            };
-            let (from_run, from_ordinal) = decode_derived_from(&recording.raw(extent).map_err(unlocated)?).map_err(unlocated)?;
-            if (from_run, from_ordinal) != (0, 0) {
-                derived_coverage.push(DerivedCoverage { table: index, from_run, from_ordinal, reason: reason.to_owned() });
-            }
-        }
-        recording.derived_coverage = derived_coverage.into();
+        let mut withheld = framing.withheld;
         let mut damage = Vec::new();
         let mut runs = Vec::with_capacity(recording.directories.len());
         let mut segments = Vec::new();
@@ -317,6 +296,54 @@ impl Recording {
             }
         }
         recording.runs = runs.into();
+        let mut derived_coverage = Vec::new();
+        for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {
+            let index = table.index();
+            if index >= recording.tables || withheld.iter().any(|(held, _)| *held == index) {
+                continue;
+            }
+            let key = SectionKey::derived(index as u32);
+            let Some(section) = recording.root.section(key) else { continue };
+            if section.version < required || section.is_empty() {
+                continue;
+            }
+            let read_boundary = || -> io::Result<(u32, u32)> {
+                let extents = recording.section(key, section.version)?;
+                let [extent] = extents.as_slice() else {
+                    return Err(invalid(format!("{key} holds {} extents; expected 1", extents.len())));
+                };
+                let (from_run, from_ordinal) = decode_derived_from(&recording.raw(extent)?)?;
+                let run_count = recording.runs.len() as u32;
+                let valid = if from_run > run_count || (from_run == run_count && from_ordinal > 0) {
+                    false
+                } else if from_run < run_count {
+                    recording.runs[from_run as usize].as_ref().is_some_and(|run| {
+                        from_ordinal <= run.ordinals
+                            && i32::try_from(from_ordinal).ok().and_then(|o| run.first_hour.checked_add(o)).is_some()
+                    })
+                } else {
+                    true
+                };
+                if !valid {
+                    return Err(invalid(format!("{key} names out-of-range start run {from_run} ordinal {from_ordinal}")));
+                }
+                Ok((from_run, from_ordinal))
+            };
+            match read_boundary() {
+                Ok((0, 0)) => {}
+                Ok((from_run, from_ordinal)) => {
+                    derived_coverage.push(DerivedCoverage { table: index, from_run, from_ordinal, reason: reason.to_owned() });
+                }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    let text = format!("{}'s version marker is damaged: {error}", table_name(index as u32));
+                    damage.push(Damage { scope: DamageScope::Withheld { table: index as u32 }, cause: error });
+                    withheld.push((index, text));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        recording.withheld = withheld.into();
+        recording.derived_coverage = derived_coverage.into();
         recording.recorded = segments.clone().into();
         recording.segments = segments.into();
         recording.damage = damage.into();
