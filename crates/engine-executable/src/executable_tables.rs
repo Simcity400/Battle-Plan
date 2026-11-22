@@ -251,13 +251,18 @@ pub fn decode(identity: ExecutableIdentity, bytes: Vec<u8>, game_dir: &Path) -> 
             cursors: Err(withheld.requires(CURSORS)),
         };
     };
+    let cursor_identity = identity.clone();
     std::thread::scope(|scope| {
         let variables =
             scope.spawn(|| table(VARIABLES, || variables::VariableTables::decode(game_dir)));
         let commands = scope.spawn(|| table(COMMANDS, || commands::CommandTables::decode(image)));
         let numeric = scope.spawn(|| table(NUMERIC, || numeric::NumericTables::decode(image)));
         let folding = scope.spawn(|| table(FOLDING, || folding::FoldingTable::decode(image)));
-        let cursors = scope.spawn(|| table(CURSORS, || cursors::CursorTable::decode(image)));
+        let cursors = scope.spawn(move || {
+            table(CURSORS, || {
+                cursors::CursorTable::decode(image, &cursor_identity)
+            })
+        });
         let version = build::version_banner(&image.read_only_data().collect::<Vec<_>>());
         let keywords = table(KEYWORDS, || keywords::KeywordTables::decode(image));
         let (registries, auxiliary) = match &keywords {

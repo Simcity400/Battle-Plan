@@ -7,7 +7,7 @@ use engine_executable::executable_tables::{
     self, Tables,
     auxiliary::{AIR_GRAPH_DISPLAYS, AuxiliaryTables},
     commands::{Kind, Target, Token},
-    cursors::CursorTable,
+    cursors::{CursorAction, CursorTable},
     folding::FoldingTable,
     numeric::{NumericIdentity, NumericProperty, NumericScope, NumericTables},
     registries::{RegistryTables, TriggerReader},
@@ -58,6 +58,7 @@ pub struct Executable {
     objects: Vec<(u32, u32)>,
     folding: Vec<(u32, u32)>,
     cursors: Vec<String>,
+    cursor_bindings: BTreeMap<CursorAction, u32>,
     withheld: BTreeMap<Part, String>,
 }
 
@@ -105,6 +106,7 @@ impl Executable {
             objects: Vec::new(),
             folding: Vec::new(),
             cursors: Vec::new(),
+            cursor_bindings: BTreeMap::new(),
             withheld: BTreeMap::new(),
         }
     }
@@ -328,6 +330,19 @@ impl Executable {
         self
     }
 
+    pub fn cursor_binding(mut self, action: CursorAction, slot: u32) -> Self {
+        self.cursor_bindings.insert(action, slot);
+        self
+    }
+
+    pub fn cursor_bindings(
+        mut self,
+        bindings: impl IntoIterator<Item = (CursorAction, u32)>,
+    ) -> Self {
+        self.cursor_bindings.extend(bindings);
+        self
+    }
+
     pub fn withhold(mut self, part: Part, reason: &str) -> Self {
         self.withheld.insert(part, reason.to_owned());
         self
@@ -351,8 +366,8 @@ impl Executable {
         objects.sort_unstable();
         let folding = FoldingTable::from_pairs(self.folding.iter().copied())
             .expect("synthetic folding pairs are folded points and letters");
-        let cursors = CursorTable::from_paths(self.cursors)
-            .expect("synthetic cursor paths are valid relative cursor file paths");
+        let capacity = self.cursors.len();
+        let cursors = CursorTable::from_raw_paths(self.cursors, capacity, self.cursor_bindings);
         Parts {
             identity: self.identity.clone(),
             version: present(withheld(Part::Version), || self.version.clone()),

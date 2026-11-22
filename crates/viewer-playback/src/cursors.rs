@@ -1,5 +1,8 @@
 use eframe::egui::CustomCursorImage;
-use engine_executable::executable_tables::{Tables, cursors::CursorTable};
+use engine_executable::executable_tables::{
+    Tables,
+    cursors::{CursorAction, CursorTable},
+};
 use std::io;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,21 +37,25 @@ impl MapCursor {
         Self::ChainMoveNaval,
     ];
 
-    pub const fn name(self) -> &'static str {
+    pub const fn action(self) -> CursorAction {
         match self {
-            Self::Normal => "normal",
-            Self::DragSelect => "dragselect",
-            Self::NoMove => "no_move",
-            Self::AttackMove => "attack_move",
-            Self::AssignAir => "assign_air",
-            Self::PingOffensive => "ping_offensive",
-            Self::PingDefensive => "ping_defensive",
-            Self::FriendlyMove => "friendly_move",
-            Self::MoveToEnemyProvince => "move_to_enemy_province",
-            Self::AddUnits => "add_units",
-            Self::ChainMove => "chain_move",
-            Self::ChainMoveNaval => "chain_move_naval",
+            Self::Normal => CursorAction::Normal,
+            Self::DragSelect => CursorAction::DragSelect,
+            Self::NoMove => CursorAction::NoMove,
+            Self::AttackMove => CursorAction::AttackMove,
+            Self::AssignAir => CursorAction::AssignAir,
+            Self::PingOffensive => CursorAction::PingOffensive,
+            Self::PingDefensive => CursorAction::PingDefensive,
+            Self::FriendlyMove => CursorAction::FriendlyMove,
+            Self::MoveToEnemyProvince => CursorAction::MoveToEnemyProvince,
+            Self::AddUnits => CursorAction::AddUnits,
+            Self::ChainMove => CursorAction::ChainMove,
+            Self::ChainMoveNaval => CursorAction::ChainMoveNaval,
         }
+    }
+
+    pub const fn name(self) -> &'static str {
+        self.action().name()
     }
 }
 
@@ -134,16 +141,16 @@ impl Cursors {
         registry: Result<&CursorTable, &str>,
         read: impl Fn(&str) -> io::Result<B>,
     ) -> Self {
-        Self(MapCursor::ALL.map(|cursor| Self::read(registry, cursor.name(), &read)))
+        Self(MapCursor::ALL.map(|cursor| Self::read(registry, cursor, &read)))
     }
 
     pub fn read<B: AsRef<[u8]>>(
         registry: Result<&CursorTable, &str>,
-        name: &str,
+        cursor: MapCursor,
         read: impl Fn(&str) -> io::Result<B>,
     ) -> Result<Animated, String> {
-        let registry = registry.map_err(|why| format!("{name}: {why}"))?;
-        let path = registry.path(name)?;
+        let registry = registry.map_err(|why| format!("{}: {why}", cursor.name()))?;
+        let path = registry.path_for(cursor.action())?;
         read(path)
             .and_then(|bytes| Animated::decode(path, bytes.as_ref()))
             .map_err(|error| format!("{path}: {error}"))
@@ -239,23 +246,28 @@ mod tests {
 
     #[test]
     fn a_cursor_that_does_not_read_is_refused_by_its_path() {
-        let registry = CursorTable::from_paths([
-            "gfx/cursors/dragselect.ani".to_owned(),
-            "gfx/cursors/normal.cur".to_owned(),
-        ])
-        .unwrap();
+        let registry = CursorTable::from_raw_paths(
+            [
+                "gfx/cursors/normal.cur".to_owned(),
+                "gfx/cursors/dragselect.ani".to_owned(),
+            ],
+            2,
+            [(CursorAction::Normal, 0), (CursorAction::DragSelect, 1)],
+        );
         let cursors = Cursors::load(Ok(&registry), |_: &str| Err::<Vec<u8>, _>(io::Error::other("absent")));
         assert_eq!(cursors.get(MapCursor::DragSelect).err(), Some("gfx/cursors/dragselect.ani: absent"));
         assert_eq!(cursors.get(MapCursor::Normal).err(), Some("gfx/cursors/normal.cur: absent"));
-        assert_eq!(
-            cursors.get(MapCursor::PingOffensive).err(),
-            Some("ping_offensive: not in the recorded cursor registry")
+        assert!(
+            cursors
+                .get(MapCursor::PingOffensive)
+                .unwrap_err()
+                .contains("ping_offensive")
         );
         assert_eq!(cursors.refusals().count(), MapCursor::ALL.len());
     }
 
     #[test]
-    fn two_recorded_registries_on_the_same_installation_resolve_distinct_bindings_and_withhold_unsupported_ones() {
+    fn swapping_paths_between_slots_on_the_same_installation_swaps_resolved_cursors_and_isolates_unusable_slots() {
         let root = std::env::temp_dir().join(format!("bp_cursors_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("gfx/cursors")).unwrap();
         std::fs::create_dir_all(root.join("gfx/alt")).unwrap();
@@ -266,22 +278,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("gfx/cursors/dragselect.ani"),
-            ani_bytes(&[[200, 10, 0, 255], [200, 20, 0, 255]], 6),
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("gfx/cursors/assign_air.ani"),
-            ani_bytes(&[[0, 180, 0, 255]], 6),
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("gfx/alt/normal.cur"),
-            cur_bytes([0, 0, 255, 255], [4, 5]),
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("gfx/alt/dragselect.cur"),
-            cur_bytes([0, 255, 0, 255], [2, 3]),
+            ani_bytes(&[[0, 200, 10, 255], [0, 220, 20, 255]], 6),
         )
         .unwrap();
         std::fs::write(
@@ -294,42 +291,55 @@ mod tests {
             .unwrap();
         let read = |path: &str| layers.read_uncovered(path);
 
+        let bindings = [
+            (CursorAction::Normal, 0),
+            (CursorAction::NoMove, 1),
+            (CursorAction::DragSelect, 2),
+            (CursorAction::PingDefensive, 3),
+            (CursorAction::AssignAir, 99),
+        ];
+
         let first_tables = synthetic_game::Executable::empty()
             .cursors([
                 "gfx/cursors/normal.cur",
+                "",
                 "gfx/cursors/dragselect.ani",
-                "gfx/cursors/assign_air.ani",
-                "gfx/cursors/assign_air.ani",
-            ])
-            .build();
-        let second_tables = synthetic_game::Executable::empty()
-            .cursors([
-                "gfx/alt/normal.cur",
-                "gfx/alt/dragselect.cur",
-                "gfx/cursors/attack_move.cur",
-                "gfx/alt/attack_move.ani",
                 "gfx/alt/ping_defensive.ico",
             ])
+            .cursor_bindings(bindings)
+            .build();
+        let swapped_tables = synthetic_game::Executable::empty()
+            .cursors([
+                "gfx/cursors/dragselect.ani",
+                "",
+                "gfx/cursors/normal.cur",
+                "gfx/alt/ping_defensive.ico",
+            ])
+            .cursor_bindings(bindings)
             .build();
 
         let first = Cursors::load_from_tables(Some(first_tables), read);
-        let second = Cursors::load_from_tables(Some(second_tables), read);
+        let swapped = Cursors::load_from_tables(Some(swapped_tables), read);
 
         assert_eq!(first.get(MapCursor::Normal).unwrap().at(0.0).0.rgba.as_ref(), &[255, 0, 0, 255]);
-        assert_eq!(first.get(MapCursor::Normal).unwrap().at(0.0).0.hotspot, [1, 1]);
+        assert!(first.get(MapCursor::Normal).unwrap().at(0.0).1.is_none());
+        assert_eq!(first.get(MapCursor::DragSelect).unwrap().at(0.0).0.rgba.as_ref(), &[0, 200, 10, 255]);
         assert!(first.get(MapCursor::DragSelect).unwrap().at(0.0).1.is_some());
-        assert_eq!(first.get(MapCursor::AssignAir).unwrap().at(0.0).0.rgba.as_ref(), &[0, 180, 0, 255]);
-        assert!(first.get(MapCursor::PingOffensive).unwrap_err().contains("ping_offensive"));
 
-        assert_eq!(second.get(MapCursor::Normal).unwrap().at(0.0).0.rgba.as_ref(), &[0, 0, 255, 255]);
-        assert_eq!(second.get(MapCursor::Normal).unwrap().at(0.0).0.hotspot, [4, 5]);
-        assert_eq!(second.get(MapCursor::DragSelect).unwrap().at(0.0).0.rgba.as_ref(), &[0, 255, 0, 255]);
-        assert!(second.get(MapCursor::DragSelect).unwrap().at(0.0).1.is_none());
-        assert!(second.get(MapCursor::AttackMove).unwrap_err().contains("attack_move"));
-        assert!(second.get(MapCursor::AttackMove).unwrap_err().contains("multiple paths"));
-        assert!(second.get(MapCursor::PingDefensive).unwrap_err().contains("gfx/alt/ping_defensive.ico"));
-        assert!(second.get(MapCursor::PingDefensive).unwrap_err().contains("unsupported"));
-        assert!(second.get(MapCursor::AssignAir).unwrap_err().contains("assign_air"));
+        assert_eq!(swapped.get(MapCursor::Normal).unwrap().at(0.0).0.rgba.as_ref(), &[0, 200, 10, 255]);
+        assert!(swapped.get(MapCursor::Normal).unwrap().at(0.0).1.is_some());
+        assert_eq!(swapped.get(MapCursor::DragSelect).unwrap().at(0.0).0.rgba.as_ref(), &[255, 0, 0, 255]);
+        assert!(swapped.get(MapCursor::DragSelect).unwrap().at(0.0).1.is_none());
+
+        for loaded in [&first, &swapped] {
+            assert!(loaded.get(MapCursor::NoMove).unwrap_err().contains("no_move"));
+            assert!(loaded.get(MapCursor::NoMove).unwrap_err().contains("empty cursor path"));
+            assert!(loaded.get(MapCursor::PingDefensive).unwrap_err().contains("gfx/alt/ping_defensive.ico"));
+            assert!(loaded.get(MapCursor::PingDefensive).unwrap_err().contains("unsupported"));
+            assert!(loaded.get(MapCursor::AssignAir).unwrap_err().contains("assign_air"));
+            assert!(loaded.get(MapCursor::AssignAir).unwrap_err().contains("exceeds"));
+            assert!(loaded.get(MapCursor::PingOffensive).unwrap_err().contains("ping_offensive"));
+        }
 
         let withheld_tables = synthetic_game::Executable::empty()
             .withhold(synthetic_game::Part::Cursors, "not recorded in this recording")

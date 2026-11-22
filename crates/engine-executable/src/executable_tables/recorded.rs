@@ -33,7 +33,21 @@ pub fn encode(tables: &ExecutableTables) -> Vec<u8> {
         });
     });
     out.verified(&tables.cursors, |out, table| {
-        out.list(&table.paths, |out, path| out.str(path));
+        out.list(&table.slots, |out, slot| match slot {
+            cursors::CursorSlot::Path(path) => {
+                out.u8(0);
+                out.str(path);
+            }
+            cursors::CursorSlot::Unusable(reason) => {
+                out.u8(1);
+                out.str(reason);
+            }
+        });
+        let bindings: Vec<_> = table.bindings.iter().collect();
+        out.list(&bindings, |out, (action, slot)| {
+            out.u8(**action as u8);
+            out.u32(**slot);
+        });
     });
     out.0
 }
@@ -76,7 +90,19 @@ pub fn decode(bytes: &[u8]) -> io::Result<ExecutableTables> {
         cursors: if version < 3 {
             Err(Withheld::new(CURSORS, "not recorded in this recording"))
         } else {
-            input.verified(|input| cursors::CursorTable::from_paths(input.list(In::string)?))?
+            input.verified(|input| {
+                let slots = input.list(|input| match input.u8()? {
+                    0 => Ok(cursors::CursorSlot::validated(input.string()?)),
+                    1 => Ok(cursors::CursorSlot::Unusable(input.string()?)),
+                    _ => Err(invalid("unknown recorded cursor slot tag")),
+                })?;
+                let bindings = input.list(|input| {
+                    let action = cursors::CursorAction::from_u8(input.u8()?)
+                        .ok_or_else(|| invalid("unknown recorded cursor action"))?;
+                    Ok((action, input.u32()?))
+                })?;
+                Ok(cursors::CursorTable::from_slots(slots, bindings))
+            })?
         },
     };
     if !input.0.is_empty() {
@@ -655,15 +681,38 @@ mod tests {
     #[test]
     fn the_folding_table_round_trips_and_an_earlier_recording_lacks_it_by_name() {
         let table = folding::FoldingTable::from_pairs([(0x100, 0x61), (0x1e9e, 0x53)]).unwrap();
-        let cursor_table = cursors::CursorTable::from_paths([
-            "gfx/cursors/alpha.cur".to_owned(),
-            "gfx/alt/beta.ani".to_owned(),
-        ])
-        .unwrap();
+        let cursor_table = cursors::CursorTable::from_raw_paths(
+            [
+                "gfx/cursors/alpha.cur".to_owned(),
+                String::new(),
+                "gfx/alt/beta.ani".to_owned(),
+            ],
+            3,
+            [
+                (cursors::CursorAction::Normal, 0),
+                (cursors::CursorAction::NoMove, 1),
+                (cursors::CursorAction::DragSelect, 2),
+            ],
+        );
         let encoded = encode(&tables(Ok(table.clone()), Ok(cursor_table.clone())));
         let decoded = decode(&encoded).unwrap();
-        assert_eq!(decoded.folding, Ok(table));
-        assert_eq!(decoded.cursors, Ok(cursor_table));
+        assert_eq!(decoded.folding, Ok(table.clone()));
+        assert_eq!(decoded.cursors, Ok(cursor_table.clone()));
+        let decoded_cursors = decoded.cursors.unwrap();
+        assert_eq!(
+            decoded_cursors.path_for(cursors::CursorAction::Normal),
+            Ok("gfx/cursors/alpha.cur")
+        );
+        assert!(
+            decoded_cursors
+                .path_for(cursors::CursorAction::NoMove)
+                .unwrap_err()
+                .contains("empty cursor path")
+        );
+        assert_eq!(
+            decoded_cursors.path_for(cursors::CursorAction::DragSelect),
+            Ok("gfx/alt/beta.ani")
+        );
 
         let withheld_folding = Withheld::new(FOLDING, "no run");
         let withheld_cursors = Withheld::new(CURSORS, "no anchor");
@@ -676,11 +725,17 @@ mod tests {
         assert_eq!(decoded.cursors, Err(withheld_cursors));
         assert_eq!(decoded.identity().sha256, [3; 32]);
 
-        let cursor_tail = 1 + 4 + (4 + "gfx/cursors/alpha.cur".len()) + (4 + "gfx/alt/beta.ani".len());
+        let cursor_tail = 1
+            + 4
+            + (1 + 4 + "gfx/cursors/alpha.cur".len())
+            + (1 + 4 + "empty cursor path".len())
+            + (1 + 4 + "gfx/alt/beta.ani".len())
+            + 4
+            + 3 * (1 + 4);
         let mut version_two = encoded[..encoded.len() - cursor_tail].to_vec();
         version_two[4..6].copy_from_slice(&2_u16.to_le_bytes());
         let decoded_v2 = decode(&version_two).unwrap();
-        assert!(decoded_v2.folding.is_ok());
+        assert_eq!(decoded_v2.folding, Ok(table));
         let cursors_v2 = decoded_v2.cursors.unwrap_err();
         assert_eq!(cursors_v2.part, CURSORS);
         assert_eq!(cursors_v2.reason, "not recorded in this recording");
