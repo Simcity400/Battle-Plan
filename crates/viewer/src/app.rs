@@ -5002,20 +5002,6 @@ impl Viewer {
                             }),
                         );
                 }
-                let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> =
-                    live_of(&self.playhead_map).map(|side| Box::new(side.products().movement.iter().map(|(unit, place, scale, fade)| (*unit, place, *scale, *fade))) as _);
-                if let Some(positions) = positions {
-                    scene
-                        .apply(
-                            &state.device,
-                            &state.queue,
-                            SceneInput::SetUnitMovement {
-                                positions,
-                                history: presentation.movement(),
-                            },
-                        )
-                        .map_err(|error| error.to_string())?;
-                }
             }
             drop(scene_span);
             let mut painted_now = false;
@@ -5110,6 +5096,34 @@ impl Viewer {
                 }
                 self.overlay_fraction = Some(document.hour_fraction);
                 self.overlay_drawn_fraction = Some(document.hour_fraction);
+            }
+            if let Some(scene) = self.scene.as_mut() {
+                let movement_span = viewer_foundation::profiling::span("overlay_unit_movement");
+                let presentation = &self.counter_view.presentation;
+                presentation
+                    .movement()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .set_overlay_layout(
+                        self.prepared_overlay
+                            .as_ref()
+                            .and_then(|prepared| prepared.motion_layout().cloned()),
+                    );
+                let positions: Option<Box<dyn Iterator<Item = (viewer_foundation::unit_handle::Unit, &viewer_foundation::map::counter_move::Position, f32, f32)> + '_>> =
+                    live_of(&self.playhead_map).map(|side| Box::new(side.products().movement.iter().map(|(unit, place, scale, fade)| (*unit, place, *scale, *fade))) as _);
+                if let Some(positions) = positions {
+                    scene
+                        .apply(
+                            &state.device,
+                            &state.queue,
+                            SceneInput::SetUnitMovement {
+                                positions,
+                                history: presentation.movement(),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                drop(movement_span);
             }
             let rows = self.overlay_frame.clone().unwrap_or_else(|| Arc::clone(&rows));
             let tables = self.overlay_tables.clone().unwrap_or_else(|| Arc::clone(&tables));

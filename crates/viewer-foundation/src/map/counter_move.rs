@@ -1225,6 +1225,7 @@ pub struct Drawn {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrackRefusal {
     SteadyOrNoFrame,
+    ClockSpeedUnavailable,
     NoPriorPlacement,
     UnchangedPlacement,
 }
@@ -1233,6 +1234,7 @@ impl TrackRefusal {
     pub const fn reason(self) -> &'static str {
         match self {
             Self::SteadyOrNoFrame => "the frame is steady or none",
+            Self::ClockSpeedUnavailable => "clock speed is unavailable",
             Self::NoPriorPlacement => "no publication before this one placed it",
             Self::UnchangedPlacement => "the recording left it where it was",
         }
@@ -1342,7 +1344,13 @@ pub struct MovementHistory {
 #[derive(Debug)]
 struct HandedLayout {
     live: std::sync::Weak<LayoutToken>,
-    tracks: std::collections::HashMap<Unit, Result<crate::map::free_icons::Track, TrackRefusal>>,
+    tracks: std::collections::HashMap<Unit, HandedUnit>,
+}
+
+#[derive(Clone, Debug)]
+struct HandedUnit {
+    outcome: Result<crate::map::free_icons::Track, TrackRefusal>,
+    reference: Option<(Arc<[crate::map::free_icons::Place]>, f32)>,
 }
 
 #[derive(Debug, Default)]
@@ -1375,16 +1383,24 @@ impl Placements {
         self.held.last().copied()
     }
 
-    fn track(&self, hour: i32, width: f32) -> Result<crate::map::free_icons::Track, TrackRefusal> {
+    fn track_with_places(
+        &self,
+        hour: i32,
+        width: f32,
+    ) -> (
+        Result<crate::map::free_icons::Track, TrackRefusal>,
+        Option<(Arc<[crate::map::free_icons::Place]>, f32)>,
+    ) {
         let upto = self.held.partition_point(|place| place.hour <= hour);
         if upto < 2 {
-            return Err(TrackRefusal::NoPriorPlacement);
+            return (Err(TrackRefusal::NoPriorPlacement), None);
         }
-        let track = crate::map::free_icons::Track::new(&self.held[..upto], width);
+        let places = &self.held[..upto];
+        let track = crate::map::free_icons::Track::new(places, width);
         if !track.moves() {
-            return Err(TrackRefusal::UnchangedPlacement);
+            return (Err(TrackRefusal::UnchangedPlacement), None);
         }
-        Ok(track)
+        (Ok(track), Some((Arc::from(places), width)))
     }
 }
 
@@ -1514,9 +1530,18 @@ fn game_day(hour: i32) -> i64 {
 
 impl MovementHistory {
     pub fn clear(&mut self) {
+        self.frame = None;
         self.units.clear();
         self.placed.clear();
-        self.layouts.clear();
+        self.prune_layouts();
+    }
+
+    pub fn set_overlay_layout(&mut self, layout: Option<DrawnLayout>) {
+        if let Some(frame) = self.frame.as_mut() {
+            let previous = std::mem::replace(&mut frame.overlay_layout, layout);
+            drop(previous);
+            self.prune_layouts();
+        }
     }
 
     pub fn begin_frame(&mut self, frame: MovementFrame, in_view: impl IntoIterator<Item = u32>) {
@@ -1605,10 +1630,19 @@ impl MovementHistory {
             }
             Err(why)
         };
-        let Some(head) = self.frame.as_ref().filter(|frame| !frame.steady).map(|frame| frame.head) else {
-            self.record_layout_track(layout, unit, Err(TrackRefusal::SteadyOrNoFrame));
+        let Some((head, clock_speed)) = self
+            .frame
+            .as_ref()
+            .filter(|frame| !frame.steady)
+            .map(|frame| (frame.head, frame.clock_speed))
+        else {
+            self.record_layout_track(layout, unit, Err(TrackRefusal::SteadyOrNoFrame), None);
             return refused(TrackRefusal::SteadyOrNoFrame);
         };
+        if clock_speed.is_none() {
+            self.record_layout_track(layout, unit, Err(TrackRefusal::ClockSpeedUnavailable), None);
+            return refused(TrackRefusal::ClockSpeedUnavailable);
+        }
         let hour = layout.hour();
         let held = self.placed.entry(unit).or_default();
         held.after_a_seek(hour);
@@ -1621,8 +1655,8 @@ impl MovementHistory {
             crate::view_record::add("places", "held", held.held.len() as u64);
             crate::view_record::add("places", "movers", 1);
         }
-        let made = held.track(hour, width);
-        self.record_layout_track(layout, unit, made.clone());
+        let (made, reference) = held.track_with_places(hour, width);
+        self.record_layout_track(layout, unit, made.clone(), reference);
         let track = match made {
             Ok(track) => track,
             Err(why) => return refused(why),
@@ -1644,7 +1678,40 @@ impl MovementHistory {
         self.layouts
             .get(&layout.id())
             .filter(|held| held.live.strong_count() > 0)
-            .and_then(|held| held.tracks.get(&unit).cloned())
+            .and_then(|held| held.tracks.get(&unit).map(|handed| handed.outcome.clone()))
+    }
+
+    pub(crate) fn judge_unit(
+        &self,
+        layout: &DrawnLayout,
+        unit: Unit,
+        head: crate::map::anchored::Head,
+        figure_at: Option<[f32; 3]>,
+    ) -> JudgeOutcome {
+        let Some(handed) = self
+            .layouts
+            .get(&layout.id())
+            .filter(|held| held.live.strong_count() > 0)
+            .and_then(|held| held.tracks.get(&unit))
+        else {
+            return JudgeOutcome::Absent;
+        };
+        match (&handed.outcome, &handed.reference) {
+            (Err(refusal), _) => JudgeOutcome::Refused(*refusal),
+            (Ok(track), reference) => {
+                let expected = match reference {
+                    Some((places, width)) => crate::map::free_icons::Track::new(places, *width).at(head),
+                    None => track.at(head),
+                };
+                let figure = figure_at.unwrap_or_else(|| track.at(head));
+                let apart = distance(expected, figure);
+                if apart <= JUDGE_SLACK {
+                    JudgeOutcome::Matched { apart }
+                } else {
+                    JudgeOutcome::Differs { apart }
+                }
+            }
+        }
     }
 
     fn record_layout_track(
@@ -1652,15 +1719,17 @@ impl MovementHistory {
         layout: &DrawnLayout,
         unit: Unit,
         outcome: Result<crate::map::free_icons::Track, TrackRefusal>,
+        reference: Option<(Arc<[crate::map::free_icons::Place]>, f32)>,
     ) {
         let id = layout.id();
+        let entry = HandedUnit { outcome, reference };
         if let Some(held) = self.layouts.get_mut(&id) {
-            held.tracks.insert(unit, outcome);
+            held.tracks.insert(unit, entry);
             return;
         }
         self.prune_layouts();
         let mut tracks = std::collections::HashMap::new();
-        tracks.insert(unit, outcome);
+        tracks.insert(unit, entry);
         self.layouts.insert(
             id,
             HandedLayout {
@@ -1685,10 +1754,7 @@ impl MovementHistory {
         let (head, layout) = {
             let frame = self.frame.as_ref().filter(|frame| !frame.steady)?;
             frame.clock_speed?;
-            (
-                frame.head,
-                frame.overlay_layout.as_ref().map(|layout| (layout.id(), layout.hour())),
-            )
+            (frame.head, frame.overlay_layout.clone())
         };
         let frames = self.frames;
         let on_the_hour = |places: Option<&mut Placements>| {
@@ -1699,29 +1765,40 @@ impl MovementHistory {
                 places.figured = None;
             }
         };
-        let Some((layout_id, layout_hour)) = layout else {
+        let Some(layout) = layout else {
             on_the_hour(self.placed.get_mut(&unit));
             return standing();
         };
-        let Some(Ok(track)) = self
+        let outcome = self
             .layouts
-            .get(&layout_id)
+            .get(&layout.id())
             .and_then(|held| held.tracks.get(&unit))
-            .cloned()
-        else {
-            on_the_hour(self.placed.get_mut(&unit));
-            return standing();
+            .map(|handed| handed.outcome.clone());
+        let track = match outcome {
+            Some(Ok(track)) => track,
+            Some(Err(refusal)) => {
+                if judging() {
+                    record_judge(unit, JudgeOutcome::Refused(refusal));
+                }
+                on_the_hour(self.placed.get_mut(&unit));
+                return standing();
+            }
+            None => {
+                if judging() {
+                    record_judge(unit, JudgeOutcome::Absent);
+                }
+                on_the_hour(self.placed.get_mut(&unit));
+                return standing();
+            }
         };
         let at = track.at(head);
         if crate::view_record::on() {
             let places = self.placed.entry(unit).or_default();
             note_figure(places, frames, at, track.outside(head), track.held_still(head));
         }
-        if judging()
-            && let Some(places) = self.placed.get(&unit)
-            && let Ok(fresh) = places.track(layout_hour, track.width)
-        {
-            judge_one_point(unit, fresh.at(head), at);
+        if judging() {
+            let verdict = self.judge_unit(&layout, unit, head, Some(at));
+            record_judge(unit, verdict);
         }
         Some(AtHead { at, heading: None, scale: drawn.map(|drawn| drawn.scale) })
     }
@@ -1786,17 +1863,39 @@ fn judging() -> bool {
 
 const JUDGE_SLACK: f32 = 0.065;
 
-fn judge_one_point(unit: Unit, places: [f32; 3], figure: [f32; 3]) {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum JudgeOutcome {
+    Absent,
+    Refused(TrackRefusal),
+    Matched { apart: f32 },
+    Differs { apart: f32 },
+}
+
+fn record_judge(unit: Unit, outcome: JudgeOutcome) {
     use crate::view_record::{add, add_named};
-    add("actors check", "checks", 1);
-    add_named("actors check", "checked: one point", 1);
-    let apart = distance(places, figure);
-    if !(apart <= JUDGE_SLACK) {
-        eprintln!(
-            "CHECK one point DIFFERS at {unit:?}: a figure and its counter's own places stand {apart:.4} world units apart, where {JUDGE_SLACK} is allowed"
-        );
-        add("actors check", "differs", 1);
-        add_named("actors check", "differs: one point", 1);
+    match outcome {
+        JudgeOutcome::Absent => {
+            add("actors check", "checks", 1);
+            add_named("actors check", "checked: unplaced unit", 1);
+        }
+        JudgeOutcome::Refused(refusal) => {
+            add("actors check", "checks", 1);
+            add_named("actors check", "checked: refused track", 1);
+            add_named("actors check", refusal.reason(), 1);
+        }
+        JudgeOutcome::Matched { .. } => {
+            add("actors check", "checks", 1);
+            add_named("actors check", "checked: one point", 1);
+        }
+        JudgeOutcome::Differs { apart } => {
+            add("actors check", "checks", 1);
+            add_named("actors check", "checked: one point", 1);
+            eprintln!(
+                "CHECK one point DIFFERS at {unit:?}: a figure and its counter's own places stand {apart:.4} world units apart, where {JUDGE_SLACK} is allowed"
+            );
+            add("actors check", "differs", 1);
+            add_named("actors check", "differs: one point", 1);
+        }
     }
 }
 
