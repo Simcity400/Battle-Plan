@@ -2416,6 +2416,7 @@ impl Stepper {
             let ring = lock(&self.shared.ring);
             std::mem::take(&mut self.lands).into_iter().map(|id| (id, ring.reader_of(id))).collect()
         };
+        let had_lands = !asked.is_empty();
         for (id, reader) in asked {
             let Some(reader) = reader else { continue };
             let tables: Vec<usize> = self.selection.iter().filter(|(_, selected)| selected.readings.iter().any(|reading| reading.reader == reader)).map(|(&table, _)| table).collect();
@@ -2435,6 +2436,10 @@ impl Stepper {
             jobs.push(self.join(table, &selected, readers));
         }
         let count = jobs.len();
+        if count == 0 && had_lands && self.lands.is_empty() {
+            let caught_up = self.caught_up_at();
+            self.shared.nudge(|control| self.publish_caught_up(control, caught_up));
+        }
         self.shared.queue_joins(jobs);
         self.lend_join_threads(count);
         count > 0

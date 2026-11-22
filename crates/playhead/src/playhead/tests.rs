@@ -2550,6 +2550,30 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
     playhead.seek(0);
     let last = playhead.timeline().last();
     let mut steps = Vec::new();
+    let mid = 8;
+    loop {
+        let before = playhead.step_state();
+        let head = before.0.unwrap_or(0).min(mid);
+        consumer.advance(head);
+        consumer.take(head, &mut steps);
+        if steps.last().is_some_and(|step| step.last() >= mid) {
+            break;
+        }
+        assert!(consumer.wait_step_after(before, mid).unwrap(), "playhead stopped before step {mid}");
+    }
+    playhead.wait_until(|| playhead.ring_len() == 4);
+    assert!(playhead.newest().is_some_and(|newest| newest > mid));
+    let paused_dropped = playhead.consumer(reader);
+    let paused_id = paused_dropped.id;
+    drop(paused_dropped);
+    playhead.shared.nudge(|control| {
+        control.lands.push(paused_id);
+        control.caught_up_at = None;
+    });
+    assert!(
+        !consumer.wait_step_after(playhead.step_state(), mid).unwrap(),
+        "a paused dropped consumer's discarded landing restores caught_up_at instead of blocking wait_step_after",
+    );
     loop {
         let before = playhead.step_state();
         let head = before.0.unwrap_or(0);
@@ -2600,7 +2624,7 @@ fn wait_step_after_observes_same_hour_join_delivery_and_queued_ring_steps() {
 fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() {
     #[derive(Default)]
     struct HookGate {
-        state: std::sync::Mutex<(Option<usize>, bool, [bool; 3])>,
+        state: std::sync::Mutex<(Option<usize>, bool, [bool; 3], bool)>,
         changed: std::sync::Condvar,
     }
     struct OpenGate(Arc<HookGate>);
@@ -2608,6 +2632,7 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
         fn drop(&mut self) {
             let mut state = self.0.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.1 = true;
+            state.3 = true;
             self.0.changed.notify_all();
         }
     }
@@ -2617,14 +2642,14 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
         for table in [1usize, 2] {
             if step.table(table).is_some() {
                 let mut state = hook_gate.state.lock().unwrap();
-                if state.2[table] {
+                if state.2[table] || state.3 {
                     continue;
                 }
                 state.2[table] = true;
                 state.0 = Some(table);
                 state.1 = false;
                 hook_gate.changed.notify_all();
-                while !state.1 {
+                while !state.1 && !state.3 {
                     state = hook_gate.changed.wait(state).unwrap();
                 }
             }
@@ -2674,6 +2699,8 @@ fn a_completing_join_does_not_clobber_a_concurrent_redeclares_caught_up_state() 
         let mut control = super::lock(&playhead.shared.control);
         release_hook();
         while control.published_steps == before_t1_land.1 {
+            assert!(control.error.is_none(), "playhead errored while landing table 1: {:?}", control.error);
+            assert!(!control.stop, "playhead stopped while landing table 1");
             control = playhead.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         assert_eq!(control.caught_up_at, None, "table 1's completion nudge did not clobber table 2's pending declaration");
