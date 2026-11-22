@@ -771,7 +771,7 @@ fn stat_spans_preserve_signed_extremes_and_grow_for_the_full_census() {
             &mut Vec::new()
         ),
         Outcome::Unavailable {
-            reason: "variant stat cache unreadable"
+            reason: "variant address overflow"
         }
     );
     assert!(matches!(
@@ -808,12 +808,19 @@ fn copied_inline_names_and_registry_identity_need_only_three_definition_guards()
     assert_eq!(outcome.outcome, Outcome::Rows { len: 1 });
     assert_eq!(names, [0xff, 0, b'X']);
     assert_eq!(memory.guards.get(), 3);
-    memory.guards.set(0);
+    let stat_memory = CountedFields {
+        memory: SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        guards: Cell::new(0),
+        blocked: None,
+    };
     assert_eq!(
-        walk_stats(&memory, 0, &variants, &mut vec![StatsRow::default(); 1]),
+        walk_stats(&stat_memory, 0, &variants, &mut vec![StatsRow::default(); 1]),
         Outcome::Rows { len: 1 }
     );
-    assert_eq!(memory.guards.get(), 3);
+    assert_eq!(stat_memory.guards.get(), 3);
 }
 
 #[test]
@@ -1597,6 +1604,8 @@ fn walk_stats_witness_enforces_modified_formula_bba_gate_token_partial_batch_and
     let mut no_taint_bytes = bytes.clone();
     let nt_base = no_taint_bytes.as_ptr() as usize;
     let nt_def_ptr = (nt_base + def_off) as u64;
+    no_taint_bytes[var1..var1 + 8]
+        .copy_from_slice(&(overflow_base.wrapping_add(VTABLE_RVA.0) as u64).to_le_bytes());
     no_taint_bytes[var1 + DEFINITION..var1 + DEFINITION + 8]
         .copy_from_slice(&nt_def_ptr.to_le_bytes());
     no_taint_bytes[def_off..def_off + 8].copy_from_slice(
@@ -1936,10 +1945,11 @@ fn walk_stats_carried_refreshes_thrust_factor_after_rejected_batch() {
         }
     }
 
-    let mut bytes = vec![0_u8; 0x1000];
+    const COUNT: usize = 65;
+    const VAR_STRIDE: usize = 0x500;
+    let def_off = COUNT * VAR_STRIDE;
+    let mut bytes = vec![0_u8; def_off + 0x600];
     let base_ptr = bytes.as_ptr() as usize;
-    let var_off = 0x0;
-    let def_off = 0x600;
     let base_values = [
         100_000_000_i64,
         1_200_000,
@@ -1960,52 +1970,48 @@ fn walk_stats_carried_refreshes_thrust_factor_after_rejected_batch() {
         let off = def_off + cequipment_type::STATS_BASE + lane.stat_index * 8;
         bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
     }
-    bytes[var_off..var_off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
-    bytes[var_off + TYPE..var_off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
-    bytes[var_off + ID..var_off + ID + 4].copy_from_slice(&1_u32.to_le_bytes());
-    bytes[var_off + EQUIPMENT_TOKEN..var_off + EQUIPMENT_TOKEN + 4]
-        .copy_from_slice(&77_u32.to_le_bytes());
-    bytes[var_off + DEFINITION..var_off + DEFINITION + 8]
-        .copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
-    bytes[var_off + CLASSIFIER_FLAGS..var_off + CLASSIFIER_FLAGS + 8]
-        .copy_from_slice(&0x400_u64.to_le_bytes());
-    for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
-        let v = if lane.offset == AIR_AGILITY_STAT {
-            4_750_000
-        } else {
-            value
-        };
-        bytes[var_off + lane.offset..var_off + lane.offset + 8].copy_from_slice(&v.to_le_bytes());
+    for index in 0..COUNT {
+        let var_off = index * VAR_STRIDE;
+        bytes[var_off..var_off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+        bytes[var_off + TYPE..var_off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+        bytes[var_off + ID..var_off + ID + 4].copy_from_slice(&((index as u32) + 1).to_le_bytes());
+        bytes[var_off + EQUIPMENT_TOKEN..var_off + EQUIPMENT_TOKEN + 4]
+            .copy_from_slice(&77_u32.to_le_bytes());
+        bytes[var_off + DEFINITION..var_off + DEFINITION + 8]
+            .copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
+        bytes[var_off + CLASSIFIER_FLAGS..var_off + CLASSIFIER_FLAGS + 8]
+            .copy_from_slice(&0x400_u64.to_le_bytes());
+        for (lane, value) in STAT_LANES.into_iter().zip(base_values) {
+            let v = if lane.offset == AIR_AGILITY_STAT {
+                4_750_000
+            } else {
+                value
+            };
+            bytes[var_off + lane.offset..var_off + lane.offset + 8]
+                .copy_from_slice(&v.to_le_bytes());
+        }
+        bytes[var_off + BUILD_COST..var_off + BUILD_COST + 8]
+            .copy_from_slice(&2_400_000_i64.to_le_bytes());
     }
-    bytes[var_off + BUILD_COST..var_off + BUILD_COST + 8]
-        .copy_from_slice(&2_400_000_i64.to_le_bytes());
 
-    let variants: Vec<RegistryRow> = (0..65_u64)
-        .map(|index| RegistryRow {
-            id: ((index + 1) << 32) | u64::from(REFERENCE_TYPE),
-            address: base_ptr + var_off,
-        })
-        .collect();
     let rev = Cell::new(1_u64);
+    let world = BatchFactorWorld {
+        bytes: &bytes,
+        factor: Cell::new(50_000),
+        revision: &rev,
+        bounced: Cell::new(false),
+    };
+    let variants: Vec<RegistryRow> = (0..COUNT)
+        .map(|index| RegistryRow::read(&world, 0, base_ptr + index * VAR_STRIDE).unwrap())
+        .collect();
     let mut rows = Vec::new();
     let mut witness = RevWitness(&rev);
     assert_eq!(
-        walk_stats_carried(
-            &BatchFactorWorld {
-                bytes: &bytes,
-                factor: Cell::new(50_000),
-                revision: &rev,
-                bounced: Cell::new(false),
-            },
-            0,
-            &variants,
-            &mut rows,
-            &mut (),
-            &mut witness,
-        ),
-        Outcome::Rows { len: 65 }
+        walk_stats_carried(&world, 0, &variants, &mut rows, &mut (), &mut witness),
+        Outcome::Rows { len: COUNT }
     );
     assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert_eq!(rows[64].variant, variants[64].id);
     assert_eq!(rows[64].values[3], None);
     assert_eq!(rows[64].values[4], Some(42_000_000));
 }
@@ -2135,4 +2141,168 @@ fn partial_read_keeps_unrelated_lanes_when_reliability_bonus_or_disabled_bba_ope
     assert_eq!(rows[0].values[5], None);
     assert_eq!(rows[0].values[4], Some(42_000_000));
     assert_eq!(rows[0].values[9], Some(2_400_000));
+}
+
+#[test]
+fn walk_stats_carried_withholds_replaced_design_after_registry_read_without_affecting_neighbor() {
+    struct World<'a> {
+        bytes: &'a [u8],
+        blocked: Option<usize>,
+    }
+
+    impl Memory for World<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self
+                .blocked
+                .is_some_and(|at| (address..address.saturating_add(output.len())).contains(&at))
+            {
+                return false;
+            }
+            let base = self.bytes.as_ptr() as usize;
+            let Some(offset) = address.checked_sub(base) else {
+                return false;
+            };
+            let Some(slice) = self.bytes.get(offset..offset.saturating_add(output.len())) else {
+                return false;
+            };
+            output.copy_from_slice(slice);
+            true
+        }
+    }
+
+    struct RecordingWitness {
+        withheld: Vec<(&'static str, &'static str)>,
+    }
+
+    impl StatWitness for RecordingWitness {
+        fn quiet(&self) -> Result<QuietToken, &'static str> {
+            Ok(QuietToken::new(1, 7))
+        }
+        fn record_withheld(&mut self, lane: usize, reason: &'static str) {
+            self.withheld.push((STAT_LANES[lane].name, reason));
+        }
+    }
+
+    let mut bytes = vec![0_u8; 0x2000];
+    let base_ptr = bytes.as_ptr() as usize;
+    let var0 = 0x0;
+    let var1 = 0x600;
+    let def0 = 0xc00;
+    let def1 = 0x1200;
+    let base_values = [
+        100_000_000_i64,
+        1_200_000,
+        1_800_000,
+        4_500_000,
+        42_000_000,
+        80_000,
+        1_000_000,
+        1_500_000,
+        21_000,
+        2_400_000,
+    ];
+    let replacement_values = [
+        200_000_000_i64,
+        2_200_000,
+        2_800_000,
+        5_500_000,
+        55_000_000,
+        90_000,
+        1_200_000,
+        1_200_000,
+        31_000,
+        3_400_000,
+    ];
+    for (def_off, token, values) in [(def0, 77_u32, base_values), (def1, 88_u32, replacement_values)]
+    {
+        bytes[def_off..def_off + 8]
+            .copy_from_slice(&(cequipment_type::VTABLE_RVA.0 as u64).to_le_bytes());
+        bytes[def_off + cequipment_type::TOKEN..def_off + cequipment_type::TOKEN + 4]
+            .copy_from_slice(&token.to_le_bytes());
+        for (lane, value) in STAT_LANES.into_iter().zip(values) {
+            let off = def_off + cequipment_type::STATS_BASE + lane.stat_index * 8;
+            bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+    let init_variant =
+        |buf: &mut [u8], off: usize, id: u32, token: u32, def_off: usize, values: [i64; 10]| {
+            buf[off..off + 8].copy_from_slice(&(VTABLE_RVA.0 as u64).to_le_bytes());
+            buf[off + TYPE..off + TYPE + 4].copy_from_slice(&REFERENCE_TYPE.to_le_bytes());
+            buf[off + ID..off + ID + 4].copy_from_slice(&id.to_le_bytes());
+            buf[off + EQUIPMENT_TOKEN..off + EQUIPMENT_TOKEN + 4]
+                .copy_from_slice(&token.to_le_bytes());
+            buf[off + DEFINITION..off + DEFINITION + 8]
+                .copy_from_slice(&((base_ptr + def_off) as u64).to_le_bytes());
+            for (lane, value) in STAT_LANES.into_iter().zip(values) {
+                buf[off + lane.offset..off + lane.offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            buf[off + BUILD_COST..off + BUILD_COST + 8].copy_from_slice(&values[9].to_le_bytes());
+        };
+    init_variant(&mut bytes, var0, 1, 77, def0, base_values);
+    init_variant(&mut bytes, var1, 2, 77, def0, base_values);
+
+    let initial = World {
+        bytes: &bytes,
+        blocked: None,
+    };
+    let v0 = RegistryRow::read(&initial, 0, base_ptr + var0).unwrap();
+    let v1 = RegistryRow::read(&initial, 0, base_ptr + var1).unwrap();
+
+    init_variant(&mut bytes, var0, 99, 88, def1, replacement_values);
+
+    let mut rows = Vec::new();
+    let mut witness = RecordingWitness {
+        withheld: Vec::new(),
+    };
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &bytes,
+                blocked: None,
+            },
+            0,
+            &[v0, v1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows[0].variant, v0.id);
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert!(witness
+        .withheld
+        .iter()
+        .any(|(_, reason)| *reason == "variant identity changed before stat read"));
+    assert_eq!(rows[1].variant, v1.id);
+    assert_eq!(rows[1].values[4], Some(42_000_000));
+    assert_eq!(rows[1].values[9], Some(2_400_000));
+
+    let mut witness = RecordingWitness {
+        withheld: Vec::new(),
+    };
+    assert_eq!(
+        walk_stats_carried(
+            &World {
+                bytes: &bytes,
+                blocked: Some(base_ptr + var1 + AIR_RANGE_STAT),
+            },
+            0,
+            &[v0, v1],
+            &mut rows,
+            &mut (),
+            &mut witness,
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows[0].variant, v0.id);
+    assert_eq!(rows[0].values, [None; STAT_LANE_COUNT]);
+    assert!(witness
+        .withheld
+        .iter()
+        .any(|(_, reason)| *reason == "variant identity changed before stat read"));
+    assert_eq!(rows[1].variant, v1.id);
+    assert_eq!(rows[1].values[0], None);
+    assert_eq!(rows[1].values[4], Some(42_000_000));
+    assert_eq!(rows[1].values[9], Some(2_400_000));
 }

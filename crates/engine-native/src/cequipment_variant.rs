@@ -752,6 +752,7 @@ fn lane_for_stat_index(stat_index: i32) -> Option<usize> {
 
 struct WitnessSites {
     rebuild_located: bool,
+    variant_vtable: Option<usize>,
     def_vtable: Option<usize>,
     null_def_vtable: Option<usize>,
     module_vtable: Option<usize>,
@@ -766,6 +767,7 @@ impl WitnessSites {
     fn resolve(base: usize) -> Self {
         Self {
             rebuild_located: engine_sites::resolve(base, mutations::REBUILD_STATS_RVA).is_ok(),
+            variant_vtable: engine_sites::resolve(base, VTABLE_RVA).ok(),
             def_vtable: engine_sites::resolve(base, cequipment_type::VTABLE_RVA).ok(),
             null_def_vtable: engine_sites::resolve(base, cequipment_type::NULL_VTABLE_RVA).ok(),
             module_vtable: engine_sites::resolve(base, crate::cequipment_module::VTABLE_RVA).ok(),
@@ -1583,7 +1585,7 @@ pub fn walk_stats_carried(
         let mut sites = WitnessSites::resolve(base);
         let mut len = 0;
         const BATCH: usize = 64;
-        const FIELDS: [RecordField; 14] = [
+        const FIELDS: [RecordField; 15] = [
             RecordField {
                 source_offset: AIR_RANGE_STAT,
                 destination_offset: 0,
@@ -1654,8 +1656,13 @@ pub fn walk_stats_carried(
                 destination_offset: 124,
                 len: 4,
             },
+            RecordField {
+                source_offset: 0,
+                destination_offset: 128,
+                len: 16,
+            },
         ];
-        const STRIDE: usize = 128;
+        const STRIDE: usize = 144;
         const DEF_FIELDS: [RecordField; 8] = [
             RecordField {
                 source_offset: 0,
@@ -1710,6 +1717,7 @@ pub fn walk_stats_carried(
         let mut raw_batch = [[0_i64; STAT_LANE_COUNT]; BATCH];
         let mut lane_readable = [[false; STAT_LANE_COUNT]; BATCH];
         let mut metas: [Option<VariantStatMeta>; BATCH] = [None; BATCH];
+        let mut headers: [Option<[u8; 16]>; BATCH] = [None; BATCH];
         for sources in variants.chunks(BATCH) {
             sites.clear_live_operands();
             for (pointer, source) in pointers.iter_mut().zip(sources) {
@@ -1730,6 +1738,7 @@ pub fn walk_stats_carried(
                     let meta = VariantStatMeta::from_record(field);
                     definitions[slot] = meta.definition;
                     metas[slot] = Some(meta);
+                    headers[slot] = Some(field[128..144].try_into().unwrap());
                 }
             } else {
                 for (slot, source) in sources.iter().enumerate() {
@@ -1748,6 +1757,7 @@ pub fn walk_stats_carried(
                             }
                         }
                     }
+                    headers[slot] = read::<[u8; 16]>(memory, pointer);
                     metas[slot] = VariantStatMeta::read_individually(memory, pointer);
                     definitions[slot] = metas[slot].map_or(0, |meta| meta.definition);
                 }
@@ -1805,6 +1815,30 @@ pub fn walk_stats_carried(
             let mut candidate_refusals = [[None; STAT_LANE_COUNT]; BATCH];
             if pre_refusal.is_none() {
                 for (slot, source) in sources.iter().enumerate() {
+                    let Some(expected_vtable) = sites.variant_vtable else {
+                        candidate_refusals[slot] =
+                            [Some("variant vtable site unlocated"); STAT_LANE_COUNT];
+                        continue;
+                    };
+                    let Some(header) = headers[slot] else {
+                        candidate_refusals[slot] =
+                            [Some("variant identity unreadable"); STAT_LANE_COUNT];
+                        continue;
+                    };
+                    match identity_header(expected_vtable, header) {
+                        Ok(live_id) if live_id == source.id => {}
+                        Ok(_) => {
+                            candidate_refusals[slot] = [
+                                Some("variant identity changed before stat read");
+                                STAT_LANE_COUNT
+                            ];
+                            continue;
+                        }
+                        Err(reason) => {
+                            candidate_refusals[slot] = [Some(reason); STAT_LANE_COUNT];
+                            continue;
+                        }
+                    }
                     let Some(meta) = metas[slot] else {
                         for lane in 0..STAT_LANE_COUNT {
                             candidate_refusals[slot][lane] = Some(if lane_readable[slot][lane] {
