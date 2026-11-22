@@ -80,8 +80,21 @@ pub fn panel_fit(app: AppHandle, window: WebviewWindow, height: f64) -> Result<(
 }
 
 #[tauri::command]
-pub async fn close_panel(window: WebviewWindow) -> Result<(), String> {
-    window.destroy().map_err(|error| error.to_string())
+pub async fn close_panel(
+    window: WebviewWindow,
+    recorder: State<'_, Arc<Recorder>>,
+    revision: u64,
+) -> Result<bool, String> {
+    if !recorder.dismissible(revision) {
+        return Ok(false);
+    }
+    window.destroy().map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn prompt_shown(recorder: State<'_, Arc<Recorder>>, prompt: u64) {
+    recorder.prompt_shown(prompt);
 }
 
 #[tauri::command]

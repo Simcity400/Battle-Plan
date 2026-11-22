@@ -17,7 +17,7 @@ const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, 
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const recording: Snapshot = { phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943', continued: true, hour: 59_000_000,
   firstHour: null, savedBytes: 214 * MB, spoolBytes: 1229 * MB, startedAt: STARTED, stopping: false, problem: null, automatic: true,
-  session: null, flag: null, captureMode: 'full' };
+  session: null, flag: null, captureMode: 'full', revision: 0 };
 const flag = { width: 2, height: 1, pixels: [255, 0, 0, 255, 0, 0, 255, 255] };
 const START = engineHour({ year: 1936, month: 1, day: 1, hour: 1 })!;
 const NOW = engineHour({ year: 1941, month: 6, day: 12, hour: 1 })!;

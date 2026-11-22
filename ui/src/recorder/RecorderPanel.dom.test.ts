@@ -12,7 +12,7 @@ const settings: RecorderSettings = { recordEveryCampaign: true, autoSave: true, 
   campaigns: {}, effectiveSaveFolder: 'C:\\Recordings' };
 const snapshot: Snapshot = { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null,
   savedBytes: null, spoolBytes: null, startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null,
-  captureMode: null };
+  captureMode: null, revision: 0 };
 
 test('a panel clamped to a short screen scrolls its content and keeps its footer in reach', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },

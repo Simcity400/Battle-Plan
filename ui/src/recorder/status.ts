@@ -28,6 +28,7 @@ export interface Snapshot {
   preparation?: Preparation | null;
   sessionKey?: number | null;
   prompt?: PanelPrompt | null;
+  revision: number;
 }
 
 export interface Preparation { text: string; failed: boolean }
@@ -273,8 +274,14 @@ export function settingsQueue<T>(read: () => Promise<T>, show: (value: T) => voi
   };
 }
 
-export function followStatus<T>(listen: (show: (value: T) => void) => Promise<() => void>, read: () => Promise<T>, show: (value: T) => void, failed: (cause: unknown) => void) {
-  let attempt = 0, listening: Promise<() => void> | null = null;
+export function followStatus<T>(listen: (show: (value: T) => void) => Promise<() => void>, read: () => Promise<T>, show: (value: T) => void, failed: (cause: unknown) => void,
+  revision: (value: T) => number) {
+  let attempt = 0, listening: Promise<() => void> | null = null, latest = -Infinity;
+  const newest = (value: T) => {
+    if (revision(value) <= latest) return;
+    latest = revision(value);
+    show(value);
+  };
   const stop = () => {
     attempt += 1;
     void listening?.then(unlisten => unlisten(), () => {});
@@ -283,12 +290,10 @@ export function followStatus<T>(listen: (show: (value: T) => void) => Promise<()
   const start = () => {
     stop();
     const own = attempt;
-    let published = 0;
-    listening = listen(value => { if (own !== attempt) return; published += 1; show(value); });
+    listening = listen(value => { if (own === attempt) newest(value); });
     return listening.then(async () => {
-      const before = published;
       const value = await read();
-      if (own === attempt && before === published) show(value);
+      if (own === attempt) newest(value);
     }).catch((cause: unknown) => { if (own === attempt) failed(cause); });
   };
   const first = start();

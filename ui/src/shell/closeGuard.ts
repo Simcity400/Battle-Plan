@@ -28,7 +28,7 @@ export interface CloseGuard {
   end(): void;
 }
 
-export const UNHEARD = 'Couldn’t watch for BattlePlan closing, so closing it won’t ask before discarding unsaved changes.';
+export const UNHEARD = 'Couldn’t watch for BattlePlan closing, so it can’t check for unsaved changes. Closing waits; close again to choose whether to close without checking. Updates wait too.';
 export const UNCLOSED = 'Couldn’t close BattlePlan.';
 export const UNKEPT = 'Couldn’t tell BattlePlan to stay open for your unsaved changes.';
 export const UNANSWERED_SAVED = 'Couldn’t tell BattlePlan your changes are saved, so its update waits.';
@@ -87,7 +87,10 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
   const requests = host.requests(request => {
     if (ended) return;
     if (request.kind === 'ask') answer(request.id, request.about);
-    else release(request.id);
+    else {
+      clear(`answer:${request.id}`);
+      release(request.id);
+    }
   });
   const watch = () => {
     if (ended || watching || watched) return;

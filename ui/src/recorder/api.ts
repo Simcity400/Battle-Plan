@@ -17,7 +17,8 @@ export interface SettingsPatch {
 export const recorderStatus = () => invoke<Snapshot>('recorder_status');
 export const panelOpened = (panel: string) => invoke<PanelOpening>('panel_opened', { panel });
 export const panelFit = (height: number) => invoke<void>('panel_fit', { height });
-export const closePanel = () => invoke<void>('close_panel');
+export const closePanel = (revision: number) => invoke<boolean>('close_panel', { revision });
+export const promptShown = (prompt: number) => invoke<void>('prompt_shown', { prompt });
 export const startRecording = () => invoke<void>('start_recording');
 export const stopRecording = (discard: boolean, sessionKey: number) => invoke<void>('stop_recording', { discard, sessionKey });
 export const cancelStopPrompt = (prompt: number) => invoke<void>('cancel_stop_prompt', { prompt });

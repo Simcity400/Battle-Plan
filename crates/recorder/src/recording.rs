@@ -600,11 +600,22 @@ fn requested_stop_counter(control: &Control, directory: &Path) -> Option<u64> {
         .filter(|qpc| *qpc != 0)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Stop {
+    Save,
+    Discard(String),
+}
+
+#[derive(Debug, Default)]
+struct Ending {
+    stop: Option<Stop>,
+    sealed: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct Control {
-    stop: AtomicBool,
+    ending: std::sync::Mutex<Ending>,
     stop_qpc: std::sync::atomic::AtomicU64,
-    discard: AtomicBool,
     set_aside: std::sync::Mutex<Vec<(String, bool)>>,
     accepting: AtomicBool,
 }
@@ -612,9 +623,11 @@ pub struct Control {
 impl Control {
     pub const fn new() -> Self {
         Self {
-            stop: AtomicBool::new(false),
+            ending: std::sync::Mutex::new(Ending {
+                stop: None,
+                sealed: false,
+            }),
             stop_qpc: std::sync::atomic::AtomicU64::new(0),
-            discard: AtomicBool::new(false),
             set_aside: std::sync::Mutex::new(Vec::new()),
             accepting: AtomicBool::new(false),
         }
@@ -639,32 +652,69 @@ impl Control {
         std::mem::take(&mut *requests)
     }
 
-    pub fn stop(&self, discard: bool) {
+    pub fn stop(&self, stop: Stop) -> bool {
+        let mut ending = locked(&self.ending);
+        if let Some(asked) = &ending.stop {
+            return *asked == stop;
+        }
+        if ending.sealed {
+            return false;
+        }
         if let Some(qpc) = performance_counter() {
             let _ = self
                 .stop_qpc
                 .compare_exchange(0, qpc, Ordering::AcqRel, Ordering::Acquire);
         }
-        self.discard.store(discard, Ordering::Release);
-        self.stop.store(true, Ordering::Release);
+        ending.stop = Some(stop);
+        true
     }
 
     pub fn stopping(&self) -> bool {
-        self.stop.load(Ordering::Acquire)
+        locked(&self.ending).stop.is_some()
     }
 
-    pub fn discarding(&self) -> bool {
-        self.discard.load(Ordering::Acquire)
+    pub fn seal(&self) -> Option<Stop> {
+        let mut ending = locked(&self.ending);
+        ending.sealed = true;
+        ending.stop.clone()
     }
 
     pub fn reset(&self) {
-        self.stop.store(false, Ordering::Release);
+        *locked(&self.ending) = Ending::default();
         self.stop_qpc.store(0, Ordering::Release);
-        self.discard.store(false, Ordering::Release);
         let mut requests = locked(&self.set_aside);
         self.accepting.store(false, Ordering::Release);
         requests.clear();
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Undiscarded {
+    Unread,
+    Another,
+}
+
+impl Undiscarded {
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Unread => "the campaign in progress couldn’t be identified",
+            Self::Another => "another campaign was loaded before Discard reached the recorder",
+        }
+    }
+}
+
+fn discard_target<'a>(
+    ending: Option<&'a Stop>,
+    current: Option<&str>,
+) -> Option<Result<&'a str, Undiscarded>> {
+    let Some(Stop::Discard(asked)) = ending else {
+        return None;
+    };
+    Some(match current {
+        Some(current) if current == asked => Ok(asked.as_str()),
+        Some(_) => Err(Undiscarded::Another),
+        None => Err(Undiscarded::Unread),
+    })
 }
 
 #[derive(Debug)]
@@ -694,7 +744,7 @@ pub struct CaptureOutcome {
     pub process_exited: bool,
     pub replays: Vec<PathBuf>,
     pub discarded: bool,
-    pub undiscarded: bool,
+    pub undiscarded: Option<Undiscarded>,
     pub rerouted: bool,
     pub omitted: Vec<Omission>,
     pub waiting: Vec<String>,
@@ -716,7 +766,7 @@ pub(crate) const RECORDER_VERSION: &str = match option_env!("BATTLEPLAN_VERSION"
 static CONSOLE: Control = Control::new();
 unsafe extern "system" fn console_control(kind: u32) -> i32 {
     if kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT {
-        CONSOLE.stop(false);
+        CONSOLE.stop(Stop::Save);
         1
     } else {
         0
@@ -2406,23 +2456,33 @@ pub(crate) fn capture(
                     "detach timed out {}; collector may still be loaded",
                     end.describe(&directory)
                 );
-                if !control.discarding() {
-                    return Err(format!("{timed_out}; spool retained and not finalized"));
-                }
+                let ending = control.seal();
                 let current = in_progress(
                     admitted.as_ref().map(|(campaign, _)| campaign.as_str()),
                     stop_read,
                     status_campaign(&status_path),
                 );
+                let discarded = match discard_target(ending.as_ref(), current.as_deref()) {
+                    None => {
+                        return Err(format!("{timed_out}; spool retained and not finalized"));
+                    }
+                    Some(Err(undiscarded)) => {
+                        return Err(format!(
+                            "{timed_out}; spool retained and not finalized, and nothing was discarded: {}",
+                            undiscarded.reason()
+                        ));
+                    }
+                    Some(Ok(discarded)) => discarded,
+                };
                 let besides = others_admitted(
                     admit.is_some().then_some(&admission.admitted),
-                    current.as_deref(),
+                    Some(discarded),
                 );
                 let dropped = dropped_by_discard(
                     &directory,
                     target,
                     &ahead,
-                    current.as_deref(),
+                    Some(discarded),
                     besides,
                     &mut Vec::new(),
                 );
@@ -2448,7 +2508,8 @@ pub(crate) fn capture(
     let spool_final = process_exited || done.handle.signaled()?;
     HistoryRequest::retire_session(&directory, false, process_exited);
     print_status(&status_path);
-    requested_detach |= control.stopping() || detach.handle.signaled()?;
+    let ending = control.seal();
+    requested_detach |= ending.is_some() || detach.handle.signaled()?;
     if requested_detach && !stop_observed {
         stop_qpc = requested_stop_counter(control, &directory);
         stop_load = system_times();
@@ -2511,22 +2572,31 @@ pub(crate) fn capture(
             .issues
             .push(format!("incomplete status publication failed: {error}"));
     }
-    let discarding = control.discarding();
-    let (dropped, others_keep) = if discarding {
-        let besides = others_admitted(
-            admit.is_some().then_some(&admission.admitted),
-            current.as_deref(),
-        );
-        dropped_by_discard(
-            &directory,
-            target,
-            &ahead,
-            current.as_deref(),
-            besides,
-            &mut outcome.issues,
-        )?
+    let discard = discard_target(ending.as_ref(), current.as_deref());
+    let discarding = discard.is_some();
+    let discarded = discard.and_then(Result::ok);
+    let undiscarded = discard.and_then(Result::err);
+    let current = if discarding {
+        discarded.map(str::to_owned)
     } else {
-        (Vec::new(), false)
+        current
+    };
+    let (dropped, others_keep) = match discarded {
+        Some(discarded) => {
+            let besides = others_admitted(
+                admit.is_some().then_some(&admission.admitted),
+                Some(discarded),
+            );
+            dropped_by_discard(
+                &directory,
+                target,
+                &ahead,
+                Some(discarded),
+                besides,
+                &mut outcome.issues,
+            )?
+        }
+        None => (Vec::new(), false),
     };
     note_discards(&directory, target, &dropped)?;
     match game_facts.finish() {
@@ -2538,12 +2608,15 @@ pub(crate) fn capture(
                 .push(format!("The recording carries no game facts: {error}"));
         }
     }
-    if discarding && others_keep {
+    if let Some(undiscarded) = undiscarded {
+        println!("Nothing is discarded: {}.", undiscarded.reason());
+    }
+    if discarded.is_some() && others_keep {
         if let Some(current) = dropped.first() {
             println!("Discarding campaign {current} of this session.");
         }
         discard_dropped(&directory, target, &mut ahead, &dropped)?;
-    } else if discarding {
+    } else if discarded.is_some() {
         if process_exited {
             println!("Game process exited; discarding this session.");
         } else {
@@ -2598,7 +2671,7 @@ pub(crate) fn capture(
             campaign,
             current.as_deref(),
             auto,
-            control.stopping(),
+            ending.is_some(),
             discarding,
         ) {
             replay_io::Destination::Recording
@@ -2678,7 +2751,8 @@ pub(crate) fn capture(
                 detach_requested: requested_detach,
                 process_exited,
                 replays: continued,
-                discarded: discarding,
+                discarded: discarded.is_some(),
+                undiscarded,
                 rerouted,
                 ..CaptureOutcome::default()
             }),
@@ -2786,8 +2860,8 @@ pub(crate) fn capture(
             detach_requested: requested_detach,
             process_exited,
             replays: finalized,
-            discarded: discarding && current.is_some(),
-            undiscarded: discarding && current.is_none(),
+            discarded: discarded.is_some(),
+            undiscarded,
             rerouted,
             omitted,
             waiting: waiting.into_iter().map(|(campaign, _)| campaign).collect(),
@@ -5517,6 +5591,11 @@ mod tests {
             take_over(&output, &orphan, (4242, 99)).unwrap();
             let armed = DetachOnDrop::arm(&orphan.config, orphan.cancel_file()).unwrap();
             let control = Control::new();
+            let asked = if discard {
+                Stop::Discard("campaign".into())
+            } else {
+                Stop::Save
+            };
             let looks = Cell::new(0);
             let finished = || {
                 looks.set(looks.get() + 1);
@@ -5524,7 +5603,7 @@ mod tests {
             };
             let stopping = || {
                 if looks.get() == 2 {
-                    control.stop(discard);
+                    control.stop(asked.clone());
                 }
                 control.stopping()
             };
@@ -5532,7 +5611,7 @@ mod tests {
             assert!(goes_on, "Stop (discard: {discard}) left the session taken over unended");
             assert!(events.detach.handle.signaled().unwrap());
             assert!(!orphan.cancel_file().exists(), "Stop drains the collector");
-            assert!(control.stopping() && control.discarding() == discard);
+            assert_eq!(control.seal(), Some(asked));
             drop(armed);
             assert!(orphan.cancel_file().is_file());
             drop((claim, events));
@@ -5820,6 +5899,23 @@ mod tests {
         assert_eq!(saved(false, false, false), [false, false]);
         assert_eq!(saved(false, true, false), [true, false]);
         assert_eq!(saved(false, true, true), [false, false]);
+    }
+
+    #[test]
+    fn discard_drops_only_the_campaign_the_user_confirmed_and_only_while_it_is_in_progress() {
+        let confirmed = Stop::Discard("a".into());
+        assert_eq!(discard_target(Some(&confirmed), Some("a")), Some(Ok("a")));
+        assert_eq!(
+            discard_target(Some(&confirmed), Some("b")),
+            Some(Err(Undiscarded::Another)),
+            "the game loaded b before the stop was taken up, so b’s hours stay"
+        );
+        assert_eq!(
+            discard_target(Some(&confirmed), None),
+            Some(Err(Undiscarded::Unread))
+        );
+        assert_eq!(discard_target(Some(&Stop::Save), Some("a")), None);
+        assert_eq!(discard_target(None, Some("a")), None);
     }
 
     #[test]
@@ -7699,17 +7795,28 @@ mod tests {
     }
 
     #[test]
-    fn control_requests_discard_only_when_asked_and_resets_between_captures() {
+    fn control_keeps_the_first_stop_until_the_capture_seals_its_ending_and_resets_between_captures()
+    {
         let control = Control::new();
-        assert!(!control.stopping() && !control.discarding());
-        control.stop(false);
-        assert!(control.stopping() && !control.discarding());
+        assert!(!control.stopping());
+        assert!(control.stop(Stop::Save));
+        assert!(control.stop(Stop::Save), "the same stop asked again stands");
+        assert!(
+            !control.stop(Stop::Discard("a".into())),
+            "a later Discard can’t turn the save into one"
+        );
+        assert_eq!(control.seal(), Some(Stop::Save));
         control.reset();
-        assert!(!control.stopping() && !control.discarding());
-        control.stop(true);
-        assert!(control.stopping() && control.discarding());
+        assert!(!control.stopping());
+        assert_eq!(control.seal(), None, "a capture that ends by itself keeps what it has");
+        assert!(
+            !control.stop(Stop::Discard("a".into())),
+            "a stop after that is refused"
+        );
+        assert!(!control.stopping());
         control.reset();
-        assert!(!control.stopping() && !control.discarding());
+        assert!(control.stop(Stop::Discard("a".into())));
+        assert_eq!(control.seal(), Some(Stop::Discard("a".into())));
     }
 
     fn finalize_with(session: &Path, target: &Path, live: replay_io::Live) -> replay_io::Finalized {

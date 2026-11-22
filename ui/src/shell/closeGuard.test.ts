@@ -126,6 +126,27 @@ test('Discard and restart lets the update leave only while its confirmation stan
   assert.deepEqual(host.leaving, ['update', null], 'a stay sent again changes nothing');
 });
 
+test('a leave whose answer was lost stays locked until the host says stay, and the stay clears that answer’s Try again', async () => {
+  const { host, start, ask, stay, shown, locked } = desktop();
+  start();
+  await flush();
+  host.answerFails = true;
+  ask(4, 'leave');
+  await flush();
+  assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNANSWERED_SAVED], 'update'], 'the host may have heard it, so editing stays locked');
+  host.answerFails = false;
+  shown()[0]!.retry();
+  await flush();
+  assert.deepEqual([host.answers.at(-1), locked(), shown()], [[4, false], 'update', []], 'the same leave is sent again, and the host still holds it');
+  host.answerFails = true;
+  ask(5, 'leave');
+  await flush();
+  stay(5);
+  assert.deepEqual([locked(), shown()], ['update', []], 'an install that couldn’t start leaves nothing of its question to retry');
+  stay(4);
+  assert.equal(locked(), null);
+});
+
 test('an answer the host no longer waits for lets the page go on', async () => {
   const { host, start, ask, locked } = desktop();
   start();

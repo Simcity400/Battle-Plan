@@ -16,7 +16,7 @@ mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
-use leaving::{Answered, Closing, Leaving, Unanswered};
+use leaving::{Answered, Closing, Leaving, Reach, Request, Unanswered};
 use native::{HostStatus, NativeHost};
 use std::sync::Arc;
 use tauri::http::HeaderValue;
@@ -208,16 +208,31 @@ fn main_page(webview: &tauri::Webview) -> Result<(), String> {
     }
 }
 
+fn reach(webview: tauri::Webview, callback: u32) -> Reach {
+    Box::new(move |request: &Request| {
+        let request = serde_json::to_string(request).map_err(|error| error.to_string())?;
+        webview
+            .eval(format!("window.__TAURI_INTERNALS__.runCallback({callback}, {request})"))
+            .map_err(|error| error.to_string())
+    })
+}
+
+#[tauri::command]
+fn close_watch_document(webview: tauri::Webview, leaving: State<'_, Leaving>) -> Result<u64, String> {
+    main_page(&webview)?;
+    Ok(leaving.document())
+}
+
 #[tauri::command]
 fn watch_close_requests(
     webview: tauri::Webview,
     leaving: State<'_, Leaving>,
+    document: u64,
     seq: u64,
-    requests: tauri::ipc::JavaScriptChannelId,
+    callback: u32,
 ) -> Result<(), String> {
     main_page(&webview)?;
-    leaving.watch(seq, move || requests.channel_on(webview));
-    Ok(())
+    leaving.watch(document, seq, move || reach(webview, callback)).map_err(str::to_owned)
 }
 
 #[tauri::command]
@@ -245,6 +260,7 @@ fn close_without_answer(owner: Option<isize>, why: Unanswered) -> bool {
     let reason = match why {
         Unanswered::Close => "BattlePlan’s page hasn’t answered, so it can’t say whether it has unsaved changes.",
         Unanswered::Unresponsive => "BattlePlan’s page isn’t responding, so it can’t say whether it has unsaved changes.",
+        Unanswered::Unreached => "BattlePlan couldn’t ask its page whether it has unsaved changes.",
     };
     let wide = |text: &str| text.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     let text = wide(&format!("{reason}\n\nClose BattlePlan now? Anything unsaved is lost. Choose No to keep waiting."));
@@ -407,6 +423,7 @@ fn main() {
             video::set_map_muted,
             desktop_state,
             playback_pressure_merges,
+            close_watch_document,
             watch_close_requests,
             answer_close_question,
             leave_app,

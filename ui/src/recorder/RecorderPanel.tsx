@@ -474,7 +474,7 @@ export default function RecorderPanel() {
       void queue.refresh().catch(cause => { if (active) setError('Couldn’t read the recorder settings.', cause); });
     };
     const status = followStatus(api.onStatus, api.recorderStatus, value => { if (active) setSnapshot(value); },
-      cause => { if (active) setStatusFailure(errorMessage(cause)); });
+      cause => { if (active) setStatusFailure(errorMessage(cause)); }, value => value.revision);
     retryStatus.current = status.retry;
     const listeners = [api.onSettings(() => { if (active) loadSettings(); })];
     loadSettings();
@@ -592,7 +592,7 @@ export default function RecorderPanel() {
       else if (prompting && discarding) cancelDiscard();
       else if (prompting) cancelPrompt();
       else if (up) navigate(up);
-      else void api.closePanel();
+      else void api.closePanel(snapshot?.revision ?? 0);
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
@@ -621,9 +621,11 @@ export default function RecorderPanel() {
   }, [sessionKey]);
 
   useEffect(() => { if (!prompting) setPromptFailure(null); }, [prompting]);
+  const promptOnScreen = compact != null && stage !== 'pending' && hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
+  useEffect(() => { if (promptOnScreen !== null) void api.promptShown(promptOnScreen).catch(() => {}); }, [promptOnScreen]);
   const settled = !prompting && !promptAction && !failure && !promptFailure;
   useEffect(() => {
-    if (compact && snapshot && settled) void api.closePanel();
+    if (compact && snapshot && settled) void api.closePanel(snapshot.revision);
   }, [compact, snapshot, settled]);
 
   if (stage === 'pending') {

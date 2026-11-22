@@ -12,7 +12,7 @@ const MB = 2 ** 20;
 
 function snapshot(change: Partial<Snapshot>): Snapshot {
   return { phase: 'waiting', campaign: null, recording: null, name: null, continued: false, hour: null, firstHour: null, savedBytes: null, spoolBytes: null,
-    startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, captureMode: null, ...change };
+    startedAt: null, stopping: false, problem: null, automatic: true, session: null, flag: null, captureMode: null, revision: 0, ...change };
 }
 const recording = (change: Partial<Snapshot> = {}) => snapshot({ phase: 'recording', campaign: CAMPAIGN, recording: PATH, name: 'Germany 1936–1943',
   continued: true, hour: hour(1943, 6, 12), spoolBytes: 1229 * MB, savedBytes: 214 * MB, ...change });
@@ -191,41 +191,60 @@ test('settings reads and saves run one at a time, and a failed save is followed 
   assert.equal(shown.length, 5);
 });
 
+interface Numbered { revision: number; phase: string }
+const numbered = (revision: number, phase: string): Numbered => ({ revision, phase });
+const phases = (shown: Numbered[]) => shown.map(({ phase }) => phase);
+
 test('the status is read once its listener is in place, and a status published during the read is newer than it', async () => {
   const settle = () => new Promise(resolve => setImmediate(resolve));
   for (const publishedDuringRead of [false, true]) {
     let listening!: (stop: () => void) => void;
-    let publish!: (value: string) => void;
-    let answer!: (value: string) => void;
+    let publish!: (value: Numbered) => void;
+    let answer!: (value: Numbered) => void;
     let reads = 0;
-    const shown: string[] = [];
-    const status = followStatus<string>(handler => { publish = handler; return new Promise(resolve => { listening = resolve; }); },
-      () => { reads += 1; return new Promise(resolve => { answer = resolve; }); }, value => { shown.push(value); }, () => assert.fail('nothing failed'));
+    const shown: Numbered[] = [];
+    const status = followStatus<Numbered>(handler => { publish = handler; return new Promise(resolve => { listening = resolve; }); },
+      () => { reads += 1; return new Promise(resolve => { answer = resolve; }); }, value => { shown.push(value); }, () => assert.fail('nothing failed'),
+      value => value.revision);
     await settle();
     assert.equal(reads, 0, 'nothing is read before the listener is in place');
     listening(() => {});
     await settle();
     assert.equal(reads, 1);
-    if (publishedDuringRead) publish('saving');
-    answer('recording');
+    if (publishedDuringRead) publish(numbered(5, 'saving'));
+    answer(numbered(4, 'recording'));
     await status.first;
-    assert.deepEqual(shown, publishedDuringRead ? ['saving'] : ['recording']);
-    publish('saved');
-    assert.equal(shown.at(-1), 'saved', 'later statuses keep coming');
+    assert.deepEqual(phases(shown), publishedDuringRead ? ['saving'] : ['recording']);
+    publish(numbered(6, 'saved'));
+    assert.equal(shown.at(-1)?.phase, 'saved', 'later statuses keep coming');
   }
+});
+
+test('a status the recorder published before the one shown never replaces it', async () => {
+  let publish!: (value: Numbered) => void;
+  const shown: Numbered[] = [];
+  const status = followStatus<Numbered>(handler => { publish = handler; return Promise.resolve(() => {}); }, async () => numbered(1, 'recording'),
+    value => { shown.push(value); }, () => assert.fail('nothing failed'), value => value.revision);
+  await status.first;
+  publish(numbered(3, 'asked to quit'));
+  publish(numbered(2, 'recording'));
+  assert.deepEqual(phases(shown), ['recording', 'asked to quit'], 'an older status sent after a newer one is ignored, so the newer prompt stays');
+  publish(numbered(3, 'asked to quit'));
+  assert.equal(shown.length, 2, 'nor is the same status shown twice');
 });
 
 test('trying the status again listens again before reading, and the attempt it replaces stops showing anything', async () => {
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  const handlers: ((value: string) => void)[] = [];
-  const failures: unknown[] = [], shown: string[] = [];
+  const handlers: ((value: Numbered) => void)[] = [];
+  const failures: unknown[] = [], shown: Numbered[] = [];
   let listens = 0, reads = 0, stopped = 0;
-  const status = followStatus<string>(handler => {
+  const status = followStatus<Numbered>(handler => {
     listens += 1;
     if (listens === 1) return Promise.reject(new Error('no events'));
     handlers.push(handler);
     return Promise.resolve(() => { stopped += 1; });
-  }, async () => { reads += 1; if (reads === 1) throw new Error('no reply'); return `read ${reads}`; }, value => { shown.push(value); }, cause => { failures.push(cause); });
+  }, async () => { reads += 1; if (reads === 1) throw new Error('no reply'); return numbered(reads, `read ${reads}`); }, value => { shown.push(value); },
+  cause => { failures.push(cause); }, value => value.revision);
   await status.first;
   assert.deepEqual([listens, reads, failures.length], [1, 0, 1], 'a listener that couldn’t start is a failure, with nothing read');
   status.retry();
@@ -234,15 +253,15 @@ test('trying the status again listens again before reading, and the attempt it r
   status.retry();
   await settle();
   assert.equal(stopped, 1, 'the listener from the attempt before is stopped');
-  assert.deepEqual([listens, reads, shown], [3, 2, ['read 2']]);
-  handlers[0]('stale');
-  handlers[1]('saved');
-  assert.deepEqual(shown, ['read 2', 'saved'], 'only the current listener shows statuses');
+  assert.deepEqual([listens, reads, phases(shown)], [3, 2, ['read 2']]);
+  handlers[0](numbered(8, 'stale'));
+  handlers[1](numbered(9, 'saved'));
+  assert.deepEqual(phases(shown), ['read 2', 'saved'], 'only the current listener shows statuses');
   status.stop();
   await settle();
   assert.equal(stopped, 2);
-  handlers[1]('after closing');
-  assert.equal(shown.at(-1), 'saved');
+  handlers[1](numbered(10, 'after closing'));
+  assert.equal(shown.at(-1)?.phase, 'saved');
 });
 
 test('the stop prompt asks what the recorder asked about the live session, or what the panel’s own Stop asked, and nothing once it stops', () => {

@@ -6,7 +6,7 @@ use crate::{
 };
 use recorder::controller::{
     self, CaptureOutcome, Control, Discovery, GameProcess, LoadedCampaign, Omission, Probe,
-    Recording, Refusal, SetAside, Stage, Waiting,
+    Recording, Refusal, SetAside, Stage, Stop, Undiscarded, Waiting,
 };
 use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
 use replay_data::scope::CaptureMode;
@@ -44,6 +44,8 @@ struct Inner {
     quit_when_idle: bool,
     quit_after_stop: Option<u64>,
     prompts: panel::Prompts,
+    prompt_revision: u64,
+    shown_prompt: Option<u64>,
     sessions: u64,
     stopped: Option<(u64, bool)>,
     capturing: bool,
@@ -89,6 +91,8 @@ const CONNECTED_FOR_UPDATE: &str =
 const CLOSING_FOR_UPDATE: &str = "BattlePlan Recorder is closing for an update.";
 const SESSION_ENDED: &str = "The session you asked about has already ended, so nothing was changed.";
 const SESSION_STOPPING: &str = "BattlePlan Recorder is already stopping this session.";
+const SESSION_SAVING: &str =
+    "BattlePlan Recorder had already begun saving this session, so nothing was changed.";
 
 enum Quitting {
     Exit,
@@ -123,6 +127,39 @@ impl Inner {
             self.quit_after_stop = Some(prompt.id);
         }
         prompt
+    }
+
+    fn publish(&mut self, before: &Snapshot) -> Option<Snapshot> {
+        self.snapshot.prompt = self.prompts.pending(self.live_session());
+        self.snapshot.revision = before.revision;
+        if self.snapshot == *before {
+            return None;
+        }
+        self.snapshot.revision += 1;
+        if self.snapshot.prompt != before.prompt {
+            self.prompt_revision = self.snapshot.revision;
+        }
+        Some(self.snapshot.clone())
+    }
+
+    fn dismissible(&self, revision: u64) -> bool {
+        self.snapshot.prompt.is_none() || self.prompt_revision <= revision
+    }
+
+    fn prompt_shown(&mut self, prompt: u64) {
+        self.shown_prompt = Some(self.shown_prompt.map_or(prompt, |shown| shown.max(prompt)));
+    }
+
+    fn panel_gone(&mut self, stopping: bool) -> bool {
+        self.panel_open = false;
+        if let Some(shown) = self.shown_prompt.take() {
+            cancelled(self, shown, stopping);
+        }
+        if std::mem::take(&mut self.seen) {
+            self.result = false;
+            self.sticky = None;
+        }
+        self.prompts.pending(self.live_session()).is_some()
     }
 }
 
@@ -460,7 +497,7 @@ impl Recorder {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
-            inner.snapshot.prompt = inner.prompts.pending(inner.live_session());
+            let published = inner.publish(&before);
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }
@@ -471,7 +508,6 @@ impl Recorder {
                     && !inner.snapshot.stopping,
             );
             let menu_changed = inner.menu.replace(menu) != Some(menu);
-            let published = (inner.snapshot != before).then(|| inner.snapshot.clone());
             (
                 published,
                 menu,
@@ -599,7 +635,7 @@ impl Recorder {
             Quitting::Prompt => panel::open(app, None, true),
             Quitting::Exit => app.exit(0),
             Quitting::Stop => {
-                self.control.stop(false);
+                self.control.stop(Stop::Save);
                 self.wake.notify_all();
             }
             Quitting::Wait => self.wake.notify_all(),
@@ -615,20 +651,22 @@ impl Recorder {
         self.update(app, |inner| inner.panel_open = true);
     }
 
+    pub fn prompt_shown(&self, prompt: u64) {
+        self.lock().prompt_shown(prompt);
+    }
+
+    pub fn dismissible(&self, revision: u64) -> bool {
+        self.lock().dismissible(revision)
+    }
+
     pub fn panel_closed(&self, app: &AppHandle) {
         let stopping = self.control.stopping();
-        self.update(app, |inner| {
-            inner.panel_open = false;
-            inner.prompts.clear();
-            if !stopping {
-                inner.quit_after_stop = None;
-            }
-            if std::mem::take(&mut inner.seen) {
-                inner.result = false;
-                inner.sticky = None;
-            }
-        });
+        let mut unseen = false;
+        self.update(app, |inner| unseen = inner.panel_gone(stopping));
         self.wake.notify_all();
+        if unseen {
+            panel::open(app, None, true);
+        }
     }
 
     pub fn settings_changed(&self) {
@@ -1293,10 +1331,17 @@ impl Recorder {
                 outcome.unrenamed.join("\n"),
             )
         });
-        let kept = outcome.undiscarded.then(|| {
+        let kept = outcome.undiscarded.map(|undiscarded| {
             Problem::failure(
-                "Nothing was discarded: the campaign in progress couldn’t be identified.",
-                "Stop couldn’t read which campaign was loaded; every hour was kept.",
+                format!("Nothing was discarded: {}.", undiscarded.reason()),
+                match undiscarded {
+                    Undiscarded::Unread => {
+                        "Stop couldn’t read which campaign was loaded; every hour was kept."
+                    }
+                    Undiscarded::Another => {
+                        "Discard named the campaign you saw, and the game had moved on to another one, so every hour was kept."
+                    }
+                },
             )
         });
         match saved {
@@ -1400,13 +1445,24 @@ fn accept_stop(inner: &mut Inner, control: &Control, discard: bool, session: u64
     if inner.stopped == Some((session, discard)) {
         return Ok(false);
     }
-    if !inner.capturing || inner.snapshot.session_key != Some(session) {
-        return Err(SESSION_ENDED.into());
+    if inner.live_session() != Some(session) {
+        return Err(if !inner.capturing || inner.snapshot.session_key != Some(session) {
+            SESSION_ENDED
+        } else if inner.snapshot.stopping {
+            SESSION_STOPPING
+        } else {
+            SESSION_SAVING
+        }
+        .into());
     }
-    if inner.snapshot.stopping {
-        return Err(SESSION_STOPPING.into());
+    let stop = match (discard, &inner.snapshot.campaign) {
+        (false, _) => Stop::Save,
+        (true, Some(campaign)) => Stop::Discard(campaign.clone()),
+        (true, None) => return Err(SESSION_ENDED.into()),
+    };
+    if !control.stop(stop) {
+        return Err(SESSION_SAVING.into());
     }
-    control.stop(discard);
     inner.stopped = Some((session, discard));
     inner.prompts.clear();
     inner.snapshot.stopping = true;
@@ -1640,7 +1696,7 @@ mod tests {
         inner.new_session();
         let session = inner.snapshot.session_key.unwrap();
         assert_eq!(accept_stop(&mut inner, &control, false, session), Ok(true));
-        assert!(control.stopping() && !control.discarding());
+        assert_eq!(control.seal(), Some(Stop::Save));
         assert_eq!(inner.snapshot.phase, Phase::Saving);
         assert!(inner.snapshot.stopping);
         let control = Control::new();
@@ -1678,7 +1734,83 @@ mod tests {
         assert_eq!(inner.quit_after_stop, Some(quit.id), "and the Quit it answered goes ahead");
         assert_eq!(accept_stop(&mut inner, &control, false, live), Ok(false), "the same stop sent again after a lost reply");
         assert_eq!(accept_stop(&mut inner, &control, true, live), Err(SESSION_STOPPING.into()), "a later Discard can’t turn the save into one");
-        assert!(control.stopping() && !control.discarding());
+        assert_eq!(control.seal(), Some(Stop::Save));
+    }
+
+    #[test]
+    fn a_discard_names_the_campaign_it_was_asked_about_and_none_is_taken_once_the_session_is_saving() {
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        inner.snapshot.campaign = Some("shown".into());
+        inner.new_session();
+        let session = inner.snapshot.session_key.unwrap();
+
+        let control = Control::new();
+        inner.snapshot.phase = Phase::Saving;
+        let saving = inner.snapshot.clone();
+        assert_eq!(
+            accept_stop(&mut inner, &control, true, session),
+            Err(SESSION_SAVING.into()),
+            "a session that ended by itself is already being saved"
+        );
+        assert_eq!(inner.snapshot, saving);
+        assert!(!control.stopping());
+
+        inner.snapshot.phase = Phase::Recording;
+        assert_eq!(control.seal(), None);
+        assert_eq!(
+            accept_stop(&mut inner, &control, true, session),
+            Err(SESSION_SAVING.into()),
+            "nor once the capture has settled what it keeps, before the panel hears it is saving"
+        );
+        assert!(!inner.snapshot.stopping && inner.stopped.is_none());
+
+        let control = Control::new();
+        assert_eq!(accept_stop(&mut inner, &control, true, session), Ok(true));
+        assert_eq!(
+            control.seal(),
+            Some(Stop::Discard("shown".into())),
+            "the capture is told which campaign the user chose to discard"
+        );
+    }
+
+    #[test]
+    fn statuses_are_numbered_and_the_panel_closes_only_over_the_prompts_it_showed() {
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        inner.new_session();
+        let session = inner.snapshot.session_key.unwrap();
+        let first = inner.publish(&Snapshot::default()).expect("the new session is published");
+        assert_eq!(inner.publish(&first), None, "an unchanged status isn’t published again");
+
+        let discard = inner.ask(session, false);
+        let asked = inner.publish(&first).unwrap();
+        assert!(asked.revision > first.revision);
+        assert_eq!(asked.prompt, Some(discard));
+        assert!(
+            !inner.dismissible(first.revision),
+            "a panel judging the status before the Discard can’t close over it"
+        );
+        assert!(inner.dismissible(asked.revision));
+
+        inner.prompt_shown(discard.id);
+        let quit = inner.ask(session, true);
+        let before = inner.snapshot.clone();
+        inner.publish(&before);
+        assert!(inner.panel_gone(false), "the Quit the panel never showed needs a panel");
+        assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id));
+        assert_eq!(inner.quit_after_stop, Some(quit.id), "closing the panel doesn’t cancel a Quit it never showed");
+
+        inner.prompt_shown(quit.id);
+        assert!(!inner.panel_gone(false));
+        assert_eq!(inner.prompts.pending(Some(session)), None, "closing a panel cancels what it showed");
+        assert_eq!(inner.quit_after_stop, None);
     }
 
     #[test]

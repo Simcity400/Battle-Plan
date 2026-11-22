@@ -79,6 +79,7 @@ pub struct Snapshot {
     pub behind: Option<u64>,
     pub session_key: Option<u64>,
     pub prompt: Option<crate::panel::Prompt>,
+    pub revision: u64,
 }
 
 #[derive(Debug, Default, PartialEq)]

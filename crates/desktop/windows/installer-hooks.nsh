@@ -135,6 +135,30 @@ Function HoiWelcomeLeave
   ${NSD_GetState} $HoiStartCheckbox $HoiStartRecorder
 FunctionEnd
 
+!macro HOI_ASK_CLOSE
+  StrCpy $6 ""
+  StrCpy $3 0
+  StrCpy $9 0
+  System::Call 'kernel32::WaitNamedPipeW(w r4, i 60000) i .r8'
+  System::Call 'kernel32::CreateFileW(w r4, i 0xC0000000, i 0, p 0, i 3, i 0, p 0) p .r7'
+  ${If} $7 P<> -1
+    System::Call 'kernel32::SetNamedPipeHandleState(p r7, *i 2, p 0, p 0) i .r8'
+    System::Call 'kernel32::TransactNamedPipe(p r7, *i 67, i 1, *i .r3, i 4, *i .r8, p 0) i .r9'
+    IntOp $3 $3 & 0xFF
+    ${If} $9 <> 0
+    ${AndIf} $3 = 78
+      System::Alloc 2048
+      Pop $1
+      System::Call 'kernel32::ReadFile(p r7, p r1, i 2046, *i .r8, p 0) i .r2'
+      ${If} $2 <> 0
+        System::Call '*$1(&w1023 .r6)'
+      ${EndIf}
+      System::Free $1
+    ${EndIf}
+    System::Call 'kernel32::CloseHandle(p r7)'
+  ${EndIf}
+!macroend
+
 !macro HOI_CLOSE role exe name busy
   StrCpy $HoiRunning 0
   StrCpy $HoiAppClosed 0
@@ -157,23 +181,13 @@ FunctionEnd
       ${IfThen} $0 <> 0 ${|} ${ExitDo} ${|}
       IntOp $6 $5 % 8
       ${If} $6 = 0
-        System::Alloc 2048
-        Pop $7
-        System::Call '*$7(i 0, i 0)'
-        System::Call 'kernel32::CallNamedPipeW(w r4, *i 67, i 1, p r7, i 2046, *i 0 .r8, i 60000) i .r9'
-        StrCpy $6 ""
+        !insertmacro HOI_ASK_CLOSE
         ${If} $9 <> 0
-          System::Call '*$7(&w1023 .r6)'
-        ${EndIf}
-        System::Free $7
-        StrCpy $7 $6 1
-        StrCpy $6 $6 "" 1
-        ${If} $9 <> 0
-        ${AndIf} $7 S== "Y"
+        ${AndIf} $3 = 89
           StrCpy $HoiAppClosed 1
         ${EndIf}
         ${If} $9 <> 0
-        ${AndIf} $7 S== "N"
+        ${AndIf} $3 = 78
           ${If} $6 == ""
             MessageBox MB_ICONEXCLAMATION|MB_OK "${busy}" /SD IDOK
           ${Else}

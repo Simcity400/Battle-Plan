@@ -1,4 +1,4 @@
-import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri, transformCallback } from '@tauri-apps/api/core';
 import type { CloseRequest, CloseRequests } from './closeGuard.ts';
 import { listen } from '@tauri-apps/api/event';
 import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
@@ -89,8 +89,13 @@ let closeWatches = 0;
 export function closeRequests(onRequest: (request: CloseRequest) => void): CloseRequests {
   if (!desktopAvailable) return { watch: () => Promise.resolve() };
   const seq = ++closeWatches;
-  const requests = new Channel<CloseRequest>(onRequest);
-  return { watch: () => invoke<void>('watch_close_requests', { seq, requests }) };
+  const callback = transformCallback<CloseRequest>(onRequest);
+  return {
+    watch: async () => {
+      const document = await invoke<number>('close_watch_document');
+      await invoke<void>('watch_close_requests', { document, seq, callback });
+    },
+  };
 }
 
 export function answerCloseQuestion(id: number, stays: boolean): Promise<boolean> {

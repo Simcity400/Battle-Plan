@@ -60,6 +60,7 @@ fn main() {
             commands::panel_opened,
             commands::panel_fit,
             commands::close_panel,
+            commands::prompt_shown,
             commands::start_recording,
             commands::stop_recording,
             commands::cancel_stop_prompt,

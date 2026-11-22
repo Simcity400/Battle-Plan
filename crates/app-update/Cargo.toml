@@ -20,7 +20,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-tauri = { version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "test", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
+tauri = { version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 test-unify = { workspace = true }
 unify-adler2 = { workspace = true }
 unify-bitflags-1 = { workspace = true }
