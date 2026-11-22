@@ -2812,3 +2812,137 @@ fn recovery_handles_astra_r1_edge_cases() {
     );
     assert_eq!(overlay_roster.unreadable_names.get("recorded_first"), None);
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn recovery_handles_astra_r2_edge_cases() {
+    use crate::content::{ResolveOptions, visual};
+    use std::sync::atomic::AtomicBool;
+
+    let s2_mixed_and_def = br#"
+        entity = { locator = { position = { kept_r2 k = 1 } } name trailing }
+        entity = { locator = { position = { phantom_from_def_list @v = 1 } } name trailing }
+        entity = { game_data = { atlas_size = { @u = 1 } } }
+    "#;
+    let s4_quoted_unsettled_name = br#"
+        animation = { file = "clip.anim" "name" { } }
+        entity = { game_data = { atlas_size = { @u = 1 } } }
+    "#;
+
+    let roster = roster_of(
+        "astra-r2-recovery",
+        &[
+            (
+                "gfx/models/m.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+            ),
+            ("gfx/entities/s2_r2.asset", s2_mixed_and_def),
+            ("gfx/entities/s4_r2.asset", s4_quoted_unsettled_name),
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        roster.unreadable_names.get("kept_r2").map(String::as_str),
+        Some("gfx/entities/s2_r2.asset")
+    );
+    assert_eq!(
+        roster.unreadable_names.get("phantom_from_def_list"),
+        None,
+        "balanced scan must decline block containing variable definition; refused={:?}",
+        roster.unreadable_names
+    );
+    assert_eq!(
+        roster.unreadable_names.get("clip.anim").map(String::as_str),
+        Some("gfx/entities/s4_r2.asset"),
+        "FirstExact must apply on Shape::Unsettled one-value branch; refused={:?}",
+        roster.unreadable_names
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "content-reader-astra-r2-overlay-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    };
+    let game_dir = root.join("game");
+    let user_dir = root.join("user");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(user_dir.join("mod")).unwrap();
+    write(
+        "base/gfx/models/m.gfx",
+        b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+    );
+    write(
+        "base/gfx/models/no_file_mesh.gfx",
+        b"objectTypes = { pdxmesh = { name = target_mesh_no_file } }",
+    );
+    write(
+        "base/gfx/entities/s6_r2.asset",
+        br#"
+            animation = { name = @walk file = "a.anim" }
+            light = { name = @lamp intensity = 1 }
+            animation = { name = target_no_file }
+        "#,
+    );
+    let overlay_dir = root.join("overlay");
+    write(
+        "overlay/gfx/models/no_file_mesh.gfx",
+        b"objectTypes = { pdxmesh = { name = target_mesh_no_file file = o.mesh } } entity = { state = scalar }",
+    );
+    write(
+        "overlay/gfx/entities/s6_r2.asset",
+        br#"
+            animation = { name = @walk file = "a.anim" }
+            light = { name = @lamp intensity = 2 }
+            animation = { name = target_no_file file = "o.anim" }
+            entity = { game_data = { atlas_size = { @u = 1 } } }
+        "#,
+    );
+    let descriptor = format!(
+        "name=\"VisualOverride\"\npath=\"{}\"\n",
+        overlay_dir.display().to_string().replace('\\', "/")
+    );
+    write("user/mod/visual_override.mod", descriptor.as_bytes());
+    let base = root.join("base");
+    let mut layers = crate::ResolvedLayers::from_folders(&[(&base, &[][..])]).unwrap();
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir: root.join("cache"),
+    };
+    visual::apply(
+        &mut layers,
+        &options,
+        &[visual::Choice {
+            id: "mod/visual_override.mod".into(),
+            name: "VisualOverride".into(),
+        }],
+        &[],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let overlay_roster = Roster::read(layers.presentation()).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(overlay_roster.unreadable_names.get("@walk"), None);
+    assert_eq!(overlay_roster.unreadable_names.get("@lamp"), None);
+    assert_eq!(
+        overlay_roster
+            .unreadable_names
+            .get("target_no_file")
+            .map(String::as_str),
+        Some("gfx/entities/s6_r2.asset")
+    );
+    assert_eq!(
+        overlay_roster
+            .unreadable_names
+            .get("target_mesh_no_file")
+            .map(String::as_str),
+        Some("gfx/models/no_file_mesh.gfx")
+    );
+}

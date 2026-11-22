@@ -1457,70 +1457,55 @@ pub(super) fn last_text(fields: &[parser::Item], key: &str) -> Option<String> {
         .map(unquote)
 }
 
-fn declared_names_in(
-    items: &[parser::Item],
-    words: &[&str],
-    include_variables: bool,
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    let mut add = |raw: &[u8], quoted: bool| {
-        if !include_variables && !quoted && raw.starts_with(b"@") {
-            return;
-        }
-        let Ok(text) = std::str::from_utf8(raw) else {
-            return;
-        };
-        let name = unquote(text);
-        if !name.is_empty() {
-            names.insert(name);
-        }
-    };
-    let mut record = |item: &parser::Item, first_exact: bool| {
-        let Some(fields) = item.value.items() else {
-            return;
-        };
-        let field = if first_exact {
-            fields
-                .iter()
-                .find(|field| field.key.as_deref() == Some(b"name"))
-        } else {
-            fields.iter().rev().find(|field| field.keyword_is("name"))
-        };
-        let Some(field) = field else {
-            return;
-        };
-        let Some(raw) = field.value.scalar() else {
-            return;
-        };
-        add(raw, field.quoted());
-    };
-    for item in items {
-        if item.keyword_is("objectTypes") {
-            for block in item.value.items().unwrap_or(&[]) {
-                if words.iter().any(|word| block.keyword_is(word)) {
-                    record(block, block.keyword_is("pdxmesh"));
-                }
-            }
-        } else if words.iter().any(|word| item.keyword_is(word)) {
-            record(item, item.keyword_is("animation"));
-        }
-    }
-    names
-}
-
 fn declared_names_from(
     native_items: &[parser::Item],
     document: &parser::Document,
     words: &[&str],
 ) -> BTreeSet<String> {
-    let mut names = declared_names_in(native_items, words, true);
-    let document_words: Vec<&str> = words
-        .iter()
-        .copied()
-        .filter(|word| matches!(*word, "animation" | "light"))
-        .collect();
-    if !document_words.is_empty() {
-        names.extend(declared_names_in(&document.items, &document_words, false));
+    let mut names = BTreeSet::new();
+    for item in native_items {
+        if item.keyword_is("objectTypes") {
+            for block in item.value.items().unwrap_or(&[]) {
+                if block.keyword_is(OBJECTS[0]) && words.contains(&OBJECTS[0]) {
+                    if let Some(mesh) = mesh_definition(&block.value) {
+                        names.insert(mesh.name);
+                    }
+                } else if OBJECTS[1..]
+                    .iter()
+                    .any(|kind| words.contains(kind) && block.keyword_is(kind))
+                    && let Some(name) = block
+                        .value
+                        .items()
+                        .and_then(|fields| last_text(fields, "name"))
+                        .filter(|name| !name.is_empty())
+                {
+                    names.insert(name);
+                }
+            }
+        } else if words.contains(&"entity")
+            && item.keyword_is("entity")
+            && let Some(name) = item
+                .value
+                .items()
+                .and_then(|fields| last_text(fields, "name"))
+                .filter(|name| !name.is_empty())
+        {
+            names.insert(name);
+        }
+    }
+    for item in &document.items {
+        if words.contains(&"animation")
+            && item.keyword_is("animation")
+            && let Some(animation) = animation_definition(&item.value, "")
+        {
+            names.insert(animation.name);
+        } else if words.contains(&"light")
+            && item.keyword_is("light")
+            && let Some(fields) = item.value.items()
+            && let Some(name) = last_text(fields, "name").filter(|name| !name.is_empty())
+        {
+            names.insert(name);
+        }
     }
     names
 }
