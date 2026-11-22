@@ -151,12 +151,14 @@ class Crate:
     name: str
     folder: str
     deps: frozenset
+    libraries: frozenset = frozenset()
 
 
 def crates_from_manifests(root):
-    """Each workspace member's folder, relative to `root`, and the members it depends on through a
-    path dependency of any kind or target, read from the manifests themselves so that planning
-    needs no Rust toolchain; None when the root manifest cannot be read. The dev-dependencies that
+    """Each workspace member's folder, relative to `root`, the members it depends on through a path
+    dependency of any kind or target, and those its library itself builds on (normal and build
+    dependencies, not dev ones), read from the manifests themselves so that planning needs no Rust
+    toolchain; None when the root manifest cannot be read. The dev-dependencies that
     `tools/check-feature-unification.py` generates under `cfg(all())` are not edges, bar `test-unify`
     which they alone reach: the rest only set features on crates the member's tests already build
     through its own dependencies."""
@@ -183,22 +185,24 @@ def crates_from_manifests(root):
     names = {folder: data["package"]["name"] for folder, (_, data) in members.items()}
     crates = {}
     for folder, (path, data) in members.items():
-        sections = [data.get(kind, {}) for kind in ("dependencies", "dev-dependencies", "build-dependencies")]
+        sections = [(kind, data.get(kind, {})) for kind in ("dependencies", "dev-dependencies", "build-dependencies")]
         for platform, target in data.get("target", {}).items():
             for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
                 table = target.get(kind, {})
                 pinned = (platform, kind) == (UNIFIED, "dev-dependencies")
-                sections.append({name: spec for name, spec in table.items() if name == UNIFY} if pinned else table)
-        deps = set()
-        for section in sections:
+                sections.append((kind, {name: spec for name, spec in table.items() if name == UNIFY} if pinned else table))
+        deps, libraries = set(), set()
+        for kind, section in sections:
             for name, spec in section.items():
                 if not isinstance(spec, dict):
                     continue
                 found = shared.get(name) if spec.get("workspace") else path / spec["path"] if "path" in spec else None
                 if found is not None:
                     deps.add(names.get(key(found)))
+                    if kind != "dev-dependencies":
+                        libraries.add(names.get(key(found)))
         name = names[folder]
-        crates[name] = Crate(name, path.relative_to(root).as_posix(), frozenset(deps - {None, name}))
+        crates[name] = Crate(name, path.relative_to(root).as_posix(), frozenset(deps - {None, name}), frozenset(libraries - {None, name}))
     return crates
 
 
@@ -227,10 +231,11 @@ def closure(crates, name):
 
 
 def dependents_closure(crates, names):
-    """`names` and every crate that depends on one of them, directly or through others."""
+    """`names` and every crate whose library builds on one of them, directly or through others:
+    the libraries a change makes a restored cache rebuild."""
     users = {}
     for crate in crates.values():
-        for dep in crate.deps:
+        for dep in crate.libraries:
             users.setdefault(dep, set()).add(crate.name)
     seen, pending = set(names), list(names)
     while pending:
@@ -245,9 +250,18 @@ def load_weights(crates, text):
     """Each crate's measured cost, (build, test): the core-seconds its library build takes, and
     its test builds and test runs, from the committed table `ci.py weights` writes, in whole
     seconds so that a sum is exact in any order and every runner splits alike. A crate the table
-    lacks takes the median of those it has."""
-    table = json.loads(text).get("crates", {}) if text else {}
-    known = {name: (round(cost["build"]), round(cost["test"])) for name, cost in table.items() if name in crates}
+    lacks takes the median of those it has. A table that is not one, or an entry without both
+    costs as non-negative numbers, is refused, so a broken table fails the pull request that
+    commits it rather than main."""
+    try:
+        table = json.loads(text).get("crates", {}) if text else {}
+        costs = {name: (round(cost["build"]), round(cost["test"])) for name, cost in table.items()}
+    except (ValueError, TypeError, KeyError, AttributeError) as error:
+        raise SystemExit(f"tools/ci-weights.json is not a table of crate costs: {error!r}")
+    wrong = sorted(name for name, (build, test) in costs.items() if build < 0 or test < 0)
+    if wrong:
+        raise SystemExit(f"tools/ci-weights.json: negative costs for {', '.join(wrong)}")
+    known = {name: cost for name, cost in costs.items() if name in crates}
     builds, tests = sorted(cost[0] for cost in known.values()), sorted(cost[1] for cost in known.values())
     median = (builds[len(builds) // 2], tests[len(tests) // 2]) if known else (1, 1)
     return {name: known.get(name, median) for name in crates}
@@ -734,6 +748,7 @@ def changes(args):
     for decision in decisions:
         print(f"  {decision.state:8} {decision.job.name:22} {decision.job.group:8} {decision.detail}")
     sharded = any(d.state == "run" and d.job.shards for d in decisions)
+    load_weights({}, committed_weights())
     matrix = matrix_legs(pipeline, decisions, crates_from_manifests(ROOT) if sharded else {}, committed_weights() if sharded else "")
     for leg in matrix:
         print(f"leg {leg['name']}: {leg['jobs']}")
@@ -911,14 +926,14 @@ def warm(name, target, github_output=None):
     """Fills a target folder for a job's cache: runs the job's `warm` command, which builds every
     unit its runners may reuse, and, when it succeeds, prunes the units it did not use and names
     HEAD as the commit the folder was built from. A failed build saves nothing: its folder mixes
-    units rebuilt at HEAD with the commit it named before. A folder that no Rust input changed
-    since is not built or saved again."""
+    units rebuilt at HEAD with the commit it named before. A folder that neither a Rust input nor
+    the job's definition changed since is not built or saved again."""
     pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
     job = next((job for job in pipeline.jobs if job.name == name), None)
     if job is None or not job.warm:
         sys.exit(f"tools/ci.toml has no job {name!r} with a warm command")
     source = built_from(target)
-    save = not (source and rust_unchanged(source, pipeline, job))
+    save = not (source and rust_unchanged(source, pipeline, job) and (definitions_at(source) or {}).get(name) == job.definition)
     if save:
         started = time.monotonic()
         with tempfile.TemporaryFile() as messages:
@@ -935,7 +950,7 @@ def warm(name, target, github_output=None):
             save = False
             print("the build failed: nothing is saved", flush=True)
     else:
-        print(f"no Rust input changed since {source[:10]}: nothing to build or save", flush=True)
+        print(f"no Rust input or job definition changed since {source[:10]}: nothing to build or save", flush=True)
     if github_output:
         with open(github_output, "a", encoding="utf-8") as out:
             out.write(f"save={'true' if save else 'false'}\n")

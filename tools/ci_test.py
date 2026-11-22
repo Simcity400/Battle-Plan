@@ -73,7 +73,7 @@ command = ["boat", "test", "{packages}"]
 
 
 def crates(**deps):
-    return {name: ci.Crate(name, f"crates/{name}", frozenset(uses)) for name, uses in deps.items()}
+    return {name: ci.Crate(name, f"crates/{name}", frozenset(uses), frozenset(uses)) for name, uses in deps.items()}
 
 
 def context(changed, tree=None, workspace=None):
@@ -226,7 +226,9 @@ class Crates(unittest.TestCase):
             found = ci.crates_from_manifests(root)
             self.assertEqual(sorted(found), ["core", "mid", "test-unify", "top"])
             self.assertEqual(found["mid"].deps, {"core"})
+            self.assertEqual(found["mid"].libraries, set())
             self.assertEqual(found["top"].deps, {"mid", "test-unify"})
+            self.assertEqual(found["top"].libraries, {"mid"})
             self.assertEqual(found["core"].folder, "crates/core")
 
 
@@ -389,6 +391,8 @@ class Sharding(unittest.TestCase):
         self.assertEqual(next(d for d in decisions if d.job.name == "test").dirty, {"mid", "app"})
         _, decisions, _ = self.sharded(["crates/mid/src/lib.rs", "Cargo.lock"])
         self.assertEqual(next(d for d in decisions if d.job.name == "test").dirty, set(self.WORKSPACE))
+        tested_only = dict(self.WORKSPACE, app=ci.Crate("app", "crates/app", frozenset({"mid", "hub"}), frozenset({"hub"})))
+        self.assertEqual(ci.dependents_closure(tested_only, {"mid"}), {"mid"})
 
     def test_a_runner_is_added_only_while_it_saves_more_than_the_slack(self):
         pair = crates(a=[], b=[])
@@ -402,6 +406,10 @@ class Sharding(unittest.TestCase):
         weights = ci.load_weights(crates(a=[], b=[], c=[], new=[]), self.table({"a": (1, 10), "b": (2, 20), "c": (3, 30), "gone": (9, 90)}))
         self.assertEqual(weights, {"a": (1, 10), "b": (2, 20), "c": (3, 30), "new": (2, 20)})
         self.assertEqual(ci.load_weights(crates(a=[]), ""), {"a": (1, 1)})
+        for broken in ("not json", '{"crates": {"a": {"build": 1}}}', '{"crates": {"a": {"build": "x", "test": 1}}}',
+                       '{"crates": {"a": {"build": -1, "test": 1}}}', '{"crates": []}'):
+            with self.assertRaises(SystemExit, msg=broken):
+                ci.load_weights({}, broken)
 
     def test_a_split_is_the_same_whatever_order_a_runner_sums_costs_in(self):
         weights = ci.load_weights(crates(a=[], b=[], c=[]), self.table({"a": (0.1, 0.2), "b": (0.2, 0.3), "c": (0.3, 0.1)}))
@@ -506,6 +514,31 @@ class RestoredTarget(unittest.TestCase):
             ci.prune(profile, live)
             left = sorted(path.relative_to(profile).as_posix() for path in profile.rglob("*") if path.is_file())
         self.assertEqual(left, sorted(["build/a-1111222233334444/out/x", f".fingerprint/a-{used}/lib-a", "deps/kept.txt", f"deps/liba-{used}.rlib"]))
+
+    def test_a_changed_job_definition_warms_again_though_no_rust_input_changed(self):
+        import tempfile
+        original = ci.PIPELINE
+        head = ci.git("rev-parse", "HEAD").strip()
+        committed = ci.git("show", "HEAD:tools/ci.toml")
+        with tempfile.TemporaryDirectory() as folder:
+            def saved(text):
+                pipeline, output = Path(folder, "ci.toml"), Path(folder, "output")
+                pipeline.write_text(text, encoding="utf-8")
+                output.write_text("", encoding="utf-8")
+                ci.PIPELINE = pipeline
+                ci.warm("fuzz-build", Path(folder, "target"), output)
+                return output.read_text(encoding="utf-8").strip()
+            try:
+                Path(folder, "target").mkdir()
+                Path(folder, "target", ci.BUILT_FROM).write_text(head + "\n", encoding="utf-8")
+                self.assertEqual(saved(committed), "save=false")
+                job = next(job for job in ci.load_pipeline(committed).jobs if job.name == "fuzz-build")
+                changed = committed.replace("warm = " + ci.json.dumps(list(job.warm)),
+                                            "warm = " + ci.json.dumps([sys.executable, "-c", "pass"]), 1)
+                self.assertNotEqual(changed, committed)
+                self.assertEqual(saved(changed), "save=true")
+            finally:
+                ci.PIPELINE = original
 
     def test_only_a_build_that_succeeded_names_the_commit(self):
         import tempfile
