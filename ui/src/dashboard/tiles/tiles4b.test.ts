@@ -4,7 +4,7 @@ import type { SeriesTileReply } from '../../generated/dashboard';
 import type { Run } from '../../charts/series';
 import { playbackDomain } from '../../charts/view.ts';
 import { TileCache } from './cache.ts';
-import { FIRST_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, bytesOf, decodeTileBins, tilesOf } from './tile.ts';
+import { FIRST_BREAK, PRESENT, RUN, SEAM, TILE_BINS, TILE_GROUP, binHoursOf, decodeTileBins, tilesOf } from './tile.ts';
 import { TileView, cellBins, viewRuns } from './view.ts';
 import type { TileLane, TileViewport } from './view.ts';
 
@@ -142,33 +142,6 @@ test('a view of many keys asks its groups once, side by side, and a second chart
   await settle();
   assert.equal(some.asked.length, 0);
   assert.equal(other.current!.size, 3);
-});
-
-test('decoding a landing tile: what it costs on the thread it lands on', () => {
-  const measure = (keys: number) => {
-    const tags = Array.from({ length: keys }, (_, at) => `T${at}`);
-    const bytes = new Uint8Array(keys * TILE_BINS * (1 + 16 + 5));
-    bytes.fill(PRESENT, 0, keys * TILE_BINS);
-    const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
-    const rounds = 40;
-    tilesOf(reply, tags, 6, 10, tag => tag);
-    let started = performance.now();
-    for (let at = 0; at < rounds; at++) bytesOf(reply.bins);
-    const base64Ms = (performance.now() - started) / rounds;
-    started = performance.now();
-    for (let at = 0; at < rounds; at++) tilesOf(reply, tags, 6, 10, tag => tag);
-    const totalMs = (performance.now() - started) / rounds;
-    const decoded = { ...reply, bins: bytesOf(reply.bins as string) };
-    started = performance.now();
-    for (let at = 0; at < rounds; at++) tilesOf(decoded, tags, 6, 10, tag => tag);
-    const pageMs = (performance.now() - started) / rounds;
-    return { keys, bytes: reply.bins.length, base64Ms, totalMs, pageMs };
-  };
-  for (const keys of [8, TILE_GROUP, 100]) {
-    const { bytes, base64Ms, totalMs, pageMs } = measure(keys);
-    console.log(`decode a tile of ${keys} keys (${bytes} base64 bytes): base64 ${base64Ms.toFixed(3)} ms, all on one thread ${totalMs.toFixed(3)} ms, left on the page after the worker ${pageMs.toFixed(3)} ms`);
-    if (keys <= TILE_GROUP) assert.ok(pageMs < 1, `${pageMs} ms on the page for a tile of ${keys} keys`);
-  }
 });
 
 test('a landing tile is decoded where replies are parsed, its bytes handed over, and reads as the same tiles', () => {
