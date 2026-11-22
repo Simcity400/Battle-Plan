@@ -22,5 +22,5 @@ pub(crate) fn borderless_at(gui_scale: f32) -> Display {
 
 pub const MONITOR: Desktop = Desktop {
     physical: [2560, 1440],
-    dpi: 120,
+    dpi: Ok(120),
 };
