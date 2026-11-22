@@ -154,7 +154,8 @@ collector_primitives::capacity_max!(Capacities {
 });
 
 impl Capacities {
-    pub fn prepare_live(&self, _access: &collector_workers::CaptureAccess) {
+    pub fn prepare_live(&self, access: &collector_workers::CaptureAccess) {
+        let Some(_pin) = access.pin() else { return };
         if self.fleets != 0 {
             collector_observers::fleet_region_changes::demand(self.fleets);
             collector_observers::fleet_region_changes::presize();

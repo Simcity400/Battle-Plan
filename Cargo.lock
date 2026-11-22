@@ -1789,14 +1789,15 @@ dependencies = [
 name = "collector-map-events"
 version = "0.1.0"
 dependencies = [
+ "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",
  "collector-map-events",
- "collector-memory",
  "collector-primitives",
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "collector-workers",
  "engine-allocation",
  "engine-events",
  "engine-executable",

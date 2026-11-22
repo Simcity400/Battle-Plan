@@ -76,11 +76,12 @@ collector_primitives::capacity_max!(Capacities {
 impl Capacities {
     pub fn presize(
         &mut self,
-        _access: &collector_workers::CaptureAccess,
+        access: &collector_workers::CaptureAccess,
         memory: &impl Memory,
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
+        let _pin = access.pin().ok_or("collector capture owner expired")?;
         self.presize_inner(memory, base, state)
     }
 

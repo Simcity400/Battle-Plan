@@ -841,11 +841,12 @@ impl Capacities {
 
     pub fn presize_live_inputs_periodic(
         &mut self,
-        _access: &collector_workers::CaptureAccess,
+        access: &collector_workers::CaptureAccess,
         memory: &impl Memory,
         base: usize,
         capacity_census: bool,
     ) -> Result<(), &'static str> {
+        let _pin = access.pin().ok_or("collector capture owner expired")?;
         self.presize_inputs(memory, base, capacity_census, true)
     }
 

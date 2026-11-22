@@ -256,7 +256,10 @@ impl Pipeline {
         self.refresh();
         Callback(self)
     }
-    pub(crate) fn register(&self, _worker: &crate::Worker, role: Role) {
+    pub(crate) fn register(&self, worker: &crate::Worker, role: Role) {
+        if !worker.permitted() {
+            return;
+        }
         let Some(index) = role.slot() else {
             return;
         };

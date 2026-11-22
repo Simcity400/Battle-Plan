@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub struct Frames {
+    id: u64,
     active: AtomicBool,
     started: AtomicU64,
     published: AtomicU64,
@@ -12,7 +13,9 @@ pub struct Capture<'a> {
 }
 
 #[derive(Default)]
-pub struct Snapshot(Option<u64>);
+pub struct Snapshot(Option<(u64, u64)>);
+
+static NEXT_FENCE: AtomicU64 = AtomicU64::new(1);
 
 impl Snapshot {
     #[cfg(any(test, feature = "test-support"))]
@@ -33,6 +36,9 @@ impl Frames {
 
     fn empty() -> Self {
         Self {
+            id: NEXT_FENCE
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("frame fence identity exhausted"),
             active: AtomicBool::new(false),
             started: AtomicU64::new(0),
             published: AtomicU64::new(0),
@@ -59,7 +65,11 @@ impl Frames {
         fence: &mut Snapshot,
         owned: impl IntoIterator<Item = &'a AtomicU64>,
     ) -> bool {
-        self.pending(*fence.0.get_or_insert_with(|| self.snapshot()), owned)
+        let (_, sequence) = match fence.0 {
+            Some(snapshot) if snapshot.0 == self.id => snapshot,
+            _ => *fence.0.insert((self.id, self.snapshot())),
+        };
+        self.pending(sequence, owned)
     }
 
     pub fn pending<'a>(&self, fence: u64, owned: impl IntoIterator<Item = &'a AtomicU64>) -> bool {
@@ -118,9 +128,13 @@ mod tests {
 
     #[test]
     fn a_capture_without_a_frame_does_not_leave_a_pending_fence() {
+        let other = Frames::new_for_test();
+        let mut borrowed = Snapshot::default();
+        assert!(!other.pending_snapshot(&mut borrowed, std::iter::empty()));
         let frames = Frames::new_for_test();
         let capture = frames.capture();
         let fence = frames.snapshot();
+        assert!(frames.pending_snapshot(&mut borrowed, std::iter::empty()));
         drop(capture);
         assert!(!frames.pending(fence, std::iter::empty()));
     }

@@ -801,7 +801,7 @@ pub struct Pool<J: Send + 'static, R: Copy + Send + 'static> {
     threads: Mutex<Vec<JoinHandle<()>>>,
     allocated_bytes: usize,
     #[cfg(feature = "worker_sampler")]
-    sampled: bool,
+    generation: u64,
 }
 
 impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
@@ -817,13 +817,20 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Self::start_boosted(worker_count, capacity, false, run)
     }
     pub fn start_with_class(
-        _owner: &crate::Owner,
+        owner: &crate::Owner,
         worker_count: usize,
         capacity: usize,
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_inner(worker_count, capacity, false, classes, run, true)
+        Self::start_inner(
+            worker_count,
+            capacity,
+            false,
+            classes,
+            run,
+            owner.worker().generation,
+        )
     }
     #[cfg(any(test, feature = "test-support"))]
     fn start_boosted(
@@ -841,7 +848,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_inner(worker_count, capacity, false, classes, run, false)
+        Self::start_inner(worker_count, capacity, false, classes, run, 0)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -852,7 +859,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_inner(worker_count, capacity, wake_boost, classes, run, false)
+        Self::start_inner(worker_count, capacity, wake_boost, classes, run, 0)
     }
 
     fn start_inner(
@@ -861,7 +868,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         wake_boost: bool,
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
-        sampled: bool,
+        generation: u64,
     ) -> Result<Self, &'static str> {
         if worker_count > MAX_WORKERS || capacity == 0 {
             return Err("acquisition pool requires an admitted worker count and nonzero capacity");
@@ -1005,7 +1012,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             threads: Mutex::new(threads),
             allocated_bytes,
             #[cfg(feature = "worker_sampler")]
-            sampled,
+            generation,
         };
         for index in 0..worker_count {
             let shared = Arc::clone(&pool.shared);
@@ -1017,7 +1024,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                         shared,
                         index,
                         wake_boost,
-                        crate::WorkerStart { live: sampled }.bind(),
+                        crate::WorkerStart { generation }.bind(),
                     )
                 }) {
                 Ok(thread) => pool
@@ -1759,9 +1766,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
     pub fn shutdown(&self) -> Result<(), &'static str> {
         #[cfg(feature = "worker_sampler")]
-        if self.sampled {
-            crate::worker_sampler_state::stop_before_thread_exit();
-        }
+        crate::SamplerJoin(self.generation).before_join();
         self.shared.stop();
         let mut threads = self
             .threads

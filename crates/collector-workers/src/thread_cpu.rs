@@ -1,5 +1,5 @@
 use collector_status::status::{sequence, status};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE},
     System::Threading::{
@@ -32,6 +32,7 @@ static REGISTERED_CREATION: [AtomicU64; REGISTERED_ROLES] =
     [const { AtomicU64::new(0) }; REGISTERED_ROLES];
 #[cfg(feature = "worker_sampler")]
 static DECODE_CREATION: AtomicU64 = AtomicU64::new(0);
+static DECODE_REGISTRATION: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "worker_sampler")]
 pub struct StopOnThreadExit<'a>(pub(crate) &'a crate::Worker);
@@ -39,7 +40,7 @@ pub struct StopOnThreadExit<'a>(pub(crate) &'a crate::Worker);
 #[cfg(feature = "worker_sampler")]
 impl Drop for StopOnThreadExit<'_> {
     fn drop(&mut self) {
-        if self.0.live {
+        if let Some(_pin) = self.0.pin() {
             crate::worker_sampler_state::stop_before_thread_exit();
         }
     }
@@ -78,7 +79,7 @@ pub(crate) fn helper_creation(index: usize, id: u32) -> Option<u64> {
 }
 
 pub fn register(worker: &crate::Worker, role: Role) {
-    if worker.live {
+    if let Some(_pin) = worker.pin() {
         record_id(role, unsafe { GetCurrentThreadId() });
     }
 }
@@ -118,12 +119,44 @@ fn registered_creation_time(id: u32) -> Option<u64> {
         .filter(|created| *created != 0)
 }
 
-pub fn register_decode(worker: &crate::Worker) {
-    if worker.live {
-        let id = unsafe { GetCurrentThreadId() };
+struct DecodeRegistration<'a> {
+    _pin: crate::CapturePin,
+    _worker: &'a crate::Worker,
+    #[cfg(feature = "worker_sampler")]
+    exit: Option<StopOnThreadExit<'a>>,
+}
+
+pub fn with_decode_registration(worker: &crate::Worker, run: impl FnOnce()) {
+    let pin = worker
+        .pin()
+        .expect("decode requires a live collector worker");
+    assert!(
+        !DECODE_REGISTRATION.swap(true, Ordering::Acquire),
+        "decode worker already registered"
+    );
+    #[cfg(feature = "worker_sampler")]
+    let exit = Some(worker.sampled());
+    let id = unsafe { GetCurrentThreadId() };
+    #[cfg(feature = "worker_sampler")]
+    DECODE_CREATION.store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
+    WORKER_ID.store(id, Ordering::Release);
+    let _registration = DecodeRegistration {
+        _worker: worker,
+        _pin: pin,
         #[cfg(feature = "worker_sampler")]
-        DECODE_CREATION.store(registered_creation_time(id).unwrap_or(0), Ordering::Release);
-        WORKER_ID.store(id, Ordering::Release);
+        exit,
+    };
+    run();
+}
+
+impl Drop for DecodeRegistration<'_> {
+    fn drop(&mut self) {
+        #[cfg(feature = "worker_sampler")]
+        {
+            drop(self.exit.take());
+            DECODE_CREATION.store(0, Ordering::Release);
+        }
+        DECODE_REGISTRATION.store(false, Ordering::Release);
     }
 }
 

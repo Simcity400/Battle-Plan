@@ -105,7 +105,6 @@ pub struct Captured {
     observer_scratch: std::sync::Mutex<collector_combat_log::observer_projection::Scratch>,
     daily_refresh: bool,
     access: Option<collector_workers::CaptureAccess>,
-    daily_loan: bool,
     daily_previous: Option<DailyObservers>,
     observer_cursor: usize,
 }
@@ -129,7 +128,6 @@ impl Captured {
             observer_scratch: Default::default(),
             daily_refresh: true,
             access: None,
-            daily_loan: false,
             daily_previous: None,
             observer_cursor: 0,
         }
@@ -173,7 +171,10 @@ impl Captured {
             || replay_data::cadence::Cadence::Daily(replay_data::cadence::COMBAT_LOG_NUMERIC_SLOT)
                 .is_refresh(hour);
         if self.daily_refresh
-            && self.access.is_some()
+            && let Some(_pin) = self
+                .access
+                .as_ref()
+                .and_then(collector_workers::CaptureAccess::pin)
             && let Some(previous) = DAILY_OBSERVERS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -184,12 +185,15 @@ impl Captured {
     }
 
     pub fn begin(&mut self) {
-        if self.access.is_some() {
+        if let Some(_pin) = self
+            .access
+            .as_ref()
+            .and_then(collector_workers::CaptureAccess::pin)
+        {
             self.daily_previous = DAILY_OBSERVERS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take();
-            self.daily_loan = true;
         }
         self.observer_cursor = 0;
         if self.daily_refresh
@@ -334,7 +338,11 @@ impl Captured {
         }
     }
     pub fn finish(&mut self, parent: Outcome) {
-        if self.access.is_some() {
+        if let Some(_pin) = self
+            .access
+            .as_ref()
+            .and_then(collector_workers::CaptureAccess::pin)
+        {
             crate::land_events::observe_observer_rows(self.observers.len());
             collector_combat_log::history_events::prepare_active(
                 self.observers.len().saturating_add(self.equipment.len),
@@ -357,9 +365,7 @@ impl Captured {
             },
             _ => Outcome::Rows { len: self.len },
         };
-        if self.access.is_none() || std::mem::take(&mut self.daily_loan) {
-            self.remember_daily();
-        }
+        self.remember_daily();
     }
     fn remember_daily(&mut self) {
         let mut next = self.daily_previous.take().unwrap_or_default();
@@ -390,7 +396,11 @@ impl Captured {
         } else {
             None
         };
-        if self.access.is_some() {
+        if let Some(_pin) = self
+            .access
+            .as_ref()
+            .and_then(collector_workers::CaptureAccess::pin)
+        {
             *DAILY_OBSERVERS.lock().unwrap_or_else(|e| e.into_inner()) = next;
         } else {
             self.daily_previous = next;

@@ -43,7 +43,8 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.words.capacity() * size_of::<u64>()
     }
-    pub fn prepare_live(&mut self, _access: &collector_workers::CaptureAccess, c: &mut Capacities) {
+    pub fn prepare_live(&mut self, access: &collector_workers::CaptureAccess, c: &mut Capacities) {
+        let Some(_pin) = access.pin() else { return };
         crate::land_events::prepare();
         c.words = c.words.max(crate::land_events::capacity());
     }

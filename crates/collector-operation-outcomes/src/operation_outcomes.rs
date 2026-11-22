@@ -428,7 +428,8 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn resize(_access: &collector_workers::CaptureAccess, entries: usize) {
+pub fn resize(access: &collector_workers::CaptureAccess, entries: usize) {
+    let Some(_pin) = access.pin() else { return };
     presize(entries, 0);
 }
 pub(crate) fn presize(entries: usize, bytes: usize) {
@@ -437,9 +438,6 @@ pub(crate) fn presize(entries: usize, bytes: usize) {
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sources = [log(), offered()];
     let generations = || sources.into_iter().flatten();
     let entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
@@ -496,6 +494,9 @@ pub(crate) fn presize(entries: usize, bytes: usize) {
         return;
     };
     let pointer = &*fresh as *const Log as usize;
+    let mut retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if engine_allocation::reserve(&mut retained, 1).is_err() {
         failed();
         return;
@@ -534,12 +535,11 @@ pub unsafe fn release() {
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
         return;
     }
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     LOG.store(0, Ordering::Release);
     OFFERED.store(0, Ordering::Release);
-    retained.clear();
+    LOGS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }
 
 fn append_observation(
@@ -750,39 +750,40 @@ pub struct LaneCursor {
 #[derive(Clone, Copy)]
 pub struct Handoff {
     log: usize,
-    serial: u64,
-    live: bool,
+    access: Option<collector_workers::CaptureAccess>,
     epoch: u64,
     sequence: u64,
     lanes: usize,
     shared_rejected: u64,
 }
-pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+pub(crate) fn handoff_growing(
+    access: collector_workers::CaptureAccess,
+    cursors: &mut Vec<LaneCursor>,
+) -> Result<Handoff, &'static str> {
+    let _pin = access
+        .pin()
+        .ok_or("operation completion capture owner expired")?;
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("operation completion hooks unavailable");
     }
-    let _retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let log = log().ok_or("operation completion staging unavailable")?;
-    let mut handoff = make_handoff(
+    make_handoff(
         seal_offered(log),
         engine_native::walk::Buffer::Growing(cursors),
-    )?;
-    handoff.live = true;
-    Ok(handoff)
+        Some(access),
+    )
 }
 #[cfg(any(test, feature = "test-support"))]
 pub fn handoff_buffer(
     log: &Log,
     cursors: engine_native::walk::Buffer<'_, LaneCursor>,
 ) -> Result<Handoff, &'static str> {
-    make_handoff(log, cursors)
+    make_handoff(log, cursors, None)
 }
-
 fn make_handoff(
     log: &Log,
     mut cursors: engine_native::walk::Buffer<'_, LaneCursor>,
+    access: Option<collector_workers::CaptureAccess>,
 ) -> Result<Handoff, &'static str> {
     let lanes = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     cursors
@@ -799,8 +800,7 @@ fn make_handoff(
     let shared_rejected = log.shared.rejected();
     Ok(Handoff {
         log: log as *const Log as usize,
-        serial: log.serial,
-        live: false,
+        access,
         epoch: EPOCH.load(Ordering::Acquire),
         sequence: log.sequence.load(Ordering::Acquire),
         lanes,
@@ -813,40 +813,23 @@ pub struct Drained {
     pub bytes: usize,
 }
 impl Handoff {
-    fn retain_log(
-        self,
-    ) -> Result<Option<std::sync::MutexGuard<'static, Vec<Box<Log>>>>, &'static str> {
-        if !self.live {
-            return Ok(None);
-        }
-        let retained = LOGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if retained
-            .iter()
-            .any(|log| log.serial == self.serial && &**log as *const Log as usize == self.log)
-        {
-            Ok(Some(retained))
-        } else {
-            Err("operation completion stale handoff")
-        }
+    fn pin(&self) -> Result<Option<collector_workers::CapturePin>, &'static str> {
+        self.access
+            .as_ref()
+            .map(|access| access.pin().ok_or("operation completion stale handoff"))
+            .transpose()
     }
-
     pub fn pending(self) -> usize {
-        let Ok(_retained) = self.retain_log() else {
-            return 0;
-        };
+        let Ok(_pin) = self.pin() else { return 0 };
         let log = unsafe { &*(self.log as *const Log) };
         self.sequence
             .saturating_sub(log.assembled.load(Ordering::Acquire)) as usize
     }
     pub fn description_capacity(self, cursors: &[LaneCursor]) -> Result<usize, &'static str> {
-        let _retained = self.retain_log()?;
-        // SAFETY: the generation is retained, or this is an isolated fixture log.
+        let _pin = self.pin()?;
         let log = unsafe { &*(self.log as *const Log) };
         self.description_capacity_in(log, cursors)
     }
-
     fn description_capacity_in(
         self,
         log: &Log,
@@ -883,14 +866,10 @@ impl Handoff {
         Ok(shared)
     }
     pub fn admitted(self, cursors: &[LaneCursor]) {
-        let Ok(_retained) = self.retain_log() else {
-            return;
-        };
-        // SAFETY: the generation is retained, or this is an isolated fixture log.
+        let Ok(_pin) = self.pin() else { return };
         let log = unsafe { &*(self.log as *const Log) };
         self.admit_in(log, cursors);
     }
-
     fn admit_in(self, log: &Log, cursors: &[LaneCursor]) {
         let assembled = log.assembled.load(Ordering::Acquire);
         if self.sequence < assembled
@@ -909,10 +888,7 @@ impl Handoff {
         log.assembled_epoch.store(self.epoch, Ordering::Release);
     }
     pub fn commit(self, cursors: &[LaneCursor]) {
-        let Ok(_retained) = self.retain_log() else {
-            return;
-        };
-        // SAFETY: the generation is retained, or this is an isolated fixture log.
+        let Ok(_pin) = self.pin() else { return };
         let log = unsafe { &*(self.log as *const Log) };
         if self.sequence < log.consumed.load(Ordering::Acquire)
             || cursors.len() < self.lanes
@@ -977,8 +953,7 @@ impl Handoff {
         output: &mut [Event],
         bytes: &mut [u8],
     ) -> Result<Drained, &'static str> {
-        let _retained = self.retain_log()?;
-        // SAFETY: the generation is retained, or this is an isolated fixture log.
+        let _pin = self.pin()?;
         let log = unsafe { &*(self.log as *const Log) };
         let cursors = cursors
             .get(..self.lanes)
@@ -1025,7 +1000,7 @@ impl Handoff {
         )
         .map_err(|_| "operation completion description allocation failed")?;
         let shared = self.shared(log)?;
-        let (copied, used) = self.merge(log, cursors, tails, &shared, output, bytes)?;
+        let (copied, used) = self.merge(cursors, tails, &shared, output, bytes)?;
         if copied != pending || self.epoch != EPOCH.load(Ordering::Acquire) {
             restart();
             return Err("operation completion publication incomplete or lost");
@@ -1037,13 +1012,13 @@ impl Handoff {
     }
     fn merge(
         self,
-        log: &Log,
         cursors: &[LaneCursor],
         mut tails: Vec<u64>,
         shared: &[(u64, u64)],
         output: &mut [Event],
         bytes: &mut [u8],
     ) -> Result<(usize, usize), &'static str> {
+        let log = unsafe { &*(self.log as *const Log) };
         let first = log.assembled.load(Ordering::Acquire);
         let pending = self.sequence.saturating_sub(first) as usize;
         let mut shared = shared.iter().peekable();

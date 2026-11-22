@@ -28,7 +28,8 @@ impl Capacities {
     pub fn raise_for_descriptions(&mut self, bytes: usize) {
         grow_capacity(&mut self.bytes, bytes);
     }
-    pub fn prepare(&self, _access: &collector_workers::CaptureAccess) {
+    pub fn prepare(&self, access: &collector_workers::CaptureAccess) {
+        let Some(_pin) = access.pin() else { return };
         hooks::presize(self.entries, self.bytes);
     }
 }
@@ -67,13 +68,22 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, reason: &'static str) {
-        hooks::invalidate();
+    pub fn fail(&mut self, access: Option<collector_workers::CaptureAccess>, reason: &'static str) {
+        if let Some(_pin) = access
+            .as_ref()
+            .and_then(collector_workers::CaptureAccess::pin)
+        {
+            hooks::invalidate();
+        }
         self.handoff = Some(Err(reason));
     }
-    pub fn capture(&mut self) -> u64 {
+    pub fn capture(&mut self, access: Option<collector_workers::CaptureAccess>) -> u64 {
         let started = collector_primitives::clock::qpc();
-        self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
+        self.handoff = Some(
+            access
+                .ok_or("operation completion capture owner absent")
+                .and_then(|access| hooks::handoff_growing(access, &mut self.cursors)),
+        );
         collector_primitives::clock::qpc()
             .saturating_sub(started)
             .max(0) as u64

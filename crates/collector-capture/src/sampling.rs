@@ -790,6 +790,7 @@ static SPOOL_GENERATION: AtomicU64 = AtomicU64::new(1);
 pub struct SpoolOwner {
     live: bool,
     generation: u64,
+    capture_access: Option<collector_workers::CaptureAccess>,
 }
 
 impl SpoolOwner {
@@ -798,13 +799,14 @@ impl SpoolOwner {
         !self.live
     }
 
-    pub fn claim(_owner: &collector_workers::Owner) -> Option<Self> {
+    pub fn claim(owner: &collector_workers::Owner) -> Option<Self> {
         SPOOL_OWNED
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .ok()
             .map(|_| Self {
                 live: true,
                 generation: SPOOL_GENERATION.fetch_add(1, Ordering::Relaxed),
+                capture_access: Some(owner.capture()),
             })
     }
 
@@ -816,7 +818,12 @@ impl SpoolOwner {
         Self {
             live: false,
             generation: 0,
+            capture_access: None,
         }
+    }
+
+    pub(crate) fn capture_access(&self) -> Option<&collector_workers::CaptureAccess> {
+        self.capture_access.as_ref()
     }
 
     pub fn register_thread(&mut self, shared: &Shared) {
@@ -857,6 +864,7 @@ impl SpoolOwner {
             index,
             generation: self.generation,
             prepared: false,
+            _frame: std::marker::PhantomData,
         })
     }
 
@@ -877,6 +885,7 @@ pub struct ReadyFrame<'a> {
     index: usize,
     generation: u64,
     prepared: bool,
+    _frame: std::marker::PhantomData<&'a mut Captured>,
 }
 
 impl ReadyFrame<'_> {
@@ -1155,9 +1164,10 @@ impl Shared {
 
     pub fn pool_accounting(
         &self,
-        _access: &collector_workers::CaptureAccess,
-    ) -> engine_allocation::SharedBox<AtomicU64> {
-        self.pool_bytes.clone()
+        access: &collector_workers::CaptureAccess,
+    ) -> Option<engine_allocation::SharedBox<AtomicU64>> {
+        let _pin = access.pin()?;
+        (self.capture_access == Some(*access)).then(|| self.pool_bytes.clone())
     }
 
     #[cfg(any(test, feature = "test-support"))]

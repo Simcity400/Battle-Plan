@@ -1,9 +1,11 @@
 use std::os::windows::io::{AsRawHandle, BorrowedHandle};
 use std::sync::{
     OnceLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
 };
-use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets};
+use windows_sys::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, SetThreadSelectedCpuSets, THREAD_PRIORITY_ABOVE_NORMAL,
+};
 
 const GROUP_PROCESSORS: usize = 64;
 
@@ -108,7 +110,7 @@ pub fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     away_sets(cores(), Some(processor))
 }
 
-pub fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
+pub(crate) fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
     let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
         (sets.as_ptr(), sets.len() as u32)
     });
@@ -116,7 +118,7 @@ pub fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
     unsafe { SetThreadSelectedCpuSets(thread.as_raw_handle(), list, count) != 0 }
 }
 
-pub fn select_away(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
+pub(crate) fn select_away(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
     let selected = select(thread, sets);
     if !selected {
         AWAY_FAILURES.fetch_add(1, Ordering::Relaxed);
@@ -128,14 +130,52 @@ pub fn away_failures() -> u64 {
     AWAY_FAILURES.load(Ordering::Relaxed)
 }
 
+pub struct AffinityTarget(AtomicIsize);
+
+impl AffinityTarget {
+    pub const fn vacant() -> Self {
+        Self(AtomicIsize::new(0))
+    }
+
+    /// # Safety
+    /// The handle must belong to this runtime's worker. Withdraw it and wait for every
+    /// in-flight use of the target before allowing the worker handle to close.
+    pub unsafe fn publish(&self, _owner: &crate::Owner, worker: &std::thread::JoinHandle<()>) {
+        self.0
+            .store(worker.as_raw_handle() as isize, Ordering::Release);
+    }
+
+    pub fn withdraw(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+
+    /// # Safety
+    /// The caller must be counted by the worker's withdrawal protocol until this returns.
+    pub unsafe fn hurry(&self, confined: &AtomicBool) {
+        let thread = self.0.load(Ordering::SeqCst);
+        if thread == 0 {
+            return;
+        }
+        // SAFETY: publication and the in-flight caller count keep the handle open.
+        let thread = unsafe { BorrowedHandle::borrow_raw(thread as _) };
+        // SAFETY: the handle is the published collector worker's thread handle.
+        unsafe { SetThreadPriority(thread.as_raw_handle(), THREAD_PRIORITY_ABOVE_NORMAL) };
+        if confined.swap(false, Ordering::SeqCst) {
+            select_away(thread, None);
+        }
+    }
+}
+
 pub struct AwayFromGame {
+    generation: u64,
     _thread: std::marker::PhantomData<*const ()>,
     wanted: Option<u32>,
     applied: Option<&'static [u32]>,
 }
 impl AwayFromGame {
-    pub fn new(_worker: &crate::Worker) -> Self {
+    pub fn new(worker: &crate::Worker) -> Self {
         Self {
+            generation: worker.generation,
             _thread: std::marker::PhantomData,
             wanted: None,
             applied: None,
@@ -143,7 +183,7 @@ impl AwayFromGame {
     }
 
     pub fn follow(&mut self, processor: Option<u32>) {
-        if processor == self.wanted {
+        if !crate::worker_permitted(self.generation) || processor == self.wanted {
             return;
         }
         self.wanted = processor;

@@ -232,7 +232,8 @@ pub(super) fn release_divisions_job(mut job: DivisionsJob) {
 
 /// # Safety
 /// Run this only from the runtime sizing path while it excludes decode pool teardown.
-pub unsafe fn presize_air_wing_names(_access: &collector_workers::CaptureAccess) {
+pub unsafe fn presize_air_wing_names(access: &collector_workers::CaptureAccess) {
+    let Some(_pin) = access.pin() else { return };
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock() {
         for job in pool.iter_mut() {
             if job.grow_for_next() {
@@ -722,7 +723,8 @@ pub(crate) fn acquire_weather_job() -> WeatherJob {
 
 /// # Safety
 /// Run this only from the runtime sizing path while it excludes decode pool teardown.
-pub unsafe fn presize_weather_jobs(_access: &collector_workers::CaptureAccess) {
+pub unsafe fn presize_weather_jobs(access: &collector_workers::CaptureAccess) {
+    let Some(_pin) = access.pin() else { return };
     if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
         for job in pool.iter_mut().filter(|job| job.grow_for_next()) {
             job.grow();
@@ -795,7 +797,8 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
 
 /// # Safety
 /// Run this only from the runtime sizing path while it excludes decode pool teardown.
-pub unsafe fn presize_country_pools(_access: &collector_workers::CaptureAccess) {
+pub unsafe fn presize_country_pools(access: &collector_workers::CaptureAccess) {
+    let Some(_pin) = access.pin() else { return };
     presize_pool(
         &AIR_WING_JOB_POOL,
         AirWingJob::presize_game_score,

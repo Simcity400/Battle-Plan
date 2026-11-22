@@ -218,7 +218,7 @@ impl HistoryWorker {
         start: collector_workers::WorkerStart,
         session: PathBuf,
         replay_directory: PathBuf,
-        refresh: Option<fn()>,
+        refresh: Option<impl Fn() + Send + 'static>,
     ) -> io::Result<(Self, SpoolHistory)> {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -257,7 +257,7 @@ impl HistoryWorker {
                     ) {
                         collector_memory::terminal::observe(&error);
                     }
-                    if let Some(accept) = refresh {
+                    if let Some(accept) = &refresh {
                         let _status = collector_memory::terminal::enter(
                             collector_memory::terminal::Phase::Status,
                         );
@@ -1071,7 +1071,7 @@ mod tests {
             collector_workers::WorkerStart::for_test(),
             root.clone(),
             root.clone(),
-            None,
+            None::<fn()>,
         )
         .unwrap();
         while handoff.0.lock().unwrap().command.is_none() {
@@ -1103,7 +1103,7 @@ mod tests {
             collector_workers::WorkerStart::for_test(),
             root.clone(),
             root.clone(),
-            None,
+            None::<fn()>,
         )
         .unwrap();
         handoff.0.lock().unwrap().command = Some(Command::Retake(CAMPAIGN.to_owned(), Some(lease)));

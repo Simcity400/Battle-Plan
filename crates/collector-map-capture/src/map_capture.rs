@@ -224,14 +224,13 @@ impl ShipCensus {
         models: &mut collector_ship_models::ship_models::Captured,
     ) {
         let tables = [TableId::Fleets, TableId::TaskForces, TableId::Ships];
-        let mut reads = collector_memory::read_accounting::table_with_recording(
-            tables[0],
-            self.access.is_some(),
-        );
+        let pin = self.access.as_ref().and_then(CaptureAccess::pin);
+        let mut reads =
+            collector_memory::read_accounting::table_with_recording(tables[0], pin.is_some());
         let begin = qpc();
         self.discard_owned();
         models.begin_sources();
-        let management = std::cell::RefCell::new(self.access.as_ref().map(|access| {
+        let management = std::cell::RefCell::new(self.access.as_ref().and_then(|access| {
             collector_naval_management::forces::Session::begin_owned(
                 access,
                 memory,
@@ -420,7 +419,11 @@ impl MapCaptured {
     }
 
     pub fn for_capture(capacity: &MapCapacities, access: CaptureAccess) -> Self {
-        Self::allocate(capacity, Some(access))
+        if let Some(_pin) = access.pin() {
+            Self::allocate(capacity, Some(access))
+        } else {
+            engine_allocation::advisory(|| Self::allocate(capacity, None))
+        }
     }
 
     fn allocate(capacity: &MapCapacities, access: Option<CaptureAccess>) -> Self {
@@ -523,7 +526,7 @@ impl MapCaptured {
     }
 
     pub fn grow(&mut self, capacities: &mut MapCapacities) {
-        if self.access.is_some() {
+        if let Some(_pin) = self.access.as_ref().and_then(CaptureAccess::pin) {
             self.grow_buffers(capacities);
         } else {
             engine_allocation::advisory(|| self.grow_buffers(capacities));
@@ -575,11 +578,12 @@ impl MapCaptured {
         state: usize,
         sources: &mut impl MapSources,
     ) -> [u64; MAP_TABLES] {
+        let pin = self.access.as_ref().and_then(CaptureAccess::pin);
         let mut ticks = self.combat_ticks.unwrap_or([0; MAP_TABLES]);
         if !self.players_raw_mode {
             let mut reads = collector_memory::read_accounting::table_with_recording(
                 TableId::Players,
-                self.access.is_some(),
+                pin.is_some(),
             );
             let begin = qpc();
             let names = chuman::walk(
@@ -603,7 +607,7 @@ impl MapCaptured {
 
         let mut reads = collector_memory::read_accounting::table_with_recording(
             TableId::LandCombats,
-            self.access.is_some(),
+            pin.is_some(),
         );
         if self.combat_ticks.is_none() {
             let begin = qpc();
@@ -888,10 +892,9 @@ pub fn copy_players_refresh(
     ctx: PlayersCopyContext,
     job: &mut PlayersJob,
 ) -> PlayersCopyReport {
-    let _reads = collector_memory::read_accounting::table_with_recording(
-        TableId::Players,
-        job.access.is_some(),
-    );
+    let pin = job.access.as_ref().and_then(CaptureAccess::pin);
+    let _reads =
+        collector_memory::read_accounting::table_with_recording(TableId::Players, pin.is_some());
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;

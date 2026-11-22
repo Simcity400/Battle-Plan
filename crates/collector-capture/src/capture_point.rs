@@ -2,9 +2,9 @@ use crate::sampling::{self, Placement};
 use collector_timing::capture_gate;
 use std::{
     io,
-    os::windows::io::{AsRawHandle, BorrowedHandle},
+    os::windows::io::AsRawHandle,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
@@ -28,7 +28,8 @@ static DRAINING: AtomicBool = AtomicBool::new(false);
 static BESIDE: AtomicBool = AtomicBool::new(false);
 static WORK: AtomicU32 = AtomicU32::new(IDLE);
 static WORK_FULL: AtomicBool = AtomicBool::new(false);
-static THREAD: AtomicIsize = AtomicIsize::new(0);
+static THREAD: collector_workers::cpu_sets::AffinityTarget =
+    collector_workers::cpu_sets::AffinityTarget::vacant();
 static GAME: AtomicU32 = AtomicU32::new(0);
 static HURRIED: AtomicBool = AtomicBool::new(false);
 static CONFINED: AtomicBool = AtomicBool::new(false);
@@ -167,8 +168,13 @@ pub(crate) fn batch_left() {
     unsafe { WakeByAddressAll(WORK.as_ptr().cast()) };
 }
 
-pub fn refresh_request(_owner: &collector_workers::Owner) -> fn() {
-    settle_next
+pub fn refresh_request(owner: &collector_workers::Owner) -> impl Fn() + Send + 'static + use<> {
+    let access = owner.capture();
+    move || {
+        if let Some(_pin) = access.pin() {
+            settle_next();
+        }
+    }
 }
 
 fn settle_next() {
@@ -291,15 +297,8 @@ fn hurry() {
         return;
     }
     sampling::hurry();
-    let thread = THREAD.load(Ordering::SeqCst);
-    if thread != 0 {
-        // SAFETY: `Thread::stop` joins, closing the handle, only once no waiter is counted.
-        let thread = unsafe { BorrowedHandle::borrow_raw(thread as _) };
-        unsafe { SetThreadPriority(thread.as_raw_handle(), THREAD_PRIORITY_ABOVE_NORMAL) };
-        if CONFINED.swap(false, Ordering::SeqCst) {
-            collector_workers::cpu_sets::select_away(thread, None);
-        }
-    }
+    // SAFETY: the capture gate counts this waiter until hurry returns.
+    unsafe { THREAD.hurry(&CONFINED) };
 }
 
 pub(crate) fn hurried() -> bool {
@@ -343,7 +342,8 @@ impl Thread {
             .stack_size(stack_bytes)
             .spawn(move || run(&worker.bind()))?;
         let raw = handle.as_raw_handle();
-        THREAD.store(raw as isize, Ordering::Release);
+        // SAFETY: stop withdraws the target and waits for all counted users before joining.
+        unsafe { THREAD.publish(attach, &handle) };
         let id = unsafe { GetThreadId(raw as _) };
         // SAFETY: this is the owned capture worker and the sampler does not sample this role.
         unsafe {
@@ -369,7 +369,7 @@ impl Thread {
         while capture_gate::running() {
             std::thread::yield_now();
         }
-        THREAD.store(0, Ordering::SeqCst);
+        THREAD.withdraw();
         while capture_gate::waiting() != 0 {
             std::thread::yield_now();
         }

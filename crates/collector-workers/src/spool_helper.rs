@@ -96,7 +96,7 @@ pub struct SpoolHelper {
     thread: Option<JoinHandle<()>>,
     thread_id: u32,
     #[cfg(feature = "worker_sampler")]
-    sampled: bool,
+    sampler: Option<crate::SamplerJoin>,
 }
 
 impl SpoolHelper {
@@ -127,7 +127,7 @@ impl SpoolHelper {
         )>,
     ) -> io::Result<Self> {
         #[cfg(feature = "worker_sampler")]
-        let sampled = start.is_live();
+        let sampler = start.sampler_join();
         let shared = Arc::new(Shared::default());
         let worker = Arc::clone(&shared);
         let (id_sender, id_receiver) = std::sync::mpsc::sync_channel(1);
@@ -151,7 +151,7 @@ impl SpoolHelper {
             thread: Some(thread),
             thread_id,
             #[cfg(feature = "worker_sampler")]
-            sampled,
+            sampler,
         })
     }
 
@@ -212,8 +212,10 @@ impl SpoolHelper {
 impl Drop for SpoolHelper {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
-        if self.sampled && self.thread.is_some() {
-            crate::worker_sampler_state::stop_before_thread_exit();
+        if self.thread.is_some()
+            && let Some(sampler) = self.sampler.take()
+        {
+            sampler.before_join();
         }
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();

@@ -107,10 +107,10 @@ impl Captured {
 
     pub fn prepare_live(
         &mut self,
-        _access: &collector_workers::CaptureAccess,
+        access: &collector_workers::CaptureAccess,
         capacity: &mut Capacities,
     ) {
-        hooks::resize(capacity.entries, 0);
+        hooks::resize(access, capacity.entries, 0);
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [Outcome::Unavailable { reason: ASSEMBLED }; N]

@@ -927,14 +927,19 @@ pub unsafe fn start_worker(owner: &collector_workers::Owner) -> Result<(), &'sta
             .spawn(move || {
                 collector_workers::private_heap::off_hold_path();
                 let worker = start.bind();
-                #[cfg(feature = "worker_sampler")]
-                let _sampler_exit = worker.sampled();
-                collector_workers::thread_cpu::register_decode(&worker);
-                failure::worker(|| decode_loop(&worker));
+                collector_workers::thread_cpu::with_decode_registration(&worker, || {
+                    failure::worker(|| decode_loop(&worker));
+                });
             })
             .map_err(|_| "cannot start decode worker")?,
     );
     while decode_worker() == 0 {
+        if slot
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            return Err("decode worker stopped before registering");
+        }
         std::thread::yield_now();
     }
     Ok(())

@@ -21,13 +21,6 @@ impl CaptureAdmission {
         }
     }
 
-    /// # Safety
-    /// Only the runtime owner may open hourly admission, after publishing the capture state
-    /// and before starting teardown. No previous runtime may still be using the gate.
-    pub unsafe fn open(&self) {
-        self.closed.store(false, Ordering::SeqCst);
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn enter(&self) -> Option<CaptureLease<'_>> {
         assert!(!std::ptr::eq(self, &HOURLY_ADMISSION));
@@ -44,12 +37,18 @@ impl CaptureAdmission {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
     }
 
-    pub fn quiet(&self) -> bool {
+    fn quiet_inner(&self) -> bool {
         self.active.load(Ordering::SeqCst) == 0
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn quiet(&self) -> bool {
+        self.quiet_inner()
     }
 }
 
@@ -62,8 +61,28 @@ impl Drop for CaptureLease<'_> {
 
 static HOURLY_ADMISSION: CaptureAdmission = CaptureAdmission::closed();
 
-pub fn runtime_admission(_owner: &collector_workers::Owner) -> &'static CaptureAdmission {
-    &HOURLY_ADMISSION
+pub struct RuntimeAdmission<'a> {
+    _owner: &'a collector_workers::Owner,
+}
+
+pub fn runtime_admission(owner: &collector_workers::Owner) -> RuntimeAdmission<'_> {
+    RuntimeAdmission { _owner: owner }
+}
+
+impl RuntimeAdmission<'_> {
+    /// # Safety
+    /// Capture state must already be published and teardown must not have started.
+    pub unsafe fn open(&self) {
+        HOURLY_ADMISSION.closed.store(false, Ordering::SeqCst);
+    }
+
+    pub fn close(&self) {
+        HOURLY_ADMISSION.closed.store(true, Ordering::SeqCst);
+    }
+
+    pub fn quiet(&self) -> bool {
+        HOURLY_ADMISSION.quiet_inner()
+    }
 }
 
 pub(crate) fn admit_hourly_capture() -> Option<CaptureLease<'static>> {

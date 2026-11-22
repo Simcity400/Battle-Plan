@@ -164,7 +164,6 @@ impl Log {
 }
 
 static SERIAL: AtomicU64 = AtomicU64::new(1);
-static SESSION: AtomicU64 = AtomicU64::new(1);
 static CURRENT: AtomicPtr<Log> = AtomicPtr::new(std::ptr::null_mut());
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
@@ -429,7 +428,7 @@ pub struct Frame {
 
 #[derive(Default)]
 pub struct Assembled {
-    session: u64,
+    access: Option<collector_workers::CaptureAccess>,
     pub frames: Vec<Frame>,
     pub bytes: Vec<u8>,
     lanes: Vec<(usize, usize, u64)>,
@@ -451,11 +450,16 @@ fn generations() -> impl Iterator<Item = &'static Log> {
     })
 }
 
-pub fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
-    let _retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    output.session = SESSION.load(Ordering::Acquire);
+pub fn assemble_live(
+    access: collector_workers::CaptureAccess,
+    seal: Seal,
+    output: &mut Assembled,
+) -> Result<(), &'static str> {
+    let _pin = access.pin().ok_or("map event capture owner expired")?;
+    output.access = Some(access);
+    assemble(seal, output)
+}
+pub(crate) fn assemble(seal: Seal, output: &mut Assembled) -> Result<(), &'static str> {
     output.frames.clear();
     output.bytes.clear();
     output.lanes.clear();
@@ -590,6 +594,16 @@ fn generation(address: usize) -> &'static Log {
 }
 
 impl Assembled {
+    fn pin(&self) -> Result<Option<collector_workers::CapturePin>, &'static str> {
+        match &self.access {
+            Some(access) => access
+                .pin()
+                .map(Some)
+                .ok_or("map event capture owner expired"),
+            None if cfg!(test) => Ok(None),
+            None => Err("map event capture owner absent"),
+        }
+    }
     pub fn allocated_bytes(&self) -> usize {
         self.frames.capacity() * size_of::<Frame>()
             + self.bytes.capacity()
@@ -607,12 +621,7 @@ impl Assembled {
     }
 
     pub fn admitted(&self) {
-        let _retained = LOGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.session != SESSION.load(Ordering::Acquire) {
-            return;
-        }
+        let Ok(_pin) = self.pin() else { return };
         if self.admitted.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -636,12 +645,7 @@ impl Assembled {
     }
 
     pub fn commit(&self) {
-        let _retained = LOGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if self.session != SESSION.load(Ordering::Acquire) {
-            return;
-        }
+        let Ok(_pin) = self.pin() else { return };
         if self.admitted.swap(false, Ordering::AcqRel) {
             let _ = ADMITTED.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
@@ -696,10 +700,11 @@ impl Assembled {
     }
 }
 
-pub fn reset_admitted() {
-    let _retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+pub fn reset_admitted_live(access: &collector_workers::CaptureAccess) {
+    let Some(_pin) = access.pin() else { return };
+    reset_admitted();
+}
+fn reset_admitted() {
     for log in generations() {
         for lane in log.lanes.iter() {
             lane.assembled
@@ -717,10 +722,7 @@ pub fn reset_admitted() {
     }
 }
 
-pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+pub(crate) fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let current = CURRENT.load(Ordering::SeqCst);
     let lanes = lanes.max(REQUIRED_LANES.load(Ordering::Relaxed));
     let (lane_bytes, shared) = match unsafe { current.as_ref() } {
@@ -755,6 +757,9 @@ pub fn grow(lanes: usize, lane_bytes: usize) -> Result<bool, &'static str> {
     let fresh = engine_allocation::boxed(Log::new(lanes, lane_bytes, shared)?)
         .map_err(|_| "map event lane allocation failed")?;
     let pointer = &*fresh as *const Log as *mut Log;
+    let mut retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     engine_allocation::reserve(&mut retained, 1).map_err(|_| "map event lane allocation failed")?;
     retained.push(fresh);
     unsafe { (*pointer).previous.store(current, Ordering::SeqCst) };
@@ -787,9 +792,6 @@ pub struct Capacity {
 }
 
 pub fn capacity() -> Capacity {
-    let _retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut capacity = Capacity {
         generations: generations().count(),
         required_lanes: REQUIRED_LANES.load(Ordering::Relaxed),
@@ -816,13 +818,11 @@ pub fn capacity() -> Capacity {
 /// No callback can publish: the hooks are restored, no native call holds
 /// one, and every reader of an assembled interval has finished.
 pub unsafe fn release() {
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     CURRENT.store(std::ptr::null_mut(), Ordering::SeqCst);
     ADMITTED.store(0, Ordering::SeqCst);
-    SESSION.fetch_add(1, Ordering::Release);
-    retained.clear();
+    LOGS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
 }
 
 #[cfg(test)]

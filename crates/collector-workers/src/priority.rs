@@ -138,6 +138,7 @@ fn least_preferred_cores(sets: &[CpuSet]) -> Result<Vec<u32>, ConfinementAvailab
 pub const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct OwnPriority {
+    generation: u64,
     boosts_disabled: bool,
     frame_pipeline: bool,
     lowest: Option<bool>,
@@ -147,8 +148,9 @@ pub struct OwnPriority {
 }
 
 impl OwnPriority {
-    pub const fn new(_worker: &crate::Worker) -> Self {
+    pub const fn new(worker: &crate::Worker) -> Self {
         Self {
+            generation: worker.generation,
             boosts_disabled: false,
             frame_pipeline: false,
             lowest: None,
@@ -173,6 +175,9 @@ impl OwnPriority {
         pipeline: &crate::frame_priority::Pipeline,
         role: crate::frame_priority::Role,
     ) {
+        if !crate::worker_permitted(self.generation) {
+            return;
+        }
         self.follow(false);
         if !self.boosts_disabled
             || self.lowest != Some(false)
@@ -192,6 +197,9 @@ impl OwnPriority {
     }
 
     pub fn reconciler(&mut self) -> bool {
+        if !crate::worker_permitted(self.generation) {
+            return false;
+        }
         self.follow(false);
         if !self.boosts_disabled
             || self.lowest != Some(false)
@@ -219,6 +227,9 @@ impl OwnPriority {
             THREAD_POWER_THROTTLING_STATE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
             ThreadPowerThrottling,
         };
+        if !crate::worker_permitted(self.generation) {
+            return;
+        }
         let lowest = self.should_lower(backlogged);
         if !self.boosts_disabled {
             if unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {

@@ -51,9 +51,10 @@ impl Captured {
     }
     pub fn prepare_live(
         &mut self,
-        _access: &collector_workers::CaptureAccess,
+        access: &collector_workers::CaptureAccess,
         capacity: &mut Capacities,
     ) {
+        let Some(_pin) = access.pin() else { return };
         producer::presize(0);
         capacity.events = capacity.events.max(producer::capacity());
     }

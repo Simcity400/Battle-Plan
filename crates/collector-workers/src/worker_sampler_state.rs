@@ -21,13 +21,13 @@ thread_local! {
     static JOB_SLOT: RefCell<Option<Arc<AtomicU16>>> = const { RefCell::new(None) };
 }
 
-pub(crate) struct WorkerRegistration {
+pub(crate) struct WorkerRegistration<'a> {
     id: u32,
-    live: bool,
+    worker: &'a crate::Worker,
     slot: Arc<AtomicU16>,
     _thread: PhantomData<Rc<()>>,
 }
-pub(crate) fn register_worker(worker: &crate::Worker) -> WorkerRegistration {
+pub(crate) fn register_worker(worker: &crate::Worker) -> WorkerRegistration<'_> {
     let id = unsafe { GetCurrentThreadId() };
     let slot = Arc::new(AtomicU16::new(0));
     JOB_SLOT.replace(Some(Arc::clone(&slot)));
@@ -37,16 +37,14 @@ pub(crate) fn register_worker(worker: &crate::Worker) -> WorkerRegistration {
         .push((id, created, Arc::downgrade(&slot)));
     WorkerRegistration {
         id,
-        live: worker.live,
+        worker,
         slot,
         _thread: PhantomData,
     }
 }
-impl Drop for WorkerRegistration {
+impl Drop for WorkerRegistration<'_> {
     fn drop(&mut self) {
-        if self.live {
-            stop_before_thread_exit();
-        }
+        drop(self.worker.sampled());
         JOB_SLOT.replace(None);
         self.slot.store(0, Ordering::Release);
         JOBS.lock()

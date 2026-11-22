@@ -25,6 +25,7 @@ pub(crate) struct ObserverBoundaryRequest {
     construction: construction_ic::Captured,
     peace: peace_settlements::Captured,
     operations: operation_outcomes::Captured,
+    capture_access: Option<collector_workers::CaptureAccess>,
     politics: politics::Captured,
     finished: [bool; N],
 }
@@ -117,7 +118,7 @@ impl ObserverBoundaryRequest {
         collector_peace::peace_settlements::install_offered();
         self.finished[5] = true;
         report.ticks[5] = elapsed(begin);
-        report.ticks[6] = self.operations.capture();
+        report.ticks[6] = self.operations.capture(self.capture_access);
         self.finished[6] = true;
         report.ticks[7] = self.politics.capture();
         self.finished[7] = true;
@@ -185,7 +186,7 @@ impl ObserverBoundaryRequest {
                         collector_peace::peace_settlements::lost_drain();
                         self.peace.fail(reason);
                     }
-                    6 => self.operations.fail(lane_reason),
+                    6 => self.operations.fail(self.capture_access, lane_reason),
                     7 => self.politics.fail(lane_reason),
                     _ => unreachable!(),
                 }
@@ -230,6 +231,7 @@ impl Captured {
                 &mut self.peace_settlements,
                 peace_settlements::Captured::vacant(),
             ),
+            capture_access: self.capture_access,
             operations: std::mem::replace(
                 &mut self.operation_outcomes,
                 operation_outcomes::Captured::vacant(),

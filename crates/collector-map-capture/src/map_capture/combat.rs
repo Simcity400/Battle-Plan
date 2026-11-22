@@ -12,7 +12,7 @@ pub struct CombatReport {
 
 pub struct CombatRequest {
     ticket: u64,
-    recording: bool,
+    access: Option<collector_workers::CaptureAccess>,
     base: usize,
     state: usize,
     land: CaptureRows<cland_combat::Row>,
@@ -33,9 +33,13 @@ pub struct CombatRequest {
 impl CombatRequest {
     pub fn capture(&mut self, memory: &impl Memory) -> CombatReport {
         let mut report = CombatReport::default();
+        let pin = self
+            .access
+            .as_ref()
+            .and_then(collector_workers::CaptureAccess::pin);
         let mut reads = collector_memory::read_accounting::table_with_recording(
             TableId::LandCombats,
-            self.recording,
+            pin.is_some(),
         );
         let begin = qpc();
         let progress_begin = qpc();
@@ -125,7 +129,7 @@ impl MapCaptured {
         self.combat_request = Some(ticket);
         CombatRequest {
             ticket,
-            recording: self.access.is_some(),
+            access: self.access,
             base,
             state,
             progress_recorded,

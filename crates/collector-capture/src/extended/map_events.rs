@@ -63,23 +63,25 @@ impl Publication {
     }
 }
 
-pub fn reset_admitted(_owner: &mut crate::sampling::SpoolOwner) {
-    map_events::lanes::reset_admitted();
+pub fn reset_admitted(owner: &mut crate::sampling::SpoolOwner) {
+    if let Some(access) = owner.capture_access() {
+        map_events::lanes::reset_admitted_live(access);
+    }
 }
 
 impl Ledger {
     pub fn assemble_owned(
         &mut self,
-        _owner: &mut crate::sampling::SpoolOwner,
+        owner: &mut crate::sampling::SpoolOwner,
         captured: &Captured,
         tables: &mut [TableInput],
     ) -> Option<Publication> {
-        let Some(interval) = captured.interval else {
+        let (Some(interval), Some(access)) = (captured.interval, owner.capture_access()) else {
             tables[TableId::MapEvents.index()] = TableInput::Sampled(unavailable(UNSEALED));
             return None;
         };
         let mut assembled = map_events::lanes::Assembled::default();
-        let row = map_events::lanes::assemble(interval.seal, &mut assembled)
+        let row = map_events::lanes::assemble_live(*access, interval.seal, &mut assembled)
             .and_then(|()| map_events::interval::row(&interval, &assembled));
         match row {
             Ok(row) => {

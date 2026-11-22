@@ -250,6 +250,7 @@ method:build_warning
 method:builder_id
 method:busy_sites
 method:capture
+method:capture_quiet
 method:clone
 method:close
 method:completion_sequence
@@ -338,6 +339,7 @@ method:refusal
 method:release
 method:release_after_quiet
 method:retain
+method:revoke_capture
 method:round
 method:sampler_join
 method:saturating_add

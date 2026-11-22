@@ -1,4 +1,3 @@
-
 use collector_hooks::hook;
 use collector_lifetime::world_lifetime;
 use collector_primitives::shared_lane;
@@ -13,7 +12,11 @@ pub fn largest_event(countries: usize) -> usize {
     lanes::HEADER + 17 + countries.saturating_mul(5)
 }
 
-pub fn presize(countries: usize) -> Result<bool, &'static str> {
+pub fn presize(
+    access: &collector_workers::CaptureAccess,
+    countries: usize,
+) -> Result<bool, &'static str> {
+    let _pin = access.pin().ok_or("map event capture owner expired")?;
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
     lanes::grow(threads, largest_event(countries).saturating_mul(8))
 }

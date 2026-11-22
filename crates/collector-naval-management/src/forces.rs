@@ -68,6 +68,7 @@ static RETURNED: Condvar = Condvar::new();
 pub struct Owned {
     store: Option<Store>,
     complete: bool,
+    _access: Option<collector_workers::CapturePin>,
 }
 impl Owned {
     pub fn decode(mut self) -> Captured {
@@ -145,21 +146,29 @@ pub struct Session<'a, M: Memory> {
     store: MutexGuard<'static, Store>,
     observed: bool,
     navies: Option<Result<engine_native::cpdx_array::Array, &'static str>>,
+    access: Option<collector_workers::CapturePin>,
 }
 impl<'a, M: Memory> Session<'a, M> {
     #[cfg(test)]
     pub(crate) fn begin(memory: &'a M, base: usize, state: usize) -> Self {
-        Self::begin_inner(memory, base, state, None)
+        Self::begin_inner(memory, base, state, None, None)
     }
 
     pub fn begin_owned(
-        _access: &collector_workers::CaptureAccess,
+        access: &collector_workers::CaptureAccess,
         memory: &'a M,
         base: usize,
         state: usize,
         stopped: fn() -> bool,
-    ) -> Self {
-        Self::begin_inner(memory, base, state, Some(stopped))
+    ) -> Option<Self> {
+        let pin = access.pin()?;
+        Some(Self::begin_inner(
+            memory,
+            base,
+            state,
+            Some(stopped),
+            Some(pin),
+        ))
     }
 
     fn begin_inner(
@@ -167,6 +176,7 @@ impl<'a, M: Memory> Session<'a, M> {
         base: usize,
         state: usize,
         stopped: Option<fn() -> bool>,
+        access: Option<collector_workers::CapturePin>,
     ) -> Self {
         let mut store = STORE
             .lock()
@@ -180,6 +190,7 @@ impl<'a, M: Memory> Session<'a, M> {
                     store,
                     observed: false,
                     navies: None,
+                    access,
                 };
             }
             store = RETURNED
@@ -219,6 +230,7 @@ impl<'a, M: Memory> Session<'a, M> {
             store,
             observed,
             navies: None,
+            access,
         };
         if observed {
             for index in 0..session.store.dirty.len() {
@@ -752,6 +764,7 @@ impl<'a, M: Memory> Session<'a, M> {
             Some(Owned {
                 store: Some(held),
                 complete: false,
+                _access: self.access.take(),
             }),
         )
     }

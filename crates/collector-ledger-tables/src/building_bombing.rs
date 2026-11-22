@@ -30,7 +30,8 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
     }
-    pub fn prepare_live(&mut self, _access: &collector_workers::CaptureAccess, c: &mut Capacities) {
+    pub fn prepare_live(&mut self, access: &collector_workers::CaptureAccess, c: &mut Capacities) {
+        let Some(_pin) = access.pin() else { return };
         producer::presize(0);
         *c = (*c).max(producer::capacity());
     }

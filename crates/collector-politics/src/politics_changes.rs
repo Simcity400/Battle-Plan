@@ -619,7 +619,11 @@ fn log() -> Option<&'static Log> {
         Some(unsafe { &*pointer })
     }
 }
-pub fn resize(entries: usize, keys: usize) {
+pub fn resize(access: &collector_workers::CaptureAccess, entries: usize, keys: usize) {
+    let Some(_pin) = access.pin() else { return };
+    resize_inner(entries, keys);
+}
+fn resize_inner(entries: usize, keys: usize) {
     engine_allocation::advisory(|| resize_storage(entries, keys));
 }
 
@@ -714,9 +718,13 @@ fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
     Ok(())
 }
 
-pub fn prepare() {
+pub fn prepare(access: &collector_workers::CaptureAccess) {
+    let Some(_pin) = access.pin() else { return };
+    prepare_inner();
+}
+fn prepare_inner() {
     if let Some(log) = log() {
-        resize(log.entries, log.key_stride);
+        resize_inner(log.entries, log.key_stride);
     }
 }
 /// Release staging after disabled hooks and all callback/capture workers are
@@ -730,14 +738,11 @@ pub unsafe fn release() {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
         return;
     }
-    {
-        let mut logs = LOGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        LOG.store(0, Ordering::Release);
-        OFFERED.store(0, Ordering::Release);
-        logs.clear();
-    }
+    LOG.store(0, Ordering::Release);
+    OFFERED.store(0, Ordering::Release);
+    LOGS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
     CONSERVATION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -3150,7 +3155,7 @@ pub fn stage_fixture(events: &[Event], memory: &impl Memory) -> (Drained, Vec<Ev
 #[cfg(any(test, feature = "test-support"))]
 pub fn bench_begin(base: usize, entries: usize, keys: usize) {
     BASE.store(base, Ordering::Relaxed);
-    resize(entries, keys);
+    resize_inner(entries, keys);
     ENABLED.store(true, Ordering::SeqCst);
     let mut cursors = vec![LaneCursor::default(); thread_slots()];
     let _ = handoff_buffer(engine_native::walk::Buffer::Growing(&mut cursors));
@@ -3726,7 +3731,7 @@ mod tests {
             append_lane(before, 0, Event::default(), &memory);
         }
         let pointer = LOG.load(Ordering::Acquire);
-        prepare();
+        prepare_inner();
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
@@ -3736,7 +3741,7 @@ mod tests {
         assert!(after.entries >= before.entries);
         assert!(after.key_stride >= before.key_stride);
         let pointer = LOG.load(Ordering::Acquire);
-        prepare();
+        prepare_inner();
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
     }
 
@@ -3934,7 +3939,7 @@ mod tests {
         assert!(combined.entries >= first.entries);
         assert!(combined.key_stride > old.key_stride);
         let offered = OFFERED.load(Ordering::Acquire);
-        prepare();
+        prepare_inner();
         assert_eq!(OFFERED.load(Ordering::Acquire), offered);
         seal_staging();
         assert_eq!(LOG.load(Ordering::Acquire), offered);
@@ -4712,7 +4717,7 @@ mod tests {
             serde_json::json!("politics staging allocation failed")
         );
         drop(held);
-        prepare();
+        prepare_inner();
         assert_ne!(OFFERED.load(Ordering::Acquire), 0);
         seal_staging();
         assert!(super::log().unwrap().shared.len() > capacity);

@@ -21,6 +21,7 @@ pub fn presize_periodic(
     extended: &mut extended::Capacities,
     capacity_census: bool,
 ) -> Result<(), &'static str> {
+    let _pin = access.pin().ok_or("collector capture owner expired")?;
     measure_and_prepare(access, memory, base, map, extended, capacity_census)
 }
 
