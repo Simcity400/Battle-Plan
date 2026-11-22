@@ -413,6 +413,13 @@ function unplaceable(source) {
   return new Error(`${source} names build targets this command cannot place; pass --target.`);
 }
 
+function normalizeTarget(value, source) {
+  if (typeof value !== 'string') throw unplaceable(source);
+  const trimmed = value.trim();
+  if (trimmed.length === 0) throw unplaceable(source);
+  return trimmed;
+}
+
 async function readUtf8File(file) {
   const bytes = await readFile(file);
   try {
@@ -550,11 +557,12 @@ export async function resolveCargoTarget({ cwd, home, env, cargoArgs }) {
     seenFolders.add(key);
     folders.push(resolved);
   };
-  for (let at = path.resolve(cwd); ; at = path.dirname(at)) {
+  const resolvedCwd = path.resolve(cwd);
+  for (let at = resolvedCwd; ; at = path.dirname(at)) {
     addFolder(path.join(at, '.cargo'));
     if (path.dirname(at) === at) break;
   }
-  if (home) addFolder(home);
+  if (home) addFolder(path.resolve(resolvedCwd, home));
 
   let tomlState = null;
   for (const folder of folders.reverse()) {
@@ -579,7 +587,6 @@ export async function resolveCargoTarget({ cwd, home, env, cargoArgs }) {
   }
 
   let cliSetTarget = false;
-  const resolvedCwd = path.resolve(cwd);
   for (const override of overrides) {
     const file = await findOverrideFile(resolvedCwd, override);
     if (file !== null) {
@@ -604,17 +611,16 @@ export async function resolveCargoTarget({ cwd, home, env, cargoArgs }) {
     : undefined;
 
   if (cliSetTarget) {
-    if (tomlState.kind !== 'string' || tomlState.value.length === 0) throw unplaceable(tomlState.source);
-    return { target: tomlState.value, source: tomlState.source };
+    if (tomlState.kind !== 'string') throw unplaceable(tomlState.source);
+    return { target: normalizeTarget(tomlState.value, tomlState.source), source: tomlState.source, fromCliConfig: true };
   }
   if (envTarget !== undefined) {
     if (tomlState?.kind === 'array') throw unplaceable(tomlState.source);
-    if (envTarget.length === 0) throw unplaceable('CARGO_BUILD_TARGET');
-    return { target: envTarget, source: 'CARGO_BUILD_TARGET' };
+    return { target: normalizeTarget(envTarget, 'CARGO_BUILD_TARGET'), source: 'CARGO_BUILD_TARGET', fromCliConfig: false };
   }
   if (tomlState === null) return undefined;
-  if (tomlState.kind !== 'string' || tomlState.value.length === 0) throw unplaceable(tomlState.source);
-  return { target: tomlState.value, source: tomlState.source };
+  if (tomlState.kind !== 'string') throw unplaceable(tomlState.source);
+  return { target: normalizeTarget(tomlState.value, tomlState.source), source: tomlState.source, fromCliConfig: false };
 }
 
 export async function cargoTarget(options) {
@@ -634,16 +640,17 @@ export async function readHostTuple(env = process.env) {
 }
 
 export async function resolveTargetPlacement({ target, source, hostTarget = () => readHostTuple() }) {
-  if (typeof target !== 'string' || target.length === 0) throw unplaceable(source);
-  if (target === 'host-tuple') {
+  const normalized = normalizeTarget(target, source);
+  if (normalized === 'host-tuple') {
     const host = await hostTarget();
-    if (typeof host !== 'string' || host.length === 0) {
+    if (typeof host !== 'string' || host.trim().length === 0) {
       throw new Error(`Could not resolve host-tuple target from ${source}.`);
     }
-    return { targetArg: host, outputDirName: host };
+    const triple = host.trim();
+    return { targetArg: triple, outputDirName: triple };
   }
-  if (target.endsWith('.json')) {
-    throw new Error(`${source} names a JSON target spec (${target}), which desktop staging does not support; pass a built-in target triple with --target.`);
+  if (normalized.endsWith('.json')) {
+    throw new Error(`${source} names a JSON target spec (${normalized}), which desktop staging does not support; pass a built-in target triple with --target.`);
   }
-  return { targetArg: target, outputDirName: target };
+  return { targetArg: normalized, outputDirName: normalized };
 }

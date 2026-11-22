@@ -86,6 +86,8 @@ test('quoted, dotted, and escaped TOML keys and values are resolved across --con
   assert.equal(await resolve(['--config', 'custom-config']), 'extensionless-cli-file');
   assert.equal(await resolve(['--config', '"build".target="first"', '--config', '"build".jobs=2']), 'first');
   assert.equal(await resolve(['--config', 'build.target="first"', '--config', '"build".target="second"']), 'second');
+  assert.equal(await resolve(['--config', '"build".target="\\tx86_64-pc-windows-msvc"']), 'x86_64-pc-windows-msvc');
+  await assert.rejects(resolve(['--config', '"build".target="  \\t  "']), /--config names build targets/);
 });
 
 test('inline tables, comments, real Cargo tables, and lookalike keys obey TOML structure', async (t) => {
@@ -292,6 +294,10 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   const root = await fixture({
     'plain/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
     'desktop-cfg/crates/desktop/.cargo/config.toml': '[build]\ntarget = "aarch64-pc-windows-msvc"\n',
+    'rel-home/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
+    'rel-home/crates/desktop/cargo-home/config.toml': '[build]\ntarget = "aarch64-pc-windows-msvc"\n',
+    'int-workspace/.cargo/config.toml': '[build]\ntarget = 123\n',
+    'int-workspace/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
     'json-desktop/crates/desktop/.cargo/config.toml': '[build]\ntarget = "targets/custom.json"\n',
     'json-root/.cargo/config.toml': '[build]\ntarget = "targets/root-spec.json"\n',
     'json-root/crates/desktop/Cargo.toml': '[package]\nname = "desktop"\n',
@@ -323,6 +329,7 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
     '--config=build.target-dir="alt-target"',
   ]);
   assert.equal(cliConfigPlan.metadataCwd, path.join(root, 'plain', 'crates', 'desktop'));
+  assert.equal(cliConfigPlan.cargoCwd, path.join(root, 'plain', 'crates', 'desktop'));
   assert.deepEqual(cliConfigPlan.configArgs, [
     '--config', '"build".target="aarch64-pc-windows-msvc"',
     '--config', 'build.target-dir="alt-target"',
@@ -342,13 +349,72 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   });
   assert.equal(resolveTargetDir(explicitTargetDirPlan, path.join(root, 'from-metadata')), path.join(root, 'plain', 'custom-out'));
   assert.deepEqual(
-    companionBuildArgs({ name: 'recorder', embeds, profile: cliConfigPlan.profile, targetArgs: cliConfigPlan.targetArgs, targetDirArgs: ['--target-dir', path.join(root, 'alt')] }),
-    ['build', '-p', 'recorder', '--features', 'recorder/custom-protocol', '--profile', 'release-lto', '--target', 'aarch64-pc-windows-msvc', '--target-dir', path.join(root, 'alt'), '--message-format=json-render-diagnostics'],
+    companionBuildArgs({
+      name: 'recorder',
+      embeds,
+      profile: cliConfigPlan.profile,
+      targetArgs: cliConfigPlan.targetArgs,
+      targetDirArgs: ['--target-dir', path.join(root, 'alt')],
+      configArgs: cliConfigPlan.configArgs,
+    }),
+    [
+      'build', '-p', 'recorder', '--features', 'recorder/custom-protocol', '--profile', 'release-lto',
+      '--target', 'aarch64-pc-windows-msvc', '--target-dir', path.join(root, 'alt'),
+      '--config', '"build".target="aarch64-pc-windows-msvc"', '--config', 'build.target-dir="alt-target"',
+      '--message-format=json-render-diagnostics',
+    ],
   );
   assert.equal(
     stageOutputDir({ targetDir: path.join(root, 'out'), outputDirName: cliConfigPlan.outputDirName, profile: cliConfigPlan.profile }),
     path.join(root, 'out', 'aarch64-pc-windows-msvc', 'release-lto'),
   );
+
+  const intOverridePlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['--', '--config', '"build".target="\\tx86_64-pc-windows-msvc"'],
+    root: path.join(root, 'int-workspace'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(intOverridePlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.equal(intOverridePlan.outputDirName, 'x86_64-pc-windows-msvc');
+  assert.deepEqual(intOverridePlan.tauriEnv, { CARGO_BUILD_TARGET: 'x86_64-pc-windows-msvc' });
+  assert.deepEqual(intOverridePlan.tauriArgs, [
+    '--target', 'x86_64-pc-windows-msvc',
+    '--',
+    '--profile', 'release-lto',
+    '--config', '"build".target="\\tx86_64-pc-windows-msvc"',
+  ]);
+  assert.deepEqual(
+    companionBuildArgs({
+      name: 'collector',
+      embeds,
+      profile: intOverridePlan.profile,
+      targetArgs: intOverridePlan.targetArgs,
+      targetDirArgs: ['--target-dir', path.join(root, 'out')],
+      configArgs: intOverridePlan.configArgs,
+    }),
+    [
+      'build', '-p', 'collector', '--profile', 'release-lto',
+      '--target', 'x86_64-pc-windows-msvc', '--target-dir', path.join(root, 'out'),
+      '--config', '"build".target="\\tx86_64-pc-windows-msvc"',
+      '--message-format=json-render-diagnostics',
+    ],
+  );
+
+  const relHomePlan = await planDesktopInvocation({
+    mode: 'dev',
+    argv: [],
+    root: path.join(root, 'rel-home'),
+    env: { CARGO_HOME: 'cargo-home' },
+    hostTarget,
+  });
+  assert.equal(
+    await cargoTarget({ cwd: path.join(root, 'rel-home', 'crates', 'desktop'), home: 'cargo-home', env: {}, cargoArgs: [] }),
+    'aarch64-pc-windows-msvc',
+  );
+  assert.deepEqual(relHomePlan.targetArgs, ['--target', 'aarch64-pc-windows-msvc']);
+  assert.deepEqual(relHomePlan.tauriArgs, ['--target', 'aarch64-pc-windows-msvc', '--']);
 
   const desktopCfgPlan = await planDesktopInvocation({
     mode: 'build',
@@ -359,6 +425,7 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   });
   assert.deepEqual(desktopCfgPlan.targetArgs, ['--target', 'aarch64-pc-windows-msvc']);
   assert.deepEqual(desktopCfgPlan.tauriArgs, ['--target', 'aarch64-pc-windows-msvc', '--', '--profile', 'release-lto']);
+  assert.deepEqual(desktopCfgPlan.tauriEnv, {});
 
   const envTargetPlan = await planDesktopInvocation({
     mode: 'dev',
@@ -402,6 +469,37 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   });
   assert.deepEqual(explicitHostTuplePlan.tauriArgs, ['--target', 'x86_64-pc-windows-msvc', '--', '--profile', 'release-lto']);
 
+  const attachedShortPlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-tx86_64-pc-windows-msvc'],
+    root: path.join(root, 'multi'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(attachedShortPlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(attachedShortPlan.tauriArgs, ['--target', 'x86_64-pc-windows-msvc', '--', '--profile', 'release-lto']);
+  assert.deepEqual(attachedShortPlan.tauriEnv, {});
+
+  const attachedEqShortPlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-t=x86_64-pc-windows-msvc'],
+    root: path.join(root, 'multi'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(attachedEqShortPlan.targetArgs, ['--target', 'x86_64-pc-windows-msvc']);
+  assert.deepEqual(attachedEqShortPlan.tauriArgs, ['--target', 'x86_64-pc-windows-msvc', '--', '--profile', 'release-lto']);
+  assert.deepEqual(attachedEqShortPlan.tauriEnv, {});
+
+  const attachedHostTuplePlan = await planDesktopInvocation({
+    mode: 'build',
+    argv: ['-thost-tuple'],
+    root: path.join(root, 'multi'),
+    env,
+    hostTarget,
+  });
+  assert.deepEqual(attachedHostTuplePlan.tauriArgs, ['--target', 'x86_64-pc-windows-msvc', '--', '--profile', 'release-lto']);
+
   const explicitOverridesMulti = await planDesktopInvocation({
     mode: 'build',
     argv: ['--target', 'aarch64-pc-windows-msvc'],
@@ -411,6 +509,12 @@ test('desktop staging forwards targets to Tauri and companions, forwards --confi
   });
   assert.deepEqual(explicitOverridesMulti.targetArgs, ['--target', 'aarch64-pc-windows-msvc']);
   assert.deepEqual(explicitOverridesMulti.tauriArgs, ['--target', 'aarch64-pc-windows-msvc', '--', '--profile', 'release-lto']);
+  assert.deepEqual(explicitOverridesMulti.tauriEnv, {});
+
+  await assert.rejects(
+    planDesktopInvocation({ mode: 'build', argv: ['-t=a', '-tb'], root: path.join(root, 'plain'), env, hostTarget }),
+    /multiple build targets/,
+  );
 
   await assert.rejects(
     planDesktopInvocation({ mode: 'build', argv: [], root: path.join(root, 'json-desktop'), env, hostTarget }),

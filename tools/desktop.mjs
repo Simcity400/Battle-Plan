@@ -7,9 +7,19 @@ import { thirdPartyNotices } from "./third-party-notices.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const STAGE = "stage";
-const VALUE_FLAGS = new Set(["--config", "--profile", "--target", "-t", "--target-dir"]);
+const CARGO_VALUE_FLAGS = new Set(["--config", "--profile", "--target", "-t", "--target-dir"]);
+const CLI_VALUE_FLAGS = new Set(["--config", "-c", "--runner", "-r", "--profile", "--target", "-t", "--target-dir", "--port"]);
 
-function flagValues(args, ...names) {
+function attachedShortFlagValue(arg, names) {
+  for (const name of names) {
+    if (name.length === 2 && name.startsWith("-") && arg.startsWith(name) && arg.length > 2) {
+      return arg[2] === "=" ? arg.slice(3) : arg.slice(2);
+    }
+  }
+  return undefined;
+}
+
+function flagValues(args, valueFlags, ...names) {
   const wanted = new Set(names);
   const values = [];
   for (let index = 0; index < args.length; index++) {
@@ -28,7 +38,14 @@ function flagValues(args, ...names) {
         break;
       }
     }
-    if (!matched && VALUE_FLAGS.has(arg) && index + 1 < args.length) index++;
+    if (!matched) {
+      const attached = attachedShortFlagValue(arg, names);
+      if (attached !== undefined) {
+        values.push(attached);
+        matched = true;
+      }
+    }
+    if (!matched && valueFlags.has(arg) && index + 1 < args.length) index++;
   }
   return values;
 }
@@ -45,7 +62,7 @@ export function stageOutputDir({ targetDir, outputDirName, profile }) {
   return path.join(targetDir, ...(outputDirName === undefined ? [] : [outputDirName]), profile === "dev" ? "debug" : profile);
 }
 
-export function companionBuildArgs({ name, embeds, profile, targetArgs, targetDirArgs }) {
+export function companionBuildArgs({ name, embeds, profile, targetArgs, targetDirArgs, configArgs = [] }) {
   return [
     "build",
     "-p",
@@ -55,6 +72,7 @@ export function companionBuildArgs({ name, embeds, profile, targetArgs, targetDi
     profile,
     ...targetArgs,
     ...targetDirArgs,
+    ...configArgs,
     "--message-format=json-render-diagnostics",
   ];
 }
@@ -65,7 +83,7 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
   const runnerArgs = separator < 0 ? [] : argv.slice(separator + 1);
   const appSeparator = runnerArgs.indexOf("--");
   const cargoArgs = appSeparator < 0 ? runnerArgs : runnerArgs.slice(0, appSeparator);
-  const explicitProfiles = flagValues(cargoArgs, "--profile");
+  const explicitProfiles = flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--profile");
   const explicitProfile = explicitProfiles.length > 0 ? explicitProfiles[explicitProfiles.length - 1] : undefined;
   const release = mode === "build"
     ? !(cliArgs.includes("--debug") || cliArgs.includes("-d"))
@@ -81,27 +99,34 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
       configArgs.push("--config", cargoArgs[++index]);
     } else if (arg.startsWith("--config=")) {
       configArgs.push("--config", arg.slice("--config=".length));
-    } else if (VALUE_FLAGS.has(arg) && index + 1 < cargoArgs.length) {
+    } else if (CARGO_VALUE_FLAGS.has(arg) && index + 1 < cargoArgs.length) {
       index++;
     }
   }
 
   const desktopDir = path.join(workspaceRoot, "crates", "desktop");
-  const explicitTargets = [...flagValues(cliArgs, "--target", "-t"), ...flagValues(cargoArgs, "--target")];
+  const explicitTargets = [...flagValues(cliArgs, CLI_VALUE_FLAGS, "--target", "-t"), ...flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--target")];
   if (explicitTargets.length > 1) {
     throw new Error("--target names multiple build targets this command cannot place; pass a single --target.");
   }
   const homeRoot = env.USERPROFILE ?? env.HOME;
-  const home = env.CARGO_HOME || (homeRoot ? path.join(homeRoot, ".cargo") : undefined);
+  const home = env.CARGO_HOME
+    ? path.resolve(desktopDir, env.CARGO_HOME)
+    : homeRoot ? path.join(homeRoot, ".cargo") : undefined;
   const configured = explicitTargets.length === 1
-    ? { target: explicitTargets[0], source: "--target" }
+    ? { target: explicitTargets[0], source: "--target", fromCliConfig: false }
     : await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
   const placement = configured === undefined
     ? undefined
     : await resolveTargetPlacement({ ...configured, hostTarget: hostTarget ?? (() => readHostTuple(env)) });
   const targetArgs = placement === undefined ? [] : ["--target", placement.targetArg];
 
-  const targetDirs = flagValues(cargoArgs, "--target-dir");
+  const tauriEnv = {};
+  if (placement !== undefined && (configured.fromCliConfig || (configured.source === "CARGO_BUILD_TARGET" && env.CARGO_BUILD_TARGET !== placement.targetArg))) {
+    tauriEnv.CARGO_BUILD_TARGET = placement.targetArg;
+  }
+
+  const targetDirs = flagValues(cargoArgs, CARGO_VALUE_FLAGS, "--target-dir");
   const targetDir = targetDirs.length > 0 ? targetDirs[targetDirs.length - 1] : undefined;
   if (targetDir === "") {
     throw Object.assign(new Error("--target-dir needs a directory."), { exitCode: 2 });
@@ -117,10 +142,10 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
       tauriCliArgs.push("--target", placement.targetArg);
       cliHadTarget = true;
       index++;
-    } else if (placement !== undefined && arg.startsWith("--target=")) {
+    } else if (placement !== undefined && (arg.startsWith("--target=") || (arg.startsWith("-t") && arg.length > 2))) {
       tauriCliArgs.push("--target", placement.targetArg);
       cliHadTarget = true;
-    } else if (VALUE_FLAGS.has(arg) && index + 1 < cliArgs.length) {
+    } else if (CLI_VALUE_FLAGS.has(arg) && index + 1 < cliArgs.length) {
       tauriCliArgs.push(arg, cliArgs[++index]);
     } else {
       tauriCliArgs.push(arg);
@@ -163,6 +188,8 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
     targetDirArgs,
     configArgs,
     metadataCwd: desktopDir,
+    cargoCwd: desktopDir,
+    tauriEnv,
     forwardedRunnerArgs,
     tauriArgs,
   };
@@ -182,10 +209,10 @@ async function shipped(source, target, into) {
   for (const entry of await readdir(source)) await shipped(path.join(source, entry), path.join(target, entry), into);
 }
 
-function run(executable, args, cwd = root, capture = false) {
+function run(executable, args, cwd = root, capture = false, env = process.env) {
   if (interrupted) return Promise.reject(new Error("Interrupted"));
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, stdio: capture ? ["inherit", "pipe", "inherit"] : "inherit", windowsHide: true });
+    const child = spawn(executable, args, { cwd, env, stdio: capture ? ["inherit", "pipe", "inherit"] : "inherit", windowsHide: true });
     let stdout = "";
     child.stdout?.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
     const interrupt = () => {
@@ -241,7 +268,8 @@ async function main() {
         profile: plan.profile,
         targetArgs: plan.targetArgs,
         targetDirArgs: ["--target-dir", effectiveTargetDir],
-      }), root, true);
+        configArgs: plan.configArgs,
+      }), plan.cargoCwd, true);
     }
     const artifact = messages.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } })
       .find((message) => message?.reason === "compiler-artifact"
@@ -272,7 +300,7 @@ async function main() {
     config = { ...(releaseVersion ? { version: releaseVersion } : {}), build: { beforeBuildCommand: null }, bundle: { resources,
       ...(nightly ? { icon: ["icons/nightly.ico", "icons/nightly.png"], windows: { nsis: { installerIcon: "icons/nightly.ico" } } } : {}) } };
   }
-  await run(process.execPath, [cli, mode, "--config", JSON.stringify(config), ...plan.tauriArgs], path.join(root, "crates", "desktop"));
+  await run(process.execPath, [cli, mode, "--config", JSON.stringify(config), ...plan.tauriArgs], path.join(root, "crates", "desktop"), false, { ...process.env, ...plan.tauriEnv });
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
