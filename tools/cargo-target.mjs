@@ -6,8 +6,8 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
 const BARE_KEY = /[A-Za-z0-9_-]+/y;
-const DATE_TIME = /(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:[Zz]|([+-])(\d{2}):(\d{2}))?)?(?=$|[\t \r\n#,\}\]])/y;
-const LOCAL_TIME = /(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?=$|[\t \r\n#,\}\]])/y;
+const DATE_TIME = /\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:\d{2})?)?(?=$|[\t \r\n#,\}\]])/y;
+const LOCAL_TIME = /\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?=$|[\t \r\n#,\}\]])/y;
 const RAW_VALUE = /[^\t \r\n#,\}\]]+/y;
 const HEX_INT = /^0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*$/;
 const OCT_INT = /^0o[0-7](?:_?[0-7])*$/;
@@ -21,34 +21,6 @@ const SKIP_VALUE_FLAGS = new Set(['--profile', '--target', '-t', '--target-dir']
 
 function isTomlTable(value) {
   return typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === null;
-}
-
-function daysInMonth(year, month) {
-  if (month === 2) return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 29 : 28;
-  return [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month];
-}
-
-function validTime(hour, minute, second) {
-  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
-    && (second === undefined || (second >= 0 && second <= 60));
-}
-
-function validDateTimeMatch(match) {
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return false;
-  if (match[4] === undefined) return true;
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  const second = match[6] === undefined ? undefined : Number(match[6]);
-  if (!validTime(hour, minute, second)) return false;
-  if (match[7] !== undefined) {
-    const offsetHour = Number(match[8]);
-    const offsetMinute = Number(match[9]);
-    if (offsetHour > 23 || offsetMinute > 59) return false;
-  }
-  return true;
 }
 
 function parseToml(input, source, { inlineOverride = false } = {}) {
@@ -320,20 +292,9 @@ function parseToml(input, source, { inlineOverride = false } = {}) {
 
   function parsePrimitive() {
     DATE_TIME.lastIndex = pos;
-    const dateTime = DATE_TIME.exec(text);
-    if (dateTime) {
-      if (!validDateTimeMatch(dateTime)) fail(`invalid date/time ${dateTime[0]}`);
-      pos = DATE_TIME.lastIndex;
-      return { tomlDateTime: dateTime[0] };
-    }
+    if (DATE_TIME.exec(text)) fail('date/time values are not supported in Cargo configuration');
     LOCAL_TIME.lastIndex = pos;
-    const localTime = LOCAL_TIME.exec(text);
-    if (localTime) {
-      const second = localTime[3] === undefined ? undefined : Number(localTime[3]);
-      if (!validTime(Number(localTime[1]), Number(localTime[2]), second)) fail(`invalid time ${localTime[0]}`);
-      pos = LOCAL_TIME.lastIndex;
-      return { tomlDateTime: localTime[0] };
-    }
+    if (LOCAL_TIME.exec(text)) fail('date/time values are not supported in Cargo configuration');
     RAW_VALUE.lastIndex = pos;
     const raw = RAW_VALUE.exec(text);
     if (!raw) fail('expected value');
@@ -452,11 +413,6 @@ function unplaceable(source) {
   return new Error(`${source} names build targets this command cannot place; pass --target.`);
 }
 
-function configBaseDir(file) {
-  const directory = path.dirname(path.resolve(file));
-  return path.basename(directory) === '.cargo' ? path.dirname(directory) : directory;
-}
-
 async function readUtf8File(file) {
   const bytes = await readFile(file);
   try {
@@ -471,30 +427,33 @@ async function canonicalPathKey(file) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
-function extractDocumentTarget(document, baseDir, source) {
+function extractDocumentTarget(document, source) {
   if (!('build' in document)) return null;
   const build = document.build;
   if (!isTomlTable(build)) throw unplaceable(source);
   if (!('target' in build)) return null;
   const target = build.target;
-  if (typeof target === 'string') return { kind: 'string', value: target, baseDir, source };
-  if (Array.isArray(target) && target.every((item) => typeof item === 'string')) {
-    return { kind: 'array', values: target, source };
-  }
-  throw unplaceable(source);
+  if (typeof target === 'string') return { kind: 'string', value: target, source };
+  if (Array.isArray(target)) return { kind: 'array', values: target, source };
+  if (isTomlTable(target)) throw unplaceable(source);
+  return { kind: 'scalar', source };
+}
+
+function isScalarTarget(entry) {
+  return entry.kind === 'string' || entry.kind === 'scalar';
 }
 
 function mergeTarget(previous, next) {
   if (next === null) return previous;
   if (previous === null) return next;
-  if (previous.kind === 'string' && next.kind === 'string') return next;
+  if (isScalarTarget(previous) && isScalarTarget(next)) return next;
   if (previous.kind === 'array' && next.kind === 'array') {
     return { kind: 'array', values: [...previous.values, ...next.values], source: next.source };
   }
   throw unplaceable(next.source);
 }
 
-async function loadIncludes(includeValue, baseDir, source, state, activeIncludes) {
+async function loadIncludes(includeValue, baseDir, source, state, visitedIncludes) {
   if (!Array.isArray(includeValue)) {
     throw new Error(`${source} has an invalid include directive; expected an array of paths or include tables.`);
   }
@@ -520,14 +479,17 @@ async function loadIncludes(includeValue, baseDir, source, state, activeIncludes
     if (includePath.length === 0) {
       throw new Error(`${source} has an empty include path.`);
     }
-    const result = await loadFileLayer(path.resolve(baseDir, includePath), merged, activeIncludes, { optional });
+    if (!includePath.endsWith('.toml')) {
+      throw new Error(`${source} has an invalid include path ${includePath}; Cargo config includes must end with .toml.`);
+    }
+    const result = await loadFileLayer(path.resolve(baseDir, includePath), merged, visitedIncludes, { optional });
     merged = result.state;
     defined = defined || result.defined;
   }
   return { state: merged, defined };
 }
 
-async function loadFileLayer(file, state, activeIncludes, { optional = false } = {}) {
+async function loadFileLayer(file, state, visitedIncludes, { optional = false } = {}) {
   const resolved = path.resolve(file);
   let text;
   try {
@@ -537,25 +499,21 @@ async function loadFileLayer(file, state, activeIncludes, { optional = false } =
     throw error;
   }
   const key = await canonicalPathKey(resolved);
-  if (activeIncludes.has(key)) {
-    throw new Error(`Circular Cargo config include involving ${resolved}.`);
+  if (visitedIncludes.has(key)) {
+    throw new Error(`Duplicate or circular Cargo config include involving ${resolved}.`);
   }
   const document = parseToml(text, resolved);
-  activeIncludes.add(key);
-  try {
-    let merged = state;
-    let defined = false;
-    if ('include' in document) {
-      const included = await loadIncludes(document.include, path.dirname(resolved), resolved, merged, activeIncludes);
-      merged = included.state;
-      defined = included.defined;
-    }
-    const own = extractDocumentTarget(document, configBaseDir(resolved), resolved);
-    if (own !== null) defined = true;
-    return { state: mergeTarget(merged, own), defined };
-  } finally {
-    activeIncludes.delete(key);
+  visitedIncludes.add(key);
+  let merged = state;
+  let defined = false;
+  if ('include' in document) {
+    const included = await loadIncludes(document.include, path.dirname(resolved), resolved, merged, visitedIncludes);
+    merged = included.state;
+    defined = included.defined;
   }
+  const own = extractDocumentTarget(document, resolved);
+  if (own !== null) defined = true;
+  return { state: mergeTarget(merged, own), defined };
 }
 
 async function findFolderConfig(folder) {
@@ -636,7 +594,7 @@ export async function resolveCargoTarget({ cwd, home, env, cargoArgs }) {
       tomlState = included.state;
       cliSetTarget = cliSetTarget || included.defined;
     }
-    const own = extractDocumentTarget(document, resolvedCwd, '--config');
+    const own = extractDocumentTarget(document, '--config');
     if (own !== null) cliSetTarget = true;
     tomlState = mergeTarget(tomlState, own);
   }
@@ -647,16 +605,16 @@ export async function resolveCargoTarget({ cwd, home, env, cargoArgs }) {
 
   if (cliSetTarget) {
     if (tomlState.kind !== 'string' || tomlState.value.length === 0) throw unplaceable(tomlState.source);
-    return { target: tomlState.value, baseDir: tomlState.baseDir, source: tomlState.source };
+    return { target: tomlState.value, source: tomlState.source };
   }
   if (envTarget !== undefined) {
     if (tomlState?.kind === 'array') throw unplaceable(tomlState.source);
     if (envTarget.length === 0) throw unplaceable('CARGO_BUILD_TARGET');
-    return { target: envTarget, baseDir: resolvedCwd, source: 'CARGO_BUILD_TARGET' };
+    return { target: envTarget, source: 'CARGO_BUILD_TARGET' };
   }
   if (tomlState === null) return undefined;
   if (tomlState.kind !== 'string' || tomlState.value.length === 0) throw unplaceable(tomlState.source);
-  return { target: tomlState.value, baseDir: tomlState.baseDir, source: tomlState.source };
+  return { target: tomlState.value, source: tomlState.source };
 }
 
 export async function cargoTarget(options) {
@@ -675,7 +633,7 @@ export async function readHostTuple(env = process.env) {
   return parseHostTuple(stdout);
 }
 
-export async function resolveTargetPlacement({ target, baseDir, source, hostTarget = () => readHostTuple() }) {
+export async function resolveTargetPlacement({ target, source, hostTarget = () => readHostTuple() }) {
   if (typeof target !== 'string' || target.length === 0) throw unplaceable(source);
   if (target === 'host-tuple') {
     const host = await hostTarget();
@@ -685,10 +643,7 @@ export async function resolveTargetPlacement({ target, baseDir, source, hostTarg
     return { targetArg: host, outputDirName: host };
   }
   if (target.endsWith('.json')) {
-    const resolved = path.resolve(baseDir, target);
-    const stem = path.basename(resolved).slice(0, -'.json'.length);
-    if (!stem) throw unplaceable(source);
-    return { targetArg: resolved, outputDirName: stem };
+    throw new Error(`${source} names a JSON target spec (${target}), which desktop staging does not support; pass a built-in target triple with --target.`);
   }
   return { targetArg: target, outputDirName: target };
 }

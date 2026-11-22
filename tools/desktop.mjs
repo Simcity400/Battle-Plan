@@ -33,6 +33,14 @@ function flagValues(args, ...names) {
   return values;
 }
 
+export function metadataArgs(plan) {
+  return ["metadata", "--no-deps", "--format-version", "1", ...plan.configArgs];
+}
+
+export function resolveTargetDir(plan, metadataTargetDirectory) {
+  return plan.targetDir ?? metadataTargetDirectory;
+}
+
 export function stageOutputDir({ targetDir, outputDirName, profile }) {
   return path.join(targetDir, ...(outputDirName === undefined ? [] : [outputDirName]), profile === "dev" ? "debug" : profile);
 }
@@ -64,6 +72,20 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
     : cliArgs.includes("--release") || cargoArgs.includes("--release") || cargoArgs.includes("-r");
   const profile = explicitProfile ?? (mode === "build" && release ? "release-lto" : release ? "release" : "dev");
 
+  const configArgs = [];
+  for (let index = 0; index < cargoArgs.length; index++) {
+    const arg = cargoArgs[index];
+    if (arg === "--") break;
+    if (arg === "--config") {
+      if (index + 1 >= cargoArgs.length) throw Object.assign(new Error("--config needs a value."), { exitCode: 2 });
+      configArgs.push("--config", cargoArgs[++index]);
+    } else if (arg.startsWith("--config=")) {
+      configArgs.push("--config", arg.slice("--config=".length));
+    } else if (VALUE_FLAGS.has(arg) && index + 1 < cargoArgs.length) {
+      index++;
+    }
+  }
+
   const desktopDir = path.join(workspaceRoot, "crates", "desktop");
   const explicitTargets = [...flagValues(cliArgs, "--target", "-t"), ...flagValues(cargoArgs, "--target")];
   if (explicitTargets.length > 1) {
@@ -72,7 +94,7 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
   const homeRoot = env.USERPROFILE ?? env.HOME;
   const home = env.CARGO_HOME || (homeRoot ? path.join(homeRoot, ".cargo") : undefined);
   const configured = explicitTargets.length === 1
-    ? { target: explicitTargets[0], baseDir: desktopDir, source: "--target" }
+    ? { target: explicitTargets[0], source: "--target" }
     : await resolveCargoTarget({ cwd: desktopDir, env, cargoArgs, home });
   const placement = configured === undefined
     ? undefined
@@ -87,18 +109,51 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
   const resolvedTargetDir = targetDir === undefined ? undefined : path.resolve(workspaceRoot, targetDir);
   const targetDirArgs = resolvedTargetDir === undefined ? [] : ["--target-dir", resolvedTargetDir];
 
+  const tauriCliArgs = [];
+  let cliHadTarget = false;
+  for (let index = 0; index < cliArgs.length; index++) {
+    const arg = cliArgs[index];
+    if (placement !== undefined && (arg === "--target" || arg === "-t")) {
+      tauriCliArgs.push("--target", placement.targetArg);
+      cliHadTarget = true;
+      index++;
+    } else if (placement !== undefined && arg.startsWith("--target=")) {
+      tauriCliArgs.push("--target", placement.targetArg);
+      cliHadTarget = true;
+    } else if (VALUE_FLAGS.has(arg) && index + 1 < cliArgs.length) {
+      tauriCliArgs.push(arg, cliArgs[++index]);
+    } else {
+      tauriCliArgs.push(arg);
+    }
+  }
+  if (placement !== undefined && !cliHadTarget) {
+    tauriCliArgs.push("--target", placement.targetArg);
+  }
+
   const forwardedCargoArgs = explicitProfile === undefined && profile === "release-lto" ? ["--profile", profile] : [];
   for (let index = 0; index < cargoArgs.length; index++) {
     const arg = cargoArgs[index];
-    if (arg.startsWith("--profile=")) forwardedCargoArgs.push("--profile", arg.slice("--profile=".length));
-    else if (arg.startsWith("--target-dir=")) forwardedCargoArgs.push(...targetDirArgs);
-    else if (arg === "--target-dir") { forwardedCargoArgs.push(...targetDirArgs); index++; }
-    else forwardedCargoArgs.push(arg);
+    if (arg === "--config" && index + 1 < cargoArgs.length) {
+      forwardedCargoArgs.push(arg, cargoArgs[++index]);
+    } else if (arg.startsWith("--profile=")) {
+      forwardedCargoArgs.push("--profile", arg.slice("--profile=".length));
+    } else if (arg.startsWith("--target-dir=")) {
+      forwardedCargoArgs.push(...targetDirArgs);
+    } else if (arg === "--target-dir") {
+      forwardedCargoArgs.push(...targetDirArgs);
+      index++;
+    } else if (arg.startsWith("--target=")) {
+      continue;
+    } else if (arg === "--target") {
+      index++;
+    } else {
+      forwardedCargoArgs.push(arg);
+    }
   }
   const forwardedRunnerArgs = appSeparator < 0 ? forwardedCargoArgs : [...forwardedCargoArgs, ...runnerArgs.slice(appSeparator)];
   const tauriArgs = mode === "build"
-    ? [...cliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
-    : [...cliArgs, "--", ...forwardedRunnerArgs];
+    ? [...tauriCliArgs, ...(separator < 0 && forwardedRunnerArgs.length === 0 ? [] : ["--", ...forwardedRunnerArgs])]
+    : [...tauriCliArgs, "--", ...forwardedRunnerArgs];
 
   return {
     profile,
@@ -106,6 +161,8 @@ export async function planDesktopInvocation({ mode, argv, root: workspaceRoot = 
     outputDirName: placement?.outputDirName,
     targetDir: resolvedTargetDir,
     targetDirArgs,
+    configArgs,
+    metadataCwd: desktopDir,
     forwardedRunnerArgs,
     tauriArgs,
   };
@@ -166,9 +223,11 @@ async function main() {
     if (!process.env.npm_execpath) throw new Error("Run the build through npm: npm run build:desktop");
     await run(process.execPath, [process.env.npm_execpath, "run", "build:ui"]);
   }
-  const metadata = JSON.parse(await run("cargo", ["metadata", "--no-deps", "--format-version", "1"], root, true));
+  const metadata = JSON.parse(await run("cargo", metadataArgs(plan), plan.metadataCwd, true));
+  const effectiveTargetDir = resolveTargetDir(plan, metadata.target_directory);
+  process.env.CARGO_TARGET_DIR = effectiveTargetDir;
   let output = stageOutputDir({
-    targetDir: plan.targetDir === undefined ? metadata.target_directory : plan.targetDir,
+    targetDir: effectiveTargetDir,
     outputDirName: plan.outputDirName,
     profile: plan.profile,
   });
@@ -181,7 +240,7 @@ async function main() {
         embeds,
         profile: plan.profile,
         targetArgs: plan.targetArgs,
-        targetDirArgs: plan.targetDirArgs,
+        targetDirArgs: ["--target-dir", effectiveTargetDir],
       }), root, true);
     }
     const artifact = messages.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } })
