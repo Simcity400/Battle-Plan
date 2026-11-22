@@ -41,7 +41,7 @@ import {
 } from './productionData.ts';
 import './productionLines.css';
 import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
-import { bucketEdges, bucketRead, type BoundWindow } from '../../dashboard/regionTime.ts';
+import { bucketEdges, bucketRead, UNRECORDED_MESSAGE, type BoundWindow } from '../../dashboard/regionTime.ts';
 import type { CountryRef } from '../../generated/dashboard';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -119,8 +119,9 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
   const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);
   const breakdownHour = drillControl.hour;
+  const bucketHour = detail === null ? null : bucketRead(track, breakdownHour, detail, owner?.within);
   const breakdown = useLineBreakdown(runtime, widget, drillControl.gate, owner, key, group,
-    detail === null ? null : bucketRead(track, breakdownHour, detail, owner?.within), active && (pinned || drill.breakdown !== null));
+    bucketHour, active && (pinned || drill.breakdown !== null));
   useEffect(() => holdRuns(breakdown.data ? new Map([['runs', breakdown.data.runs]]) : null), [breakdown.data, holdRuns]);
   const warnings = useMemo(() => [...new Set([...data?.warnings ?? NO_WARNINGS, ...head.data?.warnings ?? NO_WARNINGS, ...breakdown.data?.warnings ?? NO_WARNINGS,
     ...breakdown.data?.runs.flatMap(run => run.warnings) ?? NO_WARNINGS])], [data, head.data, breakdown.data]);
@@ -139,6 +140,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const drillView = !key ? pinned && !lineTag ? drillError ? <WidgetState kind="error" failure={drillError} onRetry={drillLines.retry} /> : <WidgetState kind="loading" label="Loading production lines…" /> : <p className="drill-empty">Choose a production line in the widget settings.</p>
     : detail === null ? drillError ? <WidgetState kind="error" failure={drillError} onRetry={drillLines.retry} /> : <WidgetState kind="loading" label="Loading production lines…" />
     : breakdown.error ? <WidgetState kind="error" what="the breakdown" failure={breakdown.error} onRetry={breakdown.retry} />
+      : bucketHour === null ? <WidgetState kind="unavailable" message={UNRECORDED_MESSAGE} />
       : !breakdown.data ? <WidgetState kind="loading" label="Loading breakdown…" />
         : <ProductionDrill data={breakdown.data} selected={group} onFactor={setFactor} hour={breakdownHour} active={active} hoursPerSecond={motion}
           onPick={hour => dispatch({ type: 'pick', hour })} />;
