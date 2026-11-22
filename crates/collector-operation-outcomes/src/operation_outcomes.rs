@@ -937,10 +937,12 @@ impl Handoff {
             || self.epoch != EPOCH.load(Ordering::Acquire)
         {
             let refused = SPILL_REFUSED_EPOCH.load(Ordering::Acquire);
-            let since = log.assembled_epoch.load(Ordering::Acquire).max(log.born_epoch);
+            let since = log
+                .assembled_epoch
+                .load(Ordering::Acquire)
+                .max(log.born_epoch);
             return Err(
-                if refused > since && refused <= EPOCH.load(Ordering::Acquire)
-                {
+                if refused > since && refused <= EPOCH.load(Ordering::Acquire) {
                     SPILL_REFUSED
                 } else {
                     "operation completions were not followed in the game without a break"
@@ -1337,7 +1339,8 @@ pub mod tests {
         let fixture = Fixture::new(b"retained");
         complete(&log, &fixture, 1);
         let mut cursors = vec![LaneCursor::default()];
-        let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         let captured = Captured::sealed(handoff, cursors);
         let mut ledger = Ledger::default();
         let mut tables = vec![
@@ -1351,7 +1354,10 @@ pub mod tests {
             unsafe { &*(log.lanes[0].byte_ring.load(Ordering::Acquire) as *const ByteRing) }
                 .consumed
                 .load(Ordering::Acquire);
-        let publication = ledger.assemble_owned(&captured, &mut tables).unwrap();
+        let publication =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { ledger.assemble_owned(&captured, &mut tables) }.unwrap();
         assert_eq!(handoff.pending(), 1);
         assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), before);
         drop(publication);
@@ -1361,11 +1367,15 @@ pub mod tests {
                 .load(Ordering::Acquire),
             bytes_before
         );
-        let publication = ledger.assemble_owned(&captured, &mut tables).unwrap();
+        let publication =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { ledger.assemble_owned(&captured, &mut tables) }.unwrap();
         assert!(matches!(&tables[TableId::OperationCompletions.index()],
             TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows)))
                 if rows.len() == 1 && rows[0].effect_description == b"retained"));
-        publication.commit();
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { publication.commit() };
         assert_eq!(handoff.pending(), 0);
         assert!(log.lanes[0].consumed.load(Ordering::Acquire) > before);
         assert!(
@@ -1458,7 +1468,11 @@ pub mod tests {
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 5_000);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 5_000);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert_eq!(bytes, b"burst".repeat(5_000));
         assert_eq!(
             log.lanes[0].consumed_attempts.load(Ordering::Acquire),
@@ -1478,7 +1492,8 @@ pub mod tests {
         prime(&log);
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            let handoff =
+                handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
             Captured::sealed(handoff, cursors)
         };
         let rows = |tables: &[TableInput]| match &tables[TableId::OperationCompletions.index()] {
@@ -1513,15 +1528,21 @@ pub mod tests {
                 complete(&log, &fixture, 1);
                 expected.push((owner, 0, description));
             }
-            let publication = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+            let publication =
+            // SAFETY: The spool assembles its own frame's interval while the originating observer
+            // is live.
+            unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
             assert_eq!(rows(&tables), expected, "hour {hour}");
-            publication.admitted();
+            // SAFETY: This is the spool's actual queue admission while its originating observer
+            // remains live.
+            unsafe { publication.admitted() };
             queued.push(publication);
         }
         assert_eq!(log.consumed.load(Ordering::Acquire), 0);
         assert_eq!(log.shared.pending(), 7);
         for publication in queued {
-            publication.commit();
+            // SAFETY: The originating spool has the writer receipt and still owns the observers.
+            unsafe { publication.commit() };
         }
         assert_eq!(log.consumed.load(Ordering::Acquire), 9);
         assert!(log.shared.is_drained());
@@ -1678,8 +1699,13 @@ pub mod tests {
             });
             TableId::ALL.len()
         ];
-        if let Some(publication) = ledger.assemble_owned(&idle, &mut tables) {
-            publication.commit();
+        if let Some(publication) =
+            // SAFETY: The spool assembles its own frame's interval while the originating observer is
+            // live.
+            unsafe { ledger.assemble_owned(&idle, &mut tables) }
+        {
+            // SAFETY: The originating spool has the writer receipt and still owns the observers.
+            unsafe { publication.commit() };
         }
         assert!(
             matches!(&tables[TableId::OperationCompletions.index()], TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows))) if rows.len() == 1)
@@ -1702,8 +1728,13 @@ pub mod tests {
         let expected = capacity;
         capacity.raise_for_operations(idle.drained_pending());
         assert!(capacity == expected);
-        if let Some(publication) = ledger.assemble_owned(&idle, &mut tables) {
-            publication.commit();
+        if let Some(publication) =
+            // SAFETY: The spool assembles its own frame's interval while the originating observer is
+            // live.
+            unsafe { ledger.assemble_owned(&idle, &mut tables) }
+        {
+            // SAFETY: The originating spool has the writer receipt and still owns the observers.
+            unsafe { publication.commit() };
         }
         assert!(
             matches!(&tables[TableId::OperationCompletions.index()], TableInput::Sampled(TableView::Unavailable { reason }) if reason == "operation completion stale handoff")
@@ -1796,7 +1827,8 @@ pub mod tests {
         prime(&log);
         complete(&log, &Fixture::new(b"sealed"), 1);
         let mut cursors = vec![LaneCursor::default()];
-        let sealed = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let sealed =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
         complete(&log, &Fixture::new(&[0xfb; 10]), 1);
         sealed
             .drain(&cursors, &mut [Event::default()], &mut [0; 6])
@@ -2052,7 +2084,11 @@ pub mod tests {
         });
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 7);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert_eq!(bytes, [b"held".repeat(3), b"burst".repeat(4)].concat());
         assert_eq!(log.shared.rejected(), 0);
         assert!(log.shared.is_drained());
@@ -2104,7 +2140,8 @@ pub mod tests {
         let lane = &log.lanes[0];
         let sealed = || {
             let mut cursors = vec![LaneCursor::default()];
-            let handoff = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
+            let handoff =
+                handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap();
             Captured::sealed(handoff, cursors)
         };
         let shared = |description: &[u8]| {
@@ -2133,20 +2170,35 @@ pub mod tests {
         ];
         complete(&log, &Fixture::new(b"first"), 1);
         shared(b"first shared");
-        let first = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        let first =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert_eq!(rows(&tables), [b"first".to_vec(), b"first shared".to_vec()]);
-        first.admitted();
+        // SAFETY: This is the spool's actual queue admission while its originating observer
+        // remains live.
+        unsafe { first.admitted() };
         complete(&log, &Fixture::new(b"second"), 1);
         shared(b"second shared");
-        let second = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        let second =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert_eq!(
             rows(&tables),
             [b"second".to_vec(), b"second shared".to_vec()]
         );
-        second.admitted();
-        let quiet = ledger.assemble_owned(&sealed(), &mut tables).unwrap();
+        // SAFETY: This is the spool's actual queue admission while its originating observer
+        // remains live.
+        unsafe { second.admitted() };
+        let quiet =
+        // SAFETY: The spool assembles its own frame's interval while the originating observer is
+        // live.
+        unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert!(rows(&tables).is_empty());
-        quiet.admitted();
+        // SAFETY: This is the spool's actual queue admission while its originating observer
+        // remains live.
+        unsafe { quiet.admitted() };
         assert_eq!(lane.assembled.load(Ordering::Acquire), 2);
         assert_eq!(lane.assembled_attempts.load(Ordering::Acquire), 2);
         assert_eq!(log.consumed.load(Ordering::Acquire), 0);
@@ -2161,7 +2213,8 @@ pub mod tests {
             lane.required_bytes.load(Ordering::Relaxed),
             b"firstsecond".len()
         );
-        first.commit();
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { first.commit() };
         assert_eq!(log.consumed.load(Ordering::Acquire), 2);
         assert_eq!(lane.consumed.load(Ordering::Acquire), 1);
         assert_eq!(lane.consumed_attempts.load(Ordering::Acquire), 1);
@@ -2172,8 +2225,10 @@ pub mod tests {
             1
         );
         assert_eq!(log.assembled.load(Ordering::Acquire), 4);
-        second.commit();
-        quiet.commit();
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { second.commit() };
+        // SAFETY: The originating spool has the writer receipt and still owns the observers.
+        unsafe { quiet.commit() };
         assert_eq!(log.consumed.load(Ordering::Acquire), 4);
         assert_eq!(lane.ring().consumed.load(Ordering::Acquire), 11);
         assert!(
@@ -2203,7 +2258,8 @@ pub mod tests {
             1,
         );
         let mut first = vec![LaneCursor::default()];
-        let queued = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)).unwrap();
+        let queued =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut first)).unwrap();
         let mut events = [Event::default(); 2];
         let mut bytes = [0; 32];
         assert_eq!(
@@ -2217,7 +2273,8 @@ pub mod tests {
         queued.admitted(&first);
         complete(&log, &Fixture::new(b"later"), 1);
         let mut second = vec![LaneCursor::default()];
-        let later = handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)).unwrap();
+        let later =
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut second)).unwrap();
         assert_eq!(later.pending(), 1);
         later.admitted(&second);
         queued.admitted(&first);
@@ -2236,10 +2293,14 @@ pub mod tests {
         assert_eq!(bytes, b"lostlost sharedlater");
         complete(&log, &Fixture::new(b"before"), 1);
         let mut cursors = vec![LaneCursor::default()];
-        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+            .unwrap()
+            .admitted(&cursors);
         invalidate();
         complete(&log, &Fixture::new(b"after"), 1);
-        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+        handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+            .unwrap()
+            .admitted(&cursors);
         log.reset_admitted();
         assert_eq!(
             drain(&log),
@@ -2258,7 +2319,9 @@ pub mod tests {
         for _ in 0..2 {
             complete(&log, &fixture, 1);
             let mut cursors = vec![LaneCursor::default()];
-            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)).unwrap().admitted(&cursors);
+            handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors))
+                .unwrap()
+                .admitted(&cursors);
         }
         complete(&log, &fixture, 1);
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 3);

@@ -330,9 +330,11 @@ mod tests {
             let owned = request(&bytes, 4);
             let pointer = owned.table.payload.as_ptr();
             let capacity = owned.snapshot.capacity();
-            let pool = Pool::start(workers, 1, move |request: &mut Request| {
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { Pool::start(workers, 1, move |request: &mut Request| {
                 request.run(&kit::memory(&bytes))
-            })
+            }) }
             .unwrap();
             let mut pending = Some(owned);
             let ticket = unsafe { pool.submit(&mut pending) }.unwrap();

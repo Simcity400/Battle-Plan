@@ -23,7 +23,8 @@ fn drained(seal: Seal) -> Vec<(u64, i32, u8, Vec<u8>)> {
             )
         })
         .collect();
-    assembled.commit();
+    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    unsafe { assembled.commit() };
     rows
 }
 
@@ -234,18 +235,24 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     let mut first = Assembled::default();
     assemble(seal(), &mut first).unwrap();
     assert_eq!(sequences(&first), [1, 2]);
-    first.admitted();
+    // SAFETY: This is the spool's actual queue admission while its originating observer remains
+    // live.
+    unsafe { first.admitted() };
     assert_eq!(event(0, 2, &quarter), Ok(3));
     assert_eq!(shared_event(1, 2, b"later"), 4);
     let mut second = Assembled::default();
     assemble(seal(), &mut second).unwrap();
     assert_eq!(sequences(&second), [3, 4]);
     assert_eq!(&second.bytes[second.frames[1].start..], b"later");
-    second.admitted();
+    // SAFETY: This is the spool's actual queue admission while its originating observer remains
+    // live.
+    unsafe { second.admitted() };
     let mut quiet = Assembled::default();
     assemble(seal(), &mut quiet).unwrap();
     assert!(quiet.frames.is_empty());
-    quiet.admitted();
+    // SAFETY: This is the spool's actual queue admission while its originating observer remains
+    // live.
+    unsafe { quiet.admitted() };
     let log = current();
     assert_eq!(log.lanes[0].consumed.load(Ordering::Acquire), 0);
     assert_eq!(
@@ -257,7 +264,8 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     );
     assert_eq!(event(0, 3, &quarter), Ok(5));
     assert_eq!(event(0, 3, &quarter), Ok(6));
-    first.commit();
+    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    unsafe { first.commit() };
     assert_eq!(
         log.lanes[0].consumed.load(Ordering::Acquire),
         (HEADER + quarter.len()) as u64
@@ -274,8 +282,10 @@ fn queued_intervals_copy_disjointly_and_hold_their_space_until_written() {
     assert_eq!(event(0, 3, &quarter), Ok(7));
     assert_eq!(event(0, 3, &quarter), Ok(8));
     assert_eq!(capacity().spill_pending, 2);
-    second.commit();
-    quiet.commit();
+    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    unsafe { second.commit() };
+    // SAFETY: The originating spool has the writer receipt and still owns the observers.
+    unsafe { quiet.commit() };
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
     let rows = drained(seal());
     assert_eq!(
@@ -308,16 +318,23 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
     assert_eq!(shared_event(1, 1, b"shared"), 2);
     let mut first = Assembled::default();
     assemble(seal(), &mut first).unwrap();
-    first.admitted();
-    first.admitted();
+    // SAFETY: This is the spool's actual queue admission while its originating observer remains
+    // live.
+    unsafe { first.admitted() };
+    // SAFETY: This is the spool's actual queue admission while its originating observer remains
+    // live.
+    unsafe { first.admitted() };
     assert_eq!(event(0, 2, b"next"), Ok(3));
     let mut second = Assembled::default();
     assemble(seal(), &mut second).unwrap();
     assert_eq!(sequences(&second), [3]);
-    second.admitted();
+    // SAFETY: This is the spool's actual queue admission while its originating observer remains
+    // live.
+    unsafe { second.admitted() };
     assert_eq!(ADMITTED.load(Ordering::Acquire), 2);
     drop((first, second));
-    reset_admitted();
+    // SAFETY: The sole spool has invalidated pending writes and still owns its observer frontier.
+    unsafe { reset_admitted() };
     assert_eq!(ADMITTED.load(Ordering::Acquire), 0);
     let lost = crate::interval::seal(3, Some(1));
     assert!(
@@ -333,7 +350,8 @@ fn a_lost_queue_copies_its_intervals_again_and_reports_the_lost_output() {
             (3, 2, 0, b"next".to_vec()),
         ]
     );
-    reset_admitted();
+    // SAFETY: The sole spool has invalidated pending writes and still owns its observer frontier.
+    unsafe { reset_admitted() };
     assert!(
         crate::interval::seal(4, Some(1))
             .health

@@ -92,7 +92,10 @@ impl Captured {
             + self.balances.capacity() * size_of::<BalanceSnapshot>()
             + self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities) {
+    /// # Safety
+    /// Only the serial sizing owner may replace the live political log. Exclude competing presizers
+    /// and detach throughout.
+    pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
         if let Some(Ok(drain)) = self.drained {
             grow_capacity(&mut capacity.entries, drain.pending);
             grow_capacity(&mut capacity.bytes, drain.keys_required);
@@ -162,7 +165,10 @@ pub struct Ledger {
     scratch: Option<Box<Captured>>,
 }
 impl Ledger {
-    pub fn assemble_owned(
+    /// # Safety
+    /// Only the originating spool may consume this captured political interval, before its observer
+    /// storage is torn down.
+    pub unsafe fn assemble_owned(
         &mut self,
         branch: BranchId,
         hour: i32,

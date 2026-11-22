@@ -6,4 +6,4 @@ The spool independently records work above 100 ms. Its hour is absent for inter-
 
 Spool phases normally wait out the game’s hourly tick before starting. The idle wait and phases explicitly admitted inside the tick bypass that gate. Gate wait has its own final timing slot, so it remains visible without inflating an operation’s elapsed wall time. Test-only counters record which thread starts each phase.
 
-[Slow-hours status](../../crates/collector/src/slow_hours.rs) · [Phase accounting](../../crates/collector/src/spool_phases.rs)
+[Slow-hours status](../../crates/collector-spool/src/slow_hours.rs) · [Phase accounting](../../crates/collector-workers/src/spool_phases.rs)

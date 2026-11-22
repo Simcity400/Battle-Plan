@@ -12,4 +12,4 @@ Retirement transfers storage on the game thread and wakes an idle worker even wh
 
 The loader prepares queues and pools before callbacks can reach them, maintains the worker watchdog and releases ownership only after quiescence. Failed detach retains anything reachable from a callback. A competing unpublished initializer may drop only its own allocation. Normal detach stops and joins decode, then the loader drains any remaining jobs synchronously with a fresh memo while the spool still consumes ready frames. The worker or that quiescent loader is the only retirement consumer. Detach drains decode before the spool so queued hours keep their order.
 
-[Decode and payload handoff](../../crates/collector/src/decode.rs) · [Handoff and retirement regressions](../../crates/collector/src/decode/tests.rs) · [Authoritative table cadence](../../crates/replay-data/src/cadence.rs)
+[Decode and payload handoff](../../crates/collector-capture/src/decode.rs) · [Handoff and retirement regressions](../../crates/collector-capture/src/decode/tests.rs) · [Authoritative table cadence](../../crates/replay-data/src/cadence.rs)

@@ -27,13 +27,19 @@ pub fn on_wait(hurry: fn()) {
     let _ = HURRY.set(hurry);
 }
 
-pub fn begin() -> bool {
+/// # Safety
+/// Only the admitted hourly capture may take the process-wide gate. A successful acquisition must
+/// be released once after capture finishes, including if the beside worker takes ownership.
+pub unsafe fn begin() -> bool {
     STATE
         .compare_exchange(IDLE, RUNNING, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
 }
 
-pub fn end() {
+/// # Safety
+/// Release only the live gate acquired by this hour's successful begin, after the protected capture
+/// finishes or is refused and before allowing the next hour.
+pub unsafe fn end() {
     STATE.store(IDLE, Ordering::SeqCst);
     if WAITING.load(Ordering::SeqCst) != 0 {
         unsafe { WakeByAddressAll(STATE.as_ptr().cast()) };
@@ -124,8 +130,15 @@ mod tests {
                 ARRIVED.store(true, Ordering::Release);
             }
         });
-        assert!(begin());
-        assert!(!begin());
+        assert!(
+            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+            // refusal.
+            unsafe { begin() }
+        );
+        assert!(!
+        // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+        // refusal.
+        unsafe { begin() });
         let waiter = std::thread::spawn(|| {
             IS_WRITER.set(true);
             drop(enter(Family::CommandBatch));
@@ -135,12 +148,17 @@ mod tests {
         }
         assert!(running());
         assert_ne!(waiting(), 0);
-        end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { end() };
         waiter.join().unwrap();
         assert_eq!(waits(WRITER), 1);
         drop(enter(Family::CommandBatch));
         assert_eq!(waits(WRITER), 1);
-        assert!(begin());
+        assert!(
+            // SAFETY: The admitted producer owns this hour's gate and settles it on completion or
+            // refusal.
+            unsafe { begin() }
+        );
         exempt(EXEMPT_WRITER, true);
         pass(EXEMPT_WRITER);
         assert_eq!(waits(EXEMPT_WRITER), 0);
@@ -158,7 +176,8 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(waits(WRITER), 1);
-        end();
+        // SAFETY: This is the release of the admitted hour's gate after its protected work ends.
+        unsafe { end() };
         holder.join().unwrap();
         assert_eq!(waits(EXEMPT_WRITER), 1);
         hold(EXEMPT_WRITER);

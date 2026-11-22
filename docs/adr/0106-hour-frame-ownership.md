@@ -16,4 +16,4 @@ Core capacity slots count countries, provinces, links, states, divisions, wars, 
 
 Record the session’s capture mode and score setting before installing hooks. When score is off, no score operand reads are added. The recorder can wait on the event that says the game is between ticks before packing. Use no processor number from several processor groups because their numbers are group-relative and the recording’s core table cannot place them.
 
-[Frame pool, clock and capture ownership](../../crates/collector/src/sampling.rs)
+[Frame pool, clock and capture ownership](../../crates/collector-capture/src/sampling.rs)
