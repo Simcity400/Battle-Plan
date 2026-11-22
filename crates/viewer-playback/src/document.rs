@@ -677,6 +677,14 @@ impl DumpOverlay<'_> {
 }
 
 impl PreparedOverlay {
+    pub fn motion_layout(&self) -> Option<&viewer_foundation::map::counter_move::DrawnLayout> {
+        self.icons.motion_layout()
+    }
+
+    pub fn set_motion_continuity(&mut self, continuity: u64) {
+        self.icons.set_motion_continuity(continuity);
+    }
+
     pub fn set_pressed(
         &mut self,
         pressed: Option<viewer_foundation::unit_handle::Unit>,
