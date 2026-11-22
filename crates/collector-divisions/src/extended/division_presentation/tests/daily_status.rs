@@ -142,12 +142,17 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
                 hour
             };
             assert_eq!(row.experience, Recorded::Value(Some(i64::from(sample))));
-            let Recorded::Value(Some(footer)) = row.supply else {
+            let Recorded::Value(Some(ref footer)) = row.supply else {
                 panic!("owned footer");
             };
             assert_eq!(footer.asked, i64::from(sample) * 100_000);
+            assert_eq!(row.supply_ratio, None);
             assert_eq!(
-                row.supply_ratio,
+                row.supply_ratio_exact,
+                Recorded::Value(Some(i64::from(hour) * 10_000))
+            );
+            assert_eq!(
+                row.displayed_supply_ratio(),
                 Some(DivisionStatusRow::SUPPLY_RATIO_STEP.round(i64::from(hour) * 10_000))
             );
         }

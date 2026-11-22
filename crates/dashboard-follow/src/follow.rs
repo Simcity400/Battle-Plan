@@ -314,6 +314,7 @@ struct Index {
     ordered: Option<Vec<(u128, u32)>>,
     until: Hour,
     status: Option<Status>,
+    withheld: bool,
 }
 
 impl Index {
@@ -556,6 +557,7 @@ impl Engine {
             for changes in step.tables() {
                 self.touch(changes, lanes, step.reset());
             }
+            self.check_withheld(lanes);
             lanes.iter().for_each(|lane| self.reasons.learn(lane));
             self.follow_holders(lanes);
             self.activate(lanes, &mut stats);
@@ -715,7 +717,7 @@ impl Engine {
             }
             followed.phase = Phase::Active;
             let head = evaluate::head(lane);
-            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), ..Index::default() });
+            let index = self.tables.entry(followed.table).or_insert_with(|| Index { until: Hour::MAX, status: Some(lane.status().0), withheld: lane.withheld().is_some(), ..Index::default() });
             index.queries.push(query);
             let keyed = match &followed.query {
                 Query::Cells { rows: Rows::Keys(keys) | Rows::Live(keys), .. } => {
@@ -774,6 +776,7 @@ impl Engine {
         let (slab, marked) = (&mut self.slab, &mut self.marked);
         if changes.reset() {
             index.status = Some(lane.status().0);
+            index.withheld = lane.withheld().is_some();
             index.forget_slots();
             for &query in &index.standing {
                 relist(&self.shared, slab[query].as_mut().expect("a followed list"), lane);
@@ -929,6 +932,18 @@ impl Engine {
         if changes.renumber().is_some() {
             index.forget_slots();
             index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+        }
+    }
+
+    fn check_withheld(&mut self, lanes: &Lanes<'_>) {
+        let (slab, marked) = (&mut self.slab, &mut self.marked);
+        for (&table, index) in &mut self.tables {
+            let Some(lane) = lanes.get(table) else { continue };
+            let withheld = lane.withheld().is_some();
+            if index.withheld != withheld {
+                index.withheld = withheld;
+                index.queries.iter().for_each(|&query| mark_all(slab, marked, query));
+            }
         }
     }
 

@@ -32,6 +32,16 @@ use std::{
 const USAGE: &str = "playhead-bench <open|check|time|seek|play|join> <recording> [--branch=N (open, play, join) | --run=N | --from=<game hour> --hours=N] [--tables=Name,...] [--select=<file>] [--step=24] [--columns=all|numeric] [--untimed] [--each] [--samples=40] [--threads=4] \
     [--speed=1440] [--hz=60] [--step-threads=1] [--fetch-threads=1] [--ahead=4] [--ring=3] [--check] [--seconds=S] [--flat] [--seek=<frames>] [--seeks=40] [--mirror=all|none] [--second=Table,...] [--second-every=30] [--churn=N] [--churn-new=Table,...] [--join=Table,...] [--trials=12]";
 
+fn period(rate: f64) -> io::Result<Duration> {
+    playhead::frame_period(rate).ok_or_else(|| {
+        invalid(format!(
+            "--hz needs a rate of {} to {} frames a second",
+            playhead::FRAME_RATES.start(),
+            playhead::FRAME_RATES.end()
+        ))
+    })
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -124,7 +134,10 @@ fn main() -> io::Result<()> {
                     "--samples" => options.samples = number()? as usize,
                     "--threads" => options.threads = number()?.clamp(1.0, 64.0) as usize,
                     "--speed" => options.settings.speed = number()?,
-                    "--hz" => options.settings.rate = number()?,
+                    "--hz" => {
+                        options.settings.rate = number()?;
+                        period(options.settings.rate)?;
+                    }
                     "--step-threads" => options.settings.step_threads = number()?.max(1.0) as usize,
                     "--fetch-threads" => options.settings.fetch_threads = number()?.max(1.0) as usize,
                     "--ahead" => options.settings.ahead = number()? as u32,
@@ -1166,7 +1179,7 @@ fn against_sought(pages: &Arc<dyn Pages>, timeline: &Timeline, table: usize, mir
 }
 
 fn run_frames(playhead: &Playhead, consumer: &mut Consumer, rate: f64, seconds: f64, idle: bool) -> io::Result<()> {
-    let frame = Duration::from_secs_f64(1.0 / rate);
+    let frame = period(rate)?;
     let until = Instant::now() + Duration::from_secs_f64(seconds);
     let (mut steps, mut newest, mut quiet) = (Vec::new(), None, 0);
     loop {
@@ -1318,7 +1331,7 @@ fn play(pages: &Arc<dyn Pages>, mut selection: Vec<Declared>, options: &Options)
     let mut applied: Option<Hour> = None;
     let mut epoch = None;
     let mut seed = 0x2545_f491_4f6c_dd1d_u64;
-    let frame = Duration::from_secs_f64(1.0 / settings.rate);
+    let frame = period(settings.rate)?;
     let started = Instant::now();
     playhead.play(settings.speed);
     playhead.seek(timeline.first());

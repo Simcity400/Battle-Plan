@@ -755,7 +755,7 @@ pub(crate) fn measure(
             let mut woke_us = None;
             if !late && index > 0 {
                 let waiting = viewer_foundation::profiling::current_thread_cpu_time();
-                woke_us = wait_until(t0 + Duration::from_secs_f64(due_us / 1e6))
+                woke_us = wait_until(crate::playback_cost::frame_due(t0, due_us / 1e6)?)
                     .map(|woke| woke.duration_since(t0).as_secs_f64() * 1e6);
                 harness_wait_us += thread_us(waiting).unwrap_or(0.0);
             }
