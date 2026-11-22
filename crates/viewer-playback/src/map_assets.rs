@@ -4,9 +4,10 @@ use content_reader_image::native::Decode;
 use content_reader_image::bmp;
 use std::{io, sync::Arc};
 use viewer_world::scene_content::MapAssets;
-use viewer_foundation::{
-    errors::invalid,
-    map::{camera::MapSize, textures::{atlas_lookup, expect_size, load_image, load_map_texture, load_uploadable, sampled_heights, terrain_flag_mask, terrain_id_map, ColorSpace, MapTexture}},
+use viewer_runtime::errors::invalid;
+use viewer_gpu::{
+    camera::MapSize,
+    textures::{atlas_lookup, expect_size, load_image, load_map_texture, load_uploadable, sampled_heights, terrain_flag_mask, terrain_id_map, ColorSpace, MapTexture},
 };
 use viewer_scene_base::post::PostAssets;
 
@@ -123,8 +124,8 @@ pub fn load_with_products(
                 )?,
                 (
                     viewer_aircraft::arrow_shader::load(stack, size, decode, "order labels")?,
-                    viewer_foundation::map::ribbon_content::ArrowTypes::parse(
-                        &stack.read_uncovered(viewer_foundation::map::ribbon_content::MAPARROWS)?,
+                    viewer_gpu::ribbon_content::ArrowTypes::parse(
+                        &stack.read_uncovered(viewer_gpu::ribbon_content::MAPARROWS)?,
                     )?
                     .text_technique,
                 ),

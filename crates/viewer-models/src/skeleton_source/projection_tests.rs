@@ -1,7 +1,7 @@
 use crate::skeleton_source::tests::*;
 use crate::{entity_animation, mesh_pose, AssetKey, ModelMaterial, PaletteJoint, identity, native};
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::map::textures::ColorSpace;
+use viewer_gpu::textures::ColorSpace;
 
 fn refusal(name: &str) -> Option<String> {
     let (mesh, detail) = match name {

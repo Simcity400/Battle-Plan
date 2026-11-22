@@ -1,6 +1,6 @@
 use super::*;
-use viewer_foundation::map::camera::{FOV_Y, Free, Lens, MapDefines, MapSize, Pose};
-use viewer_foundation::map::province_admission::views;
+use viewer_gpu::camera::{FOV_Y, Free, Lens, MapDefines, MapSize, Pose};
+use viewer_gpu::province_admission::views;
 
 const VIEWPORT: [u32; 2] = [1600, 900];
 

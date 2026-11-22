@@ -2,14 +2,14 @@
 use shader_pipeline::gpu::stats::CountedPasses as _;
 use std::sync::Arc;
 use std::{collections::BTreeMap, io};
-use viewer_foundation::map::textures::load_image;
+use viewer_gpu::textures::load_image;
 
 use eframe::wgpu;
 use content_reader_core::{ResolvedLayers, defines::Defines, map::MapData, parser, parser::Value};
 use content_reader_image::{SharedRgba8Image as Rgba8Image, native::Decode};
 use content_reader_regions::regions::StrategicRegion;
 
-use viewer_foundation::map::{
+use viewer_gpu::{
     camera::{Camera, MapSize},
     frame::DayNight,
     gpu_contract::{Targets, invalid, sampler_entry, texture_entry},
@@ -1046,7 +1046,7 @@ impl PostPass {
     ) -> io::Result<Self> {
         let volumes = assets.volumes.clone();
         let program =
-            viewer_foundation::map::device_shared::shared(device, ("post copy", format), || {
+            viewer_runtime::device_shared::shared(device, ("post copy", format), || {
                 CopyProgram::new(device, format)
             });
         let luts = luts::LutRenderer::new(device, queue, assets)?;

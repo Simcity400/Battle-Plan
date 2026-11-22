@@ -106,10 +106,8 @@ fn unavailable_mixed_port_flags_are_counted_and_reported() {
 
 #[test]
 fn the_counter_pass_leaves_a_patrol_here_to_the_mission_icon() {
-    use {
-        viewer_foundation::map::task_force_visual::MissionSkips,
-        viewer_foundation::map::unit_rules::PATROL,
-    };
+    use viewer_unit_reads::task_force_visual::MissionSkips;
+    use viewer_foundation::unit_rules::PATROL;
     let patrol = TaskForceRow {
         id: (6689 << 32) | 51,
         mission: PATROL,

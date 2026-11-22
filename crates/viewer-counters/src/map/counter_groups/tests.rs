@@ -480,7 +480,7 @@ fn a_group_astride_the_seam_means_across_it_rather_than_through_the_map() {
     assert_eq!(groups[0].anchor[0], 0.0);
 }
 
-use viewer_foundation::map::{allegiance::NativeRelations, test_support::allegiance::*};
+use viewer_foundation::{allegiance::NativeRelations, test_support::allegiance::*};
 #[test]
 fn native_grouping_uses_directed_stored_truth_despite_active_war() {
     synthetic_game::enter();
@@ -684,7 +684,7 @@ fn a_group_astride_the_seam_moves_across_it() {
     let mut groups = vec![Group { members: vec![0, 1], anchor: [0.0; 3], track: None }];
     update_anchors(&mut groups, &icons, &levels, &extents(10.0, 10.0));
     let track = groups[0].track.clone().expect("both members move");
-    let at = |hour, fraction| track.at(viewer_foundation::map::anchored::Head { hour, fraction })[0];
+    let at = |hour, fraction| track.at(viewer_gpu::icon_tracks::Head { hour, fraction })[0];
     assert_eq!(groups[0].anchor[0], 0.0, "the mean of the two sits on the seam");
     assert_eq!(at(100, 0.0), 0.0);
     assert_eq!(at(102, 0.0), 2.0, "two units east of the seam");

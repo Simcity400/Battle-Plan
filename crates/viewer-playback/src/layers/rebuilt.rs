@@ -22,10 +22,8 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{
-    perspective::{Choice, Vision},
-    presentation::Continuity,
-};
+use viewer_foundation::perspective::{Choice, Vision};
+use viewer_runtime::presentation::Continuity;
 
 const TICK: Duration = Duration::from_micros(16_667);
 
@@ -218,7 +216,7 @@ impl<P: Send + Sync + 'static> Rebuilt<P> {
         let working = Arc::clone(&shared);
         let maker = timeline::maker(name);
         let worker = std::thread::Builder::new().name(name.into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let worked = std::panic::catch_unwind(AssertUnwindSafe(|| work(&working, &*build, &Rules { name, timed, maker })));
             if let Err(panic) = worked {
                 working.lock().stopped = Some(format!("The {name} worker stopped: {}", panicked(&*panic)));

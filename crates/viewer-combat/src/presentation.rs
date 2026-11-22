@@ -9,7 +9,8 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 use std::io;
-use {super::content::Content as StaticContent, viewer_foundation::map::tables::rows};
+use super::content::Content as StaticContent;
+use viewer_foundation::tables::rows;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum PortraitAsset {

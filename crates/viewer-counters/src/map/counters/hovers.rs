@@ -1,13 +1,13 @@
 
 use super::*;
-use viewer_foundation::map::counter_hovers::gui_authored::Authored;
+use viewer_native_gui::counter_hovers::gui_authored::Authored;
 #[cfg(test)]
-use viewer_foundation::map::gui_resources::contains;
-use viewer_foundation::map::native_gui::Hit;
-use viewer_foundation::map::native_gui::Sheets;
-use viewer_foundation::map::native_gui::container_frame;
+use viewer_runtime::geometry::contains;
+use viewer_native_gui::native_gui::Hit;
+use viewer_native_gui::native_gui::Sheets;
+use viewer_native_gui::native_gui::container_frame;
 #[cfg(test)]
-use viewer_foundation::map::test_support::test_tga_rgba8;
+use viewer_runtime::test_support::test_tga_rgba8;
 
 #[derive(Default)]
 pub(super) struct Sprite {
@@ -32,7 +32,7 @@ pub(super) fn presented(
     origin: [f32; 2],
     quads: &[sprites::Quad],
 ) -> Presented {
-    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
+    let _observe_profile = viewer_runtime::profiling::span("dc_observe");
     let railway_gun = stack.gun.is_some();
     let window = if railway_gun { GUN_WINDOW } else { LAND_WINDOW };
     let Some(root) = inputs.windows.guis.template(window) else {
@@ -135,7 +135,7 @@ pub(super) fn presented(
                 if element.is_named("bar_org") || element.is_named("bar_str") {
                     match container_frame(root, None) {
                         Ok(container) => {
-                            let anchor = viewer_foundation::map::native_gui::control_anchor(
+                            let anchor = viewer_native_gui::native_gui::control_anchor(
                                 icon.orientation,
                                 container.content_size,
                             );
@@ -215,7 +215,7 @@ impl Frame {
 }
 
 fn sprite_hit(inputs: &CounterInputs<'_>, name: &[u8]) -> Result<Hit, &'static str> {
-    use viewer_foundation::map::native_gui::Hit;
+    use viewer_native_gui::native_gui::Hit;
     inputs
         .assets
         .gui
@@ -316,7 +316,7 @@ fn selected_frame(
 }
 
 fn accept_hit(hit: Hit, window: &str, name: &str, refused: &mut Vec<String>) -> bool {
-    use viewer_foundation::map::native_gui::Hit;
+    use viewer_native_gui::native_gui::Hit;
     match hit {
         Hit::Through => false,
         Hit::Frame => true,
@@ -548,7 +548,7 @@ mod tests {
         }"#;
         let guis = native::Guis::new(vec![(
             "test.gui".into(),
-            native::read_at(gui, viewer_foundation::map::test_support::VIEWPORT),
+            native::read_at(gui, viewer_native_gui::test_support::VIEWPORT),
         )]);
         super::super::tests::with_counter_inputs_fixture(
             guis,
@@ -642,7 +642,7 @@ mod tests {
         }"#;
         let guis = native::Guis::new(vec![(
             "test.gui".into(),
-            native::read_at(gui, viewer_foundation::map::test_support::VIEWPORT),
+            native::read_at(gui, viewer_native_gui::test_support::VIEWPORT),
         )]);
         super::super::tests::with_counter_inputs_fixture(
             guis,

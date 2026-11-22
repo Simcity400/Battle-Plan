@@ -4,8 +4,8 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::building_facts::{SlotAdmission, admit_slot, is_floating_harbor_slot};
-use viewer_foundation::table_access::Refusals;
+use viewer_foundation::building_facts::{SlotAdmission, admit_slot, is_floating_harbor_slot};
+use dashboard_text::table_access::Refusals;
 
 use content_reader_core::{
     ResolvedLayers, buildings::BuildingType, buildings::Buildings, buildings::Slot, map::MapData,
@@ -32,19 +32,15 @@ pub use floating::HarbourCounts;
 pub use incremental::{BuildPath, BuildingsBase};
 use incremental::{Chunked, Tally};
 
-use viewer_foundation::table_access::{TokenKeys, TokenNames};
+use dashboard_text::table_access::{TokenKeys, TokenNames};
 use viewer_models::{
     entity_animation::{BUILDING_DAMAGED, BUILDING_IDLE},
     ModelInstance,
     ModelLibrary,
     WATER_HEIGHT,
 };
-use viewer_foundation::map::{
-    camera::Camera,
-    perspective::Vision,
-    province_admission::{Admission, province_boxes},
-    tables::{core, rows},
-};
+use viewer_gpu::{camera::Camera, province_admission::{Admission, province_boxes}};
+use viewer_foundation::{perspective::Vision, tables::{core, rows}};
 
 const FLOATING_HARBOR_ENTITY: &str = "floating_harbor_entity";
 pub const FLOATING_HARBOR_VISIBILITY: u8 = 0x96;
@@ -109,7 +105,7 @@ impl Defines {
     }
 }
 
-use viewer_foundation::map::province_map::{ProvinceMap, pixel};
+use viewer_gpu::province_map::{ProvinceMap, pixel};
 
 pub struct CityTerrain<'a> {
     pub width: u32,
@@ -305,8 +301,8 @@ pub struct BuildingHistory {
     dirty: bool,
     changed: bool,
     candidates: Vec<u32>,
-    admitted_against: viewer_foundation::map::camera::Hold,
-    candidates_for: Option<(Camera, [u32; 2], viewer_foundation::map::camera::Slack, Arc<[ProvinceSlots]>)>,
+    admitted_against: viewer_gpu::camera::Hold,
+    candidates_for: Option<(Camera, [u32; 2], viewer_gpu::camera::Slack, Arc<[ProvinceSlots]>)>,
     admitted: Vec<u32>,
     admitted_for: Option<(Camera, [u32; 2])>,
     counts: BuildingCounts,
@@ -476,7 +472,7 @@ impl BuildingHistory {
             }
             _ => false,
         };
-        use viewer_foundation::view_record::add;
+        use viewer_runtime::view_record::add;
         if inside && !self.changed {
             add("map buildings", "stream_kept", 1);
             return None;
@@ -599,7 +595,7 @@ impl BuildingHistory {
                 state.destroyed = destroyed;
                 state.variant = selection.variant;
                 if !budget.take() {
-                    viewer_foundation::view_record::add("map buildings", "history_deferred", 1);
+                    viewer_runtime::view_record::add("map buildings", "history_deferred", 1);
                     self.dirty = true;
                     settled = false;
                     continue;
@@ -618,8 +614,8 @@ impl BuildingHistory {
             if !steady && !entity.disable_grow_animation {
                 let previous = state.entity.map_or(0.0, |(_, old)| old.scale);
                 instance.scale = (previous + delta * prepared.popup_speed).min(1.0);
-                if viewer_foundation::view_record::on() && instance.scale < 1.0 {
-                    viewer_foundation::view_record::add("map buildings", "growing", 1);
+                if viewer_runtime::view_record::on() && instance.scale < 1.0 {
+                    viewer_runtime::view_record::add("map buildings", "growing", 1);
                 }
                 self.dirty |= instance.scale < 1.0;
                 settled &= instance.scale >= 1.0 && prepared.popup_speed >= 0.0;
@@ -637,7 +633,7 @@ impl BuildingHistory {
     }
 
     pub fn collect(&self, rect: Option<[f32; 4]>, width: f32) -> Vec<Placed> {
-        viewer_foundation::view_record::add("map buildings", "collects", 1);
+        viewer_runtime::view_record::add("map buildings", "collects", 1);
         let Some(rect) = rect else {
             return self
                 .tiles
@@ -660,7 +656,7 @@ impl BuildingHistory {
                 out.extend(slots.values().copied());
             }
         }
-        viewer_foundation::view_record::add("map buildings", "collected", out.len() as u64);
+        viewer_runtime::view_record::add("map buildings", "collected", out.len() as u64);
         out
     }
 }
@@ -714,7 +710,7 @@ impl BuildingFrame<'_> {
         self.through(u32::MAX, budget);
         self.history.prepared = self.prepared;
         {
-            use viewer_foundation::view_record::add;
+            use viewer_runtime::view_record::add;
             let counts = std::mem::take(&mut self.history.counts);
             add("map buildings", "groups_admitted", counts.groups);
             add("map buildings", "groups_applied", counts.applied);
@@ -741,7 +737,7 @@ fn place(
         (Some(_), None) => "history_removed",
         _ => "history_changed",
     };
-    viewer_foundation::view_record::add("map buildings", what, 1);
+    viewer_runtime::view_record::add("map buildings", what, 1);
     let key = |(_, instance): Placed| {
         (
             (instance.position[0] / BUILDING_TILE).floor() as i32,
@@ -792,7 +788,7 @@ fn slot_groups(
 type SlotKey = (u32, String);
 
 pub struct MapBuildingAssets {
-    pub facts: Arc<viewer_foundation::map::building_facts::BuildingFacts>,
+    pub facts: Arc<viewer_foundation::building_facts::BuildingFacts>,
     pub library: ModelLibrary,
     pub defines: Defines,
     groups: Arc<[ProvinceSlots]>,
@@ -1163,7 +1159,7 @@ impl MapBuildingAssets {
             candidates,
             entities,
             damaged_entities,
-            facts: Arc::new(viewer_foundation::map::building_facts::BuildingFacts {
+            facts: Arc::new(viewer_foundation::building_facts::BuildingFacts {
                 ordered,
                 province_sites,
                 keys,
@@ -1195,7 +1191,7 @@ impl MapBuildingAssets {
             frame,
             vision,
             city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
     }
 
@@ -1204,7 +1200,7 @@ impl MapBuildingAssets {
         frame: &DecodedFrame,
         vision: &Vision,
         city: &CityTerrain<'_>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary)> {
         let built = self.build(frame, vision, city, Err("no base was offered"), spans)?;
         Ok((built.prepared, built.summary))
@@ -1216,7 +1212,7 @@ impl MapBuildingAssets {
         vision: &Arc<Vision>,
         city: &CityTerrain<'_>,
         base: Option<&BuildingsBase>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary, BuildingsBase)> {
         self.field_patched_bound(
             replay_frame::frame::HourInput::new(frame),
@@ -1235,7 +1231,7 @@ impl MapBuildingAssets {
         city: &CityTerrain<'_>,
         bank: &Arc<Vec<bool>>,
         base: Option<&BuildingsBase>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary, BuildingsBase)> {
         self.field_patched_input(
             replay_frame::frame::HourInput::new(frame),
@@ -1254,7 +1250,7 @@ impl MapBuildingAssets {
         city: &CityTerrain<'_>,
         bank: &Arc<Vec<bool>>,
         base: Option<&BuildingsBase>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary, BuildingsBase)> {
         self.field_patched_bound(input, vision, city, Some(bank), base, spans)
     }
@@ -1266,7 +1262,7 @@ impl MapBuildingAssets {
         city: &CityTerrain<'_>,
         bank: Option<&Arc<Vec<bool>>>,
         base: Option<&BuildingsBase>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<(PreparedBuildings, MapBuildingSummary, BuildingsBase)> {
         let bank = bank
             .map(|bank| incremental::CityBank::new(city, bank))
@@ -1291,7 +1287,7 @@ impl MapBuildingAssets {
         vision: &Vision,
         city: &CityTerrain<'_>,
         base: Result<&BuildingsBase, &'static str>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<incremental::Built> {
         self.build_with_city(frame, vision, city, None, base, spans)
     }
@@ -1303,7 +1299,7 @@ impl MapBuildingAssets {
         city: &CityTerrain<'_>,
         shared_city: Option<&map_display_data::retained::Retained<Vec<bool>>>,
         base: Result<&BuildingsBase, &'static str>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<incremental::Built> {
         self.build_with_input(
             replay_frame::frame::HourInput::new(frame),
@@ -1322,7 +1318,7 @@ impl MapBuildingAssets {
         city: &CityTerrain<'_>,
         shared_city: Option<&map_display_data::retained::Retained<Vec<bool>>>,
         base: Result<&BuildingsBase, &'static str>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<incremental::Built> {
         let frame = input.frame();
         let tokens = spans.measure("buildings.tokens", |_| {
@@ -1783,7 +1779,7 @@ fn hub_left_to_another_layer(
     }
 }
 
-use viewer_foundation::map::building_facts::Scope;
+use viewer_foundation::building_facts::Scope;
 
 #[cfg(test)]
 fn raid_targets(frame: &DecodedFrame) -> Option<BTreeMap<Scope, &[u8]>> {
@@ -1887,7 +1883,7 @@ pub fn detected(
     ours: u32,
     target: impl FnOnce(Scope) -> Option<Option<bool>>,
 ) -> Option<bool> {
-    viewer_foundation::map::building_facts::detected(
+    viewer_foundation::building_facts::detected(
         (row.building_type, row.location, row.status_flags, row.country),
         controller,
         link,
@@ -2014,7 +2010,7 @@ impl MapBuildingAssets {
     }
 
     pub fn token_class(&self, token: u32, literal: Option<Option<&[u8]>>, lexical_complete: bool) -> TokenClass {
-        use viewer_foundation::table_access::TokenError;
+        use dashboard_text::table_access::TokenError;
         let unnamed = |error: TokenError| TokenClass::Refused { reason: error.to_string(), unnamed: true };
         if token == 0 {
             return unnamed(TokenError::Rejected);

@@ -13,11 +13,8 @@ use content_reader_core::map::ProvinceKind;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, NavalCombatSideDetails, NavalProvinceCombatRow, Opaque, TableId};
 use viewer_counters::map::counters::NavalMarkerValues;
-use viewer_foundation::{
-    engaged::Engaged,
-    engagement_history::{Covered, History, NAVAL},
-    map::perspective::{Choice, Country, Vision},
-};
+use viewer_engagements::{engaged::Engaged, engagement_history::{Covered, History, NAVAL}};
+use viewer_foundation::perspective::{Choice, Country, Vision};
 
 struct Sea;
 

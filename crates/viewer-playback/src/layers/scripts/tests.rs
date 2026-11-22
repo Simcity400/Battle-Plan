@@ -24,7 +24,7 @@ use replay_data::{
 };
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
-use viewer_foundation::{map::perspective, trigger_content::TriggerContent};
+use viewer_foundation::{perspective, trigger_content::TriggerContent};
 use viewer_raids::map::raids::{self, test_support};
 
 const RECORDING: Recording = Recording { branch: 3 };

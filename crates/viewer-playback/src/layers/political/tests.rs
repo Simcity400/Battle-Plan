@@ -349,7 +349,7 @@ fn naval_turn(name: &str) -> crate::playhead_host::units::Units {
     use replay_columnar::{manifest::Status, state::Cell, store::Store};
     use replay_data::rows::TableId;
     let column = crate::layers::recorded::column;
-    let mut tables: Vec<TableId> = viewer_foundation::map::perspective::VISION_TABLES.to_vec();
+    let mut tables: Vec<TableId> = viewer_foundation::perspective::VISION_TABLES.to_vec();
     tables.extend([TableId::NavalSupremacy, TableId::RelationTuples, TableId::Provinces, TableId::CountryAppearance, TableId::Autonomy, TableId::StateFlags, TableId::States]);
     tables.sort_unstable();
     tables.dedup();
@@ -392,7 +392,7 @@ fn naval_dated_with_its_hour(name: &str, whole: bool) -> Vec<replay_data::Hour> 
         playhead_host::{MapSide, open},
     };
     use std::collections::{BTreeMap, BTreeSet};
-    use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+    use viewer_foundation::visibility::{FogContent, Topology, test_defines};
     let definition = |id, kind| (id, ProvinceDefinition { id, rgb: [0; 3], kind, continent: 0 });
     let map = MapData { width: 2, height: 1, province_ids: vec![1, 2], definitions: [definition(1, ProvinceKind::Land), definition(2, ProvinceKind::Sea)].into_iter().collect(), country_colors: Default::default() };
     let empty = |class| BorderMesh { class, chunks: vec![], coarse_chunks: vec![], draws: vec![] };

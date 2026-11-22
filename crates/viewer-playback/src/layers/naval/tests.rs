@@ -25,7 +25,7 @@ fn content() -> Arc<Content> {
 }
 
 fn vision_content() -> Arc<vision::Content> {
-    use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+    use viewer_foundation::visibility::{FogContent, Topology, test_defines};
     let neighbors = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() })))
 }
@@ -81,7 +81,7 @@ impl Truth {
 }
 
 fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::units::Units {
-    let mut tables: Vec<TableId> = viewer_foundation::map::perspective::VISION_TABLES.to_vec();
+    let mut tables: Vec<TableId> = viewer_foundation::perspective::VISION_TABLES.to_vec();
     tables.extend(reads::TABLES);
     tables.sort_unstable();
     tables.dedup();

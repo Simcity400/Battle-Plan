@@ -1,8 +1,5 @@
 
-use {
-    viewer_foundation::map::province_map::HeightField,
-    viewer_foundation::map::ribbon_geometry::smooth_sharp_turns,
-};
+use viewer_gpu::{province_map::HeightField, ribbon_geometry::smooth_sharp_turns};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -69,7 +66,7 @@ pub fn build(controls: &[[f32; 3]], size: f32, heights: HeightField<'_>) -> Resu
                 (t, t + increment)
             };
             let point = |t| {
-                viewer_foundation::map::movement_routes::catmull_rom(
+                viewer_unit_reads::movement_routes::catmull_rom(
                     window[0], window[1], window[2], window[3], t,
                 )
             };

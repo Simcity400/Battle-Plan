@@ -1,5 +1,5 @@
 use super::*;
-use viewer_foundation::map::presentation::Continuity;
+use viewer_runtime::presentation::Continuity;
 
 fn lifetime(_: usize, seed: u32) -> f32 {
     3.0 + (seed % 3) as f32

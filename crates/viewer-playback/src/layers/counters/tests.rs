@@ -22,7 +22,7 @@ use std::{
     },
 };
 use viewer_counters::map::counters::Member;
-use viewer_foundation::map::perspective::{Choice, Country, Sight, Vision};
+use viewer_foundation::perspective::{Choice, Country, Sight, Vision};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Default)]
@@ -266,7 +266,7 @@ fn a_division_changed_in_a_step_is_marked_once_and_settles_to_the_composed_value
     assert_eq!(member(&side, 101).unwrap().1.shared_vision, Ok(false));
     assert_eq!(
         first.status.supply_ratio,
-        viewer_foundation::map::counter_status::SupplyRatio::Interval([80_000, 80_999]),
+        viewer_unit_reads::counter_status::SupplyRatio::Interval([80_000, 80_999]),
         "stored in units of its display step, a thousandth"
     );
     assert!(!member(&side, 101).unwrap().1.bars, "no status row: no bars");
@@ -297,13 +297,13 @@ fn exact_supply_ratio_is_preserved_without_display_step_rounding_and_tracks_sub_
     side.settle_all().unwrap();
     assert_eq!(
         member(&side, 100).unwrap().1.status.supply_ratio,
-        viewer_foundation::map::counter_status::SupplyRatio::Exact(35_499)
+        viewer_unit_reads::counter_status::SupplyRatio::Exact(35_499)
     );
     reach(&mut side, 204);
     settled_equals_composed(&mut side);
     assert_eq!(
         member(&side, 100).unwrap().1.status.supply_ratio,
-        viewer_foundation::map::counter_status::SupplyRatio::Exact(35_500)
+        viewer_unit_reads::counter_status::SupplyRatio::Exact(35_500)
     );
 }
 
@@ -524,7 +524,10 @@ fn reading_side() -> MapSide {
 }
 
 fn reading_side_with(fed: bool, more: impl Fn(u32, &mut Store)) -> MapSide {
-    use viewer_foundation::map::{perspective::VISION_TABLES, visibility::{FogContent, Topology, test_defines}};
+    use viewer_foundation::{
+        perspective::VISION_TABLES,
+        visibility::{FogContent, Topology, test_defines},
+    };
     let mut tables: Vec<TableId> = read();
     tables.extend(VISION_TABLES.iter().copied().filter(|table| !tables.contains(table)).collect::<Vec<_>>());
     let kinds = replay::columnar_frames::schema().unwrap();
@@ -969,7 +972,7 @@ fn moved_hours_are_read_against_the_mirrors_before_each_step_across_a_pack_and_a
         "A's deletion and 3's birth in its slot, written in one hour, are one step"
     );
     let mut mirrors = crate::playhead_host::mirror::Mirrors::default();
-    let mut moved = viewer_foundation::map::counter_move::MovedHours::default();
+    let mut moved = viewer_unit_reads::counter_move::MovedHours::default();
     for step in &steps {
         layer.moved_at(step, &mirrors, &mut moved);
         for changes in step.tables().iter().filter(|changes| changes.reset()) {

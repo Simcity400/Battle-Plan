@@ -2,8 +2,8 @@ use super::*;
 use fixed::SCALE;
 use std::cell::Cell;
 use std::cell::RefCell;
-use viewer_foundation::map::test_support::localisation::loaded;
-use viewer_foundation::map::text::GlyphBox;
+use viewer_foundation::test_support::localisation::loaded;
+use viewer_native_gui::text::GlyphBox;
 
 struct Fixed;
 
@@ -469,7 +469,7 @@ fn order_label_color_runs_preserve_colors_and_break_kerning() {
     assert_eq!(run[0].color, None);
     assert_eq!(
         run[1].color,
-        Some(viewer_foundation::map::native_text::packed([0.2, 0.8, 0.3, 1.0]))
+        Some(viewer_native_gui::native_text::packed([0.2, 0.8, 0.3, 1.0]))
     );
     assert_eq!(run[2].color, None);
     let pair = centred_run(&Colored, "A\u{11}GV\u{11}!", 1.0);

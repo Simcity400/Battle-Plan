@@ -6,8 +6,8 @@ use replay_frame::frame::TableView;
 use std::collections::HashSet;
 use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Instant};
-use viewer_foundation::map::presentation::Target;
-use viewer_foundation::map::ui_scale::Setting;
+use viewer_runtime::presentation::Target;
+use viewer_gpu::ui_scale::Setting;
 
 impl Viewer {
     pub(super) fn embedded_logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -380,7 +380,7 @@ impl Viewer {
                 }
             }
             MapAction::FrameLimit { hz } => {
-                viewer_foundation::map::frame_limit::limit_to(hz);
+                viewer_runtime::frame_limit::limit_to(hz);
             }
             MapAction::UiScale { scale } => {
                 self.ui_scale = Setting::from_stored(scale);
@@ -543,7 +543,7 @@ impl Viewer {
         let spawned = std::thread::Builder::new()
             .name("visual mod check".into())
             .spawn_carried(move || {
-                let _stage = viewer_foundation::load_record::stage("visual_check");
+                let _stage = viewer_runtime::load_record::stage("visual_check");
                 if reload_settings {
                     service.reload_map_settings();
                 }
@@ -558,7 +558,7 @@ impl Viewer {
                             .push("the content folders are not set".to_owned());
                         return false;
                     };
-                    let stage = viewer_foundation::load_record::stage("visual_check.revision");
+                    let stage = viewer_runtime::load_record::stage("visual_check.revision");
                     let now = content_reader_core::content::visual::revision(
                         options, selected, recorded, &cancel,
                     );

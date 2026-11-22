@@ -1,6 +1,6 @@
 use super::*;
 use content_reader_core::{province_graph::Crossing, province_graph::ProvinceGraph};
-use viewer_foundation::map::ribbon_content::ArrowType;
+use viewer_gpu::ribbon_content::ArrowType;
 
 fn links() -> Vec<CountryLinkRow> {
     [(10, 1), (11, 1), (20, 2), (30, 3)]

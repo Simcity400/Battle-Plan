@@ -3,15 +3,15 @@
 use viewer_models::entity_animation::Clock;
 use std::{collections::BTreeMap, io, sync::Arc};
 #[cfg(test)]
-use viewer_foundation::map::camera::MapDefines;
+use viewer_gpu::camera::MapDefines;
 #[cfg(test)]
-use viewer_foundation::map::camera::MapSize;
+use viewer_gpu::camera::MapSize;
 #[cfg(test)]
-use viewer_foundation::map::camera::Placement;
+use viewer_gpu::camera::Placement;
 #[cfg(test)]
-use viewer_foundation::map::tables::core;
+use viewer_foundation::tables::core;
 #[cfg(test)]
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenNames;
 
 use content_reader_core::{ResolvedLayers, cities::Cities};
 use content_reader_image::{IndexedImage, native::Decode};
@@ -29,7 +29,7 @@ use viewer_models::{
     ModelInstance,
     ModelLibrary,
 };
-use viewer_foundation::map::{
+use viewer_gpu::{
     camera::Camera,
     province_admission::{Admission, province_boxes},
     province_map::{HeightField, ProvinceMap},
@@ -349,7 +349,7 @@ impl Damage {
             frame,
             types,
             available,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
     }
 
@@ -358,7 +358,7 @@ impl Damage {
         frame: &DecodedFrame,
         types: &[BuildingType],
         available: &BTreeMap<(bool, u32, usize), &BuildingRow>,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> Self {
         let read = (|| -> io::Result<Self> {
             let provinces = spans.measure("buildings.damage_validate", |_| {
@@ -619,7 +619,7 @@ impl Presentation {
                 }
                 *admitted = shown;
                 membership_changed = true;
-                viewer_foundation::view_record::add(
+                viewer_runtime::view_record::add(
                     "city sprawl",
                     if shown { "history_groups_admitted" } else { "history_groups_let_go" },
                     1,
@@ -695,14 +695,14 @@ impl Presentation {
             }
             placed.push((city.mesh, instance));
         }
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             add("city sprawl", "history_groups", self.groups.len() as u64);
             add("city sprawl", "history_active", self.active.len() as u64);
             add("city sprawl", "history_walked", 1);
         }
         if self.placed.as_ref() == Some(&placed) {
-            viewer_foundation::view_record::add("city sprawl", "field_same_placement", 1);
+            viewer_runtime::view_record::add("city sprawl", "field_same_placement", 1);
             return None;
         }
         self.placed = Some(placed.clone());
@@ -711,8 +711,8 @@ impl Presentation {
 
     pub fn clock_records(&mut self) -> &Arc<[ClockRecord]> {
         if std::mem::take(&mut self.clocks_changed) {
-            let _span = viewer_foundation::profiling::span("city_clock_records");
-            viewer_foundation::view_record::add("city sprawl", "clock_records_rebuilt", 1);
+            let _span = viewer_runtime::profiling::span("city_clock_records");
+            viewer_runtime::view_record::add("city sprawl", "clock_records_rebuilt", 1);
             self.clock_records = self
                 .active
                 .iter()
@@ -1179,7 +1179,7 @@ mod tests {
         let camera = Placement {
             center: [10.0, 10.0],
             height: 60.0,
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         }
         .on(MapSize::TEST, MapDefines::test());
         let instance = scene.cities[0].instance;
@@ -1343,7 +1343,7 @@ mod tests {
         use viewer_models::entity_animation::{Clip, Node, Rig};
         use viewer_models::ModelPass;
         use content_reader_core::mesh;
-        use viewer_foundation::map::camera::{Free, Lens, Pose};
+        use viewer_gpu::camera::{Free, Lens, Pose};
         content_reader_core::test_game::enter();
         let rigs: Vec<_> = (0..9)
             .map(|index| {

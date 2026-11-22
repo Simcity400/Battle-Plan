@@ -8,7 +8,7 @@ use content_reader_core::{buildings::BuildingType, gui::native, parser::Item};
 use replay_data::rows::{BuildingRow, ProvinceRow, Recorded, StateBuildingInputRow, StateRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{building_facts, perspective::Vision};
+use viewer_foundation::{building_facts, perspective::Vision};
 
 const RAILWAY: &str = "rail_way";
 const GUN_EMPLACEMENT_FEATURE: u32 = 1 << 13;

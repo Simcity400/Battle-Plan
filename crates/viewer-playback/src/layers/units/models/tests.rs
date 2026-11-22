@@ -21,7 +21,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 use viewer_unit_models::{trade_routes::ConvoyLine, unit_models::PreparedModels};
 
 #[derive(Default)]

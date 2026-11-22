@@ -3,9 +3,9 @@ use content_reader_image::IndexedImage;
 use content_reader_image::native::Decode;
 use std::io;
 #[cfg(test)]
-use viewer_foundation::map::province_admission::admits_box;
+use viewer_gpu::province_admission::admits_box;
 use viewer_models::{entity_animation, ModelField, ModelInstance, ModelLibrary, strike_effects};
-use viewer_foundation::map::{camera::Camera, province_admission::Admission};
+use viewer_gpu::{camera::Camera, province_admission::Admission};
 
 pub struct FrameAssets {
     pub library: ModelLibrary,
@@ -358,7 +358,7 @@ fn buckets_use_first_inclusive_match_and_native_edge_extensions() {
 
 #[test]
 fn ambient_buckets_keep_the_camera_side_margin() {
-    use viewer_foundation::map::camera::{MapDefines, MapSize, Placement as CameraPlacement};
+    use viewer_gpu::camera::{MapDefines, MapSize, Placement as CameraPlacement};
 
     let bounds = buckets([MapSize::TEST.width, MapSize::TEST.height])[5];
     for (distance, expected) in [(84., 1), (104., 0)] {

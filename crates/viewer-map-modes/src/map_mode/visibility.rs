@@ -1,5 +1,5 @@
 
-use viewer_foundation::map::mode_visibility::{PriorityTable, RaidReach, UnitKinds, Visibility};
+use viewer_foundation::mode_visibility::{PriorityTable, RaidReach, UnitKinds, Visibility};
 
 use super::{MapMode, Stock};
 

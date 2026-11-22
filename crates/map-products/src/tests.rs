@@ -232,7 +232,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
             &assets,
             &choice(),
             &city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap()
         .0;
@@ -246,7 +246,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
             &assets,
             &choice(),
             &city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap()
         .0;
@@ -259,7 +259,7 @@ fn building_bank_survives_dependency_binding_changes_and_replacement() {
             &replacement,
             &choice(),
             &city,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
         .unwrap()
         .0;
@@ -708,11 +708,11 @@ impl Original<'_> {
     }
     fn impact_place(&self, province: u32) -> Option<([f32; 3], [f32; 4])> {
         Some((
-            viewer_foundation::map::counter_anchors::stack_anchor(
+            viewer_unit_reads::counter_anchors::stack_anchor(
                 &self.anchors,
                 &self.default_anchors,
                 province,
-                viewer_foundation::map::unit_rules::STANDSTILL,
+                viewer_foundation::unit_rules::STANDSTILL,
             )?,
             *self.bounds.get(&province)?,
         ))
@@ -723,7 +723,7 @@ impl Original<'_> {
     ) -> viewer_map_text::animated_map_text::events::Prepared {
         use viewer_map_text::animated_map_text::events::{Context, Prepared};
         let view = vision.ours();
-        match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
+        match dashboard_text::table_access::rows::<replay_data::rows::tables::MapEvents>(
             self.frame,
         ) {
             Ok(intervals) => Prepared::new(
@@ -840,7 +840,7 @@ impl Original<'_> {
     }
     pub fn battle_sounds(&self) -> Option<viewer_audio::Battles> {
         use replay_data::rows::tables;
-        use viewer_foundation::table_access::{Available, rows};
+        use dashboard_text::table_access::{Available, rows};
         let audio = self.content.audio.as_ref()?;
         audio.battle.as_ref()?;
         let mut refusals = Vec::new();
@@ -1298,7 +1298,7 @@ fn original_weather_field(frame: &DecodedFrame) -> io::Result<map_display_data::
         hour: frame.hour,
         ..Default::default()
     };
-    for row in viewer_foundation::table_access::rows::<row_tables::WeatherRegions>(frame)?.rows() {
+    for row in dashboard_text::table_access::rows::<row_tables::WeatherRegions>(frame)?.rows() {
         if let Some(kind) = [
             row.light_rain,
             row.heavy_rain,
@@ -1636,8 +1636,11 @@ fn evidence_changes_without_inventing_a_value_or_a_new_country_lifetime() {
 
 #[test]
 fn weather_projection_reads_only_the_recorded_map_scope() {
-    use viewer_foundation::map::test_support::{
-        assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+    use viewer_foundation::test_support::{
+        assert_reads_recorded,
+        complete_frame,
+        map_scoped,
+        put_sample_campaign,
     };
     let mut frame = complete_frame(11, |table| {
         replay_data::rows::sample_extended_table(table, 0)
@@ -1654,7 +1657,7 @@ fn direct_owned_vision_keeps_the_old_keyed_source_census_and_decisions() {
     let stack = fixture("products_vision_old_census");
     let content = content(&stack);
     let frame = frame(1500);
-    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES);
+    let memo = viewer_runtime::memo::Keyed::new(perspective::VISION_TABLES);
     for fog in [false, true] {
         let choice = perspective::Choice {
             country: perspective::Country::Tag("Z1500".into()),
@@ -1701,7 +1704,7 @@ fn vision_core_refusals_keep_the_independent_country_maps_precedence() {
 }
 
 fn fog_content(stack: &Stack) -> ProductContent {
-    use viewer_foundation::map::visibility::{Defines, Topology};
+    use viewer_foundation::visibility::{Defines, Topology};
     let ProductContent {
         reads, mut inputs, ..
     } = content(stack);
@@ -2396,7 +2399,7 @@ fn shared_vision_keeps_the_enforced_census_and_rejects_changed_same_hour_inputs(
     let content = fog_content(&stack);
     let mut frame = fog_frame(1500);
     let choice = perspective::Choice::default();
-    let memo = viewer_foundation::map::memo::Keyed::new(perspective::VISION_TABLES);
+    let memo = viewer_runtime::memo::Keyed::new(perspective::VISION_TABLES);
     let expected =
         perspective::cached_vision(&frame, &choice, FogContent::loaded(&content.fog), &memo)
             .unwrap();

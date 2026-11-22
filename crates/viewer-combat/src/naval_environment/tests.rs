@@ -1,5 +1,5 @@
 use super::*;
-use viewer_foundation::map::test_support::localisation::loaded;
+use viewer_foundation::test_support::localisation::loaded;
 
 #[test]
 fn night_picture_uses_viewer_pause_at_max_recorded_speed() {
@@ -29,7 +29,7 @@ fn custom_sea_grid_keeps_active_template_order_and_signed_words() {
 #[test]
 fn a_regions_custom_sea_comes_from_a_live_combat_else_its_weather_row() {
     use replay_data::rows::{NavalCombatDetailsRow, TableRows, WeatherRegionRow};
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
     let region_of = std::collections::BTreeMap::from([(10, 3)]);
     let weather = |custom_sea| WeatherRegionRow { id: 3, custom_sea, ..Default::default() };
     let mut frame = test_frame(0);
@@ -1118,7 +1118,7 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
         variant_bonus_snapshot_id,
     };
     use std::fs;
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     content_reader_core::test_game::enter();
     let lg_attack = content_reader_core::equipment::stat_index(b"lg_attack").unwrap() as u32;

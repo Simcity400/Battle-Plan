@@ -8,14 +8,9 @@ use replay_data::{
     rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::{
-    map::{
-        perspective::{Resolution, Vision},
-        presentation::Continuity,
-        visibility,
-    },
-    table_access::{Refusals, TokenKeys, TokenNames, refuse},
-};
+use viewer_foundation::{perspective::{Resolution, Vision}, visibility};
+use viewer_runtime::presentation::Continuity;
+use dashboard_text::table_access::{Refusals, TokenKeys, TokenNames, refuse};
 
 use super::{Popup, Style};
 use viewer_models::strike_effects::{Effect, Impact};
@@ -521,7 +516,7 @@ impl Prepared {
         localisation: &Localisation,
         locate: impl Fn(u32) -> Option<([f32; 3], [f32; 4])>,
     ) -> Self {
-        match viewer_foundation::table_access::rows::<tables::MapEvents>(frame) {
+        match dashboard_text::table_access::rows::<tables::MapEvents>(frame) {
             Ok(intervals) => Self::new(
                 &Context::new(frame, vision, content, localisation),
                 intervals.rows(),

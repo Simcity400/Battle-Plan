@@ -1,7 +1,7 @@
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
 use std::io;
-use viewer_foundation::unit_handle::Unit;
+use viewer_runtime::unit_handle::Unit;
 
 const TANK: u64 = 0x4;
 const VEHICLE: u64 = 0x18;
@@ -158,7 +158,7 @@ mod tests {
         ArmyIconInputRow, CountryAppearanceRow, CountryRow, DivisionRow, DivisionTemplateIconRow,
         LandCombatRow, ReservedCountryNamingRow, TableRows,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     #[test]
     fn the_type_mask_chooses_the_effect_and_a_separate_counter_adds_the_general() {

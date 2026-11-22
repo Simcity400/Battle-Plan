@@ -1,26 +1,26 @@
 
 use super::*;
 use replay_data::{rows::ActiveAbilityRow, rows::RailwayGunCounterInputRow};
-use viewer_foundation::map::gui_resources::count_noted;
-use viewer_foundation::map::gui_resources::refused_cause;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::native_gui::{self, lifecycle::Instance};
-use viewer_foundation::map::railway_gun_counter as guns;
-use viewer_foundation::map::sprites::DISABLED;
-use viewer_foundation::map::sprites::hovered_layer;
-use viewer_foundation::map::templates::counter_custom_icon;
+use viewer_native_gui::gui_resources::count_noted;
+use viewer_native_gui::gui_resources::refused_cause;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::native_gui::{self, lifecycle::Instance};
+use viewer_unit_reads::railway_gun_counter as guns;
+use viewer_native_gui::sprites::DISABLED;
+use viewer_native_gui::sprites::hovered_layer;
+use viewer_foundation::templates::counter_custom_icon;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui;
+use viewer_native_gui::test_support::gui;
 #[cfg(test)]
-use viewer_foundation::map::test_support::test_frame;
+use viewer_foundation::test_support::test_frame;
 #[cfg(test)]
-use viewer_foundation::map::test_support::test_put;
+use viewer_foundation::test_support::test_put;
 use viewer_foundation::movement_timing::Etas;
 use viewer_foundation::movement_timing::MovementContent;
 use viewer_foundation::movement_timing::Report;
-use viewer_foundation::table_access::TokenKeys;
-use viewer_foundation::table_access::TokenNames;
-use viewer_foundation::unit_handle::Unit;
+use dashboard_text::table_access::TokenKeys;
+use dashboard_text::table_access::TokenNames;
+use viewer_runtime::unit_handle::Unit;
 
 pub(super) type ColumnIdentity = (Level, u32, u32, u32, u32);
 
@@ -168,9 +168,9 @@ impl PreparedLand {
     pub(super) fn pointed(&self, member: usize) -> Option<(Option<bool>, f32, Unit)> {
         let stack = &self.stacks[member];
         let kind = if stack.gun.is_some() {
-            viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+            viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun
         } else {
-            viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+            viewer_native_gui::counter_hovers::unit_hits::Kind::Division
         };
         let ours = |unit: Unit| stack.divisions.iter().any(|&id| kind.unit(id) == unit);
         self.pointer
@@ -202,7 +202,7 @@ impl PreparedLand {
                 && let Some(&from) = held.get(&(Arc::as_ptr(program), *at))
             {
                 self.sprites[member] = old.sprites[from].take();
-                viewer_foundation::map::redraws::note("plates.carried", u64::from(self.sprites[member].is_some()));
+                viewer_runtime::redraws::note("plates.carried", u64::from(self.sprites[member].is_some()));
             }
         }
     }
@@ -233,7 +233,7 @@ impl PreparedLand {
         }
         for (member, from) in carried {
             self.sprites[member] = old.sprites[from].take();
-            viewer_foundation::map::redraws::note("plates.carried", 1);
+            viewer_runtime::redraws::note("plates.carried", 1);
         }
     }
 
@@ -254,7 +254,7 @@ impl PreparedLand {
             let hour = inputs.hour;
             let width = inputs.content.map.x();
             let world = inputs.route_world();
-            let mut places: Vec<viewer_foundation::map::free_icons::Place> = Vec::new();
+            let mut places: Vec<viewer_gpu::icon_tracks::Place> = Vec::new();
             for ((icon, position), &unit) in self.icons.iter_mut().zip(&self.positions).zip(&self.units) {
                 let drawn = history.sample_for(&self.layout, unit, position);
                 let placed = drawn.map_or_else(|| position.at(), |drawn| drawn.motion.position());
@@ -265,10 +265,10 @@ impl PreparedLand {
                         continue;
                     }
                     if let Some(there) = place_in(inputs, unit, province, position, world.as_ref()) {
-                        places.push(viewer_foundation::map::free_icons::Place { hour: at, at: there });
+                        places.push(viewer_gpu::icon_tracks::Place { hour: at, at: there });
                     }
                 }
-                places.push(viewer_foundation::map::free_icons::Place { hour, at: placed });
+                places.push(viewer_gpu::icon_tracks::Place { hour, at: placed });
                 icon.track = history.track(&self.layout, unit, &places, width).ok();
                 if settled && position.motion.is_some() {
                     *report
@@ -508,12 +508,12 @@ impl PreparedLand {
                     continue;
                 }
                 batch.at_window_standing(
-                    viewer_foundation::map::sprites::WindowKey::new(
-                        viewer_foundation::map::sprites::WindowPool::LandCounter,
+                    viewer_native_gui::sprites::WindowKey::new(
+                        viewer_native_gui::sprites::WindowPool::LandCounter,
                         0,
                         plate_member as u64,
                     ),
-                    viewer_foundation::map::sprites::WindowStamp {
+                    viewer_native_gui::sprites::WindowStamp {
                         painting: sprite.painting,
                         taken: taken(offset, icon, opacity),
                     },
@@ -608,7 +608,7 @@ impl PreparedLand {
         let ours = stack.owner == self.vision.ours();
         let style = &styles[usize::from(stack.gun.is_some())];
         let hover = CounterHover {
-            control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+            control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
             authored: style.authored.clone(),
             rect: [origin[0], origin[1], size[0], size[1]],
             remaining: stack
@@ -651,15 +651,15 @@ impl PreparedLand {
                 size[1] * child.scale,
             ])
         });
-        let click = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+        let click = viewer_native_gui::counter_hovers::unit_hits::Hit {
             ours,
             port: false,
             plate: plate_rect,
             rect: hover.rect,
             kind: if stack.gun.is_some() {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+                viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun
             } else {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+                viewer_native_gui::counter_hovers::unit_hits::Kind::Division
             },
             members: Arc::clone(&stack.divisions),
             layer: layer(priority, 0, 0),
@@ -680,10 +680,10 @@ impl PreparedLand {
                 .then(|| step.map(|value| value as i32))
         });
         if let Some(step) = step {
-            viewer_foundation::map::redraws::note("plates.moved", 1);
+            viewer_runtime::redraws::note("plates.moved", 1);
             let sprite = self.sprites[member].as_mut().expect("the step found the plate");
             for quad in &mut sprite.batch.quads {
-                viewer_foundation::map::anchored::shift(quad, step);
+                viewer_native_gui::anchored::shift(quad, step);
             }
             let by = step.map(|value| value as f32);
             for (_, rect, _) in &mut sprite.presented.controls {
@@ -699,7 +699,7 @@ impl PreparedLand {
         {
             #[cfg(test)]
             super::preparation::plan_probe::record(|counts| counts.plates_drawn += 1);
-            viewer_foundation::map::redraws::note("plates.drawn", 1);
+            viewer_runtime::redraws::note("plates.drawn", 1);
             let mut sprite = self.sprites[member]
                 .take()
                 .map(|sprite| sprite.batch)
@@ -707,7 +707,7 @@ impl PreparedLand {
             sprite.clear();
             let presented = draw_land_counter(inputs, &mut sprite, 0, origin, self, member, priority)?;
             self.sprites[member] = Some(hovers::Sprite {
-                painting: viewer_foundation::map::sprites::next_painting(),
+                painting: viewer_native_gui::sprites::next_painting(),
                 stood: [0; 2],
                 origin: if self.pointed(member).is_some() {
                     [f32::NAN; 2]
@@ -719,7 +719,7 @@ impl PreparedLand {
                 presented,
             });
         } else {
-            viewer_foundation::map::redraws::note("plates.kept", 1);
+            viewer_runtime::redraws::note("plates.kept", 1);
         }
         for why in self.pointer_refused.take() {
             *report.land_counter_gaps.entry(why.into()).or_default() += 1;
@@ -735,7 +735,7 @@ impl PreparedLand {
             for (control, rect, authored) in &sprite.presented.controls {
                 report
                     .unit_hits
-                    .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                    .push(viewer_native_gui::counter_hovers::unit_hits::Hit {
                         rect: *rect,
                         plate: None,
                         ..click.clone()
@@ -798,7 +798,7 @@ impl PreparedLand {
 }
 
 pub(super) struct PlateStyle<'a> {
-    authored: Option<viewer_foundation::map::counter_hovers::gui_authored::Authored>,
+    authored: Option<viewer_native_gui::counter_hovers::gui_authored::Authored>,
     takes_pointer: bool,
     child: Option<&'a Child>,
 }
@@ -809,7 +809,7 @@ impl<'a> PlateStyle<'a> {
         let root = inputs.windows.guis.template(name);
         Self {
             authored: root.and_then(|root| {
-                viewer_foundation::map::counter_hovers::gui_authored::Authored::read(root, false)
+                viewer_native_gui::counter_hovers::gui_authored::Authored::read(root, false)
             }),
             takes_pointer: root
                 .and_then(|root| root.find(content_reader_core::gui::native::Kind::Button, "count_bg"))
@@ -842,7 +842,7 @@ pub(super) struct Stack {
     pub(super) status_recorded: bool,
     pub(super) members: Vec<counter_status::Member>,
     pub(super) divisions: Arc<[u64]>,
-    pub(super) timing: Arc<[viewer_foundation::map::counter_hovers::land::Timing]>,
+    pub(super) timing: Arc<[viewer_native_gui::counter_hovers::land::Timing]>,
     pub(super) template: u64,
     pub(super) alternate_template: u64,
     pub(super) disclosure: Result<bool, SharingUnknown>,
@@ -993,7 +993,7 @@ pub(super) struct LandUnit<'m> {
 #[derive(Clone)]
 pub(super) struct GunUnit {
     pub(super) name: String,
-    pub(super) timing: viewer_foundation::map::counter_hovers::land::Timing,
+    pub(super) timing: viewer_native_gui::counter_hovers::land::Timing,
     pub(super) location_warning: Option<bool>,
     pub(super) join_action: u8,
     pub(super) action: counter_action::Action,
@@ -1258,7 +1258,7 @@ impl Movements {
 
     pub(super) fn prepare(&self, divisions: impl IntoIterator<Item = u64>, content: &CounterContent, movement_content: Option<&MovementContent>) {
         let Some(keyed) = &self.by_key else { return };
-        let on_frame = !viewer_foundation::map::redraws::apart_now();
+        let on_frame = !viewer_runtime::redraws::apart_now();
         let frame = &*keyed.frame;
         let Ok(movement) = rows::<tables::DivisionMovement>(frame) else { return };
         let movement = movement.rows();
@@ -1276,7 +1276,7 @@ impl Movements {
             }
             keyed.lookups.made();
             if on_frame {
-                viewer_foundation::view_record::add("overlay", "routes_made_on_frame", 1);
+                viewer_runtime::view_record::add("overlay", "routes_made_on_frame", 1);
             }
             let row = &movement[at];
             let census_row = census.binary_search_by_key(&division, |row| row.id).ok().map(|at| &census[at]);
@@ -1525,11 +1525,11 @@ const TEMPLATE_ICON_TABLES: &[replay_data::rows::TableId] =
     &[replay_data::rows::TableId::DivisionTemplateIcons];
 
 #[derive(Clone)]
-pub(super) struct TemplateIconMemo(Arc<viewer_foundation::map::memo::Keyed<TemplateIcons>>);
+pub(super) struct TemplateIconMemo(Arc<viewer_runtime::memo::Keyed<TemplateIcons>>);
 
 impl Default for TemplateIconMemo {
     fn default() -> Self {
-        Self(Arc::new(viewer_foundation::map::memo::Keyed::new(
+        Self(Arc::new(viewer_runtime::memo::Keyed::new(
             TEMPLATE_ICON_TABLES,
         )))
     }
@@ -1923,7 +1923,7 @@ pub(super) fn land_counters<'a>(
         out.report.unavailable_railway_guns = unavailable + recorded.max(out.report.unavailable_railway_guns - unavailable);
     }
     add_task_forces(inputs, owner, land, naval, &admission, &mut sources, out);
-    if viewer_foundation::view_record::on() {
+    if viewer_runtime::view_record::on() {
         record_admitted(&sources, retained.as_deref_mut());
     }
     let mut icons = Vec::new();
@@ -2061,7 +2061,7 @@ pub(super) fn land_counters<'a>(
                 counts.semantic_plan_hits += u64::from(hit);
                 counts.column_plan_hits += u64::from(hit && !units.is_empty());
             });
-            viewer_foundation::map::redraws::note(if hit { "plans.kept" } else { "plans.made" }, 1);
+            viewer_runtime::redraws::note(if hit { "plans.kept" } else { "plans.made" }, 1);
             let program = if hit {
                 before.unwrap().1
             } else {
@@ -2072,7 +2072,7 @@ pub(super) fn land_counters<'a>(
             memo.previous.insert(leader, (key, program));
             result
         } else {
-            viewer_foundation::map::redraws::note("plans.made", 1);
+            viewer_runtime::redraws::note("plans.made", 1);
             let result = column_program(inputs, &units, height, rules, land, naval, &mut undecided).append(
                 &mut drawn,
                 &mut styles,
@@ -2094,14 +2094,14 @@ pub(super) fn land_counters<'a>(
                     let (kind, members) = match *plate {
                         Plate::Land(member) => (
                             if drawn[member].gun.is_some() {
-                                viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+                                viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun
                             } else {
-                                viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+                                viewer_native_gui::counter_hovers::unit_hits::Kind::Division
                             },
                             &drawn[member].divisions,
                         ),
                         Plate::Naval(member) => (
-                            viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                            viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
                             &flotillas[member].members,
                         ),
                     };
@@ -2194,7 +2194,7 @@ pub(super) struct ColumnPlans {
 }
 
 fn record_admitted(sources: &BTreeMap<StackKey, Source<'_>>, retained: Option<&mut ColumnPlans>) {
-    use viewer_foundation::view_record;
+    use viewer_runtime::view_record;
     let mut admitted: Vec<u64> = sources
         .values()
         .flat_map(|source| &source.units)
@@ -2205,7 +2205,7 @@ fn record_admitted(sources: &BTreeMap<StackKey, Source<'_>>, retained: Option<&m
         .collect();
     admitted.sort_unstable();
     admitted.dedup();
-    let section = if viewer_foundation::map::redraws::apart_now() { "overlay worker" } else { "overlay" };
+    let section = if viewer_runtime::redraws::apart_now() { "overlay worker" } else { "overlay" };
     view_record::set(section, "divisions_admitted", admitted.len() as u64);
     let Some(plans) = retained else { return };
     let before = std::mem::replace(&mut plans.admitted, admitted);
@@ -2278,9 +2278,9 @@ fn column_program(
     let fitted = first_fit(units.iter().copied(), |rep, unit| match (rep, unit) {
         (SourceUnit::Land(rep), SourceUnit::Land(unit)) => {
             let kind = if rep.gun.is_some() {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+                viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun
             } else {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+                viewer_native_gui::counter_hovers::unit_hits::Kind::Division
             };
             if !inputs.selected_join(kind.unit(rep.id), kind.unit(unit.id), height) {
                 return false;
@@ -2329,9 +2329,9 @@ fn column_program(
             rules.coarse,
         );
         let kind = if stack.gun.is_some() {
-            viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+            viewer_native_gui::counter_hovers::unit_hits::Kind::RailwayGun
         } else {
-            viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+            viewer_native_gui::counter_hovers::unit_hits::Kind::Division
         };
         stack.selected = inputs.selected.contains(&kind.unit(stack.divisions[0]));
         stack.plate = counter_plate_color(
@@ -2396,7 +2396,7 @@ pub(super) fn land_stack(
             .iter()
             .map(|unit| {
                 unit.gun.as_ref().map_or_else(
-                    || viewer_foundation::map::counter_hovers::land::Timing {
+                    || viewer_native_gui::counter_hovers::land::Timing {
                         next: unit
                             .movement
                             .and_then(|movement| movement.eta)
@@ -3136,9 +3136,9 @@ fn place_in(
         return Some(there);
     }
     let class = match unit {
-        Unit::Division(_) => viewer_foundation::unit_class::CounterClass::Division,
-        Unit::RailwayGun(_) => viewer_foundation::unit_class::CounterClass::RailwayGun,
-        Unit::TaskForce(_) => viewer_foundation::unit_class::CounterClass::TaskForce,
+        Unit::Division(_) => viewer_runtime::unit_class::CounterClass::Division,
+        Unit::RailwayGun(_) => viewer_runtime::unit_class::CounterClass::RailwayGun,
+        Unit::TaskForce(_) => viewer_runtime::unit_class::CounterClass::TaskForce,
     };
     anchor(province, class.standstill(naval::is_land(inputs, province)))
 }

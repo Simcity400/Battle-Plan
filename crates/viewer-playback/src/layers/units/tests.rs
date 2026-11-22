@@ -16,11 +16,9 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use viewer_foundation::map::{
-    camera::{MapDefines, MapSize, Placement},
-    counter_move::RouteWorld,
-    perspective::{Choice, VISION_TABLES, Vision},
-};
+use viewer_gpu::camera::{MapDefines, MapSize, Placement};
+use viewer_unit_reads::counter_move::RouteWorld;
+use viewer_foundation::perspective::{Choice, VISION_TABLES, Vision};
 use viewer_models::entity_animation::DEFEND;
 use viewer_unit_models::unit_models::Unplaced;
 
@@ -390,7 +388,7 @@ fn sight_world(name: &str, enemy: bool) -> (Arc<crate::playhead_host::Entry>, Ar
         }
     });
     let content = {
-        use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+        use viewer_foundation::visibility::{FogContent, Topology, test_defines};
         let neighbors = [(1, vec![2]), (2, vec![1, 3]), (3, vec![2, 4]), (4, vec![3, 9]), (9, vec![4])].into_iter().collect();
         Arc::new(sight::Content::new(Ok(FogContent { topology: Topology { land: (1..=4).collect(), sea: BTreeSet::from([9]), neighbors }, defines: test_defines() })))
     };
@@ -662,7 +660,7 @@ fn the_window_moves_a_moved_figure_from_its_own_placing_with_no_models_answered(
     assert_eq!(figure.selection.oldest, 101);
     let Some(Ok((target, position))) = &figure.placed else { panic!("the moved stack is placed: {:?}", figure.placed) };
     assert_eq!(target.province, 20);
-    let moved: Vec<_> = units.movement_positions().filter(|(unit, ..)| *unit == viewer_foundation::unit_handle::Unit::Division(101)).collect();
+    let moved: Vec<_> = units.movement_positions().filter(|(unit, ..)| *unit == viewer_runtime::unit_handle::Unit::Division(101)).collect();
     assert_eq!(moved.len(), 1, "the moved figure is handed once");
     assert!(std::ptr::eq(moved[0].1, position), "its position is its figure's at the applied hour");
     assert_eq!(moved[0].2, target.instance.rotation, "a figure standing faces as placed");
@@ -738,7 +736,7 @@ fn a_figure_waiting_to_be_placed_again_is_drawn_where_it_was_until_it_is_placed(
         let meshes = &units.meshes.as_ref().expect("in the window").meshes;
         units.land(meshes).iter().filter(|target| target.identity == 101).map(|target| (target.province, target.instance.position)).collect()
     };
-    let moving = |units: &Units| units.movement_positions().filter(|(unit, ..)| *unit == viewer_foundation::unit_handle::Unit::Division(101)).count();
+    let moving = |units: &Units| units.movement_positions().filter(|(unit, ..)| *unit == viewer_runtime::unit_handle::Unit::Division(101)).count();
     let before = drawn(&units);
     assert_eq!(before.len(), 1, "101 drawn once");
     let held = units.stacks[stack as usize].figure.take().expect("101's figure");

@@ -14,10 +14,9 @@ use {
     super::INLINE_FLAG,
     viewer_foundation::tooltip_text::{TextIcons, builtin, token},
 };
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{table_access::rows, tooltip_text::Tooltip},
-};
+use super::content::Content as StaticContent;
+use dashboard_text::table_access::rows;
+use viewer_foundation::tooltip_text::Tooltip;
 
 tooltip_keys! {
     BORDER_CONFLICT_IF_YOU_WIN = "BORDER_CONFLICT_IF_YOU_WIN",

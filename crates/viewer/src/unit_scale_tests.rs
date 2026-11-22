@@ -8,15 +8,11 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use viewer_foundation::engagement_history::LAND;
-use viewer_foundation::engagement_history::combats;
+use viewer_engagements::engagement_history::LAND;
+use viewer_engagements::engagement_history::combats;
 use crate::{document::{Document, Hour, InitialHour}, engaged_index::EngagedIndex};
-use viewer_foundation::map::{
-    camera::{MapSize, Placement},
-    perspective,
-    tables::core,
-    visibility::Relations,
-};
+use viewer_gpu::camera::{MapSize, Placement};
+use viewer_foundation::{perspective, tables::core, visibility::Relations};
 use viewer_map_modes::political;
 
 fn lap<T>(name: &str, camera: &str, hour: i32, work: impl FnOnce() -> io::Result<T>) {
@@ -80,7 +76,7 @@ fn unit_scale_replay_layers() {
         let camera = Placement {
             center: [3009.9868, 1537.9652],
             height,
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         }
         .on(MapSize::of(&document.map), document.map_defines);
         for offset in 0..9 {

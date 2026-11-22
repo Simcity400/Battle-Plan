@@ -4,7 +4,7 @@ use crate::map::scene_failure_tests::Fixture;
 use crate::playback::Current;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
-use viewer_foundation::map::camera::Placement;
+use viewer_gpu::camera::Placement;
 
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]

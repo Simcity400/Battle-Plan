@@ -3,7 +3,7 @@ use super::fresh_search::Inputs;
 use game_model::movement::{army::MovementSpeedInputs, unit::eta_ratio};
 use content_reader_unit_path::{unit_path::CounterRequest, unit_path::Fact, unit_path::MoveWorld};
 use replay_data::{rows::FreshRailwayCounterEta, rows::RailwayGunCounterInputRow, rows::tables};
-use viewer_foundation::map::movement_reads::Moves;
+use viewer_unit_reads::movement_reads::Moves;
 
 const NOT_RECORDED: &str = "fresh railway ETA sea-leg transport speed is not recorded for the leg's region: capture records only the regions the owner's guns stand in or route through";
 
@@ -189,10 +189,9 @@ mod tests {
         rows::Recorded, rows::TableRows,
     };
     use replay_frame::frame::DecodedFrame;
-    use {
-        viewer_foundation::map::test_support::test_frame,
-        viewer_foundation::map::test_support::test_put as put,
-        viewer_foundation::movement_timing::MovementContent,
+    use viewer_foundation::{
+        test_support::{test_frame, test_put as put},
+        movement_timing::MovementContent,
     };
 
     fn frame() -> DecodedFrame {

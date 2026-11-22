@@ -2,7 +2,7 @@ use content_reader_core::{defines::Defines, map::MapData};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::map::color_inheritance::inheritance;
+use viewer_foundation::color_inheritance::inheritance;
 
 use super::air_assignment::Field;
 
@@ -195,7 +195,7 @@ mod tests {
     use content_reader_core::map::CountryColors;
     use replay_data::rows::*;
     use replay_frame::frame::TableView;
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn map() -> MapData {
         MapData {

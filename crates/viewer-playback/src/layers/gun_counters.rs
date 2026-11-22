@@ -18,16 +18,14 @@ use std::{
     },
 };
 use viewer_counters::map::counters::{CounterContent, Gun, GunFields, GunGround, GunJoins, GunPlaced, GunRoute, LayeredGuns, gun_member, gun_name, type_tint};
+use viewer_gpu::camera::Pose;
 use viewer_foundation::{
-    map::{
-        camera::Pose,
-        mode_visibility::UnitKinds,
-        perspective::{Choice, Vision},
-        railway_gun_counter::{GunOperands, RailStatus},
-    },
+    mode_visibility::UnitKinds,
+    perspective::{Choice, Vision},
     movement_timing::MovementContent,
-    table_access::{TokenError, TokenKeys},
 };
+use viewer_unit_reads::railway_gun_counter::{GunOperands, RailStatus};
+use dashboard_text::table_access::{TokenError, TokenKeys};
 
 pub type Hostility = BTreeMap<u64, Result<bool, &'static str>>;
 

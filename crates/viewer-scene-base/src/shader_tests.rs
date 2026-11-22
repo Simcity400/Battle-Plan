@@ -1,4 +1,4 @@
-use viewer_foundation::map::sprites::SHADER;
+use viewer_native_gui::sprites::SHADER;
 use crate::shader_validation::validate;
 
 #[test]
@@ -7,7 +7,7 @@ fn standalone_map_shaders_validate() {
         ("post_copy", include_str!("post_copy.wgsl")),
         (
             "texture_unpack",
-            include_str!("../../viewer-foundation/src/map/texture_unpack.wgsl"),
+            include_str!("../../viewer-gpu/src/texture_unpack.wgsl"),
         ),
         ("sprites", SHADER),
     ] {

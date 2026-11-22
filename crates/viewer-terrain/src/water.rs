@@ -1,7 +1,7 @@
-use viewer_foundation::map::gpu_contract::{SeaBed, Targets};
+use viewer_gpu::gpu_contract::{SeaBed, Targets};
 use eframe::wgpu;
 use std::{cell::RefCell, io, sync::Arc};
-use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
+use viewer_gpu::gpu_contract::DEPTH_FORMAT;
 
 pub struct WaterPass {
     compiled: RefCell<Option<(String, Result<super::water_shader::Water, String>)>>,
@@ -95,7 +95,7 @@ impl WaterPass {
             super::water_shader::technique(high, refractions),
         );
         let compiled = self.compiled.borrow();
-        viewer_foundation::map::gpu_contract::compiled(
+        viewer_gpu::gpu_contract::compiled(
             &compiled.as_ref().expect("compiled above").1,
         )?
         .draw(arena, encoder, targets, inputs)

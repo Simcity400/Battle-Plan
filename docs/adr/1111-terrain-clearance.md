@@ -6,4 +6,4 @@ Near the surface, test the actual triangle breaks, including a cell's authored d
 
 For combat widths, read province terrain from the recorded content and resolve categories in load order using ASCII case-insensitive names. Convert `combat_width` and `combat_support_width` to fixed5. A failed conversion is reported and leaves the earlier value in place.
 
-[Terrain sight](../../crates/viewer-foundation/src/map/terrain_sight.rs) · [Seam and precision tests](../../crates/viewer-foundation/src/map/terrain_sight/tests.rs) · [Terrain widths](../../crates/viewer-foundation/src/map/terrain_content.rs)
+[Terrain sight](../../crates/viewer-gpu/src/terrain_sight.rs) · [Seam and precision tests](../../crates/viewer-gpu/src/terrain_sight/tests.rs) · [Terrain widths](../../crates/viewer-gpu/src/terrain_content.rs)

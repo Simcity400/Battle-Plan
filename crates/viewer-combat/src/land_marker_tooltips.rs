@@ -4,17 +4,16 @@ use content_reader_localisation::{localisation::Argument, localisation::Localisa
 use replay_data::{rows::LandCombatRow, rows::LandCombatSideRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::engagement_history::{self, History};
-use viewer_foundation::land_combat_math::conditions as land_combat_math_conditions;
-use viewer_foundation::land_combat_math::side_scores;
-use viewer_foundation::map::tables::core;
+use viewer_engagements::engagement_history::{self, History};
+use viewer_engagements::land_combat_math::conditions as land_combat_math_conditions;
+use viewer_engagements::land_combat_math::side_scores;
+use viewer_foundation::tables::core;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;
-use viewer_foundation::{
-    engaged::Engaged,
-    tooltip_text::{TextIcons, builtin},
-};
-use viewer_foundation::{map::visibility::Relations, table_access::rows, tooltip_text::Tooltip};
+use viewer_engagements::engaged::Engaged;
+use viewer_foundation::tooltip_text::{TextIcons, builtin};
+use viewer_foundation::{visibility::Relations, tooltip_text::Tooltip};
+use dashboard_text::table_access::rows;
 
 tooltip_keys! {
     LAND_COMBAT_TOOLTIP_NO_INTEL = "LAND_COMBAT_TOOLTIP_NO_INTEL",
@@ -233,8 +232,8 @@ pub fn build(
         let divisions =
             rows::<tables::LandCombatDivisions>(frame).map_err(|e| e.to_string())?;
         let members =
-            viewer_foundation::land_combat_math::combat_rows(divisions.rows(), id);
-        let values = viewer_foundation::land_combat_math::member_values(frame, members)
+            viewer_engagements::land_combat_math::combat_rows(divisions.rows(), id);
+        let values = viewer_engagements::land_combat_math::member_values(frame, members)
             .map_err(|e| e.to_string())?;
         let conditions = land_combat_math_conditions(frame).map_err(|e| e.to_string())?;
         let scores = side_scores(

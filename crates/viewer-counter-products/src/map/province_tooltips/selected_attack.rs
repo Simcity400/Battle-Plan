@@ -15,10 +15,9 @@ use replay_derive::{
 };
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeSet;
-use {
-    crate::map::division_eta::CounterQueries,
-    viewer_foundation::{map::directed_wars::Owner, table_access::TokenNames},
-};
+use crate::map::division_eta::CounterQueries;
+use replay_derive::directed_wars::Owner;
+use dashboard_text::table_access::TokenNames;
 
 fn keyed<'a, T: TableSchema>(
     frame: &'a DecodedFrame,

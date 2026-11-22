@@ -1,9 +1,9 @@
 
 use std::{collections::BTreeSet, sync::Arc};
-use viewer_foundation::map::counter_hovers::unit_hits::Hit;
+use viewer_native_gui::counter_hovers::unit_hits::Hit;
 #[cfg(test)]
-use viewer_foundation::map::counter_hovers::unit_hits::Kind;
-use viewer_foundation::unit_handle::Unit;
+use viewer_native_gui::counter_hovers::unit_hits::Kind;
+use viewer_runtime::unit_handle::Unit;
 
 use replay_data::{BranchId, rows::tables};
 use replay_frame::frame::DecodedFrame;
@@ -176,7 +176,7 @@ mod tests {
         rows::CountryLinkRow, rows::DivisionRow, rows::RailwayGunCounterInputRow, rows::TableRows,
         rows::TaskForceRow,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn hit(kind: Kind, ids: &[u64]) -> Hit {
         Hit {

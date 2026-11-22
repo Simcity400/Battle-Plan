@@ -6,4 +6,4 @@ The window and dump share one ordered registry of limitations. Its statements de
 
 With fog disabled, admission returns full visibility before reading sight inputs. With fog enabled, missing unit evidence can leave stack appearance at its fog-off presentation, with the limitation reported. Missing province fog inputs have their own report. A fractional frame uses the earlier recorded fog snapshot. Co-belligerency requires all contributing relation tables before admitting other countries' counters. In an older recording that lacks `DivisionStatus`, figure and exercise glyph inputs come from `DivisionModelInputs`.
 
-[Core tables and limitation registry](../../crates/viewer-foundation/src/map/tables.rs)
+[Core tables and limitation registry](../../crates/viewer-foundation/src/tables.rs)

@@ -1,4 +1,4 @@
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, ops::Range, sync::Arc};
 

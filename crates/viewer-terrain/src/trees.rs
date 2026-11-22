@@ -2,9 +2,9 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::{collections::BTreeMap, io, ops::Range};
-use viewer_foundation::map::province_admission::admits_box;
-use viewer_foundation::map::textures::load_file;
-use viewer_foundation::map::textures::load_image;
+use viewer_gpu::province_admission::admits_box;
+use viewer_gpu::textures::load_file;
+use viewer_gpu::textures::load_image;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
@@ -12,7 +12,7 @@ use content_reader_core::{ResolvedLayers, mesh, mesh::Descriptors};
 use content_reader_image::{IndexedImage, SharedRgba8Image as Rgba8Image, dds, native::Decode};
 
 use viewer_scene_base::shadow::{BUFFER_FORMAT, DEPTH_MAP_FORMAT};
-use viewer_foundation::map::{
+use viewer_gpu::{
     camera::{Camera, MapDefines, WATER_HEIGHT},
     gpu_contract::{DEPTH_FORMAT, Targets, buffer},
     province_map::HeightField,
@@ -551,14 +551,14 @@ pub struct LitInputs<'a> {
 pub struct TreeFrame<'a> {
     pub camera: Camera,
     pub offsets: &'a [f32],
-    pub planes: viewer_foundation::map::province_admission::Planes,
+    pub planes: viewer_gpu::province_admission::Planes,
 }
 
 type Batch = (usize, Range<u32>, Range<u32>);
 
 #[derive(Default, PartialEq)]
 struct Admitted {
-    key: Option<(Camera, viewer_foundation::map::province_admission::Planes, Vec<f32>)>,
+    key: Option<(Camera, viewer_gpu::province_admission::Planes, Vec<f32>)>,
     copies: Vec<Vec<Batch>>,
 }
 
@@ -976,8 +976,8 @@ impl TreePass {
         if self.admitted.borrow().key.as_ref() != Some(&key) {
             let copies = self.walk(frame);
             *self.admitted.borrow_mut() = Admitted { key: Some(key), copies };
-            viewer_foundation::view_record::add("trees", "walks", 1);
-            viewer_foundation::view_record::add("trees", "buckets_walked", self.buckets.len() as u64);
+            viewer_runtime::view_record::add("trees", "walks", 1);
+            viewer_runtime::view_record::add("trees", "buckets_walked", self.buckets.len() as u64);
         } else if viewer_scene_base::actor_check::every().is_some() {
             let fresh = self.walk(frame);
             if fresh != self.admitted.borrow().copies {
@@ -985,7 +985,7 @@ impl TreePass {
             }
             viewer_scene_base::actor_check::checked("tree buckets", self.buckets.len() as u64);
         }
-        viewer_foundation::view_record::add("trees", "batches_read", 1);
+        viewer_runtime::view_record::add("trees", "batches_read", 1);
         std::cell::Ref::map(self.admitted.borrow(), |admitted| {
             admitted.copies.get(copy).map_or(&[][..], Vec::as_slice)
         })
@@ -1044,7 +1044,7 @@ fn nearest_visible_copy(bucket: &TreeBucket, frame: TreeFrame<'_>) -> Option<(us
 fn visible(
     bucket: &TreeBucket,
     offset: f32,
-    planes: &viewer_foundation::map::province_admission::Planes,
+    planes: &viewer_gpu::province_admission::Planes,
 ) -> bool {
     let (low_x, high_x) = bucket.x_span();
     let (low_z, high_z) = bucket.z_span();

@@ -5,10 +5,8 @@ mod combat;
 mod combat_content;
 mod selection;
 use viewer_unit_history::unit_history::naval::{Candidate, Formation, FormationPlacement, Hull, Sources};
-use viewer_foundation::map::{
-    task_force_visual::{MissionSkips, TaskForceMotions},
-    unit_rules::SHIP_IN_PORT,
-};
+use viewer_unit_reads::task_force_visual::{MissionSkips, TaskForceMotions};
+use viewer_foundation::unit_rules::SHIP_IN_PORT;
 
 pub const NAVAL_COMBAT_FILE: &str = "gfx/naval_combat.txt";
 
@@ -284,7 +282,7 @@ impl UnitModelAssets {
             if !models.is_complete() || !ships.is_complete() || !forces.is_complete() {
                 return Ok(None);
             }
-            let order = viewer_foundation::map::counter_order::RecordedOrder::read(frame)?;
+            let order = viewer_unit_reads::counter_order::RecordedOrder::read(frame)?;
             let variants = rows::<tables::VariantDefinitions>(frame)?;
             let variant_names: BTreeMap<_, _> = variants
                 .rows()
@@ -629,7 +627,7 @@ impl UnitModelAssets {
     ) -> ForcePart {
         let mut part = ForcePart::default();
         let report = &mut part.report;
-        let placement = match route.and_then(|route| viewer_foundation::map::task_force_visual::visual_of(force.province, &route, ground.movement, ground.world, ground.anchor, ground.land, ground.scale)) {
+        let placement = match route.and_then(|route| viewer_unit_reads::task_force_visual::visual_of(force.province, &route, ground.movement, ground.world, ground.anchor, ground.land, ground.scale)) {
             Ok(placement) => placement,
             Err(reason) => {
                 report.error(format!("naval_formation_motion: {reason}"));
@@ -696,7 +694,7 @@ impl UnitModelAssets {
             }
             None => (position.standing, 0.0),
         };
-        let standing_scale = |province| (ground.scale)(province, viewer_foundation::unit_class::CounterClass::TaskForce.standstill((ground.land)(province)));
+        let standing_scale = |province| (ground.scale)(province, viewer_runtime::unit_class::CounterClass::TaskForce.standstill((ground.land)(province)));
         let from_scale = standing_scale(force.province);
         let to_scale = path.first().map_or(1.0, |&next| standing_scale(next));
         let animator_scale = placement.animator.map_or(from_scale, |sample| sample.interpolate_scale(from_scale, to_scale));
@@ -765,7 +763,7 @@ impl UnitModelAssets {
                 *report.by_entity.entry(name.clone()).or_default() += 1;
             }
         }
-        if self.ships.root.is_none() && roster.first_flags.is_some_and(|flags| flags & viewer_foundation::map::counter_order::FORMATION_CAPITAL_MASK != 0) {
+        if self.ships.root.is_none() && roster.first_flags.is_some_and(|flags| flags & viewer_unit_reads::counter_order::FORMATION_CAPITAL_MASK != 0) {
             report.error("naval_formation_capital_root: authored formation has no root attach point");
         }
         report.ship_hulls += roster.slots.iter().filter(|&&index| index != 0 || self.ships.root.is_some()).count();
@@ -901,7 +899,7 @@ fn formation_slots<'a>(
     ordered.sort_by_key(|row| row.counter.as_ref().map_or(0, |c| c.roster_ordinal));
     let mut slots = Vec::new();
     if let Some(first) = ordered.first()
-        && first.formation_flags & viewer_foundation::map::counter_order::FORMATION_CAPITAL_MASK
+        && first.formation_flags & viewer_unit_reads::counter_order::FORMATION_CAPITAL_MASK
             != 0
     {
         slots.push((0, *first));

@@ -1,13 +1,13 @@
 use super::*;
 use replay_data::rows::Recorded;
-use viewer_foundation::diagnostics_panel::test_support::assert_diagnostics;
-use viewer_foundation::map::test_support::gui as tests;
+use viewer_runtime::diagnostics_panel::test_support::assert_diagnostics;
+use viewer_native_gui::test_support::gui as tests;
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
 fn naval_trait_hovers_refuse_each_shown_entry_by_name_and_clear_authored_seeds() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::test_support::gui::windows;
+    use viewer_native_gui::test_support::gui::windows;
     let windows = windows(
         br#"guiTypes={
         containerWindowType={name=entry buttonType={name=Background pdx_tooltip=SEED}
@@ -439,8 +439,8 @@ fn exile_windows() -> NativeWindows {
 fn exile_badge_hover_has_native_modifier_lines_and_delayed_description() {
     content_reader_core::test_game::enter();
     use std::time::{Duration, Instant};
-    use viewer_foundation::map::{native_gui::lifecycle::Instance, test_support::gui::fixture};
-    use viewer_foundation::tooltip_painter::HoverState;
+    use viewer_native_gui::{native_gui::lifecycle::Instance, test_support::gui::fixture};
+    use viewer_native_gui::tooltip_painter::HoverState;
 
     let windows = exile_windows();
     let out = exile_assigned(exile_files(), &exile_localisation(), &windows);
