@@ -344,7 +344,10 @@ export class DatedStore {
   eligibleThrough(entry: FollowEntry) {
     return Math.min(this.head + (this.readings.get(entry.id)?.offset ?? 0), this.coverage(entry)?.through ?? entry.hour);
   }
-  offset(entry: FollowEntry) { return this.readings.get(entry.id)?.offset ?? 0; }
+  showsAt(entry: FollowEntry, head: number) {
+    const r = this.readings.get(entry.id), date = r && this.coverage(entry);
+    return !!date && date.start <= head + r.offset && head + r.offset <= date.through;
+  }
   group(entry: FollowEntry, id: number) { return this.readings.get(entry.id)?.cells.get(id); }
   close() { this.packets = []; this.first = 0; this.early.clear(); this.groups.clear(); this.dependents.clear(); }
 }

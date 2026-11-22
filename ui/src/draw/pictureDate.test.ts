@@ -230,4 +230,30 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   now += 17; frame();
   assert.ok(layoutClears.length > 0 && projectNotice()?.owner === 4 && projectNotice()?.waiting === false && projectNotice()?.date === undefined,
     'a reply the view refuses releases the picture and erases it');
+
+  post({ type: 'options', rate: 1, measured: false, cap: 60, lane: 1 });
+  const port = { onmessage: null as ((e: { data: unknown }) => void) | null, postMessage() {} };
+  post({ type: 'port', port: port as unknown as MessagePort });
+  const landed = (items: unknown[]) => port.onmessage!({ data: items });
+  post({ type: 'add', id: 50, branch: 'arsenal', product: 'nuclear-arsenal' });
+  post({ type: 'bind', branch: 'arsenal', route: 30, seek: 20 });
+  post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position: 24, seek: 20, lastHour: 199, playing: false, speed: 1, generation: 10, forwardSeek: true } });
+  const arsenal = { types: [], countries: [], missing: null, warnings: [] };
+  post({ type: 'surface', id: 8, owner: 1, canvas: ink, width: 100, height: 20, dpr: 1,
+    model: { view: 'nuclear-arsenal', offset: 0, follow: 50, structure: 'empty', cells: [{ ...cell, key: 'empty' }] } });
+  post({ type: 'race', id: 9, owner: 1, canvas: { width: 500, height: 180, getContext: () => raceInk } as unknown as OffscreenCanvas,
+    model: { view: 'nuclear-arsenal', offset: 0, follow: 50, top: 10, tags: [], split: false, overlay: false, colours: new Map(), looks: new Map(),
+      scroll: 0, width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } as never } });
+  landed([{ kind: 'panels', batch: { route: 30, clock: 0, seek: 20, completed: undefined,
+    panels: [{ id: 50, hour: 23, stepped: true, panel: { data: arsenal, refused: null } }] } }]);
+  now += 17; frame();
+  const lanePanel = () => sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 8 && s.generation === 10).at(-1);
+  const laneRace = () => sent.flatMap(m => m.type === 'racePresent' && m.id === 9 && m.generation === 10 ? [m] : []).at(-1);
+  assert.deepEqual([lanePanel()?.readHour, lanePanel()?.waiting, laneRace()?.hour, laneRace()?.waiting], [undefined, true, null, true],
+    'on a drawing lane, a followed panel and race paused at 24:00 wait while their reading covers only 23:00');
+  landed([{ kind: 'panels', batch: { route: 30, clock: 0, seek: 20, completed: 24, panels: [] } }]);
+  assert.ok(render, 'the completion alone schedules a frame');
+  now += 17; frame();
+  assert.deepEqual([lanePanel()?.readHour, lanePanel()?.waiting, laneRace()?.hour, laneRace()?.waiting], [24, false, 24, false],
+    'once the completion extends the coverage to 24:00, both surfaces present it with no clock or layout event');
 });

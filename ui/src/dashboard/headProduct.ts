@@ -16,6 +16,8 @@ import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
+import type { PlaybackController } from './playback';
+import { pageClock } from './widgetClock.ts';
 
 export function headRead(widget: Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>, track: BoundTrack | undefined, tracks: BoundTrack[],
   hoverHour: number | null): { follows: boolean; hourAt: (clockHour: number) => number | null } {
@@ -33,6 +35,37 @@ export function headSource(following: boolean, status: 'off' | FollowEntry['stat
   if (following && hidden) return 'idle';
   if (!following || status === 'off') return 'asked';
   return status === 'followed' && landed ? 'pushed' : 'fallback';
+}
+
+interface Boundary { holds: () => boolean; was: boolean; changed: () => void }
+interface Boundaries { watches: Set<Boundary>; sequence: number; stop: () => void }
+const boundaries = new WeakMap<PlaybackController, Boundaries>();
+
+export function watchBoundary(clock: PlaybackController, holds: () => boolean, changed: () => void): () => void {
+  const page = pageClock(clock);
+  let shared = boundaries.get(page);
+  if (!shared) {
+    const made: Boundaries = { watches: new Set(), sequence: page.getSnapshot().sequence, stop: () => {} };
+    const check = () => {
+      const { sequence } = page.getSnapshot();
+      if (sequence === made.sequence) return;
+      made.sequence = sequence;
+      for (const watch of made.watches) {
+        const now = watch.holds();
+        if (now !== watch.was) { watch.was = now; watch.changed(); }
+      }
+    };
+    const stopFrame = page.subscribeFrame(check), stopAnchor = page.subscribe(check);
+    made.stop = () => { stopFrame(); stopAnchor(); };
+    boundaries.set(page, shared = made);
+  }
+  const watch: Boundary = { holds, was: holds(), changed };
+  const watches = shared.watches;
+  watches.add(watch);
+  return () => {
+    watches.delete(watch);
+    if (!watches.size && boundaries.get(page) === shared) { shared.stop(); boundaries.delete(page); }
+  };
 }
 
 export const heldPanel = (entry: FollowEntry | null): Landed | undefined => entry && !entry.panel ? entry.landed ?? undefined : undefined;
@@ -122,7 +155,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   options: HeadProductOptions<T>): HeadProduct<T> {
   const { active, validate, structure, paint, hoverHour = null } = options;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const { follows, hourAt } = headRead(widget, track, runtime.tracks, hoverHour);
+  const { follows, hourAt } = useMemo(() => headRead(widget, track, runtime.tracks, hoverHour), [widget, track, runtime.tracks, hoverHour]);
   const prepared = useContext(PreparingPage);
   const following = active && follows && !prepared && !!track && !!params;
   const paramsKey = params ? canonical(params) : null;
@@ -146,8 +179,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   }, []);
   const followed = useFollow(store, query, target, paint ? painting : null, shape, observeOnScreen);
   const bounded = !!track && !!params;
-  const watchClock = useCallback((changed: () => void) => bounded ? runtime.clock.subscribe(changed) : () => {}, [bounded, runtime.clock]);
-  const outsideNow = () => bounded && hourAt(runtime.clock.getHour()) === null;
+  const outsideNow = useCallback(() => bounded && hourAt(runtime.clock.getHour()) === null, [bounded, hourAt, runtime.clock]);
+  const watchClock = useCallback((changed: () => void) => bounded ? watchBoundary(runtime.clock, outsideNow, changed) : () => {}, [bounded, runtime.clock, outsideNow]);
   const outside = useSyncExternalStore(watchClock, outsideNow, outsideNow);
   const entry = followed.entry;
   const source = headSource(following, followed.status, entry?.landed !== undefined, followed.hidden);

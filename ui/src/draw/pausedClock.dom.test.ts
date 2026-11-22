@@ -5,7 +5,7 @@ import { withNativePage } from '../../../tools/native-page.ts';
 interface Surface { visible: boolean; opacity: number; busy: boolean; hour: number | null }
 interface Shown {
   field: string | null; headedField: string | null; mounts: number; hour: number; strict: number | null; asks: number; listedRead: string; listed: string | null;
-  warned: string[]; aces: string | null; shortAces: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
+  warned: string[]; aces: string | null; shortAces: string | null; menus?: string[] | null; raceDescribed: boolean; raceRanking: string; raceLive: string; raceFocused: boolean; focused?: Shown; noDoctrines: string | null; tip: string | null; described: boolean; muted: number;
   panel: Surface; race: Surface; headed: Surface;
 }
 let mounts = 0, muted = 1, asks = 0;
@@ -93,5 +93,14 @@ test('paused, a speed change keeps the exact pictures, a move past the hour they
     const { before: atEnd, after: pastEnd } = await act<{ before: Shown; after: Shown }>('pastShortEnd()');
     assert.ok(atEnd.shortAces === 'empty' && pastEnd.aces === 'empty' && pastEnd.shortAces === 'unavailable',
       `a step past the end of one track's branch, while another runs on, shows that track's Aces outside the recording, never loading: ${show(pastEnd)}`);
+    for (const [hour, gone, said] of [[120, false, 'GER at 120'], [144, true, 'GER is no longer in the ranking']] as const) {
+      const { before, seen, pending, done } = await act<{ before: Shown; seen: Shown[]; pending: Shown; done: Shown }>(`raceHold(${hour}, ${gone})`);
+      assert.ok(before.raceFocused && before.raceLive.includes(`at ${before.hour}`), `the race is focused and announces its selected row: ${show(before)}`);
+      assert.ok(dim(pending.race, before.hour) && pending.raceFocused, `held, the race keeps focus under the dim: ${show(pending)}`);
+      const speaking = [...seen, pending].find(state => state.race.busy && (!state.raceFocused || state.raceDescribed || state.raceLive !== ''));
+      assert.equal(speaking, undefined, `while held, the focused race announces nothing: ${show(speaking)}`);
+      assert.ok(lit(done.race, hour) && done.raceFocused && done.raceDescribed && done.raceLive === said,
+        `once ${hour}:00 is presented, the selected country is announced from the current picture: ${show(done)}`);
+    }
   }, 120_000));
 });

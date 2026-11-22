@@ -64,8 +64,9 @@ class GatedWorker extends Worker {
 }
 Object.defineProperty(GatedWorker.prototype, 'onmessage', { configurable: true, set(this: Worker, heard: (event: MessageEvent<FromWorker>) => void) {
   this.addEventListener('message', (event: MessageEvent<FromWorker>) => {
-    if (!gate.holds?.(event.data)) { heard(event); return; }
-    gate.held.push({ message: event.data, deliver: () => heard(event) });
+    const deliver = () => { delivered(event.data); heard(event); wake(); };
+    if (!gate.holds?.(event.data)) { deliver(); return; }
+    gate.held.push({ message: event.data, deliver });
     wake();
   });
 } });
@@ -141,13 +142,15 @@ const emptied = { seek: -1 };
 let strict: number | null = null, followedSurface = false, listedRead = '';
 const waiting = new Set<() => void>();
 const wake = () => queueMicrotask(() => { for (const heard of [...waiting]) heard(); });
-onDraw(message => {
+function delivered(message: FromWorker) {
   if (message.type === 'present') for (const surface of message.surfaces) {
     presents.set(surface.id, surface);
     const accepted = surface.owner === owners.get(surface.id) && surface.seek === clock.getSnapshot().seekSequence && surface.generation === clockGeneration(clock);
     if (accepted && (surface.readHour !== undefined || !surface.waiting)) drawn.set(surface.id, surface.readHour ?? null);
   }
   if (message.type === 'racePresent') racePresents.set(message.id, message);
+}
+onDraw(message => {
   if (message.type === 'structure' && message.updates.some(update => update.id === native.id && update.panel === null))
     emptied.seek = clock.getSnapshot().seekSequence;
   wake();
@@ -208,10 +211,14 @@ function watchRemoval() {
 }
 const removalSeen = () => removal.seen && probe.commits > removal.after;
 
+const raceReply = { set: (_: NuclearArsenalReply) => {} };
+const withoutGermany: NuclearArsenalReply = { ...reply, countries: [{ tag: 'ENG', countryId: 2, total: 1, counts: [{ ordinal: 0, value: 1, ready: 1 }] }] };
 function Race() {
+  const [ranked, setRanked] = useState(reply);
+  raceReply.set = setRanked;
   return <div id="race" style={{ width: '480px', height: '160px', display: 'flex' }}>
     <DatedArsenal label="Nuclear arsenal" items={[]} slots={5} name={key => key} active clock={clock} tooltip={key => ({ title: `${key} at ${clock.getHour()}`, rows: [] })}
-      model={{ offset: 0, reply, date, top: 10, tags: ['GER'], split: false, tokens: readTokens(), slots: 5, overlay: true,
+      model={{ offset: 0, reply: ranked, date, top: 10, tags: ['GER'], split: false, tokens: readTokens(), slots: 5, overlay: true,
         colours: new Map([['GER', '#808080']]), looks: new Map([['GER', { name: 'Germany', color: '#808080' }]]) }} />
   </div>;
 }
@@ -245,7 +252,7 @@ function shown() {
     listed: document.querySelector('#listed')?.textContent ?? null, warned: arsenalWarnings.told.filter(warning => warning.startsWith('read at ')),
     aces: stateOf('#aces .widget-state'), shortAces: stateOf('#short-aces .widget-state'), noDoctrines: stateOf('#no-doctrines .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
     raceDescribed: !!raceCanvas()?.getAttribute('aria-describedby'), raceRanking: document.querySelector('#race p[id$="-ranking"]')?.textContent ?? '',
-    raceLive: document.querySelector('#race p[aria-live]')?.textContent ?? '',
+    raceLive: document.querySelector('#race p[aria-live]')?.textContent ?? '', raceFocused: !!raceCanvas() && document.activeElement === raceCanvas(),
     muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
     panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(surfaceOf(ink1) ?? -1)),
     race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent()?.hour),
@@ -344,6 +351,26 @@ async function staleStep() {
   return { taken, pending, done: shown() };
 }
 
+async function raceHold(hour: number, gone: boolean) {
+  const race = raceCanvas()!, from = clock.getHour();
+  race.focus();
+  race.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
+  await until(() => shown().raceLive.includes(`at ${from}`));
+  const before = shown(), id = surfaceOf(race);
+  gate.holds = message => message.type === 'racePresent' && message.id === id;
+  const heldNow = () => gate.held.some(({ message }) => message.type === 'racePresent' && message.owner === owners.get(id ?? -1) &&
+    message.seek === clock.getSnapshot().seekSequence && message.hour === hour);
+  let pending = before;
+  const seen = await watch(() => { clock.seek(hour); if (gone) raceReply.set(withoutGermany); }, async () => {
+    await until(() => heldNow() && shown().race.busy);
+    pending = shown();
+    gate.holds = null;
+    for (const { deliver } of gate.held.splice(0)) deliver();
+    await until(() => { const now = shown(); return !now.race.busy && now.race.hour === hour && now.raceRanking !== ''; });
+  });
+  return { before, seen, pending, done: seen.at(-1)! };
+}
+
 export const fixture = {
   async mount() {
     pop.showPopover();
@@ -376,6 +403,7 @@ export const fixture = {
     return { before, after: shown() };
   },
   staleStep,
+  raceHold,
   async playFor(milliseconds: number) {
     const start = Math.ceil(performance.now());
     at(start, () => clock.setPlaying(true));
