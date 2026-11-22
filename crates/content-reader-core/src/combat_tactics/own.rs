@@ -34,6 +34,19 @@ impl Shaper<'_> {
 }
 
 #[cfg(test)]
+pub(crate) fn register_non_damaged_building_level() {
+    crate::test_game::with(|game| {
+        game.trigger_at(
+            0x3BE4,
+            "non_damaged_building_level",
+            0,
+            crate::trigger_keys::Reader::Own(0x1404540c0),
+            0x140491A40,
+        )
+    });
+}
+
+#[cfg(test)]
 mod tests {
     use crate::{
         key_names::KeyNames,
@@ -51,15 +64,7 @@ mod tests {
 
     #[test]
     fn non_damaged_building_level_rejects_provincial_buildings() {
-        crate::test_game::with(|game| {
-            game.trigger_at(
-                0x3BE4,
-                "non_damaged_building_level",
-                0,
-                Reader::Own(0x1404540c0),
-                0x140491A40,
-            )
-        });
+        super::register_non_damaged_building_level();
         let mut names = KeyNames::default();
         for (name, provincial) in [(b"factory".as_slice(), false), (b"port".as_slice(), true)] {
             names.counts.buildings.insert(name.to_vec());

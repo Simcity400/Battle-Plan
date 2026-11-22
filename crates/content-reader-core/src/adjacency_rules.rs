@@ -955,15 +955,7 @@ adjacency_rule = {
     #[cfg(feature = "test-support")]
     #[test]
     fn read_map_loads_key_names_for_own_keys_that_need_buildings() {
-        crate::test_game::with(|game| {
-            game.trigger_at(
-                0x3BE4,
-                "non_damaged_building_level",
-                0,
-                crate::trigger_keys::Reader::Own(0x1404540c0),
-                0x140491A40,
-            )
-        });
+        crate::combat_tactics::own::register_non_damaged_building_level();
         let stack = crate::test_support::Stack::new("adjacency_rules_own_key_building");
         stack.write(
             &stack.base(),

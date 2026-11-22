@@ -1379,3 +1379,40 @@ fn balanced_valueless_operator_before_close_refuses_without_swallowing_siblings(
     assert_eq!(trigger.len(), 1, "{trigger:?}");
     assert_eq!(trigger[0].value, Value::Scalar(b"loose".to_vec()));
 }
+
+#[test]
+fn balanced_final_variable_reference_at_eof_refuses_unknown_dispatch_definition() {
+    let read = read(
+        br#"a = { @v = 7 marker = yes } b = { loose k = @v"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), _field: &Field<'_>| Shape::ByKey,
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    let b = block(&read.items, "b");
+    assert_eq!(b.len(), 1, "{b:?}");
+    assert_eq!(b[0].value, Value::Scalar(b"loose".to_vec()));
+}
+
+#[test]
+fn balanced_variable_resolving_to_open_brace_refuses_without_shifting_boundary() {
+    let read = read(
+        br#"@o = { a = { trigger = { loose k = @o } @x = 7 n = @x } b = { n = @x } }"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"a" | b"b") => Shape::Object(()),
+            Some(b"trigger") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+    let trigger = block(block(&read.items, "a"), "trigger");
+    assert_eq!(trigger.len(), 1, "{trigger:?}");
+    assert_eq!(trigger[0].value, Value::Scalar(b"loose".to_vec()));
+}

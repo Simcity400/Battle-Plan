@@ -2208,12 +2208,13 @@ impl<'n> Reader<'n> {
     fn balanced(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
         while self.unsettled.is_none() {
-            let token = self.peek().clone();
+            let raw_token = self.peek().clone();
             self.advance();
-            if token.kind == Kind::End {
+            if raw_token.kind == Kind::End {
+                self.current = self.resolve(raw_token);
                 return items;
             }
-            match token.kind {
+            match raw_token.kind {
                 Kind::Close => return items,
                 Kind::Open => items.push(Item {
                     key: None,
@@ -2223,8 +2224,12 @@ impl<'n> Reader<'n> {
                     value: Value::Block(self.balanced()),
                 }),
                 _ => {
-                    let token = self.resolve(token);
+                    let token = self.resolve(raw_token.clone());
                     if self.unsettled.is_some() {
+                        return items;
+                    }
+                    if matches!(token.kind, Kind::Open | Kind::Close) {
+                        self.refuse_balanced_brace(&raw_token, token.kind);
                         return items;
                     }
                     let operator = self.peek().operator();
@@ -2235,8 +2240,8 @@ impl<'n> Reader<'n> {
                             let peek = self.peek();
                             (peek.kind, peek.line)
                         };
-                        if matches!(peek_kind, Kind::Close | Kind::End) {
-                            if peek_kind == Kind::Close && self.unsettled.is_none() {
+                        if peek_kind == Kind::Close {
+                            if self.unsettled.is_none() {
                                 let what = match self.unknown_scopes.last() {
                                     Some((_, block)) => format!(
                                         "key {} ends block `{}` without a value under unknown dispatch: a key reader leaves `}}` unread while a list reader reads the operator as an entry",
@@ -2254,20 +2259,19 @@ impl<'n> Reader<'n> {
                                     line: peek_line,
                                     what,
                                 });
-                                return items;
                             }
-                            items.push(Item {
-                                key: Some(token.text),
-                                key_quoted: token.kind == Kind::Quoted,
-                                operator,
-                                kind: Kind::End,
-                                value: Value::Scalar(Vec::new()),
-                            });
                             return items;
                         }
                         self.advance();
-                        let value = self.resolve(self.current());
+                        let raw_value = self.current();
+                        let value = self.resolve(raw_value.clone());
                         if self.unsettled.is_some() {
+                            return items;
+                        }
+                        if raw_value.kind != value.kind
+                            && matches!(value.kind, Kind::Open | Kind::Close)
+                        {
+                            self.refuse_balanced_brace(&raw_value, value.kind);
                             return items;
                         }
                         let kind = value.kind;
@@ -2297,6 +2301,34 @@ impl<'n> Reader<'n> {
             }
         }
         items
+    }
+
+    fn refuse_balanced_brace(&mut self, reference: &Token, resolved_kind: Kind) {
+        if self.unsettled.is_some() {
+            return;
+        }
+        let brace = if resolved_kind == Kind::Open {
+            "`{`"
+        } else {
+            "`}`"
+        };
+        let what = match self.unknown_scopes.last() {
+            Some((_, block)) => format!(
+                "variable {} resolves to {brace} inside block `{}` under unknown dispatch, so whether it shifts the block boundary is unknown",
+                reference.shown(),
+                String::from_utf8_lossy(block),
+            ),
+            None => format!(
+                "variable {} resolves to {brace} inside a block under unknown dispatch, so whether it shifts the block boundary is unknown",
+                reference.shown(),
+            ),
+        };
+        self.unsettled = Some(Misread {
+            kind: crate::DiagnosticKind::Unsettled,
+            count: None,
+            line: reference.line,
+            what,
+        });
     }
 }
 

@@ -2,7 +2,7 @@
 use std::io;
 
 mod body_keys;
-mod own;
+pub(crate) mod own;
 
 use crate::{
     ResolvedLayers,
