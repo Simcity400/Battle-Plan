@@ -412,3 +412,89 @@ fn lane_fold_invalidates_cached_inputs_when_refresh_witness_changes() {
     assert_eq!(lookup(8), Ok(Engaged::No));
     assert_eq!(lookup(9), Ok(Engaged::Yes));
 }
+
+#[test]
+fn lanes_fold_reads_format_145_recording_without_refresh_witness_table() {
+    use crate::layers::sounds::tests::record_runs_at;
+    use playhead::pages::{Pages, Run};
+    use replay_columnar::{state::Kind, unit::reader::Extents};
+    use viewer_foundation::engaged::Ambiguity;
+    struct WithoutTable {
+        inner: Arc<dyn Pages>,
+        omitted: usize,
+    }
+    impl Pages for WithoutTable {
+        fn extents(&self, run: usize) -> &dyn Extents {
+            self.inner.extents(run)
+        }
+        fn runs(&self) -> &[Run] {
+            self.inner.runs()
+        }
+        fn kinds(&self, table: usize) -> Option<&[Kind]> {
+            (table != self.omitted).then(|| self.inner.kinds(table)).flatten()
+        }
+        fn format(&self) -> u16 {
+            self.inner.format()
+        }
+    }
+    let mut held = HashMap::new();
+    let recording = record_runs_at(145, &[(0, 12)], &NAMES, |at, store| {
+        if at == 0 {
+            held.clear();
+        }
+        for table in EMPTY {
+            if table == TableId::CombatEngagementRefreshes {
+                continue;
+            }
+            store.status(table.index(), Status::Complete, true, Some(at), true).unwrap();
+        }
+        for rows in hour_rows(at) {
+            let table = rows.table();
+            store.status(table.index(), Status::Complete, true, Some(at), true).unwrap();
+            let entry = held.entry(table).or_default();
+            match rows {
+                TableRows::CountryLinks(rows) => write::<tables::CountryLinks>(store, &rows, entry),
+                TableRows::Countries(rows) => write::<tables::Countries>(store, &rows, entry),
+                TableRows::LocalPlayer(rows) => write::<tables::LocalPlayer>(store, &rows, entry),
+                TableRows::FactionMembers(rows) => write::<tables::FactionMembers>(store, &rows, entry),
+                TableRows::LandCombats(rows) => write::<tables::LandCombats>(store, &rows, entry),
+                TableRows::LandCombatSides(rows) => write::<tables::LandCombatSides>(store, &rows, entry),
+                _ => unreachable!("the sequence writes no other table"),
+            }
+        }
+    });
+    assert_eq!(recording.format(), 145);
+    let units = units(recording, "engaged-f145");
+    let pages: Arc<dyn Pages> = Arc::new(WithoutTable {
+        inner: Arc::clone(&units.pages),
+        omitted: TableId::CombatEngagementRefreshes.index(),
+    });
+    assert!(pages.kinds(TableId::CombatEngagementRefreshes.index()).is_none());
+    let shared = Arc::new(History::default());
+    let started = |_: usize| PieceStart {
+        branch: 3,
+        load: false,
+        restart: false,
+    };
+    fold(
+        &pages,
+        &units.timeline,
+        &started,
+        None,
+        Country::Recorded,
+        Arc::clone(&shared),
+        None,
+        |_, _, _| {},
+    )
+    .unwrap();
+    let lookup = |hour: Hour, combat: u64| {
+        shared
+            .lookup(0, 3, hour, 1, &[combat])
+            .map(|flags| flags[&combat])
+    };
+    assert_eq!(lookup(3, 100), Ok(Engaged::Yes));
+    assert_eq!(lookup(5, 101), Ok(Engaged::No));
+    assert_eq!(lookup(8, 101), Ok(Engaged::Ambiguous(Ambiguity::Order)));
+    assert_eq!(lookup(9, 101), Ok(Engaged::Ambiguous(Ambiguity::Scope)));
+    assert_eq!(lookup(10, 101), Ok(Engaged::Yes));
+}

@@ -61,7 +61,10 @@ macro_rules! open {
 impl Store {
     fn open(pages: &Arc<dyn Pages>, run: usize, branch: BranchId) -> io::Result<Self> {
         let mut held: Vec<Option<Box<dyn Kept>>> = (0..TableId::ALL.len()).map(|_| None).collect();
-        open!(pages, run, held, Campaign, CountryLinks, Countries, LocalPlayer, Players, HumanControllers, FactionMembers, WarRelations, Subjects, LandCombats, LandCombatSides, NavalCombats, NavalCombatDetails, NavalCombatParticipants, NavalCombatShips, TaskForces, CombatEngagementRefreshes);
+        open!(pages, run, held, Campaign, CountryLinks, Countries, LocalPlayer, Players, HumanControllers, FactionMembers, WarRelations, Subjects, LandCombats, LandCombatSides, NavalCombats, NavalCombatDetails, NavalCombatParticipants, NavalCombatShips, TaskForces);
+        if pages.kinds(TableId::CombatEngagementRefreshes.index()).is_some() {
+            open!(pages, run, held, CombatEngagementRefreshes);
+        }
         Ok(Self { tables: held, branch, hour: 0, metrics: Metrics::default() })
     }
 

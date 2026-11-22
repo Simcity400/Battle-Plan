@@ -1100,17 +1100,38 @@ typed_codec!(
     },
     { 0 => (triggers): U8 },
     |row, mask| {
-        if row.kind > CombatEngagementRefreshRow::LOCAL_ALL_SIDES {
-            return Err(invalid("invalid combat engagement refresh kind"));
-        }
-        if row.side > 1 {
-            return Err(invalid("invalid combat engagement refresh side"));
-        }
-        if row.kind >= CombatEngagementRefreshRow::CONTROLLER_TARGET && row.side != 0 {
-            return Err(invalid("invalid combat engagement refresh side for kind"));
-        }
-        if mask & 1 != 0 && (row.triggers == 0 || (row.triggers & !3) != 0) {
-            return Err(invalid("invalid combat engagement refresh triggers"));
+        match row.kind {
+            CombatEngagementRefreshRow::LAND_SIDE | CombatEngagementRefreshRow::NAVAL_SIDE => {
+                if row.side > 1 {
+                    return Err(invalid("invalid combat engagement refresh side"));
+                }
+                if mask & 1 != 0 && (row.triggers == 0 || (row.triggers & !3) != 0) {
+                    return Err(invalid("invalid combat engagement refresh triggers"));
+                }
+            }
+            CombatEngagementRefreshRow::CONTROLLER_TARGET => {
+                if row.side != 0 {
+                    return Err(invalid("invalid combat engagement refresh side for kind"));
+                }
+                if row.target == 0 || row.target > i32::MAX as u64 {
+                    return Err(invalid("invalid combat engagement refresh controller target"));
+                }
+                if mask & 1 != 0 && row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED {
+                    return Err(invalid("invalid combat engagement refresh triggers for kind"));
+                }
+            }
+            CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
+                if row.side != 0 {
+                    return Err(invalid("invalid combat engagement refresh side for kind"));
+                }
+                if row.target != 0 {
+                    return Err(invalid("invalid combat engagement refresh target for kind"));
+                }
+                if mask & 1 != 0 && row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED {
+                    return Err(invalid("invalid combat engagement refresh triggers for kind"));
+                }
+            }
+            _ => return Err(invalid("invalid combat engagement refresh kind")),
         }
         Ok(())
     }
@@ -1232,3 +1253,46 @@ opaque_value!([i64; 6]);
 opaque_value!([[i64; 6]; 6]);
 opaque_value!([u32; 2]);
 opaque_value!([u32; 4]);
+
+#[cfg(test)]
+mod combat_engagement_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_malformed_combat_engagement_refresh_rows_on_decode() {
+        for bad in [
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 9,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: i32::MAX as u64 + 1,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 7,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+        ] {
+            assert!(bad.check_selected_fields(1).is_err(), "{bad:?}");
+        }
+    }
+}

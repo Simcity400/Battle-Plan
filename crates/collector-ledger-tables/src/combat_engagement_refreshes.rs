@@ -42,6 +42,7 @@ impl Captured {
     }
 
     pub fn fail(&mut self, reason: &'static str) {
+        producer::lost_drain();
         self.rows.fail(Outcome::Unavailable { reason });
     }
 
@@ -85,12 +86,24 @@ fn project(entries: &[Entry]) -> Result<Vec<CombatEngagementRefreshRow>, &'stati
     let mut rows: Vec<CombatEngagementRefreshRow> =
         allocation::vec(entries.len()).map_err(|_| "collector allocation failed")?;
     for entry in entries {
-        if entry.kind > CombatEngagementRefreshRow::LOCAL_ALL_SIDES
-            || entry.side > 1
-            || (entry.kind >= CombatEngagementRefreshRow::CONTROLLER_TARGET && entry.side != 0)
-            || entry.triggers == 0
-            || (entry.triggers & !3) != 0
-        {
+        let valid = match entry.kind {
+            CombatEngagementRefreshRow::LAND_SIDE | CombatEngagementRefreshRow::NAVAL_SIDE => {
+                entry.side <= 1 && entry.triggers != 0 && (entry.triggers & !3) == 0
+            }
+            CombatEngagementRefreshRow::CONTROLLER_TARGET => {
+                entry.side == 0
+                    && entry.target >= 1
+                    && entry.target <= i32::MAX as u64
+                    && entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
+            }
+            CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
+                entry.side == 0
+                    && entry.target == 0
+                    && entry.triggers == CombatEngagementRefreshRow::TRIGGER_RECORDED
+            }
+            _ => false,
+        };
+        if !valid {
             return Err("combat engagement refresh entry invalid");
         }
         rows.push(CombatEngagementRefreshRow {
@@ -204,5 +217,77 @@ mod tests {
             }])
             .is_err()
         );
+        for bad in [
+            Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 9,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: i32::MAX as u64 + 1,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            Entry {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 7,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+            },
+        ] {
+            assert!(project(&[bad]).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn skipped_drain_via_fail_does_not_replay_stale_entries_into_next_hour() {
+        use engine_native::memory::SliceMemory;
+        let clock = |hour: i32| engine_native::cgame_state::Clock {
+            hour,
+            campaign_id: 1,
+            play_session_started_at: 10,
+            ..Default::default()
+        };
+        let memory = SliceMemory { base: 0, bytes: &[] };
+        producer::test_reset(true);
+        producer::presize(16);
+        let mut captured = Captured::with_capacities(&16);
+
+        producer::boundary(Some(clock(100)));
+        captured.capture(&memory, 0, 0);
+        assert!(matches!(captured.outcomes()[0], Outcome::Unavailable { .. }));
+
+        producer::test_record_entry(Entry {
+            kind: CombatEngagementRefreshRow::LAND_SIDE,
+            target: 62,
+            side: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        });
+        producer::boundary(Some(clock(101)));
+        captured.fail("rejected");
+        assert!(matches!(captured.outcomes()[0], Outcome::Unavailable { .. }));
+
+        producer::boundary(Some(clock(102)));
+        captured.capture(&memory, 0, 0);
+        assert!(matches!(captured.outcomes()[0], Outcome::Unavailable { .. }));
+
+        producer::boundary(Some(clock(103)));
+        captured.capture(&memory, 0, 0);
+        assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 0 });
+        producer::test_reset(false);
     }
 }

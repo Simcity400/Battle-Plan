@@ -9,6 +9,7 @@ use engine_native::{
 };
 use replay_data::rows::CombatEngagementRefreshRow;
 use std::{
+    cell::Cell,
     ops::Range,
     sync::{
         OnceLock,
@@ -283,39 +284,103 @@ fn identify_all_combats(
     }))
 }
 
-struct ActiveGuard;
-impl Drop for ActiveGuard {
-    fn drop(&mut self) {
-        LEDGER.leave();
+fn read_manager_cached_viewer(
+    memory: &impl Memory,
+    base: usize,
+    manager: usize,
+) -> Result<u32, &'static str> {
+    if manager == 0 {
+        return Err("combat engagement refresh combat manager null");
+    }
+    let expected = engine_sites::at(base, native::COMBAT_MANAGER_VTABLE_RVA)
+        .ok_or("combat engagement refresh combat manager vtable withheld")?
+        as u64;
+    let vtable = engine_native::read::<u64>(memory, manager)
+        .ok_or("combat engagement refresh combat manager unreadable")?;
+    if vtable != expected {
+        return Err("combat engagement refresh combat manager unauthenticated");
+    }
+    manager
+        .checked_add(native::COMBAT_MANAGER_CACHED_VIEWER)
+        .and_then(|at| engine_native::read::<u32>(memory, at))
+        .ok_or("combat engagement refresh combat manager viewer unreadable")
+}
+
+fn identify_hourly_viewer_change(before: u32, after: u32) -> Option<Entry> {
+    (before != after).then_some(Entry {
+        kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+        target: 0,
+        side: 0,
+        triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+    })
+}
+
+thread_local! {
+    static DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct FlightGuard {
+    entered_ledger: bool,
+    observe: bool,
+    completed: bool,
+}
+
+impl FlightGuard {
+    fn enter(observe: bool) -> Self {
+        FLIGHTS.fetch_add(1, Ordering::SeqCst);
+        let outer = DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            current == 0
+        });
+        if outer {
+            LEDGER.enter();
+        }
+        Self {
+            entered_ledger: outer,
+            observe,
+            completed: false,
+        }
     }
 }
 
-fn record_observation(
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        if !self.completed && self.observe && ENABLED.load(Ordering::SeqCst) {
+            LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
+            LEDGER.refuse("combat engagement refresh native call unwound");
+        }
+        if self.entered_ledger {
+            LEDGER.leave();
+        }
+        FLIGHTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn commit_observation(
     site_key: usize,
     object: usize,
-    read: impl FnOnce(&engine_native::memory::LiveMemory, usize) -> Result<Option<Entry>, &'static str>,
+    generation: u64,
+    outcome: Result<Option<Entry>, &'static str>,
 ) {
     if !ENABLED.load(Ordering::SeqCst) {
         return;
     }
-    LEDGER.enter();
-    let _guard = ActiveGuard;
     if LEDGER.poisoned.load(Ordering::SeqCst) || crate::allocation::failed() {
         LEDGER.attempt();
         LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    LEDGER.attempt();
-    if crate::world_lifetime::invalidating() {
+    if generation != crate::world_lifetime::generation() || crate::world_lifetime::invalidating() {
+        LEDGER.attempt();
         LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
         LEDGER.refuse("combat engagement refresh native world awaits hourly boundary");
         return;
     }
-    // SAFETY: live read occurs inside the native game callback on the paused object pointer.
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
-    let base = BASE.load(Ordering::Relaxed);
-    match read(&memory, base) {
+    match outcome {
         Ok(Some(entry)) => {
+            LEDGER.attempt();
             let result = LEDGER
                 .claim((site_key, object))
                 .and_then(|token| LEDGER.complete(token, Ok(Some(entry))));
@@ -328,6 +393,7 @@ fn record_observation(
             LEDGER.zero_writes.fetch_add(1, Ordering::Relaxed);
         }
         Err(reason) => {
+            LEDGER.attempt();
             LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
             LEDGER.refuse(reason);
         }
@@ -336,15 +402,61 @@ fn record_observation(
 
 type NativeFunction = unsafe extern "system-unwind" fn(usize, usize, usize, usize) -> usize;
 
-fn run(site: usize, rcx: usize, rdx: usize, r8: usize, r9: usize) -> usize {
+fn execute_observed<T>(
+    site: usize,
+    object: usize,
+    prepare: impl FnOnce() -> Result<T, &'static str>,
+    original: impl FnOnce() -> usize,
+    finish: impl FnOnce(T) -> Result<Option<Entry>, &'static str>,
+) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CombatEngagementRefreshes);
-    FLIGHTS.fetch_add(1, Ordering::SeqCst);
-    // SAFETY: trampoline address was stored during hook construction before publication.
-    let original: NativeFunction =
-        unsafe { std::mem::transmute(ORIGINAL[site].load(Ordering::Acquire)) };
-    let result = timing.original(|| unsafe { original(rcx, rdx, r8, r9) });
-    FLIGHTS.fetch_sub(1, Ordering::SeqCst);
+    let observe = ENABLED.load(Ordering::SeqCst);
+    let mut flight = FlightGuard::enter(observe);
+    let generation = crate::world_lifetime::generation();
+    let pre = if observe {
+        if crate::world_lifetime::invalidating() {
+            Some(Err("combat engagement refresh native world awaits hourly boundary"))
+        } else {
+            Some(prepare())
+        }
+    } else {
+        None
+    };
+    let result = timing.original(original);
+    flight.completed = true;
+    if let Some(pre) = pre {
+        let outcome = pre.and_then(finish);
+        commit_observation(site, object, generation, outcome);
+    }
     result
+}
+
+fn run_observed(
+    site: usize,
+    rcx: usize,
+    rdx: usize,
+    r8: usize,
+    r9: usize,
+    read: impl FnOnce(&engine_native::memory::LiveMemory, usize) -> Result<Option<Entry>, &'static str>,
+) -> usize {
+    execute_observed(
+        site,
+        rcx,
+        || {
+            // SAFETY: live read occurs inside the native game callback on the paused object pointer.
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let base = BASE.load(Ordering::Relaxed);
+            read(&memory, base)
+        },
+        || {
+            // SAFETY: trampoline address was stored during hook construction before publication.
+            let original: NativeFunction =
+                unsafe { std::mem::transmute(ORIGINAL[site].load(Ordering::Acquire)) };
+            // SAFETY: forwarding the original native arguments to the hooked function trampoline.
+            unsafe { original(rcx, rdx, r8, r9) }
+        },
+        Ok,
+    )
 }
 
 unsafe extern "system-unwind" fn add_unit(
@@ -354,7 +466,7 @@ unsafe extern "system-unwind" fn add_unit(
     r9: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    record_observation(0, combatant, |memory, base| {
+    run_observed(0, combatant, unit, r8, r9, |memory, base| {
         identify_side(
             memory,
             base,
@@ -363,8 +475,7 @@ unsafe extern "system-unwind" fn add_unit(
             false,
         )
         .map(Some)
-    });
-    run(0, combatant, unit, r8, r9)
+    })
 }
 
 unsafe extern "system-unwind" fn remove_unit(
@@ -374,7 +485,7 @@ unsafe extern "system-unwind" fn remove_unit(
     r9: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    record_observation(1, combatant, |memory, base| {
+    run_observed(1, combatant, unit, r8, r9, |memory, base| {
         identify_side(
             memory,
             base,
@@ -383,8 +494,7 @@ unsafe extern "system-unwind" fn remove_unit(
             false,
         )
         .map(Some)
-    });
-    run(1, combatant, unit, r8, r9)
+    })
 }
 
 unsafe extern "system-unwind" fn naval_add_transfer(
@@ -394,7 +504,7 @@ unsafe extern "system-unwind" fn naval_add_transfer(
     r9: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    record_observation(2, combatant, |memory, base| {
+    run_observed(2, combatant, transfer, r8, r9, |memory, base| {
         identify_side(
             memory,
             base,
@@ -403,8 +513,7 @@ unsafe extern "system-unwind" fn naval_add_transfer(
             true,
         )
         .map(Some)
-    });
-    run(2, combatant, transfer, r8, r9)
+    })
 }
 
 unsafe extern "system-unwind" fn change_controller(
@@ -414,10 +523,9 @@ unsafe extern "system-unwind" fn change_controller(
     r9: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    record_observation(3, command, |memory, _base| {
+    run_observed(3, command, rdx, r8, r9, |memory, _base| {
         identify_controller_target(memory, command)
-    });
-    run(3, command, rdx, r8, r9)
+    })
 }
 
 unsafe extern "system-unwind" fn update_all_combats(
@@ -427,10 +535,42 @@ unsafe extern "system-unwind" fn update_all_combats(
     r9: usize,
 ) -> usize {
     let _hook = crate::hook_timing::label();
-    record_observation(4, manager, |memory, base| {
+    run_observed(4, manager, rdx, r8, r9, |memory, base| {
         identify_all_combats(memory, base, manager)
-    });
-    run(4, manager, rdx, r8, r9)
+    })
+}
+
+unsafe extern "system-unwind" fn hourly_update(
+    manager: usize,
+    rdx: usize,
+    r8: usize,
+    r9: usize,
+) -> usize {
+    let _hook = crate::hook_timing::label();
+    execute_observed(
+        5,
+        manager,
+        || {
+            // SAFETY: live read occurs inside the native game callback on the paused manager pointer.
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let base = BASE.load(Ordering::Relaxed);
+            read_manager_cached_viewer(&memory, base, manager)
+        },
+        || {
+            // SAFETY: trampoline address was stored during hook construction before publication.
+            let original: NativeFunction =
+                unsafe { std::mem::transmute(ORIGINAL[5].load(Ordering::Acquire)) };
+            // SAFETY: forwarding the original native arguments to the hooked function trampoline.
+            unsafe { original(manager, rdx, r8, r9) }
+        },
+        |before| {
+            // SAFETY: live read occurs immediately after the native hourly update returns on the live manager.
+            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let base = BASE.load(Ordering::Relaxed);
+            let after = read_manager_cached_viewer(&memory, base, manager)?;
+            Ok(identify_hourly_viewer_change(before, after))
+        },
+    )
 }
 
 const REQUIRED_VTABLES: [engine_sites::Rva; 9] = [
@@ -444,6 +584,38 @@ const REQUIRED_VTABLES: [engine_sites::Rva; 9] = [
     cnaval_combat::VTABLE_RVA,
     native::COMBAT_MANAGER_VTABLE_RVA,
 ];
+
+fn begin_enable_transition(enabled: bool) -> bool {
+    let was_enabled = ENABLED.load(Ordering::SeqCst);
+    if !enabled {
+        ENABLED.store(false, Ordering::SeqCst);
+        if was_enabled {
+            LEDGER.lost_drain();
+        }
+    }
+    was_enabled
+}
+
+fn finish_enable_transition(was_enabled: bool, enabled: bool, has_hooks: bool) {
+    let now_enabled = enabled && has_hooks;
+    if now_enabled && !was_enabled {
+        LEDGER.lost_drain();
+    }
+    ENABLED.store(now_enabled, Ordering::SeqCst);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_reset(enabled: bool) {
+    LEDGER.reset();
+    ENABLED.store(enabled, Ordering::SeqCst);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_record_entry(entry: Entry) {
+    let mut flight = FlightGuard::enter(true);
+    flight.completed = true;
+    commit_observation(0, 1, crate::world_lifetime::generation(), Ok(Some(entry)));
+}
 
 pub struct Hooks {
     hooks: Vec<Hook>,
@@ -462,6 +634,7 @@ impl Hooks {
             naval_add_transfer as *const () as usize,
             change_controller as *const () as usize,
             update_all_combats as *const () as usize,
+            hourly_update as *const () as usize,
         ];
         let install = || -> Result<Vec<Hook>, &'static str> {
             for rva in REQUIRED_VTABLES {
@@ -501,15 +674,13 @@ impl Hooks {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
-        if !enabled {
-            ENABLED.store(false, Ordering::SeqCst);
-        }
+        let was_enabled = begin_enable_transition(enabled);
         if !Hook::set_family_enabled_shared(&mut self.hooks, enabled)
             .map_err(|_| "combat engagement refresh hook state change failed")?
         {
             return Ok(false);
         }
-        ENABLED.store(enabled && !self.hooks.is_empty(), Ordering::SeqCst);
+        finish_enable_transition(was_enabled, enabled, !self.hooks.is_empty());
         Ok(true)
     }
 
@@ -699,6 +870,7 @@ mod tests {
             manager,
             engine_sites::at(base, native::COMBAT_MANAGER_VTABLE_RVA).unwrap() as u64,
         );
+        write_u32(&mut bytes, manager + native::COMBAT_MANAGER_CACHED_VIEWER, 11);
 
         let memory = SliceMemory {
             base: mem_base,
@@ -779,11 +951,27 @@ mod tests {
                 triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
             }))
         );
+        assert_eq!(
+            read_manager_cached_viewer(&memory, base, addr(manager)),
+            Ok(11)
+        );
+        assert_eq!(identify_hourly_viewer_change(11, 11), None);
+        assert_eq!(
+            identify_hourly_viewer_change(11, 12),
+            Some(Entry {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            })
+        );
 
         assert!(identify_side(&memory, base, 0, 1, false).is_err());
         assert!(identify_controller_target(&memory, 0).is_err());
         assert!(identify_all_combats(&memory, base, 0).is_err());
         assert!(identify_all_combats(&memory, base, addr(cmd_pos)).is_err());
+        assert!(read_manager_cached_viewer(&memory, base, 0).is_err());
+        assert!(read_manager_cached_viewer(&memory, base, addr(cmd_pos)).is_err());
     }
 
     #[test]
@@ -794,22 +982,134 @@ mod tests {
         let mut out = Vec::new();
         assert!(drain(&mut out).is_err());
 
-        record_observation(0, 1, |_, _| {
-            Ok(Some(Entry {
-                kind: CombatEngagementRefreshRow::LAND_SIDE,
-                target: 62,
-                side: 0,
-                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
-            }))
-        });
+        let mut committed_during_original = true;
+        execute_observed(
+            0,
+            1,
+            || {
+                Ok(Some(Entry {
+                    kind: CombatEngagementRefreshRow::LAND_SIDE,
+                    target: 62,
+                    side: 0,
+                    triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                }))
+            },
+            || {
+                committed_during_original = LEDGER.events.load(Ordering::SeqCst) > 0;
+                assert!(active() > 0);
+                0
+            },
+            Ok,
+        );
+        assert!(!committed_during_original);
+        assert_eq!(active(), 0);
         boundary(Some(clock(101)));
         let count = drain(&mut out).unwrap();
         assert_eq!(count, 1);
         assert_eq!(out[0].target, 62);
 
-        record_observation(1, 2, |_, _| Err("synthetic unreadable"));
+        execute_observed(1, 2, || Err::<Option<Entry>, _>("synthetic unreadable"), || 0, Ok);
         boundary(Some(clock(102)));
         assert!(drain(&mut out).is_err());
+
+        boundary(Some(clock(103)));
+        assert!(drain(&mut out).is_err());
+
+        boundary(Some(clock(104)));
+        assert_eq!(drain(&mut out).unwrap(), 0);
+    }
+
+    #[test]
+    fn unwinding_native_call_clears_active_and_refuses_interval() {
+        let _scope = TestScope::enter();
+        presize(16);
+        boundary(Some(clock(100)));
+        let mut out = Vec::new();
+        assert!(drain(&mut out).is_err());
+
+        let unwound = std::panic::catch_unwind(|| {
+            execute_observed(
+                0,
+                1,
+                || {
+                    Ok(Some(Entry {
+                        kind: CombatEngagementRefreshRow::LAND_SIDE,
+                        target: 62,
+                        side: 0,
+                        triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+                    }))
+                },
+                || -> usize {
+                    panic!("synthetic native unwind");
+                },
+                Ok,
+            )
+        });
+        assert!(unwound.is_err());
+        assert_eq!(active(), 0);
+        assert_eq!(LEDGER.events.load(Ordering::SeqCst), 0);
+
+        boundary(Some(clock(101)));
+        assert!(drain(&mut out).is_err());
+    }
+
+    #[test]
+    fn nested_same_thread_calls_commit_without_overlap_poisoning() {
+        let _scope = TestScope::enter();
+        presize(16);
+        boundary(Some(clock(100)));
+        let mut out = Vec::new();
+        assert!(drain(&mut out).is_err());
+
+        execute_observed(
+            5,
+            10,
+            || Ok(11u32),
+            || {
+                execute_observed(
+                    1,
+                    20,
+                    || {
+                        Ok(Some(Entry {
+                            kind: CombatEngagementRefreshRow::LAND_SIDE,
+                            target: 62,
+                            side: 0,
+                            triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+                        }))
+                    },
+                    || 0,
+                    Ok,
+                )
+            },
+            |before| Ok(identify_hourly_viewer_change(before, 12)),
+        );
+        assert_eq!(active(), 0);
+        boundary(Some(clock(101)));
+        let count = drain(&mut out).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(out[0].kind, CombatEngagementRefreshRow::LAND_SIDE);
+        assert_eq!(out[1].kind, CombatEngagementRefreshRow::LOCAL_ALL_SIDES);
+    }
+
+    #[test]
+    fn disable_then_reenable_poisons_quiet_next_interval() {
+        let _scope = TestScope::enter();
+        presize(16);
+        boundary(Some(clock(100)));
+        let mut out = Vec::new();
+        assert!(drain(&mut out).is_err());
+        boundary(Some(clock(101)));
+        assert_eq!(drain(&mut out).unwrap(), 0);
+
+        let was = begin_enable_transition(true);
+        finish_enable_transition(was, true, true);
+        boundary(Some(clock(102)));
+        assert_eq!(drain(&mut out).unwrap(), 0);
+
+        let was = begin_enable_transition(false);
+        finish_enable_transition(was, false, true);
+        let was = begin_enable_transition(true);
+        finish_enable_transition(was, true, true);
 
         boundary(Some(clock(103)));
         assert!(drain(&mut out).is_err());

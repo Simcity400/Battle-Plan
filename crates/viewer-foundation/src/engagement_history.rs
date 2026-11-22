@@ -148,6 +148,7 @@ pub fn combats(
     history.advance(
         engaged::Sample {
             viewer,
+            alternate_viewer: None,
             links,
             relations,
             controllers: None,

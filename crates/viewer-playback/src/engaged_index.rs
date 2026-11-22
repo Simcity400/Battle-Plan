@@ -91,24 +91,38 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
         let units = (row.triggers & CombatEngagementRefreshRow::TRIGGER_UNITS) != 0;
         match row.kind {
             CombatEngagementRefreshRow::LAND_SIDE => {
+                if row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
+                    return Ok(Witness::Unavailable);
+                }
                 let entry = land.entry((row.target, row.side)).or_default();
                 entry.recorded |= recorded;
                 entry.units |= units;
             }
             CombatEngagementRefreshRow::NAVAL_SIDE => {
+                if row.side > 1 || row.triggers == 0 || (row.triggers & !3) != 0 {
+                    return Ok(Witness::Unavailable);
+                }
                 let entry = naval.entry((row.target, row.side)).or_default();
                 entry.recorded |= recorded;
                 entry.units |= units;
             }
             CombatEngagementRefreshRow::CONTROLLER_TARGET => {
-                let Ok(raw) = u32::try_from(row.target) else {
+                if row.side != 0
+                    || row.target == 0
+                    || row.target > i32::MAX as u64
+                    || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                {
                     return Ok(Witness::Unavailable);
-                };
-                if (raw as i32) > 0 {
-                    controller_targets.push(raw);
                 }
+                controller_targets.push(row.target as u32);
             }
             CombatEngagementRefreshRow::LOCAL_ALL_SIDES => {
+                if row.side != 0
+                    || row.target != 0
+                    || row.triggers != CombatEngagementRefreshRow::TRIGGER_RECORDED
+                {
+                    return Ok(Witness::Unavailable);
+                }
                 local_all_sides = true;
             }
             _ => return Ok(Witness::Unavailable),
@@ -124,6 +138,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
 
 struct Viewer {
     slot: u32,
+    alternate_slot: Option<u32>,
     inputs: Arc<Inputs>,
 }
 
@@ -193,14 +208,14 @@ impl Viewer {
             tags.insert(*slot, String::new());
         }
         let (slot, _) = viewer_foundation::fold_tables::viewer(frame, &inputs.links, &tags, country)?;
-        Ok(Self { slot, inputs: Arc::clone(inputs) })
+        Ok(Self { slot, alternate_slot: None, inputs: Arc::clone(inputs) })
     }
 
     fn recording<F: Tables + ?Sized>(frame: &F, inputs: &Arc<Inputs>) -> Option<(Self, bool)> {
         let slot = viewer_foundation::fold_tables::perspective(frame, &inputs.links)?;
         let observing = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
             .is_some_and(|rows| rows.iter().all(|row| row.country as i32 <= 0));
-        Some((Self { slot, inputs: Arc::clone(inputs) }, observing))
+        Some((Self { slot, alternate_slot: None, inputs: Arc::clone(inputs) }, observing))
     }
 
     fn sample(&self, kind: usize, recording: bool, sides: HourSides) -> engaged::Sample<'_> {
@@ -223,6 +238,7 @@ impl Viewer {
         };
         engaged::Sample {
             viewer: self.slot,
+            alternate_viewer: self.alternate_slot,
             links: &self.inputs.links,
             relations: self.inputs.relations.as_ref().map_err(|reason| *reason),
             controllers: self.inputs.controllers.clone(),
@@ -537,7 +553,7 @@ impl Pass {
         self.inputs.clone_from(&inputs);
         let held_viewer = self.viewer.take().filter(|viewer| kept && inputs.as_ref().is_some_and(|inputs| Arc::ptr_eq(&viewer.inputs, inputs)));
         let viewer = held_viewer.or_else(|| sides.as_ref().zip(inputs.as_ref()).and_then(|((frame, _), inputs)| Viewer::with(*frame, &self.country, inputs).ok()));
-        self.viewer = viewer.as_ref().map(|viewer| Viewer { slot: viewer.slot, inputs: Arc::clone(&viewer.inputs) });
+        self.viewer = viewer.as_ref().map(|viewer| Viewer { slot: viewer.slot, alternate_slot: None, inputs: Arc::clone(&viewer.inputs) });
         let player = sides
             .as_ref()
             .zip(inputs.as_ref())
@@ -551,6 +567,9 @@ impl Pass {
                 && observing
             {
                 viewer.slot = slot;
+                if slot != view {
+                    viewer.alternate_slot = Some(view);
+                }
             }
             (viewer, view)
         });

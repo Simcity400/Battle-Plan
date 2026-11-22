@@ -478,6 +478,98 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
 }
 
 #[test]
+fn an_observer_switch_with_a_refresh_does_not_serve_the_old_viewers_definite_flag() {
+    use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let allied: &[(u32, u32)] = &[(2, 3)];
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+
+    let mut frame10 = naval_frame(6, &[1], allied, 1, [1, 0]);
+    *frame10.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+        vec![LocalPlayerRow {
+            country: 0,
+            observer_country: 3,
+        }],
+    ));
+    pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+
+    let mut frame11 = naval_frame(6, &[1], allied, 1, [0, 0]);
+    *frame11.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+        vec![LocalPlayerRow {
+            country: 0,
+            observer_country: 4,
+        }],
+    ));
+    *frame11.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+                target: 4,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+            CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+                target: 0,
+                side: 0,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            },
+        ]),
+    );
+    pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
+
+    assert_eq!(pass.check.summary.mismatches, 0, "{:?}", pass.check.summary.first);
+    let index = index(&pass);
+    let served = flags(&index, &mut frame11, 11, 4);
+    assert_eq!(served.naval[&0], Engaged::No);
+    assert_eq!(served.land[&100], Engaged::Ambiguous(engaged::Ambiguity::Order));
+}
+
+#[test]
+fn malformed_refresh_witness_rows_withhold_witness() {
+    use replay_data::rows::{CombatEngagementRefreshRow, TableRows};
+    use replay_frame::frame::TableView;
+    for bad in [
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+            target: 9,
+            side: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+            target: 0,
+            side: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+            target: 0,
+            side: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+            target: i32::MAX as u64 + 1,
+            side: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        },
+        CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::CONTROLLER_TARGET,
+            target: 4,
+            side: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_UNITS,
+        },
+    ] {
+        let mut frame = naval_frame(6, &[1], &[], 1, [0, 0]);
+        *frame.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+            TableRows::CombatEngagementRefreshes(vec![bad]),
+        );
+        assert!(matches!(witness(&frame).unwrap(), Witness::Unavailable));
+    }
+}
+
+#[test]
 fn the_recording_players_icons_keep_the_clients_carried_frame() {
     use replay_data::{rows::NavalCombatShipRow, rows::TableRows};
     use replay_frame::frame::TableView;
@@ -699,6 +791,7 @@ fn a_side_whose_combat_ends_is_reported_once() {
         history.advance_reporting(
             engaged::Sample {
                 viewer: 1,
+                alternate_viewer: None,
                 links: &links,
                 relations: Ok(&relations),
                 controllers: Some(Default::default()),

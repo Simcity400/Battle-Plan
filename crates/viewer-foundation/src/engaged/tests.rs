@@ -202,6 +202,7 @@ fn defended<'a>(
 ) -> Sample<'a> {
     Sample {
         viewer: 1,
+        alternate_viewer: None,
         links,
         relations: Ok(relations),
         controllers: Some(Controllers::default()),
@@ -687,4 +688,62 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
         Continuity::Next,
     );
     assert_eq!(local.side(62, 0), Engaged::Yes);
+}
+
+#[test]
+fn remapped_controller_target_is_scope_ambiguous_not_proven() {
+    let (apart, allied) = (relations(false), relations(true));
+    let before_links = BTreeMap::from([(1, 1), (2, 2), (5, 5), (7, 1)]);
+    let after_links = BTreeMap::from([(1, 1), (2, 2), (5, 5), (7, 3)]);
+    let unlinked = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+    let witness_seven = || RefreshWitness::Complete {
+        sides: BTreeMap::new(),
+        controller_targets: vec![7],
+        local_all_sides: false,
+    };
+
+    for (prev_links, next_links) in [
+        (&before_links, &after_links),
+        (&after_links, &before_links),
+        (&unlinked, &before_links),
+        (&before_links, &unlinked),
+    ] {
+        let mut history = History::default();
+        history.advance(sample(prev_links, &apart, &[7], &[2]), Continuity::Load);
+        history.advance(sample(prev_links, &allied, &[7], &[2]), Continuity::Next);
+        assert_eq!(history.side(62, 0), Engaged::No);
+        history.advance(
+            Sample {
+                refreshes: witness_seven(),
+                ..sample(next_links, &allied, &[7], &[2])
+            },
+            Continuity::Next,
+        );
+        assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+    }
+}
+
+#[test]
+fn partial_previous_census_still_applies_witnessed_side_refresh() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+    let allied = relations(true);
+    let mut history = History::default();
+    let partial_empty = Sample {
+        sides: BTreeMap::new(),
+        complete: false,
+        ..sample(&links, &allied, &[], &[])
+    };
+    history.advance(partial_empty, Continuity::Load);
+    history.advance(
+        Sample {
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::from([((62, 0), RECORDED)]),
+                controller_targets: Vec::new(),
+                local_all_sides: false,
+            },
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
 }

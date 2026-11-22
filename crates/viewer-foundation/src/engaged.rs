@@ -140,19 +140,29 @@ pub(crate) enum Tested {
     Units,
 }
 
+#[cfg(test)]
 pub(crate) fn step(
     held: Engaged,
     refresh: Option<Refresh>,
     mut evaluate: impl FnMut(Tested, usize) -> Option<bool>,
 ) -> Engaged {
+    step_with_viewers(held, refresh, 1, |lists, when, _| evaluate(lists, when))
+}
+
+fn step_with_viewers(
+    held: Engaged,
+    refresh: Option<Refresh>,
+    viewers: usize,
+    mut evaluate: impl FnMut(Tested, usize, usize) -> Option<bool>,
+) -> Engaged {
     match refresh {
         None => Engaged::Unknown,
-        Some(Refresh::Load) => Engaged::of(evaluate(Tested::Recorded, 0)),
+        Some(Refresh::Load) => Engaged::of(evaluate(Tested::Recorded, 0, 0)),
         Some(Refresh::Hour { proven, possible }) => {
             if !proven.any() && !possible.any() {
                 return held;
             }
-            let mut evaluated = [Engaged::Unknown; 4];
+            let mut evaluated = [Engaged::Unknown; 8];
             let mut len = 0;
             for (tested, lists) in [
                 (proven.recorded || possible.recorded, Tested::Recorded),
@@ -160,8 +170,10 @@ pub(crate) fn step(
             ] {
                 if tested {
                     for when in 0..2 {
-                        evaluated[len] = Engaged::of(evaluate(lists, when));
-                        len += 1;
+                        for viewer in 0..viewers {
+                            evaluated[len] = Engaged::of(evaluate(lists, when, viewer));
+                            len += 1;
+                        }
                     }
                 }
             }
@@ -204,6 +216,7 @@ impl Controllers {
 
 pub struct Sample<'a> {
     pub viewer: u32,
+    pub alternate_viewer: Option<u32>,
     pub links: &'a BTreeMap<u32, u32>,
     pub relations: Result<&'a Relations, &'static str>,
     pub controllers: Option<Controllers>,
@@ -247,6 +260,7 @@ struct Kept {
 
 struct Previous {
     viewer: u32,
+    alternate_viewer_refreshed: Option<u32>,
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
     controllers: Option<Controllers>,
@@ -266,8 +280,16 @@ struct EverySide {
 
 impl Previous {
     fn every_side(&self, sample: &Sample<'_>) -> EverySide {
-        let mut proven = self.viewer != sample.viewer;
+        let mut proven = false;
         let mut possible = false;
+        if self.viewer != sample.viewer {
+            if self.alternate_viewer_refreshed == Some(sample.viewer) {
+                possible = true;
+            } else {
+                proven = true;
+            }
+        }
+        let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
         match &sample.refreshes {
             RefreshWitness::Complete {
                 controller_targets,
@@ -278,16 +300,33 @@ impl Previous {
                 for &raw in controller_targets {
                     let now = sample.links.get(&raw).copied();
                     let before = self.links.get(&raw).copied();
-                    if now == Some(sample.viewer) || before == Some(sample.viewer) {
+                    if let Some(alt) = alternate {
+                        if now == Some(sample.viewer)
+                            || before == Some(sample.viewer)
+                            || now == Some(alt)
+                            || before == Some(alt)
+                            || now.is_none()
+                            || before.is_none()
+                        {
+                            possible = true;
+                        }
+                    } else if now == Some(sample.viewer) && before == Some(sample.viewer) {
                         proven = true;
-                    } else if now.is_none() || before.is_none() {
+                    } else if now == Some(sample.viewer)
+                        || before == Some(sample.viewer)
+                        || now.is_none()
+                        || before.is_none()
+                    {
                         possible = true;
                     }
                 }
             }
             RefreshWitness::Unavailable => {
-                possible = match (&self.controllers, &sample.controllers) {
-                    (Some(was), Some(now)) => now.may_have_joined(was, sample.viewer),
+                possible |= match (&self.controllers, &sample.controllers) {
+                    (Some(was), Some(now)) => {
+                        now.may_have_joined(was, sample.viewer)
+                            || alternate.is_some_and(|alt| now.may_have_joined(was, alt))
+                    }
                     _ => true,
                 };
             }
@@ -329,16 +368,20 @@ impl Previous {
             RefreshWitness::Unavailable => None,
         };
         let Some(before) = self.sides.get(&key) else {
-            return self.complete.then(|| {
-                let extra = witnessed.unwrap_or_default();
-                (
+            let extra = witnessed.unwrap_or_default();
+            if self.complete {
+                return Some((
                     Lists {
                         recorded: true,
                         units: extra.units,
                     },
                     Lists::default(),
-                )
-            });
+                ));
+            }
+            if extra.any() {
+                return Some((extra, Lists::default()));
+            }
+            return None;
         };
         if let Some(witnessed) = witnessed {
             let mut proven = witnessed;
@@ -455,6 +498,9 @@ impl History {
         let next = previous.as_ref().filter(|_| continuity == Continuity::Next);
         let every = next.map(|previous| previous.every_side(&sample));
         let mut held = BTreeMap::new();
+        let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
+        let viewers = [sample.viewer, alternate.unwrap_or(sample.viewer)];
+        let viewer_count = if alternate.is_some() { 2 } else { 1 };
         let before = next.map(|p| (&p.links, p.relations.as_ref().map_err(|reason| *reason)));
         for (key, side) in &sample.sides {
             let refresh = match (continuity, next, every) {
@@ -463,10 +509,11 @@ impl History {
                 _ => None,
             };
             let same = side.unit_lists == side.lists;
-            let mut tested = [[None; 2]; 2];
-            let evaluate = |lists: Tested, when: usize| {
+            let mut tested = [[[None; 2]; 2]; 2];
+            let evaluate = |lists: Tested, when: usize, viewer_index: usize| {
                 let lists = if same { Tested::Recorded } else { lists };
-                *tested[lists as usize][when].get_or_insert_with(|| {
+                *tested[lists as usize][when][viewer_index].get_or_insert_with(|| {
+                    let viewer = viewers[viewer_index];
                     let snapshot = if when == 0 {
                         Some((sample.links, sample.relations))
                     } else {
@@ -479,19 +526,23 @@ impl History {
                     let (links, relations) = snapshot?;
                     test(primary, secondary, |raw| {
                         let slot = *links.get(&raw)?;
-                        if slot == sample.viewer {
+                        if slot == viewer {
                             return Some((true, true));
                         }
-                        Some((false, relations.ok()?.shared(slot, sample.viewer)))
+                        Some((false, relations.ok()?.shared(slot, viewer)))
                     })
                 })
             };
             let held_before = self.held.get(key).copied().unwrap_or(Engaged::Unknown);
-            held.insert(*key, step(held_before, refresh, evaluate));
+            held.insert(
+                *key,
+                step_with_viewers(held_before, refresh, viewer_count, evaluate),
+            );
         }
         let mut earlier = previous.map(|previous| previous.sides).unwrap_or_default();
         self.previous = Some(Previous {
             viewer: sample.viewer,
+            alternate_viewer_refreshed: alternate.filter(|_| every.is_some_and(|e| e.proven)),
             links: sample.links.clone(),
             relations: sample.relations.cloned(),
             controllers: sample.controllers,
