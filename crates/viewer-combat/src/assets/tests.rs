@@ -1,10 +1,10 @@
 use super::*;
 use content_reader_image::native::Decode;
-use viewer_foundation::map::lazy_icons::flag_set;
-use viewer_foundation::map::sprites::Interface;
-use viewer_foundation::map::test_support::gui as tests;
-use viewer_foundation::map::test_support::image::tga;
-use viewer_foundation::map::test_support::unit_types::subunits as synthetic_subunits;
+use viewer_native_gui::lazy_icons::flag_set;
+use viewer_native_gui::sprites::Interface;
+use viewer_native_gui::test_support::gui as tests;
+use viewer_runtime::test_support::image::tga;
+use viewer_foundation::test_support::unit_types::subunits as synthetic_subunits;
 
 #[test]
 fn custom_sea_declarations_follow_effective_strategic_templates() {
@@ -72,7 +72,7 @@ fn combat_native_assets_follow_global_templates_and_scrollbars() {
 
 #[test]
 fn every_window_the_map_opens_loads_its_own_and_its_entries_sprites() {
-    use viewer_foundation::combat_selection::Selection;
+    use viewer_engagements::combat_selection::Selection;
     content_reader_core::test_game::enter();
     let opened: Vec<&[u8]> = [
         Selection::Land(0),
@@ -253,7 +253,7 @@ fn combat_fonts_select_the_native_language_family() {
 #[test]
 fn lazy_portraits_publish_loaded_and_missing_resources() {
     use crate::{binding::Bindings, gui_resources};
-    use viewer_foundation::map::native_gui::Resources;
+    use viewer_native_gui::native_gui::Resources;
 
     let (root, assets, lazy) = synthetic_assets(
         "lazy_portrait_purity",

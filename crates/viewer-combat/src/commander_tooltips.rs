@@ -18,19 +18,16 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::table_access::country_slot;
+use dashboard_text::table_access::country_slot;
 use viewer_foundation::tooltip_text::country_localised;
 use viewer_foundation::tooltip_text::displayable;
 use viewer_foundation::tooltip_text::ensure_newlines;
 use viewer_foundation::tooltip_text::tooltip_keys;
 use viewer_foundation::tooltip_text::viewing_tag as tooltip_text_viewing_tag;
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{
-        map::{native_windows::NativeWindows, perspective::Vision},
-        table_access::rows,
-    },
-};
+use super::content::Content as StaticContent;
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_foundation::perspective::Vision;
+use dashboard_text::table_access::rows;
 use {
     super::{
         Selection, Values,

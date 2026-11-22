@@ -10,4 +10,4 @@ The spool and its persistent helpers encode large table segments against shared 
 
 File writes have a separate ordered owner and keep capture and encoder storage on the spool side. Pending receipts may occupy up to half the admission budget so writes can complete and release those receipts. Idle sync failures create a completion without a frame. Allocation-failure tests can hand the writer one turn at a time to keep allocator call order reproducible.
 
-[Comparison](../../crates/collector/src/spool_compare.rs) · [Segmentation](../../crates/collector/src/spool_segments.rs) · [File writer](../../crates/collector/src/spool_writer.rs)
+[Comparison](../../crates/collector-spool/src/spool_compare.rs) · [Segmentation](../../crates/collector-spool/src/spool_segments.rs) · [File writer](../../crates/collector-spool/src/spool_writer.rs)

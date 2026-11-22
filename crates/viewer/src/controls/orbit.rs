@@ -1,8 +1,8 @@
 
 use super::{Frame, approach};
-use dashboard::protocol::GamepadButton;
+use dashboard_core::protocol::GamepadButton;
 use std::f32::consts::{PI, TAU};
-use viewer_foundation::map::camera::{Camera, FOV_Y, Free, Lens, NEAR, Pose, WATER_HEIGHT};
+use viewer_gpu::camera::{Camera, FOV_Y, Free, Lens, NEAR, Pose, WATER_HEIGHT};
 
 pub const LENS: Lens = Lens {
     fov_y: FOV_Y,

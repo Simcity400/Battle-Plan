@@ -9,32 +9,32 @@ use crate::map_views::CounterView;
 use crate::map_views::Views;
 use dashboard_text::naval_battle_name::battle_name_candidates;
 use viewer_combat as combat;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::{MapDefines, motion::CameraLaw};
-use viewer_foundation::map::free_icons;
-use viewer_foundation::map::gui_resources::GuiAssets;
-use viewer_foundation::map::gui_resources::GuiFlags;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::Retry;
-use viewer_foundation::map::layers::Omissions;
-use viewer_foundation::map::memo::Keyed;
-use viewer_foundation::map::memo::Recent;
-use viewer_foundation::map::memo::TableKey;
-use viewer_foundation::map::memo::project;
-use viewer_foundation::map::native_resources::Context;
-use viewer_foundation::map::native_shader::draw as native_shader_draw;
-use viewer_foundation::map::native_windows::NativeWindows;
-use viewer_foundation::map::province_schedule::Shared;
-use viewer_foundation::map::sprites::Quad;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::{MapDefines, motion::CameraLaw};
+use viewer_native_gui::free_icons;
+use viewer_native_gui::gui_resources::GuiAssets;
+use viewer_native_gui::gui_resources::GuiFlags;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::Retry;
+use viewer_gpu::layers::Omissions;
+use viewer_runtime::memo::Keyed;
+use viewer_runtime::memo::Recent;
+use viewer_runtime::memo::TableKey;
+use viewer_runtime::memo::project;
+use viewer_native_gui::native_resources::Context;
+use viewer_native_gui::native_shader::draw as native_shader_draw;
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_gpu::province_schedule::Shared;
+use viewer_native_gui::sprites::Quad;
 use viewer_foundation::movement_timing::EtaCache;
 use viewer_foundation::movement_timing::Etas;
 use viewer_foundation::movement_timing::MovementContent;
-use viewer_foundation::tooltip_painter::TooltipPosition;
-use viewer_foundation::tooltip_painter::draw as tooltip_painter_draw;
+use viewer_native_gui::tooltip_painter::TooltipPosition;
+use viewer_native_gui::tooltip_painter::draw as tooltip_painter_draw;
 use viewer_raids::map::raid_arrows;
 #[cfg(any(test, feature = "test-support"))]
-use viewer_world::map::name_pass;
-use viewer_world::map::scene_content::MapAssets;
+use viewer_map_text::name_pass;
+use viewer_world::scene_content::MapAssets;
 
 use dashboard_base::content::check_verification;
 use std::{
@@ -50,50 +50,36 @@ use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{BranchId, rows::tables as row_tables};
 use replay_frame::frame::DecodedFrame;
 
-use {
-    crate::playback::Playback, viewer_foundation::map::province_map::HeightField,
-    viewer_foundation::map::province_map::ProvinceMap,
-    viewer_world::map::border_pass::BorderAssets, viewer_world::map::border_pass::StraitVertex,
-    viewer_world::map::border_pass::Topology, viewer_world::map::border_pass::strait_quads,
-    viewer_world::map::borders, viewer_world::map::borders::BorderMeshes,
-    viewer_world::map::demilitarized::Zone, viewer_world::map::political::Regions,
+use crate::playback::Playback;
+use viewer_gpu::province_map::{HeightField, ProvinceMap};
+use viewer_borders::{
+    border_pass::{BorderAssets, Topology, strait_quads},
+    strait_shader::StraitVertex,
+    borders::{self, BorderMeshes},
+    demilitarized::Zone,
 };
-use {
-    viewer_world::map::rivers, viewer_world::map::rivers::RiverAssets,
-    viewer_world::map::rivers::RiverImage, viewer_world::map::rivers::RiverMesh,
-};
-use viewer_world::map::mapframe::FrameAssets;
-use {
-    viewer_world::map::trees, viewer_world::map::trees::TreeAssets,
-    viewer_world::map::trees::TreeField, viewer_world::map::trees::TreeGeometry,
-    viewer_world::map::trees::TreeImage,
-};
-use viewer_world::map::map_buildings::MapBuildingAssets;
-use viewer_world::map::unit_models::{ModelReport, UnitModelAssets};
-use {
-    viewer_world::map::railways as rail_layer, viewer_world::map::railways::Bridges,
-    viewer_world::map::railways::RailAssets, viewer_world::map::railways::RailMesh,
-};
-use {viewer_world::map::sprawl, viewer_world::map::sprawl::Sprawl};
+use map_display_data::landscape::Regions;
+use viewer_terrain::rivers::{self, RiverAssets, RiverImage, RiverMesh};
+use viewer_world::mapframe::FrameAssets;
+use viewer_terrain::trees::{self, TreeAssets, TreeField, TreeGeometry, TreeImage};
+use viewer_buildings::map_buildings::MapBuildingAssets;
+use viewer_unit_models::unit_models::{ModelReport, UnitModelAssets};
+use viewer_rail::railways::{self as rail_layer, Bridges, RailAssets, RailMesh};
+use viewer_buildings::sprawl::{self, Sprawl};
 use viewer_raids::map::intel_icons;
 use viewer_raids::map::raids;
-use {
-    viewer_foundation::map::camera::Camera, viewer_foundation::map::name_draw::Placements,
-    viewer_foundation::map::sprites::Batch, viewer_world::map::labels,
-    viewer_world::map::labels::LabelContent, viewer_world::map::labels::LabelReport,
-    viewer_world::map::name_pass::NameContent, viewer_world::map::name_pass::PlacementInputs,
-};
+use viewer_gpu::camera::Camera;
+use viewer_runtime::name_draw::Placements;
+use viewer_native_gui::sprites::Batch;
+use viewer_map_icons::labels::{self, LabelContent, LabelReport};
+use viewer_map_text::name_pass::{NameContent, PlacementInputs};
 use viewer_counters::map::counters::{self, CounterContent, CounterInputs, CounterReport};
-use {
-    viewer_counter_products::map::orders,
-    viewer_foundation::map::province_geometry::ProvinceGeometry,
-    viewer_foundation::map::ribbon_content::OrderAssets,
-    viewer_foundation::map::ribbon_content::OrderField,
-};
-use viewer_foundation::map::perspective;
-use viewer_foundation::map::tables::{self, Limitations};
-use viewer_foundation::map::textures::IntelMap;
-use {viewer_world::map::weather, viewer_world::map::weather::SnowMud};
+use viewer_counter_products::map::orders;
+use viewer_gpu::{province_geometry::ProvinceGeometry, ribbon_content::{OrderAssets, OrderField}};
+use viewer_foundation::perspective;
+use viewer_foundation::tables::{self, Limitations};
+use viewer_gpu::textures::IntelMap;
+use map_display_data::SnowMud;
 
 pub struct InitialHour {
     pub branch: Option<BranchId>,
@@ -205,8 +191,8 @@ pub struct Content {
     pub combat: Arc<combat::Content>,
     pub counter_content: Arc<viewer_counter_products::map::counter_content::Content>,
 
-    pub political_gpu: viewer_world::map::political_gpu::Cache,
-    pub scene_textures: viewer_world::map::scene::TextureCache,
+    pub political_gpu: viewer_map_modes::political_gpu::Cache,
+    pub scene_textures: viewer_world::scene::TextureCache,
     pub texture_quality: u8,
     pub visual_mods: Option<Vec<content_reader_core::content::visual::Choice>>,
     pub visual_revision: String,
@@ -215,7 +201,7 @@ pub struct Content {
     pub map_defines: MapDefines,
     pub camera_law: CameraLaw,
     pub minimap_defines: Result<combat::minimap::Defines, String>,
-    pub game_speeds: Result<viewer_foundation::map::frame::GameSpeeds, String>,
+    pub game_speeds: Result<viewer_gpu::frame::GameSpeeds, String>,
     pub game_display: Result<content_reader_settings::settings::Display, String>,
     pub game_options: content_reader_settings::settings::MapOptions,
     pub game_full_resolution: bool,
@@ -232,27 +218,27 @@ pub struct Content {
     pub border_meshes: Arc<BorderMeshes>,
     pub straits: Vec<StraitVertex>,
     pub strategic_regions: Arc<BTreeMap<u32, content_reader_regions::regions::StrategicRegion>>,
-    pub naval_dominance: viewer_world::map::naval_dominance::Content,
-    pub map_modes: Arc<viewer_world::map::map_mode::Content>,
+    pub naval_dominance: viewer_map_modes::naval_dominance::Content,
+    pub map_modes: Arc<viewer_map_modes::map_mode::Content>,
     pub border_trace: Duration,
     pub icons: MapIcons,
     pub names: NameContent,
     pub labels: LabelContent,
-    pub resource_icons: Result<viewer_world::map::resource_icons::ResourceIconContent, String>,
-    pub adjacency_icons: viewer_world::map::adjacency_icons::AdjacencyIcons,
-    pub trade_routes: Result<viewer_world::map::trade_routes::TradeRouteDefines, String>,
-    air_assignment_colors: Result<viewer_world::map::air_assignment::Colors, String>,
-    occupation_stripe_alpha: Result<viewer_world::map::occupation_stripes::Alpha, String>,
-    naval_selection_colors: Result<viewer_world::map::naval_selection::Colors, String>,
+    pub resource_icons: Result<viewer_map_icons::resource_icons::ResourceIconContent, String>,
+    pub adjacency_icons: viewer_map_icons::adjacency_icons::AdjacencyIcons,
+    pub trade_routes: Result<viewer_unit_models::trade_routes::TradeRouteDefines, String>,
+    air_assignment_colors: Result<viewer_map_modes::air_assignment::Colors, String>,
+    occupation_stripe_alpha: Result<viewer_map_modes::occupation_stripes::Alpha, String>,
+    naval_selection_colors: Result<viewer_map_modes::naval_selection::Colors, String>,
     naval_region_eligibility: BTreeSet<u32>,
-    air_order_colors: Result<viewer_world::map::air_orders::Colors, String>,
+    air_order_colors: Result<viewer_aircraft::air_orders::Colors, String>,
     air_transfer_color: Result<[f32; 4], String>,
     pub river_assets: RiverAssets,
     pub river_mesh: RiverMesh,
     pub river_trace: rivers::Trace,
     pub river_build: Duration,
     pub counters: Arc<CounterContent>,
-    pub radar_centers: viewer_world::map::radar_symbols::Centers,
+    pub radar_centers: viewer_aircraft::radar_symbols::Centers,
     pub raid_hover: Arc<raids::tooltips::Content>,
     pub frame_assets: FrameAssets,
     pub tree_assets: TreeAssets,
@@ -264,17 +250,17 @@ pub struct Content {
     pub map_buildings: MapBuildingAssets,
     pub rail_assets: RailAssets,
     pub rail_geometry: rail_layer::RailGeometry,
-    pub aircraft: Arc<viewer_world::map::aircraft::AircraftAssets>,
-    pub trains: Arc<viewer_world::map::trains::TrainAssets>,
+    pub aircraft: Arc<viewer_aircraft::aircraft::AircraftAssets>,
+    pub trains: Arc<viewer_rail::trains::TrainAssets>,
     pub rail_build: Duration,
     pub bridges: Bridges,
     pub unit_models: UnitModelAssets,
     pub orders: OrderAssets,
-    pub weather_effects: Arc<viewer_world::map::weather_effects::Assets>,
+    pub weather_effects: Arc<viewer_weather_effects::weather_effects::Assets>,
     eta_cache: Arc<EtaCache>,
     order_memo: Recent<(TableKey, u32, bool), OrderField>,
-    trade_route_memo: Recent<(TableKey, u32), viewer_world::map::trade_routes::TradeRoutes>,
-    trade_route_stops: std::sync::Mutex<viewer_world::map::trade_routes::KeptStops>,
+    trade_route_memo: Recent<(TableKey, u32), viewer_unit_models::trade_routes::TradeRoutes>,
+    trade_route_stops: std::sync::Mutex<viewer_unit_models::trade_routes::KeptStops>,
     type_tint_memo: counters::type_tint::Memo,
     mission_memo: counters::MissionMemo,
     overlay_carry: counters::Carry,
@@ -288,10 +274,10 @@ pub struct Hour<'a> {
     pub frame: &'a DecodedFrame,
     pub hour_fraction: f32,
     product_hour: map_products::ProductHour<'a>,
-    pool_limits: viewer_world::map::equipment_graphics::LimitValues,
+    pool_limits: viewer_unit_models::equipment_graphics::LimitValues,
     worker_etas: Option<Arc<viewer_foundation::movement_timing::WorkerEtas>>,
     air_rosters: Option<Arc<crate::playback::AirRosters>>,
-    moved_hours: Option<Arc<viewer_foundation::map::counter_move::MovedHours>>,
+    moved_hours: Option<Arc<viewer_unit_reads::counter_move::MovedHours>>,
 }
 
 impl std::ops::Deref for Hour<'_> {
@@ -303,7 +289,7 @@ impl std::ops::Deref for Hour<'_> {
 }
 
 impl Content {
-    pub fn naval_dominance_sources(&self, frame: &DecodedFrame, ours: u32, region: u32) -> viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap {
+    pub fn naval_dominance_sources(&self, frame: &DecodedFrame, ours: u32, region: u32) -> viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap {
         counters::naval_dominance_sources(frame, &self.map, &self.counters, ours, region, self.icons.raids.movement_reads(), self.icons.raids.mission_topology())
     }
 
@@ -327,7 +313,7 @@ impl Content {
             &orders::OrderInputs {
                 assets: &self.orders,
                 transport: Some(
-                    viewer_foundation::map::air_transport_content::AirTransportContent {
+                    viewer_unit_reads::air_transport_content::AirTransportContent {
                         geometry: &self.icons.raids.geometry,
                         state_provinces: &self.icons.raids.trigger_content.state_provinces,
                         region_by_province: &self.icons.raids.regions,
@@ -365,8 +351,9 @@ impl Content {
     }
 }
 
-fn note_scope(schedule: &viewer_foundation::map::province_schedule::Schedule, bounds: &BTreeMap<u32, [f32; 4]>) {
-    use viewer_foundation::map::{province_schedule::Update, redraws::note};
+fn note_scope(schedule: &viewer_gpu::province_schedule::Schedule, bounds: &BTreeMap<u32, [f32; 4]>) {
+    use viewer_gpu::province_schedule::Update;
+    use viewer_runtime::redraws::note;
     let (mut in_view, mut dirty) = (0_u64, 0_u64);
     for &province in bounds.keys() {
         match schedule.update(province) {
@@ -378,8 +365,8 @@ fn note_scope(schedule: &viewer_foundation::map::province_schedule::Schedule, bo
     note("scope.provinces", bounds.len() as u64);
     note("scope.provinces_in_view", in_view);
     note("scope.provinces_dirty_off_screen", dirty);
-    viewer_foundation::view_record::set("overlay", "provinces_in_view", in_view);
-    viewer_foundation::view_record::set("overlay", "provinces_dirty_off_screen", dirty);
+    viewer_runtime::view_record::set("overlay", "provinces_in_view", in_view);
+    viewer_runtime::view_record::set("overlay", "provinces_dirty_off_screen", dirty);
 }
 
 #[derive(Clone)]
@@ -428,8 +415,8 @@ pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
 pub struct OverlayHits {
     pub raids: Vec<raids::tooltips::Hit>,
     pub intel: Vec<intel_icons::IntelHit>,
-    pub occupation: Vec<viewer_world::map::occupation_icons::Hit>,
-    pub adjacency: Vec<viewer_world::map::adjacency_icons::Hit>,
+    pub occupation: Vec<viewer_map_icons::occupation_icons::Hit>,
+    pub adjacency: Vec<viewer_map_icons::adjacency_icons::Hit>,
 }
 
 impl OverlayHits {
@@ -488,12 +475,12 @@ impl OverlayCounters {
 }
 
 pub struct PreparedOverlay {
-    pub radar: Arc<viewer_world::map::radar_symbols::Field>,
-    pub air_ranges: Arc<viewer_world::map::air_ranges::Fields>,
-    pub air_assignment: viewer_world::map::air_assignment::Field,
-    pub occupation_stripes: viewer_world::map::air_assignment::Field,
-    pub naval_selection: viewer_world::map::naval_selection::Field,
-    pub air_orders: Arc<viewer_world::map::air_orders::Prepared>,
+    pub radar: Arc<viewer_aircraft::radar_symbols::Field>,
+    pub air_ranges: Arc<viewer_aircraft::air_ranges::Fields>,
+    pub air_assignment: viewer_map_modes::air_assignment::Field,
+    pub occupation_stripes: viewer_map_modes::air_assignment::Field,
+    pub naval_selection: viewer_map_modes::naval_selection::Field,
+    pub air_orders: Arc<viewer_aircraft::air_orders::Prepared>,
     labels: labels::PreparedLabels,
     raids: Batch,
     native_raids: raids::PreparedRaids,
@@ -508,7 +495,7 @@ pub struct PreparedOverlay {
     layers: [usize; 6],
     counter_view: CounterView,
     pub(crate) laid_icons: LaidIcons,
-    adjacency_icons: viewer_world::map::adjacency_icons::PreparedAdjacencyIcons,
+    adjacency_icons: viewer_map_icons::adjacency_icons::PreparedAdjacencyIcons,
     adjacency_priority: i8,
     mode_icons: Batch,
     mode_icon_refused: BTreeMap<String, usize>,
@@ -517,12 +504,12 @@ pub struct PreparedOverlay {
 
 pub struct Still {
     labels: labels::PreparedLabels,
-    air_assignment: viewer_world::map::air_assignment::Field,
-    air_orders: Arc<viewer_world::map::air_orders::Prepared>,
-    air_ranges: Arc<viewer_world::map::air_ranges::Fields>,
-    occupation_stripes: viewer_world::map::air_assignment::Field,
-    naval_selection: viewer_world::map::naval_selection::Field,
-    radar: Arc<viewer_world::map::radar_symbols::Field>,
+    air_assignment: viewer_map_modes::air_assignment::Field,
+    air_orders: Arc<viewer_aircraft::air_orders::Prepared>,
+    air_ranges: Arc<viewer_aircraft::air_ranges::Fields>,
+    occupation_stripes: viewer_map_modes::air_assignment::Field,
+    naval_selection: viewer_map_modes::naval_selection::Field,
+    radar: Arc<viewer_aircraft::radar_symbols::Field>,
     engaged_covered: bool,
 }
 
@@ -634,7 +621,7 @@ impl DumpOverlay<'_> {
 
     pub fn naval_dominance_sources(
         &self,
-    ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
+    ) -> Arc<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap> {
         self.tables.naval_dominance_sources()
     }
 
@@ -683,7 +670,7 @@ impl DumpOverlay<'_> {
             )?;
             self.hour.icons.lazy.settle();
             if self.hour.icons.lazy.version() == before {
-                viewer_foundation::map::sprites::dump_sprites(
+                viewer_native_gui::sprites::dump_sprites(
                     &self.batch,
                     &self.extra,
                     &mut self.sprites,
@@ -696,7 +683,7 @@ impl DumpOverlay<'_> {
                     field: self.hour.heights(),
                     sight: self.hour.assets.terrain_sight(),
                 };
-                let at = viewer_foundation::map::anchored::Head { hour: self.hour.frame.hour, fraction: 0.0 };
+                let at = viewer_gpu::icon_tracks::Head { hour: self.hour.frame.hour, fraction: 0.0 };
                 self.looks = Some(free_icons::present(
                     &self.camera,
                     self.viewport,
@@ -720,7 +707,7 @@ impl DumpOverlay<'_> {
 }
 
 impl PreparedOverlay {
-    pub fn motion_layout(&self) -> Option<&viewer_foundation::map::counter_move::DrawnLayout> {
+    pub fn motion_layout(&self) -> Option<&viewer_unit_reads::counter_move::DrawnLayout> {
         self.icons.motion_layout()
     }
 
@@ -730,8 +717,8 @@ impl PreparedOverlay {
 
     pub fn set_pressed(
         &mut self,
-        pressed: Option<viewer_foundation::unit_handle::Unit>,
-        plate_hovered: Option<viewer_foundation::unit_handle::Unit>,
+        pressed: Option<viewer_runtime::unit_handle::Unit>,
+        plate_hovered: Option<viewer_runtime::unit_handle::Unit>,
     ) {
         self.counter_view.pressed = pressed;
         self.counter_view.plate_hovered = plate_hovered;
@@ -763,24 +750,24 @@ pub trait IconHost {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
-        icons: &viewer_world::map::resource_icons::HourIcons,
-    ) -> viewer_world::map::resource_icons::PreparedResourceIcons;
+        visibility: viewer_foundation::mode_visibility::Visibility,
+        icons: &viewer_map_icons::resource_icons::HourIcons,
+    ) -> viewer_map_icons::resource_icons::PreparedResourceIcons;
 
     fn lay_occupation_icons(
         &self,
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        mode: Option<viewer_map_icons::occupation_icons::Mode>,
         country: u32,
-        marks: &viewer_world::map::occupation_icons::Marks,
-    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons;
+        marks: &viewer_map_icons::occupation_icons::Marks,
+    ) -> viewer_map_icons::occupation_icons::PreparedOccupationIcons;
 }
 
 pub struct LaidIcons {
-    pub(crate) resource_icons: viewer_world::map::resource_icons::PreparedResourceIcons,
-    pub(crate) occupation_icons: viewer_world::map::occupation_icons::PreparedOccupationIcons,
+    pub(crate) resource_icons: viewer_map_icons::resource_icons::PreparedResourceIcons,
+    pub(crate) occupation_icons: viewer_map_icons::occupation_icons::PreparedOccupationIcons,
     pub(crate) resource_icons_by: MadeBy,
     pub(crate) occupation_icons_by: MadeBy,
 }
@@ -812,8 +799,8 @@ impl LaidIcons {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
-        icons: &viewer_world::map::resource_icons::HourIcons,
+        visibility: viewer_foundation::mode_visibility::Visibility,
+        icons: &viewer_map_icons::resource_icons::HourIcons,
         version: u64,
     ) {
         self.resource_icons = hour.lay_resource_icons(camera, viewport, ui_scale, visibility, icons);
@@ -827,9 +814,9 @@ impl LaidIcons {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        mode: Option<viewer_map_icons::occupation_icons::Mode>,
         country: u32,
-        marks: &viewer_world::map::occupation_icons::Marks,
+        marks: &viewer_map_icons::occupation_icons::Marks,
         version: u64,
     ) {
         self.occupation_icons = hour.lay_occupation_icons(camera, viewport, ui_scale, mode, country, marks);
@@ -843,11 +830,11 @@ impl IconHost for Hour<'_> {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
-        icons: &viewer_world::map::resource_icons::HourIcons,
-    ) -> viewer_world::map::resource_icons::PreparedResourceIcons {
+        visibility: viewer_foundation::mode_visibility::Visibility,
+        icons: &viewer_map_icons::resource_icons::HourIcons,
+    ) -> viewer_map_icons::resource_icons::PreparedResourceIcons {
         self.resource_icons_with(camera, viewport, ui_scale, visibility, |inputs| {
-            viewer_world::map::resource_icons::lay_out(inputs, icons)
+            viewer_map_icons::resource_icons::lay_out(inputs, icons)
         })
     }
 
@@ -856,12 +843,12 @@ impl IconHost for Hour<'_> {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        mode: Option<viewer_map_icons::occupation_icons::Mode>,
         country: u32,
-        marks: &viewer_world::map::occupation_icons::Marks,
-    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons {
+        marks: &viewer_map_icons::occupation_icons::Marks,
+    ) -> viewer_map_icons::occupation_icons::PreparedOccupationIcons {
         self.occupation_icons_with(camera, viewport, ui_scale, mode, country, |inputs| {
-            viewer_world::map::occupation_icons::lay_out(inputs, marks)
+            viewer_map_icons::occupation_icons::lay_out(inputs, marks)
         })
     }
 }
@@ -904,7 +891,7 @@ impl PreparedOverlay {
             )));
         }
         let mut still = self.take_still();
-        let mut spans = viewer_foundation::profiling::BuilderSpans::new(false);
+        let mut spans = viewer_runtime::profiling::BuilderSpans::new(false);
         match hour.prepare_overlay_with(camera, viewport, ui_scale, tables, view, rows, &mut spans, Some(&mut still)) {
             Ok(placed) => {
                 self.finish_project(placed, hour, camera, viewport, ui_scale, tables.ours(), lay_ins);
@@ -990,7 +977,7 @@ impl PreparedOverlay {
         ui_scale: f32,
         layers: &OverlayLayers,
         time: f32,
-        pools: viewer_foundation::map::icon_windows::Pools,
+        pools: viewer_native_gui::icon_windows::Pools,
     ) -> io::Result<()> {
         let logical = gui_resources_viewport(viewport, ui_scale);
         let windows = hour.icons.counters.window_cache.at(logical.map(|v| v as u32))?;
@@ -1007,7 +994,7 @@ impl PreparedOverlay {
             camera,
             viewport,
             ui_scale,
-            moved: hour.moved_hours.as_deref().unwrap_or(&viewer_foundation::map::counter_move::NO_MOVED_HOURS),
+            moved: hour.moved_hours.as_deref().unwrap_or(&viewer_unit_reads::counter_move::NO_MOVED_HOURS),
             movement: hour.movement.as_deref(),
             heights: hour.heights(),
             settings: self.counter_view.settings,
@@ -1033,7 +1020,7 @@ impl PreparedOverlay {
         let assets = inputs.assets;
         let mut views = self.counter_view.presentation.windows.lock().unwrap_or_else(|p| p.into_inner());
         views.set_quiet(true);
-        viewer_foundation::map::redraws::note(
+        viewer_runtime::redraws::note(
             "quiet.pools",
             pools.named().iter().filter(|(running, _)| *running).count() as u64,
         );
@@ -1119,7 +1106,7 @@ impl PreparedOverlay {
             camera,
             viewport,
             ui_scale,
-            moved: hour.moved_hours.as_deref().unwrap_or(&viewer_foundation::map::counter_move::NO_MOVED_HOURS),
+            moved: hour.moved_hours.as_deref().unwrap_or(&viewer_unit_reads::counter_move::NO_MOVED_HOURS),
             movement: hour.movement.as_deref(),
             heights: hour.heights(),
             settings: self.counter_view.settings,
@@ -1136,13 +1123,13 @@ impl PreparedOverlay {
             visibility: self.counter_view.visibility,
             art: hour.icons.lazy.version(),
         };
-        let schedule_profile = viewer_foundation::profiling::span("d_schedule");
+        let schedule_profile = viewer_runtime::profiling::span("d_schedule");
         inputs
             .schedule
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .present(&inputs.content.bounds, camera, viewport, time);
-        if replay_frame::cpu::enabled() || viewer_foundation::view_record::on() {
+        if replay_frame::cpu::enabled() || viewer_runtime::view_record::on() {
             note_scope(&inputs.schedule.lock().unwrap_or_else(|p| p.into_inner()), &inputs.content.bounds);
         }
         let (dirty, cleaning) = {
@@ -1187,10 +1174,10 @@ impl PreparedOverlay {
             adjacency_rules,
         } = &mut *views;
         label_view.set_cleaning(cleaning);
-        let owner_profile = viewer_foundation::profiling::FrameOwners::new();
+        let owner_profile = viewer_runtime::profiling::FrameOwners::new();
         let (counters, other) = (
             {
-                let _span = viewer_foundation::profiling::span("d_counters");
+                let _span = viewer_runtime::profiling::span("d_counters");
                 owner_profile.measure("counters", || {
                     icons.draw_branched(&inputs, time, owner_profile, naval, pings, bases, land_combats)
                 })
@@ -1217,10 +1204,10 @@ impl PreparedOverlay {
                         time: Some(time),
                     };
                     let (_, labels_owner) = owner_profile.measure("labels", || {
-                        let _span = viewer_foundation::profiling::span("d_labels");
+                        let _span = viewer_runtime::profiling::span("d_labels");
                         labels.draw_scheduled(context, &dirty, label_view);
                     });
-                    let modes_profile = viewer_foundation::profiling::span("d_modes");
+                    let modes_profile = viewer_runtime::profiling::span("d_modes");
                     let (raid_quads, raids_owner) = owner_profile.measure("raids", || {
                         let mut raid_batch = Batch::default();
                         let mut raid_hits = Vec::new();
@@ -1308,7 +1295,7 @@ impl PreparedOverlay {
             .into_iter()
             .chain(other_owners)
         {
-            viewer_foundation::profiling::record_owner_sample(sample);
+            viewer_runtime::profiling::record_owner_sample(sample);
         }
         let (raid_quads, mode_icons) = other;
         counters?;
@@ -1357,8 +1344,8 @@ impl PreparedOverlay {
             .collect()
     }
 
-    pub fn province_stripes(&self) -> &viewer_world::map::air_assignment::Field {
-        use viewer_foundation::map::mode_visibility::PriorityTable;
+    pub fn province_stripes(&self) -> &viewer_map_modes::air_assignment::Field {
+        use viewer_foundation::mode_visibility::PriorityTable;
         match self.counter_view.visibility.priorities {
             PriorityTable::Resistance => &self.occupation_stripes,
             PriorityTable::StrategicNavy => &self.naval_selection.assignment,
@@ -1418,12 +1405,12 @@ impl PreparedOverlay {
         self.laid_icons.occupation_icons_by()
     }
 
-    pub fn replace_resource_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_world::map::resource_icons::HourIcons, version: u64) {
+    pub fn replace_resource_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, icons: &viewer_map_icons::resource_icons::HourIcons, version: u64) {
         self.laid_icons.replace_resource_icons(hour, camera, viewport, ui_scale, self.counter_view.visibility, icons, version);
     }
 
     #[allow(clippy::too_many_arguments, reason = "the camera, the viewing country and the layer's product")]
-    pub fn replace_occupation_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_world::map::occupation_icons::Marks, version: u64) {
+    pub fn replace_occupation_icons(&mut self, hour: &impl IconHost, camera: Camera, viewport: [u32; 2], ui_scale: f32, country: u32, marks: &viewer_map_icons::occupation_icons::Marks, version: u64) {
         self.laid_icons.replace_occupation_icons(hour, camera, viewport, ui_scale, self.counter_view.occupation, country, marks, version);
     }
 
@@ -1570,15 +1557,15 @@ pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
 }
 
 pub fn select_movement(
-    scene: &mut viewer_world::map::scene::Scene,
+    scene: &mut viewer_world::scene::Scene,
     device: &eframe::wgpu::Device,
     queue: &eframe::wgpu::Queue,
     content: &Content,
     frame: &DecodedFrame,
     ours: u32,
-    selected: &BTreeSet<viewer_foundation::unit_handle::Unit>,
+    selected: &BTreeSet<viewer_runtime::unit_handle::Unit>,
 ) -> std::io::Result<()> {
-    use viewer_world::map::scene::SceneInput;
+    use viewer_world::scene::SceneInput;
     let epoch = (frame.branch, frame.hour, ours);
     if !scene.movement_arrows.matches(epoch, selected) {
         let heights = HeightField {
@@ -1748,7 +1735,7 @@ impl Document {
                         *resolved.borrow_mut() = Arc::clone(&current);
                     }
                     let _generation = current.layers.enter_generation();
-                    let _stage = viewer_foundation::load_record::stage("document");
+                    let _stage = viewer_runtime::load_record::stage("document");
                     let document = Self::load_shared_once(
                         path,
                         options,
@@ -1781,7 +1768,7 @@ impl Document {
             },
             || {
                 let _revision = crate::perf_log::StartupSpan::new("visual_mod_revision");
-                let _stage = viewer_foundation::load_record::stage("document.revision_after_load");
+                let _stage = viewer_runtime::load_record::stage("document.revision_after_load");
                 let current = resolved.borrow();
                 let _generation = current.layers.enter_generation();
                 visual_revision_now(options, &replay, visual_mods)
@@ -1864,9 +1851,9 @@ impl Document {
         }
         let language = &replay.identity.language;
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
-        viewer_foundation::load_record::count("content loaded", 1, 0);
+        viewer_runtime::load_record::count("content loaded", 1, 0);
         let mut content = {
-            let _stage = viewer_foundation::load_record::stage("document.recorded_stack");
+            let _stage = viewer_runtime::load_record::stage("document.recorded_stack");
             resolved.as_ref().clone()
         };
         content.layers = content.layers.with_own_overlay_diagnostics();
@@ -1885,7 +1872,7 @@ impl Document {
                 })
                 .collect();
             let cancel = std::sync::atomic::AtomicBool::new(false);
-            let decided_stage = viewer_foundation::load_record::stage("document.visual_decided");
+            let decided_stage = viewer_runtime::load_record::stage("document.visual_decided");
             let decision = decided(visual_fallback, options, selected, &recorded, &cancel);
             drop(decided_stage);
             match decision {
@@ -1900,7 +1887,7 @@ impl Document {
                     });
                 }
                 None => match {
-                    let _stage = viewer_foundation::load_record::stage("document.visual_apply");
+                    let _stage = viewer_runtime::load_record::stage("document.visual_apply");
                     content_reader_core::content::visual::apply(
                         &mut content.layers,
                         options,
@@ -1980,7 +1967,7 @@ impl Document {
         fallback: Option<crate::visual_fallback::Built>,
         uncovered_reads: content_reader_core::content::UncoveredReads,
     ) -> io::Result<Self> {
-        let serial = viewer_foundation::load_record::stage("content.serial");
+        let serial = viewer_runtime::load_record::stage("content.serial");
         let game_version = replay.identity.game_version.clone();
         let content = Arc::new(content);
         std::thread::scope(|prefix| {
@@ -1988,18 +1975,18 @@ impl Document {
             let scripted_language = recorded_language.clone();
             let h_scripted = content_reader_core::parallel::spawn(prefix, move || {
                 let _startup = crate::perf_log::StartupSpan::new("document_scripted_text");
-                let _stage = viewer_foundation::load_record::stage("content.scripted");
+                let _stage = viewer_runtime::load_record::stage("content.scripted");
                 Arc::new(dashboard_text::scripted_text::ScriptedContent::read(
                     scripted_content,
                     scripted_language,
                 ))
             });
             let map = {
-                let _stage = viewer_foundation::load_record::stage("content.map");
+                let _stage = viewer_runtime::load_record::stage("content.map");
                 product_loader.map()?
             };
             let (terrain, default_map) = {
-                let _stage = viewer_foundation::load_record::stage("content.terrain");
+                let _stage = viewer_runtime::load_record::stage("content.terrain");
                 product_loader.terrain()?
             };
             for reason in &terrain.skipped {
@@ -2008,18 +1995,18 @@ impl Document {
                 ));
             }
             let defines = {
-                let _stage = viewer_foundation::load_record::stage("content.defines");
+                let _stage = viewer_runtime::load_record::stage("content.defines");
                 product_loader.defines()?
             };
             let audio = {
-                let _stage = viewer_foundation::load_record::stage("content.audio");
+                let _stage = viewer_runtime::load_record::stage("content.audio");
                 product_loader.audio(&defines, &options.user_dir, &mut warnings)
             };
             let art_defines = {
-                let _stage = viewer_foundation::load_record::stage("content.graphics_defines");
+                let _stage = viewer_runtime::load_record::stage("content.graphics_defines");
                 defines.graphics_for(&content.layers)
             };
-            let game_speeds = viewer_foundation::map::frame::GameSpeeds::load(&defines);
+            let game_speeds = viewer_gpu::frame::GameSpeeds::load(&defines);
             let defines_for = |stack: &content_reader_core::ResolvedLayers| {
                 if stack.shows_visual_mods() {
                     &art_defines
@@ -2028,7 +2015,7 @@ impl Document {
                 }
             };
             let settings = content_reader_settings::settings::read_keys(&options.user_dir)?;
-            let camera_tilt = viewer_foundation::map::camera::stored_tilt(
+            let camera_tilt = viewer_gpu::camera::stored_tilt(
                 settings
                     .f32_or_constructed(
                         &["camera_tilt"],
@@ -2113,7 +2100,7 @@ impl Document {
                 regions,
                 notes: region_notes,
             } = {
-                let _stage = viewer_foundation::load_record::stage("content.regions");
+                let _stage = viewer_runtime::load_record::stage("content.regions");
                 content_reader_regions::regions::read(&content.layers)?
             };
             warnings.extend(region_notes);
@@ -2121,7 +2108,7 @@ impl Document {
             let mut dag = content_reader_core::parallel::dag::Dag::default();
             let layers = &content.layers;
             let h_assets = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.assets");
+                let _stage = viewer_runtime::load_record::stage("wave1.assets");
                 let _startup = crate::perf_log::StartupSpan::new("document_assets");
                 let mut warnings = Vec::new();
                 let assets = crate::map_assets::load_with_products(
@@ -2139,7 +2126,7 @@ impl Document {
                 Ok((assets?, warnings))
             });
             let h_icons = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.icons");
+                let _stage = viewer_runtime::load_record::stage("wave1.icons");
                 let _startup = crate::perf_log::StartupSpan::new("document_icons");
                 layers.artwork("map icons and interface", |stack| {
                     MapIcons::load_with_products(
@@ -2156,7 +2143,7 @@ impl Document {
                 })
             });
             let h_names = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.names");
+                let _stage = viewer_runtime::load_record::stage("wave1.names");
                 let _startup = crate::perf_log::StartupSpan::new("document_names");
                 layers.artwork("map names", |stack| {
                     NameContent::load_with_localisation(stack, &map, || {
@@ -2165,7 +2152,7 @@ impl Document {
                 })
             });
             let h_labels = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.labels");
+                let _stage = viewer_runtime::load_record::stage("wave1.labels");
                 Ok(Arc::new(combat::naval_labels::RecordedLabels::prepare(
                     recorded_language.clone(),
                     &recorded_language,
@@ -2173,7 +2160,7 @@ impl Document {
                 )))
             });
             let h_counters = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.counters");
+                let _stage = viewer_runtime::load_record::stage("wave1.counters");
                 crate::map_assets::graphics_define(
                     layers,
                     "counters",
@@ -2192,7 +2179,7 @@ impl Document {
                 )
             });
             let h_borders_in = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.borders_in");
+                let _stage = viewer_runtime::load_record::stage("wave1.borders_in");
                 let border_assets = layers.artwork("borders", |stack| {
                     BorderAssets::load(
                         stack,
@@ -2207,7 +2194,7 @@ impl Document {
                 Ok((border_assets, states, adjacencies))
             });
             let h_rail_reads = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.rail_reads");
+                let _stage = viewer_runtime::load_record::stage("wave1.rail_reads");
                 let (cities, city_styles) = content_reader_core::cities::read(layers)?;
                 let buildings_read = content_reader_core::positions::read_buildings(layers)?;
                 let building_types = product_loader.buildings()?;
@@ -2227,10 +2214,10 @@ impl Document {
                 ))
             });
             let h_trains = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.trains");
+                let _stage = viewer_runtime::load_record::stage("wave1.trains");
                 let (trains, warnings) = layers.artwork("supply trains", |stack| {
                     let mut warnings = Vec::new();
-                    viewer_world::map::trains::TrainAssets::load(
+                    viewer_rail::trains::TrainAssets::load(
                         stack,
                         decode,
                         defines_for(stack),
@@ -2241,10 +2228,10 @@ impl Document {
                 Ok((Arc::new(trains), warnings))
             });
             let h_aircraft = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.aircraft");
+                let _stage = viewer_runtime::load_record::stage("wave1.aircraft");
                 let (aircraft, warnings) = layers.artwork("aircraft", |stack| {
                     let mut warnings = Vec::new();
-                    viewer_world::map::aircraft::AircraftAssets::load(
+                    viewer_aircraft::aircraft::AircraftAssets::load(
                         stack,
                         decode,
                         &map,
@@ -2257,7 +2244,7 @@ impl Document {
                 Ok((Arc::new(aircraft), warnings))
             });
             let h_bridges = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.bridges");
+                let _stage = viewer_runtime::load_record::stage("wave1.bridges");
                 layers.artwork("railway bridges", |stack| {
                     let mut warnings = Vec::new();
                     Bridges::load(stack, decode, defines_for(stack), &mut warnings)
@@ -2265,7 +2252,7 @@ impl Document {
                 })
             });
             let h_units = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.units");
+                let _stage = viewer_runtime::load_record::stage("wave1.units");
                 let _startup = crate::perf_log::StartupSpan::new("document_units");
                 let stack = layers.presentation();
                 let mut warnings = Vec::new();
@@ -2285,7 +2272,7 @@ impl Document {
                 Ok((unit_models, warnings))
             });
             let h_orders = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.orders");
+                let _stage = viewer_runtime::load_record::stage("wave1.orders");
                 layers.artwork("orders and arrows", |stack| {
                     let mut warnings = Vec::new();
                     OrderAssets::load(stack, decode, (&defines, defines_for(stack)), &mut warnings)
@@ -2293,13 +2280,13 @@ impl Document {
                 })
             });
             let h_weather = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.weather");
-                let region_provinces = viewer_world::map::weather_effects::RegionProvinces::new(
+                let _stage = viewer_runtime::load_record::stage("wave1.weather");
+                let region_provinces = viewer_weather_effects::weather_effects::RegionProvinces::new(
                     &regions,
                     |province| map.definitions.contains_key(&province),
                 );
                 layers.artwork("weather effects", |stack| {
-                    viewer_world::map::weather_effects::Assets::load(
+                    viewer_weather_effects::weather_effects::Assets::load(
                         stack,
                         defines_for(stack),
                         [map.width, map.height],
@@ -2309,7 +2296,7 @@ impl Document {
                 })
             });
             let h_mapbuildings = dag.add(&[], || -> io::Result<_> {
-                let _stage = viewer_foundation::load_record::stage("wave1.mapbuildings");
+                let _stage = viewer_runtime::load_record::stage("wave1.mapbuildings");
                 layers.artwork("map buildings", |stack| {
                     let mut warnings = Vec::new();
                     let building_layers = product_loader.reader(stack, "display/buildings");
@@ -2324,40 +2311,40 @@ impl Document {
                 })
             });
             let h_geometry = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.geometry");
+                let _stage = viewer_runtime::load_record::stage("wave1.geometry");
                 let started = Instant::now();
                 let geometry = ProvinceGeometry::build(&map);
                 Ok((geometry, started.elapsed()))
             });
             let h_river_assets = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.river_assets");
+                let _stage = viewer_runtime::load_record::stage("wave1.river_assets");
                 layers.artwork("rivers", |stack| {
                     RiverAssets::load(stack, [map.width, map.height], texture_quality, decode)
                 })
             });
             let h_rail_assets = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.rail_assets");
+                let _stage = viewer_runtime::load_record::stage("wave1.rail_assets");
                 layers.artwork("railways", |stack| {
                     RailAssets::load(stack, [map.width, map.height], decode)
                 })
             });
             let h_ideologies = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.ideologies");
+                let _stage = viewer_runtime::load_record::stage("wave1.ideologies");
                 product_loader.ideologies()
             });
             let h_resources = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.resources");
+                let _stage = viewer_runtime::load_record::stage("wave1.resources");
                 product_loader.resources()
             });
             let h_initial = dag.add(&[], || {
-                let _stage = viewer_foundation::load_record::stage("wave1.initial");
+                let _stage = viewer_runtime::load_record::stage("wave1.initial");
                 Self::initial_playback(replay, initial).map(std::sync::Mutex::new)
             });
             let h_initial_flags = {
                 let playback = h_initial.clone();
                 let icons = h_icons.clone();
                 dag.add(&[playback.id(), icons.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.initial_flags");
+                    let _stage = viewer_runtime::load_record::stage("wave2.initial_flags");
                     if let crate::playback::Current::Frame(frame) = playback
                         .read()?
                         .lock()
@@ -2374,7 +2361,7 @@ impl Document {
                 let h_icons = h_icons.clone();
                 let h_counters = h_counters.clone();
                 dag.add(&[h_icons.id(), h_counters.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.movement");
+                    let _stage = viewer_runtime::load_record::stage("wave2.movement");
                     let icons = h_icons.read()?;
                     let counters = h_counters.read()?;
 
@@ -2391,7 +2378,7 @@ impl Document {
             let h_label_content = {
                 let (defines, art_defines) = (&defines, &art_defines);
                 dag.add(&[], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.labels");
+                    let _stage = viewer_runtime::load_record::stage("wave2.labels");
                     crate::map_assets::graphics_define(
                         layers,
                         "map labels",
@@ -2406,7 +2393,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 let h_borders_in = h_borders_in.clone();
                 dag.add(&[h_assets.id(), h_borders_in.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.borders");
+                    let _stage = viewer_runtime::load_record::stage("wave2.borders");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2438,7 +2425,7 @@ impl Document {
                 let (defines, art_defines) = (&defines, &art_defines);
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || -> io::Result<_> {
-                    let _stage = viewer_foundation::load_record::stage("wave2.rivers");
+                    let _stage = viewer_runtime::load_record::stage("wave2.rivers");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2461,7 +2448,7 @@ impl Document {
             let h_trees = {
                 let h_assets = h_assets.clone();
                 dag.add(&[h_assets.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.trees");
+                    let _stage = viewer_runtime::load_record::stage("wave2.trees");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2504,7 +2491,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 let h_rail_reads = h_rail_reads.clone();
                 dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.sprawl");
+                    let _stage = viewer_runtime::load_record::stage("wave2.sprawl");
                     let (assets, _) = h_assets.read()?;
                     let heights = HeightField {
                         width: assets.heightmap.width,
@@ -2532,7 +2519,7 @@ impl Document {
                 let h_assets = h_assets.clone();
                 let h_rail_reads = h_rail_reads.clone();
                 dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave2.railgeom");
+                    let _stage = viewer_runtime::load_record::stage("wave2.railgeom");
                     let (assets, _) = h_assets.read()?;
                     let (_, _, buildings_read, building_types, rail_defines) =
                         h_rail_reads.read()?;
@@ -2552,7 +2539,7 @@ impl Document {
             let h_frame = {
                 let icons = h_icons.clone();
                 dag.add(&[icons.id()], move || {
-                    let _stage = viewer_foundation::load_record::stage("wave1.frame");
+                    let _stage = viewer_runtime::load_record::stage("wave1.frame");
                     layers.artwork("map frame", |stack| {
                         let mut warnings = Vec::new();
                         FrameAssets::load(
@@ -2584,7 +2571,7 @@ impl Document {
                     )
                 })
             };
-            let products_stage = viewer_foundation::load_record::stage("products");
+            let products_stage = viewer_runtime::load_record::stage("products");
             dag.run();
             drop(products_stage);
             let (mut assets, notes) = h_assets.take()?;
@@ -2613,7 +2600,7 @@ impl Document {
             }
             let names = h_names.take()?;
             let recorded_labels = h_labels.take()?;
-            let icon_windows = viewer_foundation::load_record::stage("wave1.icon_windows");
+            let icon_windows = viewer_runtime::load_record::stage("wave1.icon_windows");
             joined_warnings.extend(layers.artwork("map icon windows", |stack| {
                 MapIcons::load_gui(
                     &mut combat_assets,
@@ -2746,7 +2733,7 @@ impl Document {
             };
             h_initial_flags.take()?;
             warnings.extend(wave2_warnings);
-            let _rest = viewer_foundation::load_record::stage("content.rest");
+            let _rest = viewer_runtime::load_record::stage("content.rest");
             raid_assets.trigger_content.terrain = movement.clone();
             let map_modes = {
                 let mode_layers = product_loader.reader(&content.layers, "display/modes");
@@ -2758,7 +2745,7 @@ impl Document {
                 }
                 let categories = content_reader_state_categories::state_categories::read(&mode_layers)?;
                 let infrastructure =
-                    viewer_world::map::map_mode::infrastructure::Content::new(&building_types);
+                    viewer_map_modes::map_mode::infrastructure::Content::new(&building_types);
                 let terrain_categories = combat_assets.movement_terrain();
                 let provinces: Vec<u32> = map.definitions.keys().copied().collect();
                 let province_terrain = |province| {
@@ -2779,7 +2766,7 @@ impl Document {
                             "the provinces' terrain records did not read (unit movement is unavailable)"
                                 .to_owned(),
                         ),
-                        (Ok(categories), Some(_)) => Ok(viewer_world::map::map_mode::terrain::Sources {
+                        (Ok(categories), Some(_)) => Ok(viewer_map_modes::map_mode::terrain::Sources {
                             categories,
                             provinces: &provinces,
                             terrain: &province_terrain,
@@ -2787,7 +2774,7 @@ impl Document {
                             regions: &regions,
                         }),
                     };
-                        viewer_world::map::map_mode::Content::new(
+                        viewer_map_modes::map_mode::Content::new(
                             defines,
                             Arc::clone(&ideologies),
                             &categories,
@@ -2796,7 +2783,7 @@ impl Document {
                             recorded_language.clone(),
                             terrain,
                             infrastructure.clone(),
-                            viewer_world::map::map_mode::strategic::Content::new(
+                            viewer_map_modes::map_mode::strategic::Content::new(
                                 defines, &regions,
                             )?,
                         )
@@ -2814,10 +2801,10 @@ impl Document {
                 "occupation map icons",
                 &art_defines,
                 &defines,
-                viewer_world::map::occupation_icons::IconDefines::load,
+                viewer_map_icons::occupation_icons::IconDefines::load,
             )
             .and_then(|defines| {
-                Ok(viewer_world::map::occupation_icons::Content {
+                Ok(viewer_map_icons::occupation_icons::Content {
                     definitions: content_reader_core::occupation_modifiers::Definitions::read(
                         &content.layers,
                     )?,
@@ -2830,7 +2817,7 @@ impl Document {
                     warnings.extend(occupation.warnings().cloned());
                     counter_assets.gui.load(
                         &content.layers,
-                        &viewer_world::map::occupation_icons::gui_assets(occupation),
+                        &viewer_map_icons::occupation_icons::gui_assets(occupation),
                         &mut icon_images,
                     )?;
                 }
@@ -2842,7 +2829,7 @@ impl Document {
             counter_assets
                 .gui
                 .load(&content.layers, &intel_sprites, &mut icon_images)?;
-            if icon_images.len() >= viewer_foundation::map::lazy_icons::DYNAMIC_BASE {
+            if icon_images.len() >= viewer_native_gui::lazy_icons::DYNAMIC_BASE {
                 return Err(invalid("more static icon pages than texture ids"));
             }
             let icons = MapIcons {
@@ -2925,7 +2912,7 @@ impl Document {
                 .collect();
             let province_hover = h_hover.take()?;
             warnings.extend(province_hover.warnings());
-            let naval_dominance = viewer_world::map::naval_dominance::Content::new(
+            let naval_dominance = viewer_map_modes::naval_dominance::Content::new(
                 &map,
                 &regions,
                 icons
@@ -3015,7 +3002,7 @@ impl Document {
                 trigger_content: Arc::new(icons.raids.trigger_content.clone()),
                 occupation: Arc::new(combat::Occupation::load(&content.layers)),
             });
-            let resource_icons = viewer_world::map::resource_icons::ResourceIconContent::load(
+            let resource_icons = viewer_map_icons::resource_icons::ResourceIconContent::load(
                 &content.layers,
                 &defines,
             )
@@ -3028,14 +3015,14 @@ impl Document {
             }
             let adjacency_icons = match content_reader_core::adjacency_rules::read(&content.layers) {
                 Ok(rules) => {
-                    viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
+                    viewer_map_icons::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
                         .with_build(game_version)
                 }
                 Err(error) => {
                     warnings.push(format!(
                     "No strait or canal icons are drawn: the adjacency rules cannot be read: {error}"
                 ));
-                    viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+                    viewer_map_icons::adjacency_icons::AdjacencyIcons::new(&[], &defines)
                         .with_build(game_version)
                 }
             };
@@ -3044,7 +3031,7 @@ impl Document {
                 "trade-route lines and convoys",
                 &art_defines,
                 &defines,
-                viewer_world::map::trade_routes::TradeRouteDefines::read,
+                viewer_unit_models::trade_routes::TradeRouteDefines::read,
             )
             .map_err(|error| error.to_string());
             let air_assignment_colors = crate::map_assets::graphics_define(
@@ -3052,7 +3039,7 @@ impl Document {
                 "Air assignment stripes",
                 &art_defines,
                 &defines,
-                viewer_world::map::air_assignment::Colors::read,
+                viewer_map_modes::air_assignment::Colors::read,
             )
             .map_err(|error| error.to_string());
             let occupation_stripe_alpha = crate::map_assets::graphics_define(
@@ -3060,10 +3047,10 @@ impl Document {
                 "occupation country stripes",
                 &art_defines,
                 &defines,
-                viewer_world::map::occupation_stripes::Alpha::read,
+                viewer_map_modes::occupation_stripes::Alpha::read,
             )
             .map_err(|error| error.to_string());
-            let naval_region_eligibility = viewer_world::map::naval_selection::eligible_regions(
+            let naval_region_eligibility = viewer_map_modes::naval_selection::eligible_regions(
                 &icons.raids.region_provinces,
                 &icons.raids.geometry,
             );
@@ -3072,10 +3059,10 @@ impl Document {
                 "Navy local selection colours",
                 &art_defines,
                 &defines,
-                viewer_world::map::naval_selection::Colors::read,
+                viewer_map_modes::naval_selection::Colors::read,
             )
             .map_err(|error| error.to_string());
-            let radar_centers = viewer_world::map::radar_symbols::Centers::new(
+            let radar_centers = viewer_aircraft::radar_symbols::Centers::new(
                 &icons.raids.trigger_content.state_provinces,
                 &counters.bounds,
                 map.width as i32,
@@ -3085,7 +3072,7 @@ impl Document {
                 "Air mission arrows",
                 &art_defines,
                 &defines,
-                viewer_world::map::air_orders::Colors::read,
+                viewer_aircraft::air_orders::Colors::read,
             )
             .map_err(|error| error.to_string());
             let air_transfer_color = crate::map_assets::graphics_define(
@@ -3093,7 +3080,7 @@ impl Document {
                 "Air transfer arrows",
                 &art_defines,
                 &defines,
-                viewer_world::map::air_transfers::color,
+                viewer_aircraft::air_transfers::color,
             )
             .map_err(|error| error.to_string());
             let snow_content = map_products::display::SnowContent::new(
@@ -3110,7 +3097,7 @@ impl Document {
                     default_anchors: Arc::clone(&counters.default_anchors),
                     bounds: Arc::clone(&counters.bounds),
                     localisation: Arc::clone(&names.localisation),
-                    map_text: viewer_world::map::animated_map_text::events::Content::new(
+                    map_text: viewer_map_text::animated_map_text::events::Content::new(
                         &building_types,
                     ),
                     audio: audio.as_ref().map(|source| Arc::clone(&source.content)),
@@ -3201,8 +3188,8 @@ impl Document {
                 bridges,
                 unit_models,
                 orders: order_assets,
-                political_gpu: viewer_world::map::political_gpu::Cache::default(),
-                scene_textures: viewer_world::map::scene::TextureCache::default(),
+                political_gpu: viewer_map_modes::political_gpu::Cache::default(),
+                scene_textures: viewer_world::scene::TextureCache::default(),
                 eta_cache,
                 order_memo: Recent::new(),
                 trade_route_memo: Recent::new(),
@@ -3323,7 +3310,7 @@ impl Document {
         perspective: &perspective::Choice,
     ) -> io::Result<(
         map_display_data::buildings::Buildings,
-        viewer_world::map::map_buildings::MapBuildingSummary,
+        viewer_buildings::map_buildings::MapBuildingSummary,
     )> {
         self.hour()?.map_building_field(perspective)
     }
@@ -3331,12 +3318,12 @@ impl Document {
     pub fn aircraft_plan(
         &self,
         perspective: &perspective::Choice,
-    ) -> io::Result<viewer_world::map::aircraft::AircraftPlan> {
+    ) -> io::Result<viewer_aircraft::aircraft::AircraftPlan> {
         let _cost = replay_frame::cpu::scope("viewer", Some("air/naval source choices"));
         self.hour()?.aircraft_plan(perspective)
     }
 
-    pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
+    pub fn nuclear_impacts(&self) -> io::Result<viewer_models::strike_effects::Impacts> {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         self.hour()?.nuclear_impacts()
     }
@@ -3344,7 +3331,7 @@ impl Document {
     pub fn train_plan(
         &self,
         perspective: &perspective::Choice,
-    ) -> io::Result<viewer_world::map::trains::TrainPlan> {
+    ) -> io::Result<viewer_rail::trains::TrainPlan> {
         let _cost = replay_frame::cpu::scope("viewer", Some("rails"));
         self.hour()?.train_plan(perspective)
     }
@@ -3366,7 +3353,7 @@ impl Document {
     pub fn unit_model_field(
         &self,
         perspective: &perspective::Choice,
-    ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
+    ) -> io::Result<(viewer_unit_history::unit_history::Field, ModelReport)> {
         self.hour()?
             .unit_model_field_sailing(perspective, 0.0, &|_| false)
     }
@@ -3375,8 +3362,8 @@ impl Document {
         &self,
         perspective: &perspective::Choice,
         time: f32,
-        shown: &dyn Fn(&viewer_world::map::trade_routes::ConvoyDefines) -> bool,
-    ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
+        shown: &dyn Fn(&viewer_unit_models::trade_routes::ConvoyDefines) -> bool,
+    ) -> io::Result<(viewer_unit_history::unit_history::Field, ModelReport)> {
         self.hour()?
             .unit_model_field_sailing(perspective, time, shown)
     }
@@ -3387,7 +3374,7 @@ impl Document {
 
     pub fn place_names(
         &self,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<Placements> {
         self.hour()?.place_names(mode)
     }
@@ -3401,7 +3388,7 @@ impl Document {
         perspective: &perspective::Choice,
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<DumpOverlay<'_>> {
         self.hour()?.dump_overlay(
             camera,
@@ -3449,7 +3436,7 @@ pub struct OverlayTables {
     counters: counters::HourTables,
     vision: Arc<perspective::Vision>,
     labels: Arc<map_display_data::landscape::Labels>,
-    radar: Arc<viewer_world::map::radar_symbols::Field>,
+    radar: Arc<viewer_aircraft::radar_symbols::Field>,
     air: Arc<std::sync::Mutex<OverlayAir>>,
     pub engaged_covered: bool,
     raids: Arc<raids::RaidIcons>,
@@ -3510,8 +3497,8 @@ impl OverlayRows {
 struct OverlayAir {
     selected: Arc<Vec<u64>>,
     rows: usize,
-    orders: Arc<viewer_world::map::air_orders::Prepared>,
-    ranges: Arc<viewer_world::map::air_ranges::Fields>,
+    orders: Arc<viewer_aircraft::air_orders::Prepared>,
+    ranges: Arc<viewer_aircraft::air_ranges::Fields>,
 }
 
 impl OverlayAir {
@@ -3520,12 +3507,12 @@ impl OverlayAir {
         selected: &Arc<Vec<u64>>,
         rows: usize,
         build: impl FnOnce() -> (
-            viewer_world::map::air_orders::Prepared,
-            viewer_world::map::air_ranges::Fields,
+            viewer_aircraft::air_orders::Prepared,
+            viewer_aircraft::air_ranges::Fields,
         ),
     ) -> (
-        Arc<viewer_world::map::air_orders::Prepared>,
-        Arc<viewer_world::map::air_ranges::Fields>,
+        Arc<viewer_aircraft::air_orders::Prepared>,
+        Arc<viewer_aircraft::air_ranges::Fields>,
     ) {
         if self.selected != *selected || (!selected.is_empty() && self.rows != rows) {
             let (orders, ranges) = build();
@@ -3547,7 +3534,7 @@ impl OverlayTables {
 
     pub fn naval_dominance_sources(
         &self,
-    ) -> Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap> {
+    ) -> Arc<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap> {
         self.counters.naval_dominance_sources()
     }
 
@@ -3617,11 +3604,11 @@ impl<'a> Hour<'a> {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        visibility: viewer_foundation::map::mode_visibility::Visibility,
-        lay: impl FnOnce(&viewer_world::map::resource_icons::ResourceIconInputs<'_>) -> viewer_world::map::resource_icons::PreparedResourceIcons,
-    ) -> viewer_world::map::resource_icons::PreparedResourceIcons {
+        visibility: viewer_foundation::mode_visibility::Visibility,
+        lay: impl FnOnce(&viewer_map_icons::resource_icons::ResourceIconInputs<'_>) -> viewer_map_icons::resource_icons::PreparedResourceIcons,
+    ) -> viewer_map_icons::resource_icons::PreparedResourceIcons {
         let Ok(content) = &self.resource_icons else { return Default::default() };
-        lay(&viewer_world::map::resource_icons::ResourceIconInputs {
+        lay(&viewer_map_icons::resource_icons::ResourceIconInputs {
             content,
             localisation: &self.names.localisation,
             state_provinces: &self.icons.raids.trigger_content.state_provinces,
@@ -3638,12 +3625,12 @@ impl<'a> Hour<'a> {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        mode: Option<viewer_world::map::occupation_icons::Mode>,
+        mode: Option<viewer_map_icons::occupation_icons::Mode>,
         country: u32,
-        lay: impl FnOnce(&viewer_world::map::occupation_icons::Inputs<'_>) -> viewer_world::map::occupation_icons::PreparedOccupationIcons,
-    ) -> viewer_world::map::occupation_icons::PreparedOccupationIcons {
+        lay: impl FnOnce(&viewer_map_icons::occupation_icons::Inputs<'_>) -> viewer_map_icons::occupation_icons::PreparedOccupationIcons,
+    ) -> viewer_map_icons::occupation_icons::PreparedOccupationIcons {
         let Ok(content) = &self.icons.occupation else { return Default::default() };
-        lay(&viewer_world::map::occupation_icons::Inputs {
+        lay(&viewer_map_icons::occupation_icons::Inputs {
             content,
             mode,
             country,
@@ -3659,14 +3646,14 @@ impl<'a> Hour<'a> {
         &self,
         choice: &perspective::Choice,
         memos: &map_products::FogMemos,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
         intel: bool,
     ) -> io::Result<Arc<map_products::FogProduct>> {
         let _cost = replay_frame::cpu::scope("viewer", Some("fog"));
         self.product_hour.fog_with(choice, memos, spans, intel)
     }
 
-    pub fn weather_field(&self) -> io::Result<viewer_world::map::weather_effects::Field> {
+    pub fn weather_field(&self) -> io::Result<map_display_data::WeatherField> {
         let _cost = replay_frame::cpu::scope("viewer", Some("weather"));
         self.product_hour.weather_field()
     }
@@ -3675,7 +3662,7 @@ impl<'a> Hour<'a> {
         &self,
         viewer: u32,
         selected: &[u64],
-    ) -> viewer_world::map::air_ranges::Fields {
+    ) -> viewer_aircraft::air_ranges::Fields {
         self.air_ranges_from(self.frame, viewer, selected)
     }
 
@@ -3684,13 +3671,13 @@ impl<'a> Hour<'a> {
         frame: &DecodedFrame,
         viewer: u32,
         selected: &[u64],
-    ) -> viewer_world::map::air_ranges::Fields {
+    ) -> viewer_aircraft::air_ranges::Fields {
         let defines = &self.icons.raids.defines;
-        viewer_world::map::air_ranges::read_fields(
+        viewer_aircraft::air_ranges::read_fields(
             frame,
             viewer,
             selected,
-            viewer_foundation::map::air_range::Defines {
+            viewer_unit_reads::air_range::Defines {
                 map_scale: defines.map_scale,
                 ace_wing_size: defines.ace_wing_size,
                 ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
@@ -3740,7 +3727,7 @@ impl<'a> Hour<'a> {
 
     pub fn with_moved_hours(
         mut self,
-        moved_hours: Arc<viewer_foundation::map::counter_move::MovedHours>,
+        moved_hours: Arc<viewer_unit_reads::counter_move::MovedHours>,
     ) -> Self {
         self.moved_hours = Some(moved_hours);
         self
@@ -3782,21 +3769,21 @@ impl<'a> Hour<'a> {
         Ok(self.orders_and_convoys(perspective, show_allied)?.0)
     }
 
-    pub fn trade_route_lines(&self, ours: u32) -> Arc<viewer_world::map::trade_routes::TradeRoutes> {
+    pub fn trade_route_lines(&self, ours: u32) -> Arc<viewer_unit_models::trade_routes::TradeRoutes> {
         self.trade_route_memo
             .get_or_insert_with((TableKey::of(self.frame, TRADE_ROUTE_TABLES), ours), || {
                 Ok::<_, io::Error>(Arc::new(self.build_trade_route_lines(ours)))
             })
             .unwrap_or_else(|why| {
-                let mut routes = viewer_world::map::trade_routes::TradeRoutes::default();
+                let mut routes = viewer_unit_models::trade_routes::TradeRoutes::default();
                 routes.report.unavailable = Some(why.to_string());
                 Arc::new(routes)
             })
     }
 
-    pub fn trade_route_convoys_kept(&self, ours: u32, kept: &mut Option<KeptConvoys>) -> Arc<Vec<viewer_world::map::trade_routes::ConvoyLine>> {
+    pub fn trade_route_convoys_kept(&self, ours: u32, kept: &mut Option<KeptConvoys>) -> Arc<Vec<viewer_unit_models::trade_routes::ConvoyLine>> {
         use replay_data::rows::TableId;
-        use viewer_world::map::trade_routes;
+        use viewer_unit_models::trade_routes;
         let read = TradeRouteRead::of(self.frame, kept.as_ref().map(|held| &held.read));
         if let Some(held) = kept.as_mut()
             && held.ours == ours
@@ -3804,7 +3791,7 @@ impl<'a> Hour<'a> {
         {
             if held.read.assigned_same(&read) {
                 held.read = read;
-                viewer_foundation::view_record::add("trade routes", "convoys kept", 1);
+                viewer_runtime::view_record::add("trade routes", "convoys kept", 1);
                 return Arc::clone(&held.convoys);
             }
             if let Ok(defines) = &self.trade_routes
@@ -3812,26 +3799,26 @@ impl<'a> Hour<'a> {
             {
                 let made = Arc::new(made);
                 static KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                if viewer_foundation::install_check::due(&KEPT) {
+                if viewer_runtime::install_check::due(&KEPT) {
                     let whole = self.trade_route_lines(ours);
                     if whole.convoys != *made {
-                        viewer_foundation::install_check::found("trade route convoys", format!("hour {}: {} convoy lines kept, {} built whole", self.frame.hour, made.len(), whole.convoys.len()));
+                        viewer_runtime::install_check::found("trade route convoys", format!("hour {}: {} convoy lines kept, {} built whole", self.frame.hour, made.len(), whole.convoys.len()));
                     }
                 }
                 (held.read, held.convoys) = (read, Arc::clone(&made));
-                viewer_foundation::view_record::add("trade routes", "convoys made again", 1);
+                viewer_runtime::view_record::add("trade routes", "convoys made again", 1);
                 return made;
             }
         }
-        viewer_foundation::view_record::add("trade routes", "lines built whole", 1);
+        viewer_runtime::view_record::add("trade routes", "lines built whole", 1);
         let routes = self.trade_route_lines(ours);
         let convoys = Arc::new(routes.convoys.clone());
         *kept = Some(KeptConvoys { read, ours, routes, convoys: Arc::clone(&convoys) });
         convoys
     }
 
-    fn build_trade_route_lines(&self, ours: u32) -> viewer_world::map::trade_routes::TradeRoutes {
-        use viewer_world::map::trade_routes;
+    fn build_trade_route_lines(&self, ours: u32) -> viewer_unit_models::trade_routes::TradeRoutes {
+        use viewer_unit_models::trade_routes;
         let graph = match self.icons.raids.mission_topology() {
             Ok((graph, geography)) => (graph, geography),
             Err(why) => {
@@ -3863,9 +3850,9 @@ impl<'a> Hour<'a> {
         let counters = &self.counters;
         let position = |province: u32| {
             let slot = if geography.land.contains(&province) && ports.contains_key(&province) {
-                viewer_foundation::map::unit_rules::SHIP_IN_PORT
+                viewer_foundation::unit_rules::SHIP_IN_PORT
             } else {
-                viewer_foundation::map::unit_rules::STANDSTILL
+                viewer_foundation::unit_rules::STANDSTILL
             };
             counters.anchor(province, slot)
         };
@@ -3909,7 +3896,7 @@ impl<'a> Hour<'a> {
         show_allied: bool,
     ) -> io::Result<(
         Arc<OrderField>,
-        Vec<viewer_world::map::trade_routes::ConvoyLine>,
+        Vec<viewer_unit_models::trade_routes::ConvoyLine>,
     )> {
         self.orders_and_convoys_with(perspective, show_allied, false, false)
     }
@@ -3922,7 +3909,7 @@ impl<'a> Hour<'a> {
         routes_layered: bool,
     ) -> io::Result<(
         Arc<OrderField>,
-        Vec<viewer_world::map::trade_routes::ConvoyLine>,
+        Vec<viewer_unit_models::trade_routes::ConvoyLine>,
     )> {
         let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
         let plan = if plan_layered { Arc::new(OrderField::default()) } else { self.plan_field(perspective, show_allied)? };
@@ -3941,16 +3928,16 @@ impl<'a> Hour<'a> {
         {
             return Ok((plan, routes.convoys.clone()));
         }
-        let mut field = viewer_foundation::map::ribbon_mesh::append(&plan, &raid_field);
-        field = viewer_foundation::map::ribbon_mesh::append(&field, &routes.field);
-        field = viewer_foundation::map::ribbon_mesh::append(&field, &air.field);
+        let mut field = viewer_gpu::ribbon_mesh::append(&plan, &raid_field);
+        field = viewer_gpu::ribbon_mesh::append(&field, &routes.field);
+        field = viewer_gpu::ribbon_mesh::append(&field, &air.field);
         field.report.raid_arrows = report;
         field.report.trade_routes = route_warnings;
         field.report.air_orders = air_warnings;
         Ok((Arc::new(field), routes.convoys.clone()))
     }
 
-    pub fn raid_arrows(&self, ours: u32) -> (OrderField, viewer_foundation::map::ribbon_content::RaidArrowReport) {
+    pub fn raid_arrows(&self, ours: u32) -> (OrderField, viewer_gpu::ribbon_content::RaidArrowReport) {
         let heights = self.heights();
         let counters = &self.counters;
         let anchor = |province: u32, kind: u32| counters.anchor(province, kind);
@@ -3961,7 +3948,7 @@ impl<'a> Hour<'a> {
         let variant_model = |variant: u64, country: u32| {
             self.unit_models.aircraft_entity(
                 self.frame,
-                viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
+                viewer_unit_models::equipment_graphics::Limits::new(&self.pool_limits, &evaluate),
                 variant,
                 country,
             )
@@ -3988,7 +3975,7 @@ impl<'a> Hour<'a> {
         viewer: u32,
         selected: &[u64],
         selected_wings: &[u64],
-    ) -> viewer_world::map::air_orders::Prepared {
+    ) -> viewer_aircraft::air_orders::Prepared {
         self.air_orders_from(self.frame, viewer, selected, selected_wings)
     }
 
@@ -3998,14 +3985,14 @@ impl<'a> Hour<'a> {
         viewer: u32,
         selected: &[u64],
         selected_wings: &[u64],
-    ) -> viewer_world::map::air_orders::Prepared {
-        let mut prepared = viewer_world::map::air_orders::read(
+    ) -> viewer_aircraft::air_orders::Prepared {
+        let mut prepared = viewer_aircraft::air_orders::read(
             frame,
-            &viewer_world::map::air_orders::Inputs {
+            &viewer_aircraft::air_orders::Inputs {
                 arrow: self
                     .orders
                     .types
-                    .get(viewer_world::map::air_orders::MISSION_ARROW),
+                    .get(viewer_aircraft::air_orders::MISSION_ARROW),
                 colors: self
                     .air_order_colors
                     .as_ref()
@@ -4018,15 +4005,15 @@ impl<'a> Hour<'a> {
                 region_position: &|region| self.counters.region_icon(region),
             },
         );
-        prepared.transfers = viewer_world::map::air_transfers::read(
+        prepared.transfers = viewer_aircraft::air_transfers::read(
             frame,
-            &viewer_world::map::air_transfers::Inputs {
+            &viewer_aircraft::air_transfers::Inputs {
                 viewer,
                 selected: selected_wings,
                 arrow: self
                     .orders
                     .types
-                    .get(viewer_world::map::air_transfers::ARROW),
+                    .get(viewer_aircraft::air_transfers::ARROW),
                 color: self
                     .air_transfer_color
                     .as_ref()
@@ -4089,14 +4076,14 @@ impl<'a> Hour<'a> {
         if state.is_some()
             && self.counters.kinds.get(&province) == Some(&content_reader_core::map::ProvinceKind::Land)
             && let Some(icon) = self.counters.site_icons
-                [viewer_foundation::map::building_facts::AIR_BASE]
+                [viewer_foundation::building_facts::AIR_BASE]
                 .get(&province)
         {
             match &icon.anchor {
-                Ok(viewer_foundation::map::building_facts::IconAnchor::Record(position)) => {
+                Ok(viewer_foundation::building_facts::IconAnchor::Record(position)) => {
                     return Ok(Some(*position));
                 }
-                Ok(viewer_foundation::map::building_facts::IconAnchor::Province) => (),
+                Ok(viewer_foundation::building_facts::IconAnchor::Province) => (),
                 Err(why) => return Err(why.clone()),
             }
         }
@@ -4149,21 +4136,21 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
     ) -> io::Result<(
         map_display_data::buildings::Buildings,
-        viewer_world::map::map_buildings::MapBuildingSummary,
+        viewer_buildings::map_buildings::MapBuildingSummary,
     )> {
         self.map_building_field_profiled(
             perspective,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
     }
 
     pub fn map_building_field_profiled(
         &self,
         perspective: &perspective::Choice,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<(
         map_display_data::buildings::Buildings,
-        viewer_world::map::map_buildings::MapBuildingSummary,
+        viewer_buildings::map_buildings::MapBuildingSummary,
     )> {
         let _cost = replay_frame::cpu::scope("viewer", Some("buildings"));
         self.product_hour.buildings(
@@ -4177,7 +4164,7 @@ impl<'a> Hour<'a> {
     pub fn prepare_unit_models(
         &self,
         perspective: &perspective::Choice,
-    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+    ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         self.prepare_unit_models_profiled(perspective, &mut |_| {})
     }
 
@@ -4185,11 +4172,11 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
         lap: &mut dyn FnMut(&'static str),
-    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+    ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         self.prepare_unit_models_with_spans(
             perspective,
             lap,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
         )
     }
 
@@ -4197,8 +4184,8 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
         lap: &mut dyn FnMut(&'static str),
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
-    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
+    ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         self.prepare_unit_models_naval_or_not(perspective, true, lap, spans)
     }
 
@@ -4207,8 +4194,8 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         naval: bool,
         lap: &mut dyn FnMut(&'static str),
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
-    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
+    ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         self.unit_models_with(perspective, true, lap, |assets, inputs, lap| {
             assets.prepare_naval_or_not(inputs, naval, lap, spans)
         })
@@ -4220,11 +4207,11 @@ impl<'a> Hour<'a> {
         naval: bool,
         ours: u32,
         lap: &mut dyn FnMut(&'static str),
-    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+    ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         if !naval {
             let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
             let evaluate = |items: &[content_reader_core::parser::Item], scopes| self.trigger_world().evaluate(items, scopes);
-            let limits = viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
+            let limits = viewer_unit_models::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
             let prepared = self.unit_models.prepare_shipless(self.frame, ours, &self.counters.terrain.combat_terrain, limits, &self.names.localisation);
             lap("um_owned");
             return prepared;
@@ -4242,11 +4229,11 @@ impl<'a> Hour<'a> {
         land: bool,
         lap: &mut dyn FnMut(&'static str),
         make: impl FnOnce(
-            &viewer_world::map::unit_models::UnitModelAssets,
-            viewer_world::map::unit_models::PrepareInputs<'_>,
+            &viewer_unit_models::unit_models::UnitModelAssets,
+            viewer_unit_models::unit_models::PrepareInputs<'_>,
             &mut dyn FnMut(&'static str),
-        ) -> io::Result<viewer_world::map::unit_models::PreparedModels>,
-    ) -> io::Result<viewer_world::map::unit_models::PreparedModels> {
+        ) -> io::Result<viewer_unit_models::unit_models::PreparedModels>,
+    ) -> io::Result<viewer_unit_models::unit_models::PreparedModels> {
         let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
         let prepared = (|| {
             let content = &self.counters;
@@ -4255,7 +4242,7 @@ impl<'a> Hour<'a> {
             lap("um_etas");
             let movement = self.movement.as_deref();
             let world = movement.map(
-                |movement| viewer_foundation::map::counter_move::RouteWorld {
+                |movement| viewer_unit_reads::counter_move::RouteWorld {
                     map: &movement.map,
                     heights: self.heights(),
                     width: self.map.width as f32,
@@ -4271,21 +4258,21 @@ impl<'a> Hour<'a> {
                 ),
             };
             let motions =
-                viewer_foundation::map::task_force_visual::TaskForceMotions::read(self.frame)?;
+                viewer_unit_reads::task_force_visual::TaskForceMotions::read(self.frame)?;
             let missions =
-                viewer_foundation::map::task_force_visual::MissionSkips::read(self.frame)?;
+                viewer_unit_reads::task_force_visual::MissionSkips::read(self.frame)?;
             lap("um_ship_inputs");
             let region = |province| content.region(province);
             let evaluate = |items: &[content_reader_core::parser::Item], scopes| {
                 self.trigger_world().evaluate(items, scopes)
             };
             let limits =
-                viewer_world::map::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
+                viewer_unit_models::equipment_graphics::Limits::new(&self.pool_limits, &evaluate);
             let vision = self.vision(perspective)?;
             lap("um_vision");
             make(
                 &self.unit_models,
-                viewer_world::map::unit_models::PrepareInputs {
+                viewer_unit_models::unit_models::PrepareInputs {
                     frame: self.frame,
                     limits,
                     vision: &vision,
@@ -4294,7 +4281,7 @@ impl<'a> Hour<'a> {
                     world: world.as_ref(),
                     terrain: &content.terrain.combat_terrain,
                     routes: Some(&content.routes),
-                    ships: &viewer_world::map::unit_models::ShipPlaces {
+                    ships: &viewer_unit_models::unit_models::ShipPlaces {
                         motions: &motions,
                         movement,
                         land: &land,
@@ -4315,8 +4302,8 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
         time: f32,
-        shown: &dyn Fn(&viewer_world::map::trade_routes::ConvoyDefines) -> bool,
-    ) -> io::Result<(viewer_world::map::unit_history::Field, ModelReport)> {
+        shown: &dyn Fn(&viewer_unit_models::trade_routes::ConvoyDefines) -> bool,
+    ) -> io::Result<(viewer_unit_history::unit_history::Field, ModelReport)> {
         let mut prepared = self.prepare_unit_models(perspective)?;
         let (orders, convoys) = self.orders_and_convoys(perspective, false)?;
         prepared.add_raid_units(&self.unit_models, &orders.raid_units);
@@ -4340,7 +4327,7 @@ impl<'a> Hour<'a> {
         Ok((field, report))
     }
 
-    pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
+    pub fn nuclear_impacts(&self) -> io::Result<viewer_models::strike_effects::Impacts> {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         self.product_hour.nuclear_impacts()
     }
@@ -4352,14 +4339,14 @@ impl<'a> Hour<'a> {
     pub fn map_text(
         &self,
         vision: &perspective::Vision,
-    ) -> viewer_world::map::animated_map_text::events::Prepared {
+    ) -> viewer_map_text::animated_map_text::events::Prepared {
         self.product_hour.map_text(vision)
     }
 
     pub fn aircraft_plan(
         &self,
         perspective: &perspective::Choice,
-    ) -> io::Result<viewer_world::map::aircraft::AircraftPlan> {
+    ) -> io::Result<viewer_aircraft::aircraft::AircraftPlan> {
         let _cost = replay_frame::cpu::scope("viewer", Some("air/naval source choices"));
         let heights = HeightField {
             width: self.assets.heightmap.width,
@@ -4368,14 +4355,14 @@ impl<'a> Hour<'a> {
         };
         let movement = self.movement.as_deref();
         let world = movement.map(
-            |movement| viewer_foundation::map::counter_move::RouteWorld {
+            |movement| viewer_unit_reads::counter_move::RouteWorld {
                 map: &movement.map,
                 heights: self.heights(),
                 width: self.map.width as f32,
             },
         );
         let motions =
-            viewer_foundation::map::task_force_visual::TaskForceMotions::read(self.frame)?;
+            viewer_unit_reads::task_force_visual::TaskForceMotions::read(self.frame)?;
         let land = |province| {
             movement
                 .and_then(|movement| movement.map.terrain(province))
@@ -4401,12 +4388,12 @@ impl<'a> Hour<'a> {
         let evaluate = |items: &[content_reader_core::parser::Item], scopes| {
             self.trigger_world().evaluate(items, scopes)
         };
-        let models = viewer_world::map::aircraft::ModelMemo::default();
+        let models = viewer_aircraft::aircraft::ModelMemo::default();
         let model = |variant, country| {
             models.resolve(variant, country, || {
                 self.unit_models.aircraft_entity(
                     self.frame,
-                    viewer_world::map::equipment_graphics::Limits::new(
+                    viewer_unit_models::equipment_graphics::Limits::new(
                         &self.pool_limits,
                         &evaluate,
                     ),
@@ -4415,7 +4402,7 @@ impl<'a> Hour<'a> {
                 )
             })
         };
-        viewer_world::map::aircraft::AircraftPlan::build(
+        viewer_aircraft::aircraft::AircraftPlan::build(
             self.frame,
             &self.aircraft,
             &self.counters.region_of,
@@ -4431,14 +4418,14 @@ impl<'a> Hour<'a> {
     pub fn train_plan(
         &self,
         perspective: &perspective::Choice,
-    ) -> io::Result<viewer_world::map::trains::TrainPlan> {
+    ) -> io::Result<viewer_rail::trains::TrainPlan> {
         let _cost = replay_frame::cpu::scope("viewer", Some("rails"));
         let heights = HeightField {
             width: self.assets.heightmap.width,
             height: self.assets.heightmap.height,
             values: self.assets.heightmap_texels(),
         };
-        viewer_world::map::trains::TrainPlan::build_with_graph(
+        viewer_rail::trains::TrainPlan::build_with_graph(
             self.frame,
             self.vision(perspective)?.ours(),
             &self.rail_geometry,
@@ -4455,11 +4442,11 @@ impl<'a> Hour<'a> {
 
     pub fn map_mode_fill(
         &self,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
         choice: &perspective::Choice,
         selected: Option<u32>,
-        colour: Option<&viewer_world::map::map_mode::ColourState>,
-    ) -> io::Result<viewer_world::map::map_mode::ModeFill> {
+        colour: Option<&map_display_data::landscape::ColourState>,
+    ) -> io::Result<map_display_data::landscape::ModeFill> {
         let _cost = replay_frame::cpu::scope("viewer", Some("modes/styles"));
         self.product_hour
             .mode(&self.map_modes, mode, choice, selected, colour)
@@ -4467,10 +4454,10 @@ impl<'a> Hour<'a> {
 
     pub fn political_product(
         &self,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
         choice: &perspective::Choice,
         selected: Option<u32>,
-        colour: Option<&viewer_world::map::map_mode::ColourState>,
+        colour: Option<&map_display_data::landscape::ColourState>,
     ) -> io::Result<map_products::landscape::PoliticalProduct> {
         self.product_hour.political(
             &self.map_modes,
@@ -4508,20 +4495,20 @@ impl<'a> Hour<'a> {
 
     pub fn place_names(
         &self,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<Placements> {
         Ok((*self.shared_names(mode)?).clone())
     }
     pub fn shared_names(
         &self,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<Arc<Placements>> {
         self.product_hour.names(&self.name_inputs(), mode)
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn name_areas(
         &self,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<name_pass::NameAreas> {
         let _cost = replay_frame::cpu::scope("viewer", Some("world names"));
         self.product_hour.name_areas(&self.name_inputs(), mode)
@@ -4577,7 +4564,7 @@ impl<'a> Hour<'a> {
             raids,
             engaged,
             left_out,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
             true,
         )
     }
@@ -4588,7 +4575,7 @@ impl<'a> Hour<'a> {
         raids: Arc<raids::RaidIcons>,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
         left_out: counters::Kinds,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
         radar: bool,
     ) -> io::Result<OverlayTables> {
         self.hour_tables_layered(perspective, raids, engaged, left_out, false, spans, radar)
@@ -4601,7 +4588,7 @@ impl<'a> Hour<'a> {
         engaged: Option<&crate::engaged_index::EngagedIndex>,
         left_out: counters::Kinds,
         labels_by_layers: bool,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
         radar: bool,
     ) -> io::Result<OverlayTables> {
         self.hour_tables_of(perspective, raids, engaged.map(|index| index.shared.as_ref()), left_out, labels_by_layers, spans, radar, counters::Need::WHOLE)
@@ -4613,12 +4600,12 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         vision: Arc<perspective::Vision>,
         raids: Arc<raids::RaidIcons>,
-        engaged: Option<&viewer_foundation::engagement_history::History>,
+        engaged: Option<&viewer_engagements::engagement_history::History>,
         left_out: counters::Kinds,
         left: LeftToLayers,
         labels_by_layers: bool,
         need: counters::Need,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
     ) -> io::Result<OverlayTables> {
         self.seed_vision(perspective, vision);
         let mut tables = self.hour_tables_of(perspective, raids, engaged, left_out, labels_by_layers, spans, !left.radar, need)?;
@@ -4633,10 +4620,10 @@ impl<'a> Hour<'a> {
         &self,
         perspective: &perspective::Choice,
         raids: Arc<raids::RaidIcons>,
-        engaged: Option<&viewer_foundation::engagement_history::History>,
+        engaged: Option<&viewer_engagements::engagement_history::History>,
         left_out: counters::Kinds,
         labels_by_layers: bool,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
         radar: bool,
         need: counters::Need,
     ) -> io::Result<OverlayTables> {
@@ -4662,9 +4649,9 @@ impl<'a> Hour<'a> {
             engaged.is_some_and(|index| index.covers(self.frame.branch, self.frame.hour));
         let (radar, empty_air) = spans.measure("overlay.tables.radar_empty_air", |_| {
             let radar = Arc::new(if radar {
-                viewer_world::map::radar_symbols::Field::read(self.frame, ours, self.heights(), &self.radar_centers)
+                viewer_aircraft::radar_symbols::Field::read(self.frame, ours, self.heights(), &self.radar_centers)
             } else {
-                viewer_world::map::radar_symbols::Field::default()
+                viewer_aircraft::radar_symbols::Field::default()
             });
             let empty_air = OverlayAir {
                 selected: Arc::new(Vec::new()),
@@ -4753,14 +4740,14 @@ impl<'a> Hour<'a> {
             tables,
             view,
             rows,
-            &mut viewer_foundation::profiling::BuilderSpans::new(false),
+            &mut viewer_runtime::profiling::BuilderSpans::new(false),
             None,
         )
     }
 
     fn counter_inputs<'b>(
         &'b self,
-        windows: &'b viewer_foundation::map::native_windows::NativeWindows,
+        windows: &'b viewer_native_gui::native_windows::NativeWindows,
         display: &'b counters::CounterDisplay,
         camera: Camera,
         viewport: [u32; 2],
@@ -4780,7 +4767,7 @@ impl<'a> Hour<'a> {
             camera,
             viewport,
             ui_scale,
-            moved: self.moved_hours.as_deref().unwrap_or(&viewer_foundation::map::counter_move::NO_MOVED_HOURS),
+            moved: self.moved_hours.as_deref().unwrap_or(&viewer_unit_reads::counter_move::NO_MOVED_HOURS),
             movement: self.movement.as_deref(),
             heights: self.heights(),
             settings: view.settings,
@@ -4808,19 +4795,19 @@ impl<'a> Hour<'a> {
         let frame = self.frame;
         let hour = Hour::new(self.content, frame, self.hour_fraction);
         let air_assignment = if view.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicAir
+            == viewer_foundation::mode_visibility::PriorityTable::StrategicAir
         {
             let defines = &hour.icons.raids.defines;
-            rows.read("air assignment", frame, |frame| viewer_world::map::air_assignment::read(
+            rows.read("air assignment", frame, |frame| viewer_map_modes::air_assignment::read(
                 frame,
                 &view.air_selected,
                 tables.ours(),
-                viewer_foundation::map::air_range::Defines {
+                viewer_unit_reads::air_range::Defines {
                     map_scale: defines.map_scale,
                     ace_wing_size: defines.ace_wing_size,
                     ace_wing_size_max_bonus: defines.ace_wing_size_max_bonus,
                 },
-                viewer_world::map::air_assignment::Content {
+                viewer_map_modes::air_assignment::Content {
                     geometry: &hour.icons.raids.geometry,
                     states: &hour.icons.raids.trigger_content.state_provinces,
                     regions: &hour.icons.raids.region_provinces,
@@ -4849,10 +4836,10 @@ impl<'a> Hour<'a> {
             })
         };
         let occupation_stripes = if view.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::Resistance
+            == viewer_foundation::mode_visibility::PriorityTable::Resistance
         {
             rows.read("occupation stripes", frame, |frame| {
-                viewer_world::map::occupation_stripes::read(
+                viewer_map_modes::occupation_stripes::read(
                     frame,
                     tables.ours(),
                     &self.map,
@@ -4867,10 +4854,10 @@ impl<'a> Hour<'a> {
             Default::default()
         };
         let naval_selection = if view.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy
+            == viewer_foundation::mode_visibility::PriorityTable::StrategicNavy
         {
             rows.read("naval selection", frame, |frame| {
-                viewer_world::map::naval_selection::read(
+                viewer_map_modes::naval_selection::read(
                     frame,
                     tables.ours(),
                     &view.selected,
@@ -4919,7 +4906,7 @@ impl<'a> Hour<'a> {
         tables: &OverlayTables,
         view: &CounterView,
         rows: &OverlayRows,
-        spans: &mut viewer_foundation::profiling::BuilderSpans,
+        spans: &mut viewer_runtime::profiling::BuilderSpans,
         still: Option<&mut Still>,
     ) -> io::Result<PreparedOverlay> {
         let lazy_version = self.icons.lazy.version();
@@ -4942,7 +4929,7 @@ impl<'a> Hour<'a> {
         let fraction = self.hour_fraction;
         let prepare_counters = || {
             let _cost = replay_frame::cpu::scope("viewer", Some("actors/units"));
-            let _span = viewer_foundation::profiling::span("p_counters");
+            let _span = viewer_runtime::profiling::span("p_counters");
             rows.read("counters", frame, |_| prepare_counters_with(&counter_inputs, tables, view, lazy_version))
         };
         let prepare_other = |labels: &mut labels::PreparedLabels| {
@@ -4957,7 +4944,7 @@ impl<'a> Hour<'a> {
             );
             let raid_report = tables.raids.report.clone();
             {
-                let _span = viewer_foundation::profiling::span("p_labels");
+                let _span = viewer_runtime::profiling::span("p_labels");
                 let _cost = replay_frame::cpu::scope("viewer", Some("labels"));
                 labels.project(&label_at);
             }
@@ -4980,7 +4967,7 @@ impl<'a> Hour<'a> {
             } else {
                 let made = hour.resource_icons_with(camera, viewport, ui_scale, view.visibility, |inputs| {
                     let _cost = replay_frame::cpu::scope("viewer", Some("resource icons"));
-                    rows.read("resource icons", frame, |frame| viewer_world::map::resource_icons::prepare(inputs, frame))
+                    rows.read("resource icons", frame, |frame| viewer_map_icons::resource_icons::prepare(inputs, frame))
                 });
                 (made, MadeBy::Today)
             };
@@ -4989,24 +4976,24 @@ impl<'a> Hour<'a> {
             } else {
                 let made = hour.occupation_icons_with(camera, viewport, ui_scale, view.occupation, tables.ours(), |inputs| {
                     let _cost = replay_frame::cpu::scope("viewer", Some("occupation icons"));
-                    rows.read("occupation icons", frame, |frame| viewer_world::map::occupation_icons::prepare(inputs, frame))
+                    rows.read("occupation icons", frame, |frame| viewer_map_icons::occupation_icons::prepare(inputs, frame))
                 });
                 (made, MadeBy::Today)
             };
             let counters = &hour.counters;
             let anchor = |province| {
-                counters.anchor(province, viewer_foundation::map::unit_rules::STANDSTILL)
+                counters.anchor(province, viewer_foundation::unit_rules::STANDSTILL)
             };
             let adjacency_icons =
                 hour.adjacency_icons
-                    .prepare(&viewer_world::map::adjacency_icons::Inputs {
+                    .prepare(&viewer_map_icons::adjacency_icons::Inputs {
                         anchor: &anchor,
                         camera,
                         viewport,
                         ui_scale,
                         visibility: view.visibility,
                     });
-            let adjacency_priority = viewer_world::map::adjacency_icons::priority(
+            let adjacency_priority = viewer_map_icons::adjacency_icons::priority(
                 &hour.counters.defines.priorities,
                 &view.visibility,
             );
@@ -5077,12 +5064,12 @@ impl<'a> Hour<'a> {
         camera: Camera,
         viewport: [u32; 2],
         ui_scale: f32,
-        reach: Option<viewer_foundation::map::mode_visibility::RaidReach>,
+        reach: Option<viewer_foundation::mode_visibility::RaidReach>,
         raids: &raids::RaidIcons,
     ) -> raids::PreparedRaids {
         let anchor = |province| {
             self.counters
-                .anchor(province, viewer_foundation::map::unit_rules::STANDSTILL)
+                .anchor(province, viewer_foundation::unit_rules::STANDSTILL)
         };
         raids::prepare(
             &raids::RaidInputs {
@@ -5141,7 +5128,7 @@ impl<'a> Hour<'a> {
         perspective: &perspective::Choice,
         omitted: Omissions,
         counter_settings: counters::CounterSettings,
-        mode: &viewer_world::map::map_mode::MapMode,
+        mode: &viewer_map_modes::map_mode::MapMode,
     ) -> io::Result<DumpOverlay<'a>> {
         let layers = OverlayLayers::omitting(omitted);
         let tables = self.hour_tables(perspective, None)?;
@@ -5174,7 +5161,7 @@ impl<'a> Hour<'a> {
         self.product_hour.snow_grid(self.snow_cells()?)
     }
 
-    pub fn snow_cells(&self) -> io::Result<&weather::SnowCells> {
+    pub fn snow_cells(&self) -> io::Result<&map_snow::SnowCells> {
         Ok(&self.products.snow_content()?.cells)
     }
 
@@ -5292,8 +5279,8 @@ fn song_chances(
 pub struct KeptConvoys {
     read: TradeRouteRead,
     ours: u32,
-    routes: Arc<viewer_world::map::trade_routes::TradeRoutes>,
-    convoys: Arc<Vec<viewer_world::map::trade_routes::ConvoyLine>>,
+    routes: Arc<viewer_unit_models::trade_routes::TradeRoutes>,
+    convoys: Arc<Vec<viewer_unit_models::trade_routes::ConvoyLine>>,
 }
 
 fn load_rivers(
@@ -5430,8 +5417,8 @@ mod tests {
         let cancel = std::sync::atomic::AtomicBool::new(false);
         content_reader_core::content::visual::apply(&mut layers, &options, &selected, &[], &cancel)
             .unwrap();
-        let plan = viewer_world::map::sprawl::SprawlPlan {
-            buildings: vec![viewer_world::map::sprawl::SprawlBuilding {
+        let plan = viewer_buildings::sprawl::SprawlPlan {
+            buildings: vec![viewer_buildings::sprawl::SprawlBuilding {
                 entity: "house".into(),
                 position: [0.0; 3],
                 rotation: 0.0,
@@ -5978,15 +5965,18 @@ mod tests {
 
     #[test]
     fn finish_project_reapplies_resource_and_occupation_icons_when_panning_past_the_pad() {
-        use viewer_foundation::map::{
-            camera::{MapDefines, MapSize, Placement},
-            mode_visibility::{Priorities, PriorityIcon, PriorityTable, Visibility},
+        use viewer_gpu::camera::{MapDefines, MapSize, Placement};
+        use viewer_foundation::mode_visibility::{
+            Priorities,
+            PriorityIcon,
+            PriorityTable,
+            Visibility,
         };
-        use viewer_world::map::{
-            map_mode::ColorList,
+        use viewer_map_icons::{
             occupation_icons::{self, HourMarks, IconDefines, Mark, Mode, Occupation},
             resource_icons::{self, Laid, ResourceIconContent, ResourceIconDefines, Row},
         };
+        use viewer_map_modes::map_mode::ColorList;
 
         struct SyntheticHost {
             resource_content: ResourceIconContent,
@@ -6050,7 +6040,7 @@ mod tests {
         priorities.set(PriorityTable::Resources, PriorityIcon::Resource, 10);
         let host = SyntheticHost {
             resource_content: ResourceIconContent {
-                origins: viewer_foundation::resource_origins::Content {
+                origins: viewer_runtime::resource_origins::Content {
                     resources: Vec::new(),
                     buildings: Default::default(),
                     bonuses: [0, 0],

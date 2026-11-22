@@ -3,11 +3,11 @@ use super::Viewer;
 use crate::controls::flight::{self, Airframe, Flight, View};
 use crate::controls::{Frame, Pad};
 use crate::document::Document;
-use viewer_foundation::map::camera::Camera;
-use viewer_foundation::map::province_map::HeightField;
-use viewer_world::map::aircraft::PlayerAircraft;
-use viewer_world::map::models::ModelInstance;
-use viewer_world::map::scene::PlayerModel;
+use viewer_gpu::camera::Camera;
+use viewer_gpu::province_map::HeightField;
+use viewer_aircraft::aircraft::PlayerAircraft;
+use viewer_models::ModelInstance;
+use viewer_world::scene::PlayerModel;
 
 pub(crate) const LABEL: &str = "flying aircraft";
 
@@ -146,7 +146,7 @@ impl Viewer {
 
     pub(super) fn fly_model<'a>(
         flying: Option<(usize, ModelInstance)>,
-        library: &'a viewer_world::map::models::ModelLibrary,
+        library: &'a viewer_models::ModelLibrary,
     ) -> Option<PlayerModel<'a>> {
         flying.map(|(mesh, instance)| PlayerModel {
             library,
@@ -212,7 +212,7 @@ mod tests {
     fn the_host_s_controller_flies_the_aircraft_while_the_map_lacks_keyboard_focus()
     -> std::io::Result<()> {
         use crate::map::scene_failure_tests::Fixture;
-        use dashboard::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
+        use dashboard_core::protocol::{GamepadButton, GamepadMessage, GamepadOwner, GamepadState};
         use eframe::egui;
         use std::sync::{Arc, Mutex};
         use std::time::{Duration, Instant};
@@ -268,7 +268,7 @@ mod tests {
             draw(&mut viewer);
             std::thread::sleep(Duration::from_millis(1));
         }
-        viewer.set_camera_mode(dashboard::protocol::CameraMode::Fly, false, &ctx);
+        viewer.set_camera_mode(dashboard_core::protocol::CameraMode::Fly, false, &ctx);
         let owner = GamepadOwner {
             viewer: 1,
             handoff: 1,

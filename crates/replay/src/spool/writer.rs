@@ -370,11 +370,40 @@ impl SegmentBackend for FileBackend {
 
 pub type SpoolWriteStartHook = fn(Option<(u32, u64)>);
 
+#[cfg(test)]
+#[derive(Default)]
+struct SyncClock {
+    fixed: Option<Arc<dyn Fn() -> Instant + Send + Sync>>,
+}
+
+#[cfg(not(test))]
+#[derive(Default)]
+struct SyncClock;
+
+impl SyncClock {
+    #[inline]
+    fn now(&self) -> Instant {
+        self.fixed().unwrap_or_else(Instant::now)
+    }
+
+    #[cfg(test)]
+    fn fixed(&self) -> Option<Instant> {
+        self.fixed.as_ref().map(|clock| clock())
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    fn fixed(&self) -> Option<Instant> {
+        None
+    }
+}
+
 pub struct SegmentedSpool<B: SegmentBackend = FileBackend> {
     backend: B,
     sink: Option<B::Sink>,
     state: SegmentState,
     next_segment: u32,
+    clock: SyncClock,
     last_sync: Instant,
     last_error: Option<io::ErrorKind>,
     committed_segment: Option<u32>,
@@ -402,6 +431,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             sink: None,
             state: SegmentState::default(),
             next_segment,
+            clock: SyncClock::default(),
             last_sync: Instant::now(),
             last_error: None,
             committed_segment: None,
@@ -672,11 +702,11 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
         let result = (|| {
             if let Some(sink) = &mut self.sink
                 && sink.poll_sync()?
-                && self.last_sync.elapsed() >= SYNC_INTERVAL
+                && self.clock.now().saturating_duration_since(self.last_sync) >= SYNC_INTERVAL
             {
                 sink.flush()?;
                 sink.start_sync()?;
-                self.last_sync = Instant::now();
+                self.last_sync = self.clock.now();
             }
             Ok(())
         })();
@@ -737,7 +767,7 @@ impl<B: SegmentBackend> SegmentedSpool<B> {
             .ok_or_else(|| invalid_static("no writable segment"))?;
         sink.flush()?;
         sink.sync_all()?;
-        self.last_sync = Instant::now();
+        self.last_sync = self.clock.now();
         Ok(())
     }
 

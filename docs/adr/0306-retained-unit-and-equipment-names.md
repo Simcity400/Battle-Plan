@@ -10,4 +10,4 @@ Variant ordering uses the recorded DLC to decide whether module slots suppress t
 
 For the aircraft catalogue, read each branch's saved designs at the hours the variant table was actually read. Variant and token IDs are session-dependent, so spell the equipment at the same hour and deduplicate the spelling and model pair. Build the entry catalogue once per bound source and content stack. Search includes descriptors and references, while loading model files is deferred until the viewer flies an entry. Retain refusals as named entries. Stable page ordering keeps flyable entries first and orders each tier by name bytes.
 
-[Unit names](../../crates/dashboard-text/src/unit_names.rs) · [Variant names](../../crates/dashboard-text/src/variant_names.rs) · [Aircraft catalogue](../../crates/dashboard/src/products/aircraft_catalogue.rs)
+[Unit names](../../crates/dashboard-text/src/unit_names.rs) · [Variant names](../../crates/dashboard-text/src/variant_names.rs) · [Aircraft catalogue](../../crates/dashboard-air/src/products/aircraft_catalogue.rs)

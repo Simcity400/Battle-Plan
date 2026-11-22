@@ -150,9 +150,9 @@ fn viewer(hour: Hour, side: MapSide) -> Viewer {
     viewer
 }
 
-fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
-    dashboard::protocol::DashboardMapView {
+fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: "map-state".into(),
         source_id: "map-state".into(),
@@ -285,11 +285,11 @@ fn a_layers_install_runs_on_the_frame_that_takes_its_publication_whatever_the_fr
     let entry = open(units, hourly_steps()).unwrap();
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Owing { owes: false, installs: 0 })], View::default()).unwrap();
     shown_at(&mut side, 2);
-    viewer_foundation::map::display_refresh::pace_at(1e12);
+    viewer_runtime::display_refresh::pace_at(1e12);
     let mut installed = 0;
     for hour in 3..=8 {
         frames_at(&mut side, hour, &format!("hour {hour} applied"), |side| !side.composing() && side.applied() == Some(hour));
-        let _budget = viewer_foundation::map::frame_budget::begin(true);
+        let _budget = viewer_runtime::frame_budget::begin(true);
         side.upload_each(|layer| match layer.any_mut().and_then(|layer| layer.downcast_mut::<Owing>()) {
             Some(owing) => {
                 installed += 1;
@@ -302,6 +302,6 @@ fn a_layers_install_runs_on_the_frame_that_takes_its_publication_whatever_the_fr
         assert_eq!(side.last_frame().drawn, Some(hour), "the hour the picture shows is the hour the publication applied");
         assert!(!side.last_frame().layers[0].upload_carried, "nothing of the publication is left for a later frame");
     }
-    viewer_foundation::map::display_refresh::pace_at(120.0);
+    viewer_runtime::display_refresh::pace_at(120.0);
     assert_eq!(installed, 6, "every publication's install ran in the window that took it");
 }

@@ -15,12 +15,9 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::perspective::Choice;
-use viewer_world::map::{
-    gradient::Attributes,
-    map_mode::MapMode,
-    naval_dominance::{self, Content, Fact, Relations, Sides},
-};
+use viewer_foundation::perspective::Choice;
+use map_display_data::landscape::Attributes;
+use viewer_map_modes::{map_mode::MapMode, naval_dominance::{self, Content, Fact, Relations, Sides}};
 
 type Wars = HashMap<u32, Fact<Vec<u32>>>;
 

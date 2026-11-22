@@ -7,7 +7,8 @@ use replay_data::{
     rows::CharacterOperativeRow, rows::PORTRAIT_LARGE, rows::ProvinceRow, rows::Recorded,
     rows::StrategicOperativeRow, rows::portrait_entry,
 };
-use viewer_foundation::map::{color_inheritance::active_subject, directed_wars};
+use viewer_foundation::color_inheritance::active_subject;
+use replay_derive::directed_wars;
 use viewer_foundation::tooltip_text::localise;
 
 const OPERATIVE_PORTRAIT_ROLE: u32 = 4;

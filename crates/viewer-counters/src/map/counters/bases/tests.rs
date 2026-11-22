@@ -1,5 +1,5 @@
 use super::*;
-use viewer_foundation::map::province_map::ProvinceMap;
+use viewer_gpu::province_map::ProvinceMap;
 
 fn admitted(_: &SpawnPoint, _: &positions::BuildingPosition, _: Option<u32>) -> SlotAdmission {
     SlotAdmission::Admitted
@@ -441,7 +441,7 @@ fn icons_anchor_only_at_records_the_loader_admits() {
         &slots,
         &provinces,
         |spawn, slot, province| {
-            viewer_foundation::map::building_facts::admit_slot(
+            viewer_foundation::building_facts::admit_slot(
                 spawn, slot, province, &map, &states, &roster,
             )
         },
@@ -462,7 +462,7 @@ fn icons_anchor_only_at_records_the_loader_admits() {
     assert_eq!(icons.anchor(8, template("lone_hq"), slot0), Ok([9.0; 3]));
     let spawn = &buildings.spawn_points["port_spawn"];
     let admit = |slot| {
-        viewer_foundation::map::building_facts::admit_slot(
+        viewer_foundation::building_facts::admit_slot(
             spawn,
             slot,
             Some(7),
@@ -490,7 +490,7 @@ fn base_prohibition_lists_keep_raw_zero_and_nonzero_country_aliases() {
 fn cached_base_joins_equal_fresh_hour_derivations() {
     content_reader_core::test_game::enter();
     use replay_data::rows::{AirBaseRow, ProvinceRow, TableRows};
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
     super::super::tests::with_counter_inputs_fixture(
         super::super::tests::action_gui(false),
         |_| {},
@@ -649,7 +649,7 @@ fn a_new_bases_product_lays_out_the_changed_base_alone_and_is_held_back_while_no
         },
         |mut inputs| {
             let frame = DecodedFrame { branch: 1, hour: 1, metrics: Default::default(), tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()) };
-            let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+            let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
             let tables = hour_tables(
                 &frame,
                 inputs.map,

@@ -18,7 +18,7 @@ pub fn make(document: &Document) -> Box<dyn Layer> {
 }
 
 pub fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    let choice = viewer_foundation::map::perspective::Choice::default();
+    let choice = viewer_foundation::perspective::Choice::default();
     let today = document.vision(&choice).and_then(|vision| Ok(document.hour()?.map_text(&vision).display())).map_err(|error| format!("map text presented hour failed: {error}"));
     let layer = of(layer);
     let events = today.as_ref().ok().map(|text| match &text.interval {

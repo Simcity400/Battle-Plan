@@ -1,10 +1,10 @@
 
 use super::{Config, Options, Viewer, drop};
 use crate::controls::{Frame, flight::Flight, walker::World};
-use dashboard::protocol::CameraMode;
+use dashboard_core::protocol::CameraMode;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
-use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Pose};
+use viewer_gpu::camera::{Camera, MapDefines, MapSize, Pose};
 
 const MAP: MapSize = MapSize {
     width: 5632,
@@ -29,10 +29,10 @@ fn map_camera() -> Camera {
         height: 500.0,
         map: MAP,
         defines: MapDefines::test(),
-        pose: Pose::Free(viewer_foundation::map::camera::Free::new(
+        pose: Pose::Free(viewer_gpu::camera::Free::new(
             0.0,
             -0.2,
-            viewer_foundation::map::camera::Lens::MAP,
+            viewer_gpu::camera::Lens::MAP,
         )),
     }
 }

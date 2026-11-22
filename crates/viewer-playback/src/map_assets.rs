@@ -3,21 +3,13 @@ use content_reader_image::native::Decode;
 #[cfg(test)]
 use content_reader_image::bmp;
 use std::{io, sync::Arc};
-use viewer_world::map::scene_content::MapAssets;
-use {
-    viewer_foundation::errors::invalid,
-    viewer_foundation::map::camera::MapSize,
-    viewer_foundation::map::textures::atlas_lookup,
-    viewer_foundation::map::textures::expect_size,
-    viewer_foundation::map::textures::load_image,
-    viewer_foundation::map::textures::load_map_texture,
-    viewer_foundation::map::textures::load_uploadable,
-    viewer_foundation::map::textures::sampled_heights,
-    viewer_foundation::map::textures::terrain_flag_mask,
-    viewer_foundation::map::textures::terrain_id_map,
-    viewer_foundation::map::textures::{ColorSpace, MapTexture},
-    viewer_world::map::post::PostAssets,
+use viewer_world::scene_content::MapAssets;
+use viewer_runtime::errors::invalid;
+use viewer_gpu::{
+    camera::MapSize,
+    textures::{atlas_lookup, expect_size, load_image, load_map_texture, load_uploadable, sampled_heights, terrain_flag_mask, terrain_id_map, ColorSpace, MapTexture},
 };
+use viewer_scene_base::post::PostAssets;
 
 #[allow(clippy::too_many_arguments, reason = "The loader needs recorded geometry, presentation artwork, and decode settings together.")]
 pub fn load_with_products(
@@ -37,7 +29,7 @@ pub fn load_with_products(
     }
     warnings.extend(layers.artwork("shader source audit", |stack| {
         let mut lines = Vec::new();
-        viewer_world::map::shader_sources::check(stack, &mut lines).map(|()| lines)
+        viewer_scene_base::shader_sources::check(stack, &mut lines).map(|()| lines)
     })?);
     warnings.push("Selected arrow routes use viewer-local selection and animation; particle retained state follows the viewer's submitted world, arrows, labels and meshes.".into());
     let read = |path: &[u8]| layers.read_path(path);
@@ -123,17 +115,17 @@ pub fn load_with_products(
     let (arrow_shader, movement_arrows, order_label_shader) =
         layers.artwork("map arrows", |stack| {
             Ok((
-                viewer_world::map::arrow_shader::load(stack, size, decode, "map arrows")?,
-                viewer_world::map::movement_arrows::Assets::load(
+                viewer_aircraft::arrow_shader::load(stack, size, decode, "map arrows")?,
+                viewer_world::movement_arrows::Assets::load(
                     stack,
                     defines_for(stack),
                     size,
                     decode,
                 )?,
                 (
-                    viewer_world::map::arrow_shader::load(stack, size, decode, "order labels")?,
-                    viewer_foundation::map::ribbon_content::ArrowTypes::parse(
-                        &stack.read_uncovered(viewer_foundation::map::ribbon_content::MAPARROWS)?,
+                    viewer_aircraft::arrow_shader::load(stack, size, decode, "order labels")?,
+                    viewer_gpu::ribbon_content::ArrowTypes::parse(
+                        &stack.read_uncovered(viewer_gpu::ribbon_content::MAPARROWS)?,
                     )?
                     .text_technique,
                 ),
@@ -142,7 +134,7 @@ pub fn load_with_products(
     let assets = MapAssets {
         map,
         mesh_limit: graphics_define(layers, "mesh budget", art_defines, defines, |defines| {
-            viewer_world::map::mesh_budget::Budget::read(defines)
+            viewer_scene_base::mesh_budget::Budget::read(defines)
         })?,
         atlas: texture(&format!("atlas{quality}.dds"), ColorSpace::Srgb)?,
         atlas_normal: texture(&format!("atlas_normal{quality}.dds"), ColorSpace::Linear)?,
@@ -169,14 +161,14 @@ pub fn load_with_products(
         lean2: texture("lean2.dds", ColorSpace::Linear)?,
         water_specular: texture("fow_rgb_waterspec_a.dds", ColorSpace::Linear)?,
         naval_dominance: texture("naval_dominance_fx.dds", ColorSpace::Srgb)?,
-        terrain_shader: shader("terrain shader", viewer_world::map::terrain_shader::load)?,
-        water_shader: shader("water shader", viewer_world::map::water_shader::load)?,
-        sky_shader: shader("sky shader", viewer_world::map::sky_shader::load)?,
-        name_shader: shader("map name shader", viewer_world::map::name_shader::load)?,
+        terrain_shader: shader("terrain shader", viewer_terrain::terrain_shader::load)?,
+        water_shader: shader("water shader", viewer_terrain::water_shader::load)?,
+        sky_shader: shader("sky shader", viewer_terrain::sky_shader::load)?,
+        name_shader: shader("map name shader", viewer_map_text::name_shader::load)?,
         arrow_shader,
         movement_arrows,
         order_label_shader,
-        tree_shader: shader("tree shadow shader", viewer_world::map::tree_caster::load)?,
+        tree_shader: shader("tree shadow shader", viewer_scene_base::tree_caster::load)?,
         reflection,
         ice_diffuse: texture("ice_diffuse.dds", ColorSpace::Linear)?,
         ice_noise: texture(&format!("ice_noise_{quality}.dds"), ColorSpace::Linear)?,
@@ -188,7 +180,7 @@ pub fn load_with_products(
         post: layers.artwork("post-processing", |stack| {
             PostAssets::load(stack, defines_for(stack), map, decode)
         })?,
-        shadow_blur: shader("shadow blur shader", viewer_world::map::shadow_blur::load)?,
+        shadow_blur: shader("shadow blur shader", viewer_scene_base::shadow_blur::load)?,
         rivers,
         trees,
         perm_snow: map_snow::permanent_mask(definitions, &terrain).into(),

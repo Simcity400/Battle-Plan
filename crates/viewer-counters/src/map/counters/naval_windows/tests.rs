@@ -370,14 +370,14 @@ fn a_naval_icon_kept_off_screen_asks_only_while_its_province_will_be_cleaned() {
 }
 use super::*;
 use std::collections::BTreeSet;
-use viewer_foundation::map::gui_resources::contains;
-use viewer_foundation::map::icon_windows::{GUI_DELTA_CLAMP, visible_layout};
-use viewer_foundation::map::native_gui::PartKind;
-use viewer_foundation::map::native_gui::lifecycle::Call;
-use viewer_foundation::map::province_schedule::Update as ScheduleUpdate;
+use viewer_runtime::geometry::contains;
+use viewer_native_gui::icon_windows::{GUI_DELTA_CLAMP, visible_layout};
+use viewer_native_gui::native_gui::PartKind;
+use viewer_native_gui::native_gui::lifecycle::Call;
+use viewer_gpu::province_schedule::Update as ScheduleUpdate;
 #[cfg(test)]
-use viewer_foundation::map::test_support::part as test_support_part;
-use viewer_foundation::map::test_support::{Fixture, VIEWPORT};
+use viewer_native_gui::test_support::part as test_support_part;
+use viewer_native_gui::test_support::{Fixture, VIEWPORT};
 
 const GUI: &str = r#"guiTypes = {
     containerWindowType = { name = "unit_counter_navy" size = { width = 20 height = 10 }
@@ -1557,7 +1557,7 @@ impl Synthetic {
 }
 
 fn supply_flotilla(
-    supply: viewer_foundation::map::counter_inputs::NavalSupply,
+    supply: viewer_unit_reads::counter_inputs::NavalSupply,
     byte: u16,
 ) -> naval::Flotilla {
     let mut item = gui_windows::tests::port_flotilla();
@@ -1572,7 +1572,7 @@ fn supply_flotilla(
 #[test]
 fn a_refused_update_makes_its_known_writes_and_waits_only_for_its_unknown_part() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::counter_inputs::NavalSupply;
+    use viewer_unit_reads::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
     let country = CounterSettings {
         color_mode: CounterColorMode::Country,
@@ -1600,7 +1600,7 @@ fn a_refused_update_makes_its_known_writes_and_waits_only_for_its_unknown_part()
 #[test]
 fn partial_intel_supply_retains_fresh_or_last_written_visibility() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::counter_inputs::NavalSupply;
+    use viewer_unit_reads::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
     let partial = supply_flotilla(NavalSupply::Retain, 50);
@@ -1776,7 +1776,7 @@ fn only_an_engaged_rotation_repairs_the_background_frame() {
 #[test]
 fn an_omitted_icon_leaves_its_items_unknown_until_they_are_written() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::counter_inputs::NavalSupply;
+    use viewer_unit_reads::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
     let (why, supply, _) =
@@ -1798,7 +1798,7 @@ fn an_omitted_icon_leaves_its_items_unknown_until_they_are_written() {
 #[test]
 fn an_unrecorded_supply_ratio_is_repaired_only_by_a_written_one() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::counter_inputs::NavalSupply;
+    use viewer_unit_reads::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
     let withheld = format!(
@@ -1820,7 +1820,7 @@ fn an_unrecorded_supply_ratio_is_repaired_only_by_a_written_one() {
 #[test]
 fn an_item_first_built_after_undecided_grids_waits_for_its_kept_parts() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::counter_inputs::NavalSupply;
+    use viewer_unit_reads::counter_inputs::NavalSupply;
     let mut shipped = Synthetic::new();
     let settings = CounterSettings::default();
     let (why, _, _) = shipped.item_at(
@@ -2157,7 +2157,7 @@ fn a_window_whose_tick_fails_has_unknown_transitions() {
 #[test]
 fn the_pools_frame_wins_and_the_index_establishes_one_it_lacks() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::icon_frames::{CARRIED, Kept, NAVAL_NO_HISTORY};
+    use viewer_engagements::icon_frames::{CARRIED, Kept, NAVAL_NO_HISTORY};
     let view = View::with_gui(&GUI.replacen(
         r#"buttonType = { name = "bg_btn" quadTextureSprite = "GFX_bg" }"#,
         r#"buttonType = { name = "bg_btn" quadTextureSprite = "GFX_bg" frame = 2 }"#,

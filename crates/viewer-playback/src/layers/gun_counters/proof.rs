@@ -30,7 +30,7 @@ pub fn marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
     marked
 }
 
-pub fn give(layer: &dyn Layer, document: &Document, choice: &viewer_foundation::map::perspective::Choice) -> io::Result<()> {
+pub fn give(layer: &dyn Layer, document: &Document, choice: &viewer_foundation::perspective::Choice) -> io::Result<()> {
     let Some(layer) = layer.any().downcast_ref::<GunCounters>() else { return Ok(()) };
     layer.set_vision(choice.clone(), document.vision(choice)?);
     let tables = document.hour()?.hour_tables(choice, None)?;

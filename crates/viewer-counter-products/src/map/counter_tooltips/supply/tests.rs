@@ -4,10 +4,8 @@ use replay_data::{
     rows::TableId, rows::TableRows, rows::UnitSupplyOrigin,
 };
 use replay_frame::frame::TableView;
-use {
-    viewer_foundation::map::counter_hovers::land::CounterControl,
-    viewer_foundation::map::test_support::{test_frame, test_put as put},
-};
+use viewer_native_gui::counter_hovers::land::CounterControl;
+use viewer_foundation::test_support::{test_frame, test_put as put};
 
 fn loc() -> Localisation {
     [

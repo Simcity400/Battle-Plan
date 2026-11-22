@@ -210,7 +210,7 @@ impl Layer for SoundsFed {
             let (jobs, receive) = mpsc::channel();
             let (send, made) = mpsc::channel();
             thread::Builder::new().name("battle sounds".into()).spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 run(receive, send)
             })?;
             (self.jobs, self.made) = (Some(jobs), Some(made));

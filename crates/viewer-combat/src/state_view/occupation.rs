@@ -9,7 +9,7 @@ use viewer_foundation::tooltip_text::ensure_newlines;
 use content_reader_core::gui::native;
 use replay_data::rows::{GarrisonTemplateSelection, Recorded, StateResistanceRow, tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::templates::{counter_custom_icon, custom_icon_index};
+use viewer_foundation::templates::{counter_custom_icon, custom_icon_index};
 
 const CONTAINER: &str = "resistance_container";
 const LAW_AND_TEMPLATE: [&str; 3] = ["select_law_icon", "template_garrison", "template_need_text"];

@@ -15,11 +15,9 @@ use std::{
     },
     time::Instant,
 };
-use viewer_foundation::map::{
-    frame::DayNight,
-    presentation::{Continuity, UnitRestart},
-};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_gpu::frame::DayNight;
+use viewer_runtime::presentation::{Continuity, UnitRestart};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const BRANCH: BranchId = 1;
 const LAST: Hour = 11;
@@ -123,9 +121,9 @@ fn drawn(viewer: &mut Viewer) {
     viewer.rendered = viewer.layers_on_screen().map(|(branch, hour)| Playhead { branch, hour, fraction: 0.0 });
 }
 
-fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
-    let bounds = dashboard::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
-    dashboard::protocol::DashboardMapView {
+fn target(hour: Hour, playing: bool) -> dashboard_core::protocol::DashboardMapView {
+    let bounds = dashboard_core::protocol::ViewBounds { x: 0, y: 0, width: 256, height: 144 };
+    dashboard_core::protocol::DashboardMapView {
         options: Default::default(),
         id: "spine".into(),
         source_id: "spine".into(),

@@ -2,21 +2,19 @@
 use super::naval_windows::{Mark, mark, marks};
 use super::*;
 use std::collections::HashMap;
-use viewer_foundation::map::gui_resources::GuiAssets;
-use viewer_foundation::map::gui_resources::count_noted;
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::POOL_EXHAUSTED;
-use viewer_foundation::map::icon_windows::Retry;
-use viewer_foundation::map::native_gui::{
+use viewer_native_gui::gui_resources::GuiAssets;
+use viewer_native_gui::gui_resources::count_noted;
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::POOL_EXHAUSTED;
+use viewer_native_gui::icon_windows::Retry;
+use viewer_native_gui::native_gui::{
     self,
-    lifecycle::{
-        Admission, Held, Instance, MapIconPool, Pool, Rewrote, SlotId, Tick, Unknown, Withheld,
-    },
+    lifecycle::{Admission, Held, Instance, MapIconPool, Pool, Rewrote, SlotId, Tick, Unknown, Withheld},
 };
-use viewer_foundation::map::native_text::COLOR;
-use viewer_foundation::map::native_windows::NativeWindows;
-use viewer_foundation::map::province_schedule::{Schedule, Update};
+use viewer_native_gui::native_text::COLOR;
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_gpu::province_schedule::{Schedule, Update};
 
 pub const MISSION_SPRITES: [(u32, &str); 8] = [
     (1, "GFX_mapicon_naval_mission_patrol"),
@@ -153,7 +151,7 @@ pub struct MissionIcons {
     pub(super) hovers: Arc<super::naval_mission_inputs::hover::Hovers>,
     pub(super) convoy_hovers: Arc<BTreeMap<u64, super::naval_mission_inputs::hover::Prepared>>,
     pub(super) naval_dominance_sources:
-        Option<Arc<viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap>>,
+        Option<Arc<viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap>>,
     pub(super) regions: BTreeMap<u32, Vec<MissionEntry>>,
     pub(super) input_gaps: BTreeMap<String, usize>,
     unavailable: Option<&'static str>,
@@ -274,7 +272,7 @@ fn entries(
             continue;
         }
         *totals.entry(*kind).or_default() += 1;
-        if *kind == viewer_foundation::map::unit_rules::PATROL && *current_region == region {
+        if *kind == viewer_foundation::unit_rules::PATROL && *current_region == region {
             patrolling += 1;
         }
         match pride {
@@ -1408,7 +1406,7 @@ impl MissionView {
                                             (native::Kind::Icon,"pride",Control::Pride),
                                         ] {
                                             let Some(button)=windows.entry.find(element_kind,name) else {continue;};
-                                            if let Some(hit) = viewer_foundation::map::gui_resources::hit_rectangle(
+                                            if let Some(hit) = viewer_native_gui::gui_resources::hit_rectangle(
                                                 button, &entry, instance.position(), resources, &mut report.icon_gui_notes,
                                             )
                                                 && !hit.disabled { hits.push((kind, control, hit.rect)); }

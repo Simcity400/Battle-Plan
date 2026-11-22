@@ -216,8 +216,8 @@ fn another_content_stack_drops_the_old_ones_notes() {
     let mut control = Control::new(Arc::clone(&status), None, true);
     let relay = relay(&mut control);
     let publish = |control: &mut Control| {
-        let now = control.unplayed;
-        control.last_evict = now - Duration::from_secs(6);
+        let now = control.last_evict + Duration::from_secs(6);
+        control.unplayed = now;
         control.step_at(now);
     };
     control.apply(Command::Claim(1));

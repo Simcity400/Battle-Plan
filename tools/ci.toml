@@ -189,7 +189,7 @@ base = true
 dependents = false
 shared = ["tools/check-clippy.py"]
 command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
-local = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "{python}", "tools/boat.py", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
+ci-only = true
 shards = 2
 warm = ["cargo", "clippy", "--workspace", "--all-targets", "--keep-going", "--no-deps"]
 
@@ -200,7 +200,7 @@ tier = "check"
 toolchain = "rust"
 inputs = ["fuzz/**", "crates/replay/**", "crates/replay-columnar/**", "crates/replay-data/**", "crates/replay-frame/**", "crates/dashboard-base/**"]
 command = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
-local = ["{python}", "tools/boat.py", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
+ci-only = true
 warm = ["cargo", "check", "--all-targets", "--manifest-path", "fuzz/Cargo.toml"]
 
 [[job]]
@@ -222,5 +222,5 @@ command = ["cargo", "nextest", "run", "--cargo-profile", "ci", "--profile", "hos
 report = "target/nextest/hosted/junit.xml"
 shards = 8
 warm = ["cargo", "test", "--profile", "ci", "--workspace", "--no-run", "--no-fail-fast"]
-not-run = { "needs the game install until the dashboard rework (#169)" = { crates = ["dashboard", "dashboard-base", "dashboard-core", "dashboard-text"], panic = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLEPLAN_GAME_DIR with the supported installation|BATTLEPLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' } }
+not-run = { "needs the game install until the dashboard rework (#169)" = { crates = ["dashboard", "dashboard-air", "dashboard-base", "dashboard-core", "dashboard-land", "dashboard-politics", "dashboard-text", "dashboard-wars", "dashboard-world"], panic = '^(?:.*: Custom \{ kind: NotFound, error: "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation" \}|[\w -]+ requires? BATTLEPLAN_GAME_DIR with the supported installation|BATTLEPLAN_GAME_DIR(?: must name the installed game| must name the supported installation for executable metadata)?)$' } }
 widen = [".config/nextest.toml"]

@@ -43,14 +43,14 @@ import { sinceLabel } from '../../dashboard/stretch';
 import { entryAt } from '../../dashboard/reads';
 import { useShownHour } from '../../dashboard/widgetPerf';
 import { DETAIL, OPTIONS } from './definition';
-import { LEVELS, coverageLegend, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
-  lossWindow, lossKey, unknownCauses, withHead, withShips } from './lossesData.ts';
+import { LEVELS, atHead, coverageLegend, destructionCountingNote, destructionLegend, formatLosses, lossItems, lossesTotal, lossesFootnote,
+  lossWindow, lossKey, unknownCauses, withShips } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import { lossHistory, lossNumbers, lossParts, lossRows, lossSegments, pinLosses, readLossSelection } from './lossDrill';
 import type { LossRow } from './lossDrill';
 import { exactLossHour, stretchWindow, useLossHistory } from './lossesSource';
 import type { LossSelection } from './lossesSource';
-import type { LandSource, LossHeadReply, LossLeaf, LossesReply } from '../../generated/dashboard';
+import type { LandSource, LossHeadReply, LossesReply } from '../../generated/dashboard';
 import './equipmentLosses.css';
 import { useDrill } from '../../charts/drill/useDrill';
 import { useRegion } from '../../dashboard/widgetTime.ts';
@@ -64,14 +64,6 @@ function validateHead(value: unknown): LossHeadReply {
   if (!reply || !Array.isArray(reply.leaves) || !reply.leaves.every(leaf => typeof leaf === 'string') || !Array.isArray(reply.warnings))
     throw new Error('The equipment-loss head reply is malformed.');
   return reply;
-}
-
-function atHead(reply: LossesReply, hour: number, cells: LiveValues<number>, named: ReadonlySet<string>): LossesReply {
-  return withHead(withShips(reply, hour), hour, (leaf: LossLeaf) => {
-    if (!named.has(leaf.key)) return null;
-    const key = liveKey(leaf.key, 'total');
-    return cells.get(key) ?? cells.missing(key);
-  });
 }
 
 function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
@@ -212,7 +204,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
       const reply = headLive.read();
       if (made?.reply !== reply) {
         const at = lossRows(reply, { ...view, hour: headLive.hour() }, selected);
-        made = { reply, values: valuesOf(new Map(at.flatMap(row => row.exact === null ? [] : [[liveKey(row.id, 'amount'), Number(row.exact)] as const])), 'Not known') };
+        made = { reply, values: valuesOf(new Map(at.flatMap(row => row.exact === null ? [] : [[liveKey(row.id, 'amount'), row.exact] as const])), 'Not known') };
       }
       return made.values;
     } };
@@ -236,7 +228,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
     { key: 'type', header: 'Equipment type', label: 'Equipment type', priority: 2, inTooltip: true, value: row => row.type },
     { key: 'design', header: 'Design', label: 'Design', value: row => row.design },
     { key: 'amount', header: 'Losses', label: 'Losses', numeric: true, width: 'max-content', value: row => row.exact, render: rowText,
-      paint: value => formatLosses(Number(value), BigInt(Math.round(Number(value))), scale) },
+      paint: value => formatLosses(Number(value), typeof value === 'bigint' ? value : BigInt(Math.round(Number(value))), scale) },
   ], [scale]);
   function partsOf(at: readonly LossRow[]) {
     return lossParts(at, scale).map(part => ({ ...part,
@@ -265,7 +257,7 @@ function LossesView({ widget, runtime, active, countrySlot, onDiagnostics }: Wid
   const airCoverage = shownReply.landSource === 'combatLog' ? destructionLegend(shownReply, view, tokens) : [];
   const incomplete = total.incomplete || [...coverage, ...airCoverage].some(item => item.label === 'Incomplete')
     || shownReply.causes.some(cause => cause.loss && cause.source.kind === 'destruction')
-      && (shownReply.destructionCountedFrom === null || view.hour < shownReply.destructionCountedFrom);
+      && destructionCountingNote(shownReply, view.hour) !== '';
   const status = total.exact === null ? 'Unavailable' : incomplete ? 'Incomplete' : 'Complete';
   const limitations = incomplete ? unknownCauses(shownReply, view.hour) : [];
   const coverageBody = limitations.length ? <details className="equipment-losses-completeness"><summary>{status}</summary>

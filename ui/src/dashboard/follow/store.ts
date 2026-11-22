@@ -20,7 +20,7 @@ export interface Landed { panel: FollowedPanel; values?: Map<string, number | st
 
 export interface FollowEntry {
   readonly id: number;
-  values?: Map<string, number | string>;
+  values?: Map<string, number | bigint | string>;
   coverage?: { start: number; through: number };
   status: 'pending' | 'followed' | 'unavailable';
   reason?: string;

@@ -14,15 +14,15 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 use script::LeaderRoles;
 use std::sync::Arc;
 use std::sync::Mutex;
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::PoolView;
-use viewer_foundation::map::native_resources::Context;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::MapSize;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::PoolView;
+use viewer_native_gui::native_resources::Context;
 #[cfg(test)]
-use viewer_foundation::map::test_support::gui;
-use viewer_foundation::parallel::Workers;
-use viewer_foundation::table_access::Refusals;
+use viewer_native_gui::test_support::gui;
+use viewer_runtime::parallel::Workers;
+use dashboard_text::table_access::Refusals;
 
 
 fn scripted(assets: &mut RaidAssets, text: &str) {
@@ -614,7 +614,7 @@ fn icons_draw_at_the_top_priority_inside_the_height_band_nearest_last() {
                     height,
                     map: MapSize::TEST,
                     defines: MapDefines::test(),
-                    pose: viewer_foundation::map::camera::Pose::Map,
+                    pose: viewer_gpu::camera::Pose::Map,
                 },
                 viewport: [2048, 1152],
                 ui_scale: 1.0,
@@ -1205,7 +1205,7 @@ fn drawn_in(
                 height,
                 map: MapSize::TEST,
                 defines: MapDefines::test(),
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             },
             viewport,
             ui_scale,
@@ -2047,7 +2047,7 @@ mod launch_gate {
         }
     }
 
-    fn airborne(values: [i64; 10]) -> Eval {
+    fn airborne(values: [Option<i64>; 10]) -> Eval {
         use replay_data::{
             rows::StockpileArchetypeRow, rows::StockpileRow, rows::VariantDefinitionRow,
             rows::VariantStatsRow,
@@ -2158,12 +2158,23 @@ mod launch_gate {
     #[test]
     fn transport_range_reads_the_first_variant_stat() {
         content_reader_core::test_game::enter_viewer();
-        let mut long_first = [1; 10];
-        long_first[0] = 100 * 100_000;
+        let mut long_first = [Some(1); 10];
+        long_first[0] = Some(100 * 100_000);
         assert_eq!(airborne(long_first), Eval::True);
-        let mut long_second = [1; 10];
-        long_second[1] = 100 * 100_000;
+        let mut long_second = [Some(1); 10];
+        long_second[1] = Some(100 * 100_000);
         assert_eq!(airborne(long_second), Eval::False);
+        let mut withheld = [Some(100 * 100_000); 10];
+        withheld[0] = None;
+        match airborne(withheld) {
+            Eval::Unknown(reasons) => {
+                assert!(
+                    reasons.iter().any(|reason| reason.contains("air_range")),
+                    "{reasons:?}"
+                );
+            }
+            other => panic!("withheld air_range must stay unknown, got {other:?}"),
+        }
     }
 
     #[test]

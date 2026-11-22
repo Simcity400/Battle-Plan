@@ -12,15 +12,15 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::sprites::Interface;
-use viewer_foundation::map::{
+use viewer_native_gui::sprites::Interface;
+use viewer_native_gui::{
     lazy_icons::{LazyFlags, LazyImages, LazyTextures, Lookup},
     native_gui::{self, Sheets},
     native_resources::GuiResources,
     native_windows::NativeWindows,
     sprites::{NO_TEXTURE, SpriteSheet},
 };
-use viewer_foundation::tooltip_painter::TooltipDefines;
+use viewer_native_gui::tooltip_painter::TooltipDefines;
 
 type PortraitFailures = BTreeMap<String, (Option<native_gui::RefusalKind>, String)>;
 

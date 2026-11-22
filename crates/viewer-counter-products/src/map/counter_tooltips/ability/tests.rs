@@ -53,7 +53,7 @@ fn with_context<R>(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>) -> R) ->
 
 fn hover() -> CounterHover {
     CounterHover {
-        control: viewer_foundation::map::counter_hovers::land::CounterControl::Ability {
+        control: viewer_native_gui::counter_hovers::land::CounterControl::Ability {
             country: 1,
             ordinal: 0,
         },

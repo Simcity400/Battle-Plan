@@ -1,12 +1,12 @@
 
 use std::cell::Cell;
-use viewer_foundation::map::province_geometry::ProvinceGeometry;
-use viewer_foundation::map::ribbon_content::*;
-use viewer_foundation::map::ribbon_mesh::{emit, ribbon_height, sort_draws, span};
+use viewer_gpu::province_geometry::ProvinceGeometry;
+use viewer_gpu::ribbon_content::*;
+use viewer_gpu::ribbon_mesh::{emit, ribbon_height, sort_draws, span};
 pub(crate) mod allied;
 mod chain;
 mod execution;
-use viewer_foundation::map::ribbon_fixed as fixed;
+use viewer_gpu::ribbon_fixed as fixed;
 mod group_sections;
 pub mod invasion;
 mod labels;
@@ -34,11 +34,9 @@ use replay_frame::frame::DecodedFrame;
 #[cfg(test)]
 use self::fixed::Smoothing;
 use self::fixed::{Point, SCALE};
-use {
-    viewer_foundation::map::name_draw::Placements, viewer_foundation::map::name_draw::WorldName,
-    viewer_foundation::map::province_map::HeightField,
-    viewer_foundation::map::tables as table_gate,
-};
+use viewer_runtime::name_draw::{Placements, WorldName};
+use viewer_gpu::province_map::HeightField;
+use viewer_foundation::tables as table_gate;
 
 
 pub const TYPE_MOVE: i32 = 1;
@@ -469,8 +467,8 @@ pub fn requires_full_frame(
 
 pub struct OrderInputs<'a> {
     pub assets: &'a OrderAssets,
-    pub transport: Option<viewer_foundation::map::air_transport_content::AirTransportContent<'a>>,
-    pub reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
+    pub transport: Option<viewer_unit_reads::air_transport_content::AirTransportContent<'a>>,
+    pub reads: Option<viewer_unit_reads::movement_reads::ReadOperands<'a>>,
     pub geometry: &'a ProvinceGeometry,
     pub movement: Option<&'a MovementMap>,
     pub map: &'a MapData,
@@ -1230,7 +1228,7 @@ pub fn build(inputs: &OrderInputs<'_>, frame: &DecodedFrame) -> io::Result<Order
     field.labels = Placements {
         country: placed_labels,
         warnings: Vec::new(),
-        generation: viewer_foundation::map::name_draw::next_generation(),
+        generation: viewer_runtime::name_draw::next_generation(),
         near: None,
     };
     field.report.refused = refused;

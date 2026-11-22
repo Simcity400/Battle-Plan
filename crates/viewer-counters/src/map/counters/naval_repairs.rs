@@ -5,7 +5,7 @@ impl<'a> Sources<'a> {
     pub fn new(
         frame: &'a DecodedFrame,
         links: &'a BTreeMap<u32, u32>,
-        relations: Result<&'a viewer_foundation::map::visibility::Relations, &'static str>,
+        relations: Result<&'a viewer_foundation::visibility::Relations, &'static str>,
     ) -> Self {
         Self(replay_derive::naval_repairs::Sources::new(
             frame, links, relations,
@@ -34,7 +34,7 @@ impl Capacity {
         let text = format!("{}/{}", self.used, self.level);
         match self.colour {
             Some(colour) => {
-                let marker = viewer_foundation::map::native_text::COLOR;
+                let marker = viewer_native_gui::native_text::COLOR;
                 format!("{marker}{colour}{text}{marker}!")
             }
             None => text,
@@ -56,8 +56,8 @@ mod tests {
             .text(),
             format!(
                 "{}R1/10{}!",
-                viewer_foundation::map::native_text::COLOR,
-                viewer_foundation::map::native_text::COLOR
+                viewer_native_gui::native_text::COLOR,
+                viewer_native_gui::native_text::COLOR
             )
         );
     }

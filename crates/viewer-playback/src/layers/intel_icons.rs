@@ -21,9 +21,9 @@ use std::{
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{perspective, tables::core};
+use viewer_foundation::{perspective, tables::core};
 use viewer_raids::map::intel_icons::{self, IntelIcons};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub const NAME: &str = "intel icons";
 
@@ -105,7 +105,7 @@ impl Open {
         let (send, done) = mpsc::channel();
         let evaluate = Arc::clone(evaluate);
         std::thread::Builder::new().name("intel icons".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             for work in receive {
                 let job = match work {
                     Work::Evaluate(job) => job,
@@ -269,7 +269,7 @@ impl Icons {
         if let Some(open) = self.open.take() {
             self.stats.closed += 1;
             let _ = std::thread::Builder::new().name("intel icons closing".into()).spawn(move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
                 drop((open, icons));
             });
         }

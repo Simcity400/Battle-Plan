@@ -21,11 +21,10 @@ use replay_columnar::{
 use replay_data::rows::{Field, List, Opaque, ResourceRightRow, RowCodec, RowsVisit, StateResourceRow, TableId, TableRows, tables};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{io, sync::Arc};
-use viewer_foundation::{map::test_support::localisation::loaded, resource_origins::{self, fixture}};
-use viewer_world::map::{
-    map_mode::{MapMode, Stock},
-    resource_icons::hour_icons,
-};
+use viewer_foundation::test_support::localisation::loaded;
+use viewer_runtime::resource_origins::{self, fixture};
+use viewer_map_modes::map_mode::{MapMode, Stock};
+use viewer_map_icons::resource_icons::hour_icons;
 
 struct Content {
     origins: resource_origins::Content,

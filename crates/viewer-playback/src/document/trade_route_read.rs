@@ -2,8 +2,8 @@
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::{DecodedFrame, ViewIdentity};
 use std::sync::Arc;
-use viewer_foundation::table_access::{self, Available};
-use viewer_world::map::trade_routes::{ClientFields, OriginFields, RegionalFields, RouteFields};
+use dashboard_text::table_access::{self, Available};
+use viewer_unit_models::trade_routes::{ClientFields, OriginFields, RegionalFields, RouteFields};
 
 pub const TABLES: [TableId; 8] = [
     TableId::ResourceOrigins,
@@ -57,7 +57,7 @@ impl TradeRouteRead {
         }
         for (at, (mine, theirs)) in self.0.iter().zip(&other.0).enumerate() {
             if !(Arc::ptr_eq(&mine.shape, &theirs.shape) || mine.shape == theirs.shape) {
-                viewer_foundation::view_record::add_named("trade routes", &format!("{:?} differs", TABLES[at]), 1);
+                viewer_runtime::view_record::add_named("trade routes", &format!("{:?} differs", TABLES[at]), 1);
                 return false;
             }
         }

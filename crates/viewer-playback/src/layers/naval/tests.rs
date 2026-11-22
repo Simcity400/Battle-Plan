@@ -14,8 +14,8 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use viewer_world::map::{
-    gradient::Attributes,
+use map_display_data::landscape::Attributes;
+use viewer_map_modes::{
     map_mode::{MapMode, Stock},
     naval_dominance::{Content, Fact, Relations, Sides, Supremacy},
 };
@@ -25,7 +25,7 @@ fn content() -> Arc<Content> {
 }
 
 fn vision_content() -> Arc<vision::Content> {
-    use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+    use viewer_foundation::visibility::{FogContent, Topology, test_defines};
     let neighbors = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() })))
 }
@@ -81,7 +81,7 @@ impl Truth {
 }
 
 fn record_world(history: &mut BTreeMap<i32, Truth>) -> crate::playhead_host::units::Units {
-    let mut tables: Vec<TableId> = viewer_foundation::map::perspective::VISION_TABLES.to_vec();
+    let mut tables: Vec<TableId> = viewer_foundation::perspective::VISION_TABLES.to_vec();
     tables.extend(reads::TABLES);
     tables.sort_unstable();
     tables.dedup();
@@ -262,7 +262,7 @@ fn another_map_mode_declares_nothing_and_the_default_composes_again() {
 
 fn political_content() -> Arc<crate::layers::political::Content> {
     use content_reader_core::map::{MapData, ProvinceDefinition, ProvinceKind};
-    use viewer_world::map::borders::{BorderClass, BorderMesh, BorderMeshes};
+    use viewer_borders::borders::{BorderClass, BorderMesh, BorderMeshes};
     let definition = |id, kind| (id, ProvinceDefinition { id, rgb: [0; 3], kind, continent: 0 });
     let map = MapData { width: 2, height: 1, province_ids: vec![1, 2], definitions: [definition(1, ProvinceKind::Land), definition(2, ProvinceKind::Sea)].into_iter().collect(), country_colors: Default::default() };
     let empty = |class| BorderMesh { class, chunks: vec![], coarse_chunks: vec![], draws: vec![] };

@@ -1,12 +1,6 @@
 
 use super::{Content, Country, IDENTITY, Tags, branch, missing};
-use crate::{
-    Source,
-    products::{
-        LoadContext,
-        at_hour::{At, AtHour},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour}}};
 use replay_data::rows::{OperativeMembershipRow, Recorded, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

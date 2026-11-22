@@ -157,6 +157,7 @@ pub struct Hour<'a> {
     pub hour: i32,
     pub first: bool,
     pub fresh: bool,
+    pub format: u16,
     pub strings: &'a [u32],
     store: &'a Store,
     own: &'a [Output],
@@ -172,12 +173,18 @@ impl<'a> Hour<'a> {
             hour,
             first,
             fresh,
+            format: replay_data::FORMAT_VERSION,
             strings,
             store,
             own: &[],
             misread: std::cell::Cell::new(None),
             definitions: UNPACKED.get_or_init(Definitions::unpacked),
         }
+    }
+
+    pub fn with_format(mut self, format: u16) -> Self {
+        self.format = format;
+        self
     }
 
     pub fn defined(mut self, definitions: &'a Definitions) -> Self {
@@ -753,6 +760,9 @@ impl<'a> Rows<'a> {
 pub trait Writer: Send {
     fn name(&self) -> &'static str;
     fn version(&self) -> u32;
+    fn accepts_version(&self, version: u32) -> bool {
+        version == self.version()
+    }
     fn tables(&self) -> &'static [Output];
     fn reads(&self) -> &'static [Read];
     fn hourly(&self) -> bool {
@@ -785,6 +795,7 @@ pub struct Writers {
     owners: Vec<Owner>,
     held: Owner,
     given: Vec<Vec<Given>>,
+    format: u16,
 }
 
 fn owner(writer: &dyn Writer) -> Owner {
@@ -818,7 +829,12 @@ impl Writers {
             owners,
             held: labels::owner("store"),
             given,
+            format: replay_data::FORMAT_VERSION,
         }
+    }
+
+    pub fn set_format(&mut self, format: u16) {
+        self.format = format;
     }
 
     fn label(&self, at: usize) -> Scope {
@@ -1065,7 +1081,7 @@ impl Writers {
                 }
                 let (result, misread, rows) = {
                     let mut rows = Rows::new(store, lent, logs, std::mem::take(&mut self.names), self.held);
-                    let seen = Hour::new(store, branch, hour, first, !self.ran[at], &strings).owning(tables).defined(&self.definitions);
+                    let seen = Hour::new(store, branch, hour, first, !self.ran[at], &strings).with_format(self.format).owning(tables).defined(&self.definitions);
                     let result = {
                         let _label = labels::enter(self.owners[at], labels::Kind::Operator);
                         self.writers[at].hour(&seen, &mut rows)
@@ -1272,14 +1288,25 @@ impl Writers {
             writer.start();
             let fresh = fresh_given(&**writer);
             (self.withheld[at], self.ran[at], self.given[at]) = match saved.remove(writer.name()) {
-                Some((version, ran, withheld, blob, given)) if version == writer.version() && given.len() == fresh.len() => {
+                Some((version, ran, withheld, blob, given)) if writer.accepts_version(version) && given.len() == fresh.len() => {
                     writer.load(blob)?;
-                    (withheld, ran, given)
+                    (withheld, ran && version == writer.version(), given)
                 }
                 _ => (Some(OTHER_VERSION.to_owned()), false, fresh),
             };
         }
         Ok(())
+    }
+
+    pub fn table_versions(&self) -> Vec<(usize, u32)> {
+        self.writers
+            .iter()
+            .filter(|writer| writer.version() > 1)
+            .flat_map(|writer| {
+                let version = writer.version();
+                writer.tables().iter().map(move |output| (output.table().index(), version))
+            })
+            .collect()
     }
 }
 
@@ -1288,7 +1315,7 @@ impl Writers {
         for (at, writer) in self.writers.iter_mut().enumerate() {
             if self.withheld[at].is_none() && self.ran[at] {
                 let _label = labels::enter(self.owners[at], labels::Kind::Operator);
-                writer.prime(&Hour::new(store, branch, hour, false, false, &[]).defined(&self.definitions));
+                writer.prime(&Hour::new(store, branch, hour, false, false, &[]).with_format(self.format).defined(&self.definitions));
             }
         }
     }

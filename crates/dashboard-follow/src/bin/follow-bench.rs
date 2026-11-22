@@ -31,6 +31,16 @@ const OCCUPATION_TABLES: [TableId; 10] = [
     TableId::CountryLinks,
 ];
 
+fn period(rate: f64) -> io::Result<Duration> {
+    playhead::frame_period(rate).ok_or_else(|| {
+        invalid(format!(
+            "--hz needs a rate of {} to {} frames a second",
+            playhead::FRAME_RATES.start(),
+            playhead::FRAME_RATES.end()
+        ))
+    })
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -95,7 +105,10 @@ fn main() -> io::Result<()> {
                     "--select" => options.select = value.to_owned(),
                     "--hook" if value == "on" || value == "off" => options.hook = value == "on",
                     "--speed" => options.settings.speed = number()?,
-                    "--hz" => options.settings.rate = number()?,
+                    "--hz" => {
+                        options.settings.rate = number()?;
+                        period(options.settings.rate)?;
+                    }
                     "--step-threads" => options.settings.step_threads = number()?.max(1.0) as usize,
                     "--fetch-threads" => options.settings.fetch_threads = number()?.max(1.0) as usize,
                     "--seek" => options.seek_every = Some(number()?.max(1.0) as u64),
@@ -431,7 +444,7 @@ fn play(pages: &Arc<dyn Pages>, selection: Vec<Declared>, page: &[Query], option
         playhead.declare(plain.declared()?, None)?;
     }
     let quantum = ((settings.speed / settings.rate).round() as Hour).max(1);
-    let frame = Duration::from_secs_f64(1.0 / settings.rate);
+    let frame = period(settings.rate)?;
     let mut stats: Vec<StepStats> = Vec::new();
     let mut steps: Vec<StepRecord> = Vec::new();
     let mut ages: Vec<i64> = Vec::new();

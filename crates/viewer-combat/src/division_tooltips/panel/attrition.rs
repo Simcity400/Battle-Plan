@@ -2,8 +2,14 @@ use super::*;
 use engine_executable::modifier_keys as keys;
 use replay_data::rows::DivisionRow;
 use replay_derive::modifier_registry::Registry;
-use viewer_foundation::map::division_panel::{
-    at_war, country_identity, equipment, held_bonus, modifier, state, state_amount,
+use viewer_foundation::division_panel::{
+    at_war,
+    country_identity,
+    equipment,
+    held_bonus,
+    modifier,
+    state,
+    state_amount,
 };
 pub(super) fn fresh(
     content: &StaticContent,
@@ -12,7 +18,7 @@ pub(super) fn fresh(
     status: &DivisionStatusRow,
 ) -> Result<i64, String> {
     use replay_derive::{eta_derive::frame_terms::FrameTerms, eta_derive::frame_terms::Geography};
-    use viewer_foundation::map::border_power;
+    use viewer_foundation::border_power;
     let movement = frame
         .complete::<tables::DivisionMovement>()
         .map_err(|why| why.to_string())?;
@@ -48,7 +54,7 @@ pub(super) fn fresh(
                 .map_err(Clone::clone)?
                 .sub_units
                 .clone();
-            viewer_foundation::map::counter_attrition::PanelContent::read(
+            viewer_unit_reads::counter_attrition::PanelContent::read(
                 &scripted.layers.layers,
                 &content.map,
                 sub_units,

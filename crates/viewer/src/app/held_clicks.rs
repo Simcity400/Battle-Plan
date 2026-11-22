@@ -5,13 +5,11 @@ use replay_data::{BranchId, Hour};
 use replay_frame::frame::DecodedFrame;
 use std::sync::Arc;
 use viewer_counters::map::selection_sounds;
-use viewer_foundation::{
-    combat_selection::Selection as Window,
-    map::counter_hovers::unit_hits::{Hit, Kind},
-    unit_handle::Unit,
-};
+use viewer_engagements::combat_selection::Selection as Window;
+use viewer_native_gui::counter_hovers::unit_hits::{Hit, Kind};
+use viewer_runtime::unit_handle::Unit;
 use viewer_raids::map::raids::offers::TooltipTarget;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Clone, Debug)]
 pub(super) enum Click {
@@ -384,7 +382,7 @@ impl Viewer {
 mod tests {
     use super::super::{Config, MapHit, Options, Viewer};
     use std::sync::{Arc, Mutex};
-    use viewer_foundation::map::{counter_hovers::unit_hits, sprites::layer};
+    use viewer_native_gui::{counter_hovers::unit_hits, sprites::layer};
     use viewer_raids::map::raids::tooltips::{Hit, Key};
 
     #[test]

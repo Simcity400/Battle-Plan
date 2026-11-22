@@ -1,6 +1,6 @@
 
 use super::{
-    Segment, columns_at,
+    DerivedCoverage, REQUIRED_DERIVED_VERSIONS, Segment, columns_at, decode_derived_from, derived_withheld,
     input::{Held, Source},
     invalid, schema, withheld_at,
 };
@@ -160,15 +160,27 @@ fn recorded_columns(root: &Root, format: impl FnOnce() -> io::Result<Option<u16>
         if root.identity.schema != ours {
             return Err(differs(""));
         }
-        return Ok(Framing { columns: schema.iter().map(Vec::len).collect(), withheld: Vec::new(), tables: TABLE_COUNT, format });
+        let mut withheld = Vec::new();
+        derived_withheld(root, TABLE_COUNT, &mut withheld);
+        return Ok(Framing { columns: schema.iter().map(Vec::len).collect(), withheld, tables: TABLE_COUNT, format });
     }
     let mut columns = columns_at(format)?;
     let tables = columns.len();
-    if envelope::schema_digest_prefix(&schema[..tables], &columns) != Some(root.identity.schema) {
+    let historical = super::schema_at(format)?;
+    if envelope::schema_digest_prefix(&historical[..tables], &columns) != Some(root.identity.schema) {
         return Err(differs(""));
     }
     columns.resize(TABLE_COUNT, 0);
-    Ok(Framing { columns, withheld: withheld_at(format)?, tables, format })
+    let mut withheld = withheld_at(format)?;
+    derived_withheld(root, tables, &mut withheld);
+    Ok(Framing { columns, withheld, tables, format })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableCoverage<'a> {
+    Valid,
+    WithheldAll(&'a str),
+    WithheldBefore { ordinal: u32, reason: &'a str },
 }
 
 pub struct Recording {
@@ -183,6 +195,7 @@ pub struct Recording {
     tables: usize,
     format: u16,
     withheld: Box<[(usize, String)]>,
+    derived_coverage: Box<[DerivedCoverage]>,
     runs: Box<[Option<Arc<Run>>]>,
     segments: Box<[Segment]>,
     recorded: Box<[Segment]>,
@@ -234,6 +247,7 @@ impl Recording {
             tables: TABLE_COUNT,
             format: crate::format::FormatVersion::CURRENT.version(),
             withheld: Box::default(),
+            derived_coverage: Box::default(),
             runs: Box::default(),
             segments: Box::default(),
             recorded: Box::default(),
@@ -256,7 +270,7 @@ impl Recording {
         recording.columns = framing.columns.into();
         recording.tables = framing.tables;
         recording.format = framing.format;
-        recording.withheld = framing.withheld.into();
+        let mut withheld = framing.withheld;
         let mut damage = Vec::new();
         let mut runs = Vec::with_capacity(recording.directories.len());
         let mut segments = Vec::new();
@@ -283,6 +297,54 @@ impl Recording {
             }
         }
         recording.runs = runs.into();
+        let mut derived_coverage = Vec::new();
+        for &(table, required, reason) in REQUIRED_DERIVED_VERSIONS {
+            let index = table.index();
+            if index >= recording.tables || withheld.iter().any(|(held, _)| *held == index) {
+                continue;
+            }
+            let key = SectionKey::derived(index as u32);
+            let Some(section) = recording.root.section(key) else { continue };
+            if section.version < required || section.is_empty() {
+                continue;
+            }
+            let read_boundary = || -> io::Result<(u32, u32)> {
+                let extents = recording.section(key, section.version)?;
+                let [extent] = extents.as_slice() else {
+                    return Err(invalid(format!("{key} holds {} extents; expected 1", extents.len())));
+                };
+                let (from_run, from_ordinal) = decode_derived_from(&recording.raw(extent)?)?;
+                let run_count = recording.runs.len() as u32;
+                let valid = if from_run > run_count || (from_run == run_count && from_ordinal > 0) {
+                    false
+                } else if from_run < run_count {
+                    recording.runs[from_run as usize].as_ref().is_some_and(|run| {
+                        from_ordinal <= run.ordinals
+                            && i32::try_from(from_ordinal).ok().and_then(|o| run.first_hour.checked_add(o)).is_some()
+                    })
+                } else {
+                    true
+                };
+                if !valid {
+                    return Err(invalid(format!("{key} names out-of-range start run {from_run} ordinal {from_ordinal}")));
+                }
+                Ok((from_run, from_ordinal))
+            };
+            match read_boundary() {
+                Ok((0, 0)) => {}
+                Ok((from_run, from_ordinal)) => {
+                    derived_coverage.push(DerivedCoverage { table: index, from_run, from_ordinal, reason: reason.to_owned() });
+                }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    let text = format!("{}'s version marker is damaged: {error}", table_name(index as u32));
+                    damage.push(Damage { scope: DamageScope::Withheld { table: index as u32 }, cause: error });
+                    withheld.push((index, text));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        recording.withheld = withheld.into();
+        recording.derived_coverage = derived_coverage.into();
         recording.recorded = segments.clone().into();
         recording.segments = segments.into();
         recording.damage = damage.into();
@@ -338,6 +400,7 @@ impl Recording {
             tables: self.tables,
             format: self.format,
             withheld: self.withheld.clone(),
+            derived_coverage: self.derived_coverage.clone(),
             runs: self.runs.clone(),
             segments: self.segments.clone(),
             recorded: self.recorded.clone(),
@@ -388,6 +451,23 @@ impl Recording {
 
     pub fn withheld_reason(&self, table: usize) -> Option<&str> {
         self.withheld.iter().find(|(held, _)| *held == table).map(|(_, reason)| reason.as_str())
+    }
+
+    pub fn table_coverage(&self, table: usize, run: u32) -> TableCoverage<'_> {
+        if let Some(reason) = self.withheld_reason(table) {
+            return TableCoverage::WithheldAll(reason);
+        }
+        let Some(coverage) = self.derived_coverage.iter().find(|held| held.table == table) else {
+            return TableCoverage::Valid;
+        };
+        match run.cmp(&coverage.from_run) {
+            std::cmp::Ordering::Less => TableCoverage::WithheldAll(coverage.reason.as_str()),
+            std::cmp::Ordering::Equal if coverage.from_ordinal > 0 => TableCoverage::WithheldBefore {
+                ordinal: coverage.from_ordinal,
+                reason: coverage.reason.as_str(),
+            },
+            _ => TableCoverage::Valid,
+        }
     }
 
     pub fn predates(&self, table: usize) -> Option<&str> {

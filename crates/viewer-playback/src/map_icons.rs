@@ -3,18 +3,10 @@ use content_reader_gfx::gfx;
 use content_reader_image::{dds, native::Decode};
 use std::{collections::BTreeMap, io, sync::Arc};
 use viewer_combat as combat;
-use viewer_foundation::map::native_windows::NativeWindows;
-use {
-    viewer_counters::map::counters::CounterAssets,
-    viewer_foundation::{
-        errors::invalid,
-        map::{
-            lazy_icons::{DYNAMIC_BASE, LazyTextures},
-            sprites::Interface,
-            text,
-        },
-    },
-};
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_counters::map::counters::CounterAssets;
+use viewer_runtime::errors::invalid;
+use viewer_native_gui::{lazy_icons::{DYNAMIC_BASE, LazyTextures}, sprites::Interface, text};
 
 pub struct MapIcons {
     pub combat: Arc<combat::Assets>,
@@ -23,8 +15,8 @@ pub struct MapIcons {
     pub counters: Arc<CounterAssets>,
     pub raids: Arc<viewer_raids::map::raids::RaidAssets>,
     pub intel: Arc<viewer_raids::map::intel_icons::IntelAssets>,
-    pub occupation: Result<viewer_world::map::occupation_icons::Content, String>,
-    pub animated_text: Arc<viewer_world::map::animated_map_text::Assets>,
+    pub occupation: Result<viewer_map_icons::occupation_icons::Content, String>,
+    pub animated_text: Arc<viewer_map_text::animated_map_text::Assets>,
     pub lazy: Arc<LazyTextures>,
 }
 
@@ -34,7 +26,7 @@ pub struct LoadedIcons {
     pub images: Vec<dds::Texture>,
     pub fonts: text::Fonts,
     pub counters: CounterAssets,
-    pub animated_text: viewer_world::map::animated_map_text::Assets,
+    pub animated_text: viewer_map_text::animated_map_text::Assets,
     pub lazy: Arc<LazyTextures>,
 }
 
@@ -76,7 +68,7 @@ impl MapIcons {
             let windows = NativeWindows::load_at(layers, gui_viewport)?;
             let layouts = viewer_counters::map::counters::Layouts::read(&windows);
             let mut font_warnings = Vec::new();
-            let arrow_font = viewer_foundation::map::ribbon_content::arrow_text_font(layers)?;
+            let arrow_font = viewer_gpu::ribbon_content::arrow_text_font(layers)?;
             let registry = content_reader_core::gui::native::resources::Registry::from_files(
                 content_reader_core::gui::native::sprites::read_object_layers(layers)?,
             );
@@ -156,7 +148,7 @@ impl MapIcons {
             counters
                 .gui
                 .load(layers, &raids.gui_assets(), &mut images)?;
-            let animated_text = viewer_world::map::animated_map_text::Assets::load(
+            let animated_text = viewer_map_text::animated_map_text::Assets::load(
                 layers,
                 (defines, graphics),
                 map_size,
@@ -168,7 +160,7 @@ impl MapIcons {
                 .load(layers, &animated_text.gui_assets(), &mut images)?;
             counters.gui.load(
                 layers,
-                &viewer_world::map::resource_icons::gui_assets(),
+                &viewer_map_icons::resource_icons::gui_assets(),
                 &mut images,
             )?;
             if images.len() >= DYNAMIC_BASE {

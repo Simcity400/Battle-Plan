@@ -9,7 +9,7 @@ use replay_data::Hour;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};
 use std::{io, io::Write, sync::Arc};
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 
 pub struct Line {
     entry: Arc<Entry>,

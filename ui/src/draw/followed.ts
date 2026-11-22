@@ -10,7 +10,7 @@ import type { FromWorker } from './kit';
 
 export interface PageReading {
   id: number; seek: number; hour: number; through: number; coverage?: { start: number; through: number };
-  panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
+  panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | bigint | string> | null;
 }
 
 export interface Answered { answer: FollowedAnswer; date: { since: number; through: number } }
@@ -107,12 +107,13 @@ export class Followed {
   private values(id: number, panel?: FollowedPanel) {
     const entry = this.entries.get(id)!;
     const section = sectionOf(panel?.data);
-    const values = new Map<string, number | string>();
+    const values = new Map<string, number | bigint | string>();
     if (section) {
       const live = sectionValues(section, sectionGroups(section, key => this.store.group(entry, key)));
       for (let i = 0; i < section.cells.length; i += 3 + section.cells[i + 2]! * 3) {
         const key = liveKey(section.rows[section.cells[i]!]!, section.kinds[section.cells[i + 1]!]!.id);
-        values.set(key, live.get(key) ?? live.missing(key));
+        const raw = live.raw?.(key);
+        values.set(key, raw !== undefined && !Number.isSafeInteger(Number(raw)) ? raw : live.get(key) ?? live.missing(key));
       }
     }
     return section ? values : null;

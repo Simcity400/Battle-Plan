@@ -6,8 +6,8 @@ use replay_data::rows::{StateFlagRow, tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
 
-pub(super) use viewer_foundation::map::border_power::Defines;
-use viewer_foundation::map::border_power::{self, enemy_ratio, same};
+pub(super) use viewer_foundation::border_power::Defines;
+use viewer_foundation::border_power::{self, enemy_ratio, same};
 fn power(
     content: &super::Content,
     frame: &DecodedFrame,

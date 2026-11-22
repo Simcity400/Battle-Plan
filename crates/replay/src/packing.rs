@@ -205,14 +205,9 @@ impl Packing {
         if !budget.background.load(Ordering::Acquire) {
             return;
         }
-        const RATE: u64 = 32 << 20;
-        const BURST: u64 = 8 << 20;
         let due = {
             let mut next = lock(&budget.io);
-            let now = std::time::Instant::now();
-            let burst = std::time::Duration::from_secs_f64(BURST as f64 / RATE as f64);
-            let start = (*next).max(now.checked_sub(burst).unwrap_or(now));
-            *next = start + std::time::Duration::from_secs_f64(bytes as f64 / RATE as f64);
+            *next = io_due(*next, std::time::Instant::now(), bytes);
             *next
         };
         let began = std::time::Instant::now();
@@ -239,6 +234,24 @@ impl Packing {
     pub fn active() -> bool {
         BUDGET.with_borrow(|budget| budget.is_some())
     }
+}
+
+trait Moment: Copy + Ord + std::ops::Add<std::time::Duration, Output = Self> {
+    fn earlier(self, by: std::time::Duration) -> Option<Self>;
+}
+
+impl Moment for std::time::Instant {
+    fn earlier(self, by: std::time::Duration) -> Option<Self> {
+        self.checked_sub(by)
+    }
+}
+
+fn io_due<T: Moment>(next: T, now: T, bytes: usize) -> T {
+    const RATE: u64 = 32 << 20;
+    const BURST: u64 = 8 << 20;
+    let burst = std::time::Duration::from_secs_f64(BURST as f64 / RATE as f64);
+    let start = now.earlier(burst).map_or(next, |floor| next.max(floor));
+    start + std::time::Duration::from_secs_f64(bytes as f64 / RATE as f64)
 }
 
 pub struct Budgeted<T>(T);
@@ -669,4 +682,25 @@ pub(crate) fn ordered<T: Send, U: Send>(
             .count();
         drive(started);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    impl Moment for Duration {
+        fn earlier(self, by: Duration) -> Option<Self> {
+            self.checked_sub(by)
+        }
+    }
+
+    #[test]
+    fn background_io_near_the_clock_origin_keeps_the_credit_it_accrued() {
+        let ms = Duration::from_millis;
+        let mebibyte = Duration::from_secs_f64(1.0 / 32.0);
+        assert_eq!(io_due(ms(50), ms(200), 1 << 20), ms(50) + mebibyte);
+        assert_eq!(io_due(ms(50), ms(1_000), 1 << 20), ms(750) + mebibyte);
+        assert_eq!(io_due(ms(900), ms(1_000), 1 << 20), ms(900) + mebibyte);
+    }
 }

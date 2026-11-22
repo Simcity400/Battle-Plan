@@ -209,7 +209,7 @@ const HURRY: std::time::Duration = std::time::Duration::from_secs(1);
 const CATCHING_UP: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn step_rate() -> f64 {
-    viewer_foundation::map::simulation_rate::rate()
+    viewer_runtime::simulation_rate::rate()
 }
 
 pub fn settings() -> Settings {
@@ -217,7 +217,7 @@ pub fn settings() -> Settings {
 }
 
 fn entered_map(thread: playhead::Thread) {
-    use viewer_foundation::worker_priority::{Class, enter};
+    use viewer_runtime::worker_priority::{Class, enter};
     enter(match thread {
         playhead::Thread::Stepper | playhead::Thread::Step | playhead::Thread::Seeking => Class::Kept,
         playhead::Thread::Fetch => Class::Worker,
@@ -225,7 +225,7 @@ fn entered_map(thread: playhead::Thread) {
 }
 
 fn entered(thread: playhead::Thread) {
-    use viewer_foundation::worker_priority::{Class, enter};
+    use viewer_runtime::worker_priority::{Class, enter};
     enter(match thread {
         playhead::Thread::Stepper => Class::Playback,
         playhead::Thread::Step | playhead::Thread::Seeking => Class::Kept,
@@ -275,20 +275,20 @@ impl ForMap {
     fn made(self) -> io::Result<MapSide> {
         let Self { content: document, replay, branch: recording, hour, at, weather } = self;
         let units = units::of(&replay, recording)?;
-        let (engaged, branch) = (crate::engaged_index::lanes::shared(&replay, &units, recording, &viewer_foundation::map::perspective::Country::Recorded)?, recording);
+        let (engaged, branch) = (crate::engaged_index::lanes::shared(&replay, &units, recording, &viewer_foundation::perspective::Country::Recorded)?, recording);
         let entry = open(units, settings())?;
         entry.set_capture(replay.capture_mode);
         let content = Arc::new(crate::layers::political::Content::new(Arc::clone(&document.map), Arc::clone(&document.border_meshes)));
         let place_in = Arc::clone(&document);
         let map = &document.map;
         let largest = map.definitions.last_key_value().map_or(0, |(&id, _)| id).max(map.province_ids.iter().copied().max().unwrap_or(0));
-        let intel = viewer_foundation::map::textures::IntelCells::new(map).map(|cells| Arc::new(crate::layers::intel::Content::new(cells, largest))).map_err(|error| error.to_string());
+        let intel = viewer_gpu::textures::IntelCells::new(map).map(|cells| Arc::new(crate::layers::intel::Content::new(cells, largest))).map_err(|error| error.to_string());
         let snow = document
             .products
             .snow_content()
-            .map(|content| Arc::new(crate::layers::snow::Content::new(content.cells.clone(), content.winter.clone(), viewer_foundation::map::camera::MapSize::of(&document.map), document.map_defines)))
+            .map(|content| Arc::new(crate::layers::snow::Content::new(content.cells.clone(), content.winter.clone(), viewer_gpu::camera::MapSize::of(&document.map), document.map_defines)))
             .map_err(|error| error.to_string());
-        let counters = crate::layers::counters::Content::new(Arc::clone(&document.counters), document.movement.clone(), (viewer_foundation::map::camera::MapSize::of(&document.map), document.map_defines), document.tables);
+        let counters = crate::layers::counters::Content::new(Arc::clone(&document.counters), document.movement.clone(), (viewer_gpu::camera::MapSize::of(&document.map), document.map_defines), document.tables);
         let marker_index = || crate::layers::engagements::Index { history: Arc::clone(&engaged), branch };
         let (land_index, naval_index) = (marker_index(), marker_index());
         let guns = crate::layers::gun_counters::Content::new(Arc::clone(&document.counters), Arc::clone(&document.map), document.movement.clone());
@@ -368,7 +368,7 @@ impl Opening {
         std::thread::Builder::new()
             .name(OPENING.into())
             .spawn(move || {
-                viewer_foundation::worker_priority::background_priority();
+                viewer_runtime::worker_priority::background_priority();
                 let _ = send.send(make());
             })
             .map_err(|error| io::Error::other(format!("no thread to open it: {error}")))?;
@@ -448,7 +448,7 @@ fn groups(upstream: &[Vec<usize>]) -> Vec<usize> {
 
 const COMPOSING: &str = "playhead host compose";
 
-const COMPOSE_CLASS: viewer_foundation::worker_priority::Class = viewer_foundation::worker_priority::Class::Kept;
+const COMPOSE_CLASS: viewer_runtime::worker_priority::Class = viewer_runtime::worker_priority::Class::Kept;
 
 fn compose_away(away: &mut Away) {
     let count = away.layers.len();
@@ -484,7 +484,7 @@ fn compose_away(away: &mut Away) {
     std::thread::scope(|scope| {
         for _ in 1..threads {
             if std::thread::Builder::new().name(COMPOSING.into()).spawn_scoped(scope, || {
-                viewer_foundation::worker_priority::enter(COMPOSE_CLASS);
+                viewer_runtime::worker_priority::enter(COMPOSE_CLASS);
                 work();
             }).is_err() {
                 break;
@@ -515,7 +515,7 @@ impl Worker {
         let (jobs, receive) = mpsc::channel::<Job>();
         let (send, done) = mpsc::channel();
         std::thread::Builder::new().name("playhead host worker".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(COMPOSE_CLASS);
+            viewer_runtime::worker_priority::enter(COMPOSE_CLASS);
             for job in receive {
                 match job {
                     Job::Compose(mut away) => {
@@ -731,10 +731,10 @@ pub struct MapSide {
     branch: Option<replay_data::BranchId>,
     resets_taken: u64,
     resets_shown: u64,
-    mode: Option<viewer_world::map::map_mode::MapMode>,
+    mode: Option<viewer_map_modes::map_mode::MapMode>,
     mode_settled: Vec<bool>,
     view_shown: View,
-    handed_viewer: Option<(viewer_foundation::map::perspective::Choice, u32)>,
+    handed_viewer: Option<(viewer_foundation::perspective::Choice, u32)>,
     switched: Option<Instant>,
     stepped: bool,
     #[cfg(any(test, feature = "test-support"))]
@@ -783,7 +783,7 @@ fn offer(applied: &[Arc<Step>], later: &[Arc<Step>], epoch: u64, reads: &BTreeSe
     }
 }
 
-fn join_overlay(overlay: Option<&mut overlay::Overlay>, layers: &[Box<dyn Layer>], perspective: &viewer_foundation::map::perspective::Choice, branch: Option<replay_data::BranchId>, settling: Settling) -> bool {
+fn join_overlay(overlay: Option<&mut overlay::Overlay>, layers: &[Box<dyn Layer>], perspective: &viewer_foundation::perspective::Choice, branch: Option<replay_data::BranchId>, settling: Settling) -> bool {
     let Some(overlay) = overlay else { return false };
     let at_hour = overlay.join(settling);
     if let (Some(branch), Some((tables, rosters))) = (branch, overlay.tables_of(perspective).map(Arc::clone).zip(overlay.rosters())) {
@@ -920,7 +920,7 @@ impl MapSide {
         self.overlay.as_deref()
     }
 
-    pub fn vision(&self) -> Result<Arc<viewer_foundation::map::perspective::Vision>, String> {
+    pub fn vision(&self) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
         self.vision.kept_for(&self.view_shown.perspective)
     }
 
@@ -955,11 +955,11 @@ impl MapSide {
         self.combat.loading()
     }
 
-    fn engaged(&self) -> Option<Arc<viewer_foundation::engagement_history::History>> {
+    fn engaged(&self) -> Option<Arc<viewer_engagements::engagement_history::History>> {
         self.layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::layers::engagements::Engagements>()).and_then(crate::layers::engagements::Engagements::history).map(Arc::clone)
     }
 
-    fn ask_overlay_step(&mut self, whole: bool, lay: bool, moved: Arc<viewer_foundation::map::counter_move::MovedHours>) -> bool {
+    fn ask_overlay_step(&mut self, whole: bool, lay: bool, moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool {
         if self.overlay.is_none() || self.composing || self.superseded {
             return false;
         }
@@ -977,7 +977,7 @@ impl MapSide {
         overlay.ask_step(overlay::Lend { views, applied, branch, perspective, vision, engaged, draws_labels, lay_ins, keys, published, draws, left, moved, whole, lay })
     }
 
-    fn moved_before(&self, step: &Step, into: &mut viewer_foundation::map::counter_move::MovedHours) {
+    fn moved_before(&self, step: &Step, into: &mut viewer_unit_reads::counter_move::MovedHours) {
         if let Some(mirrors) = self.mirrors.as_deref() {
             for (at, layer) in self.layers.iter().enumerate() {
                 if self.reads[at].is_ok() && self.ready[at] {
@@ -1031,7 +1031,7 @@ impl MapSide {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn hand_viewer(&mut self, choice: viewer_foundation::map::perspective::Choice, ours: u32) {
+    pub fn hand_viewer(&mut self, choice: viewer_foundation::perspective::Choice, ours: u32) {
         self.handed_viewer = Some((choice, ours));
     }
 
@@ -1276,7 +1276,7 @@ impl MapSide {
         let mut applied = Vec::with_capacity(steps.len());
         let (resets_before, applied_before) = (self.resets_taken, self.applied);
         let (mut waiting, mut after_reset, mut crossing) = (self.composing, false, false);
-        let mut moved = viewer_foundation::map::counter_move::MovedHours::default();
+        let mut moved = viewer_unit_reads::counter_move::MovedHours::default();
         while let Some(step) = steps.pop_front() {
             waiting |= step.last() > head;
             if waiting {
@@ -1335,10 +1335,10 @@ impl MapSide {
             let composing = compose.iter().any(|&wanted| wanted) && !composed_here;
             let overlay_at = (!composing && self.overlay.is_some()).then(|| self.overlay_counters_at().unwrap_or(0));
             if overlay_at.is_some() {
-                if viewer_foundation::view_record::on() {
+                if viewer_runtime::view_record::on() {
                     let (movers, hours) = moved.counts();
-                    viewer_foundation::view_record::add("moved", "movers", movers as u64);
-                    viewer_foundation::view_record::add("moved", "hours", hours as u64);
+                    viewer_runtime::view_record::add("moved", "movers", movers as u64);
+                    viewer_runtime::view_record::add("moved", "hours", hours as u64);
                 }
                 self.ask_overlay_step(settling.strict(), lay, Arc::new(std::mem::take(&mut moved)));
             }
@@ -1374,7 +1374,7 @@ impl MapSide {
                 }
                 if !(self.reads[at].is_ok() && self.ready[at]) || compose[at] || self.superseded {
                     if self.reads[at].is_ok() && (!self.ready[at] || compose[at]) {
-                        viewer_foundation::view_record::add("layers", "frames_not_ready", 1);
+                        viewer_runtime::view_record::add("layers", "frames_not_ready", 1);
                     }
                     continue;
                 }
@@ -1557,7 +1557,7 @@ impl MapSide {
         if let Some(overlay) = self.overlay.as_deref_mut() {
             overlay.stepped();
         }
-        self.combat.join(settling, viewer_foundation::map::simulation_rate::interval());
+        self.combat.join(settling, viewer_runtime::simulation_rate::interval());
         timeline::close(frame.composing);
         self.last = frame.clone();
         Ok(frame)
@@ -1752,7 +1752,7 @@ impl MapSide {
         )
     }
 
-    fn copy_vision(&mut self, exact: bool) -> Result<Arc<viewer_foundation::map::perspective::Vision>, String> {
+    fn copy_vision(&mut self, exact: bool) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
         let applied = self.applied;
         let home = self.mirrors.is_some() && !self.composing && !self.superseded;
         let layer = vision_of(&self.names, &self.reads, &self.ready, &self.layers, self.composing || self.superseded);
@@ -1932,7 +1932,7 @@ impl MapSide {
     }
 
     fn judge_installs(&mut self) {
-        use viewer_foundation::map::publication_check as check;
+        use viewer_runtime::publication_check as check;
         if !check::on() {
             return;
         }
@@ -2195,7 +2195,7 @@ impl MapSide {
         self.branch = Some(branch);
     }
 
-    pub fn mode_on_screen(&self) -> Option<&viewer_world::map::map_mode::MapMode> {
+    pub fn mode_on_screen(&self) -> Option<&viewer_map_modes::map_mode::MapMode> {
         self.mode.as_ref()
     }
 }
@@ -2240,7 +2240,7 @@ pub struct CaughtUp {
 fn held_viewer(layer: &dyn Layer) -> Option<u32> {
     use crate::layers::{air_mission_counters, base_counters, counters, gun_counters, labels, land_markers, naval_markers, radar, trains, vision};
     let any = layer.any();
-    let given = |held: Option<(viewer_foundation::map::perspective::Choice, Arc<viewer_foundation::map::perspective::Vision>)>| held.map(|(_, vision)| vision.ours());
+    let given = |held: Option<(viewer_foundation::perspective::Choice, Arc<viewer_foundation::perspective::Vision>)>| held.map(|(_, vision)| vision.ours());
     if let Some(layer) = any.downcast_ref::<vision::Vision>() {
         layer.ours()
     } else if let Some(layer) = any.downcast_ref::<labels::Labels>() {

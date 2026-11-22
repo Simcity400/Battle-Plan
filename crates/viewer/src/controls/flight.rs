@@ -1,11 +1,11 @@
 
 use super::{Frame, approach};
-use dashboard::protocol::GamepadButton;
+use dashboard_core::protocol::GamepadButton;
 use eframe::egui::Key;
 use std::f32::consts::{PI, TAU};
-use viewer_foundation::map::camera::{Camera, Free, Lens, PITCH_LIMIT, Pose, WATER_HEIGHT};
-use viewer_world::map::aircraft::GroundContact;
-use viewer_world::map::models::ModelInstance;
+use viewer_gpu::camera::{Camera, Free, Lens, PITCH_LIMIT, Pose, WATER_HEIGHT};
+use viewer_aircraft::aircraft::GroundContact;
+use viewer_models::ModelInstance;
 
 pub const SLOWEST: f32 = 4.0;
 pub const FASTEST: f32 = 80.0;
@@ -436,7 +436,7 @@ impl Flight {
         let aircraft = match self.phase {
             Phase::Flying => (self.view == View::Chase).then(|| self.instance(position)),
             Phase::Crashed { exploded, .. } => (!exploded).then(|| ModelInstance {
-                animation: viewer_world::map::entity_animation::named_request(EXPLODE),
+                animation: viewer_models::entity_animation::named_request(EXPLODE),
                 ..self.instance(position)
             }),
             Phase::Wrecked { .. } => None,

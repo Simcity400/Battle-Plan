@@ -7,6 +7,17 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
+viewer-borders.workspace = true
+viewer-buildings.workspace = true
+viewer-map-icons.workspace = true
+viewer-map-modes.workspace = true
+viewer-map-text.workspace = true
+viewer-models.workspace = true
+viewer-rail.workspace = true
 map-content.workspace = true
 map-display-data.workspace = true
 content-witness.workspace = true
@@ -24,10 +35,15 @@ replay-frame.workspace = true
 sha2.workspace = true
 viewer-audio = { path = "../viewer-audio" }
 viewer-counter-products = { path = "../viewer-counter-products" }
-viewer-foundation = { path = "../viewer-foundation" }
-viewer-world = { path = "../viewer-world" }
 
 [dev-dependencies]
+dashboard-text = { workspace = true, features = ["test-support"] }
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }
+viewer-buildings = { workspace = true, features = ["test-support"] }
+viewer-models = { workspace = true, features = ["test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 product-codec.workspace = true
 engine-executable.workspace = true
@@ -42,7 +58,6 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
@@ -58,4 +73,9 @@ unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-counter-products = { path = "../viewer-counter-products", features = ["test-support"] }
-viewer-world = { path = "../viewer-world", features = ["test-support"] }
+viewer-map-icons = { workspace = true, features = ["test-support"] }
+viewer-map-modes = { workspace = true, features = ["test-support"] }
+viewer-map-text = { workspace = true, features = ["test-support"] }
+viewer-native-gui = { workspace = true, features = ["test-support"] }
+viewer-rail = { workspace = true, features = ["test-support"] }
+viewer-scene-base = { workspace = true, features = ["test-support"] }

@@ -185,7 +185,7 @@ pub fn encode_framed_at(
     };
     let records = records_of(segments, None)?;
     let columns = crate::columnar_frames::columns_at(format)?;
-    let schema = envelope::schema_digest_prefix(&schema()?[..columns.len()], &columns).ok_or_else(|| io::Error::other("the format frames no schema of this build"))?;
+    let schema = envelope::schema_digest_prefix(&crate::columnar_frames::schema_at(format)?[..columns.len()], &columns).ok_or_else(|| io::Error::other("the format frames no schema of this build"))?;
     let identity = envelope::Identity { schema, ..identity_of(campaign_id, &records)? };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, columns.len(), SETTINGS, None)?;
     let mut file = HourWriter::framed(file, LEVEL, replay_columnar::unit::Settings::at(LEVEL), &columns)?;
@@ -198,7 +198,7 @@ pub fn encode_framed_at(
             if !run.as_ref().is_some_and(|(_, branch, next)| *branch == decoded.branch && *next == decoded.hour) {
                 let epoch = if run.is_some() { envelope::epoch::GAP } else { envelope::epoch::START };
                 file.start_run(decoded.branch, epoch, decoded.hour)?;
-                run = Some((Synthetic::framed(decoded.branch, decoded.hour, columns.clone())?, decoded.branch, decoded.hour));
+                run = Some((Synthetic::framed_at(decoded.branch, decoded.hour, format, columns.clone())?, decoded.branch, decoded.hour));
             }
             let (synthetic, _, next) = run.as_mut().expect("a run under way");
             let clock = decoded.complete::<tables::Clock>()?;

@@ -4,13 +4,11 @@ use content_reader_core::ResolvedLayers;
 use serde::Deserialize;
 use std::sync::Arc;
 use std::{fs, io, path::PathBuf};
-use viewer_foundation::map::gpu_contract::map_device_descriptor;
-use viewer_foundation::map::gpu_contract::select_adapter;
-use {
-    viewer_foundation::map::camera, viewer_foundation::map::frame,
-    viewer_foundation::map::province_map::HeightField, viewer_world::map::mapframe,
-    viewer_world::map::rivers, viewer_world::map::scene, viewer_world::map::trees,
-};
+use viewer_gpu::gpu_contract::map_device_descriptor;
+use viewer_gpu::gpu_contract::select_adapter;
+use viewer_gpu::{camera, frame, province_map::HeightField};
+use viewer_world::{mapframe, scene};
+use viewer_terrain::{rivers, trees};
 
 #[derive(Deserialize)]
 struct Layer {
@@ -54,7 +52,7 @@ enum SyntheticEffect {
     CriticalBombardment,
 }
 
-impl From<SyntheticEffect> for viewer_world::map::strike_effects::Effect {
+impl From<SyntheticEffect> for viewer_models::strike_effects::Effect {
     fn from(effect: SyntheticEffect) -> Self {
         match effect {
             SyntheticEffect::Nuclear => Self::Nuclear,
@@ -217,11 +215,11 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         }
     };
     eprintln!("Content scene: particle assets");
-    let weather = viewer_world::map::weather_effects::Assets::load(
+    let weather = viewer_weather_effects::weather_effects::Assets::load(
         layers,
         &defines,
         [map.width, map.height],
-        viewer_world::map::weather_effects::RegionProvinces::new(&regions, |province| {
+        viewer_weather_effects::weather_effects::RegionProvinces::new(&regions, |province| {
             map_data.definitions.contains_key(&province)
         }),
         decode,
@@ -267,7 +265,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
         for (index, &[x, z, height]) in input.cameras.iter().enumerate() {
             scene.set_nuclear_impacts(
                 [&impacts],
-                viewer_foundation::map::presentation::Continuity::Reset,
+                viewer_runtime::presentation::Continuity::Reset,
             );
             eprintln!("Content scene: view {index}");
             let request = scene::Request {
@@ -275,7 +273,7 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
                 camera: camera::Placement {
                     center: [x, z],
                     height,
-                    pose: viewer_foundation::map::camera::Pose::Map,
+                    pose: viewer_gpu::camera::Pose::Map,
                 }
                 .on(map, camera_defines),
                 day_night: frame::DayNight::at_hour(input.hour),
@@ -328,23 +326,23 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
 fn synthetic_impacts(
     layers: &ResolvedLayers,
     impacts: &[SyntheticImpact],
-) -> io::Result<viewer_world::map::strike_effects::Impacts> {
+) -> io::Result<viewer_models::strike_effects::Impacts> {
     let stacks = content_reader_core::positions::read_unit_stacks(layers)?;
     let map = content_reader_core::map::load(layers)?;
-    let boxes = viewer_foundation::map::province_admission::province_boxes(
-        &viewer_foundation::map::province_map::ProvinceMap {
+    let boxes = viewer_gpu::province_admission::province_boxes(
+        &viewer_gpu::province_map::ProvinceMap {
             width: map.width,
             height: map.height,
             ids: &map.province_ids,
         },
     );
-    let mut out = viewer_world::map::strike_effects::Impacts::default();
+    let mut out = viewer_models::strike_effects::Impacts::default();
     for (id, impact) in impacts.iter().enumerate() {
         let stack = stacks
             .iter()
             .find(|stack| {
                 stack.province == impact.province
-                    && stack.kind == viewer_foundation::map::unit_rules::STANDSTILL
+                    && stack.kind == viewer_foundation::unit_rules::STANDSTILL
             })
             .ok_or_else(|| {
                 io::Error::other(format!(
@@ -355,7 +353,7 @@ fn synthetic_impacts(
         let bounds = *boxes.get(&impact.province).ok_or_else(|| {
             io::Error::other(format!("province {} is not painted", impact.province))
         })?;
-        out.impacts.push(viewer_world::map::strike_effects::Impact {
+        out.impacts.push(viewer_models::strike_effects::Impact {
             id: id as u64,
             province: impact.province,
             effect: impact.effect.into(),

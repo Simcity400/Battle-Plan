@@ -12,13 +12,14 @@ use std::{
     thread,
     time::Duration,
 };
-use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
-use viewer_foundation::map::gpu_contract::is_software;
-use viewer_foundation::map::ui_scale::Setting;
-use viewer_foundation::worker_priority::background_priority;
+use viewer_gpu::gpu_contract::SOFTWARE_RENDERER_NOTICE;
+use viewer_gpu::gpu_contract::is_software;
+use viewer_gpu::ui_scale::Setting;
+use viewer_runtime::worker_priority::background_priority;
 
-use dashboard::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
-use dashboard::{Service, Source, SourceKey};
+use dashboard_core::protocol::{DashboardMapState, DashboardMapView, ViewBounds};
+use dashboard::Service;
+use dashboard_base::{Source, SourceKey};
 use eframe::{egui, wgpu};
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
     app::{Viewer, date, load_scene, map_overlay, partial_notice},
     document::{Content, Document, InitialHour},
 };
-use viewer_world::map::scene::Scene;
+use viewer_world::scene::Scene;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct MapSourceKey {
@@ -202,7 +203,7 @@ impl DashboardMaps {
         let tables = view.viewer.tables();
         engine_executable::executable_tables::scope(tables, || {
             view.viewer.host_map_action(
-                dashboard::protocol::MapAction::Export {
+                dashboard_core::protocol::MapAction::Export {
                     path,
                     view_id: None,
                     request,
@@ -757,7 +758,7 @@ impl DashboardMaps {
                         if job_alive.load(Ordering::Acquire) {
                             let _ = sender.send(result);
                         }
-                        viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
+                        viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
                     }) {
                     Ok(_) => {
                         self.opening_source = Some(OpeningSource {
@@ -936,7 +937,7 @@ impl DashboardMaps {
                 if job_alive.load(Ordering::Acquire) {
                     let _ = sender.send(result);
                 }
-                viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
+                viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
             })) {
                 view.loading = Some(SceneLoad {
                     samples: graphics.samples,
@@ -1013,7 +1014,7 @@ impl DashboardMaps {
                 if job_alive.load(Ordering::Acquire) {
                     let _ = sender.send(result);
                 }
-                viewer_foundation::worker_priority::at_least(Some(0), || wake.request_repaint());
+                viewer_runtime::worker_priority::at_least(Some(0), || wake.request_repaint());
             }) {
             Ok(_) => {
                 self.loading = Some(LoadingSource {
@@ -1053,7 +1054,7 @@ impl DashboardMaps {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        recording: Option<viewer_foundation::frame_writer::Pass<'_>>,
+        recording: Option<viewer_runtime::frame_writer::Pass<'_>>,
     ) {
         if recording.is_some() {
             self.ui_pass::<true>(ui, frame, recording);
@@ -1066,7 +1067,7 @@ impl DashboardMaps {
         &mut self,
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
-        recording: Option<viewer_foundation::frame_writer::Pass<'_>>,
+        recording: Option<viewer_runtime::frame_writer::Pass<'_>>,
     ) {
         self.poll(ui.ctx());
         self.apply_visual_fallback(frame);
@@ -1121,8 +1122,8 @@ impl DashboardMaps {
                 });
             } else if view.viewer.has_map() {
                 if let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) {
-                    let scope = dashboard::map_settings::widget_key(
-                        &dashboard::map_settings::campaign_key(&source.source.replay()),
+                    let scope = dashboard_core::map_settings::widget_key(
+                        &dashboard_core::map_settings::campaign_key(&source.source.replay()),
                         &view.target.id,
                     );
                     view.viewer.follow_map_settings(&self.service, scope);
@@ -1308,7 +1309,7 @@ mod tests {
         ));
         let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
-        let revision = dashboard::protocol::replay_revision(&path).unwrap();
+        let revision = dashboard_core::protocol::replay_revision(&path).unwrap();
         let service = Service::new(Arc::new(|_| true)).unwrap();
         let mut target = DashboardMapView {
             options: Default::default(),
@@ -1362,7 +1363,7 @@ mod tests {
             done: impl Fn(&MapView) -> bool,
         ) {
             let deadline =
-                std::time::Instant::now() + viewer_foundation::map::test_support::TEST_HANG_GUARD;
+                std::time::Instant::now() + viewer_runtime::test_support::TEST_HANG_GUARD;
             while !done(&maps.views[id]) {
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -1379,7 +1380,7 @@ mod tests {
         let away = path.with_extension("away");
         let replay = crate::playback::tests::fixture();
         std::fs::write(&path, replay.bytes()).unwrap();
-        let revision = dashboard::protocol::replay_revision(&path).unwrap();
+        let revision = dashboard_core::protocol::replay_revision(&path).unwrap();
         std::fs::rename(&path, &away).unwrap();
         let mut maps = DashboardMaps::new(
             Config::default(),
@@ -1472,7 +1473,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut frame = eframe::Frame::_new_kittest();
         maps.set_views(Some("page-1"), vec![target.clone()], &frame, &ctx);
-        let export = dashboard::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
+        let export = dashboard_core::protocol::MapAction::Export { path: "widget.png".into(), view_id: None, request: 5 };
         maps.views.get_mut(&target.id).unwrap().viewer.host_map_action(export, &ctx, &mut frame);
         maps.set_views(Some("page-1"), Vec::new(), &frame, &ctx);
         assert!(maps.views.is_empty());

@@ -14,7 +14,7 @@ use std::{
     ops::Range,
     sync::Arc,
 };
-use viewer_world::map::railways::{Bridge, PreparedRailGeometry, RailNetwork, RailRun};
+use viewer_rail::railways::{Bridge, PreparedRailGeometry, RailNetwork, RailRun};
 
 const VERTEX: u64 = std::mem::size_of::<[f32; 6]>() as u64;
 
@@ -133,10 +133,10 @@ impl Strips {
         self.placed.clear();
         self.placed.try_reserve(runs.len().saturating_sub(self.placed.capacity())).map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
         self.placed.extend_from_slice(runs);
-        if viewer_foundation::install_check::due(&CHECKED_STRIPS) {
+        if viewer_runtime::install_check::due(&CHECKED_STRIPS) {
             let whole: Vec<u32> = runs.iter().flat_map(|run| run.clone().chain(std::iter::once(u32::MAX))).collect();
             if let Some(at) = (0..length).find(|&at| self.held[at] != whole[at]) {
-                viewer_foundation::install_check::found(
+                viewer_runtime::install_check::found(
                     "rail strip indices",
                     format_args!("entry {at} of {length} holds {} where the list laid out whole holds {}", self.held[at], whole[at]),
                 );

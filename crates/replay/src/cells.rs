@@ -109,7 +109,7 @@ impl Tapped {
 }
 
 pub(crate) fn read_columns(recording: &Recording, recorded: usize, table: usize, columns: Option<&[usize]>) -> Vec<usize> {
-    match columns {
+    let mut columns = match columns {
         Some(columns) => {
             let mut columns: Vec<usize> = columns.iter().copied().filter(|&column| column < recorded).collect();
             columns.sort_unstable();
@@ -117,7 +117,12 @@ pub(crate) fn read_columns(recording: &Recording, recorded: usize, table: usize,
             columns
         }
         None => recording.read_columns(table),
+    };
+    if let Some(&id) = TableId::ALL.get(table) {
+        let format = recording.format();
+        columns.retain(|&column| !id.column_withheld_at(column, format));
     }
+    columns
 }
 
 pub struct TableReader {
@@ -148,6 +153,7 @@ pub struct TableReader {
     restores: u32,
     log: Option<Box<LogRead>>,
     absent: bool,
+    withheld_before: Option<(u32, String)>,
 }
 
 struct LogRead {
@@ -161,9 +167,17 @@ impl TableReader {
         let held = recording.run(run)?;
         let index = table.index();
         let absent = recording.predates(index).is_some();
-        if let Some(reason) = recording.withheld_reason(index).filter(|_| !absent) {
-            return Err(Damage::wrap(DamageScope::Withheld { table: index as u32 }, invalid(reason.to_owned())));
-        }
+        let withheld_before = if absent {
+            None
+        } else {
+            match recording.table_coverage(index, run) {
+                crate::columnar_frames::TableCoverage::Valid => None,
+                crate::columnar_frames::TableCoverage::WithheldAll(reason) => {
+                    return Err(Damage::wrap(DamageScope::Withheld { table: index as u32 }, invalid(reason.to_owned())));
+                }
+                crate::columnar_frames::TableCoverage::WithheldBefore { ordinal, reason } => Some((ordinal, reason.to_owned())),
+            }
+        };
         let kinds = crate::columnar_frames::schema()?.swap_remove(index);
         let recorded = recording.columns()[index].min(kinds.len());
         let columns = read_columns(recording, recorded, index, columns);
@@ -196,6 +210,7 @@ impl TableReader {
             pending: Tapped::default(),
             restores: 0,
             absent,
+            withheld_before,
         })
     }
 
@@ -295,7 +310,17 @@ impl TableReader {
         Damage::wrap(DamageScope::Table { run: self.run, block, table: self.table as u32 }, error)
     }
 
+    fn check_ordinal(&self, ordinal: u32) -> io::Result<()> {
+        if let Some((from, reason)) = &self.withheld_before
+            && ordinal < *from
+        {
+            return Err(Damage::wrap(DamageScope::Withheld { table: self.table as u32 }, invalid(reason.clone())));
+        }
+        Ok(())
+    }
+
     pub fn seek(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
+        self.check_ordinal(ordinal)?;
         if ordinal >= self.ordinals {
             return Err(invalid(format!("Run {} holds no ordinal {ordinal}", self.run)));
         }
@@ -364,6 +389,7 @@ impl TableReader {
             return Ok(false);
         }
         let next = ordinal + 1;
+        self.check_ordinal(next)?;
         let (block, hour) = (next / BLOCK, (next % BLOCK) as u16);
         if self.absent {
             self.stand_absent(next);
@@ -409,6 +435,7 @@ impl TableReader {
     }
 
     pub fn go_to(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
+        self.check_ordinal(ordinal)?;
         match self.ordinal {
             Some(at) if at == ordinal => {
                 self.changes.clear();
@@ -464,6 +491,7 @@ impl TableReader {
         }
         let Some(ordinal) = self.ordinal else { return Err(invalid("A table reader reads a stretch before its first seek")) };
         let next = ordinal + 1;
+        self.check_ordinal(next)?;
         if to < next || to >= self.ordinals || to / BLOCK != next / BLOCK {
             return Err(invalid(format!("A stretch to ordinal {to} after {ordinal} crosses a block or the run")));
         }

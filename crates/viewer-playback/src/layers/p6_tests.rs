@@ -12,7 +12,7 @@ use replay_columnar::{
     unit::{BLOCK, BlockPage, Encoder, PartSink, Settings as Writing, reader::Extents},
 };
 use replay_data::rows::TableId;
-use viewer_foundation::map::camera::{MapDefines, MapSize};
+use viewer_gpu::camera::{MapDefines, MapSize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -238,7 +238,7 @@ fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store) -> 
     tables.extend(empty);
     let extra: Vec<TableId> = extra.iter().copied().filter(|table| !tables.contains(table)).collect();
     tables.extend(extra);
-    assert!(viewer_foundation::map::perspective::VISION_TABLES.iter().all(|table| tables.contains(table)));
+    assert!(viewer_foundation::perspective::VISION_TABLES.iter().all(|table| tables.contains(table)));
     record(44, &tables, |at, store| {
         let write = |store: &mut Store, table: TableId, slot: u32, field: &str, cell: Cell<'_>| store.table(table.index()).unwrap().write(slot, column(table, field), cell).unwrap();
         if at == 0 {
@@ -292,7 +292,7 @@ fn vision_world_and(extra: &[TableId], mut more: impl FnMut(u32, &mut Store) -> 
 }
 
 pub(super) fn vision_content() -> Arc<vision::Content> {
-    use viewer_foundation::map::visibility::{FogContent, Topology, test_defines};
+    use viewer_foundation::visibility::{FogContent, Topology, test_defines};
     let land: BTreeSet<u32> = (1..=6).collect();
     let neighbors = (1..=7u32).map(|id| (id, [id - 1, id + 1].into_iter().filter(|next| (1..=7).contains(next)).collect())).collect();
     Arc::new(vision::Content::new(Ok(FogContent { topology: Topology { land, sea: BTreeSet::from([7]), neighbors }, defines: test_defines() })))
@@ -320,7 +320,7 @@ fn a_moving_division_and_a_province_changing_hands_refold_only_what_they_touch_a
         assert_eq!(Some(notes), fresh.notes(), "the notes stepped equal those composed at hour {hour}");
         let fog = if (20..24).contains(&hour) { "off, the game's fow console switch" } else { "on, so a stack text 0 has no intelligence" };
         assert!(notes.perspective().len() == 1 && notes.perspective()[0].starts_with(&format!("Viewing country text 0: the recording client's stored viewpoint; fog of war {fog}")), "the viewing country's line at hour {hour}: {:?}", notes.perspective());
-        let mut truncated = viewer_foundation::map::tables::Limitations::default();
+        let mut truncated = viewer_foundation::tables::Limitations::default();
         for table in ours.truncated() {
             map_products::note_truncated_perspective(&mut truncated, table);
         }
@@ -495,7 +495,7 @@ fn the_intel_texture_steps_with_the_vision_it_reads_and_equals_itself_composed()
     let ids: Vec<u32> = (0..42 * 6u32).map(|at| at % 42 / 6 + 1).collect();
     let definitions = (1..=7u32).map(|id| (id, ProvinceDefinition { id, rgb: [0; 3], kind: if id == 7 { ProvinceKind::Sea } else { ProvinceKind::Land }, continent: 0 })).collect();
     let map = MapData { width: 42, height: 6, province_ids: ids, definitions, country_colors: Default::default() };
-    let cells = viewer_foundation::map::textures::IntelCells::new(&map).unwrap();
+    let cells = viewer_gpu::textures::IntelCells::new(&map).unwrap();
     let layers: Vec<Box<dyn Layer>> = vec![Box::new(Vision::new(vision_content())), Box::new(Intel::new(Ok(Arc::new(intel::Content::new(cells, 7)))))];
     let mut checked = 0;
     play_all(vision_world(), layers, 40, |hour, _mirrors, layers| {
@@ -519,12 +519,12 @@ impl super::trains::Yard for Asked {
         300.0
     }
 
-    fn plan(&self, _rows: &super::trains::PlanRows<'_>, ours: u32, _curve: &mut dyn FnMut(&[u32]) -> io::Result<viewer_world::map::trains::Curve>, _cache: &mut viewer_world::map::trains::PlanCache) -> io::Result<viewer_world::map::trains::TrainPlan> {
+    fn plan(&self, _rows: &super::trains::PlanRows<'_>, ours: u32, _curve: &mut dyn FnMut(&[u32]) -> io::Result<viewer_rail::trains::Curve>, _cache: &mut viewer_rail::trains::PlanCache) -> io::Result<viewer_rail::trains::TrainPlan> {
         self.0.lock().unwrap().push(ours);
-        Ok(viewer_world::map::trains::TrainPlan::default())
+        Ok(viewer_rail::trains::TrainPlan::default())
     }
 
-    fn curve(&self, _path: &[u32], _network: &viewer_world::map::railways::RailNetwork) -> viewer_world::map::trains::Curve {
+    fn curve(&self, _path: &[u32], _network: &viewer_rail::railways::RailNetwork) -> viewer_rail::trains::Curve {
         None
     }
 }
@@ -552,7 +552,7 @@ fn viewing_world_and(asked: &Arc<Asked>, more: impl FnMut(u32, &mut Store) -> Ve
 #[test]
 fn a_viewing_country_change_reaches_engagements_trains_and_labels_through_vision_as_a_reader_opened_on_it() {
     use super::{Upstream, engagements::Engagements, labels::Labels, trains::Trains};
-    use viewer_foundation::map::perspective::{Choice, Country};
+    use viewer_foundation::perspective::{Choice, Country};
     const HOUR: i32 = 8;
     let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));
     let (entry, layers) = viewing_world(&asked);
@@ -633,7 +633,7 @@ fn a_compose_answers_the_windows_vision_questions_without_its_layers() {
 #[test]
 fn a_new_viewing_country_is_never_handed_over_with_parts_of_the_country_before() {
     use crate::playhead_host::{Head, side::SideThread};
-    use viewer_foundation::map::perspective::{Choice, Country};
+    use viewer_foundation::perspective::{Choice, Country};
     const HOUR: i32 = 8;
     const REFUSED: i32 = 16;
     let asked = Arc::new(Asked(std::sync::Mutex::new(Vec::new())));

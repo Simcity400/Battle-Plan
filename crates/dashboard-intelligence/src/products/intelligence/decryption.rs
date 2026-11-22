@@ -1,12 +1,6 @@
 
 use super::{Content, Country, IDENTITY, Tags, branch, missing};
-use crate::{
-    Source,
-    products::{
-        LoadContext,
-        at_hour::{At, AtHour},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, at_hour::{At, AtHour}}};
 use dashboard_follow::live::Source as Cell;
 use dashboard_query::{Index, Query, timeline::Join};
 use dashboard_text::cryptology;
@@ -477,7 +471,7 @@ pub struct Ciphers {
 
 impl Ciphers {
     pub fn of(source: &Source) -> Self {
-        Self { replay: source.replay(), index: crate::answer::index(source), held: source.state::<Held>() }
+        Self { replay: source.replay(), index: dashboard_base::queries::index(source), held: source.state::<Held>() }
     }
 
     fn history(&self, branch: u64) -> io::Result<Arc<CipherHistory>> {

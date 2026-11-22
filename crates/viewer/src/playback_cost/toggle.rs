@@ -81,9 +81,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
             _ => translated.push(arg.clone()),
         }
     }
-    if !(refresh_hz.is_finite() && refresh_hz > 0.0) {
-        return Err(invalid("--refresh-hz needs a positive rate"));
-    }
+    let refresh_hz = super::refresh_rate(refresh_hz)?;
     if wanted[0] == wanted[1] {
         return Err(invalid("--mod-a and --mod-b name the same set: a toggle changes nothing"));
     }
@@ -114,7 +112,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
-    let mut config = dashboard::Config::load()?;
+    let mut config = dashboard_core::config::Config::load()?;
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }

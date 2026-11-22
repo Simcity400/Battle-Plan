@@ -15,14 +15,13 @@ use std::{
     },
     time::Instant,
 };
-use viewer_world::map::{
+use viewer_borders::{
     borders::{BorderClass, BorderMeshes},
-    map_mode::MapMode,
     border_pass::ClassPlan,
     demilitarized::{Zone, ZonePlan},
-    gradient::Attributes,
-    political::{Regions, UNAVAILABLE_COLOR},
 };
+use viewer_map_modes::{map_mode::MapMode, political::UNAVAILABLE_COLOR};
+use map_display_data::landscape::{Attributes, Regions};
 
 const NONE: u32 = u32::MAX;
 pub const LEFT_OUT: u8 = u8::MAX;
@@ -1382,7 +1381,7 @@ impl Layer for Political {
             (self.undated_from, self.voided_from) = (None, None);
             return Ok(());
         }
-        let digest = viewer_foundation::map::hour_check::on().then(|| digest(&self.country_of, &self.colours));
+        let digest = viewer_runtime::hour_check::on().then(|| digest(&self.country_of, &self.colours));
         let plans = (std::mem::take(&mut self.prepared_plans) || self.fill_changed || self.asks_whole.load(Ordering::Acquire))
             .then(|| self.classes.clone().zip(self.zone_plan.clone()))
             .flatten();
@@ -1625,7 +1624,7 @@ impl Installer {
     }
 
     fn judge_hour(&self, written: Option<(Hour, u64)>, through: Option<Hour>) {
-        use viewer_foundation::map::hour_check as check;
+        use viewer_runtime::hour_check as check;
         check::judged();
         if let Some((hour, settled)) = written {
             let shown = digest(&self.keys_of, &self.colours);
@@ -1765,7 +1764,7 @@ impl Installs for Installer {
             writes: self.uploads,
             phases,
         };
-        if viewer_foundation::map::hour_check::on() {
+        if viewer_runtime::hour_check::on() {
             self.judge_hour(digest_of, through);
         }
         Ok(())

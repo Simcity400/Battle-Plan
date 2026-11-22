@@ -18,16 +18,14 @@ use std::{
     },
 };
 use viewer_counters::map::counters::{CounterContent, Gun, GunFields, GunGround, GunJoins, GunPlaced, GunRoute, LayeredGuns, gun_member, gun_name, type_tint};
+use viewer_gpu::camera::Pose;
 use viewer_foundation::{
-    map::{
-        camera::Pose,
-        mode_visibility::UnitKinds,
-        perspective::{Choice, Vision},
-        railway_gun_counter::{GunOperands, RailStatus},
-    },
+    mode_visibility::UnitKinds,
+    perspective::{Choice, Vision},
     movement_timing::MovementContent,
-    table_access::{TokenError, TokenKeys},
 };
+use viewer_unit_reads::railway_gun_counter::{GunOperands, RailStatus};
+use dashboard_text::table_access::{TokenError, TokenKeys};
 
 pub type Hostility = BTreeMap<u64, Result<bool, &'static str>>;
 
@@ -672,7 +670,7 @@ impl Layer for GunCounters {
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        let shown = viewer_world::map::map_mode::visibility::of(&view.map_mode);
+        let shown = viewer_map_modes::map_mode::visibility::of(&view.map_mode);
         let high = view.camera.is_some_and(|camera| matches!(camera.pose, Pose::Map) && camera.height >= self.content.icons_cutoff());
         if !shown.unit_counters || shown.unit_kinds != UnitKinds::All || !view.overlay.counters.railway_guns || high {
             self.hidden = true;

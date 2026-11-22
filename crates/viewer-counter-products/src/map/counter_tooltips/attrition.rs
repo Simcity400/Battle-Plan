@@ -2,13 +2,13 @@
 use super::*;
 use replay_derive::modifier_registry::Registry;
 use std::collections::BTreeMap;
-use viewer_foundation::map::counter_attrition::{Content, Terrain};
+use viewer_unit_reads::counter_attrition::{Content, Terrain};
 use viewer_foundation::movement_timing::HourTerms;
 use viewer_foundation::tooltip_text::ensure_newlines;
 
-use viewer_foundation::map::counter_inputs::SCALE as ONE;
+use viewer_unit_reads::counter_inputs::SCALE as ONE;
 
-use viewer_foundation::map::division_panel as panel;
+use viewer_foundation::division_panel as panel;
 
 struct Lookups<'b> {
     content: &'b Content,

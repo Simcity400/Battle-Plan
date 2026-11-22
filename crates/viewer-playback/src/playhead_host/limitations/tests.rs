@@ -180,16 +180,16 @@ fn the_lists_are_compared_by_their_lines_text_each_sides_extra_lines_named_and_t
 
 struct Unread;
 
-impl viewer_foundation::map::tables::Statuses for Unread {
-    fn seen(&self, _table: TableId) -> viewer_foundation::map::tables::Seen {
-        viewer_foundation::map::tables::Seen::Unavailable("unread".into())
+impl viewer_foundation::tables::Statuses for Unread {
+    fn seen(&self, _table: TableId) -> viewer_foundation::tables::Seen {
+        viewer_foundation::tables::Seen::Unavailable("unread".into())
     }
 }
 
 #[test]
 fn every_wording_todays_limitation_maker_can_give_has_an_owner() {
     use super::Owner;
-    use viewer_foundation::map::{
+    use viewer_foundation::{
         perspective::Resolution,
         tables::{DISPLAY_NOT_RECORDED, Limitations, Perspective, RowFacts, table_limitations},
     };
@@ -215,7 +215,7 @@ fn every_wording_todays_limitation_maker_can_give_has_an_owner() {
     map_products::note_truncated_perspective(&mut out, "UnitIntel");
     map_products::note_truncated_perspective(&mut out, "CountryIntel");
     map_products::note_unreadable_names(&mut out, &[1]);
-    viewer_world::map::labels::note_withheld(&mut out, [(1, viewer_world::map::labels::NO_VICTORY_POINTS)]);
+    viewer_map_icons::labels::note_withheld(&mut out, [(1, viewer_map_icons::labels::NO_VICTORY_POINTS)]);
     lines.extend(out.into_lines());
     let by_status = super::status_notes(&Unread);
     let unowned: Vec<&String> = lines.iter().filter(|line| super::owner(line, &by_status).is_none()).collect();

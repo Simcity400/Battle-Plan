@@ -31,12 +31,9 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{perspective, tables};
-use viewer_world::map::{
-    border_pass::{ClassPlan, land_class},
-    demilitarized::{Zone, ZonePlan},
-    map_mode::MapMode,
-};
+use viewer_foundation::{perspective, tables};
+use viewer_borders::{border_pass::{ClassPlan, land_class}, demilitarized::{Zone, ZonePlan}};
+use viewer_map_modes::map_mode::MapMode;
 
 mod intel_icons;
 mod p6;
@@ -219,7 +216,7 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
     }
     fs::create_dir(&options.out)?;
     let out = fs::canonicalize(&options.out)?;
-    let config = dashboard::Config::load()?;
+    let config = dashboard_core::config::Config::load()?;
     let mut resolve = config.resolve_options()?;
     resolve.cache_dir = out.join("cache/content");
     fs::create_dir_all(&resolve.cache_dir)?;
@@ -251,12 +248,12 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         if options.view.viewport == [0, 0] {
             options.view.viewport = [2048, 1152];
         }
-        let (size, defines) = (viewer_foundation::map::camera::MapSize::of(&document.content.map), document.content.map_defines);
+        let (size, defines) = (viewer_gpu::camera::MapSize::of(&document.content.map), document.content.map_defines);
         let camera = match spec.as_str() {
-            "fit" => viewer_foundation::map::camera::Camera::fit(size, defines, options.view.viewport),
+            "fit" => viewer_gpu::camera::Camera::fit(size, defines, options.view.viewport),
             placed => crate::parse_placement(placed)?.on(size, defines),
         };
-        let placement = viewer_foundation::map::camera::Placement { center: camera.center, height: camera.height, pose: camera.pose };
+        let placement = viewer_gpu::camera::Placement { center: camera.center, height: camera.height, pose: camera.pose };
         (options.view.camera, options.view.camera_height) = (Some(placement), camera.height);
     }
     let options = options;
@@ -1054,7 +1051,7 @@ fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> 
     match layer.plan() {
         None => note(format!("the layer has no plan: {:?}", layer.refused())),
         Some((_, plan)) => {
-            let parts = |field: &viewer_foundation::map::ribbon_content::OrderField| {
+            let parts = |field: &viewer_gpu::ribbon_content::OrderField| {
                 [
                     ("vertices", format!("{:?}", field.vertices)),
                     ("native vertices", format!("{:?}", field.native_vertices)),
@@ -1097,7 +1094,7 @@ fn units_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    use viewer_world::map::unit_history::Kind;
+    use viewer_unit_history::unit_history::Kind;
     let layer = units(layer);
     let mut compared = Compared::default();
     if !layer.drawn() {
@@ -1154,7 +1151,7 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
         compared.entries += 1;
         match figure.map(|figure| &figure.placed) {
             Some(Some(Ok((ours, _)))) => {
-                let ours = viewer_world::map::unit_history::Target { mesh: target.mesh, ..*ours };
+                let ours = viewer_unit_history::unit_history::Target { mesh: target.mesh, ..*ours };
                 if ours != *target {
                     note(&mut compared, format!("stack of {}: today {target:?}, the layer {ours:?}", target.identity));
                 }
@@ -1175,8 +1172,8 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     }
     compared.notes = json!({
         "stacks": report.stacks, "land_targets": today.len(), "placed_not_selected": extra, "today_selection_omissions": omitted,
-        "withheld_status": withheld(Withheld::Status), "withheld_unanchored": withheld(Withheld::Unplaced(viewer_world::map::unit_models::Unplaced::Unanchored)),
-        "withheld_exercise": withheld(Withheld::Unplaced(viewer_world::map::unit_models::Unplaced::Exercise)),
+        "withheld_status": withheld(Withheld::Status), "withheld_unanchored": withheld(Withheld::Unplaced(viewer_unit_models::unit_models::Unplaced::Unanchored)),
+        "withheld_exercise": withheld(Withheld::Unplaced(viewer_unit_models::unit_models::Unplaced::Exercise)),
         "today_unanchored": report.unanchored, "today_errors": report.selection_errors, "today_moving": report.moving, "today_transports": report.transports,
         "admitted": layer.admitted(), "outside_compared": outside, "deferred": layer.deferred(), "front": layer.front(256.0), "units_cutoff": layer.cutoff(),
         "left_out": {"ships": field.targets.len() - today.len(), "raid_units": "P9", "convoys": "trade routes"},
@@ -1273,7 +1270,7 @@ mod sounds_line {
     }
 
     pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-        let fog = document.hour()?.fog_products(&viewer_foundation::map::perspective::Choice::default(), &map_products::FogMemos::new(), &mut viewer_foundation::profiling::BuilderSpans::new(false), true)?;
+        let fog = document.hour()?.fog_products(&viewer_foundation::perspective::Choice::default(), &map_products::FogMemos::new(), &mut viewer_runtime::profiling::BuilderSpans::new(false), true)?;
         let (today, ours) = (fog.battles.as_deref(), of(layer).battles());
         let (differing, first) = differ_battles(ours.map(Arc::as_ref), today);
         let battles = today.map_or(0, |battles| battles.battles.len());
@@ -1362,10 +1359,8 @@ mod engagements_line {
     use crate::layers::engagements::{Engagements, Index};
     use serde_json::json;
     use std::{collections::BTreeMap, io, sync::{Arc, Mutex}};
-    use viewer_foundation::{
-        engagement_history::CombatFlags,
-        map::{tables::core, visibility::Relations},
-    };
+    use viewer_engagements::engagement_history::CombatFlags;
+    use viewer_foundation::{tables::core, visibility::Relations};
 
     pub(super) static FOLDED: Mutex<Option<(Folded, u32)>> = Mutex::new(None);
 
@@ -1403,7 +1398,7 @@ mod engagements_line {
             compared.differing += 1;
             compared.first.get_or_insert(format!("provenance {provenance:?} against today's {:?}", [today.land_provenance, today.naval_provenance]));
         }
-        compared.notes = json!({"land": today.land.len(), "naval": today.naval.len(), "engaged": today.land.values().chain(today.naval.values()).filter(|flag| **flag == viewer_foundation::engaged::Engaged::Yes).count()});
+        compared.notes = json!({"land": today.land.len(), "naval": today.naval.len(), "engaged": today.land.values().chain(today.naval.values()).filter(|flag| **flag == viewer_engagements::engaged::Engaged::Yes).count()});
         Ok(compared)
     }
 

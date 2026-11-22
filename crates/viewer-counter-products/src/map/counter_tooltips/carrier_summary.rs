@@ -6,15 +6,15 @@ use replay_data::{
 };
 use std::collections::BTreeMap;
 #[cfg(test)]
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 #[cfg(test)]
-use viewer_foundation::map::perspective::Country;
+use viewer_foundation::perspective::Country;
 #[cfg(test)]
-use viewer_foundation::map::perspective::Vision;
+use viewer_foundation::perspective::Vision;
 #[cfg(test)]
-use viewer_foundation::map::visibility::Defines;
+use viewer_foundation::visibility::Defines;
 #[cfg(test)]
-use viewer_foundation::map::visibility::FogContent;
+use viewer_foundation::visibility::FogContent;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 use viewer_foundation::tooltip_text::displayable_flags;
@@ -821,7 +821,7 @@ fn state_levels(
         .frame
         .complete::<tables::StateBuildings>()
         .map_err(|e| e.to_string())?;
-    let tokens = viewer_foundation::table_access::TokenNames::new(context.frame)
+    let tokens = dashboard_text::table_access::TokenNames::new(context.frame)
         .map_err(|e| e.to_string())?;
     let mut level = 0_i32;
     let mut damaged = 0_i32;
@@ -1222,7 +1222,7 @@ mod tests {
     use super::*;
     use replay_data::rows::*;
     use replay_frame::frame::DecodedFrame;
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     const BASE: u64 = 40;
     const SHIP: u64 = (100_u64 << 32) | 0x33;
@@ -1914,8 +1914,8 @@ mod tests {
         with_context(&frame, false, true, None, |context| {
             let sea = super::super::task_force_children::specific(
                 context,
-                &viewer_foundation::map::counter_hovers::task_force::Hover {
-                    control: viewer_foundation::map::counter_hovers::task_force::Control::Carrier,
+                &viewer_native_gui::counter_hovers::task_force::Hover {
+                    control: viewer_native_gui::counter_hovers::task_force::Control::Carrier,
                     unit_hit: 0,
                     rect: [0.; 4],
                     hit: None,
@@ -1930,16 +1930,16 @@ mod tests {
             .unwrap();
             let port = super::super::task_force_port::build(
                 context,
-                &viewer_foundation::map::counter_hovers::task_force_port::Hover {
+                &viewer_native_gui::counter_hovers::task_force_port::Hover {
                     control:
-                        viewer_foundation::map::counter_hovers::task_force_port::Control::Carrier,
+                        viewer_native_gui::counter_hovers::task_force_port::Control::Carrier,
                     unit_hit: 0,
                     rect: [0.; 4],
                     hit: None,
                     authored: None,
                     supported: true,
                     members: vec![7].into(),
-                    metadata: viewer_foundation::map::counter_hovers::task_force_port::Metadata {
+                    metadata: viewer_native_gui::counter_hovers::task_force_port::Metadata {
                         country: 1,
                         visibility: 255,
                         enemy: Ok(false),

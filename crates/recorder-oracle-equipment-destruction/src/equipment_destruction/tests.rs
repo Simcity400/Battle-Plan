@@ -151,6 +151,23 @@ fn invalid_owners_designs_amounts_and_unavailable_intervals_refuse() {
                 .contains(reason)
         );
     }
+    let partial_marker = EquipmentDestructionRow {
+        coverage: EquipmentDestructionCoverage::PartialInterval.into(),
+        unavailable_reason: "reworded startup interval".to_owned().into(),
+        ..Default::default()
+    };
+    *frame.tables[TableId::EquipmentDestruction.index()] =
+        TableView::Complete(TableRows::EquipmentDestruction(vec![partial_marker.clone()]));
+    assert!(
+        compare(&frame, &mut Report::default())
+            .unwrap_err()
+            .to_string()
+            .contains("reworded startup interval")
+    );
+    *frame.tables[TableId::EquipmentDestruction.index()] = TableView::Complete(
+        TableRows::EquipmentDestruction(vec![partial_marker, amount(EquipmentDestructionCause::Attrition)]),
+    );
+    assert!(compare(&frame, &mut Report::default()).is_err());
 }
 
 #[test]

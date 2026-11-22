@@ -12,4 +12,4 @@ Resistance and compliance match controlled states, including occupied ones, to r
 
 Terrain is content-static and maps each province to its own region. Land uses its definition category. Sea and lakes can use their strategic region's naval category or the ocean fallback. A missing or refused prerequisite withholds the affected region by reason. The terrain pass keeps its distinct land and water alpha and channel constants.
 
-[Mode contracts](../../crates/viewer-world/src/map/map_mode.rs) · [State fold](../../crates/viewer-world/src/map/map_mode/state_fold.rs) · [Strategic colours](../../crates/viewer-world/src/map/map_mode/strategic.rs) · [Terrain](../../crates/viewer-world/src/map/map_mode/terrain.rs) · [Visibility](../../crates/viewer-world/src/map/map_mode/visibility.rs)
+[Mode contracts](../../crates/viewer-map-modes/src/map_mode.rs) · [State fold](../../crates/viewer-map-modes/src/map_mode/state_fold.rs) · [Strategic colours](../../crates/viewer-map-modes/src/map_mode/strategic.rs) · [Terrain](../../crates/viewer-map-modes/src/map_mode/terrain.rs) · [Visibility](../../crates/viewer-map-modes/src/map_mode/visibility.rs)

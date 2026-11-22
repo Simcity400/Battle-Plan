@@ -34,7 +34,7 @@ struct Ready {
     combat: Option<viewer_combat::ReadKey>,
 }
 
-type Placed = (viewer_foundation::map::camera::Camera, Option<f32>, [u32; 2], f32, crate::map_views::CounterView);
+type Placed = (viewer_gpu::camera::Camera, Option<f32>, [u32; 2], f32, crate::map_views::CounterView);
 
 impl Ready {
     fn of(hour: Hour, ask: &Ask) -> Self {
@@ -118,7 +118,7 @@ impl SideThread {
         let thread = std::thread::Builder::new().name(THREAD.into()).spawn({
             let shared = Arc::clone(&shared);
             move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
                 if tables.is_some() {
                     engine_executable::executable_tables::enter(tables);
                 }
@@ -162,10 +162,10 @@ impl SideThread {
             if let Err(error) = installs.install(gpu, through, composed) {
                 self.install_failure = Some(format!("The map's layer {} stopped at an install: {error}", installs.name()));
             }
-            if viewer_foundation::map::publication_check::on() {
-                viewer_foundation::map::publication_check::judged();
+            if viewer_runtime::publication_check::on() {
+                viewer_runtime::publication_check::judged();
                 if installs.owes() {
-                    viewer_foundation::map::publication_check::found(installs.name(), "a change set whose hour this frame had reached was left unwritten");
+                    viewer_runtime::publication_check::found(installs.name(), "a change set whose hour this frame had reached was left unwritten");
                 }
             }
         }
@@ -193,7 +193,7 @@ impl SideThread {
             Ok(turn) => turn,
             Err(TryLockError::Poisoned(held)) => held.into_inner(),
             Err(TryLockError::WouldBlock) => {
-                viewer_foundation::view_record::add("layers", "frames_without_the_side", 1);
+                viewer_runtime::view_record::add("layers", "frames_without_the_side", 1);
                 self.products.missed = Some(self.doing.name());
                 return None;
             }
@@ -316,7 +316,7 @@ impl SideThread {
         self.products.applied
     }
 
-    pub fn mode_on_screen(&self) -> Option<&viewer_world::map::map_mode::MapMode> {
+    pub fn mode_on_screen(&self) -> Option<&viewer_map_modes::map_mode::MapMode> {
         self.products.mode.as_ref()
     }
 
@@ -449,7 +449,7 @@ impl Drop for Window<'_> {
 }
 
 fn advance(shared: &Shared) {
-    use viewer_foundation::map::simulation_rate as rate;
+    use viewer_runtime::simulation_rate as rate;
     let (mut pace, mut reach) = (rate::Pace::new(Instant::now()), rate::Reach::default());
     let mut waited = Waited::default();
     let mut turn = lock(&shared.held);
@@ -561,8 +561,8 @@ pub struct LayIns {
     pub labels: Option<(Arc<map_display_data::landscape::Labels>, u32)>,
     pub intel: Option<Arc<viewer_raids::map::intel_icons::IntelIcons>>,
     pub raids: Option<Arc<viewer_raids::map::raids::RaidIcons>>,
-    resources: Option<(viewer_world::map::resource_icons::HourIcons, u64)>,
-    occupation: Option<(viewer_world::map::occupation_icons::Marks, u64)>,
+    resources: Option<(viewer_map_icons::resource_icons::HourIcons, u64)>,
+    occupation: Option<(viewer_map_icons::occupation_icons::Marks, u64)>,
 }
 
 impl LayIns {
@@ -581,8 +581,8 @@ impl LayIns {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_icons(
-        resources: Option<(viewer_world::map::resource_icons::HourIcons, u64)>,
-        occupation: Option<(viewer_world::map::occupation_icons::Marks, u64)>,
+        resources: Option<(viewer_map_icons::resource_icons::HourIcons, u64)>,
+        occupation: Option<(viewer_map_icons::occupation_icons::Marks, u64)>,
     ) -> Self {
         Self {
             resources,
@@ -600,7 +600,7 @@ impl LayIns {
         }
     }
 
-    pub fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &impl crate::document::IconHost, camera: viewer_foundation::map::camera::Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
+    pub fn lay(&self, prepared: &mut crate::document::PreparedOverlay, hour: &impl crate::document::IconHost, camera: viewer_gpu::camera::Camera, pixels: [u32; 2], ui_scale: f32, ours: u32) -> bool {
         let view = prepared.counter_view().clone();
         self.lay_icons(&mut prepared.laid_icons, &view, hour, camera, pixels, ui_scale, ours)
     }
@@ -611,7 +611,7 @@ impl LayIns {
         laid_icons: &mut crate::document::LaidIcons,
         view: &crate::map_views::CounterView,
         hour: &impl crate::document::IconHost,
-        camera: viewer_foundation::map::camera::Camera,
+        camera: viewer_gpu::camera::Camera,
         pixels: [u32; 2],
         ui_scale: f32,
         ours: u32,
@@ -652,24 +652,24 @@ pub struct Products {
     pub view: View,
     pub composing: bool,
     pub applied: Option<Hour>,
-    pub mode: Option<viewer_world::map::map_mode::MapMode>,
+    pub mode: Option<viewer_map_modes::map_mode::MapMode>,
     pub frame: Frame,
     pub branch: Option<replay_data::BranchId>,
     pub battles: Option<Option<Arc<viewer_audio::battle::Battles>>>,
-    pub radar: Option<Arc<viewer_world::map::radar_symbols::Field>>,
-    pub plan: Option<(Hour, Arc<viewer_foundation::map::ribbon_content::OrderField>)>,
-    pub routes: Option<(u64, Arc<viewer_world::map::trade_routes::TradeRoutes>)>,
+    pub radar: Option<Arc<viewer_aircraft::radar_symbols::Field>>,
+    pub plan: Option<(Hour, Arc<viewer_gpu::ribbon_content::OrderField>)>,
+    pub routes: Option<(u64, Arc<viewer_unit_models::trade_routes::TradeRoutes>)>,
     pub labels: Option<crate::layers::labels::Stamped>,
     pub left: crate::document::LeftToLayers,
-    pub placements: Option<Arc<viewer_foundation::map::name_draw::Placements>>,
+    pub placements: Option<Arc<viewer_runtime::name_draw::Placements>>,
     pub counters: viewer_counters::map::counters::Layered,
     pub counter_kinds: viewer_counters::map::counters::Kinds,
-    pub units: Option<Arc<viewer_world::map::unit_models::PreparedModels>>,
-    pub movement: Vec<(viewer_foundation::unit_handle::Unit, viewer_foundation::map::counter_move::Position, f32, f32)>,
+    pub units: Option<Arc<viewer_unit_models::unit_models::PreparedModels>>,
+    pub movement: Vec<(viewer_runtime::unit_handle::Unit, viewer_unit_reads::counter_move::Position, f32, f32)>,
     movement_of: Option<u64>,
     pub pick_divisions: std::collections::HashMap<u32, Vec<crate::layers::units::PickDivision>>,
     pub ours: Option<u32>,
-    pub engaged: Option<Arc<viewer_foundation::engagement_history::History>>,
+    pub engaged: Option<Arc<viewer_engagements::engagement_history::History>>,
     pub highlight: Option<(u64, crate::highlight::Over<Arc<crate::highlight::Picture>>)>,
     pub highlight_hour: Option<Hour>,
     pictures: std::collections::VecDeque<(Hour, u64, Arc<crate::highlight::Picture>)>,
@@ -683,7 +683,7 @@ pub struct Products {
     pub overlay_hour: Option<Hour>,
     pub overlay_loading: Vec<String>,
     pub overlay_missed: Vec<replay_data::rows::TableId>,
-    pub vision: Result<Arc<viewer_foundation::map::perspective::Vision>, String>,
+    pub vision: Result<Arc<viewer_foundation::perspective::Vision>, String>,
     pub combat_loading: Vec<String>,
     pub combat_whole: Option<Result<(), String>>,
 }

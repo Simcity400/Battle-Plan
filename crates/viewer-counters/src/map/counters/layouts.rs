@@ -1,8 +1,8 @@
 
 use super::*;
-use viewer_foundation::map::native_gui;
+use viewer_native_gui::native_gui;
 #[cfg(test)]
-use viewer_foundation::map::native_windows::NativeWindows;
+use viewer_native_gui::native_windows::NativeWindows;
 
 pub(super) fn window<'a>(guis: &'a native::Guis, name: &str) -> io::Result<&'a native::Element> {
     guis.template(name)

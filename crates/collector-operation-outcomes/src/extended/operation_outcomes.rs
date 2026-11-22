@@ -28,7 +28,10 @@ impl Capacities {
     pub fn raise_for_descriptions(&mut self, bytes: usize) {
         grow_capacity(&mut self.bytes, bytes);
     }
-    pub fn prepare(&self) {
+    /// # Safety
+    /// Only the serial sizing owner may resize or retire operation logs. Keep the active log
+    /// storage live throughout and exclude detach and conflicting presizers.
+    pub unsafe fn prepare(&self) {
         hooks::presize(self.entries, self.bytes);
     }
 }
@@ -52,12 +55,16 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
-    pub fn grow(&mut self, capacity: &mut Capacities) {
+    /// # Safety
+    /// Only the serial sizing owner may resize or retire operation logs. Keep the active log
+    /// storage live throughout and exclude detach and conflicting presizers.
+    pub unsafe fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(
             &mut capacity.entries,
             self.drained_pending.load(Ordering::Relaxed),
         );
-        capacity.prepare();
+        // SAFETY: The caller owns this live capacity pass and excludes observer teardown.
+        unsafe { capacity.prepare() };
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [Outcome::Unavailable { reason: ASSEMBLED }]
@@ -108,19 +115,31 @@ impl Publication {
         self.cursors.capacity() * size_of::<hooks::LaneCursor>()
     }
 
-    pub fn admitted(&self) {
+    /// # Safety
+    /// Acknowledge only actual admission of this publication by its originating session, while its
+    /// referenced observer log remains live.
+    pub unsafe fn admitted(&self) {
         self.handoff.admitted(&self.cursors);
     }
-    pub fn commit(self) {
+    /// # Safety
+    /// Acknowledge only a confirmed writer receipt for this publication, before the originating
+    /// session releases its observer log.
+    pub unsafe fn commit(self) {
         self.handoff.commit(&self.cursors);
     }
 }
 
-pub fn reset_admitted() {
+/// # Safety
+/// Only the session's spool may reset its frontier after invalidating its pending writes and before
+/// the observer log is released.
+pub unsafe fn reset_admitted() {
     hooks::reset_admitted();
 }
 impl Ledger {
-    pub fn assemble_owned(
+    /// # Safety
+    /// Only the originating spool may assemble its captured interval. Keep the corresponding log
+    /// live until its publication is committed or discarded.
+    pub unsafe fn assemble_owned(
         &mut self,
         captured: &Captured,
         tables: &mut [TableInput],

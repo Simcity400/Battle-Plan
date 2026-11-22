@@ -3,7 +3,7 @@ use super::{Compared, Document, Layer, Mirrors};
 use crate::layers::mode_fills::{Fill, ModeFills, Paint};
 use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Duration};
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 
 const WAIT: Duration = Duration::from_secs(30);
 

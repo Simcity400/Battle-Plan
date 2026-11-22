@@ -19,10 +19,21 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::resource_origins::{
-    self, Definition, Folds, INFRASTRUCTURE_TOKEN, Input, Origin, ResourceOperands, Values, building_grants_from, grant_lists, grant_of, resource_operands,
+use viewer_runtime::resource_origins::{
+    self,
+    Definition,
+    Folds,
+    INFRASTRUCTURE_TOKEN,
+    Input,
+    Origin,
+    ResourceOperands,
+    Values,
+    building_grants_from,
+    grant_lists,
+    grant_of,
+    resource_operands,
 };
-use viewer_world::map::resource_icons::{HourIcons, Laid, laid_icon};
+use viewer_map_icons::resource_icons::{HourIcons, Laid, laid_icon};
 
 const WHOLE: [TableId; 13] = [
     TableId::CountryLinks,
@@ -602,7 +613,7 @@ impl Layer for ResourceIcons {
     }
 
     fn inputs(&mut self, view: &View, inputs: &mut Inputs<'_>) -> io::Result<()> {
-        let hidden = if !viewer_world::map::map_mode::visibility::of(&view.map_mode).resource_icons {
+        let hidden = if !viewer_map_modes::map_mode::visibility::of(&view.map_mode).resource_icons {
             Some(NOT_DRAWN)
         } else if self.content.origins().is_none() {
             Some(NO_ORIGINS)

@@ -1,4 +1,5 @@
-use crate::{map::tables::rows, table_access::TokenKeys};
+use crate::tables::rows;
+use dashboard_text::table_access::TokenKeys;
 use content_reader_core::{
     movement::MovementDefines, movement::MovementMap, movement::RailMovementDefines,
     terrain::TerrainDefinitions,

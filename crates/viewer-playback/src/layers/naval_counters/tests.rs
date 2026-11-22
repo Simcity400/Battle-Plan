@@ -8,14 +8,10 @@ use playhead::Settings;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, ShipCounterInputs, TableId};
 use viewer_counters::map::counters::{NavalMember, Port, Sea, type_tint};
-use viewer_foundation::map::{
-    camera::Placement,
-    counter_move::{Position, UnitRoute},
-    perspective::{Choice, Country, Vision},
-    task_force_visual,
-    unit_rules::SHIP_IN_PORT,
-};
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_gpu::camera::Placement;
+use viewer_unit_reads::{counter_move::{Position, UnitRoute}, task_force_visual};
+use viewer_foundation::{perspective::{Choice, Country, Vision}, unit_rules::SHIP_IN_PORT};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 struct Shore {
     land: HashSet<u32>,

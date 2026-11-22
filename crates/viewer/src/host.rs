@@ -3,7 +3,7 @@ pub(crate) mod driver;
 mod window;
 
 use crate::{Options, app, embedded};
-use dashboard::protocol::{NativeCommand, NativeEvent};
+use dashboard_core::protocol::{NativeCommand, NativeEvent};
 use eframe::wgpu;
 use job_priority::SpawnCarried as _;
 use std::{
@@ -199,9 +199,9 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
     if !options.window_dump || options.out.is_none() || options.replay.is_none() {
         return Err(io::Error::other("--window-dump needs a recording and --out"));
     }
-    let (mut config, config_error) = match dashboard::Config::load() {
+    let (mut config, config_error) = match dashboard_core::config::Config::load() {
         Ok(config) => (config, None),
-        Err(error) => (dashboard::Config::default(), Some(error.to_string())),
+        Err(error) => (dashboard_core::config::Config::default(), Some(error.to_string())),
     };
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
@@ -213,7 +213,7 @@ pub fn window_dump(args: impl Iterator<Item = OsString>) -> io::Result<()> {
 }
 
 pub(crate) fn dump_window(
-    config: dashboard::Config,
+    config: dashboard_core::config::Config,
     options: Options,
     config_error: Option<String>,
 ) -> io::Result<()> {
@@ -227,7 +227,7 @@ pub(crate) fn dump_window(
     spawn(
         "map (window dump)",
         move |lost| {
-            viewer_foundation::worker_priority::frame_priority();
+            viewer_runtime::worker_priority::frame_priority();
             let failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let reported = Arc::clone(&failure);
             driver::run(&drawn, inputs, lost, move |ctx, state| {
@@ -262,7 +262,7 @@ pub(crate) fn paced_window(
     spawn(
         "map (harness)",
         move |_lost| {
-            viewer_foundation::worker_priority::frame_priority();
+            viewer_runtime::worker_priority::frame_priority();
             job(&drawn, inputs).map_err(|error| error.to_string())
         },
         move |result| {
@@ -291,8 +291,8 @@ fn embedded_map(
         );
     }
     crate::perf_log::enter(role.name());
-    viewer_foundation::worker_priority::frame_priority();
-    let mut config = dashboard::Config::default();
+    viewer_runtime::worker_priority::frame_priority();
+    let mut config = dashboard_core::config::Config::default();
     if let Some(path) = &options.game_dir {
         config.game_dir = path.clone();
     }
@@ -347,19 +347,19 @@ mod tests {
 
     #[test]
     fn a_map_started_after_another_ended_builds_on_a_device_of_its_own() {
-        let _gpu = viewer_foundation::map::test_support::serial();
+        let _gpu = viewer_gpu::test_support::serial();
         let (first, _) = driver::map_device(None).unwrap_or_else(|reason| {
             panic!(
                 "a_map_started_after_another_ended_builds_on_a_device_of_its_own requires a usable GPU or WARP adapter: {reason}"
             )
         });
         let kept = first.device.clone();
-        let made = viewer_foundation::map::device_shared::shared(&first.device, "restart probe", || 1_u32);
+        let made = viewer_runtime::device_shared::shared(&first.device, "restart probe", || 1_u32);
         drop(first);
         let (second, _) = driver::map_device(None).unwrap();
         assert!(kept != second.device, "the second map's device compares equal to the first's");
         let mut built = false;
-        let again = viewer_foundation::map::device_shared::shared(&second.device, "restart probe", || {
+        let again = viewer_runtime::device_shared::shared(&second.device, "restart probe", || {
             built = true;
             2_u32
         });
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn a_destroyed_device_is_seen_as_lost_and_its_later_errors_do_not_panic() {
-        let _gpu = viewer_foundation::map::test_support::serial();
+        let _gpu = viewer_gpu::test_support::serial();
         let instance = shader_pipeline::gpu::instance();
         let adapter = pollster::block_on(async {
             match instance

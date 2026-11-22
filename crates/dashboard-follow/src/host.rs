@@ -33,8 +33,10 @@ const FRAME: Duration = Duration::from_micros(16_667);
 pub fn held_tables(pages: &dyn Pages, tables: usize) -> Vec<bool> {
     (0..tables)
         .map(|table| {
+            let unwithheld = pages.kinds(table).is_some_and(|kinds| !kinds.is_empty())
+                && pages.runs().iter().enumerate().any(|(run, held)| pages.withheld_at(run, table, held.last_hour()).is_none());
             let restored = pages.runs().iter().all(|run| run.pages.iter().filter_map(|page| page.tables.get(table)).any(|entry| entry.first.is_some() || entry.restore.is_some()));
-            restored && pages.runs().iter().any(|run| recorded(run, table))
+            unwithheld && restored && pages.runs().iter().any(|run| recorded(run, table))
         })
         .collect()
 }
@@ -259,10 +261,11 @@ impl StepProduct {
                     Ok(id) => {
                         out.insert("follow".into(), id.into());
                         let exact = || out.get("values").and_then(Value::as_array).is_some_and(|values| values.iter().all(|value| value.as_i64().is_none_or(|n| n.unsigned_abs() < 1 << 53)));
-                        if (new || seed) && fresh && exact() { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); }
+                        if (new || seed) && fresh && exact() { out.insert("seedHour".into(), hour.into()); } else { out.remove("values"); out.remove("rawValues"); }
                     }
                     Err(reason) => {
                         out.remove("values");
+                        out.remove("rawValues");
                         out.insert("unavailable".into(), reason.into());
                     }
                 }

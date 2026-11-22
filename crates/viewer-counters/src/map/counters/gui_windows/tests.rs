@@ -1,10 +1,14 @@
 use super::*;
 use std::path::Path;
-use viewer_foundation::map::gui_resources::GuiAssets;
-use viewer_foundation::map::native_gui::{PartKind, lifecycle::Tick};
-use viewer_foundation::map::native_resources::GuiResources;
-use viewer_foundation::map::test_support::{
-    Fixture, SYNTHETIC_NAVAL_GUI, SYNTHETIC_NAVY_GUI, VIEWPORT, part,
+use viewer_native_gui::gui_resources::GuiAssets;
+use viewer_native_gui::native_gui::{PartKind, lifecycle::Tick};
+use viewer_native_gui::native_resources::GuiResources;
+use viewer_native_gui::test_support::{
+    Fixture,
+    SYNTHETIC_NAVAL_GUI,
+    SYNTHETIC_NAVY_GUI,
+    VIEWPORT,
+    part,
 };
 
 const STILL: Tick = Tick { time: 0.0, dt: 0.0 };
@@ -227,7 +231,7 @@ fn countries() -> Countries {
         groups: BTreeMap::new(),
         ui_colors: UiColors {
             colors: BTreeMap::from([(0, Some([0.1, 0.2, 0.3, 1.0]))]),
-            inheritance: viewer_foundation::map::color_inheritance::Inheritance::default(),
+            inheritance: viewer_foundation::color_inheritance::Inheritance::default(),
             gap: "CountryAppearance has no row for it".into(),
             unavailable: None,
         },
@@ -323,7 +327,7 @@ fn production_selected(
 #[test]
 fn detailed_coarse_and_port_selection_follows_the_first_task_force() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::unit_handle::Unit;
+    use viewer_runtime::unit_handle::Unit;
     let fixture = navy_fixture();
     let windows = windows();
     let window = windows.navy();

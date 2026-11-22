@@ -1,15 +1,15 @@
 use std::time::Instant;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::camera::{Free, Lens, Pose};
-use viewer_foundation::map::frame::shadow_fade_factor;
-use viewer_foundation::map::layers::Omissions;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::perspective::Country;
-use viewer_foundation::map::perspective::Resolution;
-use viewer_foundation::map::ui_scale::extent;
-use viewer_foundation::map::ui_scale::valid;
-use viewer_foundation::profile_writer::profile_flush;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::camera::{Free, Lens, Pose};
+use viewer_gpu::frame::shadow_fade_factor;
+use viewer_gpu::layers::Omissions;
+use viewer_foundation::perspective::Choice;
+use viewer_foundation::perspective::Country;
+use viewer_foundation::perspective::Resolution;
+use viewer_gpu::ui_scale::extent;
+use viewer_gpu::ui_scale::valid;
+use viewer_runtime::profile_writer::profile_flush;
 mod app;
 use viewer_combat as combat;
 #[cfg(test)]
@@ -22,7 +22,7 @@ mod counter_integration_tests;
 mod dashboard_maps;
 use viewer_playback::document;
 mod dump_head;
-use viewer_foundation::errors::invalid;
+use viewer_runtime::errors::invalid;
 mod embedded;
 use viewer_playback::engaged_index;
 pub mod host;
@@ -60,13 +60,13 @@ mod unit_scale_tests;
 use viewer_playback::visual_fallback;
 use viewer_playback::worker_pool;
 
-use dashboard::Config;
+use dashboard_core::config::Config;
 
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
-use {viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight};
+use viewer_gpu::{camera::Camera, frame::DayNight};
 use replay_data::{BranchId, Hour};
 use std::{
     collections::BTreeSet,
@@ -75,11 +75,8 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use {
-    viewer_world::map::name_pass::{LayerFade, StrategicNames},
-    viewer_world::map::scene::Overlay,
-    viewer_world::map::scene::Request,
-};
+use viewer_map_text::name_pass::{LayerFade, StrategicNames};
+use viewer_world::scene::{Overlay, Request};
 
 const USAGE: &str = "viewer is the development harness and tooling around BattlePlan's map; the desktop
 app (replay-desktop.exe) shows maps itself. It runs:
@@ -318,7 +315,7 @@ struct Options {
     branch: Option<BranchId>,
     allow_unverified: bool,
     perspective: Choice,
-    map_mode: viewer_world::map::map_mode::MapMode,
+    map_mode: viewer_map_modes::map_mode::MapMode,
     allied_plans: Option<bool>,
     day_night: Option<bool>,
     free_overlays: Option<bool>,
@@ -370,7 +367,7 @@ impl Options {
     }
 
     fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
-        Self::parse_profiled(args, viewer_foundation::profile_writer::profiling())
+        Self::parse_profiled(args, viewer_runtime::profile_writer::profiling())
     }
 
     fn parse_profiled(args: impl Iterator<Item = OsString>, profiling: bool) -> io::Result<Self> {
@@ -541,7 +538,7 @@ impl Options {
                         .next()
                         .and_then(|value| value.into_string().ok())
                         .ok_or_else(|| invalid(USAGE))?;
-                    options.demilitarized = viewer_world::map::demilitarized::parse_states(&value)?;
+                    options.demilitarized = viewer_borders::demilitarized::parse_states(&value)?;
                 }
                 Some("--debug-borders") => options.debug_borders = true,
                 Some("--exclude-game-ui") => options.exclude_game_ui = true,
@@ -595,7 +592,7 @@ impl Options {
                         .ok()
                         .filter(|scale| valid(*scale))
                         .ok_or_else(|| {
-                            let range = dashboard::protocol::MAP_UI_SCALE_RANGE;
+                            let range = dashboard_core::protocol::MAP_UI_SCALE_RANGE;
                             invalid(format!(
                                 "the UI scale must be a number from {} to {}",
                                 range.start(),
@@ -759,7 +756,7 @@ impl Options {
                         "--fog" => options.perspective.fog = Choice::parse_fog(&value)?,
                         "--map-mode" => {
                             options.map_mode =
-                                viewer_world::map::map_mode::MapMode::parse(&value)
+                                viewer_map_modes::map_mode::MapMode::parse(&value)
                                     .ok_or_else(|| invalid("--map-mode takes a map mode token"))?
                         }
                         "--allied-plans" | "--day-night" | "--free-overlays" => {
@@ -1138,7 +1135,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         render::probe_dump_device()?;
         let graphics =
             engine_executable::executable_tables::or_installed(&config.game_dir, || {
-                dashboard::map_settings::read_game(&config.user_dir)
+                dashboard_core::map_settings::read_game(&config.user_dir)
             })?
             .graphics;
         let mut document = document::Document::load(
@@ -1268,12 +1265,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|placement| place(*placement))
             .collect::<io::Result<Vec<_>>>()?;
         let trade_routes =
-            viewer_world::map::map_mode::visibility::of(&options.map_mode).trade_routes;
+            viewer_map_modes::map_mode::visibility::of(&options.map_mode).trade_routes;
         let (unit_model_field, unit_report) = document.unit_model_field_sailing(
             &options.perspective,
             options.presentation_time,
             &|defines| {
-                viewer_world::map::trade_routes::convoys_shown(
+                viewer_unit_models::trade_routes::convoys_shown(
                     camera.height,
                     defines,
                     true,
@@ -1282,11 +1279,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             },
         )?;
         let intel_map = document.intel_map(&options.perspective)?;
-        let visibility = viewer_world::map::map_mode::visibility::of(&options.map_mode);
+        let visibility = viewer_map_modes::map_mode::visibility::of(&options.map_mode);
         if visibility.fog_of_war {
             println!(
                 "{}",
-                viewer_foundation::map::textures::intel_line(
+                viewer_gpu::textures::intel_line(
                     &intel_map,
                     &camera.defines,
                     camera.height,
@@ -1337,7 +1334,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             window.set_settled(true);
             let raids = Arc::clone(&document.icons.raids);
             window.set_rule_relations(Arc::new(move |frame, rule, country| {
-                viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+                viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
             }));
             let content = Arc::clone(&document.content);
             window.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
@@ -1512,7 +1509,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     country_names: interface,
                     ground: camera
                         .free()
-                        .map(|_| viewer_foundation::map::free_icons::Ground {
+                        .map(|_| viewer_native_gui::free_icons::Ground {
                             field: document.assets.height_field(),
                             sight: document.assets.terrain_sight(),
                         }),
@@ -1559,7 +1556,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 crate::app::map_hits::local(
                     None,
                     dump_overlay.looks(),
-                    viewer_foundation::map::free_icons::IconFamily::Intel,
+                    viewer_gpu::icon_tracks::IconFamily::Intel,
                     hit.layer,
                     point,
                 )
@@ -1583,9 +1580,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let naval_hover_sources = (options.province_hover.is_some()
             && matches!(
                 options.map_mode,
-                viewer_world::map::map_mode::MapMode::Stock(
-                    viewer_world::map::map_mode::Stock::StrategicNavy
-                        | viewer_world::map::map_mode::Stock::Default
+                viewer_map_modes::map_mode::MapMode::Stock(
+                    viewer_map_modes::map_mode::Stock::StrategicNavy
+                        | viewer_map_modes::map_mode::Stock::Default
                 )
             ))
         .then(|| dump_overlay.naval_dominance_sources());
@@ -1629,7 +1626,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         let tooltip_refused =
             viewer_counter_products::map::counter_tooltips::count_refusals(tooltips);
-        for warning in viewer_foundation::diagnostics_panel::tooltip_warning_lines(&tooltip_refused)
+        for warning in viewer_runtime::diagnostics_panel::tooltip_warning_lines(&tooltip_refused)
         {
             eprintln!("Warning: {warning}");
         }
@@ -1821,7 +1818,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.tree_field.buckets.len(),
             document.tree_assets.meshes.len(),
             document.tree_geometry.vertices.len(),
-            viewer_world::map::trees::tree_fade(&camera.defines, camera.height),
+            viewer_terrain::trees::tree_fade(&camera.defines, camera.height),
             camera.height,
             report.tree_instances,
             report.tree_draw_calls,
@@ -1931,7 +1928,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             summary.entities,
             summary.meshes,
             camera.height,
-            viewer_world::map::models::draws_city_sprawl(&camera),
+            viewer_models::draws_city_sprawl(&camera),
             report.sprawl_drawn,
             document.sprawl_build.as_secs_f64() * 1000.0
         );
@@ -1977,7 +1974,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             rail_mesh.unanchored,
             rail_mesh.samples,
             rail_mesh.native_vertices.len(),
-            viewer_world::map::railways::RailFade::default().update(&camera, 0.0),
+            viewer_rail::railways::RailFade::default().update(&camera, 0.0),
             camera.height,
             document.rail_build.as_secs_f64() * 1000.0
         );
@@ -2049,7 +2046,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.names.graph.edge_count(),
             report.icon_pages
         );
-        let mut placed: Vec<&viewer_foundation::map::name_draw::WorldName> =
+        let mut placed: Vec<&viewer_runtime::name_draw::WorldName> =
             placements.country.iter().collect();
         placed.sort_by(|a, b| {
             b.font_size
@@ -2251,10 +2248,10 @@ pub(crate) fn background_window(value: Option<&std::ffi::OsStr>) -> bool {
 
 pub fn cli() -> std::process::ExitCode {
     engine_heap::return_freed_memory_promptly();
-    viewer_foundation::parallel::name_shared_pool();
-    viewer_foundation::frame_writer::initialize(Instant::now());
+    viewer_runtime::parallel::name_shared_pool();
+    viewer_runtime::frame_writer::initialize(Instant::now());
     let result = run();
-    viewer_foundation::frame_writer::flush();
+    viewer_runtime::frame_writer::flush();
     profile_flush();
     perf_log::finish();
     match result {
@@ -2410,7 +2407,7 @@ mod tests {
         assert_eq!(default.perspective, Choice::default());
         assert_eq!(
             default.perspective.fog,
-            dashboard::map_display::option_defaults::FOG
+            dashboard_core::map_display::option_defaults::FOG
         );
         let options = parse(&[
             "campaign.battleplan",

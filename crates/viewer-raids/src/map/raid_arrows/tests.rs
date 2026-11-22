@@ -1,6 +1,6 @@
 use super::*;
 use std::cell::Cell;
-use viewer_foundation::map::unit_pose::test_support::defines;
+use viewer_gpu::unit_pose::test_support::defines;
 
 #[test]
 fn the_colour_is_active_in_flight_preparing_before_and_undecided_when_prepared() {

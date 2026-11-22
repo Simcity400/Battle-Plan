@@ -21,8 +21,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective::Choice;
-use viewer_world::map::{trade_routes::ConvoyLine, unit_models::PreparedModels};
+use viewer_foundation::perspective::Choice;
+use viewer_unit_models::{trade_routes::ConvoyLine, unit_models::PreparedModels};
 
 #[derive(Default)]
 struct Counted {
@@ -30,7 +30,7 @@ struct Counted {
 }
 
 impl Select for Counted {
-    fn choose_meshes(&self, _frame: &DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> io::Result<super::super::meshes::Chosen> {
+    fn choose_meshes(&self, _frame: &DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> io::Result<super::super::meshes::Chosen> {
         Err(io::Error::other("no unit meshes in this test"))
     }
 
@@ -244,7 +244,7 @@ impl Gated {
 }
 
 impl Select for Gated {
-    fn choose_meshes(&self, _frame: &DecodedFrame, _ours: u32, _kept: (&viewer_world::map::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_world::map::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> io::Result<super::super::meshes::Chosen> {
+    fn choose_meshes(&self, _frame: &DecodedFrame, _ours: u32, _kept: (&viewer_unit_models::unit_models::KeptChoices, Option<&std::collections::BTreeSet<u64>>), _stacks: &std::collections::HashMap<u64, super::super::meshes::Asked>, _asked: &std::collections::HashSet<u64>, _told: &viewer_unit_models::unit_models::Told, _parts: &mut dyn FnMut(&'static str, u64)) -> io::Result<super::super::meshes::Chosen> {
         Err(io::Error::other("no unit meshes in this test"))
     }
 

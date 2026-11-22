@@ -1,7 +1,7 @@
 use super::tooltips::Details;
 use content_reader_core::gui::native;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{
+use viewer_native_gui::{
     gui_resources::{hit_rectangle, hit_rectangles},
     native_gui::{self, SpriteSetter, lifecycle::Instance},
     native_resources::Context,
@@ -219,7 +219,7 @@ fn draw_inner(
 mod tests {
     use super::*;
     use super::super::tooltips::DetailEntry;
-    use viewer_foundation::map::{native_resources::Context, test_support::gui};
+    use viewer_native_gui::{native_resources::Context, test_support::gui};
 
     #[test]
     fn an_opened_details_window_draws_its_panel_rows_and_type_buttons() {
@@ -352,7 +352,7 @@ mod tests {
         let hits = |point: [f32; 2]| {
             rects
                 .iter()
-                .any(|rect| viewer_foundation::map::gui_resources::contains(*rect, point))
+                .any(|rect| viewer_runtime::geometry::contains(*rect, point))
         };
         assert!(hits([left + 10.0, top + 5.0]), "{rects:?}");
         assert!(hits([left + 50.0, top + 5.0]), "{rects:?}");
@@ -404,7 +404,7 @@ mod tests {
         let hits = |point: [f32; 2]| {
             rects
                 .iter()
-                .any(|rect| viewer_foundation::map::gui_resources::contains(*rect, point))
+                .any(|rect| viewer_runtime::geometry::contains(*rect, point))
         };
         assert!(hits([left + 10.0, top + 5.0]), "{rects:?}");
         assert!(hits([left + 50.0, top + 5.0]), "{rects:?}");

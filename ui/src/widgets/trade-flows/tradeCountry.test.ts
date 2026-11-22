@@ -3,6 +3,7 @@ import test from 'node:test';
 import { decodeTrade } from './tradeData.ts';
 import { bandGroups, countryParts, countryTotal, countryTrade, countryTradeTags, divergingExtent, mergedBands, mirrored, partnerFact } from './tradeCountry.ts';
 import type { TradeFlowsReply } from '../../generated/dashboard';
+import { assertLinearWork, measureWork } from '../../test-support/work.ts';
 
 const A = '[1,1]', B = '[2,2]', C = '[3,3]';
 const reply: TradeFlowsReply = { branchId: 'b', decimals: 0,
@@ -77,17 +78,26 @@ test('each resource’s deals draw as one band, exports above the axis and impor
 });
 
 test('5,000 trading partners group in one pass over the deals', () => {
-  const count = 5000;
-  const big: TradeFlowsReply = { ...reply, countries: Array.from({ length: count + 1 }, (_, index) => `T${String(index).padStart(5, '0')}`),
-    countryIdentities: Array.from({ length: count + 1 }, (_, index) => ({ tag: `T${String(index).padStart(5, '0')}`, runs: [{ firstHour: 0, lastHour: 95, slot: index + 10, countryId: index + 10 }] })),
-    flows: Array.from({ length: count }, (_, index) => ({ seller: index + 1, buyer: 0, sellerIdentity: `[${index + 11},${index + 11}]`, buyerIdentity: '[10,10]',
-      resource: index % 2 ? 2 : 9, firstHours: [0], lastHours: [95], deliveredRaw: [String(index + 1)],
-      sellerTags: [index + 1], buyerTags: [0], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
-  const { imports } = countryTrade(decodeTrade(big), '[10,10]', null);
-  const started = performance.now();
-  const partners = countryParts(imports, 'imports', 'partner', 'current', 0, 50, big.known);
-  assert.equal(partners.length, count);
-  assert.equal(countryTotal(imports, 'current', 0, 50, big.known), BigInt(count * (count + 1) / 2));
-  assert.deepEqual(bandGroups(imports.map(flow => flow.resource.id)).length, 2, 'two resources draw two bands');
-  assert.ok(performance.now() - started < 2000);
+  const imported = (count: number) => {
+    const big: TradeFlowsReply = { ...reply, countries: Array.from({ length: count + 1 }, (_, index) => `T${String(index).padStart(5, '0')}`),
+      countryIdentities: Array.from({ length: count + 1 }, (_, index) => ({ tag: `T${String(index).padStart(5, '0')}`, runs: [{ firstHour: 0, lastHour: 95, slot: index + 10, countryId: index + 10 }] })),
+      flows: Array.from({ length: count }, (_, index) => ({ seller: index + 1, buyer: 0, sellerIdentity: `[${index + 11},${index + 11}]`, buyerIdentity: '[10,10]',
+        resource: index % 2 ? 2 : 9, firstHours: [0], lastHours: [95], deliveredRaw: [String(index + 1)],
+        sellerTags: [index + 1], buyerTags: [0], factories: [1], convoysAssigned: [0], convoysRequired: [0], deals: [1] })) };
+    return { imports: countryTrade(decodeTrade(big), '[10,10]', null).imports, known: big.known };
+  };
+  assertLinearWork(count => {
+    const { imports, known } = imported(count);
+    let partners: ReturnType<typeof countryParts> = [], total: bigint | null = null;
+    const work = measureWork(imports, flows => { partners = countryParts(flows, 'imports', 'partner', 'current', 0, 50, known); total = countryTotal(flows, 'current', 0, 50, known); });
+    assert.equal(partners.length, count);
+    assert.equal(total, BigInt(count * (count + 1) / 2));
+    return work;
+  }, 'grouping deals by partner and totalling them');
+  assertLinearWork(count => {
+    let groups: [number, number][] = [];
+    const work = measureWork(imported(count).imports.map(flow => flow.resource.id), keys => { groups = bandGroups(keys); });
+    assert.equal(groups.length, 2, 'two resources draw two bands');
+    return work;
+  }, 'grouping band keys');
 });

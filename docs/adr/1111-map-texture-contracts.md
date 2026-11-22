@@ -10,4 +10,4 @@ Snow and mud cover four-pixel blocks, and the independent intel texture covers s
 
 The fog grid caches a content-owned composition of its source pixels. Only defined land uses changing province bytes. Water and unrecognized province IDs use the clear byte, and an unseen recorded province keeps its recorded zero prior to the complement operation. Pixels outside the floor-sized grid are excluded. Complement the truncated mean once per cell. If no visibility input is available, the viewer reports it and supplies an all-clear stand-in. Preparation can happen during content loading or on demand. Keep completed composition and structural refusals, and retry transient resource failures.
 
-[Texture loading and upload](../../crates/viewer-foundation/src/map/textures.rs) · [Intel cells](../../crates/viewer-foundation/src/map/textures/intel_cells.rs) · [Precision tests](../../crates/viewer-foundation/src/map/textures/tests.rs)
+[Texture loading and upload](../../crates/viewer-gpu/src/textures.rs) · [Intel cells](../../crates/viewer-gpu/src/textures/intel_cells.rs) · [Precision tests](../../crates/viewer-gpu/src/textures/tests.rs)

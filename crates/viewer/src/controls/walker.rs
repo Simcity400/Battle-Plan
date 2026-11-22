@@ -1,13 +1,13 @@
 
 use super::{Frame, approach};
-use dashboard::protocol::GamepadButton;
+use dashboard_core::protocol::GamepadButton;
 use eframe::egui::Key;
 use std::f32::consts::{PI, TAU};
-use viewer_foundation::map::camera::{Camera, FOV_Y, Free, Lens, Pose, WATER_HEIGHT};
-use viewer_foundation::map::province_map::HEIGHT_SCALE;
-use viewer_world::map::entity_animation::{IDLE, MOVE};
-use viewer_world::map::models::ModelInstance;
-use viewer_world::map::unit_models::MESH_FORWARD_OFFSET;
+use viewer_gpu::camera::{Camera, FOV_Y, Free, Lens, Pose, WATER_HEIGHT};
+use viewer_gpu::province_map::HEIGHT_SCALE;
+use viewer_models::entity_animation::{IDLE, MOVE};
+use viewer_models::ModelInstance;
+use viewer_unit_history::unit_history::MESH_FORWARD_OFFSET;
 
 pub const WALK_PACE: f32 = 1.0;
 pub const FLY_PACE: f32 = 2.5;

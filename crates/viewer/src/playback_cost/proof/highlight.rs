@@ -9,12 +9,9 @@ use crate::{
 use map_display_data::landscape::Regions;
 use serde_json::json;
 use std::{collections::BTreeSet, io, sync::Arc, time::Instant};
-use viewer_foundation::map::perspective;
-use viewer_world::map::{
-    border_pass::ClassPlan,
-    demilitarized::{Zone, ZonePlan},
-    map_mode::MapMode,
-};
+use viewer_foundation::perspective;
+use viewer_borders::{border_pass::ClassPlan, demilitarized::{Zone, ZonePlan}};
+use viewer_map_modes::map_mode::MapMode;
 
 fn cycle_hz() -> f64 {
     static HZ: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
@@ -31,7 +28,7 @@ pub(super) fn make(document: &Document) -> Box<dyn Layer> {
     Box::new(Political::new(Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
 }
 
-fn plans(meshes: &viewer_world::map::borders::BorderMeshes, regions: &Regions, zone: &Zone, provinces: &BTreeSet<u32>) -> (ClassPlan, ZonePlan, ZonePlan) {
+fn plans(meshes: &viewer_borders::borders::BorderMeshes, regions: &Regions, zone: &Zone, provinces: &BTreeSet<u32>) -> (ClassPlan, ZonePlan, ZonePlan) {
     let highlight = |a, b| provinces.contains(&a) != provinces.contains(&b);
     (
         ClassPlan::matching(meshes, regions, |a, b| !zone.splits(a, b) && !highlight(a, b)),

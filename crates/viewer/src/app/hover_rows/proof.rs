@@ -25,17 +25,14 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_counter_products::map::{counter_tooltips::Style, province_tooltips::ModeHover};
-use viewer_foundation::{
-    map::{
-        camera::{Camera, MapSize, Placement},
-        counter_hovers::{land::CounterHover, task_force, task_force_port},
-        layers::Omissions,
-        perspective::{self, Vision},
-        province_geometry::ProvinceGeometry,
-    },
-    tooltip_text::Tooltip,
+use viewer_gpu::{
+    camera::{Camera, MapSize, Placement},
+    layers::Omissions,
+    province_geometry::ProvinceGeometry,
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_native_gui::counter_hovers::{land::CounterHover, task_force, task_force_port};
+use viewer_foundation::{perspective::{self, Vision}, tooltip_text::Tooltip};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const LIMIT: Duration = Duration::from_secs(120);
 const VIEWPORT: [u32; 2] = [2048, 1152];
@@ -274,7 +271,7 @@ impl Line {
                     };
                 }
                 for hit in &overlay.hits.occupation {
-                    if let viewer_world::map::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
+                    if let viewer_map_icons::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
                         targets.occupation.insert((*state, token.clone()));
                     }
                 }
@@ -473,7 +470,7 @@ type MakeJob = Box<dyn Fn(&Caches) -> Job>;
 fn all(family: Family, document: &Document, targets: &Targets, inputs: &Inputs) -> Vec<(String, Key, MakeJob)> {
     let mut out: Vec<(String, Key, MakeJob)> = Vec::new();
     let replay = document.playback.roster_sampler();
-    let selected: Arc<Vec<viewer_foundation::unit_handle::Unit>> = Arc::default();
+    let selected: Arc<Vec<viewer_runtime::unit_handle::Unit>> = Arc::default();
     match family {
         Family::Counters => {
             for hover in &targets.land {

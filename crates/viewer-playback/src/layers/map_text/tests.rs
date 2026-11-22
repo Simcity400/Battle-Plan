@@ -21,8 +21,8 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use viewer_foundation::map::visibility::FogContent;
-use viewer_world::map::animated_map_text::events;
+use viewer_foundation::visibility::FogContent;
+use viewer_map_text::animated_map_text::events;
 
 const BRANCH: u64 = 0;
 
@@ -56,7 +56,7 @@ fn source() -> Arc<dyn Source> {
 }
 
 fn fog() -> FogContent {
-    use viewer_foundation::map::visibility::{Topology, test_defines};
+    use viewer_foundation::visibility::{Topology, test_defines};
     let neighbors = BTreeMap::from([(1, vec![2]), (2, vec![1])]);
     FogContent { topology: Topology { land: BTreeSet::from([1]), sea: BTreeSet::from([2]), neighbors }, defines: test_defines() }
 }
@@ -122,7 +122,7 @@ fn insert_whole(store: &mut Store, table: TableId, slot: u32, key: u128) {
 }
 
 fn record_with(recorded: impl Fn(u32) -> bool, more: impl Fn(u32, &mut Store)) -> crate::playhead_host::units::Units {
-    let mut tables: Vec<TableId> = viewer_foundation::map::perspective::VISION_TABLES.to_vec();
+    let mut tables: Vec<TableId> = viewer_foundation::perspective::VISION_TABLES.to_vec();
     tables.extend(TABLES);
     tables.sort_unstable();
     tables.dedup();

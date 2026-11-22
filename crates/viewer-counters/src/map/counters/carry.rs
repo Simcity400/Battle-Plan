@@ -66,8 +66,8 @@ mod tests {
     use super::*;
     use replay_data::rows::{TableRows, tables};
     use std::cell::Cell;
-    use viewer_foundation::map::test_support::{test_frame, test_put};
-    use viewer_foundation::table_access::rows;
+    use viewer_foundation::test_support::{test_frame, test_put};
+    use dashboard_text::table_access::rows;
 
     #[test]
     fn a_part_is_carried_while_what_it_read_stands_and_built_again_when_any_of_it_changes() {

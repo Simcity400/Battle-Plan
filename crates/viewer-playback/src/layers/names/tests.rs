@@ -12,7 +12,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 struct Stub(Arc<Localisation>);
 
@@ -48,7 +48,7 @@ impl Atlas for Stub {
 
     fn mode_names(&self, frame: &replay_frame::frame::DecodedFrame, mode: &MapMode) -> std::io::Result<Arc<Placements>> {
         let name = WorldName { key: format!("{} at {}", mode.token(), frame.hour), ..self.place("", "", &[]).unwrap() };
-        Ok(Arc::new(Placements { country: vec![name], generation: viewer_foundation::map::name_draw::next_generation(), ..Placements::default() }))
+        Ok(Arc::new(Placements { country: vec![name], generation: viewer_runtime::name_draw::next_generation(), ..Placements::default() }))
     }
 
     fn executable(&self) -> Option<engine_executable::executable_tables::Tables> {

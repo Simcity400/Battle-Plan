@@ -52,3 +52,6 @@ impl RunLexicon {
         spans.iter().filter(move |span| span.first <= to && span.last >= from).map(|span| span.token).filter(move |token| last.replace(*token) != Some(*token))
     }
 }
+
+#[cfg(test)]
+mod tests;

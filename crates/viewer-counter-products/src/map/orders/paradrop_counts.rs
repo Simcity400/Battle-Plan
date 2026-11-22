@@ -1,6 +1,6 @@
 
 use std::cell::OnceCell;
-use viewer_foundation::map::air_range;
+use viewer_unit_reads::air_range;
 
 use replay_data::{
     rows::AceRangeInputRow, rows::AirWingRow, rows::ArmyOrderRow, rows::CountryCommandPowerRow,
@@ -9,9 +9,9 @@ use replay_data::{
 use replay_frame::frame::DecodedFrame;
 
 use super::transport_counts::{self, Origin, RegionGeometry};
-use {
-    viewer_foundation::map::air_registry_sources::AirRegistrySources,
-    viewer_foundation::map::air_transport_content::AirTransportContent,
+use viewer_unit_reads::{
+    air_registry_sources::AirRegistrySources,
+    air_transport_content::AirTransportContent,
 };
 
 pub(super) struct Context<'a> {

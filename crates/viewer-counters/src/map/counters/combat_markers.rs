@@ -1,14 +1,12 @@
 
 use super::*;
-use viewer_foundation::engagement_history::Provenance;
-use viewer_foundation::icon_frames::{self, Kept};
-use viewer_foundation::map::gui_resources::viewport;
-use {
-    viewer_foundation::engaged::Engaged, viewer_foundation::engagement_progress as progress,
-    viewer_foundation::engagement_progress::FIXED,
-    viewer_foundation::land_combat_math::ScoreDefines,
-    viewer_foundation::land_combat_math::ScoreGap, viewer_foundation::land_combat_math::conditions,
-    viewer_foundation::land_combat_math::side_scores,
+use viewer_engagements::engagement_history::Provenance;
+use viewer_engagements::icon_frames::{self, Kept};
+use viewer_native_gui::gui_resources::viewport;
+use viewer_engagements::{
+    engaged::Engaged,
+    engagement_progress::{self as progress, FIXED},
+    land_combat_math::{ScoreDefines, ScoreGap, conditions, side_scores},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -355,7 +353,7 @@ struct HourJoins<'a, R> {
     kinds: &'a BTreeMap<u64, (Option<u32>, bool)>,
     details: &'a BTreeMap<u64, &'a replay_data::rows::LandCombatDetailsRow>,
     members: &'a BTreeMap<u64, Vec<replay_data::rows::LandCombatMember<'a>>>,
-    conditions: &'a viewer_foundation::land_combat_math::Conditions,
+    conditions: &'a viewer_engagements::land_combat_math::Conditions,
     progresses: &'a progress::Progresses,
     defines: &'a LandCombatDefines,
     held: TintHeld<'a>,
@@ -453,7 +451,7 @@ impl LandMarkers {
         let details: BTreeMap<_, _> = details_table.rows().iter().map(|r| (r.combat, r)).collect();
         let members = rows::<tables::LandCombatDivisions>(frame)?;
         let member_values =
-            viewer_foundation::land_combat_math::member_values(frame, members.rows())?;
+            viewer_engagements::land_combat_math::member_values(frame, members.rows())?;
         let mut members_by_combat: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for row in replay_data::rows::land_combat_members(members.rows(), &member_values) {
             members_by_combat.entry(row.combat).or_default().push(row);

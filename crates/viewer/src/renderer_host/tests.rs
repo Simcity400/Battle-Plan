@@ -1,7 +1,7 @@
 use super::*;
 use eframe::egui::{Color32, ColorImage, TextureId, epaint::ImageDelta};
 use eframe::wgpu::util::DeviceExt as _;
-use viewer_foundation::map::gpu_contract::{device_descriptor, select_adapter};
+use viewer_gpu::gpu_contract::{device_descriptor, select_adapter};
 
 #[test]
 fn sessions_are_found_by_their_renderer_and_bound_once() {
@@ -29,7 +29,7 @@ fn sessions_are_found_by_their_renderer_and_bound_once() {
 fn render_states(
     format: wgpu::TextureFormat,
 ) -> (MutexGuard<'static, ()>, [egui_wgpu::RenderState; 2]) {
-    let serial = viewer_foundation::map::test_support::serial();
+    let serial = viewer_gpu::test_support::serial();
     let state = pollster::block_on(async {
         let instance = shader_pipeline::gpu::instance();
         let available_adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
@@ -205,7 +205,7 @@ fn composite(
         renderer.free_texture(&id);
     }
     drop(renderer);
-    viewer_foundation::map::gpu_contract::read_texture(&state.device, &state.queue, &output, 4)
+    viewer_gpu::gpu_contract::read_texture(&state.device, &state.queue, &output, 4)
         .unwrap()
 }
 

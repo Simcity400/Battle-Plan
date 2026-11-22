@@ -1097,9 +1097,41 @@ derived {
 PowerSpendDays = 518 => PowerSpendDay(PowerSpendDayRow),
 }
 }
+const VARIANT_STATS_PRE_WITNESS_SCHEMA: [Kind; 13] = [
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::I64,
+    Kind::U64,
+    Kind::I32,
+    Kind::Opaque,
+];
+
 impl TableId {
+    pub fn schema_at(&self, format: u16) -> &'static [Kind] {
+        if *self == Self::VariantStats
+            && format < compatibility::VARIANT_STAT_WITNESS_FORMAT
+        {
+            &VARIANT_STATS_PRE_WITNESS_SCHEMA
+        } else {
+            self.schema()
+        }
+    }
+
+    pub const fn column_withheld_at(self, column: usize, format: u16) -> bool {
+        matches!(self, Self::TrainInventory)
+            && column == 4
+            && format < compatibility::VARIANT_STAT_WITNESS_FORMAT
+    }
+
     pub fn skip_snapshot(&self, fields: usize, input: &mut Decoder<'_>) -> io::Result<()> {
-        let schema = &self.schema()[..fields];
+        let schema = &self.schema_at(input.format)[..fields];
         let minimum = 1 + schema
             .iter()
             .map(|kind| kind.minimum_row_bytes())
@@ -1123,7 +1155,7 @@ impl TableId {
     }
 
     pub fn skip_delta(&self, fields: usize, input: &mut Decoder<'_>) -> io::Result<()> {
-        let schema = &self.schema()[..fields];
+        let schema = &self.schema_at(input.format)[..fields];
         let width = fields.div_ceil(8);
         let count = input.count(1 + width)?;
         let mut previous = 0;
@@ -1166,13 +1198,13 @@ impl TableId {
 
     pub fn field_span<'a>(self, field: usize, input: &mut Decoder<'a>) -> io::Result<&'a [u8]> {
         let before = input.rest();
-        self.schema()[field].decode(input)?;
+        self.schema_at(input.format)[field].decode(input)?;
         Ok(&before[..before.len() - input.remaining()])
     }
 
     pub fn change_span<'a>(self, field: usize, input: &mut Decoder<'a>) -> io::Result<&'a [u8]> {
         let before = input.rest();
-        self.schema()[field].decode_change(input)?;
+        self.schema_at(input.format)[field].decode_change(input)?;
         Ok(&before[..before.len() - input.remaining()])
     }
 

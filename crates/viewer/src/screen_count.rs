@@ -1,7 +1,7 @@
 
 use eframe::wgpu;
 use std::io;
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 
 pub(crate) const COUNTS: usize = 11 + TILES;
 
@@ -292,9 +292,19 @@ pub(crate) mod readout {
         }
     }
 
+    trait Moment: Copy + PartialOrd {
+        fn earlier(self, by: Duration) -> Option<Self>;
+    }
+
+    impl Moment for Instant {
+        fn earlier(self, by: Duration) -> Option<Self> {
+            self.checked_sub(by)
+        }
+    }
+
     #[derive(Clone, Copy)]
-    struct Frame {
-        at: Instant,
+    struct Frame<T = Instant> {
+        at: T,
         differed: bool,
         seen: bool,
         presented: u64,
@@ -315,7 +325,7 @@ pub(crate) mod readout {
     pub(crate) fn count(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        scene: &viewer_world::map::scene::Scene,
+        scene: &viewer_world::scene::Scene,
     ) {
         if !on() {
             return;
@@ -413,10 +423,15 @@ pub(crate) mod readout {
                 seen: screen[1] > SEEN,
                 presented: PRESENTED.load(Ordering::Relaxed),
             });
-            let second = Instant::now() - Duration::from_secs(1);
-            self.frames.retain(|frame| frame.at >= second);
+            trim(&mut self.frames, Instant::now());
             self.waiting = false;
             self.compare.last = None;
+        }
+    }
+
+    fn trim<T: Moment>(frames: &mut Vec<Frame<T>>, now: T) {
+        if let Some(second) = now.earlier(Duration::from_secs(1)) {
+            frames.retain(|kept| kept.at >= second);
         }
     }
 
@@ -446,5 +461,36 @@ pub(crate) mod readout {
                 ),
             ]
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        impl Moment for Duration {
+            fn earlier(self, by: Duration) -> Option<Self> {
+                self.checked_sub(by)
+            }
+        }
+
+        #[test]
+        fn frames_from_the_clock_origin_keep_the_last_second() {
+            let mut frames = Vec::new();
+            let mut kept = |at: u64, now: u64| {
+                frames.push(Frame {
+                    at: Duration::from_millis(at),
+                    differed: false,
+                    seen: false,
+                    presented: at,
+                });
+                trim(&mut frames, Duration::from_millis(now));
+                frames.iter().map(|frame| frame.presented).collect::<Vec<_>>()
+            };
+            assert_eq!(kept(0, 0), [0]);
+            assert_eq!(kept(500, 500), [0, 500]);
+            assert_eq!(kept(1_000, 1_000), [0, 500, 1_000]);
+            assert_eq!(kept(1_500, 1_501), [1_000, 1_500]);
+            assert_eq!(kept(2_500, 2_501), [2_500]);
+        }
     }
 }

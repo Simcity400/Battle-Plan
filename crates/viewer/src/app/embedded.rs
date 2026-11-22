@@ -6,8 +6,8 @@ use replay_frame::frame::TableView;
 use std::collections::HashSet;
 use std::path::Path;
 use std::{path::PathBuf, sync::Arc, time::Instant};
-use viewer_foundation::map::presentation::Target;
-use viewer_foundation::map::ui_scale::Setting;
+use viewer_runtime::presentation::Target;
+use viewer_gpu::ui_scale::Setting;
 
 impl Viewer {
     pub(super) fn embedded_logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -261,9 +261,9 @@ impl Viewer {
         if let Some(source) = self.source.clone() {
             let replay = source.replay();
             let preferences =
-                self.follow_map_settings(service, dashboard::map_settings::campaign_key(&replay));
+                self.follow_map_settings(service, dashboard_core::map_settings::campaign_key(&replay));
             let selection = (
-                dashboard::map_settings::campaign_key(&replay),
+                dashboard_core::map_settings::campaign_key(&replay),
                 preferences.visual_mods.clone(),
                 preferences.graphics.samples,
                 preferences.graphics.texture_quality,
@@ -348,9 +348,9 @@ impl Viewer {
         }
     }
 
-    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard::protocol::MapAction>, why: &str) {
+    fn refuse_exports(&mut self, actions: impl IntoIterator<Item = dashboard_core::protocol::MapAction>, why: &str) {
         for action in actions {
-            if let dashboard::protocol::MapAction::Export { request, .. } = action {
+            if let dashboard_core::protocol::MapAction::Export { request, .. } = action {
                 self.export_results.push((request, Err(why.to_owned())));
             }
         }
@@ -358,11 +358,11 @@ impl Viewer {
 
     pub(crate) fn host_map_action(
         &mut self,
-        action: dashboard::protocol::MapAction,
+        action: dashboard_core::protocol::MapAction,
         ctx: &egui::Context,
         frame: &mut eframe::Frame,
     ) {
-        use dashboard::protocol::MapAction;
+        use dashboard_core::protocol::MapAction;
         match action {
             MapAction::Unload { path } => {
                 if self.unload_recording(Path::new(&path)) {
@@ -380,7 +380,7 @@ impl Viewer {
                 }
             }
             MapAction::FrameLimit { hz } => {
-                viewer_foundation::map::frame_limit::limit_to(hz);
+                viewer_runtime::frame_limit::limit_to(hz);
             }
             MapAction::UiScale { scale } => {
                 self.ui_scale = Setting::from_stored(scale);
@@ -475,7 +475,7 @@ impl Viewer {
 
     fn reload_campaign_map(
         &mut self,
-        source: std::sync::Arc<dashboard::Source>,
+        source: std::sync::Arc<dashboard_base::Source>,
         ctx: &egui::Context,
     ) {
         if let Some((branch, hour)) = self.document.as_ref().map(|document| self.hour_on_screen(document)) {
@@ -543,7 +543,7 @@ impl Viewer {
         let spawned = std::thread::Builder::new()
             .name("visual mod check".into())
             .spawn_carried(move || {
-                let _stage = viewer_foundation::load_record::stage("visual_check");
+                let _stage = viewer_runtime::load_record::stage("visual_check");
                 if reload_settings {
                     service.reload_map_settings();
                 }
@@ -558,7 +558,7 @@ impl Viewer {
                             .push("the content folders are not set".to_owned());
                         return false;
                     };
-                    let stage = viewer_foundation::load_record::stage("visual_check.revision");
+                    let stage = viewer_runtime::load_record::stage("visual_check.revision");
                     let now = content_reader_core::content::visual::revision(
                         options, selected, recorded, &cancel,
                     );
@@ -656,7 +656,7 @@ impl Viewer {
         messages.extend(self.visual_check_note.iter().cloned());
         let mut seen = HashSet::new();
         messages.retain(|message| seen.insert(message.clone()));
-        embedded.report_details(dashboard::protocol::MapDetails {
+        embedded.report_details(dashboard_core::protocol::MapDetails {
             content_ready: self.config.resolve_options().is_ok(),
             error: self.error.clone(),
             game: self.config.game_dir.to_string_lossy().into_owned(),
@@ -677,7 +677,7 @@ impl Viewer {
             return;
         };
         embedded.report(
-            dashboard::protocol::ViewerState {
+            dashboard_core::protocol::ViewerState {
                 path: self
                     .document
                     .as_ref()
