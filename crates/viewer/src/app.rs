@@ -4517,16 +4517,23 @@ impl Viewer {
                 ui.ctx().request_repaint();
             }
         }
-        if let Some(target) = crate::suite_input::take_camera(view_id) {
+        let pending_camera = crate::suite_input::take_camera(view_id);
+        if let Some(command) = &pending_camera {
             self.zoom.reset();
             self.orbit.reset();
-            self.camera_manual = crate::suite_input::apply_camera(camera, target, pixels, &floor);
+            self.camera_manual = crate::suite_input::apply_camera(camera, command.target, pixels, &floor);
             ui.ctx().request_repaint();
         }
         let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
         if shift != 0.0 {
             camera.center[0] += shift;
             self.zoom.shift([shift, 0.0]);
+        }
+        if let Some(command) = pending_camera {
+            command.finish(Ok(crate::suite_input::ResolvedCamera {
+                center: camera.center,
+                height: camera.height,
+            }));
         }
         self.camera = Some(camera.placement());
         let (camera, overlay_camera) = match pinned.filter(|_| !placed_walk) {

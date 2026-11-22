@@ -18,8 +18,12 @@ foreach ($definition in $driverAst.FindAll({param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
     $node.Name -in @(
         'Get-SubstDriveNames', 'Resolve-LaunchUserDirectory', 'Write-LaunchSelection', 'Copy-ShaderCompiler',
-        'Invoke-WithFocusRetry', 'Get-UiRegionBox', 'Invoke-ObservedUiStep', 'Invoke-BoundedUiSequence',
-        'Invoke-ExitThenVerify', 'Read-SharedUtf8Text', 'Start-SmokeTool', 'Wait-SmokeTool'
+        'Invoke-WithFocusRetry', 'Invoke-SequentialFocusInput', 'Get-UiRegionBox',
+        'Test-UiPatchMatch', 'Test-UiRegionChanged', 'Resolve-UiDialogProbe', 'Test-UiDialogState',
+        'Reset-UiToCleanMap', 'Invoke-ObservedUiStep', 'Invoke-BoundedUiSequence',
+        'Invoke-UiSaveFlow', 'Invoke-UiExitFlow', 'Invoke-ExitThenVerify',
+        'Read-SharedUtf8Text', 'Start-SmokeTool', 'Wait-SmokeTool',
+        'Get-ActiveSmokeTools', 'Invoke-FailureRecorderCleanup'
     )
 }, $false)) { . ([scriptblock]::Create($definition.Extent.Text)) }
 try { $ScratchRoot = Resolve-LaunchUserDirectory $ScratchRoot }
@@ -210,22 +214,30 @@ try {
     $script:Passed++; Write-Host 'PASS clock lines keep withheld fields absent and named'
 
     $focusCalls = 0; $focusPauses = 0
-    $focusResult = Invoke-WithFocusRetry -MaxAttempts 4 -Pause { $script:focusPauses++ } -Action {
+    $focusResult = Invoke-WithFocusRetry -MaxAttempts 4 -OnRetry { $script:focusPauses++ } -Operation {
         $script:focusCalls++
         if ($script:focusCalls -lt 3) { throw 'Windows refused to focus the game; input was not sent.' }
         'focused'
     }
     if ($focusResult -cne 'focused' -or $focusCalls -ne 3 -or $focusPauses -ne 2) { throw "Focus retry recovered unexpectedly: result=$focusResult calls=$focusCalls pauses=$focusPauses" }
     $lostCalls = 0
-    $lostResult = Invoke-WithFocusRetry -MaxAttempts 3 -Pause {} -Action {
+    $lostResult = Invoke-WithFocusRetry -MaxAttempts 3 -OnRetry {} -Operation {
         $script:lostCalls++
         if ($script:lostCalls -eq 1) { throw 'Game focus was lost; input was not sent.' }
         'recovered'
     }
     if ($lostResult -cne 'recovered' -or $lostCalls -ne 2) { throw "Focus-lost retry failed: result=$lostResult calls=$lostCalls" }
+    $partialCalls = 0; $partialError = $null
+    try {
+        $null = Invoke-WithFocusRetry -MaxAttempts 4 -OnRetry {} -Operation {
+            $script:partialCalls++
+            throw 'Game focus was lost after delivering partial input (1 of 4).'
+        }
+    } catch { $partialError = $_.Exception.Message }
+    if ($partialCalls -ne 1 -or $partialError -notlike '*partial input*') { throw "Partial-input focus loss was retried: calls=$partialCalls error=$partialError" }
     $exhaustedCalls = 0; $exhaustedError = $null
     try {
-        $null = Invoke-WithFocusRetry -MaxAttempts 3 -Pause {} -Action {
+        $null = Invoke-WithFocusRetry -MaxAttempts 3 -OnRetry {} -Operation {
             $script:exhaustedCalls++
             throw 'Windows refused to focus the game; input was not sent.'
         }
@@ -233,13 +245,240 @@ try {
     if ($exhaustedCalls -ne 3 -or $exhaustedError -notlike '*Windows refused to focus the game*') { throw "Bounded focus retry did not stop at limit: calls=$exhaustedCalls error=$exhaustedError" }
     $nonFocusCalls = 0; $nonFocusError = $null
     try {
-        $null = Invoke-WithFocusRetry -MaxAttempts 4 -Pause {} -Action {
+        $null = Invoke-WithFocusRetry -MaxAttempts 4 -OnRetry {} -Operation {
             $script:nonFocusCalls++
             throw 'The game window no longer belongs to the selected process.'
         }
     } catch { $nonFocusError = $_.Exception.Message }
     if ($nonFocusCalls -ne 1 -or $nonFocusError -notlike '*no longer belongs*') { throw "Non-focus error was retried: calls=$nonFocusCalls error=$nonFocusError" }
-    $script:Passed++; Write-Host 'PASS focus-borrow retries recover transiently and stay bounded'
+
+    $driveAst = $smoke.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Drive'}, $true)
+    if (-not $driveAst) { throw 'Drive function not found in Invoke-FullSmoke.' }
+    . ([scriptblock]::Create($driveAst.Extent.Text))
+    $stubDriverLog = Join-Path $root 'stub-driver.jsonl'
+    $stubDriverPath = Join-Path $root 'stub-driver.ps1'
+    $stubDriverBody = @'
+param(
+    [string]$CaptureRoot,
+    [string]$InputShimDir,
+    [string]$Action,
+    [int]$GameId,
+    [string]$GameExe,
+    [string]$UserDirectory,
+    [switch]$Foreground,
+    [switch]$KeepForeground,
+    [string]$Out
+)
+$logPath = Join-Path (Split-Path -Parent $PSCommandPath) 'stub-driver.jsonl'
+$attempt = if (Test-Path -LiteralPath $logPath) { @([IO.File]::ReadAllLines($logPath)).Count + 1 } else { 1 }
+[IO.File]::AppendAllText($logPath, (([ordered]@{ attempt = $attempt; action = $Action; out = $Out } | ConvertTo-Json -Compress) + "`n"))
+if ($Action -cne 'Screenshot') { throw "Unexpected action received by driver: $Action" }
+if ($attempt -eq 1) { throw 'Windows refused to focus the game; input was not sent.' }
+[pscustomobject]@{ Action = $Action; Path = $Out; Width = 1920; Height = 1080 }
+'@
+    [IO.File]::WriteAllText($stubDriverPath, $stubDriverBody, $utf8)
+    $driver = $stubDriverPath
+    $CaptureRoot = $root; $InputShimDir = ''; $game = [pscustomobject]@{ Id = 4321 }; $gamePath = $exe; $userPath = $fixtureProfile; $Foreground = $false
+    $driveOut = Join-Path $root 'drive-shot.png'
+    $driveReply = Drive 'Screenshot' @{ Out = $driveOut }
+    $driveEntries = @([IO.File]::ReadAllLines($stubDriverLog) | ForEach-Object { $_ | ConvertFrom-Json })
+    if ($driveReply.Action -cne 'Screenshot' -or $driveEntries.Count -ne 2 -or $driveEntries[0].action -cne 'Screenshot' -or $driveEntries[1].action -cne 'Screenshot') {
+        throw "Drive did not preserve Action across focus retry: $($driveEntries | ConvertTo-Json -Compress)"
+    }
+    $script:Passed++; Write-Host 'PASS focus-borrow retries preserve Drive Action and stay bounded'
+
+    $delivered = [Collections.Generic.List[string]]::new()
+    $reacquired = 0
+    $failedOnce = $false
+    Invoke-SequentialFocusInput -Items @('n1', 'n2', 'n3', 'n4') -MaxAttemptsPerItem 3 -Pause {} -Reacquire { $script:reacquired++ } -SendItem {
+        param($item)
+        if ($item -eq 'n3' -and -not $script:failedOnce) {
+            $script:failedOnce = $true
+            throw 'Game focus was lost; input was not sent.'
+        }
+        $delivered.Add([string]$item)
+    }
+    if (($delivered -join ',') -cne 'n1,n2,n3,n4' -or $reacquired -ne 1) {
+        throw "Per-item focus retry duplicated or dropped input: delivered=$($delivered -join ',') reacquired=$reacquired"
+    }
+    $dupDelivered = [Collections.Generic.List[string]]::new()
+    $outerAttempts = 0; $partialErr = $null
+    try {
+        $null = Invoke-WithFocusRetry -MaxAttempts 3 -OnRetry {} -Operation {
+            $script:outerAttempts++
+            Invoke-SequentialFocusInput -Items @('a', 'b', 'c') -MaxAttemptsPerItem 2 -Pause {} -Reacquire {} -SendItem {
+                param($item)
+                if ($item -eq 'b') { throw 'Game focus was lost; input was not sent.' }
+                $dupDelivered.Add([string]$item)
+            }
+        }
+    } catch { $partialErr = $_.Exception.Message }
+    if ($outerAttempts -ne 1 -or ($dupDelivered -join ',') -cne 'a' -or $partialErr -notlike '*partial input*') {
+        throw "Partial sequential input was replayed by outer focus retry: attempts=$outerAttempts delivered=$($dupDelivered -join ',') err=$partialErr"
+    }
+    $script:Passed++; Write-Host 'PASS sequential wheel and text focus retries never duplicate delivered input'
+
+    Add-Type -AssemblyName System.Drawing
+    $imgDir = Join-Path $root 'uiimg'
+    $null = New-Item -ItemType Directory -Path $imgDir
+    function New-SolidPng([string]$path, [int]$w, [int]$h, [Drawing.Color]$bg, [scriptblock]$paint = {}) {
+        $bmp = [Drawing.Bitmap]::new($w, $h)
+        try {
+            $g = [Drawing.Graphics]::FromImage($bmp)
+            try {
+                $g.Clear($bg)
+                & $paint $bmp $g
+            } finally { $g.Dispose() }
+            $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png)
+        } finally { $bmp.Dispose() }
+    }
+    $cleanMapImg = Join-Path $imgDir 'clean-map.png'
+    $noisyMapImg = Join-Path $imgDir 'noisy-map.png'
+    $menuOpenImg = Join-Path $imgDir 'menu-open.png'
+    $confirmOpenImg = Join-Path $imgDir 'confirm-open.png'
+    $menuPatchImg = Join-Path $imgDir 'menu-patch.png'
+    New-SolidPng $cleanMapImg 320 200 ([Drawing.Color]::FromArgb(40, 70, 110))
+    New-SolidPng $noisyMapImg 320 200 ([Drawing.Color]::FromArgb(40, 70, 110)) {
+        param($bmp, $g)
+        for ($py = 50; $py -lt 62; $py++) {
+            for ($px = 60; $px -lt 75; $px++) {
+                $bmp.SetPixel($px, $py, [Drawing.Color]::FromArgb(240, 220, 40))
+            }
+        }
+    }
+    New-SolidPng $menuOpenImg 320 200 ([Drawing.Color]::FromArgb(40, 70, 110)) {
+        param($bmp, $g)
+        $brush = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(200, 190, 165))
+        try { $g.FillRectangle($brush, 40, 30, 220, 140) } finally { $brush.Dispose() }
+    }
+    New-SolidPng $confirmOpenImg 320 200 ([Drawing.Color]::FromArgb(40, 70, 110)) {
+        param($bmp, $g)
+        $brush = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(25, 30, 45))
+        try { $g.FillRectangle($brush, 60, 40, 200, 120) } finally { $brush.Dispose() }
+    }
+    New-SolidPng $menuPatchImg 80 40 ([Drawing.Color]::FromArgb(200, 190, 165))
+
+    $regionBox = Get-UiRegionBox @(150, 100) 320 200 80 40
+    if (Test-UiRegionChanged $cleanMapImg $noisyMapImg $regionBox) {
+        throw 'Sparse unrelated map noise falsely triggered UI dialog transition.'
+    }
+    if (-not (Test-UiRegionChanged $cleanMapImg $menuOpenImg $regionBox)) {
+        throw 'Real opaque menu opening was not detected.'
+    }
+    if (Test-UiPatchMatch -ImagePath $noisyMapImg -PatchPath $menuPatchImg -Origin @(110, 80) -Tolerance 22) {
+        throw 'Calibrated menu patch falsely matched closed map.'
+    }
+    if (-not (Test-UiPatchMatch -ImagePath $menuOpenImg -PatchPath $menuPatchImg -Origin @(110, 80) -Tolerance 22)) {
+        throw 'Calibrated menu patch did not match open menu.'
+    }
+
+    $regionProbe = [pscustomobject]@{ Mode = 'Region'; Box = $regionBox }
+    $noiseClicks = [Collections.Generic.List[string]]::new()
+    $noiseEscapes = 0
+    $noiseExitErr = $null
+    try {
+        $null = Invoke-UiExitFlow -MaxAttempts 2 -MaxPolls 2 -Pause {} `
+            -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $false } `
+            -PauseGame {} -Click { param($name) $noiseClicks.Add([string]$name) } `
+            -SendEscape { $script:noiseEscapes++ } `
+            -IsMenuOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg } `
+            -IsConfirmOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg -SecondaryReferencePath $menuOpenImg }
+    } catch { $noiseExitErr = $_.Exception.Message }
+    if ($noiseClicks -contains 'exit_game' -or $noiseClicks -contains 'exit_confirm' -or $noiseEscapes -ne 0 -or $noiseExitErr -notlike '*did not exit through its confirmation dialog*') {
+        throw "Closed menu with unrelated pixel noise sent follow-up click or blind Escape: clicks=$($noiseClicks -join ',') escapes=$noiseEscapes err=$noiseExitErr"
+    }
+
+    $noiseSaveClicks = [Collections.Generic.List[string]]::new()
+    $noiseSaveEscapes = 0
+    $noiseSaveErr = $null
+    try {
+        $null = Invoke-UiSaveFlow -MaxAttempts 2 -MaxPolls 2 -Pause {} `
+            -IsSaveComplete { $false } -CheckClock {} -PauseGame {} `
+            -Click { param($name) $noiseSaveClicks.Add([string]$name) } `
+            -TypeSaveName {} -SendEscape { $script:noiseSaveEscapes++ } `
+            -IsMenuOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg } `
+            -IsSaveDialogOpen { Test-UiDialogState -ShotPath $noisyMapImg -Probe $regionProbe -ReferencePath $cleanMapImg -SecondaryReferencePath $menuOpenImg } `
+            -WaitForSave { [pscustomobject]@{ Done = $false; Reason = 'not saved' } }
+    } catch { $noiseSaveErr = $_.Exception.Message }
+    if ($noiseSaveClicks -contains 'save_menu' -or $noiseSaveClicks -contains 'save_confirm' -or $noiseSaveEscapes -ne 0 -or $noiseSaveErr -notlike '*did not produce a complete text save*') {
+        throw "Closed menu with unrelated pixel noise sent save follow-up click or blind Escape: clicks=$($noiseSaveClicks -join ',') escapes=$noiseSaveEscapes err=$noiseSaveErr"
+    }
+
+    $openDepth = 1
+    $resetEscapes = 0
+    $cleanedState = Reset-UiToCleanMap -MaxEscapes 3 -Pause {} -IsAnyDialogOpen { $script:openDepth -gt 0 } -SendEscape { $script:resetEscapes++; $script:openDepth-- }
+    if (-not $cleanedState -or $resetEscapes -ne 1) {
+        throw "Reset-UiToCleanMap sent wrong Escape count: cleaned=$cleanedState escapes=$resetEscapes"
+    }
+    $script:Passed++; Write-Host 'PASS dialog probes reject map noise and reset observes starting state without blind Escapes'
+
+    $preConfirmClicks = [Collections.Generic.List[string]]::new()
+    $preConfirmExited = $false
+    $preConfirmMenuOpen = $false
+    $preConfirmReport = [ordered]@{}
+    $preConfirmVerified = $false
+    $preConfirmErr = $null
+    try {
+        Invoke-ExitThenVerify -Report $preConfirmReport -ExitGame {
+            $null = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+                -HasExited { $script:preConfirmExited } -GetExitCode { 0 } -WaitForExit { param($ms) $true } `
+                -PauseGame {} -Click {
+                    param($name)
+                    $preConfirmClicks.Add([string]$name)
+                    if ($name -eq 'menu') { $script:preConfirmMenuOpen = $true; $script:preConfirmExited = $true }
+                } -SendEscape {} -IsMenuOpen { $script:preConfirmMenuOpen } -IsConfirmOpen { $false }
+        } -Verify {
+            $script:preConfirmVerified = $true
+            $preConfirmReport.oracle_differences = 0
+        }
+    } catch { $preConfirmErr = $_.Exception.Message }
+    if ($preConfirmReport.normal_game_exit -ne $false -or -not $preConfirmVerified -or $preConfirmReport.oracle_differences -ne 0 -or
+        ($preConfirmClicks -contains 'exit_confirm') -or $preConfirmErr -notlike '*before exit confirmation*') {
+        throw "Pre-confirmation exit falsely succeeded or skipped verify: exit=$($preConfirmReport.normal_game_exit) verified=$preConfirmVerified clicks=$($preConfirmClicks -join ',') err=$preConfirmErr"
+    }
+
+    $crashReport = [ordered]@{}
+    $crashVerified = $false
+    $crashErr = $null
+    $crashAttempts = 0
+    $crashUiState = @{ Menu = $false; Confirm = $false }
+    try {
+        Invoke-ExitThenVerify -Report $crashReport -ExitGame {
+            $null = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+                -HasExited { $false } -GetExitCode { -1073741819 } -WaitForExit { param($ms) $true } `
+                -PauseGame {} -Click {
+                    param($name)
+                    if ($name -eq 'menu') { $crashUiState.Menu = $true }
+                    elseif ($name -eq 'exit_game') { $crashUiState.Confirm = $true }
+                    elseif ($name -eq 'exit_confirm') { $script:crashAttempts++ }
+                } -SendEscape { $crashUiState.Menu = $false; $crashUiState.Confirm = $false } `
+                -IsMenuOpen { $crashUiState.Menu } -IsConfirmOpen { $crashUiState.Confirm }
+        } -Verify {
+            $script:crashVerified = $true
+            $crashReport.oracle_differences = 0
+        }
+    } catch { $crashErr = $_.Exception.Message }
+    if ($crashReport.normal_game_exit -ne $false -or -not $crashVerified -or $crashAttempts -ne 1 -or $crashErr -notlike '*-1073741819*') {
+        throw "Non-zero exit code after confirmation was accepted or skipped verify: exit=$($crashReport.normal_game_exit) verified=$crashVerified attempts=$crashAttempts err=$crashErr"
+    }
+
+    $cleanExitReport = [ordered]@{}
+    $cleanExitResult = $null
+    $cleanUiState = @{ Menu = $false; Confirm = $false }
+    Invoke-ExitThenVerify -Report $cleanExitReport -ExitGame {
+        $script:cleanExitResult = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
+            -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $true } `
+            -PauseGame {} -Click {
+                param($name)
+                if ($name -eq 'menu') { $cleanUiState.Menu = $true }
+                elseif ($name -eq 'exit_game') { $cleanUiState.Confirm = $true }
+            } -SendEscape { $cleanUiState.Menu = $false; $cleanUiState.Confirm = $false } `
+            -IsMenuOpen { $cleanUiState.Menu } -IsConfirmOpen { $cleanUiState.Confirm }
+    } -Verify { $cleanExitReport.oracle_differences = 0 }
+    if ($cleanExitReport.normal_game_exit -ne $true -or -not $cleanExitResult.ConfirmationSent -or $cleanExitResult.ExitCode -ne 0) {
+        throw 'Confirmed zero-code exit did not report clean normal_game_exit.'
+    }
+    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0 while still verifying offline on failure'
 
     $box = Get-UiRegionBox @(10, 20) 1920 1080 120 60
     if (($box -join ',') -cne '0,0,130,80') { throw "Clamped top-left UI box mismatch: $($box -join ',')" }
@@ -326,7 +565,8 @@ try {
     $null = New-Item -ItemType Directory -Path $toolDir
     $python = (Get-Command python -ErrorAction Stop).Source
     $toolReport = [ordered]@{ checks = @() }
-    $okRun = Start-SmokeTool -Exe $python -Arguments @('-c', "import sys; print('ok stdout'); print('ok stderr', file=sys.stderr)") -Name 'ok-tool' -WorkingDirectory $toolDir -OutputDir $toolDir
+    $toolTracker = [Collections.Generic.List[object]]::new()
+    $okRun = Start-SmokeTool -Exe $python -Arguments @('-c', "import sys; print('ok stdout'); print('ok stderr', file=sys.stderr)") -Name 'ok-tool' -WorkingDirectory $toolDir -OutputDir $toolDir -Tracker $toolTracker
     $okOut = Wait-SmokeTool -Run $okRun -Seconds 15 -Report $toolReport -WriteReport {} -Utf8 $utf8
     if ($okOut.Trim() -cne 'ok stdout' -or (Read-SharedUtf8Text $okRun.StdoutPath).Trim() -cne 'ok stdout' -or
         (Read-SharedUtf8Text $okRun.StderrPath).Trim() -cne 'ok stderr' -or
@@ -335,24 +575,21 @@ try {
         throw 'Completed tool did not persist stdout, stderr and combined log files.'
     }
 
-    $failRun = Start-SmokeTool -Exe $python -Arguments @('-c', "import sys; print('bad stdout'); print('bad stderr', file=sys.stderr); sys.exit(9)") -Name 'fail-tool' -WorkingDirectory $toolDir -OutputDir $toolDir
+    $failRun = Start-SmokeTool -Exe $python -Arguments @('-c', "import sys; print('bad stdout'); print('bad stderr', file=sys.stderr); sys.exit(9)") -Name 'fail-tool' -WorkingDirectory $toolDir -OutputDir $toolDir -Tracker $toolTracker
     $failMsg = $null
     try { $null = Wait-SmokeTool -Run $failRun -Seconds 15 -Report $toolReport -WriteReport {} -Utf8 $utf8 } catch { $failMsg = $_.Exception.Message }
     if ($failMsg -notlike '*fail-tool failed with exit 9*' -or (Read-SharedUtf8Text $failRun.StderrPath).Trim() -cne 'bad stderr') {
         throw "Failed tool error or stderr log mismatch: $failMsg"
     }
 
-    $readyFile = Join-Path $toolDir 'ready'
-    $stopFile = Join-Path $toolDir 'stop'
-    $watcher = [IO.FileSystemWatcher]::new($toolDir, 'ready')
-    $liveCode = "import os, sys, time; print('live stdout', flush=True); print('live stderr', file=sys.stderr, flush=True); open(sys.argv[1], 'w').close(); deadline = time.monotonic() + 15; " +
-        "exec('while not os.path.exists(sys.argv[2]) and time.monotonic() < deadline: time.sleep(0.02)')"
-    $liveRun = Start-SmokeTool -Exe $python -Arguments @('-c', $liveCode, $readyFile, $stopFile) -Name 'live-tool' -WorkingDirectory $toolDir -OutputDir $toolDir
+    $readyEventName = 'Local\BattlePlanSmokeReady_' + [Guid]::NewGuid().ToString('N')
+    $stopEventName = 'Local\BattlePlanSmokeStop_' + [Guid]::NewGuid().ToString('N')
+    $readyEvent = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $readyEventName)
+    $stopEvent = [Threading.EventWaitHandle]::new($false, [Threading.EventResetMode]::ManualReset, $stopEventName)
+    $liveCode = "import ctypes, sys; k = ctypes.windll.kernel32; print('live stdout', flush=True); print('live stderr', file=sys.stderr, flush=True); r = k.OpenEventW(0x0002, False, sys.argv[1]); k.SetEvent(r); k.CloseHandle(r); s = k.OpenEventW(0x00100000, False, sys.argv[2]); k.WaitForSingleObject(s, 0xFFFFFFFF); k.CloseHandle(s)"
+    $liveRun = Start-SmokeTool -Exe $python -Arguments @('-c', $liveCode, $readyEventName, $stopEventName) -Name 'detach' -WorkingDirectory $toolDir -OutputDir $toolDir -Tracker $toolTracker
     try {
-        if (-not (Test-Path -LiteralPath $readyFile)) {
-            $changed = $watcher.WaitForChanged([IO.WatcherChangeTypes]::Created, 10000)
-            if ($changed.TimedOut -and -not (Test-Path -LiteralPath $readyFile)) { throw 'Synthetic live tool did not signal readiness.' }
-        }
+        if (-not $readyEvent.WaitOne(10000)) { throw 'Synthetic live tool did not signal readiness.' }
         $liveStdout = Read-SharedUtf8Text $liveRun.StdoutPath
         $liveStderr = Read-SharedUtf8Text $liveRun.StderrPath
         if ($liveStdout.Trim() -cne 'live stdout' -or $liveStderr.Trim() -cne 'live stderr') {
@@ -360,18 +597,58 @@ try {
         }
         $timeoutMsg = $null
         try { $null = Wait-SmokeTool -Run $liveRun -TimeoutMs 1 -Report $toolReport -WriteReport {} -Utf8 $utf8 } catch { $timeoutMsg = $_.Exception.Message }
-        if ($timeoutMsg -notlike '*Timed out: live-tool*' -or (Read-SharedUtf8Text $liveRun.LogPath) -notmatch 'live stdout' -or (Read-SharedUtf8Text $liveRun.LogPath) -notmatch 'live stderr') {
+        if ($timeoutMsg -notlike '*Timed out: detach*' -or (Read-SharedUtf8Text $liveRun.LogPath) -notmatch 'live stdout' -or (Read-SharedUtf8Text $liveRun.LogPath) -notmatch 'live stderr') {
             throw "Timed-out tool did not retain streamed output: $timeoutMsg"
         }
-        [IO.File]::WriteAllText($stopFile, 'stop')
-        $null = $liveRun.Process.WaitForExit(10000)
+
+        $active = @(Get-ActiveSmokeTools $toolTracker)
+        if ($active.Count -ne 1 -or $active[0].Process.Id -ne $liveRun.Process.Id) {
+            throw "Tracked active tool list mismatch: count=$($active.Count)"
+        }
+
+        $secondDetachStarted = $false
+        $detachSkipReport = [ordered]@{}
+        $fakeRecorder = [pscustomobject]@{ Process = $liveRun.Process }
+        Invoke-FailureRecorderCleanup -RecorderRun $fakeRecorder -ToolTracker $toolTracker -Report $detachSkipReport -RunDetach {
+            $script:secondDetachStarted = $true
+        } -WaitRecorder {}
+        if ($secondDetachStarted -or $detachSkipReport.recorder_cleanup_error -notlike "*$($liveRun.Process.Id)*") {
+            throw "Second detach was launched while first detach PID $($liveRun.Process.Id) was still running."
+        }
+
+        $retainedLock = Join-Path $root 'retainedtoollock'
+        $null = New-Item -ItemType Directory -Path $retainedLock
+        [IO.File]::WriteAllText((Join-Path $retainedLock 'owner'), 'tool-owner')
+        $lock = $retainedLock; $ownerToken = 'tool-owner'
+        $reader = $null; $game = $null; $recorderRun = $null; $report = [ordered]@{}; $failure = $null
+        $selection = $null; $selectionWritten = $false; $settingsPath = Join-Path $fixtureProfile 'settings.txt'; $settingsBytes = [byte[]]@(1, 2, 3)
+        $started = [Diagnostics.Stopwatch]::StartNew()
+        function Write-Report {}
+        . ([scriptblock]::Create($cleanup.Extent.Text.Trim().Substring(1, $cleanup.Extent.Text.Trim().Length - 2)))
+        if ($report.cleanup_complete -ne $false -or -not (Test-Path -LiteralPath $retainedLock) -or
+            @($report.retained_tool_pids | Where-Object { $_.pid -eq $liveRun.Process.Id }).Count -ne 1) {
+            throw 'Cleanup released game lock or marked complete while a timed-out tool PID was still alive.'
+        }
+
+        $null = $stopEvent.Set()
+        if (-not $liveRun.Process.WaitForExit(10000)) { throw 'Synthetic live tool did not exit after stop event.' }
+        $retryDetachStarted = $false
+        $detachRanReport = [ordered]@{}
+        Invoke-FailureRecorderCleanup -RecorderRun ([pscustomobject]@{ Process = [pscustomobject]@{ HasExited = $false } }) -ToolTracker $toolTracker -Report $detachRanReport -RunDetach {
+            $script:retryDetachStarted = $true
+        } -WaitRecorder {}
+        if (-not $retryDetachStarted) { throw 'Failure detach did not run when no prior detach was alive.' }
+        Remove-Item -LiteralPath (Join-Path $retainedLock 'owner') -Force
+        Remove-Item -LiteralPath $retainedLock -Force
     } finally {
-        $watcher.Dispose()
+        $null = $stopEvent.Set()
+        $readyEvent.Dispose()
+        $stopEvent.Dispose()
         if (-not $liveRun.Process.HasExited) {
             try { $liveRun.Process.Kill(); $null = $liveRun.Process.WaitForExit(5000) } catch {}
         }
     }
-    $script:Passed++; Write-Host 'PASS tool stdout and stderr stream to files on disk while running and across timeout'
+    $script:Passed++; Write-Host 'PASS tool streams persist deterministically, track active PIDs, guard double detach, and retain lock'
     Write-Host "$script:Passed offline checks passed."
 } finally {
     if ($substDrive) { & (Join-Path $env:SystemRoot 'System32\subst.exe') $substDrive /D }

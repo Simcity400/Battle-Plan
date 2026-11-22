@@ -77,13 +77,81 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   await send('Log.enable');
   await send('Page.enable');
   const sent = new Map();
+  const ipcCalls = new Map();
+  const ipcById = new Map();
+  const parseIpcBody = text => {
+    if (!text) return null;
+    try { return JSON.parse(text); } catch { return text; }
+  };
   on('Network.requestWillBeSent', ({ requestId, request }) => {
     const command = /^http:\/\/ipc\.localhost\/([^/?]+)/.exec(request.url)?.[1];
-    if (command !== 'set_dashboard_maps') return;
-    const read = request.postData !== undefined ? Promise.resolve(request.postData)
-      : send('Network.getRequestPostData', { requestId }).then(reply => reply.postData, () => null);
-    read.then(body => { if (body) sent.set(command, { at: Date.now(), args: JSON.parse(body) }); }, () => {});
+    if (!command) return;
+    if (command === 'set_dashboard_maps') {
+      const read = request.postData !== undefined ? Promise.resolve(request.postData)
+        : send('Network.getRequestPostData', { requestId }).then(reply => reply.postData, () => null);
+      read.then(body => { if (body) sent.set(command, { at: Date.now(), args: JSON.parse(body) }); }, () => {});
+    }
+    if (command === 'export_map') {
+      let resolveDone;
+      const done = new Promise(resolve => { resolveDone = resolve; });
+      const entry = { id: requestId, command, at: Date.now(), settled: false, ok: null, status: null, result: null, error: null, done, resolveDone };
+      if (!ipcCalls.has(command)) ipcCalls.set(command, []);
+      ipcCalls.get(command).push(entry);
+      ipcById.set(requestId, entry);
+    }
   });
+  on('Network.responseReceived', ({ requestId, response }) => {
+    const entry = ipcById.get(requestId);
+    if (entry) entry.status = response.status;
+  });
+  on('Network.loadingFinished', ({ requestId }) => {
+    const entry = ipcById.get(requestId);
+    if (!entry || entry.settled) return;
+    ipcById.delete(requestId);
+    send('Network.getResponseBody', { requestId }).then(
+      ({ body, base64Encoded }) => {
+        const text = base64Encoded ? Buffer.from(body ?? '', 'base64').toString('utf8') : (body ?? '');
+        const parsed = parseIpcBody(text);
+        const ok = entry.status !== null && entry.status >= 200 && entry.status < 300;
+        entry.ok = ok;
+        entry.result = ok ? parsed : null;
+        entry.error = ok ? null : (typeof parsed === 'string' && parsed ? parsed : `HTTP ${entry.status ?? 'error'}`);
+        entry.settled = true;
+        entry.resolveDone(entry);
+      },
+      () => {
+        const ok = entry.status !== null && entry.status >= 200 && entry.status < 300;
+        entry.ok = ok;
+        entry.error = ok ? null : `HTTP ${entry.status ?? 'error'}`;
+        entry.settled = true;
+        entry.resolveDone(entry);
+      },
+    );
+  });
+  on('Network.loadingFailed', ({ requestId, errorText }) => {
+    const entry = ipcById.get(requestId);
+    if (!entry || entry.settled) return;
+    ipcById.delete(requestId);
+    entry.ok = false;
+    entry.error = errorText || 'IPC request failed';
+    entry.settled = true;
+    entry.resolveDone(entry);
+  });
+  const waitForIpc = async (command, since, timeoutMs = 20_000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const match = (ipcCalls.get(command) ?? []).findLast(entry => entry.at >= since);
+      if (match) {
+        if (match.settled) return { ok: match.ok, status: match.status, result: match.result, error: match.error };
+        const remaining = Math.max(0, deadline - Date.now());
+        const finished = await Promise.race([match.done, sleep(remaining).then(() => null)]);
+        if (!finished) return null;
+        return { ok: finished.ok, status: finished.status, result: finished.result, error: finished.error };
+      }
+      await sleep(16);
+    }
+    return null;
+  };
   await send('Network.enable', { maxPostDataSize: 1 << 20 });
   const native = await evaluate('!!window.__TAURI_INTERNALS__');
   if (!native) throw new Error('refusing to drive a page outside the desktop host');
@@ -97,6 +165,7 @@ export async function connect(port, { timeoutMs = 120_000 } = {}) {
   return {
     send, evaluate, on, messages,
     lastSent: command => sent.get(command) ?? null,
+    waitForIpc,
     setCase(label) { current = label; },
     get case() { return current; },
     mouse,

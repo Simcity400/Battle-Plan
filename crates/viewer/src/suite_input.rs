@@ -1,13 +1,15 @@
 
 use eframe::egui;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener},
     sync::{
         Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
+    time::Duration,
 };
 use viewer_foundation::map::camera::{Camera, Pose, motion::Floor};
 
@@ -17,10 +19,30 @@ pub(crate) enum CameraTarget {
     Reset,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct CameraCommand {
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub(crate) struct ResolvedCamera {
+    pub(crate) center: [f32; 2],
+    pub(crate) height: f32,
+}
+
+#[derive(Debug)]
+pub(crate) struct PendingCamera {
+    pub(crate) target: CameraTarget,
+    reply: Option<mpsc::SyncSender<Result<ResolvedCamera, String>>>,
+}
+
+impl PendingCamera {
+    pub(crate) fn finish(mut self, result: Result<ResolvedCamera, String>) {
+        if let Some(tx) = self.reply.take() {
+            let _ = tx.send(result);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct QueuedCamera {
     view: Option<String>,
-    target: CameraTarget,
+    pending: PendingCamera,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -37,7 +59,7 @@ struct CameraLine {
 }
 
 impl CameraLine {
-    fn into_command(self) -> Result<CameraCommand, &'static str> {
+    fn into_command(self) -> Result<(Option<String>, CameraTarget), &'static str> {
         let target = if self.reset {
             if self.center.is_some() || self.height.is_some() {
                 return Err("camera reset takes neither center nor height");
@@ -52,33 +74,30 @@ impl CameraLine {
             }
             CameraTarget::Place { center, height }
         };
-        Ok(CameraCommand {
-            view: self.view,
-            target,
-        })
+        Ok((self.view, target))
     }
 }
 
 #[derive(Debug, Default)]
 struct CameraQueue {
-    pending: Vec<CameraCommand>,
+    pending: Vec<QueuedCamera>,
 }
 
 impl CameraQueue {
-    fn push(&mut self, command: CameraCommand) {
+    fn push(&mut self, command: QueuedCamera) {
         self.pending.push(command);
     }
 
-    fn take(&mut self, view: Option<&str>) -> Option<CameraTarget> {
+    fn take(&mut self, view: Option<&str>) -> Option<PendingCamera> {
         let mut chosen = None;
-        self.pending.retain(|command| {
+        let existing = std::mem::take(&mut self.pending);
+        for command in existing {
             if command.view.as_deref() == view {
-                chosen = Some(command.target);
-                false
+                chosen = Some(command.pending);
             } else {
-                true
+                self.pending.push(command);
             }
-        });
+        }
         chosen
     }
 }
@@ -112,6 +131,14 @@ fn wake() {
     }
 }
 
+fn encode_camera_reply(result: Result<ResolvedCamera, String>) -> String {
+    match result {
+        Ok(resolved) => serde_json::to_string(&resolved)
+            .unwrap_or_else(|_| r#"{"error":"failed to encode resolved camera"}"#.into()),
+        Err(error) => serde_json::json!({ "error": error }).to_string(),
+    }
+}
+
 fn enabled() -> bool {
     *ENABLED.get_or_init(|| {
         let Some(address) = std::env::var("BATTLEPLAN_E2E_INPUT").or_else(|_| std::env::var("HOI4_E2E_INPUT")).ok() else {
@@ -132,18 +159,44 @@ fn enabled() -> bool {
             .name("suite input".into())
             .spawn(move || {
                 for stream in listener.incoming().flatten() {
+                    let mut writer = stream.try_clone().ok();
                     for line in BufReader::new(stream).lines().map_while(Result::ok) {
                         match serde_json::from_str::<Line>(&line) {
-                            Ok(Line::Camera { camera }) => match camera.into_command() {
-                                Ok(command) => {
-                                    PENDING_CAMERAS
-                                        .lock()
-                                        .unwrap_or_else(|error| error.into_inner())
-                                        .push(command);
-                                    wake();
+                            Ok(Line::Camera { camera }) => {
+                                let reply = match camera.into_command() {
+                                    Ok((view, target)) => {
+                                        let (tx, rx) = mpsc::sync_channel(1);
+                                        PENDING_CAMERAS
+                                            .lock()
+                                            .unwrap_or_else(|error| error.into_inner())
+                                            .push(QueuedCamera {
+                                                view,
+                                                pending: PendingCamera {
+                                                    target,
+                                                    reply: Some(tx),
+                                                },
+                                            });
+                                        wake();
+                                        match rx.recv_timeout(Duration::from_secs(10)) {
+                                            Ok(result) => result,
+                                            Err(mpsc::RecvTimeoutError::Timeout) => {
+                                                Err("viewer did not apply camera command within 10 s".into())
+                                            }
+                                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                                Err("camera command was superseded or dropped before drawing".into())
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!("BATTLEPLAN_E2E_INPUT line refused: {error}");
+                                        Err(error.into())
+                                    }
+                                };
+                                if let Some(writer) = writer.as_mut() {
+                                    let _ = writeln!(writer, "{}", encode_camera_reply(reply));
+                                    let _ = writer.flush();
                                 }
-                                Err(error) => eprintln!("BATTLEPLAN_E2E_INPUT line refused: {error}"),
-                            },
+                            }
                             Ok(line) => {
                                 PENDING.lock().unwrap_or_else(|error| error.into_inner()).push(line);
                                 wake();
@@ -184,7 +237,7 @@ pub(crate) fn apply(ctx: &egui::Context, input: &mut egui::RawInput) {
     }
 }
 
-pub(crate) fn take_camera(view: Option<&str>) -> Option<CameraTarget> {
+pub(crate) fn take_camera(view: Option<&str>) -> Option<PendingCamera> {
     if ENABLED.get() != Some(&true) {
         return None;
     }
@@ -222,6 +275,7 @@ pub(crate) fn apply_camera(
             let eye = camera.eye();
             let low = floor(eye[0], eye[2]).max(low_limit);
             camera.height = camera.height.clamp(low, high_limit.max(low));
+            camera.clamp_center(viewport);
             true
         }
     }
@@ -280,43 +334,51 @@ mod tests {
     }
 
     #[test]
-    fn camera_lines_parse_validate_and_route_by_view() {
+    fn camera_lines_parse_validate_route_and_reply_by_view() {
         let parse_camera = |text: &str| match serde_json::from_str::<Line>(text).unwrap() {
             Line::Camera { camera } => camera.into_command(),
             other => panic!("unexpected line: {other:?}"),
         };
-        let placed = parse_camera(r#"{"camera":{"view":"overview-map","center":[2816,1024],"height":180}}"#).unwrap();
-        assert_eq!(placed, CameraCommand {
-            view: Some("overview-map".into()),
-            target: CameraTarget::Place { center: [2816.0, 1024.0], height: 180.0 },
-        });
-        let reset = parse_camera(r#"{"camera":{"view":"overview-map","reset":true}}"#).unwrap();
-        assert_eq!(reset, CameraCommand {
-            view: Some("overview-map".into()),
-            target: CameraTarget::Reset,
-        });
-        let campaign = parse_camera(r#"{"camera":{"center":[3000,1200],"height":200}}"#).unwrap();
-        assert_eq!(campaign, CameraCommand {
-            view: None,
-            target: CameraTarget::Place { center: [3000.0, 1200.0], height: 200.0 },
-        });
+        let (placed_view, placed_target) = parse_camera(r#"{"camera":{"view":"overview-map","center":[2816,1024],"height":180}}"#).unwrap();
+        assert_eq!(placed_view, Some("overview-map".into()));
+        assert_eq!(placed_target, CameraTarget::Place { center: [2816.0, 1024.0], height: 180.0 });
+        let (reset_view, reset_target) = parse_camera(r#"{"camera":{"view":"overview-map","reset":true}}"#).unwrap();
+        assert_eq!(reset_view, Some("overview-map".into()));
+        assert_eq!(reset_target, CameraTarget::Reset);
+        let (campaign_view, campaign_target) = parse_camera(r#"{"camera":{"center":[3000,1200],"height":200}}"#).unwrap();
+        assert_eq!(campaign_view, None);
+        assert_eq!(campaign_target, CameraTarget::Place { center: [3000.0, 1200.0], height: 200.0 });
         assert!(parse_camera(r#"{"camera":{"view":"overview-map"}}"#).is_err());
         assert!(parse_camera(r#"{"camera":{"view":"overview-map","center":[2816,1024],"height":0}}"#).is_err());
         assert!(parse_camera(r#"{"camera":{"view":"overview-map","center":[2816,1024],"height":180,"reset":true}}"#).is_err());
         assert!(serde_json::from_str::<Line>(r#"{"camera":{"extra":1}}"#).is_err());
 
+        let (tx_old, rx_old) = mpsc::sync_channel(1);
+        let (tx_reset, rx_reset) = mpsc::sync_channel(1);
+        let (tx_campaign, rx_campaign) = mpsc::sync_channel(1);
         let mut queue = CameraQueue::default();
-        queue.push(placed);
-        queue.push(campaign.clone());
-        queue.push(reset.clone());
-        assert_eq!(queue.take(Some("overview-map")), Some(CameraTarget::Reset));
-        assert_eq!(queue.take(Some("overview-map")), None);
-        assert_eq!(queue.take(None), Some(campaign.target));
-        assert_eq!(queue.take(None), None);
+        queue.push(QueuedCamera { view: placed_view, pending: PendingCamera { target: placed_target, reply: Some(tx_old) } });
+        queue.push(QueuedCamera { view: campaign_view, pending: PendingCamera { target: campaign_target, reply: Some(tx_campaign) } });
+        queue.push(QueuedCamera { view: reset_view, pending: PendingCamera { target: reset_target, reply: Some(tx_reset) } });
+
+        let taken = queue.take(Some("overview-map")).unwrap();
+        assert_eq!(taken.target, CameraTarget::Reset);
+        assert!(rx_old.recv().is_err());
+        let fit = ResolvedCamera { center: [2816.0, 1024.0], height: 3000.0 };
+        taken.finish(Ok(fit));
+        assert_eq!(rx_reset.recv().unwrap(), Ok(fit));
+        assert!(queue.take(Some("overview-map")).is_none());
+
+        let taken_campaign = queue.take(None).unwrap();
+        assert_eq!(taken_campaign.target, campaign_target);
+        let placed = ResolvedCamera { center: [3000.0, 1200.0], height: 200.0 };
+        taken_campaign.finish(Ok(placed));
+        assert_eq!(rx_campaign.recv().unwrap(), Ok(placed));
+        assert!(queue.take(None).is_none());
     }
 
     #[test]
-    fn apply_camera_places_deterministically_clamps_bounds_and_resets_to_fit() {
+    fn apply_camera_places_deterministically_clamps_modded_limits_and_resets_to_fit() {
         let viewport = [1000, 500];
         let mut camera = Camera::fit(MapSize::TEST, MapDefines::test(), viewport);
         let fit = camera;
@@ -341,6 +403,24 @@ mod tests {
         ));
         assert_eq!(camera.center[0], MapSize::TEST.x() - 10.0);
         assert_eq!(camera.height, 95.0);
+
+        let mut modded_defines = MapDefines::test();
+        modded_defines.heights = [250.0, 4000.0];
+        let mut modded = Camera::fit(MapSize::TEST, modded_defines, viewport);
+        let modded_center = modded.center;
+        let modded_fit_height = modded.height;
+        assert!(modded_fit_height > 250.0);
+        assert!(apply_camera(
+            &mut modded,
+            CameraTarget::Place { center: modded_center, height: 180.0 },
+            viewport,
+            &floor,
+        ));
+        assert_eq!(modded.height, 250.0);
+        assert!(modded.height < modded_fit_height);
+        let encoded = encode_camera_reply(Ok(ResolvedCamera { center: modded.center, height: modded.height }));
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded["height"].as_f64(), Some(250.0));
 
         assert!(!apply_camera(&mut camera, CameraTarget::Reset, viewport, &floor));
         assert_eq!(camera, fit);

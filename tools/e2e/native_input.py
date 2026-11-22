@@ -68,6 +68,7 @@ class Desktop:
         self.app_pid = app_pid
         self.address = address
         self.channel = None
+        self.channel_reader = None
 
     def send(self, *lines):
         """Sends events to the viewer's suite input channel; the epoch milliseconds the first left at."""
@@ -75,9 +76,17 @@ class Desktop:
             host, port = self.address.rsplit(":", 1)
             self.channel = socket.create_connection((host, int(port)), timeout=10)
             self.channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.channel_reader = self.channel.makefile("r", encoding="utf-8")
         at = epoch_ms()
         self.channel.sendall("".join(json.dumps(line) + "\n" for line in lines).encode())
         return at
+
+    def send_and_receive(self, line):
+        at = self.send(line)
+        raw = self.channel_reader.readline()
+        if not raw:
+            raise RuntimeError("the viewer closed the suite input channel before replying")
+        return at, json.loads(raw)
 
     def windows(self):
         """Every visible window on the desktop, children included: (hwnd, pid, rect, title, class, id)."""
@@ -175,7 +184,23 @@ class Desktop:
                 raise ValueError("camera placement requires finite center and positive height")
             payload["center"] = [cx, cz]
             payload["height"] = h
-        return {"posted": [self.send({"camera": payload})]}
+        at, reply = self.send_and_receive({"camera": payload})
+        if not isinstance(reply, dict):
+            raise RuntimeError("viewer returned a non-object camera reply")
+        if reply.get("error"):
+            raise RuntimeError(str(reply["error"]))
+        resolved_center = reply.get("center")
+        resolved_height = reply.get("height")
+        if (
+            not isinstance(resolved_center, (list, tuple))
+            or len(resolved_center) != 2
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in resolved_center)
+            or not isinstance(resolved_height, (int, float))
+            or not math.isfinite(resolved_height)
+            or resolved_height <= 0
+        ):
+            raise RuntimeError(f"viewer returned an invalid resolved camera pose: {reply!r}")
+        return {"posted": [at], "center": [float(resolved_center[0]), float(resolved_center[1])], "height": float(resolved_height)}
 
     def save_dialog(self, path, seconds):
         """Fills the host's save dialog's file name and confirms it, as a user does."""
