@@ -810,3 +810,15 @@ fn log_span_reads_texts_filters_keys_and_reports_unavailable_gaps_across_blocks(
     assert!(log_span(&recording, 0, TableId::LeaderTraitGains, &[99], Keys::All, first, last, &mut |_, _, _| {}).is_err());
     assert!(log_span(&recording, 0, TableId::Countries, &[0], Keys::All, first, last, &mut |_, _, _| {}).is_err());
 }
+
+#[test]
+fn edge_walk_allocates_only_visited_bins_across_many_keys() {
+    let mut walk = Walk::new(Some(summary::Source::Cell(0)), None, 816, 6, 1_000);
+    for key in 0u128..1_500 {
+        walk.point(key, true, Some((key % 17) as i64), 820);
+        walk.point(key, true, Some(((key + 1) % 17) as i64), 821);
+    }
+    walk.end(822);
+    assert_eq!(walk.rows.len(), 1_500);
+    assert!(walk.rows.values().all(|row| row.bins.len() == 1 && row.bins[0].0 == 0 && row.bins[0].1.last_hour == 821));
+}

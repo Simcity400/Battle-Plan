@@ -98,7 +98,7 @@ macro_rules! status_fields {
             maximum_organisation_exact: Recorded::Value($row.movement_organisation.flatten().map(|pair| pair[1])),
             entrenchment: $row.entrenchment,
             entrenchment_cap: $row.entrenchment_cap,
-            supply_ratio: (!DivisionStatusRow::keeps_exact_supply($row.out_of_supply_days)).then(|| DivisionStatusRow::SUPPLY_RATIO_STEP.round($row.supply_ratio)),
+            supply_ratio: None,
             attrition_value: $row.attrition_value,
             attrition_threshold: $row.attrition_threshold,
             exercising: $row.exercising,
@@ -144,22 +144,8 @@ macro_rules! project_status_fields {
             commander_modifiers: Recorded::Value(block.map(|entries: [Option<i64>; 6]| [entries[0], entries[1], entries[2], entries[4], entries[5]])),
             commander_width_factor: Recorded::Value(block.and_then(|entries| entries[3])),
             combat_movement: Recorded::Value($combat_movement),
-            supply_ratio_exact: Recorded::Value(
-                DivisionStatusRow::exact_supply(
-                    $row.out_of_supply_days,
-                    $row.supply_ratio,
-                    $row.supply_grace_remaining,
-                )
-                .map(|[ratio, _]| ratio),
-            ),
-            supply_grace_exact: Recorded::Value(
-                DivisionStatusRow::exact_supply(
-                    $row.out_of_supply_days,
-                    $row.supply_ratio,
-                    $row.supply_grace_remaining,
-                )
-                .map(|[_, grace]| grace),
-            ),
+            supply_ratio_exact: Recorded::Value(Some($row.supply_ratio)),
+            supply_grace_exact: Recorded::Value(Some($row.supply_grace_remaining)),
         }
     }};
 }
@@ -167,7 +153,6 @@ macro_rules! project_status_fields {
 #[derive(Clone, Copy, PartialEq)]
 struct StatusInputs {
     row: carmy::StatusRow,
-    exact_supply: Option<[i64; 2]>,
     supply_grace: Option<i32>,
     supply: Option<engine_native::cunit_supply_inputs::Inputs>,
     dig_in: Option<i64>,
@@ -2309,19 +2294,11 @@ impl Captured {
                 row.supply_origins_start = 0;
                 row.maximum_hit_points = 0;
                 row.maximum_organisation = 0;
-                row.supply_ratio = DivisionStatusRow::SUPPLY_RATIO_STEP.round(r.supply_ratio);
-                row.supply_grace_remaining =
-                    DivisionStatusRow::displayed_grace(r.supply_grace_remaining, self.supply_grace);
                 row.attrition = 0;
                 row.supply = None;
                 row.supply_failure = None;
                 Some(StatusInputs {
                     row,
-                    exact_supply: DivisionStatusRow::exact_supply(
-                        r.out_of_supply_days,
-                        r.supply_ratio,
-                        r.supply_grace_remaining,
-                    ),
                     supply_grace: self.supply_grace,
                     supply: supply.0,
                     dig_in: self.dig_in.factor(r.division, index),
@@ -5135,6 +5112,78 @@ pub mod tests {
             };
             assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(stored));
         }
+    }
+
+    #[test]
+    fn supply_status_keeps_exact_operands_and_sub_percent_deltas_at_zero_days() {
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 0,
+            status: 1,
+            bans: 0,
+            paths: 0,
+            ..Capacities::default()
+        });
+        capture.supply_grace = Some(72);
+        capture.status.outcome = Outcome::Rows { len: 1 };
+        capture.status.rows[0] = carmy::StatusRow {
+            division: 42,
+            supply_ratio: 35_499,
+            supply_grace_maximum: 7_200_000,
+            supply_grace_remaining: 3_635_999,
+            out_of_supply_days: Some(0),
+            ..Default::default()
+        };
+        let TableView::Complete(TableRows::DivisionStatus(rows)) = capture.tables()[1].clone()
+        else {
+            panic!("complete status");
+        };
+        assert_eq!(rows[0].supply_ratio, None);
+        assert_eq!(rows[0].supply_ratio_exact, Recorded::Value(Some(35_499)));
+        assert_eq!(rows[0].supply_grace_exact, Recorded::Value(Some(3_635_999)));
+        assert_eq!(rows[0].supply_grace_remaining, Recorded::Value(3_600_000));
+        assert_eq!(rows[0].displayed_supply_ratio(), Some(35_000));
+        let mut baseline = std::array::from_fn(|_| unavailable("outside presentation fixture"));
+        for (id, view) in TABLES.into_iter().zip(capture.tables()) {
+            baseline[id.index()] = view;
+        }
+        let mut encoder = replay_frame::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay_frame::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 0,
+                    tables: baseline.map(Into::into),
+                    metrics: replay_frame::frame::Metrics::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let scratch = collector_projection::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &scratch);
+        let [_, status, ..] = capture.table_inputs(Some(&mut projection), None);
+        assert!(matches!(status, TableInput::ComparedEqual(_)));
+        capture.status.rows[0].supply_ratio = 35_500;
+        let [_, status, ..] = capture.table_inputs(Some(&mut projection), None);
+        let TableInput::ComparedChanges { indices, rows, .. } = status else {
+            panic!("sub-percent supply_ratio change must publish delta");
+        };
+        assert_eq!(indices, [0]);
+        let TableRows::DivisionStatus(rows) = rows else {
+            unreachable!();
+        };
+        assert_eq!(rows[0].supply_ratio, None);
+        assert_eq!(rows[0].supply_ratio_exact, Recorded::Value(Some(35_500)));
+        capture.status.rows[0].supply_ratio = 35_499;
+        capture.status.rows[0].supply_grace_remaining = 3_636_000;
+        let [_, status, ..] = capture.table_inputs(Some(&mut projection), None);
+        let TableInput::ComparedChanges { indices, rows, .. } = status else {
+            panic!("sub-percent supply_grace_remaining change must publish delta");
+        };
+        assert_eq!(indices, [0]);
+        let TableRows::DivisionStatus(rows) = rows else {
+            unreachable!();
+        };
+        assert_eq!(rows[0].supply_grace_exact, Recorded::Value(Some(3_636_000)));
     }
 
     #[test]

@@ -2183,10 +2183,22 @@ mod tests {
         assert!(!historical.body.contains("supply "));
         assert_eq!(historical.refused[reason], 1);
         status[0].supply_grace_maximum = Recorded::Value(0);
-        put(&mut frame, TableRows::DivisionStatus(status));
+        put(&mut frame, TableRows::DivisionStatus(status.clone()));
         let no_grace = tooltip(&frame, &[1], false, false, &vision);
         assert!(no_grace.body.contains("supply 0%\n"));
         assert!(!no_grace.refused.contains_key(reason));
+        status[0].supply_grace_maximum = Recorded::Value(400_000);
+        status[0].supply_grace_remaining = Recorded::Value(0);
+        status[0].supply_ratio = None;
+        status[0].supply_ratio_exact = Recorded::Value(Some(35_499));
+        status[0].supply_grace_exact = Recorded::Value(Some(0));
+        put(&mut frame, TableRows::DivisionStatus(status));
+        let exact_rounded = tooltip(&frame, &[1], false, false, &vision);
+        assert!(
+            exact_rounded.body.contains("supply 35%\n"),
+            "{}",
+            exact_rounded.body
+        );
     }
 
     #[test]
