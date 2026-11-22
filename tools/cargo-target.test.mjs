@@ -53,4 +53,85 @@ test('a list of targets is refused by name', async (t) => {
   const home = path.join(root, 'no-home');
   await assert.rejects(cargoTarget({ cwd: root, home, env: {}, cargoArgs: [] }), /config\.toml names build targets this command cannot place/);
   await assert.rejects(cargoTarget({ cwd: root, home, env: {}, cargoArgs: ['--config', 'build.target=["a"]'] }), /--config names build targets/);
+  await assert.rejects(cargoTarget({ cwd: root, home, env: {}, cargoArgs: ['--config', '"build".target=["a", "b"]'] }), /--config names build targets/);
+  await assert.rejects(cargoTarget({ cwd: root, home, env: {}, cargoArgs: ['--config', 'build.target=[]'] }), /--config names build targets/);
+  await assert.rejects(cargoTarget({ cwd: root, home, env: {}, cargoArgs: ['--config', 'build.target=""'] }), /--config names build targets/);
+  await assert.rejects(cargoTarget({ cwd: root, home, env: {}, cargoArgs: ['--config', 'build.target=123'] }), /--config names build targets/);
+});
+
+test('quoted, dotted, and escaped TOML keys and values are resolved across --config and config files', async (t) => {
+  const root = await fixture({
+    '.cargo/config.toml': '["build"]\n"target" = "quoted-table"\n',
+    'escaped.toml': '"\\u0062uild"."t\\x61rget" = "targets\\\\x\\u00386_64\\U0000002dwin.json"\n',
+    'literal.toml': "['build']\n'target' = 'C:\\targets\\custom.json'\n",
+    'multiline.toml': '[build]\ntarget = """\nx86_64-\\\n  pc-windows-msvc"""\n',
+    'multiline-literal.toml': "[build]\ntarget = '''\nC:\\targets\\multi.json'''\n",
+    'custom-config': '[build]\ntarget = "extensionless-cli-file"\n',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const resolve = (cargoArgs = [], env = {}) => cargoTarget({ cwd: root, home: path.join(root, 'no-home'), env, cargoArgs });
+
+  assert.equal(await resolve(), 'quoted-table');
+  assert.equal(await resolve(['--config', '"build".target="quoted-cli"'], { CARGO_BUILD_TARGET: 'env' }), 'quoted-cli');
+  assert.equal(await resolve(['--config', `'build'."target"='single-and-double'`]), 'single-and-double');
+  assert.equal(await resolve(['--config', 'build . "target" = "spaced-dots"']), 'spaced-dots');
+  assert.equal(await resolve(['--config', '"\\u0062uild"."\\u0074arget"="escaped-cli-key"']), 'escaped-cli-key');
+  assert.equal(await resolve(['--config', 'build.target="dir\\\\custom\\"target\\".json"']), 'dir\\custom"target".json');
+  assert.equal(await resolve(['--config', 'build.target="custom.toml"']), 'custom.toml');
+  assert.equal(await resolve(['--config', 'escaped.toml']), 'targets\\x86_64-win.json');
+  assert.equal(await resolve(['--config', 'literal.toml']), 'C:\\targets\\custom.json');
+  assert.equal(await resolve(['--config', 'multiline.toml']), 'x86_64-pc-windows-msvc');
+  assert.equal(await resolve(['--config', 'multiline-literal.toml']), 'C:\\targets\\multi.json');
+  assert.equal(await resolve(['--config', 'custom-config']), 'extensionless-cli-file');
+  assert.equal(await resolve(['--config', '"build".target="first"', '--config', '"build".jobs=2']), 'first');
+  assert.equal(await resolve(['--config', 'build.target="first"', '--config', '"build".target="second"']), 'second');
+});
+
+test('inline tables, comments, real Cargo tables, and lookalike keys obey TOML structure', async (t) => {
+  const root = await fixture({
+    '.cargo/config.toml': [
+      '\uFEFF[target.\'cfg(all(target_os = "windows", target_arch = "x86_64"))\']',
+      'rustflags = ["-C", "link-arg=/DEBUG"] # trailing comment',
+      '',
+      '[other]',
+      'build.target = "nested-other"',
+      'nested = { build = { target = "nested-inline" } }',
+      'note = """',
+      '[build]',
+      'target = "inside-string"',
+      '"""',
+      '""."build".target = "empty-prefix"',
+      '',
+      '[build.sub]',
+      'target = "subtable-ignored"',
+      '',
+      '[build]',
+      '# target = "commented-out"',
+      'target = "real#not-a-comment" # comment after value',
+    ].join('\n'),
+    'inline.toml': 'build = { jobs = 4, "target" = "from-inline-table" }\n',
+    'super-dotted.toml': '[build.sub.leaf]\nx = 1\n[build]\nsub.y = 2\ntarget = "after-dotted-sub"\n',
+    'inline-array.toml': 'build = { target = [\n  # comment\n  "a",\n  "b",\n] }\n',
+    'table-target.toml': '[build.target]\nfoo = "bar"\n',
+    'scalar-build.toml': 'build = "not-a-table"\n',
+    'aot-build.toml': '[[build]]\ntarget = "a"\n',
+    'bad-duplicate.toml': '[build]\ntarget = "a"\ntarget = "b"\n',
+    'bad-reopen.toml': 'build.jobs = 2\n[build]\ntarget = "a"\n',
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const resolve = (cargoArgs = []) => cargoTarget({ cwd: root, home: path.join(root, 'no-home'), env: {}, cargoArgs });
+
+  assert.equal(await resolve(), 'real#not-a-comment');
+  assert.equal(await resolve(['--config', 'inline.toml']), 'from-inline-table');
+  assert.equal(await resolve(['--config', 'super-dotted.toml']), 'after-dotted-sub');
+  assert.equal(await resolve(['--config', 'build = { target = "cli-inline" }']), 'cli-inline');
+  assert.equal(await resolve(['--config', 'other.build.target="ignored"', '--', '--config', 'build.target="after-sep"']), 'real#not-a-comment');
+  await assert.rejects(resolve(['--config', 'inline-array.toml']), /inline-array\.toml names build targets this command cannot place/);
+  await assert.rejects(resolve(['--config', 'table-target.toml']), /table-target\.toml names build targets this command cannot place/);
+  await assert.rejects(resolve(['--config', 'scalar-build.toml']), /scalar-build\.toml names build targets this command cannot place/);
+  await assert.rejects(resolve(['--config', 'aot-build.toml']), /aot-build\.toml names build targets this command cannot place/);
+  await assert.rejects(resolve(['--config', 'missing.toml']), /--config/);
+  await assert.rejects(resolve(['--config', 'bad-duplicate.toml']), /bad-duplicate\.toml/);
+  await assert.rejects(resolve(['--config', 'bad-reopen.toml']), /bad-reopen\.toml/);
+  await assert.rejects(resolve(['--config', '--config=build.target="injected"']), /--config/);
 });
