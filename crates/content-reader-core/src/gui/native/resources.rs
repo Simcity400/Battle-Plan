@@ -389,9 +389,7 @@ mod tests {
         assert!(refusals[0].reason.contains("text color reader"));
     }
 
-    // quarantine: #158 a three-byte DDS is not refused as undefined
     #[test]
-    #[ignore = "quarantined under #158"]
     fn mod_textures_decode_in_the_native_order() {
         crate::test_game::enter();
         let rgba = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -399,7 +397,8 @@ mod tests {
         let jpeg =
             include_bytes!("../../../../content-reader-image/src/native/testdata/baseline_420.jpg")
                 .to_vec();
-        let undefined = vec![0, 0, 1];
+        let undefined = b"DDS ".to_vec();
+        let short = vec![0, 0, 1];
         let garbage = vec![
             0x13, 7, 0x55, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
         ];
@@ -408,6 +407,7 @@ mod tests {
             (b"gfx/mod/renamed.tga", png.clone()),
             (b"gfx/mod/photo.dds", jpeg),
             (b"gfx/mod/tiny.dds", undefined),
+            (b"gfx/mod/short.dds", short),
             (b"gfx/mod/noise.dds", garbage),
             (b"gfx/mod/huge.dds", vec![0; FILE_LIMIT + 1]),
         ]
@@ -447,6 +447,9 @@ mod tests {
         let tiny = texture(b"gfx/mod/tiny.png", &read).unwrap().unwrap_err();
         assert!(matches!(&tiny, NoTexture::Undefined { path, .. } if path == "gfx/mod/tiny.dds"));
         assert!(!tiny.native_failure());
+        let short = texture(b"gfx/mod/short.png", &read).unwrap().unwrap_err();
+        assert!(matches!(&short, NoTexture::Undecodable { path, .. } if path == "gfx/mod/short.dds"));
+        assert!(short.native_failure());
         for (name, native) in [
             (&b"gfx/mod/noise.dds"[..], "Undecodable"),
             (b"gfx/mod/absent.png", "Missing"),

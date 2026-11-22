@@ -431,3 +431,45 @@ fn scripted_text_state_display_shares_precedence_language_and_cached_failures() 
             .contains("other-language")
     );
 }
+
+#[test]
+fn state_templates_accept_synthesized_unclaimed_bmp_provinces() {
+    content_reader_core::test_game::enter();
+    let stack = content_reader_core::test_support::Stack::new("state_templates_unclaimed_bmp");
+    let base = stack.base();
+    stack.write(
+        &base,
+        "common/defines/fixture.lua",
+        "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 } }",
+    );
+    stack.write(
+        &base,
+        "map/default.map",
+        "definitions = definition.csv provinces = provinces.bmp terrain = terrain.bmp rivers = rivers.bmp heightmap = heightmap.bmp tree_definition = trees.bmp",
+    );
+    stack.write(
+        &base,
+        "map/definition.csv",
+        "0;0;0;0;land;false;unknown;0\n1;1;0;0;land;false;unknown;1\n",
+    );
+    stack.write(
+        &base,
+        "history/states/unclaimed.txt",
+        "state = { id = 77 name = SYNTH_STATE provinces = { 1 2 } }",
+    );
+    let mut bmp = vec![0_u8; 62];
+    bmp[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 62_u32), (10, 54), (14, 40), (18, 2), (22, 1)] {
+        bmp[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bmp[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bmp[54..60].copy_from_slice(&[0, 0, 1, 7, 8, 9]);
+    std::fs::write(base.join("map/provinces.bmp"), bmp).unwrap();
+
+    let layers = stack.layers(&[]);
+    let defines = content_reader_core::defines::read(&layers).unwrap();
+    let (states, names, _) = read_state_templates(&layers, &defines).unwrap();
+    assert_eq!(states.definitions()[&77].provinces, [1, 2]);
+    assert_eq!(names[&77], Ok("SYNTH_STATE".into()));
+}

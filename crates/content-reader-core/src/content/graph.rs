@@ -122,6 +122,10 @@ impl Product {
     pub(super) fn request(&self) -> Digest {
         self.metadata.request
     }
+
+    pub(super) fn identity(&self) -> (Digest, Digest) {
+        (self.metadata.request, self.metadata.content)
+    }
     pub(super) fn value<T: Send + Sync + 'static>(&self) -> io::Result<Arc<T>> {
         Arc::clone(self.value.as_ref().map_err(Failure::error)?)
             .downcast::<T>()
@@ -172,10 +176,20 @@ impl Node {
     }
 }
 
+#[derive(Default)]
+struct WatchState {
+    pending: BTreeSet<(std::path::PathBuf, bool)>,
+    arming: bool,
+    ready: bool,
+}
+
 pub(super) struct Graph {
     state: Arc<Mutex<State>>,
     pub witnesses: Arc<super::generation::Witnesses>,
     pub(super) changes: Arc<super::changes::Changes>,
+    watches: Arc<Mutex<WatchState>>,
+    arming_lock: Arc<Mutex<()>>,
+    watches_ready: Arc<AtomicBool>,
     pub(super) inventories: Arc<Mutex<Vec<std::sync::Weak<super::generation::Witnesses>>>>,
     loading: Arc<AtomicBool>,
     scoped: Arc<AtomicBool>,
@@ -190,6 +204,9 @@ impl Default for Graph {
             state: Arc::clone(&current.state),
             witnesses: Arc::clone(&current.witnesses),
             changes: Arc::clone(&current.changes),
+            watches: Arc::clone(&current.watches),
+            arming_lock: Arc::clone(&current.arming_lock),
+            watches_ready: Arc::clone(&current.watches_ready),
             inventories: Arc::clone(&current.inventories),
             loading: Arc::clone(&current.loading),
             scoped: Arc::clone(&current.scoped),
@@ -241,6 +258,9 @@ impl Graph {
             state: Arc::default(),
             witnesses: Arc::default(),
             changes: Arc::default(),
+            watches: Arc::default(),
+            arming_lock: Arc::default(),
+            watches_ready: Arc::new(AtomicBool::new(false)),
             inventories: Arc::default(),
             loading: Arc::new(AtomicBool::new(false)),
             scoped: Arc::new(AtomicBool::new(false)),
@@ -250,18 +270,99 @@ impl Graph {
         }
     }
 
-    pub(super) fn acquire(&self) {
-        let mut users = self.users.lock().unwrap_or_else(|error| error.into_inner());
-        if *users == 0 {
-            self.snapshots
+    pub(super) fn is_scoped(&self) -> bool {
+        self.scoped.load(Ordering::Acquire)
+    }
+
+    pub(super) fn watch_root(&self, root: &std::path::Path, subtree: bool) {
+        if !self.watches_ready.load(Ordering::Acquire) {
+            let mut watches = self
+                .watches
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
-            self.prune();
+                .unwrap_or_else(|error| error.into_inner());
+            if !watches.ready {
+                watches.pending.insert((root.to_path_buf(), subtree));
+                return;
+            }
         }
-        *users += 1;
-        self.scoped.store(true, Ordering::Release);
-        self.loading.store(true, Ordering::Release);
+        self.changes.watch_root(root, subtree);
+    }
+
+    pub(super) fn has_unwatched_roots(&self) -> bool {
+        if self.watches_ready.load(Ordering::Acquire) {
+            return false;
+        }
+        let watches = self
+            .watches
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        !watches.ready && (watches.arming || !watches.pending.is_empty())
+    }
+
+    pub(super) fn acquire(&self) {
+        {
+            let mut users = self.users.lock().unwrap_or_else(|error| error.into_inner());
+            if *users == 0 {
+                self.snapshots
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clear();
+                self.prune();
+            }
+            *users += 1;
+            self.scoped.store(true, Ordering::Release);
+            self.loading.store(true, Ordering::Release);
+        }
+        if !self.watches_ready.load(Ordering::Acquire) {
+            self.arm_pending_watches_with(|root, subtree| self.changes.watch_root(root, subtree));
+        }
+    }
+
+    pub(super) fn arm_pending_watches_with(
+        &self,
+        mut register: impl FnMut(&std::path::Path, bool),
+    ) {
+        let _arm = self
+            .arming_lock
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut armed_any = false;
+        struct ResetArming<'a>(&'a Mutex<WatchState>);
+        impl Drop for ResetArming<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .arming = false;
+            }
+        }
+        let _reset = ResetArming(&self.watches);
+        loop {
+            let batch = {
+                let mut watches = self
+                    .watches
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if watches.ready {
+                    return;
+                }
+                if watches.pending.is_empty() {
+                    if armed_any {
+                        self.changes.changed();
+                    }
+                    watches.arming = false;
+                    watches.ready = true;
+                    self.watches_ready.store(true, Ordering::Release);
+                    return;
+                }
+                watches.arming = true;
+                armed_any = true;
+                std::mem::take(&mut watches.pending)
+            };
+            for (root, subtree) in batch {
+                register(&root, subtree);
+            }
+        }
     }
 
     pub(super) fn inventory(&self, inventory: &Arc<super::generation::Witnesses>) {
@@ -473,6 +574,97 @@ impl Graph {
             }
         };
         if !self.loading.load(Ordering::Acquire)
+            && let Some(entry) = node
+                .result
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+        {
+            entry.release();
+        }
+        Ok((product, built))
+    }
+
+    pub(super) fn product_shared_if<T: Send + Sync + 'static>(
+        &self,
+        key: Key,
+        parent: Option<&Arc<Node>>,
+        build: impl FnOnce(&Arc<Node>) -> (io::Result<T>, Vec<ContentRead>, diagnostics::Diagnostics),
+        shareable: impl FnOnce(&T, &[ContentRead]) -> bool,
+    ) -> io::Result<(Arc<Product>, bool)> {
+        let node = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let node = Arc::clone(state.nodes.entry(key.clone()).or_insert_with(|| {
+                Arc::new(Node {
+                    id: key.digest(),
+                    key,
+                    result: Mutex::new(None),
+                    confirmed: OnceLock::new(),
+                    refresh: Mutex::new(()),
+                    builds: AtomicU64::new(0),
+                    building: AtomicBool::new(false),
+                    requests: AtomicUsize::new(0),
+                    dependencies: Mutex::new(BTreeSet::new()),
+                })
+            }));
+            state
+                .by_id
+                .entry(node.request())
+                .or_insert_with(|| Arc::clone(&node));
+            node.requests.fetch_add(1, Ordering::Relaxed);
+            node
+        };
+        struct Request<'a>(&'a AtomicUsize);
+        impl Drop for Request<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::Release);
+            }
+        }
+        let _request = Request(&node.requests);
+        if let Some(parent) = parent {
+            self.dependency(parent, &node)?;
+        }
+        let (product, built) = match node.ready(true) {
+            Some(product) => (product, false),
+            None => {
+                let _refresh = node
+                    .refresh
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                match node.ready(true) {
+                    Some(product) => (product, false),
+                    None => {
+                        let replacement = self.construct(&node, build);
+                        let product = replacement.view().expect("new product holds its value");
+                        let share = product
+                            .value::<T>()
+                            .is_ok_and(|value| shareable(&value, &product.reads));
+                        if share {
+                            if self.is_scoped()
+                                && *node.confirmed.get_or_init(|| product.content)
+                                    != product.content
+                            {
+                                self.stale.store(true, Ordering::Release);
+                                return Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!(
+                                        "content product changed within its generation: {} (schema {})",
+                                        node.key.parser, node.key.schema
+                                    ),
+                                ));
+                            }
+                            *node
+                                .result
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner()) = Some(replacement);
+                        }
+                        (product, true)
+                    }
+                }
+            }
+        };
+        if self.is_scoped()
+            && !self.loading.load(Ordering::Acquire)
             && let Some(entry) = node
                 .result
                 .lock()

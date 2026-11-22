@@ -608,24 +608,32 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "collector-advisors",
+ "collector-air",
  "collector-air-histories",
  "collector-air-records",
  "collector-air-relations",
  "collector-air-sorties",
  "collector-army-icons",
  "collector-certificates",
+ "collector-characters",
  "collector-combat",
  "collector-combat-log",
  "collector-construction",
  "collector-country-counters",
  "collector-division-parts",
+ "collector-division-templates",
+ "collector-divisions",
  "collector-economy",
+ "collector-equipment-destruction",
  "collector-experience-gains",
  "collector-extended-support",
+ "collector-factions",
  "collector-fuel-awards",
  "collector-governance",
+ "collector-hook-failures",
  "collector-hooks",
  "collector-intel",
+ "collector-land-events",
  "collector-leaders",
  "collector-ledger-tables",
  "collector-lexical",
@@ -635,15 +643,21 @@ dependencies = [
  "collector-map-tables",
  "collector-memory",
  "collector-metadata",
+ "collector-missions",
  "collector-model-inputs",
  "collector-naval-counters",
  "collector-naval-details",
+ "collector-naval-history",
  "collector-naval-management",
+ "collector-naval-missions",
  "collector-naval-movement",
+ "collector-naval-results",
  "collector-new-divisions",
  "collector-observers",
+ "collector-operation-outcomes",
  "collector-output",
  "collector-peace",
+ "collector-plans",
  "collector-politics",
  "collector-primitives",
  "collector-production",
@@ -658,6 +672,7 @@ dependencies = [
  "collector-slow-tables",
  "collector-snapshots",
  "collector-stability",
+ "collector-states",
  "collector-status",
  "collector-supply-trains",
  "collector-test-support",
@@ -665,6 +680,7 @@ dependencies = [
  "collector-visibility",
  "collector-war-overview",
  "collector-weather",
+ "collector-workers",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -748,6 +764,49 @@ dependencies = [
  "serde_json",
  "test-unify",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "collector-air"
+version = "0.1.0"
+dependencies = [
+ "collector-air",
+ "collector-air-histories",
+ "collector-air-sorties",
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hook-failures",
+ "collector-memory",
+ "collector-missions",
+ "collector-model-inputs",
+ "collector-naval-management",
+ "collector-observers",
+ "collector-output",
+ "collector-politics",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-ship-models",
+ "collector-test-support",
+ "collector-workers",
+ "crossbeam-utils",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-events",
+ "engine-executable",
+ "engine-map-air",
+ "engine-mutations",
+ "engine-native",
+ "engine-raid-inputs",
+ "engine-sites",
+ "engine-visibility",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -908,6 +967,44 @@ dependencies = [
  "replay-identity",
  "serde",
  "test-unify",
+]
+
+[[package]]
+name = "collector-characters"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-characters",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-intel",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-metadata",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-snapshots",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-characters",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-mutations",
+ "engine-native",
+ "engine-sites",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1079,6 +1176,103 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-division-templates"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "collector-certificates",
+ "collector-division-templates",
+ "collector-extended-support",
+ "collector-hook-failures",
+ "collector-hooks",
+ "collector-memory",
+ "collector-model-inputs",
+ "collector-naval-management",
+ "collector-observers",
+ "collector-output",
+ "collector-politics",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "collector-timing",
+ "collector-workers",
+ "content-reader-country-names",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-regions",
+ "either",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-executable",
+ "engine-mutations",
+ "engine-native",
+ "engine-occupation",
+ "num-traits",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "smallvec",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-divisions"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "collector-certificates",
+ "collector-combat",
+ "collector-division-parts",
+ "collector-divisions",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-production",
+ "collector-projection",
+ "collector-raw",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "collector-workers",
+ "content-reader-country-names",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-regions",
+ "either",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-sites",
+ "engine-visibility",
+ "num-traits",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "smallvec",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "collector-economy"
 version = "0.1.0"
 dependencies = [
@@ -1108,6 +1302,37 @@ dependencies = [
  "replay-identity",
  "test-unify",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "collector-equipment-destruction"
+version = "0.1.0"
+dependencies = [
+ "collector-division-parts",
+ "collector-equipment-destruction",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-events",
+ "engine-executable",
+ "engine-native",
+ "engine-sites",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1157,6 +1382,41 @@ dependencies = [
  "serde",
  "serde_json",
  "test-unify",
+]
+
+[[package]]
+name = "collector-factions"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-factions",
+ "collector-hooks",
+ "collector-intel",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-metadata",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-executable",
+ "engine-mutations",
+ "engine-native",
+ "engine-resources",
+ "engine-scripts",
+ "engine-sites",
+ "engine-stability",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1228,6 +1488,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-hook-failures"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-hook-failures",
+ "collector-hooks",
+ "collector-naval-management",
+ "collector-observers",
+ "collector-output",
+ "collector-politics",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "crossbeam-utils",
+ "engine-air-history",
+ "engine-allocation",
+ "engine-characters",
+ "engine-decisions",
+ "engine-events",
+ "engine-executable",
+ "engine-fuel",
+ "engine-intelligence",
+ "engine-land-inputs",
+ "engine-map-air",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-occupation",
+ "engine-peace",
+ "engine-production",
+ "engine-sites",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "test-unify",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "collector-hooks"
 version = "0.1.0"
 dependencies = [
@@ -1238,6 +1538,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-sites",
  "retour",
  "serde",
  "serde_json",
@@ -1280,6 +1581,35 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-land-events"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-combat-log",
+ "collector-hooks",
+ "collector-land-events",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-sites",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
  "test-unify",
  "windows-sys 0.52.0",
  "windows-sys 0.61.2",
@@ -1511,6 +1841,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-missions"
+version = "0.1.0"
+dependencies = [
+ "collector-air-sorties",
+ "collector-certificates",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-missions",
+ "collector-observers",
+ "collector-primitives",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-utils",
+ "engine-executable",
+ "engine-map-air",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-sites",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "collector-model-inputs"
 version = "0.1.0"
 dependencies = [
@@ -1601,6 +1959,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-naval-history"
+version = "0.1.0"
+dependencies = [
+ "collector-air",
+ "collector-air-histories",
+ "collector-air-sorties",
+ "collector-country-counters",
+ "collector-extended-support",
+ "collector-hook-failures",
+ "collector-memory",
+ "collector-missions",
+ "collector-model-inputs",
+ "collector-naval-history",
+ "collector-naval-management",
+ "collector-observers",
+ "collector-output",
+ "collector-politics",
+ "collector-primitives",
+ "collector-projection",
+ "collector-raw",
+ "collector-ship-models",
+ "collector-test-support",
+ "collector-workers",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-executable",
+ "engine-mutations",
+ "engine-native",
+ "engine-naval-history",
+ "engine-railways",
+ "engine-sites",
+ "engine-visibility",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "collector-naval-management"
 version = "0.1.0"
 dependencies = [
@@ -1625,6 +2025,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-naval-missions"
+version = "0.1.0"
+dependencies = [
+ "collector-air-sorties",
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-missions",
+ "collector-naval-details",
+ "collector-naval-missions",
+ "collector-naval-movement",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "collector-timing",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "engine-naval-history",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "collector-naval-movement"
 version = "0.1.0"
 dependencies = [
@@ -1642,6 +2074,31 @@ dependencies = [
  "serde",
  "serde_json",
  "test-unify",
+]
+
+[[package]]
+name = "collector-naval-results"
+version = "0.1.0"
+dependencies = [
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-naval-results",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "collector-timing",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "engine-naval-history",
+ "engine-sites",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1708,6 +2165,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-operation-outcomes"
+version = "0.1.0"
+dependencies = [
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-operation-outcomes",
+ "collector-primitives",
+ "collector-projection",
+ "collector-test-support",
+ "collector-timing",
+ "engine-allocation",
+ "engine-events",
+ "engine-executable",
+ "engine-native",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "collector-output"
 version = "0.1.0"
 dependencies = [
@@ -1761,6 +2242,52 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "collector-plans"
+version = "0.1.0"
+dependencies = [
+ "collector-air",
+ "collector-air-histories",
+ "collector-air-sorties",
+ "collector-combat",
+ "collector-country-counters",
+ "collector-division-parts",
+ "collector-divisions",
+ "collector-extended-support",
+ "collector-hook-failures",
+ "collector-memory",
+ "collector-missions",
+ "collector-model-inputs",
+ "collector-naval-history",
+ "collector-naval-management",
+ "collector-observers",
+ "collector-output",
+ "collector-plans",
+ "collector-politics",
+ "collector-primitives",
+ "collector-production",
+ "collector-projection",
+ "collector-raw",
+ "collector-ship-models",
+ "collector-states",
+ "collector-test-support",
+ "collector-workers",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-deployment",
+ "engine-executable",
+ "engine-land-inputs",
+ "engine-native",
+ "engine-visibility",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
  "test-unify",
  "windows-sys 0.52.0",
  "windows-sys 0.61.2",
@@ -2156,6 +2683,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "collector-states"
+version = "0.1.0"
+dependencies = [
+ "collector-certificates",
+ "collector-extended-support",
+ "collector-hooks",
+ "collector-lifetime",
+ "collector-memory",
+ "collector-observers",
+ "collector-primitives",
+ "collector-projection",
+ "collector-states",
+ "collector-test-support",
+ "collector-timing",
+ "collector-workers",
+ "crossbeam-utils",
+ "engine-allocation",
+ "engine-executable",
+ "engine-mutations",
+ "engine-native",
+ "engine-occupation",
+ "engine-railways",
+ "game-model",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "serde",
+ "test-unify",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "collector-status"
 version = "0.1.0"
 dependencies = [
@@ -2304,6 +2864,27 @@ dependencies = [
  "serde_json",
  "test-unify",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "collector-workers"
+version = "0.1.0"
+dependencies = [
+ "collector-memory",
+ "collector-primitives",
+ "collector-status",
+ "collector-test-support",
+ "collector-timing",
+ "collector-workers",
+ "engine-allocation",
+ "engine-executable",
+ "engine-native",
+ "replay-data",
+ "replay-identity",
+ "serde",
+ "serde_json",
+ "test-unify",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

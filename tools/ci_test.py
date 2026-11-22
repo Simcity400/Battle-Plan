@@ -214,16 +214,19 @@ class Crates(unittest.TestCase):
                 "crates/core/Cargo.toml": '[package]\nname = "core"\n[dependencies]\nserde = { workspace = true }\n',
                 "crates/mid/Cargo.toml": '[package]\nname = "mid"\n[dev-dependencies]\nshared-core = { workspace = true }\n',
                 "crates/top/Cargo.toml": '[package]\nname = "top"\n[target."cfg(windows)".dependencies]\nm = { package = "mid", path = "../mid" }\n'
-                                         '[dependencies]\ntao = { path = "../../vendor/tao" }\n',
+                                         '[dependencies]\ntao = { path = "../../vendor/tao" }\n'
+                                         '[target.\'cfg(all())\'.dev-dependencies]\nshared-core = { workspace = true, features = ["x"] }\n'
+                                         'test-unify = { path = "../test-unify" }\n',
+                "crates/test-unify/Cargo.toml": '[package]\nname = "test-unify"\n',
                 "crates/gone/Cargo.toml": '[package]\nname = "gone"\n',
             }
             for name, text in files.items():
                 Path(root, name).parent.mkdir(parents=True, exist_ok=True)
                 Path(root, name).write_text(text, encoding="utf-8")
             found = ci.crates_from_manifests(root)
-            self.assertEqual(sorted(found), ["core", "mid", "top"])
+            self.assertEqual(sorted(found), ["core", "mid", "test-unify", "top"])
             self.assertEqual(found["mid"].deps, {"core"})
-            self.assertEqual(found["top"].deps, {"mid"})
+            self.assertEqual(found["top"].deps, {"mid", "test-unify"})
             self.assertEqual(found["core"].folder, "crates/core")
 
 
@@ -526,6 +529,36 @@ class Pipeline(unittest.TestCase):
     def test_an_unknown_tier_is_refused(self):
         with self.assertRaises(SystemExit):
             ci.load_pipeline(re.sub(r'(name = "scan"\ngroup = "all"\ntier = )"check"', r'\1"weekly"', PIPELINE))
+
+    def test_nextest_deps_dir_resolves_profile_and_target_dir(self):
+        root = Path("repo")
+        self.assertEqual(
+            ci.nextest_deps_dir(["cargo", "nextest", "run", "--cargo-profile", "ci"], root=root, env={}),
+            root / ".cargo-target" / "ci" / "deps",
+        )
+        self.assertEqual(
+            ci.nextest_deps_dir(["cargo", "nextest", "run", "--cargo-profile=release"], root=root, env={"CARGO_TARGET_DIR": "custom"}),
+            Path("custom") / "release" / "deps",
+        )
+        self.assertEqual(
+            ci.nextest_deps_dir(["cargo", "nextest", "run"], root=root, env={}),
+            root / ".cargo-target" / "debug" / "deps",
+        )
+
+    def test_stage_shader_compiler_copies_cached_dlls_beside_nextest_binaries(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cache = root / ".cargo-target" / "shader-compiler"
+            cache.mkdir(parents=True)
+            for name in ci.SHADER_COMPILER:
+                (cache / name).write_bytes(name.encode("ascii"))
+            log = root / "stage.log"
+            code = ci.stage_shader_compiler(["cargo", "nextest", "run", "--cargo-profile", "ci"], log, root=root, env={})
+            self.assertEqual(code, 0)
+            deps = root / ".cargo-target" / "ci" / "deps"
+            for name in ci.SHADER_COMPILER:
+                self.assertEqual((deps / name).read_bytes(), name.encode("ascii"))
 
 
 if __name__ == "__main__":

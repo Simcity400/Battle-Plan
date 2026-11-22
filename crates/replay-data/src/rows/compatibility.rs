@@ -3717,6 +3717,14 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         capture += 1;
     }
+    history[TableId::PowerSpendDays.index()] = LastChange {
+        introduced: POWER_LEDGER_DAY_LOG_FORMAT,
+        ..table(
+            TableId::PowerSpendDays,
+            POWER_LEDGER_DAY_LOG_FORMAT,
+            "power ledger day log",
+        )
+    };
     history
 };
 
@@ -4629,7 +4637,16 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
+        assert_eq!(POWER_LEDGER_DAY_LOG_FORMAT, 143);
+        assert_eq!(VARIANT_STAT_WITNESS_FORMAT, 144);
         assert_eq!(FORMAT_VERSION, VARIANT_STAT_WITNESS_FORMAT);
+        assert_eq!(TableId::PowerSpendTotals.field_count(), 32);
+        let spend_days = TableId::PowerSpendDays.last_change();
+        assert_eq!(spend_days.introduced, POWER_LEDGER_DAY_LOG_FORMAT);
+        assert_eq!(spend_days.format, POWER_LEDGER_DAY_LOG_FORMAT);
+        assert_eq!(spend_days.kind, ChangeKind::Layout);
+        assert!(spend_days.table_gap(TableId::PowerSpendDays, CAPTURE_ADDITIONS_FORMAT).is_some());
+        assert!(spend_days.table_gap(TableId::PowerSpendDays, POWER_LEDGER_DAY_LOG_FORMAT).is_none());
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

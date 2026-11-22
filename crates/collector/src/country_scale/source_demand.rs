@@ -44,12 +44,14 @@ impl Demand {
         let faction_rows =
             table_demand::rows(factions.outcome).map(|rows| (rows, factions.required_bytes));
         if let Ok(accounts) = engine_native::cfaction_system::accounts(memory, base, state) {
-            crate::faction_companion_changes::demand_accounts(accounts.count as usize * 2 + 1);
+            collector_factions::faction_companion_changes::demand_accounts(
+                accounts.count as usize * 2 + 1,
+            );
         }
         if let Ok((owners, _)) = faction_rows {
             crate::country_input_changes::sharing_demand(owners);
-            crate::faction_goal_changes::demand(owners);
-            crate::faction_companion_changes::demand(owners);
+            collector_factions::faction_goal_changes::demand(owners);
+            collector_factions::faction_companion_changes::demand(owners);
             crate::variable_changes::Observer.demand_embedded(owners);
         }
         Ok(Some(Self {
@@ -57,23 +59,17 @@ impl Demand {
             links,
             provinces: indexed(cgame_state::PROVINCES, 8),
             states: indexed(cgame_state::STATES, 8),
-            state_names: capacity_census.then(|| {
-                engine_native::cstate::name_demand(memory, base, state)
-            }),
+            state_names: capacity_census
+                .then(|| engine_native::cstate::name_demand(memory, base, state)),
             factions: faction_rows,
             faction_members: capacity_census.then(|| {
-                table_demand::rows(
-                    engine_native::cfaction_system::count_members(memory, base, state),
-                )
-            }),
-            wars: capacity_census.then(|| {
-                engine_native::cwar_relation::row_demand(
+                table_demand::rows(engine_native::cfaction_system::count_members(
                     memory, base, state,
-                )
+                ))
             }),
-            groups: engine_native::cprovince::conflict_group_demand(
-                memory, base, state,
-            ),
+            wars: capacity_census
+                .then(|| engine_native::cwar_relation::row_demand(memory, base, state)),
+            groups: engine_native::cprovince::conflict_group_demand(memory, base, state),
         }))
     }
 

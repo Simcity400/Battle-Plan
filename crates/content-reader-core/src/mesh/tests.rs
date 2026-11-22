@@ -2081,3 +2081,283 @@ fn collision_keeps_the_last_collision_shaded_mesh_and_narrows_its_indices() {
     assert_eq!(collision(&root(vec![shape(vec![mesh("PdxMeshStandard", triangle.clone(), vec![0, 1, 2])])])).unwrap(), None);
     assert!(collision(&root(vec![shape(vec![mesh("Collision", triangle, vec![0, 1, 3])])])).is_err());
 }
+
+#[test]
+fn entity_and_mesh_scale_multiply_and_follow_native_clone_and_field_rules() {
+    let descriptors = parse_descriptors(
+        br#"
+        objectTypes = {
+            pdxmesh = { name = "unit_mesh" file = "u.mesh" }
+            pdxmesh = { name = "mesh_only" file = "m.mesh" scale = 2.5 }
+            pdxmesh = { name = "alt_mesh" file = "a.mesh" scale = 0.75 }
+            pdxmesh = { name = "mesh_last_wins" file = "l.mesh" scale = 2.0 SCALE = 4.5 scale = bad }
+        }
+        entity = { name = "only_mesh" pdxmesh = "mesh_only" }
+        entity = { name = "only_entity" pdxmesh = "unit_mesh" scale = 3.25 }
+        entity = { name = "combined" pdxmesh = "mesh_only" scale = 0.4 }
+        entity = { name = "inherited" clone = "combined" }
+        entity = { name = "grandchild" clone = "inherited" }
+        entity = { name = "overridden" clone = "combined" scale = 1.6 }
+        entity = { name = "switched_mesh" clone = "combined" pdxmesh = "alt_mesh" }
+        entity = { name = "entity_last_wins" pdxmesh = "mesh_only" scale = 1.5 SCALE = 0.6 scale = bad }
+        entity = { name = "clone_bad_scale" clone = "combined" scale = bad }
+        "#,
+        "gfx/entities/scales.asset",
+    )
+    .unwrap();
+    let approx = |actual: f32, expected: f32, label: &str| {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "{label}: expected {expected}, got {actual}"
+        );
+    };
+    approx(descriptors.resolve("mesh_only").unwrap().scale, 2.5, "bare mesh");
+    approx(descriptors.resolve("only_mesh").unwrap().scale, 2.5, "entity unscaled");
+    approx(descriptors.resolve("only_entity").unwrap().scale, 3.25, "mesh unscaled");
+    approx(descriptors.resolve("combined").unwrap().scale, 1.0, "2.5 * 0.4");
+    approx(descriptors.resolve("inherited").unwrap().scale, 1.0, "clone inherits");
+    approx(descriptors.resolve("grandchild").unwrap().scale, 1.0, "grandchild inherits");
+    approx(descriptors.resolve("overridden").unwrap().scale, 4.0, "clone overrides 2.5 * 1.6");
+    approx(descriptors.resolve("switched_mesh").unwrap().scale, 0.3, "clone switches mesh 0.75 * 0.4");
+    approx(descriptors.resolve("mesh_last_wins").unwrap().scale, 4.5, "mesh repeated/case/bad scale");
+    approx(descriptors.resolve("entity_last_wins").unwrap().scale, 1.5, "entity repeated/case/bad scale");
+    approx(descriptors.resolve("clone_bad_scale").unwrap().scale, 2.5, "clone malformed scale resets entity factor to 1.0");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn roster_clone_inheritance_multiplies_entity_and_mesh_scale_factors() {
+    let roster = roster_of(
+        "scales",
+        &[
+            (
+                "gfx/models/meshes.gfx",
+                b"objectTypes = { pdxmesh = { name = m file = m.mesh scale = 2.5 }
+                    pdxmesh = { name = n file = n.mesh scale = 0.75 } }",
+            ),
+            (
+                "gfx/entities/scales.asset",
+                br#"entity = { name = "base" pdxmesh = "m" scale = 0.4 }
+                    entity = { name = "inherited" clone = "base" }
+                    entity = { name = "overridden" clone = "base" scale = 1.6 }
+                    entity = { name = "switched" clone = "base" pdxmesh = "n" }
+                    entity = { name = "bad_override" clone = "base" scale = bad }"#,
+            ),
+        ],
+        &[],
+    );
+    let resolve = |name: &str| roster.descriptors.resolve(name).unwrap().scale;
+    assert!((resolve("base") - 1.0).abs() < 1e-6);
+    assert!((resolve("inherited") - 1.0).abs() < 1e-6);
+    assert!((resolve("overridden") - 4.0).abs() < 1e-6);
+    assert!((resolve("switched") - 0.3).abs() < 1e-6);
+    assert!((resolve("bad_override") - 2.5).abs() < 1e-6);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn file_variables_resolve_mesh_and_cloned_entity_scales_in_file_order() {
+    let roster = roster_of(
+        "var_scales",
+        &[
+            (
+                "gfx/models/meshes.gfx",
+                br#"@mesh_factor = 2.5
+                    @mesh_factor = 9.0
+                    objectTypes = {
+                        pdxmesh = { name = early file = e.mesh scale = @late_mesh }
+                        pdxmesh = { name = var_mesh file = m.mesh scale = @mesh_factor }
+                        pdxmesh = { name = quoted_mesh file = q.mesh scale = 3.0 scale = "@mesh_factor" }
+                    }
+                    @late_mesh = 4.0"#,
+            ),
+            (
+                "gfx/models/variants.gfx",
+                br#"objectTypes = {
+                        pdxmesh = { name = choices file = choices.mesh
+                            variant = { @factor = 3 weight = 1 pdxmesh = alternate }
+                        }
+                        pdxmesh = { name = target file = target.mesh scale = @factor }
+                    }"#,
+            ),
+            (
+                "gfx/entities/scales.asset",
+                br#"@base_scale = 0.4
+                    @override_scale = 1.6
+                    entity = { name = "base" pdxmesh = "var_mesh" scale = @base_scale }
+                    entity = { name = "inherited" clone = "base" }
+                    entity = { name = "overridden" clone = "base" scale = @override_scale }
+                    entity = { name = "forward" clone = "base" scale = @after_clone }
+                    @after_clone = 5.0
+                    entity = { name = "nested_state_before_name" pdxmesh = "var_mesh" state = { @factor = 3 name = "idle" } scale = @factor }
+                    entity = { name = "before_nested" pdxmesh = "var_mesh" scale = @late_nested state = { @late_nested = 4.0 name = "idle" } }
+                    entity = { name = "after_nested" pdxmesh = "var_mesh" scale = @late_nested }
+                    entity = { name = "orphan" clone = "missing_parent" @from_orphan = 1.2 state = { @from_orphan_state = 2.0 name = "idle" } }
+                    entity = { name = "uses_orphan" pdxmesh = "var_mesh" scale = @from_orphan }
+                    entity = { name = "uses_orphan_state" pdxmesh = "var_mesh" scale = @from_orphan_state }
+                    entity = { name = "versioned" pdxmesh = "var_mesh" version = 2 }
+                    entity = { name = "versioned" pdxmesh = "var_mesh" @from_older = 0.8 version = 1 }
+                    entity = { name = "uses_older" pdxmesh = "var_mesh" scale = @from_older }"#,
+            ),
+            (
+                "gfx/entities/state_trailing_var.asset",
+                br#"entity = { name = "nested_state_after_name" pdxmesh = "var_mesh" state = { name = "idle" @factor = 3 } scale = @factor }"#,
+            ),
+            (
+                "gfx/entities/skipped_unknown_block.asset",
+                br#"entity = { name = "skipped_unknown" pdxmesh = "var_mesh" unused_options = { @factor = 3 } @factor = 2 scale = @factor }"#,
+            ),
+            (
+                "gfx/entities/skipped_animation_block.asset",
+                br#"animation = { name = "ignored_anim" file = "a.anim" @factor = 3 }
+                    @factor = 2
+                    entity = { name = "after_animation" pdxmesh = "var_mesh" scale = @factor }"#,
+            ),
+            (
+                "gfx/entities/hash_collision.asset",
+                br#"@costarring = 3
+                    entity = { name = "hash_collide" pdxmesh = "var_mesh" scale = @liquid }"#,
+            ),
+        ],
+        &[],
+    );
+    let resolve = |name: &str| roster.descriptors.resolve(name).unwrap().scale;
+    assert!((resolve("early") - 1.0).abs() < 1e-6);
+    assert!((resolve("var_mesh") - 2.5).abs() < 1e-6);
+    assert!((resolve("quoted_mesh") - 3.0).abs() < 1e-6);
+    assert!((resolve("base") - 1.0).abs() < 1e-6);
+    assert!((resolve("inherited") - 1.0).abs() < 1e-6);
+    assert!((resolve("overridden") - 4.0).abs() < 1e-6);
+    assert!((resolve("forward") - 2.5).abs() < 1e-6);
+    assert!((resolve("nested_state_before_name") - 7.5).abs() < 1e-6);
+    assert!((resolve("nested_state_after_name") - 2.5).abs() < 1e-6);
+    assert!((resolve("before_nested") - 2.5).abs() < 1e-6);
+    assert!((resolve("after_nested") - 10.0).abs() < 1e-6);
+    assert!((resolve("uses_orphan") - 3.0).abs() < 1e-6);
+    assert!((resolve("uses_orphan_state") - 5.0).abs() < 1e-6);
+    assert!((resolve("uses_older") - 2.0).abs() < 1e-6);
+    assert!((resolve("skipped_unknown") - 5.0).abs() < 1e-6);
+    assert!((resolve("after_animation") - 5.0).abs() < 1e-6);
+    assert!((resolve("hash_collide") - 7.5).abs() < 1e-6);
+    assert!((resolve("target") - 3.0).abs() < 1e-6);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
+    use crate::content::{ResolveOptions, visual};
+    use std::sync::atomic::AtomicBool;
+
+    let unsettled = br#"
+        entity = {
+            game_data = { atlas_size = { @extra = overlay_only x = 4 } }
+            name = @extra
+            pdxmesh = "m"
+        }
+        entity = { name = "first" pdxmesh = "m" scale = 9.0 locator = { name = "point" position = { @x = 2 0 0 } } }
+        entity = { name = "second" pdxmesh = "m" scale = 9.0 }
+        @after_extra = overlay_after
+        entity = { name = @after_extra pdxmesh = "m" }
+    "#;
+    assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
+
+    let root = std::env::temp_dir().join(format!(
+        "content-reader-unsettled-overlay-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    };
+    let game_dir = root.join("game");
+    let user_dir = root.join("user");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(user_dir.join("mod")).unwrap();
+    write(
+        "base/gfx/models/m.gfx",
+        b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
+    );
+    write(
+        "base/gfx/entities/a.asset",
+        br#"
+            @model = first
+            entity = { name = @model pdxmesh = "m" scale = 2.0 }
+            entity = { name = "second" pdxmesh = "m" scale = 4.0 }
+        "#,
+    );
+    write(
+        "base/gfx/entities/broken.asset",
+        br#"
+            @broken_var = broken_second
+            entity = { name = "broken_first" pdxmesh = "m" locator = { name = "point" position = { @x = 2 0 0 } } }
+            entity = { name = @broken_var pdxmesh = "m" }
+        "#,
+    );
+    let overlay_dir = root.join("overlay");
+    write("overlay/gfx/entities/a.asset", unsettled);
+    let descriptor = format!(
+        "name=\"VisualOverride\"\npath=\"{}\"\n",
+        overlay_dir.display().to_string().replace('\\', "/")
+    );
+    write("user/mod/visual_override.mod", descriptor.as_bytes());
+    let base = root.join("base");
+    let mut layers = crate::ResolvedLayers::from_folders(&[(&base, &[][..])]).unwrap();
+    let options = ResolveOptions {
+        game_dir,
+        user_dir,
+        cache_dir: root.join("cache"),
+    };
+    let plan = visual::apply(
+        &mut layers,
+        &options,
+        &[visual::Choice {
+            id: "mod/visual_override.mod".into(),
+            name: "VisualOverride".into(),
+        }],
+        &[],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(plan.order.len(), 1, "{:?}", plan.warnings);
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+    let roster = Roster::read(layers.presentation()).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(roster.descriptors.resolve("first").unwrap().scale, 2.0);
+    assert_eq!(roster.descriptors.resolve("second").unwrap().scale, 4.0);
+    assert_eq!(roster.refused_declaration("first"), None);
+    assert_eq!(roster.refused_declaration("second"), None);
+    assert_eq!(roster.unreadable_names.get("m"), None);
+    assert_eq!(roster.unreadable_names.get("@model"), None);
+    assert_eq!(roster.unreadable_names.get("@extra"), None);
+    assert_eq!(roster.unreadable_names.get("@after_extra"), None);
+    assert_eq!(roster.unreadable_names.get("@broken_var"), None);
+    assert!(roster.refused_declaration("overlay_only").is_some());
+    assert!(roster.refused_declaration("overlay_after").is_some());
+    assert!(roster.refused_declaration("broken_first").is_some());
+    assert!(roster.refused_declaration("broken_second").is_some());
+    assert_eq!(
+        roster.unreadable_names.get("overlay_only").map(String::as_str),
+        Some("gfx/entities/a.asset")
+    );
+    assert!(!roster.descriptors.entities.contains_key("broken_first"));
+    assert!(!roster.descriptors.entities.contains_key("broken_second"));
+    assert_eq!(
+        roster.unreadable_names.get("broken_first").map(String::as_str),
+        Some("gfx/entities/broken.asset")
+    );
+    assert_eq!(
+        roster.unreadable_names.get("broken_second").map(String::as_str),
+        Some("gfx/entities/broken.asset")
+    );
+    assert!(
+        roster
+            .unreadable
+            .iter()
+            .any(|entry| entry.contains("gfx/entities/broken.asset")),
+        "{:?}",
+        roster.unreadable
+    );
+}

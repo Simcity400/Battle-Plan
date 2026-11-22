@@ -128,7 +128,13 @@ impl<'ast> Visit<'ast> for Discovery {
             return;
         }
         if name.ends_with("::Hooks::new") {
-            if !self.in_run || !self.audited || !name.starts_with("crate::") {
+            if !self.in_run
+                || !self.audited
+                || !name
+                    .split("::")
+                    .next()
+                    .is_some_and(|root| root == "crate" || root.starts_with("collector_"))
+            {
                 self.errors.push(format!(
                     "{name} bypasses the direct registered runtime constructor"
                 ));

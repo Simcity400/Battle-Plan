@@ -1104,8 +1104,6 @@ fn retained_province_installs_and_frames_preserve_operands_and_instance_bytes() 
 }
 
 #[test]
-// quarantine: #143 province scheduling allocates and scans bitsets sized by the largest id
-#[ignore = "quarantined under #143"]
 fn retained_province_frames_preserve_sparse_high_ids() {
     check_retained_province_frames(100_019, u32::MAX);
 }
@@ -1432,6 +1430,12 @@ fn check_retained_province_frames(stride: u32, last_id: u32) {
         }));
         unit_history::same_history::assert_instances(&output, &full);
         let dense = &history.provinces;
+        let bound = 18 * (dense.records.len() + 1) + 36;
+        let slots = history.schedule.lock().unwrap().storage_slots();
+        assert!(
+            slots <= bound,
+            "frame {number}: schedule storage {slots} exceeded bound {bound}"
+        );
         saw[0] |= !output.is_empty();
         saw[1] |= history
             .updates

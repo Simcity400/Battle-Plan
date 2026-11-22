@@ -12,4 +12,4 @@ Transfer feedback can select any pool-backed wing, independently of mission elig
 
 Incoming registrations and hourly transfer progress use the mission job's complete wing and base witnesses. The direct vector certifies nonmembership when available. If the membership observation failed, the result instead retains an explicit unknown. A certified failed observation stays unknown until its token changes. Transfer demand groups destinations and census indices in one bulk arena, resolving the pool base and any override through one registry pass without duplicating idle demand for a registered wing.
 
-[Wing equipment carry](../../crates/collector/src/extended/air/wing_store.rs) · [Map flags](../../crates/collector/src/extended/air/wing_map_flags.rs) · [Raid flags](../../crates/collector/src/extended/air/wing_raid_flags.rs)
+[Wing equipment carry](../../crates/collector-air/src/extended/air/wing_store.rs) · [Map flags](../../crates/collector-air/src/extended/air/wing_map_flags.rs) · [Raid flags](../../crates/collector-air/src/extended/air/wing_raid_flags.rs)

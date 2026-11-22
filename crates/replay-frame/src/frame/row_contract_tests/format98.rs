@@ -874,7 +874,7 @@ fn state_continent_append_preserves_format98_prefix_and_distinct_failures() {
 }
 
 #[test]
-fn format_142_train_inventory_withholds_required_trucks_raw_and_skips_legacy_variant_stats() {
+fn format_143_train_inventory_withholds_required_trucks_raw_and_skips_legacy_variant_stats() {
     let format = replay_data::rows::compatibility::VARIANT_STAT_WITNESS_FORMAT - 1;
     let train = TrainInventoryRow {
         country: 5000,

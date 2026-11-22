@@ -1,23 +1,7 @@
-
 pub(crate) use crate::terminal::*;
+#[cfg(test)]
 use std::io;
 
-pub(crate) fn fail(phase: Phase, code: Code) {
-    crate::terminal::record_failure(phase, code);
-}
-
-pub(crate) fn install_hooks() {
-    engine_allocation::set_hooks(Some(should_fail), Some(failure_hook));
-    engine_allocation::set_stop_hook(Some(failed));
-}
-fn failure_hook() {
-    fail(phase(), Code::Reserve);
-}
-pub(crate) fn native_error(error: &io::Error) {
-    if engine_allocation::is_allocation_error(error) {
-        fail(phase(), Code::Native);
-    }
-}
 #[cfg(test)]
 pub(crate) fn concurrent_watermark_exercise() -> io::Result<()> {
     use std::sync::{

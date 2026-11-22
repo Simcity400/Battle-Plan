@@ -271,11 +271,26 @@ struct Maker {
 }
 
 impl Maker {
-    fn spawn(routes: Arc<dyn Routes>) -> io::Result<(Sender<Job>, Receiver<Made>)> {
+    fn spawn(
+        routes: Arc<dyn Routes>,
+        #[cfg(test)] sent: Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>,
+    ) -> io::Result<(Sender<Job>, Receiver<Made>)> {
         let (jobs, receive) = mpsc::channel::<Job>();
         let (send, made) = mpsc::channel::<Made>();
         let mut maker = Self { routes, stops: HashMap::new(), ribbons: HashMap::new(), provinces_version: 0 };
         std::thread::Builder::new().name("convoys".into()).spawn(move || {
+            #[cfg(test)]
+            struct WorkerExit(Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>);
+            #[cfg(test)]
+            impl Drop for WorkerExit {
+                fn drop(&mut self) {
+                    let (state, changed) = &*self.0;
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1 = true;
+                    changed.notify_all();
+                }
+            }
+            #[cfg(test)]
+            let _exit = WorkerExit(Arc::clone(&sent));
             viewer_foundation::worker_priority::background_priority();
             while let Ok(mut job) = receive.recv() {
                 let mut answered = 1;
@@ -284,6 +299,12 @@ impl Maker {
                 }
                 if send.send(maker.make(job, answered)).is_err() {
                     return;
+                }
+                #[cfg(test)]
+                {
+                    let (state, changed) = &*sent;
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0 += answered;
+                    changed.notify_all();
                 }
             }
         })?;
@@ -520,6 +541,10 @@ pub struct Convoys {
     in_flight: usize,
     #[cfg(test)]
     blocking_waits: usize,
+    #[cfg(test)]
+    sent: Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>,
+    #[cfg(test)]
+    jobs_sent: usize,
     worker_bytes: usize,
     moved: bool,
     window: bool,
@@ -566,6 +591,10 @@ impl Convoys {
             in_flight: 0,
             #[cfg(test)]
             blocking_waits: 0,
+            #[cfg(test)]
+            sent: Arc::default(),
+            #[cfg(test)]
+            jobs_sent: 0,
             worker_bytes: 0,
             moved: false,
             window: false,
@@ -909,7 +938,17 @@ impl Convoys {
             provinces_version: self.provinces_version,
         };
         if self.worker.is_none() {
-            match Maker::spawn(Arc::clone(&self.routes)) {
+            #[cfg(test)]
+            let sent = {
+                self.sent = Arc::new((Mutex::new((0, false)), std::sync::Condvar::new()));
+                self.jobs_sent = 0;
+                Arc::clone(&self.sent)
+            };
+            match Maker::spawn(
+                Arc::clone(&self.routes),
+                #[cfg(test)]
+                sent,
+            ) {
                 Ok(worker) => self.worker = Some(worker),
                 Err(error) => {
                     self.refused = Some(format!("The convoys layer is refused: its worker cannot start: {error}"));
@@ -921,6 +960,10 @@ impl Convoys {
             && jobs.send(job).is_ok()
         {
             self.in_flight += 1;
+            #[cfg(test)]
+            {
+                self.jobs_sent += 1;
+            }
             self.moved = false;
         }
     }
@@ -952,7 +995,7 @@ impl Convoys {
 
     fn settle_dirty(&mut self, mirrors: &Mirrors, wait: bool) {
         self.frame += 1;
-        if self.columns.is_none() || TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
+        if self.columns.is_none() {
             return;
         }
         if self.fresh_vision.swap(false, Ordering::AcqRel) {
@@ -963,6 +1006,10 @@ impl Convoys {
             self.refused = Some("The convoys layer is refused: it is given no vision of the viewing country yet".into());
             (self.pending, self.stale, self.since) = (Vec::new(), false, None);
             (self.worker, self.in_flight, self.worker_bytes) = (None, 0, 0);
+            (self.product, self.product_for, self.product_hour) = (Arc::default(), None, None);
+            return;
+        }
+        if TABLES.iter().any(|&table| mirrors.get(table).is_none()) {
             return;
         }
         if self.refused.take().is_some() {
@@ -1100,6 +1147,11 @@ impl Layer for Convoys {
         Ok(())
     }
 
+    fn compose_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>) -> io::Result<()> {
+        self.take_vision(upstream);
+        self.compose(mirrors)
+    }
+
     fn apply(&mut self, step: &Step, mirrors: &Mirrors) {
         if step.gap() || self.columns.is_none() {
             return;
@@ -1146,18 +1198,7 @@ impl Layer for Convoys {
     }
 
     fn settle_with(&mut self, mirrors: &Mirrors, upstream: &Upstream<'_>, settling: Settling) -> io::Result<()> {
-        if self.window
-            && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
-        {
-            match vision.ours() {
-                Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
-                    self.vision = Some((vision.choice().clone(), ours));
-                    self.stale |= self.columns.is_some();
-                }
-                None => self.vision = None,
-                Some(_) => {}
-            }
-        }
+        self.take_vision(upstream);
         self.settle_dirty(mirrors, settling.strict());
         Ok(())
     }
@@ -1195,6 +1236,31 @@ impl Layer for Convoys {
 }
 
 impl Convoys {
+    #[cfg(test)]
+    fn wait_replies_ready(&self) {
+        let (state, changed) = &*self.sent;
+        let mut held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while held.0 < self.jobs_sent {
+            assert!(!held.1, "the convoys worker stopped before answering all {} jobs ({} answered)", self.jobs_sent, held.0);
+            held = changed.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn take_vision(&mut self, upstream: &Upstream<'_>) {
+        if self.window
+            && let Some(vision) = upstream.get::<crate::layers::vision::Vision>()
+        {
+            match vision.ours() {
+                Some(ours) if self.vision.as_ref().is_none_or(|(choice, held)| *held != ours || choice != vision.choice()) => {
+                    self.vision = Some((vision.choice().clone(), ours));
+                    self.stale |= self.columns.is_some();
+                }
+                None => self.vision = None,
+                Some(_) => {}
+            }
+        }
+    }
+
     fn mark(&mut self, changes: &Changes, read: &[usize]) {
         let deleted: Vec<u128> = changes.deleted().keys().unwrap_or_default().to_vec();
         let mut slots: Vec<u32> = changes.inserted().slots().to_vec();
