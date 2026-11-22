@@ -55,6 +55,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
       const clockHour = clock.positionAt(shownTime(p.shown));
       if (fixed === undefined && p.head !== undefined && Math.floor(p.head) > Math.floor(clockHour)) { release(); continue; }
       const hour = pictureHour(p.date, clockHour, fixed);
+      if (hour === null && p.waiting && held.stale) continue;
       if (hour === null) held.drop(); else held.present(p.holdsThrough);
       visible(hour !== null);
       own(hour !== null, hour === null);

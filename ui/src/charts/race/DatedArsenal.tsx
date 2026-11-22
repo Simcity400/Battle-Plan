@@ -79,8 +79,9 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       }
       if (m.type === 'raceInspection') { if (m.request === ticket) { resolve?.(m.picture); resolve = undefined; } return; }
       const clockHour = clock.positionAt(shownTime(m.shown));
-      if (m.hour === null || (latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour)) ||
-        m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
+      const ahead = latest.current.model.fixed === undefined && m.head !== undefined && Math.floor(m.head) > Math.floor(clockHour);
+      if (m.hour === null && m.waiting && held.stale && !ahead) return;
+      if (m.hour === null || ahead || m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
       else { held.present(m.holdsThrough); visible(true); }
     });
     const inspect = (target?: RaceTarget) => new Promise<RaceInspection | undefined>(done => {

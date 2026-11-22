@@ -142,9 +142,16 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   step(11, 11);
   assert.deepEqual([retainedClears.length, raceClears.length], [0, 0], 'an uncovered paused step keeps the old pictures until the worker paints');
   now += 17; frame();
-  assert.ok(retainedClears.length > 0 && raceClears.length > 0, 'the next frame erases the pictures the step left uncovered');
-  assert.equal(raced(11)?.hour, null, 'the uncovered race is presented without a picture');
+  assert.deepEqual([retainedClears.length, raceClears.length], [0, 0], 'the worker leaves an uncovered picture for its host to release');
+  assert.deepEqual([raced(11)?.hour, raced(11)?.waiting], [null, false], 'an uncovered recorded race is presented without a picture and waits for nothing');
   post({ type: 'detach', id: 3 }); post({ type: 'closeRace', id: 3 });
+  post({ type: 'race', id: 6, owner: 1, canvas: { width: 500, height: 180, getContext: () => raceInk } as unknown as OffscreenCanvas,
+    model: { view: 'nuclear-arsenal', offset: 0, follow: 99, top: 10, tags: [], split: false, overlay: false, colours: new Map(), looks: new Map(),
+      scroll: 0, width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } as never } });
+  now += 17; frame();
+  const followedRace = sent.flatMap(m => m.type === 'racePresent' && m.id === 6 ? [m] : []).at(-1);
+  assert.deepEqual([followedRace?.hour, followedRace?.waiting], [null, true], 'a paused followed race whose hour is not read yet is waiting, not empty');
+  post({ type: 'closeRace', id: 6 });
 
   const coveredClears: number[][] = [];
   const covered = { getContext: () => ({ fillText() {}, clearRect: (...args: number[]) => coveredClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;

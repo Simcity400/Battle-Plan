@@ -162,6 +162,10 @@ export class Followed {
     const section = entry?.panel && sectionOf(entry.panel.data);
     return entry && section ? sectionValues(section, sectionGroups(section, key => this.store.group(entry, key))) : null;
   }
+  covers(id: number, hour: number) {
+    const entry = this.entries.get(id), date = entry && this.store.coverage(entry);
+    return !!date && date.start <= hour && hour <= date.through;
+  }
   read(id: number) {
     const entry = this.entries.get(id);
     if (!entry?.panel) return;

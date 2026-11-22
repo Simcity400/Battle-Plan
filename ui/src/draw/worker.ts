@@ -21,10 +21,10 @@ const post = (message: FromWorker) => self.postMessage(message);
 const wall = () => performance.timeOrigin + performance.now();
 interface Panel {
   kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D;
-  date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; reply?: unknown; through?: number; nextText?: number;
+  date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; waiting?: boolean; reply?: unknown; through?: number; nextText?: number;
 }
 interface Race {
-  kind: 'race'; id: number; owner: number; model: Extract<ToWorker, { type: 'race' }>['model']; picture: InstanceType<(typeof raceViews)[keyof typeof raceViews]>; shown?: boolean; through?: number;
+  kind: 'race'; id: number; owner: number; model: Extract<ToWorker, { type: 'race' }>['model']; picture: InstanceType<(typeof raceViews)[keyof typeof raceViews]>; shown?: boolean; waiting?: boolean; through?: number;
   reply?: unknown; nextText?: number; confirmed?: number; since?: number;
 }
 interface Table {
@@ -224,7 +224,6 @@ function paint(s: Surface, head: number) {
   }
   s.date.set(date ? date.through - m.offset : null, fixed, date ? date.since - m.offset : null);
   if (!raw || !s.date.canPaintAt(head)) {
-    s.program.clear();
     s.date.drawn = undefined; s.through = undefined; s.pointer.clear();
     return false;
   }
@@ -373,15 +372,20 @@ function holdsThrough(s: Panel | Race) {
   const entry = s.model.follow === undefined ? undefined : followed.read(s.model.follow);
   return entry?.hasFollowedCells || !s.date.drawn ? s.through : Math.min(s.date.drawn.through, next);
 }
+function waiting(s: Panel | Race, head: number) {
+  return s.through === undefined && !anchor.playing && s.model.follow !== undefined &&
+    !followed.covers(s.model.follow, Math.floor(s.model.fixed ?? head) + s.model.offset);
+}
 function report(s: Surface, head: number, notices: Present[]) {
-  const shown = s.through !== undefined;
-  if (s.shown === shown) return;
+  const shown = s.through !== undefined, held = s.kind !== 'table' && waiting(s, head);
+  if (s.shown === shown && (s.kind === 'table' || s.waiting === held)) return;
   s.shown = shown;
   if (s.kind === 'race') {
+    s.waiting = held;
     post({ type: 'racePresent', id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-      head: s.model.fixed ?? head, hour: s.through ?? null, holdsThrough: holdsThrough(s) ?? null, at: wall(), shown: shownWall });
-  } else if (s.kind === 'panel') notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
-    head: s.model.fixed ?? head, date: s.date.drawn, readHour: s.through, holdsThrough: holdsThrough(s), shown: shownWall });
+      head: s.model.fixed ?? head, hour: s.through ?? null, holdsThrough: holdsThrough(s) ?? null, waiting: held, at: wall(), shown: shownWall });
+  } else if (s.kind === 'panel') { s.waiting = held; notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
+    head: s.model.fixed ?? head, date: s.date.drawn, readHour: s.through, holdsThrough: holdsThrough(s), waiting: held, shown: shownWall }); }
   else notices.push({ id: s.id, owner: s.owner, seek: anchor.seek, generation: anchor.generation ?? 0,
     head: s.model.fixed ?? head, readHour: s.through, at: wall(), shown: shownWall });
 }
