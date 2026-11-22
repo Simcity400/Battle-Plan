@@ -222,15 +222,109 @@ fn out_of_order_closed_days_keep_their_native_date_in_spending_replies() {
         ],
         "a closed day landing between earlier and later closed days counts as its own day and keeps its own native date"
     );
+}
 
-    let mut legacy = [super::Value::Number(0); super::TOTALS.len()];
-    legacy[super::position("days")] = super::Value::Number(1);
-    legacy[super::position("day_payments")] = super::Value::Number(1);
-    legacy[super::position("day_charge")] = super::Value::Number(PP);
-    legacy[super::position("last_day")] = super::Value::Number(144);
-    legacy[super::position("counted_day")] = super::Value::Unrecorded;
-    let (_, fallback) = super::listed(&super::Change { ordinal: 0, hour: 168, before: None, after: &legacy }, 0);
-    assert_eq!(fallback.expect("a day").day, Some(144), "recordings predating counted_day fall back to last_day");
+#[test]
+fn format_142_recording_without_day_log_falls_back_to_last_day_end_to_end() {
+    use replay::columnar_frames::synthetic::{Input, Sample};
+    use replay_data::rows::{ClockRow, PowerSpendTotalRow, compatibility::CAPTURE_ADDITIONS_FORMAT, tables};
+    let frames: Vec<DecodedFrame> = (FIRST..=168)
+        .map(|hour| {
+            let mut frame = source_frame(hour);
+            set(&mut frame, TableId::Clock, TableRows::Clock(vec![ClockRow { hour, ..Default::default() }]));
+            frame
+        })
+        .collect();
+    let item = PowerItemRow {
+        holder: SLOT,
+        ordinal: 0,
+        kind: PowerItemRow::COST,
+        currency: PowerCurrency::Political,
+        cause: PowerCause::DailyGain,
+        component: Some(PowerDailyCostKind::PoliticalPowerCostModifier as u32),
+        charged: true,
+        site: PowerSite::AddPoliticalPower,
+        first_hour: 120,
+        first_read: 144,
+        first_country: GER,
+        first_epoch: 1,
+        first_sequence: 0,
+        ..Default::default()
+    };
+    let total_at = |days: i64, charge: i64, last_day: i32, sequence: u64| PowerSpendTotalRow {
+        holder: SLOT,
+        currency: PowerCurrency::Political as u8,
+        ordinal: 0,
+        days: Recorded::Value(days),
+        day_payments: Recorded::Value(days),
+        day_entries: Recorded::Value(days),
+        day_charge: Recorded::Value(charge),
+        day_unknown: Recorded::Value(0),
+        days_uncovered: Recorded::Value(0),
+        realized_gained: Recorded::Value(0),
+        realized_lost: Recorded::Value(0),
+        realized_unknown: Recorded::Value(days),
+        first_day: Recorded::Value(Some(120)),
+        last_day: Recorded::Value(Some(last_day)),
+        last_lag: Recorded::Value(Some(24)),
+        last_hour: Recorded::Value(Some(last_day)),
+        last_sequence: Recorded::Value(Some(sequence)),
+        last_ordinal: Recorded::Value(Some(0)),
+        last_covered: Recorded::Value(true),
+        known: Recorded::Value(0),
+        payments: Recorded::Value(0),
+        entries: Recorded::Value(0),
+        unknown: Recorded::Value(0),
+        uncovered: Recorded::Value(0),
+        balances: Recorded::Value(0),
+        credits: Recorded::Value(0),
+        gained: Recorded::NotRecorded,
+        capped: Recorded::NotRecorded,
+        gain_days: Recorded::NotRecorded,
+        gain_unknown_days: Recorded::NotRecorded,
+        unmatched: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    let bytes = replay::campaign::fixtures::encode_framed_at(CAPTURE_ADDITIONS_FORMAT, CAMPAIGN.into(), &[records(1, frames)], |synthetic, decoded| {
+        let countries = decoded.complete::<tables::Countries>()?;
+        synthetic.table(TableId::Countries, Input::Snapshot { rows: countries, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let links = decoded.complete::<tables::CountryLinks>()?;
+        synthetic.table(TableId::CountryLinks, Input::Snapshot { rows: links, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let coverage = [PowerSpendCoverageRow {
+            holder: SLOT,
+            political: decoded.hour > FIRST,
+            command: decoded.hour > FIRST,
+            reason: if decoded.hour == FIRST { PowerSpendCoverageRow::BACKLOG } else { PowerSpendCoverageRow::KNOWN },
+            political_since: (decoded.hour > FIRST).then_some(FIRST + 1),
+            command_since: (decoded.hour > FIRST).then_some(FIRST + 1),
+            ..Default::default()
+        }];
+        synthetic.table(TableId::PowerSpendCoverage, Input::Snapshot { rows: &coverage, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let items = if decoded.hour >= 144 { std::slice::from_ref(&item) } else { &[] };
+        synthetic.table(TableId::PowerItems, Input::Snapshot { rows: items, partial: None, read: true, sample: Sample::FromReadBit })?;
+        let totals = match decoded.hour {
+            ..=143 => Vec::new(),
+            144..=167 => vec![total_at(1, 2 * PP, 120, 50)],
+            _ => vec![total_at(2, 45 * PP / 10, 144, 80)],
+        };
+        synthetic.table(TableId::PowerSpendTotals, Input::Snapshot { rows: &totals, partial: None, read: true, sample: Sample::FromReadBit })?;
+        Ok(())
+    })
+    .unwrap();
+    let replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+    assert_eq!(replay.format.version(), CAPTURE_ADDITIONS_FORMAT);
+    assert!(replay.recording().predates(TableId::PowerSpendDays.index()).is_some());
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-f142".into(), revision: "1".into() }, "format142.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 168);
+    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone(), day.credits)).collect();
+    assert_eq!(
+        listed,
+        [
+            (144, Some(120), 1, 1, Some("200000".into()), 0),
+            (168, Some(144), 1, 1, Some("250000".into()), 0),
+        ],
+        "an encoded format-142 recording without PowerSpendDays opens and reads recurring days via the last_day fallback"
+    );
 }
 
 fn source_frame(hour: i32) -> DecodedFrame {
@@ -241,4 +335,76 @@ fn source_frame(hour: i32) -> DecodedFrame {
     let capture = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() };
     set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![capture]));
     frame
+}
+
+#[test]
+fn two_native_days_in_one_read_hour_keep_separate_dates_and_amounts() {
+    const GER2: u32 = 9002;
+    let make_frame = |hour: i32| {
+        let mut frame = source(1, hour, Some(1_000));
+        set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: SLOT, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+        set(
+            &mut frame,
+            TableId::CountryLinks,
+            TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: SLOT }, CountryLinkRow { id: GER2, canonical_slot: SLOT }]),
+        );
+        set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(Vec::new()));
+        let mut days = Vec::new();
+        let mut costs = Vec::new();
+        if (144..=167).contains(&hour) {
+            days.push(daily(144, 20 * PP, 10 * PP, 10 * PP, 80));
+            costs.push(cost(144, 10 * PP, 80));
+        }
+        if hour == 168 {
+            days.push(CountryPowerDailyRow { country: GER2, ..daily(120, 30 * PP, 20 * PP, 10 * PP, 50) });
+            costs.push(CountryPowerDailyCostRow { country: GER2, ..cost(120, 20 * PP, 50) });
+        }
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        let captures = [GER, GER2]
+            .into_iter()
+            .map(|country| PoliticsCaptureCoverageRow { country, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() })
+            .collect();
+        set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(captures));
+        frame
+    };
+    let frames = (FIRST..=168).map(make_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-same-read".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 168);
+    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone(), day.credits)).collect();
+    assert_eq!(
+        listed,
+        [
+            (168, Some(120), 1, 1, Some((20 * PP).to_string()), 0),
+            (168, Some(144), 1, 1, Some((10 * PP).to_string()), 0),
+        ],
+        "two native days counted in the same read hour emit two entries with separate dates and amounts"
+    );
+}
+
+#[test]
+fn daily_credit_carries_its_native_date_separately_from_debits() {
+    let make_frame = |hour: i32| {
+        let mut frame = source_frame(hour);
+        let (days, costs) = if (120..=143).contains(&hour) {
+            (vec![daily(120, 3 * PP, -2 * PP, 5 * PP, 50)], vec![cost(120, -2 * PP, 50)])
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        frame
+    };
+    let frames = (FIRST..=144).map(make_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-credit".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 144);
+    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.day, day.days, day.payments, day.charge_raw.clone(), day.credits)).collect();
+    assert_eq!(
+        listed,
+        [(144, Some(120), 0, 0, Some("0".into()), 1)],
+        "a settled daily credit carries its native date while staying separate from debits"
+    );
+    assert!(reply.warnings.iter().any(|warning| warning.contains("recorded credit is not included in spending")));
 }

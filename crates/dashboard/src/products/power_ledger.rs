@@ -312,7 +312,7 @@ impl Value {
     }
 }
 
-const TOTALS: [&str; 23] = [
+const TOTALS: [&str; 22] = [
     "known",
     "payments",
     "unknown",
@@ -329,13 +329,26 @@ const TOTALS: [&str; 23] = [
     "realized_lost",
     "realized_unknown",
     "last_day",
-    "counted_day",
     "credits",
     "gained",
     "capped",
     "gain_days",
     "gain_unknown_days",
     "unmatched",
+];
+
+const DAYS: [&str; 11] = [
+    "ordinal",
+    "day",
+    "days",
+    "payments",
+    "charge",
+    "unknown",
+    "uncovered",
+    "realized_gained",
+    "realized_lost",
+    "realized_unknown",
+    "credits",
 ];
 
 type Cells = [Value; TOTALS.len()];
@@ -370,7 +383,7 @@ fn raw(value: Option<i64>) -> Option<String> {
     value.map(|value| value.to_string())
 }
 
-pub(super) fn listed(change: &Change<'_>, item: u32) -> (Option<SpendPayment>, Option<SpendDay>) {
+pub(super) fn listed(change: &Change<'_>, item: u32, include_days: bool) -> (Option<SpendPayment>, Option<SpendDay>) {
     let after = |name: &str| change.after[position(name)];
     let payment = (count(change, "payments") > 0).then(|| {
         let unknown = count(change, "unknown");
@@ -388,9 +401,9 @@ pub(super) fn listed(change: &Change<'_>, item: u32) -> (Option<SpendPayment>, O
     });
     let days = count(change, "days");
     let day_payments = count(change, "day_payments");
-    let day = (days > 0 || day_payments > 0 || count(change, "credits") > 0).then(|| SpendDay {
+    let day = (include_days && (days > 0 || day_payments > 0 || count(change, "credits") > 0)).then(|| SpendDay {
         item,
-        day: after("counted_day").number().or_else(|| after("last_day").number()).map(|day| day as i32),
+        day: after("last_day").number().map(|day| day as i32),
         read: change.hour,
         days,
         charge_raw: raw(delta(change, "day_charge")),
@@ -438,6 +451,56 @@ fn changes(query: &Query<'_>, piece: &Piece, low: u128, high: u128, each: &mut d
             }
             before = Some(after);
         }
+    }
+    Ok(())
+}
+
+fn day_log(query: &Query<'_>, piece: &Piece, currency: SpendCurrency, each: &mut dyn FnMut(i32, u32, SpendDay)) -> io::Result<()> {
+    let from = if piece.baseline == Some(piece.first) { piece.first.saturating_add(1) } else { piece.first };
+    if from > piece.last {
+        return Ok(());
+    }
+    let columns: Vec<usize> = DAYS.iter().map(|name| dashboard_declare::field(TableId::PowerSpendDays, name)).collect::<io::Result<_>>()?;
+    let mut rows = Vec::new();
+    let returned = dashboard_query::cost::storage(|| {
+        lanes::log_span(query.replay.recording(), piece.run, TableId::PowerSpendDays, &columns, from, piece.last, &mut |hour, key, cells| {
+            if (key >> 72) as u32 == piece.slot && (key >> 32) as u8 == currency.code() {
+                rows.push((hour, cells.to_vec()));
+            }
+        })
+    })?;
+    let order: Vec<usize> = columns.iter().map(|column| returned.binary_search(column).map_err(|_| crate::invalid("A spend day column was not read"))).collect::<io::Result<_>>()?;
+    for (hour, cells) in rows {
+        let value = |at: usize| Value::of(cells[order[at]]);
+        let Some(ordinal) = value(0).number().and_then(|value| u32::try_from(value).ok()) else { continue };
+        let Some(day_midnight) = value(1).number().map(|value| value as i32) else { continue };
+        let count_u32 = |at: usize| value(at).number().map_or(0, |value| u32::try_from(value.max(0)).unwrap_or(u32::MAX));
+        let days = count_u32(2);
+        let payments = count_u32(3);
+        let credits = count_u32(10);
+        if days == 0 && payments == 0 && credits == 0 {
+            continue;
+        }
+        let realized_unknown = count_u32(9);
+        each(
+            hour,
+            ordinal,
+            SpendDay {
+                item: 0,
+                day: Some(day_midnight),
+                read: hour,
+                days,
+                charge_raw: raw(value(4).number()),
+                payments,
+                unknown: count_u32(5),
+                uncovered: count_u32(6),
+                realized_raw: (realized_unknown == 0)
+                    .then(|| value(7).number().zip(value(8).number()).map(|(gained, lost)| i128::from(gained) + i128::from(lost)))
+                    .flatten()
+                    .map(|value| value.to_string()),
+                credits,
+            },
+        );
     }
     Ok(())
 }
@@ -518,6 +581,7 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
     let mut index: HashMap<(u32, u32, u32), u32> = HashMap::new();
     let mut credits: BTreeMap<u32, u32> = BTreeMap::new();
     let mut unmatched = 0_u64;
+    let has_day_log = query.replay.recording().predates(TableId::PowerSpendDays.index()).is_none();
     for piece in pieces(query, &params.country, params.from, params.to)? {
         crate::metadata::check_cancel(cancelled)?;
         coverage(query, &piece, currency, &mut reply.coverage)?;
@@ -532,6 +596,10 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
                 }
                 return;
             }
+            let (payment, day) = listed(&change, 0, !has_day_log);
+            if payment.is_none() && day.is_none() {
+                return;
+            }
             let Some(row) = items.get(&change.ordinal) else {
                 missing += 1;
                 return;
@@ -540,15 +608,36 @@ fn spending(source: &Source, query: &Query<'_>, params: &PowerSpendingParams, na
                 asked.push((piece.run, row.clone()));
                 (asked.len() - 1) as u32
             });
-            let (payment, day) = listed(&change, at);
-            if let Some(day) = &day
-                && day.credits > 0
-            {
-                *credits.entry(at).or_default() += day.credits;
+            if let Some(mut payment) = payment {
+                payment.item = at;
+                reply.payments.push(payment);
             }
-            reply.payments.extend(payment);
-            reply.days.extend(day);
+            if let Some(mut day) = day {
+                day.item = at;
+                if day.credits > 0 {
+                    *credits.entry(at).or_default() += day.credits;
+                }
+                reply.days.push(day);
+            }
         })?;
+        if has_day_log {
+            day_log(query, &piece, currency, &mut |hour, ordinal, mut day| {
+                let Some(row) = items.get(&ordinal) else {
+                    missing += 1;
+                    return;
+                };
+                let at = *index.entry((piece.run, piece.slot, ordinal)).or_insert_with(|| {
+                    asked.push((piece.run, row.clone()));
+                    (asked.len() - 1) as u32
+                });
+                day.item = at;
+                day.read = hour;
+                if day.credits > 0 {
+                    *credits.entry(at).or_default() += day.credits;
+                }
+                reply.days.push(day);
+            })?;
+        }
         if missing != 0 {
             reply.warnings.push(format!("Politics spending item is not recorded in power items (count: {missing})"));
         }

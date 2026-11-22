@@ -251,7 +251,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::POWER_LEDGER_COUNTED_DAY_FORMAT
+            crate::rows::compatibility::POWER_LEDGER_DAY_LOG_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -260,6 +260,9 @@ mod tests {
             }
             let format = FormatVersion::read(version).unwrap();
             let mut expected = crate::rows::compatibility::RETIRED_TABLES.to_vec();
+            if version < crate::rows::compatibility::POWER_LEDGER_DAY_LOG_FORMAT {
+                expected.push(TableId::PowerSpendDays);
+            }
             if version < crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT {
                 expected.push(TableId::StrategicRegionWeights);
             }

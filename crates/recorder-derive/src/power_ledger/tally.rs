@@ -132,7 +132,6 @@ pub(super) fn gains(holder: u32, currency: u8) -> Total {
         last_covered: No,
         balances: No,
         credits: No,
-        counted_day: No,
         ..Total::default()
     }
 }
@@ -158,8 +157,13 @@ pub(super) fn midnight(hour: i32) -> i32 {
     hour.div_euclid(24) * 24
 }
 
-pub(super) fn pay(total: &mut Total, seen: &mut ItemDays, payment: &Payment) {
-    if payment.recurring { day(total, seen, payment) } else { once(total, payment) }
+pub(super) fn pay(total: &mut Total, seen: &mut ItemDays, payment: &Payment) -> Option<(i32, bool, bool)> {
+    if payment.recurring {
+        day(total, seen, payment)
+    } else {
+        once(total, payment);
+        None
+    }
 }
 
 fn once(total: &mut Total, payment: &Payment) {
@@ -182,10 +186,10 @@ fn once(total: &mut Total, payment: &Payment) {
     }
 }
 
-fn day(total: &mut Total, seen: &mut ItemDays, payment: &Payment) {
+fn day(total: &mut Total, seen: &mut ItemDays, payment: &Payment) -> Option<(i32, bool, bool)> {
     let count = i128::from(payment.count);
     if count <= 0 {
-        return;
+        return None;
     }
     let day = midnight(payment.hour);
     let lag = payment.read.saturating_sub(day);
@@ -211,7 +215,6 @@ fn day(total: &mut Total, seen: &mut ItemDays, payment: &Payment) {
     if get(total.first_day).is_none_or(|first| day < first) {
         set(&mut total.first_day, day);
     }
-    set(&mut total.counted_day, day);
     let last = get(total.last_day);
     if last.is_none_or(|last| day > last) {
         set(&mut total.last_day, day);
@@ -228,6 +231,7 @@ fn day(total: &mut Total, seen: &mut ItemDays, payment: &Payment) {
         set(&mut total.last_lag, held_lag.map_or(lag, |held| held.max(lag)));
         set(&mut total.last_hour, held_hour.map_or(payment.hour, |held| held.min(payment.hour)));
     }
+    Some((day, new_day, newly_uncovered))
 }
 
 pub(super) fn count(total: &mut Total, credit: bool, times: i64) {

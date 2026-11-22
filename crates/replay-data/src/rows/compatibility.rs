@@ -3710,17 +3710,12 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         capture += 1;
     }
-    history[TableId::PowerSpendTotals.index()] = LastChange {
-        introduced: history[TableId::PowerSpendTotals.index()].introduced,
-        ..appended_at(
-            TableId::PowerSpendTotals,
-            POWER_LEDGER_COUNTED_DAY_FORMAT,
-            "power ledger counted day",
-            &[AppendedField {
-                index: 32,
-                name: "counted_day",
-                introduced: POWER_LEDGER_COUNTED_DAY_FORMAT,
-            }],
+    history[TableId::PowerSpendDays.index()] = LastChange {
+        introduced: POWER_LEDGER_DAY_LOG_FORMAT,
+        ..table(
+            TableId::PowerSpendDays,
+            POWER_LEDGER_DAY_LOG_FORMAT,
+            "power ledger day log",
         )
     };
     history
@@ -4621,14 +4616,14 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, POWER_LEDGER_COUNTED_DAY_FORMAT);
-        let totals = TableId::PowerSpendTotals.last_change();
-        assert_eq!(totals.format, POWER_LEDGER_COUNTED_DAY_FORMAT);
-        assert_eq!(totals.kind, ChangeKind::AppendedOnly);
-        assert_eq!(TableId::PowerSpendTotals.field_name(32), Some("counted_day"));
-        assert!(totals.table_gap(TableId::PowerSpendTotals, CAPTURE_ADDITIONS_FORMAT).is_none());
-        assert_eq!(totals.fields(TableId::PowerSpendTotals, CAPTURE_ADDITIONS_FORMAT), 32);
-        assert_eq!(totals.fields(TableId::PowerSpendTotals, POWER_LEDGER_COUNTED_DAY_FORMAT), 33);
+        assert_eq!(FORMAT_VERSION, POWER_LEDGER_DAY_LOG_FORMAT);
+        assert_eq!(TableId::PowerSpendTotals.field_count(), 32);
+        let spend_days = TableId::PowerSpendDays.last_change();
+        assert_eq!(spend_days.introduced, POWER_LEDGER_DAY_LOG_FORMAT);
+        assert_eq!(spend_days.format, POWER_LEDGER_DAY_LOG_FORMAT);
+        assert_eq!(spend_days.kind, ChangeKind::Layout);
+        assert!(spend_days.table_gap(TableId::PowerSpendDays, CAPTURE_ADDITIONS_FORMAT).is_some());
+        assert!(spend_days.table_gap(TableId::PowerSpendDays, POWER_LEDGER_DAY_LOG_FORMAT).is_none());
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

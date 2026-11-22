@@ -254,6 +254,14 @@ pub(super) fn written_cost_days(hour: &Hour<'_>) -> io::Result<HashSet<(u32, i32
     Ok(days)
 }
 
+pub(super) fn deleted_cost_countries(hour: &Hour<'_>) -> HashSet<u32> {
+    let table = TableId::CountryPowerDailyCosts;
+    if !costs_complete(hour) {
+        return HashSet::new();
+    }
+    hour.deleted_keys(table).map(|key| (key >> 32) as u32).collect()
+}
+
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {
     for table in [TableId::CountryPowerChanges, TableId::CountryPowerDaily, TableId::CountryPowerDailyCosts, TableId::PoliticsCaptureCoverage] {
         let view = hour.table(table);

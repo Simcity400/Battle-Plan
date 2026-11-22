@@ -218,6 +218,70 @@ pub fn history(recording: &Recording, run: u32, table: TableId, columns: &[usize
     Ok(History { columns, to, texts, keys })
 }
 
+pub fn log_span(
+    recording: &Recording,
+    run: u32,
+    table: TableId,
+    columns: &[usize],
+    from: i32,
+    to: i32,
+    each: &mut dyn FnMut(i32, u128, &[Cell]),
+) -> io::Result<Vec<usize>> {
+    let index = table.index();
+    let mut asked = columns.to_vec();
+    asked.sort_unstable();
+    asked.dedup();
+    if recording.predates(index).is_some() {
+        return Ok(asked);
+    }
+    if let Some(reason) = recording.withheld_reason(index) {
+        return Err(crate::columnar_frames::Damage::wrap(
+            crate::columnar_frames::DamageScope::Withheld { table: index as u32 },
+            invalid(reason.to_owned()),
+        ));
+    }
+    let held = recording.run(run)?;
+    if held.ordinals == 0 {
+        return Ok(asked);
+    }
+    let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
+    if from > to {
+        return Ok(asked);
+    }
+    let (Some(first), Some(last)) = (held.ordinal(from), held.ordinal(to)) else {
+        return Ok(asked);
+    };
+    let kinds = crate::columnar_frames::schema()?.swap_remove(index);
+    let recorded = recording.columns()[index].min(kinds.len());
+    asked.retain(|&column| column < kinds.len());
+    let read: Vec<usize> = asked.iter().copied().filter(|&column| column < recorded).collect();
+    let first_block = held.place(first).0;
+    let last_block = held.place(last).0;
+    let pages = recording.table_pages(run, index, first_block.saturating_sub(1), last_block + 1)?;
+    let empty = Strings::default();
+    let mut out = Vec::with_capacity(asked.len());
+    unit::reader::log_span(recording.extents(), &pages, &kinds[..recorded], index, &read, held.first_hour, from..=to, &mut |hour, event| {
+        let unit::reader::LogEvent::Appended { key, rows, at, .. } = event else { return };
+        let view = TableView::new(rows, &kinds[..recorded], &empty);
+        out.clear();
+        for &column in &asked {
+            out.push(if column >= recorded {
+                Cell::Unrecorded
+            } else {
+                match view.value(column, at) {
+                    replay_columnar::store::Value::Number(_) => view.number(column, at).map_or(Cell::Unrecorded, Cell::Number),
+                    replay_columnar::store::Value::Missing => Cell::Missing,
+                    replay_columnar::store::Value::Unrecorded => Cell::Unrecorded,
+                    replay_columnar::store::Value::Text(_) => Cell::Unrecorded,
+                    replay_columnar::store::Value::List(_) => Cell::Written(hour),
+                }
+            });
+        }
+        each(hour, key, &out);
+    })?;
+    Ok(asked)
+}
+
 pub fn reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
     let held = recording.run(run)?;
     let (from, to) = (from.max(held.first_hour), to.min(held.last_hour()));
