@@ -182,32 +182,34 @@ fn side_for(units: Units) -> MapSide {
     side
 }
 
-fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
-    for _ in 0..50_000_000u64 {
-        let head = side.entry().playhead().newest().unwrap_or(0);
-        let frame = side.frame(head).unwrap();
-        if done(side, &frame) {
-            return;
-        }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
-    panic!("the map side never reached what the test waits for");
+fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &crate::playhead_host::Frame) -> bool) {
+    crate::layers::recorded::frames_until(side, done);
 }
 
 fn reach(side: &mut MapSide, hour: i32) {
-    for _ in 0..50_000_000u64 {
-        let head = side.entry().playhead().newest().unwrap_or(0).min(hour + 3);
-        let frame = side.frame(head).unwrap();
-        if !side.composing() && frame.applied.is_some_and(|applied| applied >= hour) {
+    let cap = (hour + 3).min(side.entry().playhead().timeline().last());
+    loop {
+        assert!(side.entry().playhead().error().is_none(), "the playhead stopped before hour {hour}: {:?}", side.entry().playhead().error());
+        crate::layers::recorded::reads_landed(side);
+        let before = side.entry().playhead().step_state();
+        let head = before.0.unwrap_or(0).min(cap);
+        let frame = if side.composing() { side.frame_waiting(head) } else { side.frame(head) }.unwrap();
+        if !side.composing() && side.applied().is_some_and(|applied| applied >= hour) {
             return;
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
+        if side.composing() || frame.steps > 0 || frame.swapped.is_some() || frame.superseded {
+            continue;
         }
+        let more = side
+            .wait_step_after(before, cap)
+            .unwrap_or_else(|error| panic!("the playhead stopped before hour {hour}: {error}"));
+        assert!(
+            more,
+            "the map side reached hour {:?} (head cap {cap}) without reaching hour {hour}: {}",
+            side.applied(),
+            crate::layers::recorded::seen(side),
+        );
     }
-    panic!("the map side never reached hour {hour}");
 }
 
 fn hold(side: &mut MapSide, hour: i32) {
@@ -581,9 +583,7 @@ fn reading_equals_composed(side: &MapSide) {
     assert_eq!(reading(side).differ(&fresh), (0, None));
 }
 
-// quarantine: #142 a vision or viewing-country change never settles
 #[test]
-#[ignore = "quarantined under #142"]
 fn the_counters_reading_the_vision_layer_follow_a_change_of_the_viewing_country_with_nothing_given() {
     let mut side = reading_side();
     reading_settled(&mut side);
