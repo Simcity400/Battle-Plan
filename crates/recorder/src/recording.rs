@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fs::{self, File},
     path::{Path, PathBuf},
     sync::{

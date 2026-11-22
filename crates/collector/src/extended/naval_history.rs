@@ -1,5 +1,6 @@
 
 use crate::{
+    projection::{Projection, project_table, scalar_table},
     raw::RawLog,
     read_accounting,
     sampling::qpc,
@@ -17,8 +18,8 @@ use engine_naval_history::{
     csunk_ship_info, naval_dominance_entry,
 };
 use engine_railways::{cprovince_railway_info, crailway_manager, rail_neighbor};
-use replay_data::{rows, rows::TableId, rows::TableRows, rows::tables};
-use replay_frame::frame::TableView;
+use replay_data::{rows, rows::RowCodec, rows::TableId, rows::TableRows, rows::tables};
+use replay_frame::frame::{TableInput, TableView};
 
 pub const N: usize = 17;
 pub const TABLES: [TableId; N] = [
@@ -653,15 +654,38 @@ impl Captured {
         self.wing_sources.grow(&mut capacity.wing_sources);
     }
 
-    fn railway_building(&self, province: u32) -> Option<rows::RailwayBuildingState> {
+    fn railway_row_at(
+        &self,
+        hint: usize,
+        province: u32,
+    ) -> Option<&crailway_manager::fresh_inputs::RailwayBuildingRow> {
         let captured = self
             .rail_buildings
             .rows
             .get(..self.rail_buildings.outcome.len())?;
+        if let Some(row) = captured.get(hint)
+            && row.province == province
+        {
+            return Some(row);
+        }
         let index = captured
             .binary_search_by_key(&province, |row| row.province)
             .ok()?;
-        let state = captured[index].building.ok()??;
+        captured.get(index)
+    }
+
+    #[cfg(test)]
+    fn railway_building(&self, province: u32) -> Option<rows::RailwayBuildingState> {
+        self.railway_building_at(usize::MAX, province)
+    }
+
+    #[cfg(test)]
+    fn railway_selection(&self, province: u32) -> Option<rows::RailwaySelectionInputs> {
+        self.railway_selection_at(usize::MAX, province)
+    }
+
+    fn railway_building_at(&self, hint: usize, province: u32) -> Option<rows::RailwayBuildingState> {
+        let state = self.railway_row_at(hint, province)?.building.ok()??;
         Some(rows::RailwayBuildingState {
             building: state.building.map(|health| rows::RailwayBuildingHealth {
                 level: health.level,
@@ -671,16 +695,13 @@ impl Captured {
         })
     }
 
-    fn railway_selection(&self, province: u32) -> Option<rows::RailwaySelectionInputs> {
+    fn railway_selection_at(
+        &self,
+        hint: usize,
+        province: u32,
+    ) -> Option<rows::RailwaySelectionInputs> {
         self.rail_hour?;
-        let captured = self
-            .rail_buildings
-            .rows
-            .get(..self.rail_buildings.outcome.len())?;
-        let index = captured
-            .binary_search_by_key(&province, |row| row.province)
-            .ok()?;
-        let selected = captured[index].selection?;
+        let selected = self.railway_row_at(hint, province)?.selection?;
         let levels = selected.levels.ok().and_then(|span| {
             span.first
                 .checked_add(span.len)
@@ -692,6 +713,22 @@ impl Captured {
             levels,
             pair_count: selected.pair_count.ok(),
             building_level: selected.building_level.ok().flatten(),
+        })
+    }
+
+    fn rail_cooldowns_table(&self, outcome: Outcome) -> TableView {
+        let base = self.cooldowns.rows.as_ptr() as usize;
+        let stride = size_of::<cprovince_railway_info::Row>();
+        table::<tables::RailCooldowns, _>(outcome, &self.cooldowns.rows, |r| {
+            let hint = (r as *const cprovince_railway_info::Row as usize - base) / stride;
+            rows::RailCooldownRow {
+                province: r.province,
+                cooldown_ticks: r.cooldown_ticks,
+                building: rows::Recorded::Value(self.railway_building_at(hint, r.province)),
+                selection: rows::Recorded::Value(self.railway_selection_at(hint, r.province)),
+                selection_hour: rows::Recorded::Value(self.rail_hour),
+                building_bound: rows::Recorded::Value(Some(r.building_bound)),
+            }
         })
     }
 
@@ -1221,7 +1258,7 @@ impl Captured {
         result
     }
 
-    pub fn tables(&self) -> [TableView; N] {
+    fn checked_outcomes(&self) -> [Outcome; N] {
         let mut outcomes = self.outcomes();
         if let Some(reason) = membership_issue(
             outcomes[6],
@@ -1243,199 +1280,334 @@ impl Captured {
         ) {
             outcomes[9] = Outcome::Unavailable { reason };
         }
+        outcomes
+    }
+
+    pub fn table_inputs(&self, mut projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        let outcomes = self.checked_outcomes();
+        let supremacy = |r: &cnaval_region_dominance::Row| rows::NavalSupremacyRow {
+            region: r.region,
+            region_slot: r.region_slot,
+            country: r.country,
+            current: r.current,
+            base_target: r.base_target,
+            target: r.target,
+            individual_ratio: r.individual_ratio,
+            previous: r.previous,
+            decline_from: r.decline_from,
+        };
+        let convoy = |r: &csunk_convoy_info::Row| rows::SunkConvoyRow {
+            month: r.month,
+            killer_country: r.killer_country,
+            owner_country: r.owner_country,
+            convoys: r.convoys,
+            ordinal: r.ordinal,
+        };
+        let edge = |r: &rail_neighbor::Row| rows::RailEdgeRow {
+            from: r.from_province,
+            to: r.to_province,
+            level: r.level,
+        };
+        let land = |r: &ctheatre::Row| rows::LandTheatreRow {
+            id: r.id,
+            owner: r.owner,
+            volunteers_theatre: r.volunteers_theatre,
+            ordinal: r.ordinal,
+        };
+        let land_member = |r: &ctheater_group::MemberRow| rows::LandTheatreMemberRow {
+            orders_group: r.orders_group,
+            theater_group: r.theater_group,
+            ordinal: r.ordinal,
+        };
+        let air_member = |r: &cair_group::MemberRow| rows::AirTheatreMemberRow {
+            wing: r.wing,
+            group: r.group,
+            ordinal: r.ordinal,
+        };
+        let result_row = |r: &cnaval_combat_results::Row| rows::NavalResultRow {
+            id: r.id,
+            province: r.province,
+            result_hour: r.result_hour,
+            retire_hour: r.retire_hour,
+            category: r.category,
+            flag_a: r.flag_a,
+            flag_b: r.flag_b,
+            subtype: r.subtype,
+            readiness: r.readiness,
+            winning_side: r.winning_side,
+            losing_side: r.losing_side,
+            province_ordinal: r.province_ordinal,
+        };
+        let result_member = |r: &cnaval_combat_results::MemberRow| rows::NavalResultMemberRow {
+            result: r.result,
+            member: r.member,
+            presence_value: r.presence_value,
+            ordinal: r.ordinal,
+            side: r.side,
+        };
+        let result_country = |r: &cnaval_combat_results::CountryRow| rows::NavalResultCountryRow {
+            result: r.result,
+            country: r.country,
+            ordinal: r.ordinal,
+            list: r.list,
+        };
+        let group_member = |r: &corders_group::MemberRow| rows::OrdersGroupMemberRow {
+            group: r.group,
+            ordinal: r.ordinal,
+            unit: r.unit,
+        };
+        let group_child = |r: &corders_group::ChildRow| rows::ArmyGroupMemberRow {
+            group: r.group,
+            ordinal: r.ordinal,
+            child: r.child,
+        };
         [
-            table::<tables::NavalSupremacy, _>(outcomes[0], &self.supremacy.rows, |r| {
-                rows::NavalSupremacyRow {
-                    region: r.region,
-                    region_slot: r.region_slot,
-                    country: r.country,
-                    current: r.current,
-                    base_target: r.base_target,
-                    target: r.target,
-                    individual_ratio: r.individual_ratio,
-                    previous: r.previous,
-                    decline_from: r.decline_from,
-                }
-            }),
-            table::<tables::SunkConvoys, _>(outcomes[1], &self.convoys.rows, |r| {
-                rows::SunkConvoyRow {
-                    month: r.month,
-                    killer_country: r.killer_country,
-                    owner_country: r.owner_country,
-                    convoys: r.convoys,
-                    ordinal: r.ordinal,
-                }
-            }),
-            table::<tables::RailCooldowns, _>(outcomes[2], &self.cooldowns.rows, |r| {
-                rows::RailCooldownRow {
-                    province: r.province,
-                    cooldown_ticks: r.cooldown_ticks,
-                    building: rows::Recorded::Value(self.railway_building(r.province)),
-                    selection: rows::Recorded::Value(self.railway_selection(r.province)),
-                    selection_hour: rows::Recorded::Value(self.rail_hour),
-                    building_bound: rows::Recorded::Value(Some(r.building_bound)),
-                }
-            }),
-            table::<tables::RailEdges, _>(outcomes[3], &self.edges.rows, |r| rows::RailEdgeRow {
-                from: r.from_province,
-                to: r.to_province,
-                level: r.level,
-            }),
-            table::<tables::LandTheatres, _>(outcomes[4], &self.land.rows, |r| {
-                rows::LandTheatreRow {
-                    id: r.id,
-                    owner: r.owner,
-                    volunteers_theatre: r.volunteers_theatre,
-                    ordinal: r.ordinal,
-                }
-            }),
-            self.land_groups_table(outcomes[5]),
-            table::<tables::LandTheatreMembers, _>(outcomes[6], &self.land_members.rows, |r| {
-                rows::LandTheatreMemberRow {
-                    orders_group: r.orders_group,
-                    theater_group: r.theater_group,
-                    ordinal: r.ordinal,
-                }
-            }),
-            self.air_table(outcomes[7]),
-            self.air_groups_table(outcomes[8]),
-            table::<tables::AirTheatreMembers, _>(outcomes[9], &self.air_members.rows, |r| {
-                rows::AirTheatreMemberRow {
-                    wing: r.wing,
-                    group: r.group,
-                    ordinal: r.ordinal,
-                }
-            }),
-            table::<tables::NavalResults, _>(outcomes[10], &self.results.rows, |r| {
-                rows::NavalResultRow {
-                    id: r.id,
-                    province: r.province,
-                    result_hour: r.result_hour,
-                    retire_hour: r.retire_hour,
-                    category: r.category,
-                    flag_a: r.flag_a,
-                    flag_b: r.flag_b,
-                    subtype: r.subtype,
-                    readiness: r.readiness,
-                    winning_side: r.winning_side,
-                    losing_side: r.losing_side,
-                    province_ordinal: r.province_ordinal,
-                }
-            }),
-            table::<tables::NavalResultMembers, _>(outcomes[11], &self.result_members.rows, |r| {
-                rows::NavalResultMemberRow {
-                    result: r.result,
-                    member: r.member,
-                    presence_value: r.presence_value,
-                    ordinal: r.ordinal,
-                    side: r.side,
-                }
-            }),
-            table::<tables::NavalResultCountries, _>(
+            scalar_table::<tables::NavalSupremacy, _>(
+                projection.as_deref_mut(),
+                outcomes[0],
+                &self.supremacy.rows,
+                |r| RowCodec::key(&supremacy(r)),
+                supremacy,
+            ),
+            scalar_table::<tables::SunkConvoys, _>(
+                projection.as_deref_mut(),
+                outcomes[1],
+                &self.convoys.rows,
+                |r| RowCodec::key(&convoy(r)),
+                convoy,
+            ),
+            self.rail_cooldowns_table(outcomes[2]).into(),
+            scalar_table::<tables::RailEdges, _>(
+                projection.as_deref_mut(),
+                outcomes[3],
+                &self.edges.rows,
+                |r| RowCodec::key(&edge(r)),
+                edge,
+            ),
+            scalar_table::<tables::LandTheatres, _>(
+                projection.as_deref_mut(),
+                outcomes[4],
+                &self.land.rows,
+                |r| RowCodec::key(&land(r)),
+                land,
+            ),
+            self.land_groups_input(projection.as_deref_mut(), outcomes[5]),
+            scalar_table::<tables::LandTheatreMembers, _>(
+                projection.as_deref_mut(),
+                outcomes[6],
+                &self.land_members.rows,
+                |r| RowCodec::key(&land_member(r)),
+                land_member,
+            ),
+            self.air_input(projection.as_deref_mut(), outcomes[7]),
+            self.air_groups_input(projection.as_deref_mut(), outcomes[8]),
+            scalar_table::<tables::AirTheatreMembers, _>(
+                projection.as_deref_mut(),
+                outcomes[9],
+                &self.air_members.rows,
+                |r| RowCodec::key(&air_member(r)),
+                air_member,
+            ),
+            scalar_table::<tables::NavalResults, _>(
+                projection.as_deref_mut(),
+                outcomes[10],
+                &self.results.rows,
+                |r| RowCodec::key(&result_row(r)),
+                result_row,
+            ),
+            scalar_table::<tables::NavalResultMembers, _>(
+                projection.as_deref_mut(),
+                outcomes[11],
+                &self.result_members.rows,
+                |r| RowCodec::key(&result_member(r)),
+                result_member,
+            ),
+            scalar_table::<tables::NavalResultCountries, _>(
+                projection.as_deref_mut(),
                 outcomes[12],
                 &self.result_countries.rows,
-                |r| rows::NavalResultCountryRow {
-                    result: r.result,
-                    country: r.country,
-                    ordinal: r.ordinal,
-                    list: r.list,
-                },
+                |r| RowCodec::key(&result_country(r)),
+                result_country,
             ),
-            self.sunk_table(),
-            table::<tables::OrdersGroups, _>(outcomes[14], &self.groups.rows, |r| {
-                rows::OrdersGroupRow {
-                    handle: r.handle,
-                    country: r.country,
-                    is_army_group: r.is_army_group,
-                    motorization_level: r.motorization_level,
-                    theatre: r.theatre,
-                    theatre_ordinal: r.theatre_ordinal,
-                    theater_group: r.theater_group,
-                    parent: r.parent,
-                    leader: r.leader,
-                    hq_provider: r.hq_provider,
-                    name: if r.name_known {
-                        self.group_names
-                            .first
-                            .get(r.name_start..r.name_start + r.name_len)
-                            .map(|bytes| owned_vec(copy_vec(bytes)))
-                    } else {
-                        None
-                    }
-                    .into(),
-                }
-            }),
-            table::<tables::OrdersGroupMembers, _>(outcomes[15], &self.group_members.rows, |r| {
-                rows::OrdersGroupMemberRow {
-                    group: r.group,
-                    ordinal: r.ordinal,
-                    unit: r.unit,
-                }
-            }),
-            table::<tables::ArmyGroupMembers, _>(outcomes[16], &self.group_children.rows, |r| {
-                rows::ArmyGroupMemberRow {
-                    group: r.group,
-                    ordinal: r.ordinal,
-                    child: r.child,
-                }
-            }),
+            self.sunk_table().into(),
+            self.orders_groups_input(projection.as_deref_mut(), outcomes[14]),
+            scalar_table::<tables::OrdersGroupMembers, _>(
+                projection.as_deref_mut(),
+                outcomes[15],
+                &self.group_members.rows,
+                |r| RowCodec::key(&group_member(r)),
+                group_member,
+            ),
+            scalar_table::<tables::ArmyGroupMembers, _>(
+                projection,
+                outcomes[16],
+                &self.group_children.rows,
+                |r| RowCodec::key(&group_child(r)),
+                group_child,
+            ),
         ]
     }
 
-    fn land_groups_table(&self, outcome: Outcome) -> TableView {
+    #[cfg(test)]
+    pub fn tables(&self) -> [TableView; N] {
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("projection without a baseline always samples"),
+        })
+    }
+
+    fn orders_groups_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
+        let name_slice = |r: &corders_group::GroupRow| {
+            r.name_known
+                .then(|| {
+                    self.group_names
+                        .first
+                        .get(r.name_start..r.name_start + r.name_len)
+                })
+                .flatten()
+        };
+        project_table::<tables::OrdersGroups, _>(
+            projection,
+            outcome,
+            &self.groups.rows,
+            |r| u128::from(r.handle),
+            |r, prev| {
+                r.handle == prev.handle
+                    && r.country == prev.country
+                    && r.is_army_group == prev.is_army_group
+                    && r.motorization_level == prev.motorization_level
+                    && r.theatre == prev.theatre
+                    && r.theatre_ordinal == prev.theatre_ordinal
+                    && r.theater_group == prev.theater_group
+                    && r.parent == prev.parent
+                    && r.leader == prev.leader
+                    && r.hq_provider == prev.hq_provider
+                    && matches!(
+                        &prev.name,
+                        rows::Recorded::Value(name) if name.as_deref() == name_slice(r)
+                    )
+            },
+            |r| rows::OrdersGroupRow {
+                handle: r.handle,
+                country: r.country,
+                is_army_group: r.is_army_group,
+                motorization_level: r.motorization_level,
+                theatre: r.theatre,
+                theatre_ordinal: r.theatre_ordinal,
+                theater_group: r.theater_group,
+                parent: r.parent,
+                leader: r.leader,
+                hq_provider: r.hq_provider,
+                name: name_slice(r)
+                    .map(|bytes| owned_vec(copy_vec(bytes)))
+                    .into(),
+            },
+        )
+    }
+
+    fn land_groups_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
         let Some(bytes) = self.theatre_names.first.get(..self.theatre_names.len) else {
-            return unavailable("theatre name arena invalid");
+            return unavailable("theatre name arena invalid").into();
         };
         if !valid_named(outcome, &self.land_groups.rows, Some(bytes), |r| {
             (r.name_start, r.name_len)
         }) {
-            return unavailable("land group name range exceeds captured arena");
+            return unavailable("land group name range exceeds captured arena").into();
         }
-        table::<tables::LandTheatreGroups, _>(outcome, &self.land_groups.rows, |r| {
-            rows::LandTheatreGroupRow {
+        project_table::<tables::LandTheatreGroups, _>(
+            projection,
+            outcome,
+            &self.land_groups.rows,
+            |r| u128::from(r.id),
+            |r, prev| {
+                r.id == prev.id
+                    && r.theatre == prev.theatre
+                    && r.ordinal == prev.ordinal
+                    && r.priority == prev.priority
+                    && prev.name.as_slice() == &bytes[r.name_start..r.name_start + r.name_len]
+            },
+            |r| rows::LandTheatreGroupRow {
                 id: r.id,
                 theatre: r.theatre,
                 ordinal: r.ordinal,
                 priority: r.priority,
                 name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
-            }
-        })
+            },
+        )
     }
 
-    fn air_table(&self, outcome: Outcome) -> TableView {
+    fn air_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
         let Some(bytes) = self.theatre_names.first.get(..self.theatre_names.len) else {
-            return unavailable("theatre name arena invalid");
+            return unavailable("theatre name arena invalid").into();
         };
         if !valid_named(outcome, &self.air.rows, Some(bytes), |r| {
             (r.name_start, r.name_len)
         }) {
-            return unavailable("air theatre name range exceeds captured arena");
+            return unavailable("air theatre name range exceeds captured arena").into();
         }
-        table::<tables::AirTheatres, _>(outcome, &self.air.rows, |r| rows::AirTheatreRow {
-            id: r.id,
-            owner: r.owner,
-            ordinal: r.ordinal,
-            name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
-        })
+        project_table::<tables::AirTheatres, _>(
+            projection,
+            outcome,
+            &self.air.rows,
+            |r| u128::from(r.id),
+            |r, prev| {
+                r.id == prev.id
+                    && r.owner == prev.owner
+                    && r.ordinal == prev.ordinal
+                    && prev.name.as_slice() == &bytes[r.name_start..r.name_start + r.name_len]
+            },
+            |r| rows::AirTheatreRow {
+                id: r.id,
+                owner: r.owner,
+                ordinal: r.ordinal,
+                name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
+            },
+        )
     }
 
-    fn air_groups_table(&self, outcome: Outcome) -> TableView {
+    fn air_groups_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
         let Some(bytes) = self.theatre_names.first.get(..self.theatre_names.len) else {
-            return unavailable("theatre name arena invalid");
+            return unavailable("theatre name arena invalid").into();
         };
         if !valid_named(outcome, &self.air_groups.rows, Some(bytes), |r| {
             (r.name_start, r.name_len)
         }) {
-            return unavailable("air group name range exceeds captured arena");
+            return unavailable("air group name range exceeds captured arena").into();
         }
-        table::<tables::AirTheatreGroups, _>(outcome, &self.air_groups.rows, |r| {
-            rows::AirTheatreGroupRow {
+        project_table::<tables::AirTheatreGroups, _>(
+            projection,
+            outcome,
+            &self.air_groups.rows,
+            |r| u128::from(r.id),
+            |r, prev| {
+                r.id == prev.id
+                    && r.theatre == prev.theatre
+                    && r.ordinal == prev.ordinal
+                    && prev.name.as_slice() == &bytes[r.name_start..r.name_start + r.name_len]
+            },
+            |r| rows::AirTheatreGroupRow {
                 id: r.id,
                 theatre: r.theatre,
                 ordinal: r.ordinal,
                 name: owned_vec(copy_vec(&bytes[r.name_start..r.name_start + r.name_len])),
-            }
-        })
+            },
+        )
     }
 
     fn sunk_table(&self) -> TableView {

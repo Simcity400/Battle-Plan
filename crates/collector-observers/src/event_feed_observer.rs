@@ -696,7 +696,11 @@ impl Owner {
     ) -> Result<T, &'static str> {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let store = unsafe { &mut *self.store.get() };
-            let publication = self.seal_loss_publication.swap(0, Ordering::Acquire);
+            let publication = if self.seal_loss_publication.load(Ordering::Relaxed) != 0 {
+                self.seal_loss_publication.swap(0, Ordering::Acquire)
+            } else {
+                0
+            };
             if publication != 0 {
                 let count = self.seal_loss_count.swap(0, Ordering::SeqCst);
                 if publication == NO_SEAL {
@@ -734,6 +738,9 @@ impl Owner {
 
     fn take_declines(&self, slot: usize) -> u64 {
         let declines = self.declines[slot].load(Ordering::SeqCst);
+        if declines <= self.taken[slot].load(Ordering::Relaxed) {
+            return 0;
+        }
         declines.saturating_sub(self.taken[slot].fetch_max(declines, Ordering::SeqCst))
     }
     fn current(&self) -> usize {

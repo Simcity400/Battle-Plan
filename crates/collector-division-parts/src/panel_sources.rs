@@ -387,8 +387,8 @@ struct Held {
 }
 pub struct Store {
     roots: Table<(u8, u64), Held>,
-    countries: Table<u32, (u64, Result<ccountry::Country, &'static str>)>,
-    leaders: Table<usize, (u64, u64)>,
+    countries: Table<u32, (u64, Result<ccountry::Country, &'static str>, bool)>,
+    leaders: Table<usize, (u64, u64, u8)>,
     rows: Rows<SharedDivisionPanelSourceRow>,
     turn: u64,
     world_epoch: u64,
@@ -761,8 +761,8 @@ impl Store {
             let reads = reads(index).map(|preparation| &preparation.reads);
             let selection = (|| {
                 let owner = source_owner(seed)?;
-                let country = match self.countries.get(&owner) {
-                    Some(&(turn, country)) if turn == self.turn => country,
+                let (country, root_seen) = match self.countries.get(&owner) {
+                    Some(&(turn, country, root_seen)) if turn == self.turn => (country, root_seen),
                     _ => {
                         let country = prepared
                             .and_then(|p| p.country)
@@ -774,22 +774,27 @@ impl Store {
                                     .ok_or("division source owned selection missing")?
                                     .resolve(owner)
                             });
-                        self.countries.put(owner, (self.turn, country));
-                        country
+                        self.countries.put(owner, (self.turn, country, false));
+                        (country, false)
                     }
                 };
                 let country = country?;
-                self.root_prepared(
-                    memory,
-                    0,
-                    country.id as u64,
-                    country.pointer,
-                    country
-                        .pointer
-                        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
-                        .ok_or("division source country overflow")?,
-                    reads,
-                )?;
+                if !root_seen {
+                    self.root_prepared(
+                        memory,
+                        0,
+                        country.id as u64,
+                        country.pointer,
+                        country
+                            .pointer
+                            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                            .ok_or("division source country overflow")?,
+                        reads,
+                    )?;
+                    if let Some(entry) = self.countries.get_mut(&owner) {
+                        entry.2 = true;
+                    }
+                }
                 let selection = (|| {
                     let block = match seed.selected {
                         Some(selected) => selected.block,
@@ -812,12 +817,20 @@ impl Store {
                     let receiver = accumulator
                         .checked_sub(offset)
                         .ok_or("division source commander overflow")?;
-                    let handle = match seed.selected.and_then(|selected| selected.handle) {
-                        Some(handle) => handle,
-                        None => match self.leaders.get(&receiver) {
-                            Some(&(turn, handle)) if turn == self.turn => handle,
-                            _ => {
-                                let handle = prepared
+                    let kind = if hq { 2 } else { 1 };
+                    let kind_bit = 1u8 << kind;
+                    let selected_handle = seed.selected.and_then(|selected| selected.handle);
+                    let (handle, leader_root_seen) = match self.leaders.get(&receiver) {
+                        Some(&(turn, cached, mask))
+                            if turn == self.turn
+                                && selected_handle.is_none_or(|handle| handle == cached) =>
+                        {
+                            (cached, mask & kind_bit != 0)
+                        }
+                        _ => {
+                            let handle = match selected_handle {
+                                Some(handle) => handle,
+                                None => prepared
                                     .and_then(|p| p.commander)
                                     .filter(|(selected, _)| *selected == receiver)
                                     .map(|(_, handle)| handle)
@@ -827,17 +840,24 @@ impl Store {
                                             receiver + engine_native::cunit_leader::TYPE,
                                         )
                                         .ok_or("division source commander identity unreadable")
-                                    })?;
-                                self.leaders.put(receiver, (self.turn, handle));
-                                handle
-                            }
-                        },
+                                    })?,
+                            };
+                            self.leaders.put(receiver, (self.turn, handle, 0));
+                            (handle, false)
+                        }
                     };
                     if handle as u32 != engine_native::cunit_leader::REFERENCE_TYPE {
                         return Err("division source commander identity mismatch");
                     }
-                    let kind = if hq { 2 } else { 1 };
-                    self.root_prepared(memory, kind, handle, receiver, accumulator, reads)?;
+                    if !leader_root_seen {
+                        self.root_prepared(memory, kind, handle, receiver, accumulator, reads)?;
+                        if let Some(entry) = self.leaders.get_mut(&receiver)
+                            && entry.0 == self.turn
+                            && entry.1 == handle
+                        {
+                            entry.2 |= kind_bit;
+                        }
+                    }
                     Ok::<_, &'static str>([country.id as u64, kind as u64, handle])
                 })()
                 .unwrap_or([country.id as u64, u64::MAX, 0]);
@@ -892,9 +912,11 @@ impl Store {
                     }
                 };
                 if let Some((id, pointer)) = context {
-                    for country in [seed.roster_owner, seed.logical_owner]
-                        .into_iter()
-                        .flatten()
+                    if let Some(country) = seed.roster_owner {
+                        self.state_prepared(memory, base, state, id, pointer, country, reads)?;
+                    }
+                    if let Some(country) = seed.logical_owner
+                        && Some(country) != seed.roster_owner
                     {
                         self.state_prepared(memory, base, state, id, pointer, country, reads)?;
                     }
@@ -1262,14 +1284,20 @@ impl Store {
         let certificate = if self.settling_owned {
             observation.map(|(certificate, _)| certificate)
         } else {
-            match self.pools.get(&seed.division).and_then(|held| {
-                held.certificate.filter(|certificate| {
-                    held.army == seed.pointer
-                        && quiet.is_some_and(|quiet| quiet.quiet(pool, certificate.0))
-                })
-            }) {
-                Some(certificate) => Some(certificate),
-                None => operands::sequence(pool),
+            match self.pools.get_mut(&seed.division) {
+                Some(held)
+                    if held.army == seed.pointer
+                        && held
+                            .certificate
+                            .is_some_and(|cert| quiet.is_some_and(|quiet| quiet.quiet(pool, cert.0))) =>
+                {
+                    held.seen = self.turn;
+                    if let Some((_, slot)) = observation {
+                        held.slot = slot;
+                    }
+                    return Ok(());
+                }
+                _ => operands::sequence(pool),
             }
         };
         if let Some(held) = self.pools.get_mut(&seed.division)

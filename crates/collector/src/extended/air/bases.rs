@@ -75,11 +75,12 @@ pub(crate) struct AirBasesJob {
     pub(crate) registration_work: crate::air_base_carry_changes::Work,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HeldSegment {
     pub handle: u64,
     pub pointer: usize,
     pub id: u64,
+    pub carried_raw: Option<std::sync::Arc<super::registration_store::CarriedRaw>>,
 }
 
 #[derive(Clone, Copy)]
@@ -289,6 +290,7 @@ pub(crate) struct AirBasesMemo {
     pub(super) spans: Vec<crate::raw::Span>,
     pub(super) bytes: Vec<u8>,
     pub(super) has_bulk: bool,
+    pub(super) segments: Vec<(u64, usize, u64)>,
     pub(super) bases: Vec<cair_base::Row>,
     pub(super) aces: Vec<cace::Row>,
     pub(super) names: Vec<u8>,
@@ -315,6 +317,7 @@ impl AirBasesMemo {
             spans: Vec::new(),
             bytes: Vec::new(),
             has_bulk: false,
+            segments: Vec::new(),
             bases: Vec::new(),
             aces: Vec::new(),
             names: Vec::new(),
@@ -339,7 +342,8 @@ impl AirBasesMemo {
             payload_vectors: vector_bytes(&self.spans)
                 + vector_bytes(&self.bytes)
                 + self.carrier.bytes().0,
-            auxiliary_vectors: vector_bytes(&self.bases)
+            auxiliary_vectors: vector_bytes(&self.segments)
+                + vector_bytes(&self.bases)
                 + vector_bytes(&self.aces)
                 + vector_bytes(&self.names)
                 + self.registrations.capacity_bytes()
@@ -378,6 +382,17 @@ impl AirBasesMemo {
             job.roster.reserved_observation(base, job.game_state),
         ));
         true
+    }
+
+    pub(super) fn segments_equal(&self, segments: &[HeldSegment]) -> bool {
+        self.segments.len() == segments.len()
+            && self
+                .segments
+                .iter()
+                .zip(segments)
+                .all(|(&(handle, pointer, id), segment)| {
+                    handle == segment.handle && pointer == segment.pointer && id == segment.id
+                })
     }
 
     pub(super) fn input_equal(&self, log: &RawLog<AIR_BASES_N>) -> bool {
@@ -452,7 +467,8 @@ impl AirBasesMemo {
             && job.log.spans.iter().all(|span| span.ok);
         if report.eligible && self.key == key {
             report.compared = true;
-            report.hit = self.input_equal(&job.log)
+            report.hit = self.segments_equal(&job.segments)
+                && self.input_equal(&job.log)
                 && self.carrier.input_equal(&job.carrier.log.borrow())
                 && self.roster_equal(job, ctx.base);
         }
@@ -522,6 +538,7 @@ impl AirBasesMemo {
         if report.eligible && air.bases_memo_complete() && fog.registrations_memo_complete() {
             if reserve_to(&mut self.spans, job.log.spans.len()).is_err()
                 || reserve_to(&mut self.bytes, job.log.bytes.len()).is_err()
+                || reserve_to(&mut self.segments, job.segments.len()).is_err()
                 || reserve_to(&mut self.bases, air.bases.outcome.len()).is_err()
                 || (job.aces_active
                     && (reserve_to(&mut self.aces, air.aces.outcome.len()).is_err()
@@ -536,6 +553,9 @@ impl AirBasesMemo {
             self.bytes.clear();
             self.bytes.extend_from_slice(job.log.bytes.as_ref());
             self.has_bulk = job.log.has_bulk;
+            self.segments.clear();
+            self.segments
+                .extend(job.segments.iter().map(|s| (s.handle, s.pointer, s.id)));
             self.bases.clear();
             self.bases
                 .extend_from_slice(&air.bases.rows[..air.bases.outcome.len()]);
@@ -1455,12 +1475,19 @@ struct CarryPass<'a> {
 }
 
 impl CarryPass<'_> {
-    fn segment(&mut self, handle: u64, pointer: usize, id: u64) {
+    fn segment(
+        &mut self,
+        handle: u64,
+        pointer: usize,
+        id: u64,
+        carried_raw: Option<std::sync::Arc<super::registration_store::CarriedRaw>>,
+    ) {
         if allocation::advisory(|| allocation::reserve(self.segments, 1)).is_ok() {
             self.segments.push(HeldSegment {
                 handle,
                 pointer,
                 id,
+                carried_raw,
             });
         }
     }
@@ -1574,19 +1601,17 @@ fn registrations(
     store.visit();
     let planned = slots.run.dense;
     if let Some(held) = store.carryable(handle, pointer, certificate, planned) {
-        let (rows, segment) = (held.demand, held.segment);
-        let spliced = (held.spans.len(), held.bytes.len());
+        let (rows, segment, raw) = (held.demand, held.segment, held.raw);
         let resolved = held.links.iter().all(|&(country, slot)| {
             resolve_link(log, memory, links, seen, seen_index, countries, country) == Some(slot)
                 && !log.overflowed
         });
-        if resolved && log.splice(held.spans, held.bytes) {
+        if resolved {
             *demand = demand.and_then(|[read, wings]| {
                 Some([read.checked_add(rows[0])?, wings.checked_add(rows[1])?])
             });
             store.carried();
-            carry.work.splice(spliced.0, spliced.1);
-            carry.segment(handle, pointer, segment);
+            carry.segment(handle, pointer, segment, Some(raw));
             carry.work.note(Work::CARRIED, started);
             return true;
         }
@@ -1642,7 +1667,7 @@ fn registrations(
         };
         store.hold(handle, pointer, certificate, planned, &fresh);
         if let Some(segment) = store.segment(handle) {
-            carry.segment(handle, pointer, segment);
+            carry.segment(handle, pointer, segment, None);
         }
     }
     carry.work.note(Work::FRESH, started);

@@ -1,5 +1,16 @@
 use super::*;
 
+pub fn verify_country_occurrences<M: Memory>(
+    countries: &ccountry::Reader<'_, M>,
+    resolved: &mut [ResolvedLink],
+    items: &[CountryOccurrence],
+) -> bool {
+    let mut resolver = Resolver { cells: resolved };
+    items
+        .iter()
+        .all(|item| carrier::country_slot(countries, &mut resolver, item.country) == Ok(item.slot))
+}
+
 pub fn state_country_order_demand(
     memory: &impl Memory,
     pointer: usize,

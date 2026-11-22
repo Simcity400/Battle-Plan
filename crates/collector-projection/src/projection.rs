@@ -685,6 +685,8 @@ impl<C> Ledger<C> {
 struct Ledgers<C> {
     held: Ledger<C>,
     next: Ledger<C>,
+    seen: Vec<bool>,
+    edits: Vec<(u128, Option<usize>)>,
 }
 
 impl<C> Default for Ledgers<C> {
@@ -692,6 +694,8 @@ impl<C> Default for Ledgers<C> {
         Self {
             held: Ledger::default(),
             next: Ledger::default(),
+            seen: Vec::new(),
+            edits: Vec::new(),
         }
     }
 }
@@ -764,7 +768,13 @@ impl Projection<'_> {
                 if ledgers.held.stamp == Some(token.baseline())
                     && previous.len() == ledgers.held.keys.len() =>
             {
-                match ledger_update::<S, T, C>(&ledgers.held, &ledgers.next, source, &convert) {
+                let Ledgers {
+                    held,
+                    next,
+                    seen,
+                    edits,
+                } = &mut *ledgers;
+                match ledger_update::<S, T, C>(held, next, seen, edits, source, &convert) {
                     Ok(None) => TableInput::ComparedEqual(token),
                     Ok(Some(update)) => TableInput::SliceUpdate {
                         token,
@@ -787,7 +797,7 @@ impl Projection<'_> {
                 | TableInput::SliceUpdate { .. }
                 | TableInput::SharedComplete(_)
         ) {
-            let Ledgers { held, next } = &mut *ledgers;
+            let Ledgers { held, next, .. } = &mut *ledgers;
             std::mem::swap(held, next);
             held.stamp = Some((encoder.identity(), self.branch, self.hour));
             let mut order = self.scratch.table(S::ID);
@@ -814,18 +824,22 @@ impl Projection<'_> {
 fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     held: &Ledger<C>,
     next: &Ledger<C>,
+    seen: &mut Vec<bool>,
+    edits: &mut Vec<(u128, Option<usize>)>,
     source: &[T],
     convert: impl Fn(&T) -> S::Row,
 ) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
     const DUPLICATE: &str = "walker produced duplicate engine ids";
     const ALLOCATION: &str = "collector allocation failed";
-    let mut seen: Option<Vec<bool>> = None;
+    let mut seen_active = false;
+    let mut held_sorted = false;
+    let mut shift: isize = 0;
     let mut index: Option<std::collections::HashMap<u128, usize>> = None;
     let mut added = std::collections::HashSet::new();
-    let mut edits: Vec<(u128, Option<usize>)> = Vec::new();
+    edits.clear();
     let mut matched = 0;
     for (at, &key) in next.keys.iter().enumerate() {
-        let old = if seen.is_none() && held.keys.get(at) == Some(&key) {
+        let old = if !seen_active && held.keys.get(at) == Some(&key) {
             matched += 1;
             if next.fixed[at].is_some()
                 && next.fixed[at] == held.fixed[at]
@@ -833,19 +847,44 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
             {
                 continue;
             }
-            engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+            engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
             edits.push((key, Some(at)));
             continue;
         } else {
-            if seen.is_none() {
-                let mut marks = Vec::new();
-                engine_allocation::reserve(&mut marks, held.keys.len()).map_err(|_| ALLOCATION)?;
-                marks.resize(held.keys.len(), false);
-                marks[..at].fill(true);
-                seen = Some(marks);
+            if !seen_active {
+                seen.clear();
+                let need = held.keys.len().saturating_sub(seen.capacity());
+                if need > 0 {
+                    engine_allocation::reserve(seen, need).map_err(|_| ALLOCATION)?;
+                }
+                seen.resize(held.keys.len(), false);
+                seen[..at].fill(true);
+                held_sorted = held.keys.windows(2).all(|pair| pair[0] < pair[1]);
+                seen_active = true;
             }
-            if held.keys.get(at) == Some(&key) {
-                Some(at)
+            let base = at as isize + shift;
+            let probed = usize::try_from(base)
+                .ok()
+                .filter(|&cand| held.keys.get(cand) == Some(&key))
+                .or_else(|| {
+                    for delta in [1_isize, -1, 2, -2, 3, -3, 4, -4] {
+                        if let Ok(cand) = usize::try_from(base + delta)
+                            && held.keys.get(cand) == Some(&key)
+                        {
+                            shift = cand as isize - at as isize;
+                            return Some(cand);
+                        }
+                    }
+                    None
+                });
+            if probed.is_some() {
+                probed
+            } else if held_sorted {
+                let found = held.keys.binary_search(&key).ok();
+                if let Some(cand) = found {
+                    shift = cand as isize - at as isize;
+                }
+                found
             } else {
                 if index.is_none() {
                     let mut held_at = std::collections::HashMap::new();
@@ -854,12 +893,16 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
                     held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
                     index = Some(held_at);
                 }
-                index.as_ref().and_then(|index| index.get(&key).copied())
+                let found = index.as_ref().and_then(|index| index.get(&key).copied());
+                if let Some(cand) = found {
+                    shift = cand as isize - at as isize;
+                }
+                found
             }
         };
         match old {
             Some(old) => {
-                if std::mem::replace(&mut seen.as_mut().unwrap()[old], true) {
+                if std::mem::replace(&mut seen[old], true) {
                     return Err(DUPLICATE);
                 }
                 matched += 1;
@@ -877,22 +920,19 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
                 }
             }
         }
-        engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
+        engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
         edits.push((key, Some(at)));
     }
     if matched < held.keys.len() {
-        match &seen {
-            Some(seen) => {
-                for (old, _) in seen.iter().enumerate().filter(|(_, seen)| !**seen) {
-                    engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
-                    edits.push((held.keys[old], None));
-                }
+        if seen_active {
+            for (old, _) in seen.iter().enumerate().filter(|(_, was_seen)| !**was_seen) {
+                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+                edits.push((held.keys[old], None));
             }
-            None => {
-                for &key in &held.keys[matched..] {
-                    engine_allocation::reserve(&mut edits, 1).map_err(|_| ALLOCATION)?;
-                    edits.push((key, None));
-                }
+        } else {
+            for &key in &held.keys[matched..] {
+                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
+                edits.push((key, None));
             }
         }
     }
@@ -904,7 +944,7 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     let mut rows = Vec::new();
     engine_allocation::reserve(&mut keys, edits.len()).map_err(|_| ALLOCATION)?;
     engine_allocation::reserve(&mut rows, edits.len()).map_err(|_| ALLOCATION)?;
-    for (key, at) in edits {
+    for &(key, at) in edits.iter() {
         keys.push(key);
         if let Some(at) = at {
             rows.push(convert(&source[at]));

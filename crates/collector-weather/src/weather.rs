@@ -246,6 +246,12 @@ impl Captured {
         &self,
         projection: Option<&mut collector_projection::projection::Projection<'_>>,
     ) -> [replay_frame::frame::TableInput; N] {
+        let anchor = self
+            .temperature_pass
+            .is_some()
+            .then(|| self.temperature_anchor.as_deref())
+            .flatten();
+        let clocks_updated = self.clocks_updated;
         [
             self.region_table().into(),
             collector_projection::projection::ledger_table::<tables::WeatherProvinces, _, _>(
@@ -257,31 +263,51 @@ impl Captured {
                     if row.id == 0 {
                         return None;
                     }
-                    match self.province_modifiers.get(row.id as usize) {
+                    let mod_state: u8 = match self.province_modifiers.get(row.id as usize) {
+                        None => 0,
+                        Some([]) => 1,
                         Some(entries) => {
                             record.word(entries.len() as i64);
                             for &(key, value) in entries {
                                 record.word(i64::from(key));
                                 record.word(value);
                             }
+                            2
                         }
-                        None => record.word(-1),
-                    }
-                    match self.province_statics(row.id) {
+                    };
+                    let static_state: u8 = match self.province_statics(row.id) {
+                        None => 0,
+                        Some([]) => 1,
                         Some(list) => {
-                            record.word(entries::statics(list).count() as i64);
-                            for (name, days) in entries::statics(list) {
-                                record.bytes(Some(name));
-                                record.word(i64::from(days));
-                            }
+                            record.bytes(Some(list));
+                            2
                         }
-                        None => record.word(-1),
-                    }
+                    };
+                    let temperature = rows::ProvinceTemperature::anchored(
+                        anchor
+                            .and_then(|anchor| anchor.get(row.id as usize))
+                            .copied()
+                            .unwrap_or_else(|| words_of(row)),
+                    );
+                    let clock = if clocks_updated {
+                        rows::DayNightClock::UPDATED
+                    } else {
+                        rows::DayNightClock::held(replay_data::day_night::Clock {
+                            local_hour: row.local_hour,
+                            night_factor: row.night_factor,
+                        })
+                    };
                     Some((
                         [row.snow, row.permanent_snow],
-                        [row.display_snow, row.display_mud, row.raw_mud],
-                        self.province_temperature(row),
-                        self.province_clock(row),
+                        [
+                            row.display_snow,
+                            row.display_mud,
+                            row.raw_mud,
+                            mod_state,
+                            static_state,
+                        ],
+                        temperature,
+                        clock,
                     ))
                 },
                 |row| self.province_row(row),

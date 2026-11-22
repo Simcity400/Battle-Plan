@@ -1984,24 +1984,35 @@ impl Captured {
             .expect("owned presentation sources");
         let seeds = &inputs.seeds()[..inputs.outcome().len()];
         let parts = &self.preparation_parts[..self.status_part_count];
+        let part_cursor = std::cell::Cell::new(0usize);
+        let locate_part = |index: usize| {
+            let cur = part_cursor.get();
+            if let Some(part) = parts.get(cur)
+                && part.range.contains(&index)
+            {
+                return Some(part);
+            }
+            if let Some(part) = parts.get(cur + 1)
+                && part.range.contains(&index)
+            {
+                part_cursor.set(cur + 1);
+                return Some(part);
+            }
+            let found = parts.iter().position(|part| part.range.contains(&index))?;
+            part_cursor.set(found);
+            parts.get(found)
+        };
         self.attack.sources = Some(store.sources.settle_owned(
             context.base,
             context.game_state,
             seeds,
             &mut self.attack.selected_sources,
             |index| {
-                parts
-                    .iter()
-                    .find(|part| part.range.contains(&index))
+                locate_part(index)
                     .and_then(|part| part.get(index))
                     .and_then(|row| row.selection)
             },
-            |index| {
-                parts
-                    .iter()
-                    .find(|part| part.range.contains(&index))
-                    .and_then(|part| part.source_reads())
-            },
+            |index| locate_part(index).and_then(|part| part.source_reads()),
             |handle, pointer| {
                 parts
                     .iter()
@@ -2049,16 +2060,28 @@ impl Captured {
                 .as_deref()
                 .expect("owned certification census");
             let parts = &self.preparation_parts;
+            let cert_cursor = std::cell::Cell::new(0usize);
             self.attack.settle_certification(
                 context.base,
                 inputs.seeds(),
                 inputs.outcome(),
                 store,
                 |index| {
-                    parts
-                        .iter()
-                        .find(|part| part.range.contains(&index))
-                        .and_then(|part| part.get(index))
+                    let cur = cert_cursor.get();
+                    if let Some(part) = parts.get(cur)
+                        && part.range.contains(&index)
+                    {
+                        return part.get(index);
+                    }
+                    if let Some(part) = parts.get(cur + 1)
+                        && part.range.contains(&index)
+                    {
+                        cert_cursor.set(cur + 1);
+                        return part.get(index);
+                    }
+                    let found = parts.iter().position(|part| part.range.contains(&index))?;
+                    cert_cursor.set(found);
+                    parts[found].get(index)
                 },
             );
         }
@@ -2079,6 +2102,7 @@ impl Captured {
                 .expect("owned attack sources");
             let status = &self.status_packet;
             let parts = &self.attack_parts;
+            let attack_cursor = std::cell::Cell::new(0usize);
             self.attack.capture_owned(
                 context.base,
                 context.hour,
@@ -2087,10 +2111,21 @@ impl Captured {
                 self.deferred_store.as_deref_mut(),
                 |index| status.unit_maxima(index),
                 |index| {
-                    parts
-                        .iter()
-                        .find(|part| part.range.contains(&index))
-                        .and_then(|part| part.get(index))
+                    let cur = attack_cursor.get();
+                    if let Some(part) = parts.get(cur)
+                        && part.range.contains(&index)
+                    {
+                        return part.get(index);
+                    }
+                    if let Some(part) = parts.get(cur + 1)
+                        && part.range.contains(&index)
+                    {
+                        attack_cursor.set(cur + 1);
+                        return part.get(index);
+                    }
+                    let found = parts.iter().position(|part| part.range.contains(&index))?;
+                    attack_cursor.set(found);
+                    parts[found].get(index)
                 },
             );
             self.attack_ready = false;

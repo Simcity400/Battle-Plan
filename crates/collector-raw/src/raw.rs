@@ -837,6 +837,22 @@ impl<const N: usize> RawLog<N> {
         true
     }
 
+    pub fn clone_with_extra(&self, extra_spans: usize, extra_bytes: usize) -> Option<Self> {
+        let total_spans = self.spans.len().checked_add(extra_spans)?;
+        let total_bytes = self.bytes.len().checked_add(extra_bytes)?;
+        let mut cloned = Self::new(total_spans, total_bytes);
+        if cloned.spans.capacity() < total_spans || cloned.bytes.capacity() < total_bytes {
+            return None;
+        }
+        cloned.spans.extend_from_slice(&self.spans);
+        cloned.bytes.extend_from_slice(self.bytes.as_ref());
+        cloned.fault = self.fault;
+        cloned.raw_bytes = self.raw_bytes;
+        cloned.overflowed = self.overflowed;
+        cloned.has_bulk = self.has_bulk;
+        Some(cloned)
+    }
+
     pub fn record(
         &mut self,
         addr: usize,
