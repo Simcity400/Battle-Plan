@@ -276,10 +276,7 @@ mod tests {
 
     #[test]
     fn songs_join_tracks_stations_and_chance_bodies_across_files() {
-        use content_reader_core::trigger_keys::Reader;
-        content_reader_core::test_game::with(|game| {
-            game.trigger("has_war", 0, Reader::Assign, 0)
-        });
+        content_reader_core::test_game::enter();
         let stack = Stack::new("music_catalog");
         let (base, addon) = (stack.base(), stack.addon());
         stack.write(

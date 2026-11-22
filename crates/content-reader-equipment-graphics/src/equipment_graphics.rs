@@ -673,7 +673,6 @@ mod tests {
         let tables = TABLES.get_or_init(|| {
             test_game::executable()
                 .trigger("tag", 0, Reader::Assign, 0)
-                .trigger("has_cosmetic_tag", 0, Reader::Assign, 0)
                 .build()
         });
         executable_tables::enter(Some(*tables));
