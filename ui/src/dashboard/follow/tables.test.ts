@@ -33,3 +33,15 @@ test('changed rows out of key order, of another shape or of an unheld key are re
   assert.throws(() => mergeChanged(base, rows({ keys: [2n, 1n], columns: 1, values: [1n, 1n], changed: true })), /key order/);
   assert.throws(() => mergeChanged(base, rows({ keys: [1n], columns: 2, values: [1n, 1n], changed: true })), /columns/);
 });
+
+test('merging a thousand changes appends reasons, compacts the stale ones, and keeps every name and reason right', () => {
+  const keys = Array.from({ length: 50 }, (_, at) => BigInt(at + 1));
+  let base = rows({ keys, columns: 1, values: keys.map(() => 0n), names: keys.map(key => `C${key}`) });
+  for (let change = 0; change < 1000; change++) {
+    const key = keys[change % keys.length]!;
+    const merged = mergeChanged(base, rows({ keys: [key], columns: 1, values: [0n], states: [CELL.unrecorded], reasons: [`reason ${change}`], changed: true }));
+    base = parseAnswer(merged) as FollowedRows;
+    assert.ok(base.ends.length - 1 <= keys.length * 3 + 17, `${base.ends.length - 1} texts after ${change + 1} changes`);
+  }
+  assert.deepEqual([rowName(base, 7), rowReason(base, 7), rowReason(base, 49)], ['C8', 'reason 957', 'reason 999']);
+});
