@@ -237,118 +237,183 @@ enum Node {
     Rule,
     Permissions,
     DisabledTrigger,
+    TriggerBody,
     BoundLocalization,
     Trigger(crate::combat_tactics::Node),
 }
 
-fn parse_inner(input: &[u8], names: Option<&KeyNames>) -> io::Result<Vec<AdjacencyRule>> {
-    let mut shaper = names.map(|names| crate::combat_tactics::Shaper::new(Some(names)));
+enum TriggerNames<'a> {
+    None,
+    Provided(&'a KeyNames),
+    Lazy(&'a ResolvedLayers),
+}
+
+fn parse_inner(input: &[u8], names: TriggerNames<'_>) -> io::Result<Vec<AdjacencyRule>> {
+    let lazy_names: std::cell::OnceCell<Result<std::sync::Arc<KeyNames>, String>> =
+        std::cell::OnceCell::new();
+    let mut interrupted: Option<io::Error> = None;
+    let mut shaper: Option<crate::combat_tactics::Shaper<'_>> = None;
+    let provided = match names {
+        TriggerNames::Provided(names) => Some(names),
+        TriggerNames::None | TriggerNames::Lazy(_) => None,
+    };
     let document = native::read(
         input,
         native::Mode::KeepMark,
         native::Top::Persistent(Node::File),
-        names,
-        &mut |node, field| match node {
-            Node::File => {
-                if !field.fresh {
-                    return Shape::Unsettled(
-                        "the adjacency rules hold an entry without a key and value, which the game's file loop reads out of step with this reader".into(),
-                    );
+        provided,
+        &mut |node, field| {
+            let mut trigger_shape = |target: crate::combat_tactics::Node| match names {
+                TriggerNames::Provided(names) => shaper
+                    .get_or_insert_with(|| crate::combat_tactics::Shaper::new(Some(names)))
+                    .shape(target, field)
+                    .map(Node::Trigger),
+                TriggerNames::Lazy(layers) => {
+                    let loaded = lazy_names.get_or_init(|| match layers.key_names() {
+                        Ok(names) => Ok(names),
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                            let reason = error.to_string();
+                            interrupted = Some(error);
+                            Err(reason)
+                        }
+                        Err(error) => Err(error.to_string()),
+                    });
+                    match loaded {
+                        Ok(names) => shaper
+                            .get_or_insert_with(|| crate::combat_tactics::Shaper::new(Some(names)))
+                            .shape(target, field)
+                            .map(Node::Trigger),
+                        Err(why) => {
+                            if interrupted.is_some() {
+                                Shape::Unsettled(why.clone())
+                            } else if engine_executable::executable_tables::is_initialized() {
+                                match shaper
+                                    .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
+                                    .shape(target, field)
+                                    .map(Node::Trigger)
+                                {
+                                    Shape::Unsettled(reason) => {
+                                        Shape::Unsettled(format!("{reason} ({why})"))
+                                    }
+                                    other => other,
+                                }
+                            } else if field.opens() || field.skips_block() {
+                                Shape::Unsettled(format!(
+                                    "trigger dispatch requires key names, which failed to load: {why}"
+                                ))
+                            } else {
+                                Shape::One
+                            }
+                        }
+                    }
                 }
-                if field.keyword_is("adjacency_rule") {
-                    if field.opens() {
-                        Shape::Object(Node::Rule)
+                TriggerNames::None => {
+                    if engine_executable::executable_tables::is_initialized() {
+                        shaper
+                            .get_or_insert_with(|| crate::combat_tactics::Shaper::new(None))
+                            .shape(target, field)
+                            .map(Node::Trigger)
                     } else {
-                        Shape::Unsettled(
-                            "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow".into(),
-                        )
+                        native::untraced(field)
                     }
-                } else {
-                    Shape::One
                 }
-            }
-            Node::Rule => {
-                if !field.fresh {
-                    return Shape::Unsettled(
-                        "an entry without a key, so the game reads the rest of the file out of step with this reader".into(),
-                    );
-                }
-                match field.keyword().as_deref() {
-                    Some(b"name" | b"icon") => {
+            };
+            match node {
+                Node::File => {
+                    if !field.fresh {
+                        return Shape::Unsettled(
+                            "the adjacency rules hold an entry without a key and value, which the game's file loop reads out of step with this reader".into(),
+                        );
+                    }
+                    if field.keyword_is("adjacency_rule") {
                         if field.opens() {
-                            Shape::Unsettled(shape_mismatch(&field.key.text))
+                            Shape::Object(Node::Rule)
                         } else {
-                            Shape::One
+                            Shape::Unsettled(
+                                "an adjacency_rule is not a block: the game reads the fields after it as the rule's, which this reader cannot follow".into(),
+                            )
                         }
+                    } else {
+                        Shape::One
                     }
-                    Some(b"contested" | b"enemy" | b"friend" | b"neutral") => {
-                        if field.opens() {
-                            Shape::Object(Node::Permissions)
-                        } else {
-                            Shape::Unsettled(shape_mismatch(&field.key.text))
-                        }
-                    }
-                    Some(b"required_provinces" | b"offset") => {
-                        if field.opens() {
-                            Shape::List
-                        } else {
-                            Shape::Unsettled(shape_mismatch(&field.key.text))
-                        }
-                    }
-                    Some(b"is_disabled") => {
-                        if field.opens() {
-                            Shape::Object(Node::DisabledTrigger)
-                        } else {
-                            Shape::Unsettled(shape_mismatch(&field.key.text))
-                        }
-                    }
-                    Some(b"is_enemy" | b"is_friend" | b"is_neutral") => {
-                        if !field.opens() {
-                            Shape::Unsettled(shape_mismatch(&field.key.text))
-                        } else if shaper.is_some() {
-                            Shape::Trigger
-                        } else {
-                            Shape::ByKey
-                        }
-                    }
-                    _ => Shape::Skip,
                 }
-            }
-            Node::Permissions => {
-                if !field.fresh || field.opens() {
-                    Shape::Unsettled(shape_mismatch(&field.key.text))
-                } else {
-                    Shape::One
+                Node::Rule => {
+                    if !field.fresh {
+                        return Shape::Unsettled(
+                            "an entry without a key, so the game reads the rest of the file out of step with this reader".into(),
+                        );
+                    }
+                    match field.keyword().as_deref() {
+                        Some(b"name" | b"icon") => {
+                            if field.opens() {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            } else {
+                                Shape::One
+                            }
+                        }
+                        Some(b"contested" | b"enemy" | b"friend" | b"neutral") => {
+                            if field.opens() {
+                                Shape::Object(Node::Permissions)
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        Some(b"required_provinces" | b"offset") => {
+                            if field.opens() {
+                                Shape::List
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        Some(b"is_disabled") => {
+                            if field.opens() {
+                                Shape::Object(Node::DisabledTrigger)
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        Some(b"is_enemy" | b"is_friend" | b"is_neutral") => {
+                            if field.opens() {
+                                Shape::Object(Node::TriggerBody)
+                            } else {
+                                Shape::Unsettled(shape_mismatch(&field.key.text))
+                            }
+                        }
+                        _ => Shape::Skip,
+                    }
                 }
-            }
-            Node::DisabledTrigger => {
-                if matches!(
-                    field.keyword().as_deref(),
-                    Some(b"tooltip" | b"not_tooltip")
-                ) {
-                    Shape::ObjectIfOpen(Node::BoundLocalization)
-                } else if let Some(shaper) = &mut shaper {
-                    shaper
-                        .shape(crate::combat_tactics::Node::Trigger, field)
-                        .map(Node::Trigger)
-                } else {
-                    native::untraced(field)
+                Node::Permissions => {
+                    if !field.fresh || field.opens() {
+                        Shape::Unsettled(shape_mismatch(&field.key.text))
+                    } else {
+                        Shape::One
+                    }
                 }
-            }
-            Node::BoundLocalization => {
-                if field.keyword_is("localization_key") {
-                    Shape::One
-                } else {
-                    Shape::ObjectIfOpen(Node::BoundLocalization)
+                Node::DisabledTrigger => {
+                    if matches!(
+                        field.keyword().as_deref(),
+                        Some(b"tooltip" | b"not_tooltip")
+                    ) {
+                        Shape::ObjectIfOpen(Node::BoundLocalization)
+                    } else {
+                        trigger_shape(crate::combat_tactics::Node::Trigger)
+                    }
                 }
+                Node::TriggerBody => trigger_shape(crate::combat_tactics::Node::Trigger),
+                Node::BoundLocalization => {
+                    if field.keyword_is("localization_key") {
+                        Shape::One
+                    } else {
+                        Shape::ObjectIfOpen(Node::BoundLocalization)
+                    }
+                }
+                Node::Trigger(node) => trigger_shape(node),
             }
-            Node::Trigger(node) => shaper
-                .as_mut()
-                .expect("trigger shaper")
-                .shape(node, field)
-                .map(Node::Trigger),
         },
     );
+    if let Some(error) = interrupted {
+        return Err(error);
+    }
     if let Some(cause) = document.unsettled {
         return Err(invalid(cause.to_string()));
     }
@@ -385,11 +450,11 @@ fn parse_inner(input: &[u8], names: Option<&KeyNames>) -> io::Result<Vec<Adjacen
 }
 
 pub fn parse(input: &[u8]) -> io::Result<Vec<AdjacencyRule>> {
-    parse_inner(input, None)
+    parse_inner(input, TriggerNames::None)
 }
 
 pub fn parse_with_names(input: &[u8], names: &KeyNames) -> io::Result<Vec<AdjacencyRule>> {
-    parse_inner(input, Some(names))
+    parse_inner(input, TriggerNames::Provided(names))
 }
 
 pub fn map_file(map: &DefaultMap, key: &str) -> io::Result<String> {
@@ -409,8 +474,13 @@ pub fn read_map(layers: &ResolvedLayers, map: &DefaultMap) -> io::Result<Vec<Adj
     let bytes = layers
         .read(&path)
         .map_err(|error| invalid(format!("{path}: {error}")))?;
-    let names = layers.key_names()?;
-    parse_with_names(&bytes, &names).map_err(|error| invalid(format!("{path}: {error}")))
+    parse_inner(&bytes, TriggerNames::Lazy(layers)).map_err(|error| {
+        if error.kind() == io::ErrorKind::Interrupted {
+            error
+        } else {
+            invalid(format!("{path}: {error}"))
+        }
+    })
 }
 
 pub fn find<'a>(rules: &'a [AdjacencyRule], name: &str) -> Option<&'a AdjacencyRule> {
@@ -571,8 +641,8 @@ mod tests {
                 "field required_provinces has another shape",
             ),
             (
-                b"adjacency_rule = { name = A is_enemy = { @x = 1 always = yes } icon = @x }",
-                "@x",
+                b"adjacency_rule = { name = A is_enemy = { unknown_scope = { @x = 1 always = yes } } icon = @x }",
+                "unknown_scope",
             ),
             (b"adjacency_rule = A", "not a block"),
         ] {
@@ -690,5 +760,76 @@ adjacency_rule = {
                 offset: [0.0; 3]
             }))
         );
+    }
+
+    #[test]
+    fn known_trigger_body_replays_definitions_in_plain_parse_while_unknown_children_refuse() {
+        let rules =
+            parse(b"adjacency_rule = { name = A is_enemy = { @x = 1 always = yes } icon = @x }")
+                .unwrap();
+        assert_eq!(rules[0].unsupported, None);
+        assert_eq!(
+            rules[0].icon,
+            Ok(Some(IconPlacement {
+                province: 1,
+                offset: [0.0; 3]
+            }))
+        );
+        let refused = parse(
+            b"adjacency_rule = { name = A is_enemy = { unknown_scope = { @x = 1 always = yes } } icon = @x }",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            refused.contains("unknown_scope") || refused.contains("@x"),
+            "{refused}"
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn read_map_succeeds_without_key_names_when_no_trigger_needs_them() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("adjacency_rules_lazy_key_names");
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A icon = 7 }",
+        );
+        stack.write(&stack.base(), "common/country_tags/broken.txt", "AAA = x\n");
+        let layers = stack.layers(&[]);
+        std::fs::remove_file(stack.base().join("common/country_tags/broken.txt")).unwrap();
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(
+            rules[0].icon,
+            Ok(Some(IconPlacement {
+                province: 7,
+                offset: [0.0; 3]
+            }))
+        );
+
+        let needs = crate::test_support::Stack::new("adjacency_rules_needs_key_names");
+        needs.write(
+            &needs.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        needs.write(
+            &needs.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = B is_enemy = { custom_scope = { always = yes } } }",
+        );
+        needs.write(&needs.base(), "common/country_tags/broken.txt", "AAA = x\n");
+        let layers = needs.layers(&[]);
+        std::fs::remove_file(needs.base().join("common/country_tags/broken.txt")).unwrap();
+        let error = read(&layers).unwrap_err().to_string();
+        assert!(error.contains("custom_scope"), "{error}");
     }
 }

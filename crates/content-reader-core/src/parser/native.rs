@@ -679,6 +679,10 @@ impl<'n> Reader<'n> {
         });
     }
 
+    pub(crate) fn is_unsettled(&self) -> bool {
+        self.unsettled.is_some()
+    }
+
     fn misread(&mut self, line: u32, what: String) {
         self.misread_at(line, what, false);
     }
@@ -827,6 +831,22 @@ impl<'n> Reader<'n> {
         }
         if self.current().kind != Kind::Equals {
             let token = self.current();
+            if token.kind == Kind::Close
+                && let Some((_, block)) = self.unknown_scopes.last()
+                && self.unsettled.is_none()
+            {
+                self.unsettled = Some(Misread {
+                    kind: crate::DiagnosticKind::Unsettled,
+                    count: None,
+                    line: token.line,
+                    what: format!(
+                        "definition {} ends block `{}` without `=` under unknown dispatch: a key reader consumes `}}` while a skip or list reader closes the block here",
+                        name.shown(),
+                        String::from_utf8_lossy(block),
+                    ),
+                });
+                return;
+            }
             self.variable_misread(
                 name.line,
                 format!(
@@ -841,6 +861,9 @@ impl<'n> Reader<'n> {
         let value = match peeked {
             token if token.text.starts_with(b"@") => {
                 let resolved = self.resolve(token.clone());
+                if self.unsettled.is_some() {
+                    return;
+                }
                 self.variable_misread(
                     name.line,
                     format!(
@@ -898,8 +921,24 @@ impl<'n> Reader<'n> {
                 return Slots::Ended;
             }
             if self.current().text.starts_with(b"@") {
+                let defined_name = self.current();
                 self.define();
                 if self.unsettled.is_some() {
+                    return Slots::Ended;
+                }
+                let peek = self.peek();
+                let (closes, line) = (peek.kind == Kind::Close, peek.line);
+                if closes && let Some((_, block)) = self.unknown_scopes.last() {
+                    self.unsettled = Some(Misread {
+                        kind: crate::DiagnosticKind::Unsettled,
+                        count: None,
+                        line,
+                        what: format!(
+                            "variable {} ends block `{}` under unknown dispatch: a key reader consumes `}}` as a key while a skip or list reader closes the block here",
+                            defined_name.shown(),
+                            String::from_utf8_lossy(block),
+                        ),
+                    });
                     return Slots::Ended;
                 }
                 continue;
@@ -1572,9 +1611,12 @@ impl<'n> Reader<'n> {
 
     fn raw_list_first(&mut self) -> Vec<Item> {
         let mut items = Vec::new();
-        loop {
+        while self.unsettled.is_none() {
             self.advance();
             self.current = self.resolve(self.current());
+            if self.unsettled.is_some() {
+                return items;
+            }
             let token = self.current();
             items.push(Item {
                 key: None,
@@ -1589,6 +1631,7 @@ impl<'n> Reader<'n> {
                 return items;
             }
         }
+        items
     }
 
     fn raw_list(&mut self, equipment: bool, stores_value: bool, skip_open: bool) -> Vec<Item> {
@@ -1611,8 +1654,14 @@ impl<'n> Reader<'n> {
             if equipment && token.is_keyword("limit") {
                 self.advance();
                 self.current = self.resolve(self.current());
+                if self.unsettled.is_some() {
+                    break;
+                }
                 self.advance();
                 self.current = self.resolve(self.current());
+                if self.unsettled.is_some() {
+                    break;
+                }
                 let value = self.current();
                 if value.kind != Kind::Open {
                     self.unsettled = Some(Misread {
@@ -1629,6 +1678,9 @@ impl<'n> Reader<'n> {
                 let body = self.apply(Shape::Trigger, &token, &value, &mut |_: bool, field| {
                     untraced(field)
                 });
+                if self.unsettled.is_some() {
+                    break;
+                }
                 items.push(Item {
                     key: Some(token.text.clone()),
                     key_quoted: false,
@@ -1638,6 +1690,9 @@ impl<'n> Reader<'n> {
                 });
                 self.advance();
                 self.current = self.resolve(self.current());
+                if self.unsettled.is_some() {
+                    break;
+                }
                 token = self.current();
                 if matches!(token.kind, Kind::Open | Kind::Close | Kind::End)
                     || self.peek().kind != Kind::Close
@@ -1728,6 +1783,9 @@ impl<'n> Reader<'n> {
                 break;
             }
             let key = self.resolve(self.current());
+            if self.unsettled.is_some() {
+                break;
+            }
             self.current = key.clone();
             if key.kind == Kind::Open || !self.peek().operator() {
                 self.key = Token::slot();
@@ -1741,9 +1799,15 @@ impl<'n> Reader<'n> {
             self.key = key.clone();
             self.advance();
             let operator = self.resolve(self.current()).as_operator();
+            if self.unsettled.is_some() {
+                break;
+            }
             self.operator = operator;
             self.advance();
             let value = self.resolve(self.current());
+            if self.unsettled.is_some() {
+                break;
+            }
             self.current = value.clone();
             self.value = value.clone();
             let shape = if super::read_bool(&value.text) == Some(true) {
@@ -1800,7 +1864,7 @@ impl<'n> Reader<'n> {
 
     fn strings(&mut self, key: &Token) -> Vec<Item> {
         let mut items = Vec::new();
-        loop {
+        while self.unsettled.is_none() {
             if matches!(self.peek().kind, Kind::Close | Kind::End) {
                 if items.len() != 2 {
                     self.misread(
@@ -1817,6 +1881,9 @@ impl<'n> Reader<'n> {
             }
             self.advance();
             let token = self.resolve(self.current());
+            if self.unsettled.is_some() {
+                return items;
+            }
             self.value = token.clone();
             if items.len() == 2 {
                 self.misread(
@@ -1841,6 +1908,7 @@ impl<'n> Reader<'n> {
                 value: Value::Scalar(token.text),
             });
         }
+        items
     }
 
     pub fn skip_block(&mut self) {
@@ -1880,6 +1948,9 @@ impl<'n> Reader<'n> {
         };
         for index in 0..5 {
             let token = next(self);
+            if self.unsettled.is_some() {
+                return Value::Block(components);
+            }
             if index == 3 && token.kind == Kind::Close {
                 return Value::Block(components);
             }
@@ -1957,6 +2028,9 @@ impl<'n> Reader<'n> {
             self.value = token.clone();
             if items.len() == n && self.current.kind == Kind::Open {
                 self.skip();
+                if self.unsettled.is_some() {
+                    return items;
+                }
             }
             items.push(Item {
                 key: None,
@@ -2062,7 +2136,11 @@ impl<'n> Reader<'n> {
                 Kind::Close => break,
                 Kind::Open => {
                     keyless = true;
-                    at = skip_block(tokens, at);
+                    let (next_at, nested_def) = scan_block(tokens, at);
+                    if definition.is_none() {
+                        definition = nested_def;
+                    }
+                    at = next_at;
                     continue;
                 }
                 _ => {}
@@ -2073,12 +2151,16 @@ impl<'n> Reader<'n> {
                 at += 1;
                 continue;
             }
-            if token.text.starts_with(b"@") && definition.is_none() {
+            if !token.quoted && token.text.starts_with(b"@") && definition.is_none() {
                 definition = Some(String::from_utf8_lossy(&token.text).into_owned());
             }
             at += 2;
             if tokens.get(at).is_some_and(|value| value.kind == Kind::Open) {
-                at = skip_block(tokens, at);
+                let (next_at, nested_def) = scan_block(tokens, at);
+                if definition.is_none() {
+                    definition = nested_def;
+                }
+                at = next_at;
             } else {
                 at += 1;
             }
@@ -2147,9 +2229,18 @@ impl<'n> Reader<'n> {
     }
 }
 
-fn skip_block(tokens: &[Token], mut at: usize) -> usize {
+fn scan_block(tokens: &[Token], mut at: usize) -> (usize, Option<String>) {
     let mut depth = 0_usize;
+    let mut definition = None;
     while let Some(token) = tokens.get(at) {
+        if depth > 0
+            && definition.is_none()
+            && !token.quoted
+            && token.text.starts_with(b"@")
+            && tokens.get(at + 1).is_some_and(Token::operator)
+        {
+            definition = Some(String::from_utf8_lossy(&token.text).into_owned());
+        }
         at += 1;
         match token.kind {
             Kind::Open => depth += 1,
@@ -2162,7 +2253,7 @@ fn skip_block(tokens: &[Token], mut at: usize) -> usize {
             _ => {}
         }
     }
-    at
+    (at, definition)
 }
 
 #[cfg(test)]

@@ -1182,3 +1182,78 @@ fn keyed_definitions_under_unknown_dispatch_refuse_dependent_suffix() {
     assert_eq!(block(&observed.items, "a")[2].value, Value::Scalar(b"3".to_vec()));
     assert_eq!(block(&observed.items, "b")[0].value, Value::Scalar(b"@z".to_vec()));
 }
+
+#[test]
+fn trailing_definition_before_close_under_unknown_dispatch_refuses_without_swallowing_brace() {
+    let read = test_read(b"a = { n = 1 } b = { trigger = { @x = 3 } n = @x } c = { n = 4 }");
+    let unsettled = read.unsettled.as_ref().expect("trailing definition refused");
+    assert!(
+        unsettled.what.contains("@x") && unsettled.what.contains("trigger"),
+        "{unsettled}"
+    );
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    assert_eq!(block(&read.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+    assert!(block(block(&read.items, "b"), "trigger").is_empty());
+}
+
+#[test]
+fn mixed_list_with_nested_definition_under_unknown_dispatch_refuses() {
+    let read = test_read(
+        b"a = { n = 1 } b = { trigger = { nested = { @x = 3 z = 1 } loose } n = @x } c = { n = 4 }",
+    );
+    let unsettled = read
+        .unsettled
+        .as_ref()
+        .expect("mixed list nested definition refused");
+    assert!(unsettled.what.contains("@x"), "{unsettled}");
+    assert_eq!(keys(&read.items), ["a", "b"]);
+    assert_eq!(block(&read.items, "a")[0].value, Value::Scalar(b"1".to_vec()));
+}
+
+#[test]
+fn direct_resolution_readers_stop_before_storing_ambiguous_values() {
+    let raw_list = read(
+        b"opaque = { @t = support marker = yes } type = { @t infantry } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"type") => Shape::RawListFirst,
+            _ => Shape::One,
+        },
+    );
+    assert!(raw_list.unsettled.is_some(), "{raw_list:?}");
+    assert_eq!(keys(&raw_list.items), ["opaque", "type"]);
+    assert!(block(&raw_list.items, "type").is_empty());
+
+    let pair = read(
+        b"opaque = { @s = first marker = yes } pair = { @s second } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"pair") => Shape::Strings,
+            _ => Shape::One,
+        },
+    );
+    assert!(pair.unsettled.is_some(), "{pair:?}");
+    assert_eq!(keys(&pair.items), ["opaque", "pair"]);
+    assert!(block(&pair.items, "pair").is_empty());
+
+    let color = read(
+        b"opaque = { @c = 10 marker = yes } col = { @c 20 30 } tail = 1",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"opaque") => Shape::ByKey,
+            Some(b"col") => Shape::Color,
+            _ => Shape::One,
+        },
+    );
+    assert!(color.unsettled.is_some(), "{color:?}");
+    assert_eq!(keys(&color.items), ["opaque", "col"]);
+    assert!(block(&color.items, "col").is_empty());
+}

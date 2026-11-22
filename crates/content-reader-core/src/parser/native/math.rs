@@ -22,6 +22,9 @@ impl Reader<'_> {
             return Value::Scalar(self.value.text.clone());
         }
         let mut first = self.math_key();
+        if self.unsettled.is_some() {
+            return Value::Block(Vec::new());
+        }
         if first.keyword_is("value") {
             first.value = self.math_operand(state);
         } else {
@@ -35,6 +38,15 @@ impl Reader<'_> {
 
     fn math_key(&mut self) -> Item {
         let slots = self.key_operator_value();
+        if self.unsettled.is_some() {
+            return Item {
+                key: None,
+                key_quoted: false,
+                operator: self.operator,
+                value: Value::Scalar(Vec::new()),
+                kind: Kind::End,
+            };
+        }
         if slots == Slots::NoOperator {
             self.misread(
                 self.key.line,
@@ -70,6 +82,9 @@ impl Reader<'_> {
                 break;
             }
             let mut item = self.math_key();
+            if self.unsettled.is_some() {
+                break;
+            }
             let key = item.keyword().map(|key| key.folded());
 
             match key.as_deref() {
@@ -110,11 +125,17 @@ impl Reader<'_> {
                     items.push(item);
                     while self.peek().is_keyword("else_if") && self.unsettled.is_none() {
                         let mut branch = self.math_key();
+                        if self.unsettled.is_some() {
+                            break;
+                        }
                         branch.value = self.math_branch(state);
                         items.push(branch);
                     }
-                    if self.peek().is_keyword("else") {
+                    if self.unsettled.is_none() && self.peek().is_keyword("else") {
                         let mut branch = self.math_key();
+                        if self.unsettled.is_some() {
+                            break;
+                        }
                         let mut body = Vec::new();
                         self.math_tail(state, &mut body);
                         branch.value = Value::Block(body);
@@ -124,6 +145,9 @@ impl Reader<'_> {
                 }
                 Some(b"every_collection") => {
                     let mut name = self.math_key();
+                    if self.unsettled.is_some() {
+                        break;
+                    }
                     let mut body = Vec::new();
                     if !name.keyword_is("named_collection") {
                         self.math_error(state, "math collection must start with named_collection");
@@ -149,6 +173,9 @@ impl Reader<'_> {
 
     fn math_branch(&mut self, state: &mut State) -> Value {
         let mut limit = self.math_key();
+        if self.unsettled.is_some() {
+            return Value::Block(Vec::new());
+        }
         let mut items = Vec::new();
         if limit.keyword_is("limit") {
             limit.value = self.math_operand(state);
@@ -166,6 +193,9 @@ impl Reader<'_> {
         let mut items = Vec::new();
         for name in names {
             let mut item = self.math_key();
+            if self.unsettled.is_some() {
+                return Value::Block(items);
+            }
             if !item.keyword_is(name) {
                 self.math_error(state, "unexpected math argument");
                 self.skip_block();
@@ -173,6 +203,9 @@ impl Reader<'_> {
                 return Value::Block(items);
             }
             item.value = self.math_operand(state);
+            if self.unsettled.is_some() {
+                return Value::Block(items);
+            }
             items.push(item);
         }
         self.advance();

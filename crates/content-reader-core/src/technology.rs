@@ -23,6 +23,12 @@ type ParsedPresentation = (Vec<Template>, Vec<crate::Diagnostic>);
 type ParseError = (crate::DiagnosticKind, io::Error, bool);
 
 #[derive(Debug)]
+struct NativeEnabler {
+    candidate: EquipmentName,
+    unresolved: bool,
+}
+
+#[derive(Debug)]
 pub struct Template {
     pub token: String,
     pub database_index: Option<u32>,
@@ -30,7 +36,7 @@ pub struct Template {
     pub parent: Result<Option<String>, String>,
     pub equipment: Option<String>,
     pub folders: Vec<String>,
-    enablers: Vec<EquipmentName>,
+    enablers: Vec<NativeEnabler>,
 }
 
 fn equipment_links(definitions: &[Template]) -> EquipmentLinks {
@@ -132,6 +138,7 @@ fn parse_with_tokens(
             let mut unlocks: Vec<String> = Vec::new();
             let mut conditional = false;
             let mut candidates = Vec::new();
+            let mut native_enablers = Vec::new();
             let mut placed: Vec<String> = Vec::new();
             for field in technology.value.items().unwrap_or_default() {
                 if field.keyword_is("folder") {
@@ -210,10 +217,15 @@ fn parse_with_tokens(
                     if !unlocks.iter().any(|old| old.eq_ignore_ascii_case(name)) {
                         unlocks.push(name.into());
                     }
-                    candidates.push(EquipmentName {
+                    let candidate = EquipmentName {
                         name: name.into(),
                         limits: limits.clone(),
+                    };
+                    native_enablers.push(NativeEnabler {
+                        candidate: candidate.clone(),
+                        unresolved: !equipment.quoted() && name.starts_with('@'),
                     });
+                    candidates.push(candidate);
                 }
             }
             let fields = technology.value.items().unwrap_or_default();
@@ -227,7 +239,7 @@ fn parse_with_tokens(
                 };
                 PresentationName {
                     template: template_key,
-                    equipment: candidates.clone(),
+                    equipment: candidates,
                     force_small,
                 }
             });
@@ -239,7 +251,7 @@ fn parse_with_tokens(
                 parent,
                 equipment,
                 folders: placed,
-                enablers: candidates,
+                enablers: native_enablers,
             });
         }
     }
@@ -860,21 +872,31 @@ pub struct Enables {
 }
 
 impl Enables {
-    fn from_template(native: Template) -> Self {
+    fn from_template(
+        native: Template,
+        evaluate: &mut impl FnMut(&[Item]) -> Result<bool, String>,
+    ) -> Self {
         let mut equipment = Vec::new();
         let mut limited = Vec::new();
-        for candidate in native.enablers {
-            if candidate.limits.is_empty() {
-                equipment.push(candidate.name);
+        let mut scripted: Option<Scripted> = None;
+        for entry in native.enablers {
+            if entry.unresolved {
+                let admitted = entry.candidate.limits.is_empty()
+                    || !matches!(entry.candidate.admitted(&mut *evaluate), Ok(false));
+                if admitted {
+                    scripted.get_or_insert_with(Scripted::default).any = true;
+                }
+            } else if entry.candidate.limits.is_empty() {
+                equipment.push(entry.candidate.name);
             } else {
-                limited.push(candidate);
+                limited.push(entry.candidate);
             }
         }
         Self {
             id: native.token,
             equipment,
             parent: native.parent,
-            scripted: None,
+            scripted,
             limited,
         }
     }
@@ -1072,6 +1094,7 @@ pub fn read_enablers(
     }
     let registry = match units::Registry::read(layers) {
         Ok(registry) => registry,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
         Err(error) => {
             result
                 .unverified
@@ -1081,6 +1104,7 @@ pub fn read_enablers(
     };
     let names = match layers.key_names() {
         Ok(names) => names,
+        Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
         Err(error) => {
             result
                 .unverified
@@ -1089,12 +1113,20 @@ pub fn read_enablers(
         }
     };
     for path in paths {
-        let bytes = path.read(layers)?;
+        let bytes = match path.read(layers) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                result.unverified.push(format!("{path}: {error}"));
+                continue;
+            }
+        };
         match parse_with_registry(&bytes, &registry, &names) {
             Ok((definitions, _)) => {
                 let source = path.to_string();
                 for definition in definitions {
-                    result.add(&source, Enables::from_template(definition), &mut evaluate);
+                    let enables = Enables::from_template(definition, &mut evaluate);
+                    result.add(&source, enables, &mut evaluate);
                 }
             }
             Err((_, error, _)) => {
@@ -2171,5 +2203,81 @@ mod tests {
         );
         let ok = read_enablers(&verified.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
         assert_eq!(ok.single("lost"), Ok(None));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unresolved_variable_in_native_enablers_withholds_single_fallback() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("technology_enablers_unresolved_var");
+        stack.write(
+            &stack.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        stack.write(
+            &stack.base(),
+            "common/technologies/a.txt",
+            "technologies = { rifles = { enable_equipments = { rifle_1 } } modded = { enable_equipments = { @missing } } }",
+        );
+        let enablers =
+            read_enablers(&stack.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
+        assert!(!enablers.plain.contains_key("@missing"), "{:?}", enablers.plain);
+        let withheld = enablers.single("rifle_1").unwrap_err();
+        assert!(withheld.contains("modded"), "{withheld}");
+
+        let dual = crate::test_support::Stack::new("technology_enablers_unresolved_var_dual");
+        dual.write(
+            &dual.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        dual.write(
+            &dual.base(),
+            "common/technologies/a.txt",
+            "technologies = { rifles = { enable_equipments = { rifle_1 } } rifles_2 = { enable_equipments = { rifle_1 } } modded = { enable_equipments = { @missing } } }",
+        );
+        let enablers =
+            read_enablers(&dual.layers(&[]), |_| Err("no limit here".to_owned())).unwrap();
+        assert_eq!(enablers.single("rifle_1"), Ok(None));
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn unreadable_technology_file_records_unverified_and_preserves_other_files() {
+        crate::test_game::enter();
+        let stack = crate::test_support::Stack::new("technology_enablers_unreadable_file");
+        stack.write(
+            &stack.base(),
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        );
+        stack.write(
+            &stack.base(),
+            "common/technologies/a.txt",
+            "technologies = { first = { enable_equipments = { dual_tank } } second = { enable_equipments = { dual_tank } } solo = { enable_equipments = { solo_tank } } }",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/missing.txt",
+            "technologies = { gone = { enable_equipments = { gone_tank } } }",
+        );
+        let layers = stack.layers(&[]);
+        std::fs::remove_file(stack.addon().join("common/technologies/missing.txt")).unwrap();
+        let enablers = read_enablers(&layers, |_| Err("no limit here".to_owned())).unwrap();
+        assert!(
+            enablers
+                .unverified
+                .iter()
+                .any(|reason| reason.contains("common/technologies/missing.txt")),
+            "{:?}",
+            enablers.unverified
+        );
+        assert_eq!(enablers.single("dual_tank"), Ok(None));
+        let withheld = enablers.single("solo_tank").unwrap_err();
+        assert!(
+            withheld.contains("common/technologies/missing.txt"),
+            "{withheld}"
+        );
     }
 }

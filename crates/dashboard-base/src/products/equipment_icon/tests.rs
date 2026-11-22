@@ -758,4 +758,55 @@ fn unverified_technology_parse_withholds_equipment_icon_fallback_and_warns() {
         "{:?}",
         lost.refusals
     );
+
+    let unreadable_root = std::env::temp_dir().join(format!(
+        "hoi4_dashboard_unreadable_tech_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&unreadable_root);
+    for (path, text) in [
+        ("common/terrain/fixture.txt", "categories = { fixture = {} }"),
+        (
+            "common/units/equipment/infantry.txt",
+            "equipments = { rifles = { is_archetype = yes type = infantry } rifles_1 = { archetype = rifles } solo_rifle = { archetype = rifles } }",
+        ),
+        (
+            "common/technologies/ok.txt",
+            "technologies = { solo = { enable_equipments = { solo_rifle } } }",
+        ),
+        (
+            "common/technologies/gone.txt",
+            "technologies = { gone = { enable_equipments = { rifles_1 } } }",
+        ),
+    ] {
+        let file = unreadable_root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&unreadable_root, &[][..])]).unwrap();
+    std::fs::remove_file(unreadable_root.join("common/technologies/gone.txt")).unwrap();
+    let content = IconContent::from_parts(
+        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
+        technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
+        equipment_graphics::Content::from_texts(
+            &[],
+            &equipment_graphics::Names {
+                countries: Default::default(),
+                continents: Default::default(),
+            },
+        )
+        .unwrap(),
+        Default::default(),
+        ["GFX_rifles_1_medium".to_owned()].into(),
+        Default::default(),
+    );
+    let _ = std::fs::remove_dir_all(&unreadable_root);
+    let hour = IconHour::read(&frame, &content).unwrap();
+    assert_eq!(
+        chosen(&content, &hour, &row, "rifles_1"),
+        Ok(Some(Icon::Sprite("GFX_rifles_1_medium".into())))
+    );
+    let withheld = chosen(&content, &hour, &row, "solo_rifle").unwrap_err();
+    assert!(withheld.contains("common/technologies/gone.txt"), "{withheld}");
 }
