@@ -6,4 +6,4 @@ Prefer a division's newly minted equipment rows, then its daily rows while they 
 
 For templates, select every roster-owned entry, including unused templates. Raw owner zero is reserved and does not name a tagged country. Keep authored roster order, with templates missing settings ordered afterward by handle. Counts come from the derived slot, side and template ranges. Base combat width is the recorded sum of sub-unit widths before country and commander modifiers. A failed model read supplies empty grids along with its refusal. A priority outside the designer's content-defined range has no proven name and is refused by value.
 
-[Division equipment](../../crates/dashboard/src/products/divisions/equipment.rs) · [Division templates](../../crates/dashboard/src/products/divisions/templates.rs) · [Comparison tests](../../crates/dashboard/src/products/divisions/tests.rs)
+[Division equipment](../../crates/dashboard-land/src/products/divisions/equipment.rs) · [Division templates](../../crates/dashboard-land/src/products/divisions/templates.rs) · [Comparison tests](../../crates/dashboard-land/src/products/divisions/tests.rs)

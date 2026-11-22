@@ -8,7 +8,7 @@ pub struct ReplayFile {
     pub(super) path: String,
     name: String,
     folder: String,
-    partial: Option<dashboard::PartialRecording>,
+    partial: Option<dashboard_core::dto::PartialRecording>,
 }
 #[derive(Serialize)]
 pub struct ReplayLibrary {
@@ -26,7 +26,7 @@ pub(super) fn scan_with(
     let mut files = Vec::new();
     let root = walk(folder, &mut checkpoint, |root, directory, path, _| {
         files.push(ReplayFile {
-            partial: dashboard::metadata::read_partial_recording(path)
+            partial: dashboard_text::metadata::read_partial_recording(path)
                 .ok()
                 .flatten(),
             path: path.to_string_lossy().into_owned(),
