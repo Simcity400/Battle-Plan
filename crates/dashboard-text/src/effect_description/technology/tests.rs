@@ -618,7 +618,7 @@ fn bound_technology_entity_links_mark_every_unlock_only_when_asked() {
         .unwrap();
     let render = |links| {
         fixture.with_context_linking(content.view(None), links, |context| {
-            technology_description("mod_callback", context, 1)
+            technology_description("mod_callback", None, context, 1)
         })
     };
     let (plain, linked) = (render(false), render(true));
@@ -810,7 +810,7 @@ fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refus
     ] {
         let text = fixture
             .with_renderer(&mut fresh(), content.view(None), |renderer| {
-                renderer.bound_technology_effect("mod_callback", scope)
+                renderer.bound_technology_effect("mod_callback", None, scope)
             })
             .unwrap();
         assert_eq!(text, "");
