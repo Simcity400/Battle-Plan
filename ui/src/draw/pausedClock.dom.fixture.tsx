@@ -20,7 +20,6 @@ import { tooltipStore } from '../charts/tooltip';
 import { FrameEngine } from '../engine/frame';
 import AcesWidget from '../widgets/aces/AcesWidget';
 import DoctrineMasteryWidget from '../widgets/doctrine-mastery/DoctrineMasteryWidget';
-import SpecialProjectsWidget from '../widgets/special-projects/SpecialProjectsWidget';
 import { arsenalNotice, arsenalStructure, validateNuclearArsenal } from '../widgets/nuclear-arsenal/nuclearArsenalData';
 import type { NuclearArsenalReply } from '../generated/dashboard';
 import type { Present } from './notifications';
@@ -33,16 +32,10 @@ const reply: NuclearArsenalReply = { types: [{ ordinal: 0, token: 'nuke', name: 
   countries: [{ tag: 'GER', countryId: 1, total: 3, counts: [{ ordinal: 0, value: 3, ready: 3 }] }], missing: null, warnings: [] };
 const arsenalAt = (hour: number): NuclearArsenalReply => ({ ...reply,
   countries: [{ tag: 'GER', countryId: 1, total: hour, counts: [{ ordinal: 0, value: hour, ready: hour }] }] });
-const identities = [{ firstHour: 0, lastHour: HOURS - 1, slot: 1, countryId: 1 }];
 const doctrine = { folders: [{ ordinal: 0, id: 'land', name: 'Land', icon: null, grand: { id: 'mobile', name: 'Mobile warfare', icon: null }, completed: [],
   tracks: [{ ordinal: 0, name: 'Infantry', sub: { id: 'sub_a', name: 'Sub A', icon: null }, unlocked: 1, rewards: [{ id: 'r1', name: 'First', threshold: '5000000' }] }] }], warnings: [] };
-const projects = { branchId: '1', tag: 'GER', unavailable: null, iterationTexts: {}, identities, available: [{ firstHour: 0, lastHour: 23 }],
-  projects: [], presentations: [], people: [], warnings: [] };
-const groups = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [], humans: [],
-  unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'GER', identities }] };
 const replies: Record<string, (hour: number) => unknown> = { 'nuclear-arsenal': arsenalAt, 'air-aces': hour => ({ readHour: hour, missing: null, aces: [], warnings: [] }),
-  'doctrine-mastery': () => doctrine, 'special-projects': () => projects,
-  'special-project-details': hour => ({ hour, scientists: [], programs: [], projects: [], breakthroughs: [], unavailable: [], warnings: [] }) };
+  'doctrine-mastery': () => doctrine };
 const date = { since: 0, through: HOURS - 1 };
 const feed: PanelFeed = { view: 'nuclear-arsenal', offset: 0, structure: arsenalStructure(reply), reply, date };
 const clock = new PlaybackController(new FrameEngine({ request() {} }));
@@ -97,7 +90,6 @@ const answer = (product: string, params: Record<string, unknown>): unknown => {
     return null;
   }
   if (product === 'unfollow') { followed.delete((params as { id: number }).id); return null; }
-  if (product === 'country-groups') return groups;
   const served = replies[product];
   if (!served) throw new Error(`${product} is not served here`);
   native.asks++;
@@ -121,7 +113,6 @@ const headed = spec('headed', 'nuclear-arsenal', { kind: 'tags', tags: ['GER'] }
 const widgetProps = (widget: WidgetSpec) => ({ widget, runtime, active: true, headerSlot: null, onDiagnostics() {} }) as unknown as WidgetProps;
 const aces = widgetProps(spec('aces', 'aces', { kind: 'all' }));
 const doctrines = widgetProps(spec('doctrine', 'doctrine-mastery', { kind: 'tags', tags: ['GER'] }));
-const specials = widgetProps(spec('projects', 'special-projects', { kind: 'tags', tags: ['GER'] }, { view: 'live' }));
 const NO_PARAMS = {};
 const DOCTRINE_TIPS = 'doctrine-mastery:doctrine';
 
@@ -234,8 +225,7 @@ function shown() {
   const race = document.querySelector<HTMLCanvasElement>('#race canvas');
   return { field: ink('panel'), headedField: ink('headed'), mounts, hour: clock.getHour(), strict, asks: native.asks, listedRead,
     listed: document.querySelector('#listed')?.textContent ?? null,
-    aces: stateOf('#aces .widget-state'), projects: stateOf('#projects .special-projects > .widget-state'),
-    tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
+    aces: stateOf('#aces .widget-state'), tip: tip(), described: !!document.querySelector('#doctrine span.sr-only[id]'),
     muted: Number(getComputedStyle(document.documentElement).getPropertyValue('--muted-row-opacity')),
     panel: surface(ink1, document.querySelector('#panel'), !!ink1 && !ink1.hidden, drawn.get(panelId())),
     race: surface(race, document.querySelector('#race .race-chart'), !!race && race.style.visibility !== 'hidden', racePresent?.hour),
@@ -249,10 +239,6 @@ const currentOf = (...given: (Present | Extract<FromWorker, { type: 'racePresent
 };
 const current = () => currentOf(panelPresent(), headedPresent(), racePresent);
 const readEmptied = () => emptied.seek === clock.getSnapshot().seekSequence && strict === null;
-const widgetsAt = (hour: number) => {
-  const now = shown();
-  return now.aces === 'empty' && now.projects === (hour <= 23 ? 'empty' : 'unavailable');
-};
 
 function until(ready: () => boolean) {
   return new Promise<void>(resolve => {
@@ -278,7 +264,7 @@ function at(time: number, change: () => void) {
   try { change(); } finally { Reflect.deleteProperty(performance, 'now'); }
 }
 
-const landed = (hour: number) => current() && painted() && headedPresent()?.readHour === hour && shown().listed === String(hour) && widgetsAt(hour);
+const landed = (hour: number) => current() && painted() && headedPresent()?.readHour === hour && shown().listed === String(hour) && shown().aces === 'empty';
 
 async function heldSeek(hour: number, settled: () => boolean, done: () => boolean = () => true) {
   let pending: ReturnType<typeof shown>[] = [];
@@ -323,7 +309,7 @@ export const fixture = {
     pop.showPopover();
     createRoot(document.body.appendChild(document.createElement('div'))).render(<><Panel /><Race /><Headed />{createPortal(<Listed />, pop)}<Probe />
       <div style={{ display: 'flex', gap: '8px' }}><div id="aces" style={box}><AcesWidget {...aces} /></div>
-        <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div><div id="projects" style={box}><SpecialProjectsWidget {...specials} /></div></div></>);
+        <div id="doctrine" style={box}><DoctrineMasteryWidget {...doctrines} /></div></div></>);
     await until(() => followedSurface && listedRead === 'followed' && landed(23) && !!document.querySelector('#doctrine [data-track]'));
     document.querySelector<HTMLElement>('#doctrine [data-track]')!.focus();
     await until(() => shown().tip === dayLabel(23) && shown().described);

@@ -53,7 +53,7 @@ const NO_COVERAGE: ResearchCoverage[] = [];
 const NO_LANES: ResearchLane[] = [];
 const NO_LOOKS: ReadonlyMap<string, ResearchFolderLook> = new Map();
 type Breakdown = { slotIndex: number; entry: ResearchEntry; hour: number };
-type Tip = (content: () => TooltipContent | null, key: string, x: number, y: number) => void;
+type Tip = (content: () => TooltipContent, key: string, x: number, y: number) => void;
 type Jump = (hour: number | (() => number | null)) => ReturnType<typeof rowJumpProps>;
 const laneInteractive = (item: ResearchItem) => item.kind !== 'opened' && item.kind !== 'closed';
 const rowIndex = (row: ResearchRow) => row.kind === 'completed' ? row.entry.databaseIndex : null;
@@ -62,7 +62,7 @@ function Art({ icon, className }: { icon: string | undefined; className: string 
   return <span className={className}>{icon ? <img src={icon} alt="" /> : <ArtFallback icon="flask" />}</span>;
 }
 
-function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent | null) {
+function tipProps(tip: Tip, untip: () => void, key: string, content: () => TooltipContent) {
   return {
     onPointerMove: (event: { clientX: number; clientY: number }) => tip(content, key, event.clientX, event.clientY),
     onPointerLeave: untip,
@@ -88,8 +88,8 @@ function LaneRow({ item, slots, text, dimmed, tip, untip, jump, onOpen }: {
     {...jump(item.hour)}><Art icon={text.icon(token)} className="research-cell-art" /><span className="research-cell-name">{name}</span><small>{date}</small></button>;
 }
 
-function NowCell({ lane, history, now, holding, text, tip, untip, jump, onOpen, latest }: {
-  lane: ResearchLane; history: ResearchData['history']; now: ResearchSlotsAt | undefined; holding: boolean; text: ResearchText;
+function NowCell({ lane, history, now, text, tip, untip, jump, onOpen, latest }: {
+  lane: ResearchLane; history: ResearchData['history']; now: ResearchSlotsAt | undefined; text: ResearchText;
   tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
   latest: { current: ResearchSlotsAt | undefined };
 }) {
@@ -112,9 +112,7 @@ function NowCell({ lane, history, now, holding, text, tip, untip, jump, onOpen, 
   const databaseIndex = entry?.databaseIndex ?? null;
   const name = text.name(token, databaseIndex);
   const content = () => {
-    const reply = latest.current ?? (holding ? undefined : now);
-    if (!reply) return null;
-    const current = reply.slots.find(item => item.index === slot.index) ?? read;
+    const reply = latest.current ?? now, current = reply.slots.find(item => item.index === slot.index) ?? read;
     const progress = researchLatestProgress({ ...full, states: [current.state], progress: current.progress ? [current.progress] : [] }, current.state, reply.hour);
     return currentTooltip(token, slot.index, progress, slotNumbers(current, reply.hour).left, !!entry, text, null, databaseIndex);
   };
@@ -191,7 +189,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const imageTokens = useMemo(() => data ? [...new Set(historyTokens(data.history).map(use => typeof use === 'string' ? use : use[0]))] : NO_TOKENS, [data]);
   const recorded = useMemo(() => researchRecordedTemplates(data?.history), [data]);
   const images = useTechnologyArtwork(runtime.client, track, imageTokens, active && !!data, recorded);
-  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...(now.warnings ?? NO_WARNINGS), ...images.warnings])], [data, now.warnings, images.warnings]);
+  const diagnostics = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...(now.data?.warnings ?? NO_WARNINGS), ...images.warnings])], [data, now.data, images.warnings]);
   useDiagnostics(onDiagnostics, diagnostics);
   const artwork = useMemo(() => researchArtwork(data, images.artwork), [data, images.artwork]);
   const text = useMemo<ResearchText>(() => ({
@@ -200,7 +198,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     artworkFailure: token => images.failures?.get(token),
     folder: (token, databaseIndex) => researchFolderAt(looks, token, databaseIndex),
   }), [artwork, looks, images.failures]);
-  const tip = useCallback<Tip>((content, key, x, y) => { const shown = content(); if (shown) showTooltip(owner, shown, x, y, key); else hideTooltip(owner); }, [owner]);
+  const tip = useCallback<Tip>((content, key, x, y) => showTooltip(owner, content(), x, y, key), [owner]);
   const untip = useCallback(() => hideTooltip(owner), [owner]);
   useEffect(() => untip, [untip]);
   const breakdown = usePopover('start');
@@ -244,7 +242,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
         triggerClassName="button small research-folder-button" />
     </div>}
     {view === 'columns'
-      ? <ResearchColumns lanes={lanes} slots={slots} hour={hour} moment={moment} now={now.data} holding={now.holding} latest={latest} text={text} dimmed={dimmed} tip={tip} untip={untip} jump={jump} onOpen={open} data={data} />
+      ? <ResearchColumns lanes={lanes} slots={slots} hour={hour} moment={moment} now={now.data} latest={latest} text={text} dimmed={dimmed} tip={tip} untip={untip} jump={jump} onOpen={open} data={data} />
       : <ResearchList rows={rows} text={text} looks={looks}
         sort={sort} density={options.density === 'compact' ? 'compact' : 'comfortable'} narrow={narrowTableOf(options)}
         setOption={setOption} menu={row => row.kind === 'gap' ? [] : [jumpItem(runtime, track.id, row.hour)]}
@@ -260,8 +258,8 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   </section>;
 }
 
-function ResearchColumns({ lanes, slots, hour, moment, now, holding, latest, text, dimmed, tip, untip, jump, onOpen, data }: {
-  lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; hour: number; moment: boolean; now: ResearchSlotsAt | undefined; holding: boolean;
+function ResearchColumns({ lanes, slots, hour, moment, now, latest, text, dimmed, tip, untip, jump, onOpen, data }: {
+  lanes: readonly ResearchLane[]; slots: readonly ResearchSlotHistory[]; hour: number; moment: boolean; now: ResearchSlotsAt | undefined;
   latest: { current: ResearchSlotsAt | undefined }; text: ResearchText;
   dimmed: (token: string) => boolean; tip: Tip; untip: () => void; jump: Jump; onOpen: (target: Breakdown, anchor: () => AnchorRect | null) => void;
   data: ResearchData;
@@ -278,7 +276,7 @@ function ResearchColumns({ lanes, slots, hour, moment, now, holding, latest, tex
       {moment && <>
         <div className="research-now-label">Now · <span data-paint="date">{researchDate(now?.hour ?? hour)}</span></div>
         {lanes.map(lane => <div className="research-now-slot" key={`now:${lane.slot.index}`}>
-          <NowCell lane={lane} history={data.history} now={now} holding={holding} latest={latest} text={text} tip={tip} untip={untip} jump={jump} onOpen={onOpen} /></div>)}
+          <NowCell lane={lane} history={data.history} now={now} latest={latest} text={text} tip={tip} untip={untip} jump={jump} onOpen={onOpen} /></div>)}
       </>}
     </div>
   </div>;

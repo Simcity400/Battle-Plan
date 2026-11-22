@@ -62,7 +62,7 @@ type ItemProps = (card: ProjectCard) => HTMLAttributes<HTMLElement>;
 
 type HourNow = () => number;
 
-function CurrentList({ reply, at, held, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; held: boolean; item: ItemProps; feed: PanelFeed | null }) {
+function CurrentList({ reply, at, item, clock, feed }: { clock: PlaybackController; reply: SpecialProjectsReply; at: number; item: ItemProps; feed: PanelFeed | null }) {
   const list = useRef<HTMLDivElement>(null);
   const valueId = useId();
   const widths = useMemo(() => {
@@ -83,8 +83,7 @@ function CurrentList({ reply, at, held, item, clock, feed }: { clock: PlaybackCo
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
   useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
     exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
-  if (!running.length && !completed.length && !earlier.length && !cancelled.length) return held ? <WidgetState kind="loading" label="Loading special projects…" />
-    : <WidgetState kind="empty" message="No special projects yet." />;
+  if (!running.length && !completed.length && !earlier.length && !cancelled.length) return <WidgetState kind="empty" message="No special projects yet." />;
   const row = (card: ProjectCard, line: string, className = '') => <div key={card.project.id} className={`special-project-row${className}`} {...item(card)}>
     <ProjectTile icon={card.info.icon} /><span className="special-project-label"><strong data-panel-label={card.project.id}>{card.info.name}</strong><span>{line}</span></span></div>;
   return <div className="special-project-list" ref={list}>
@@ -149,11 +148,9 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const history = useProducts<SpecialProjectsReply>(runtime.client, requests, active, validateSpecialProjectsReply, track?.source);
   const target = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
   const tag = target === undefined ? undefined : tags.find(t => resolved.match.matches(t, target));
-  const live = useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
-    { active, validate: validateSpecialProjectsReply, structure: projectStructure });
-  const listed = withHeld(live), holding = listed !== live;
-  const currentData = useMemo(() => listed.data ? [listed.data] : undefined, [listed.data]);
-  const strictData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
+  const live = withHeld(useHeadProduct(runtime, widget, 'special-projects', view === 'live' && tag ? { country: countryFromKey(tag) } : null,
+    { active, validate: validateSpecialProjectsReply, structure: projectStructure }));
+  const currentData = useMemo(() => live.data ? [live.data] : undefined, [live.data]);
   const data = view === 'history' ? history.data : currentData;
   const { error, retry } = view === 'history' ? history : live;
   const membershipAt = useCallback((hour: number) => resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour), [resolved.unobserved]);
@@ -192,7 +189,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
   const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
-  const notes = view === 'history' ? bounded.data : strictData;
+  const notes = view === 'history' ? bounded.data : currentData;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
   const detailWarnings = useRef<readonly string[]>([]);
   const reportWarnings = useCallback((warnings: readonly string[]) => {
@@ -226,13 +223,13 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     menu.open(x, y, [{ ...start, label: `Jump to start · ${projectDate(card.project.start)}` },
       ...(completion ? [{ ...jumpItem(runtime, track.id, completion.hour), label: `Jump to completion · ${projectDate(completion)}` }] : [])]);
   };
-  const item = (reply: SpecialProjectsReply, held: boolean): ItemProps => card => {
+  const item = (reply: SpecialProjectsReply): ItemProps => card => {
     const atNow = () => {
       const run = runAt(card.project.runs, now());
       return run ? { ...card, run, info: reply.presentations[run.presentation] } : card;
     };
-    const show = (x: number, y: number) => held ? hideTooltip(owner) : showTooltip(owner, fitTooltip([projectTooltip(reply, atNow())], viewport), x, y);
-    return { tabIndex: 0, role: 'group', 'aria-label': held ? undefined : tooltipText(projectTooltip(reply, card)),
+    const show = (x: number, y: number) => showTooltip(owner, fitTooltip([projectTooltip(reply, atNow())], viewport), x, y);
+    return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(projectTooltip(reply, card)),
       onPointerMove: event => show(event.clientX, event.clientY), onPointerLeave: () => hideTooltip(owner),
       onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top); }, onBlur: () => hideTooltip(owner),
       onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY); },
@@ -245,8 +242,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const noneAt = view === 'live' && widget.countries.kind === 'group' && !tags.length && groups.data && track
     && !resolved.match.known(track.branch.firstHour, track.branch.lastHour) ? worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, at, track.branch.lastHour) : null;
   const requestedNow = view === 'live' ? tags.filter(tag => resolved.match.matches(tag, at)) : tags;
-  const waiting = <WidgetState kind="loading" label="Loading special projects…" />;
-  const details = view === 'live' && tag ? <ProjectDetails runtime={runtime} widget={widget} tag={tag} active={active} onWarnings={reportWarnings} /> : null;
   let body;
   if (!track) body = <WidgetState kind="empty" message="Load a campaign and choose a country to see its special projects." />;
   else if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) body = <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
@@ -259,15 +254,17 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (noneAt?.reason) body = <NoMembersState reason={noneAt.reason} />;
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
-  else if (!data) body = <>{waiting}{details}</>;
-  else if (data.every(reply => reply.unavailable)) body = holding ? waiting : <WidgetState kind="unavailable" message={data.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
+  else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
+  else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={data.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
-    const hour = listed.at ?? at;
-    const reply = data.find(reply => resolved.match.matches(reply.tag, hour));
-    if (!reply) body = holding ? waiting : <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
-    else body = observedAt(reply, hour) ? <><CurrentList clock={runtime.clock} feed={panelFeed('special-projects', live, r => currentKey(r, hour), widget, runtime)}
-      reply={reply} at={hour} held={holding} item={item(reply, holding)} />{details}</>
-      : <>{holding ? waiting : <WidgetState kind="unavailable" message="Projects were not recorded at this time." />}{details}</>;
+    const reply = data.find(reply => resolved.match.matches(reply.tag, at));
+    if (!reply) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
+    else {
+      const details = <ProjectDetails runtime={runtime} widget={widget} tag={reply.tag} active={active} onWarnings={reportWarnings} />;
+      body = observedAt(reply, at) ? <><CurrentList clock={runtime.clock} feed={panelFeed('special-projects', live, r => currentKey(r, at), widget, runtime)}
+        reply={reply} at={at} item={item(reply)} />{details}</>
+        : <><WidgetState kind="unavailable" message="Projects were not recorded at this time." />{details}</>;
+    }
   } else if (!lanes.some(lane => lane.identity?.tile === 'blueprint' || lane.compact)) body = historyMembershipUnknown
     ? <WidgetState kind="unavailable" message="This group’s members were not recorded for part of this history." />
     : <WidgetState kind="empty" message="No special projects yet." />;
