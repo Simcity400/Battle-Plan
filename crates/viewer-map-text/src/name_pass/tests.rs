@@ -1,6 +1,6 @@
 use super::*;
 use std::cell::Cell;
-use viewer_foundation::map::camera::MapDefines;
+use viewer_gpu::camera::MapDefines;
 
 const W: f32 = 5632.0;
 use content_reader_core::{adjacencies::Adjacency, adjacencies::IMPASSABLE, adjacencies::SEA_CROSSING};
@@ -137,7 +137,7 @@ fn camera(center: [f32; 2], height: f32) -> Camera {
         height,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
 }
 
@@ -281,7 +281,7 @@ fn names_keep_the_camera_side_margin() {
     let m = camera.view_projection(viewport);
     let plane =
         |column: usize, sign: f32| std::array::from_fn(|row| -(m[row][3] + sign * m[row][column]));
-    let open = viewer_foundation::map::province_admission::OPEN;
+    let open = viewer_gpu::province_admission::OPEN;
     let raw = [
         plane(0, 1.),
         plane(0, -1.),
@@ -341,7 +341,7 @@ fn the_fade_settles_at_the_content_cutoff_and_takes_one_second() {
         height,
         map: MapSize::TEST,
         defines,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     assert_eq!(LayerFade::instant(at(260.0)), LayerFade(1.0));
     let low = LayerFade::instant(at(259.9));
@@ -972,7 +972,7 @@ fn authored_localized_name_color_runs_survive_glyph_emission() {
 
     let layers = content_reader_core::ResolvedLayers::from_folders(&[(root.as_path(), &[][..])])
         .unwrap();
-    let interface = viewer_foundation::map::sprites::Interface::load(
+    let interface = viewer_native_gui::sprites::Interface::load(
         &layers,
         content_reader_image::native::Decode::default(),
     )
@@ -1036,9 +1036,9 @@ fn authored_localized_name_color_runs_survive_glyph_emission() {
         false,
     )
     .expect("placed coloured world name");
-    let yellow = viewer_foundation::map::native_text::packed([1.0, 204.0 / 255.0, 0.0, 1.0]);
+    let yellow = viewer_native_gui::native_text::packed([1.0, 204.0 / 255.0, 0.0, 1.0]);
     let green =
-        viewer_foundation::map::native_text::packed([51.0 / 255.0, 204.0 / 255.0, 77.0 / 255.0, 1.0]);
+        viewer_native_gui::native_text::packed([51.0 / 255.0, 204.0 / 255.0, 77.0 / 255.0, 1.0]);
     let expected = vec![[1.0; 4], yellow, green, yellow, [1.0; 4]];
     assert_eq!(placed.glyph_count(), 5);
     assert_eq!(placed.colors, expected);
@@ -1064,9 +1064,9 @@ fn authored_localized_name_color_runs_survive_glyph_emission() {
 fn stock_signature_mapname_shader_renders_authored_color_run_pixels() {
     use eframe::wgpu::util::DeviceExt;
     use shader_pipeline::{Compiled, ScalarKind, Shader, VertexInput, gpu, library::Effect};
-    use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, read_texture};
+    use viewer_gpu::gpu_contract::{DEPTH_FORMAT, read_texture};
     content_reader_core::test_game::enter();
-    let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+    let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
     let source = Arc::new(
         content_reader_core::pdxshader::program::read_with(b"mapname.shader", &|path| {
             Some(if path == b"mapname.shader" {

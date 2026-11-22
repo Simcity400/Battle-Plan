@@ -2,9 +2,9 @@ use super::*;
 use eframe::wgpu::{self, util::DeviceExt};
 use std::sync::Arc;
 #[cfg(test)]
-use viewer_foundation::map::test_support::TEST_HANG_GUARD;
-use viewer_foundation::map::test_support::gpu as tests;
-use viewer_foundation::map::textures::data_texture;
+use viewer_runtime::test_support::TEST_HANG_GUARD;
+use viewer_gpu::test_support::gpu as tests;
+use viewer_gpu::textures::data_texture;
 
 pub(super) const ALL_PASSES: [Pass; 13] = [
     Pass::Underwater,

@@ -10,4 +10,4 @@ Only source-over colour blends writing every colour channel can flatten into a s
 
 Bake caches account for changes in lazy pages and can reuse a result wherever the bake owns all its bindings. Bake commands submit before sampling, including when the main frame is abandoned. Shared pipelines and the BC texture unpack pipeline are prepared outside display draws. A newly discovered pipeline may defer a draw; mark the next frame to try again. Dynamic pages currently drawn stay resident. An upload refusal is reported once per revision, and a later revision can retry.
 
-[Layer keys, batches, upload and drawing](../../crates/viewer-foundation/src/map/sprites.rs) · [Retained sprite submission](./1111-retained-sprite-submission.md)
+[Layer keys, batches, upload and drawing](../../crates/viewer-native-gui/src/sprites.rs) · [Retained sprite submission](./1111-retained-sprite-submission.md)

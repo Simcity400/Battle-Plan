@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use viewer_foundation::map::perspective::{Choice, Vision};
+use viewer_foundation::perspective::{Choice, Vision};
 use viewer_unit_models::trade_routes::{self, Countries, ExchangeOrder, Stops, TradeRoutes};
 
 #[derive(Default)]
@@ -172,7 +172,7 @@ fn vision_layer(side: &MapSide) -> &crate::layers::vision::Vision {
 }
 
 fn window_side(name: &str, routes: Arc<dyn Routes>, refused_hours: std::ops::Range<u32>) -> MapSide {
-    use viewer_foundation::map::perspective::VISION_TABLES;
+    use viewer_foundation::perspective::VISION_TABLES;
     let recording = recorded::record_naming(name, HOURS, &[b"AAA", b"BBB"], |at, store| {
         for &table in VISION_TABLES {
             let status = if table == TableId::Countries && refused_hours.contains(&at) { Status::NotRecorded } else { Status::Complete };
@@ -419,7 +419,7 @@ fn a_job_out_is_not_carried_and_the_layer_publishes_the_hour_its_product_stands_
 
 #[test]
 fn a_viewing_country_change_withholds_the_lines_made_for_the_country_before() {
-    use viewer_foundation::map::perspective::Country;
+    use viewer_foundation::perspective::Country;
     let entry = open(recorded::record("convoys-viewer-change", HOURS, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }).unwrap();
     let routes = Arc::new(HeldLines::default());
     let _release = ReleaseRoutes(Arc::clone(&routes));

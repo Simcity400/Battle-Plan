@@ -4,10 +4,8 @@ use crate::playhead_host::mirror::{Cell, Mirror, Mirrors};
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::rows::{Recorded, ReverseZeroVisibilityInputs, TableId, ZeroSubjectInputs};
-use viewer_foundation::map::{
-    directed_wars::ReceiverWars,
-    visibility::{Families, forward_zero_shared_of},
-};
+use replay_derive::directed_war_derive::ReceiverWars;
+use viewer_foundation::visibility::{Families, forward_zero_shared_of};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,

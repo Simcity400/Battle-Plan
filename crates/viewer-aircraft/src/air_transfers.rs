@@ -3,11 +3,12 @@ use content_reader_core::defines::Defines;
 use replay_data::{rows::AirBaseRow, rows::AirTransferInputRow, rows::AirWingRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::map::{
-    air_registry_sources::AirRegistrySources,
+use viewer_unit_reads::air_registry_sources::AirRegistrySources;
+use viewer_gpu::{
     province_map::HeightField,
     ribbon_content::{ArrowType, OrderField},
-    ribbon_mesh, unit_pose,
+    ribbon_mesh,
+    unit_pose,
 };
 
 pub const ARROW: &str = "air_transfer";
@@ -81,7 +82,7 @@ fn locate(
     }
     let ratio = if distance <= 0 {
         0
-    } else if !viewer_foundation::map::air_range::finite(progress) {
+    } else if !viewer_unit_reads::air_range::finite(progress) {
         0xffff_ffff
     } else {
         progress
@@ -254,7 +255,7 @@ mod tests {
             rows::AirReferenceWitnessRow, rows::CountryLinkRow, rows::RaidAirSiteRow,
             rows::TableRows,
         };
-        use viewer_foundation::map::test_support::{test_frame, test_put as put};
+        use viewer_foundation::test_support::{test_frame, test_put as put};
         let mut frame = test_frame(7);
         put(
             &mut frame,
@@ -340,7 +341,7 @@ mod tests {
                     .collect(),
             ),
         );
-        let types = viewer_foundation::map::ribbon_content::ArrowTypes::parse(
+        let types = viewer_gpu::ribbon_content::ArrowTypes::parse(
             b"arrowType={name=air_transfer body_width={1 1} body_uv_scale=1}",
         )
         .unwrap();

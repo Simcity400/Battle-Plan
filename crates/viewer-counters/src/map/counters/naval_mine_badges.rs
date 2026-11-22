@@ -1,10 +1,7 @@
 use super::*;
 use replay_data::rows::AirCountryRelationRow;
-use viewer_foundation::map::{
-    native_gui::{self, lifecycle::Instance},
-    naval_mine_levels::{self, Levels},
-    naval_region_control::raw_roster,
-};
+use viewer_native_gui::native_gui::{self, lifecycle::Instance};
+use replay_derive::{naval_mine_levels::Levels, naval_region_control::raw_roster};
 
 type Fact<T> = Result<T, String>;
 #[derive(Clone, Debug)]
@@ -105,7 +102,7 @@ pub(super) fn prepare(
             }
             Ok(counts)
         });
-    let features = naval_mine_levels::enabled(frame);
+    let features = viewer_foundation::naval_mine_feature::enabled(frame);
     let maximum = inputs
         .assets
         .air_sortie_defines

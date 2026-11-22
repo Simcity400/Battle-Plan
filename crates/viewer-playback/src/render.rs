@@ -3,16 +3,19 @@ use shader_pipeline::gpu::stats::CountedPasses as _;
 use crate::map_icons::MapIcons;
 use std::collections::BTreeMap;
 use std::time::Instant;
-use viewer_foundation::map::camera::Camera;
-use viewer_foundation::map::icon_windows::DumpFrames;
-use viewer_foundation::map::layers::Omissions;
-use viewer_foundation::map::presentation::Continuity;
-use viewer_foundation::profile_writer::profile_print;
-use viewer_foundation::profile_writer::profiling;
+use viewer_gpu::camera::Camera;
+use viewer_native_gui::icon_windows::DumpFrames;
+use viewer_gpu::layers::Omissions;
+use viewer_runtime::presentation::Continuity;
+use viewer_runtime::profile_writer::profile_print;
+use viewer_runtime::profile_writer::profiling;
 use viewer_world::scene_content::MapAssets;
 
-use viewer_foundation::map::gpu_contract::{
-    device_requirements, map_device_descriptor, read_texture, select_adapter,
+use viewer_gpu::gpu_contract::{
+    device_requirements,
+    map_device_descriptor,
+    read_texture,
+    select_adapter,
 };
 
 use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
@@ -20,7 +23,7 @@ use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
 use eframe::wgpu;
 
 use map_display_data::buildings::Buildings as PreparedBuildings;
-use viewer_foundation::map::{
+use viewer_gpu::{
     gpu_contract::{OUTPUT_FORMAT, invalid},
     ribbon_content::{OrderAssets, OrderField},
     textures::IntelMap,
@@ -54,7 +57,7 @@ pub struct MapLayers<'a> {
     pub river_mesh: &'a RiverMesh,
     pub snow_mud: &'a Arc<SnowMud>,
     pub intel_map: &'a IntelMap,
-    pub visibility: viewer_foundation::map::mode_visibility::Visibility,
+    pub visibility: viewer_foundation::mode_visibility::Visibility,
     pub frame_assets: &'a FrameAssets,
     pub nuclear_impacts: &'a viewer_models::strike_effects::Impacts,
     pub sprawl: &'a Sprawl,
@@ -392,7 +395,7 @@ pub fn dump_png(
             [(layers.nuclear_impacts, layers.map_text)],
             Continuity::Reset,
             |province| layers.content.counters.anchor(province, 0),
-            viewer_foundation::map::province_map::HeightField {
+            viewer_gpu::province_map::HeightField {
                 width: assets.heightmap.width,
                 height: assets.heightmap.height,
                 values: assets.heightmap_texels(),

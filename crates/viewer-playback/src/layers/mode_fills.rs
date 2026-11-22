@@ -12,7 +12,8 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::{perspective::Choice, presentation::Continuity};
+use viewer_foundation::perspective::Choice;
+use viewer_runtime::presentation::Continuity;
 use viewer_borders::{border_pass::ClassPlan, demilitarized::{Zone, ZonePlan}};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 

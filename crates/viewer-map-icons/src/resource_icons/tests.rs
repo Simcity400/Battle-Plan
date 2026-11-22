@@ -1,13 +1,18 @@
 use super::*;
 use viewer_map_modes::map_mode::{MapMode, Stock, visibility};
 use replay_data::{rows::ProvinceRow, rows::TableRows};
-use viewer_foundation::{
-    map::{
-        camera::{Free, Lens, MapDefines, MapSize, Pose},
-        mode_visibility::PriorityTable,
-        test_support::{gui, localisation::loaded},
-    },
-    resource_origins::fixture::{self, AFG_SLOT, ALIASED, COSTED, GATED, GIVEN, GRANTED, MIXED},
+use viewer_gpu::camera::{Free, Lens, MapDefines, MapSize, Pose};
+use viewer_foundation::{mode_visibility::PriorityTable, test_support::localisation::loaded};
+use viewer_native_gui::test_support::gui;
+use viewer_runtime::resource_origins::fixture::{
+    self,
+    AFG_SLOT,
+    ALIASED,
+    COSTED,
+    GATED,
+    GIVEN,
+    GRANTED,
+    MIXED,
 };
 
 fn content() -> ResourceIconContent {

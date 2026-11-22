@@ -13,6 +13,8 @@ doctest = false
 test-support = []
 
 [dependencies]
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 content-reader-image.workspace = true
@@ -20,14 +22,14 @@ eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "de
 map-display-data.workspace = true
 map-snow.workspace = true
 shader-pipeline.workspace = true
-viewer-foundation.workspace = true
 viewer-scene-base.workspace = true
 
 [dev-dependencies]
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 shader-pipeline = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 
 [lints]

@@ -4,7 +4,7 @@ use replay_data::rows::{
     DivisionCamouflage, DivisionModelInputRow, DivisionStatusRow, Recorded, TableId, TableRows,
 };
 use replay_frame::frame::TableView;
-use viewer_foundation::map::test_support::{assert_reads_recorded, map_scoped};
+use viewer_foundation::test_support::{assert_reads_recorded, map_scoped};
 
 fn figure_assets(name: &str) -> (std::path::PathBuf, UnitModelAssets) {
     use viewer_models::test_support::{MESHES_GFX, triangle_mesh, visual_stack};
@@ -42,7 +42,7 @@ fn figures(
                 world: None,
                 terrain: &BTreeMap::new(), routes: None,
                 ships: &ShipPlaces {
-                    motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(
+                    motions: &viewer_unit_reads::task_force_visual::TaskForceMotions::default(
                     ),
                     movement: None,
                     land: &|_| true,

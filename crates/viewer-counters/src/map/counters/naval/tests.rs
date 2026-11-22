@@ -3,11 +3,11 @@ use replay_data::{
     rows::TableId, rows::TableRows, rows::TaskForceCounterInputRow, rows::TaskForceRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::map::unit_rules::ATTACKING;
+use viewer_foundation::unit_rules::ATTACKING;
 
 #[test]
 fn combat_task_forces_never_offer_sea_counter_sources() {
-    let skips = viewer_foundation::map::task_force_visual::MissionSkips::fixture([(7, (0, 0))], []);
+    let skips = viewer_unit_reads::task_force_visual::MissionSkips::fixture([(7, (0, 0))], []);
     for combat_references in [i32::MIN, -1, 0, 1, i32::MAX] {
         let force = replay_data::rows::TaskForceRow {
             id: 7,
@@ -95,7 +95,7 @@ fn combat_task_forces_leave_sea_group_anchors_unchanged_at_both_heights() {
         );
     }
 
-    let skips = viewer_foundation::map::task_force_visual::MissionSkips::fixture(
+    let skips = viewer_unit_reads::task_force_visual::MissionSkips::fixture(
         [(eng.id, (0, 0)), (pol.id, (0, 0))],
         [],
     );
@@ -537,7 +537,7 @@ fn strategic_port_frames_keep_fleet_mission_and_selected_splits() {
 #[test]
 fn cached_naval_operands_equal_fresh_joins_and_share_the_model_column() {
     use replay_data::rows::{ShipCounterInputs, ShipModelRow, ShipRow};
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
     let mut frame = test_frame(7);
     test_put(
         &mut frame,
@@ -914,7 +914,7 @@ fn counters_laid_out_across_a_seek_back_never_mix_their_tables_hour_with_another
                 frame
             };
             let tables = |frame: &DecodedFrame, rosters: BTreeMap<u32, Vec<(u64, u32)>>| {
-                let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+                let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
                 let mut tables = hour_tables(
                     frame,
                     inputs.map,

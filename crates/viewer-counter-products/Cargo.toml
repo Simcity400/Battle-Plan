@@ -10,9 +10,14 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["viewer-foundation/test-support"]
+test-support = []
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-native-gui.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
 game-model.workspace = true
 job-priority.workspace = true
 replay.workspace = true
@@ -34,10 +39,16 @@ content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
-viewer-foundation = { path = "../viewer-foundation" }
 dashboard-core.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
+dashboard-text = { workspace = true, features = ["test-support"] }
+replay-derive = { workspace = true, features = ["test-support"] }
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-native-gui = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 synthetic-game.workspace = true
 content-reader-abilities = { workspace = true, features = ["test-support"] }
@@ -49,7 +60,6 @@ content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }
 content-reader-unit-path = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
-viewer-foundation = { path = "../viewer-foundation", features = ["test-support"] }
 
 [lints]
 workspace = true

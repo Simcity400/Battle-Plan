@@ -126,7 +126,7 @@ fn start(
     let spawned = std::thread::Builder::new()
         .name("fly aircraft".into())
         .spawn_carried(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Normal);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Normal);
             let _ = send.send(assets.player(&name));
             repaint();
         });

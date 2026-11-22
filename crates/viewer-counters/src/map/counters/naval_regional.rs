@@ -3,7 +3,7 @@ struct RaidingGrid<'a> {
     active: u8,
     row: &'a replay_data::rows::NavalMissionTaskForceRow,
 }
-use viewer_foundation::map::msvc_stable_sort::sort;
+use viewer_runtime::msvc_stable_sort::sort;
 
 pub(super) type Fact<T> = Result<T, String>;
 
@@ -573,7 +573,7 @@ pub(super) fn prepare<'a>(
                 if let Some(count) = tiny.find(native::Kind::TextBox, "count") {
                     update.calls.push((
                         count.path.clone(),
-                        viewer_foundation::map::native_gui::lifecycle::Call::SetText(
+                        viewer_native_gui::native_gui::lifecycle::Call::SetText(
                             "?".to_owned(),
                         ),
                     ));
@@ -583,15 +583,15 @@ pub(super) fn prepare<'a>(
                 {
                     update.calls.push((
                         container.path.clone(),
-                        viewer_foundation::map::native_gui::lifecycle::Call::SetHideFlag(false),
+                        viewer_native_gui::native_gui::lifecycle::Call::SetHideFlag(false),
                     ));
                     update.calls.push((
                         container.path.clone(),
-                        viewer_foundation::map::native_gui::lifecycle::Call::Show,
+                        viewer_native_gui::native_gui::lifecycle::Call::Show,
                     ));
                 }
                 if let Some(foreground) = tiny.find(native::Kind::Icon, "spotting_bar_fg") {
-                    let extent = viewer_foundation::map::native_gui::drawable_extent(
+                    let extent = viewer_native_gui::native_gui::drawable_extent(
                         foreground,
                         &resources,
                         &Default::default(),
@@ -612,11 +612,11 @@ pub(super) fn prepare<'a>(
                             / 100.0)
                             * height as f32,
                     );
-                    let mut bound = viewer_foundation::map::native_gui::Bound::default();
+                    let mut bound = viewer_native_gui::native_gui::Bound::default();
                     bound.position = Some([0, y]);
                     update.calls.push((
                         foreground.path.clone(),
-                        viewer_foundation::map::native_gui::lifecycle::Call::Control(Box::new(
+                        viewer_native_gui::native_gui::lifecycle::Call::Control(Box::new(
                             bound,
                         )),
                     ));
@@ -693,9 +693,9 @@ pub(super) fn control_hovers(
     region: u32,
     data: Option<&Region>,
     root: &native::Element,
-    layout: &viewer_foundation::map::native_gui::Layout,
+    layout: &viewer_native_gui::native_gui::Layout,
     origin: [i32; 2],
-    resources: &dyn viewer_foundation::map::native_gui::Resources,
+    resources: &dyn viewer_native_gui::native_gui::Resources,
     layer: u64,
     report: &mut CounterReport,
 ) {

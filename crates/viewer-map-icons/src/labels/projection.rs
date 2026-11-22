@@ -219,7 +219,7 @@ pub(super) fn withheld_capitals(
 }
 
 pub fn note_withheld_capitals(
-    out: &mut viewer_foundation::map::tables::Limitations,
+    out: &mut viewer_foundation::tables::Limitations,
     frame: &DecodedFrame,
     links: &BTreeMap<u32, u32>,
 ) -> io::Result<()> {
@@ -233,7 +233,7 @@ pub const NO_VICTORY_POINTS: &str = "none of its provinces has victory points, a
 pub const TIED_VICTORY_POINTS: &str = "its provinces tie for the most victory points, and the state's province \
      order that settles the tie is not recorded";
 
-pub fn note_withheld(out: &mut viewer_foundation::map::tables::Limitations, states: impl IntoIterator<Item = (u32, &'static str)>) {
+pub fn note_withheld(out: &mut viewer_foundation::tables::Limitations, states: impl IntoIterator<Item = (u32, &'static str)>) {
     let mut withheld: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (state, why) in states {
         withheld.entry(why).or_default().push(state.to_string());

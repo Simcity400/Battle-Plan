@@ -10,4 +10,4 @@ A publication carries recorded within-interval province changes in addition to i
 
 The display frame and the maker can work on different publications. Use the exact track given to the drawn counter layout for its figure, including a recorded refusal to construct a track. Reconstructing from the current mutable placement chain would give a figure a different path. Use animator facing or the placement's facing because chords across publications can spin a figure. The optional checks distinguish expected native snaps from excess displacement and compare the track and layout behind each visible figure with the counter the frame actually draws.
 
-[Movement, placement history and checking](../../crates/viewer-foundation/src/map/counter_move.rs) · [Movement regression fixtures](../../crates/viewer-foundation/src/map/counter_move/tests.rs)
+[Movement, placement history and checking](../../crates/viewer-unit-reads/src/counter_move.rs) · [Movement regression fixtures](../../crates/viewer-unit-reads/src/counter_move/tests.rs)

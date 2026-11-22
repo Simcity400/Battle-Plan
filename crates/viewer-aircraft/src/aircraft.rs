@@ -13,9 +13,9 @@ use std::{
     sync::Arc,
     time::Instant,
 };
-use viewer_foundation::map::aircraft_model;
-use viewer_foundation::map::camera::Camera;
-use viewer_foundation::table_access::{TokenKeys, TokenNames};
+use viewer_unit_reads::aircraft_model;
+use viewer_gpu::camera::Camera;
+use dashboard_text::table_access::{TokenKeys, TokenNames};
 
 use engine_air_history::air_kamikaze::window_sum;
 mod launches;
@@ -43,16 +43,14 @@ use viewer_models::{
     ModelLibrary,
     PaletteJoint,
 };
-use viewer_foundation::map::{
+use viewer_unit_reads::{
     air_participants::{AirParticipants, CountryRelations, CountryVectors, ordered_participants},
     air_reachability::{self, Category, Causes, MineTargetSources, MissionCountry, NavalCombatTargetSources, NavalOccupantSources, PortTargetSources, RegionFractions, RegionStates, ScoutTargetSources, StrategicTargetSources, TacticalTargetSources, TargetAdmission, Wars},
     air_registry_sources::AirRegistrySources,
-    aircraft_count::{SortieDefines, SortieSources},
-    province_geometry::ProvinceGeometry,
-    province_map::HeightField,
-    tables::{Available, core, rows},
-    visibility::Families,
 };
+use replay_derive::aircraft_count::{SortieDefines, SortieSources};
+use viewer_gpu::{province_geometry::ProvinceGeometry, province_map::HeightField};
+use viewer_foundation::{tables::{Available, core, rows}, visibility::Families};
 
 pub const SEED: u32 = 0x4149_5250;
 
@@ -1225,7 +1223,7 @@ impl AircraftAssets {
             region_draws,
             region_fractions,
             province_kinds,
-            sortie_defines: viewer_foundation::map::aircraft_count::load_defines(defines)
+            sortie_defines: viewer_unit_reads::air_sortie_defines::load_defines(defines)
                 .map_err(|error| error.to_string()),
             flight_defines: layers
                 .graphics_define("aircraft flights", graphics, defines, FlightDefines::load)
@@ -1654,8 +1652,8 @@ impl Terrain {
         let d = sample(column + 1, bottom + 1);
         let low = (b - a) * tx + a;
         let high = (d - c) * tx + c;
-        (((high - low) * tz + low) * viewer_foundation::map::province_map::HEIGHT_SCALE)
-            .max(viewer_foundation::map::province_map::WATER_HEIGHT)
+        (((high - low) * tz + low) * viewer_gpu::province_map::HEIGHT_SCALE)
+            .max(viewer_gpu::province_map::WATER_HEIGHT)
     }
 }
 
@@ -1837,19 +1835,19 @@ impl Kept {
         if let Some((identity, _, held)) = &self.regions
             && identity.is(view)
         {
-            viewer_foundation::view_record::add("air scans", "regions kept", 1);
+            viewer_runtime::view_record::add("air scans", "regions kept", 1);
             return Ok(Arc::clone(held));
         }
         let read = Arc::new(RegionStates::states_read(frame)?);
         if let Some((identity, before, held)) = &mut self.regions
             && *before == read
         {
-            viewer_foundation::view_record::add("air scans", "regions stand", 1);
+            viewer_runtime::view_record::add("air scans", "regions stand", 1);
             let held = Arc::clone(held);
             (*identity, *before) = (view.identity(), read);
             return Ok(held);
         }
-        viewer_foundation::view_record::add("air scans", "regions read", 1);
+        viewer_runtime::view_record::add("air scans", "regions read", 1);
         let states = Arc::new(RegionStates::read(frame, region_provinces)?);
         self.regions = Some((view.identity(), read, Arc::clone(&states)));
         Ok(states)
@@ -2159,7 +2157,7 @@ fn region_membership(
     (members, fractions)
 }
 
-use viewer_foundation::map::air_reachability::Scans;
+use viewer_unit_reads::air_reachability::Scans;
 
 #[derive(Default)]
 struct Undecided {
@@ -3121,7 +3119,7 @@ impl AircraftPlan {
                 .iter()
                 .any(|wing| air_reachability::scanned_bits(wing.mission_mask) & bits != 0)
         };
-        let scan_lap = |name: &'static str, started: Instant| viewer_foundation::view_record::add("air scans", name, since(started));
+        let scan_lap = |name: &'static str, started: Instant| viewer_runtime::view_record::add("air scans", name, since(started));
         let scans = Scans {
             tactical: needs(1 << 1)
                 .then(|| {
@@ -4033,9 +4031,9 @@ impl AircraftPlan {
     pub fn carry_presentation(
         &mut self,
         previous: &mut Self,
-        continuity: viewer_foundation::map::presentation::Continuity,
+        continuity: viewer_runtime::presentation::Continuity,
     ) -> io::Result<()> {
-        if continuity == viewer_foundation::map::presentation::Continuity::Reset {
+        if continuity == viewer_runtime::presentation::Continuity::Reset {
             return Ok(());
         }
         let mut prior: BTreeMap<Vec<FlightKey>, Vec<usize>> = BTreeMap::new();
@@ -4144,9 +4142,9 @@ impl AircraftPlan {
             }
             Err(_) => Vec::new(),
         };
-        if viewer_foundation::view_record::on() {
-            viewer_foundation::view_record::add("flights", "jumps", self.snapped as u64);
-            viewer_foundation::view_record::set("flights", "running", self.runs.len() as u64);
+        if viewer_runtime::view_record::on() {
+            viewer_runtime::view_record::add("flights", "jumps", self.snapped as u64);
+            viewer_runtime::view_record::set("flights", "running", self.runs.len() as u64);
             self.drawn_keys = placed.iter().map(|&(index, _)| self.flights[index].key()).collect();
         }
         let mut entries = BTreeMap::new();

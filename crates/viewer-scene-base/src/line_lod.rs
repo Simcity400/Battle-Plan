@@ -1,4 +1,4 @@
-use viewer_foundation::map::camera::Camera;
+use viewer_gpu::camera::Camera;
 
 pub const TOLERANCE: f32 = 0.5;
 pub const HEIGHT_TOLERANCE: f32 = 0.1;

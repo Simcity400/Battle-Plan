@@ -3,7 +3,7 @@ use super::Viewer;
 use crate::document::{Content, Document};
 use eframe::egui;
 use std::sync::{Arc, Weak};
-use viewer_foundation::map::native_gui::pointer::Input;
+use viewer_native_gui::native_gui::pointer::Input;
 use viewer_combat::picker::{self, Control, ModeButton, Open, Toggles};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
@@ -152,7 +152,7 @@ fn dump_toggles(document: &Document, options: &crate::Options) -> Toggles {
             settings.color_mode == viewer_counters::map::counters::CounterColorMode::Country,
         ),
         allied_plans: None,
-        fog: viewer_foundation::map::perspective::fog_recorded(document.capture_mode())
+        fog: viewer_foundation::perspective::fog_recorded(document.capture_mode())
             .then_some(options.perspective.fog),
         radar: Some(dashboard::map_display::option_defaults::RADAR),
     }
@@ -166,7 +166,7 @@ pub(crate) fn dump(
         document,
         &options.map_mode,
         dump_toggles(document, options),
-        viewer_foundation::map::ui_scale::extent(options.size, options.ui_scale.unwrap_or(1.0)),
+        viewer_gpu::ui_scale::extent(options.size, options.ui_scale.unwrap_or(1.0)),
         false,
         options.presentation_time,
         true,
@@ -512,7 +512,7 @@ impl Viewer {
     }
 
     fn report_options(&mut self) {
-        use viewer_foundation::map::perspective::Country;
+        use viewer_foundation::perspective::Country;
         let (country, country_slot) = match &self.perspective.country {
             Country::Recorded => (None, None),
             Country::Tag(tag) => (Some(tag.clone()), None),
@@ -596,7 +596,7 @@ impl Viewer {
                 .document
                 .as_ref()
                 .is_none_or(|document| {
-                    viewer_foundation::map::perspective::fog_recorded(document.capture_mode())
+                    viewer_foundation::perspective::fog_recorded(document.capture_mode())
                 })
                 .then_some(self.perspective.fog),
             radar: Some(self.picker.radar),
@@ -1039,7 +1039,7 @@ mod tests {
         assert!(!viewer.dashboard_map);
         assert!(!viewer.playing);
         let hour = 60_828_400;
-        let speeds = Ok(viewer_foundation::map::frame::GameSpeeds::test());
+        let speeds = Ok(viewer_gpu::frame::GameSpeeds::test());
         let initial = viewer.follow_map_settings(&service, campaign.clone());
         let light = viewer.frame_day_night(hour, &speeds);
         assert_eq!(light.strength, 1.0);

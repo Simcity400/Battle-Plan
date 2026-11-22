@@ -1,0 +1,44 @@
+[package]
+name = "viewer-gpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["content-reader-core/test-support", "content-reader-raids/test-support", "content-reader-settings/test-support", "shader-pipeline/test-support"]
+
+[dependencies]
+bytemuck = { workspace = true, features = ["derive"] }
+content-reader-core.workspace = true
+content-reader-image.workspace = true
+content-reader-raids.workspace = true
+content-reader-settings.workspace = true
+dashboard-core.workspace = true
+eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
+engine-native.workspace = true
+job-priority.workspace = true
+map-display-data.workspace = true
+map-snow.workspace = true
+pollster.workspace = true
+replay-data.workspace = true
+shader-pipeline.workspace = true
+viewer-foundation.workspace = true
+viewer-runtime.workspace = true
+
+[dev-dependencies]
+content-reader-core = { workspace = true, features = ["test-support"] }
+content-reader-image = { workspace = true, features = ["test-support"] }
+content-reader-raids = { workspace = true, features = ["test-support"] }
+content-reader-settings = { workspace = true, features = ["test-support"] }
+engine-heap.workspace = true
+engine-native = { workspace = true, features = ["test-support"] }
+shader-pipeline = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

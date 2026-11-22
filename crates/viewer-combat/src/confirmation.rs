@@ -1,7 +1,7 @@
 
 use super::{Drawn, Values, binding::Bindings, gui, gui_resources};
 use std::io;
-use viewer_foundation::map::native_gui::{self, lifecycle, pointer::Input};
+use viewer_native_gui::native_gui::{self, lifecycle, pointer::Input};
 
 pub const CONFIRMATION_WINDOW: &str = "default_confirmation_popup";
 pub const TEMPLATES: &[&[u8]] = &[b"default_confirmation_popup"];
@@ -35,14 +35,14 @@ impl ConfirmationDrawn {
         self.controls
             .iter()
             .rev()
-            .find(|(rect, _)| viewer_foundation::map::gui_resources::contains(*rect, point))
+            .find(|(rect, _)| viewer_runtime::geometry::contains(*rect, point))
             .map(|(_, control)| *control)
     }
 }
 
 #[derive(Default)]
 pub struct Confirmation {
-    built: Option<([i32; 2], viewer_foundation::map::native_windows::NativeWindows)>,
+    built: Option<([i32; 2], viewer_native_gui::native_windows::NativeWindows)>,
     root: Option<gui::Retained>,
     generation: u64,
     texts: Option<(String, String)>,
@@ -123,7 +123,7 @@ impl Confirmation {
             return Ok(out);
         }
         for (index, quad) in out.drawn.batch.quads.iter_mut().enumerate() {
-            quad.layer = viewer_foundation::map::sprites::gui_layer(POPUP_LAYERS.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)), 0);
+            quad.layer = viewer_native_gui::sprites::gui_layer(POPUP_LAYERS.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)), 0);
         }
         let named: std::collections::BTreeMap<_, _> = gui::elements(root)
             .into_iter()

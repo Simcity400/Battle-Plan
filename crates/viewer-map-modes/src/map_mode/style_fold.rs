@@ -161,7 +161,7 @@ impl Styles {
             old.map(|old| &old.rows),
             |row| Ok(row.category),
         )?;
-        let lexical = viewer_foundation::map::tables::rows::<tables::LexicalTokens>(inputs.frame)?;
+        let lexical = viewer_foundation::tables::rows::<tables::LexicalTokens>(inputs.frame)?;
         let lexical_rows = lexical.rows();
         let view = &inputs.frame.tables[TableId::LexicalTokens.index()];
         let mask = fields(TableId::LexicalTokens, &["literal"]);

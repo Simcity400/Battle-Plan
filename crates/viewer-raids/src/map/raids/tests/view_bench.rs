@@ -1,8 +1,8 @@
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use viewer_foundation::parallel::Workers;
-use viewer_foundation::parallel::usable_processors;
+use viewer_runtime::parallel::Workers;
+use viewer_runtime::parallel::usable_processors;
 
 use content_reader_raids::{
     raids::BattalionRequirement, raids::SourceKind, raids::StartingPoint, raids::UnitRequirement,
@@ -625,10 +625,10 @@ fn raid_view_bench() {
         .and_then(|value| value.parse::<usize>().ok())
     {
         Some(1) => Workers::default(),
-        Some(threads) => viewer_foundation::builder_pool::builder_workers()
+        Some(threads) => viewer_runtime::builder_pool::builder_workers()
             .unwrap()
             .limited(threads),
-        None => viewer_foundation::builder_pool::builder_workers().unwrap(),
+        None => viewer_runtime::builder_pool::builder_workers().unwrap(),
     };
     println!(
         "BENCH raid cycle threads: {} ({} usable processors)",
@@ -1466,7 +1466,7 @@ fn split_run(
 #[test]
 fn a_batch_split_across_threads_equals_the_batch_in_order() {
     content_reader_core::test_game::enter();
-    let pool = viewer_foundation::builder_pool::builder_workers().unwrap();
+    let pool = viewer_runtime::builder_pool::builder_workers().unwrap();
     let (mut again, mut prefetched) = (0, 0);
     let ahead = reach::RAN_AHEAD.load(std::sync::atomic::Ordering::Relaxed);
     for (seed, batch, part_rows, unrecorded) in [

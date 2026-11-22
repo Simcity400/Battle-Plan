@@ -3,7 +3,7 @@ use super::{Frame, approach};
 use dashboard::protocol::GamepadButton;
 use eframe::egui::Key;
 use std::f32::consts::{PI, TAU};
-use viewer_foundation::map::camera::{Camera, Free, Lens, PITCH_LIMIT, Pose, WATER_HEIGHT};
+use viewer_gpu::camera::{Camera, Free, Lens, PITCH_LIMIT, Pose, WATER_HEIGHT};
 use viewer_aircraft::aircraft::GroundContact;
 use viewer_models::ModelInstance;
 

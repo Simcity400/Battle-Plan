@@ -4,10 +4,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, OnceLock},
 };
-use viewer_foundation::map::memo::Recent;
-use viewer_foundation::map::memo::TableKey;
-use viewer_foundation::parallel::Beside;
-use viewer_foundation::parallel::Workers;
+use viewer_runtime::memo::Recent;
+use viewer_runtime::memo::TableKey;
+use viewer_runtime::parallel::Beside;
+use viewer_runtime::parallel::Workers;
 
 use content_reader_raids::{
     raids::EquipmentRequirement, raids::RaidType, raids::SourceKind, raids::StartingPoint,
@@ -25,7 +25,7 @@ use super::{
     RaidAssets,
     script::{Eval, Scopes, World},
 };
-use viewer_foundation::map::air_range::{self, finite, registered, to_map};
+use viewer_unit_reads::air_range::{self, finite, registered, to_map};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PathSource {

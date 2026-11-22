@@ -1,8 +1,8 @@
 
 #[cfg(test)]
-use viewer_foundation::diagnostics_panel::test_support::assert_diagnostics;
+use viewer_runtime::diagnostics_panel::test_support::assert_diagnostics;
 #[cfg(test)]
-use viewer_foundation::map::counter_hovers::gui_authored;
+use viewer_native_gui::counter_hovers::gui_authored;
 #[cfg(test)]
 use viewer_foundation::tooltip_text::NoIcons;
 use viewer_foundation::tooltip_text::country_localised;
@@ -23,7 +23,7 @@ mod task_force_summary;
 mod template_facts;
 
 use std::{collections::BTreeMap, sync::Arc};
-use viewer_foundation::map::counter_hovers::{land::Timing, refuse};
+use viewer_native_gui::counter_hovers::{land::Timing, refuse};
 
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::{localisation::Argument as Arg, localisation::Localisation};
@@ -37,12 +37,10 @@ use {
     super::counter_content,
     viewer_foundation::tooltip_text::{TextIcons, displayable, localise},
 };
-use {
-    super::counter_eta, super::province_tooltips::units,
-    viewer_foundation::map::counter_hovers::land::CounterHover,
-    viewer_foundation::map::counter_inputs, viewer_foundation::map::counter_status,
-    viewer_foundation::map::perspective::Vision, viewer_foundation::tooltip_text::Tooltip,
-};
+use super::{counter_eta, province_tooltips::units};
+use viewer_native_gui::counter_hovers::land::CounterHover;
+use viewer_unit_reads::{counter_inputs, counter_status};
+use viewer_foundation::{perspective::Vision, tooltip_text::Tooltip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Style {
@@ -54,12 +52,12 @@ pub struct Style {
 pub struct Cache {
     held: Option<(CounterHover, Style, Arc<Tooltip>)>,
     naval: Option<(
-        viewer_foundation::map::counter_hovers::task_force::Hover,
+        viewer_native_gui::counter_hovers::task_force::Hover,
         Style,
         Arc<Tooltip>,
     )>,
     port: Option<(
-        viewer_foundation::map::counter_hovers::task_force_port::Hover,
+        viewer_native_gui::counter_hovers::task_force_port::Hover,
         Style,
         Arc<Tooltip>,
     )>,
@@ -74,7 +72,7 @@ impl Cache {
     pub fn request(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
         hover: &CounterHover,
         vision: &Arc<Vision>,
@@ -109,9 +107,9 @@ impl Cache {
     pub fn request_task_force(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
-        hover: &viewer_foundation::map::counter_hovers::task_force::Hover,
+        hover: &viewer_native_gui::counter_hovers::task_force::Hover,
         vision: &Arc<Vision>,
         style: Style,
     ) -> Arc<Tooltip> {
@@ -142,9 +140,9 @@ impl Cache {
     pub fn request_task_force_port(
         &mut self,
         content: &Arc<counter_content::Content>,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
         frame: &Arc<DecodedFrame>,
-        hover: &viewer_foundation::map::counter_hovers::task_force_port::Hover,
+        hover: &viewer_native_gui::counter_hovers::task_force_port::Hover,
         vision: &Arc<Vision>,
         style: Style,
     ) -> Arc<Tooltip> {
@@ -220,7 +218,7 @@ struct Context<'a> {
     nato: bool,
     diagnostics: bool,
     content: Option<&'a counter_content::Content>,
-    reads: Option<viewer_foundation::map::movement_reads::ReadOperands<'a>>,
+    reads: Option<viewer_unit_reads::movement_reads::ReadOperands<'a>>,
     dig_in_factor: Result<i64, String>,
     loc: &'a Localisation,
     recorded_language: &'a str,
@@ -297,7 +295,7 @@ impl<'a> Context<'a> {
                 }
             } else if countries.insert(owner) {
                 let ledger = (|| {
-                    use viewer_foundation::map::visibility::template_reveal;
+                    use viewer_foundation::visibility::template_reveal;
                     let defines = self
                         .units
                         .as_ref()
@@ -854,7 +852,7 @@ fn supply(
 
 pub fn build(
     content: &counter_content::Content,
-    reads: viewer_foundation::map::movement_reads::ReadOperands<'_>,
+    reads: viewer_unit_reads::movement_reads::ReadOperands<'_>,
     frame: &DecodedFrame,
     input: &CounterHover,
     vision: &Vision,
@@ -871,7 +869,7 @@ pub struct Batch<'a> {
 impl<'a> Batch<'a> {
     pub fn new(
         content: &'a counter_content::Content,
-        reads: viewer_foundation::map::movement_reads::ReadOperands<'a>,
+        reads: viewer_unit_reads::movement_reads::ReadOperands<'a>,
         frame: &'a DecodedFrame,
         vision: &'a Vision,
         style: Style,
@@ -962,7 +960,7 @@ impl<'a> Batch<'a> {
 
     pub fn build_task_force(
         &self,
-        input: &viewer_foundation::map::counter_hovers::task_force::Hover,
+        input: &viewer_native_gui::counter_hovers::task_force::Hover,
     ) -> Tooltip {
         task_force::build(&self.context, input, |movement, ours| {
             self.arrival.task_force_remaining(movement, ours)
@@ -971,7 +969,7 @@ impl<'a> Batch<'a> {
 
     pub fn build_task_force_port(
         &self,
-        input: &viewer_foundation::map::counter_hovers::task_force_port::Hover,
+        input: &viewer_native_gui::counter_hovers::task_force_port::Hover,
     ) -> Tooltip {
         task_force_port::build(&self.context, input)
     }
@@ -990,7 +988,7 @@ fn build_context(
 ) -> Tooltip {
     if matches!(
         input.control,
-        viewer_foundation::map::counter_hovers::land::CounterControl::Ability { .. }
+        viewer_native_gui::counter_hovers::land::CounterControl::Ability { .. }
     ) && let Some(out) = children::specific(context, input)
     {
         return out;
@@ -1320,13 +1318,13 @@ mod tests {
         LexicalTokenRow, NameOperands, PacketHour, PoliticsRow, ProvinceRow, Recorded, TableRows,
         TemplateDisplayName, TemplateLayout, TemplateNameValue, TemplateSettings, TemplateSubunit,
     };
-    use viewer_foundation::map::test_support::{test_frame, test_put as put};
+    use viewer_foundation::test_support::{test_frame, test_put as put};
 
     fn template_hover(context: &Context<'_>) -> Tooltip {
         fixture_context(
             context,
             &CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -1994,7 +1992,7 @@ mod tests {
         fixture_context(
             &context,
             &CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
@@ -2099,7 +2097,7 @@ mod tests {
             fixture_context(
                 &context,
                 &CounterHover {
-                    control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                    control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                     authored: None,
                     rect: [0.0; 4],
                     members: vec![1].into(),
@@ -2227,7 +2225,7 @@ mod tests {
         let reason = "counter division name: naming of division status not recorded";
         assert_diagnostics(
             || {
-                viewer_foundation::diagnostics_panel::tooltip_warning_lines(&unnamed.refused)
+                viewer_runtime::diagnostics_panel::tooltip_warning_lines(&unnamed.refused)
                     .filter(|line| line.contains("counter division name:"))
                     .collect()
             },
@@ -2303,7 +2301,7 @@ mod tests {
         };
         for coarse in [false, true] {
             let hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -2342,7 +2340,7 @@ mod tests {
         fixture_context(
             &context,
             &CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
@@ -2804,7 +2802,7 @@ mod tests {
             };
             let context = context(&frame, &loc, &vision, &names, &units);
             let hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -2854,7 +2852,7 @@ mod tests {
 
     #[test]
     fn arrival_query_runs_once_only_for_eligible_detail() {
-        use viewer_foundation::map::counter_hovers::land::CounterControl as Control;
+        use viewer_native_gui::counter_hovers::land::CounterControl as Control;
 
         let loc = loc();
         let vision = Vision::sharing(1, []);
@@ -3121,7 +3119,7 @@ mod tests {
             let etas = Etas::read(&frame, Some(&content)).unwrap();
             let context = context(&frame, &loc, &vision, &names, &units);
             let hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -3199,7 +3197,7 @@ mod tests {
                      timing: &[Timing]| {
             let context = context(frame, &loc, vision, &names, &units);
             let input = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
@@ -3313,7 +3311,7 @@ mod tests {
         content_reader_core::test_game::enter();
         use replay_data::{rows::ArmyIconInputRow, rows::RailwayGunCounterInputRow};
         use std::cell::Cell;
-        use viewer_foundation::map::counter_hovers::land::CounterControl as Control;
+        use viewer_native_gui::counter_hovers::land::CounterControl as Control;
 
         let parsed = content_reader_core::gui::native::read(
             br#"guiTypes = {
@@ -3796,7 +3794,7 @@ mod tests {
             let vision = Vision::sharing(if ours { 1 } else { 2 }, [1]);
             let ctx = context(&frame, &loc_map, &vision, &names, &units);
             let div_hover = CounterHover {
-                control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+                control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
                 authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
@@ -3837,8 +3835,8 @@ mod tests {
                 "gun ours={ours} remaining={remaining}: {:?}",
                 gun_out.body
             );
-            let tf_hover = viewer_foundation::map::counter_hovers::task_force::Hover {
-                control: viewer_foundation::map::counter_hovers::task_force::Control::Normal,
+            let tf_hover = viewer_native_gui::counter_hovers::task_force::Hover {
+                control: viewer_native_gui::counter_hovers::task_force::Control::Normal,
                 unit_hit: 0,
                 rect: [0.0; 4],
                 hit: None,

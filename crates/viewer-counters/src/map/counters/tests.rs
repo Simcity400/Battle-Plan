@@ -1,31 +1,31 @@
 mod branches;
-use viewer_foundation::engaged::Engaged;
-use viewer_foundation::engagement_history::LAND;
-use viewer_foundation::engagement_history::Provenance;
-use viewer_foundation::engagement_history::combats;
-use viewer_foundation::engagement_progress::undefended;
-use viewer_foundation::icon_frames::CARRIED;
-use viewer_foundation::map::atlas_pages;
-use viewer_foundation::map::camera::Camera;
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::lazy_icons::FlagReader;
-use viewer_foundation::map::native_gui::FALLBACK_SPRITE;
-use viewer_foundation::map::native_gui::evaluate_size;
-use viewer_foundation::map::native_resources::GuiResources;
-use viewer_foundation::map::native_windows::NativeWindows;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::perspective::Country;
-use viewer_foundation::map::perspective::SharingUnknown;
-use viewer_foundation::map::province_admission::edge_boxes;
-use viewer_foundation::map::province_map::HeightField;
-use viewer_foundation::map::province_schedule::Shared;
+use viewer_engagements::engaged::Engaged;
+use viewer_engagements::engagement_history::LAND;
+use viewer_engagements::engagement_history::Provenance;
+use viewer_engagements::engagement_history::combats;
+use viewer_engagements::engagement_progress::undefended;
+use viewer_engagements::icon_frames::CARRIED;
+use viewer_gpu::atlas_pages;
+use viewer_gpu::camera::Camera;
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::camera::Placement;
+use viewer_native_gui::lazy_icons::FlagReader;
+use viewer_native_gui::native_gui::FALLBACK_SPRITE;
+use viewer_native_gui::native_gui::evaluate_size;
+use viewer_native_gui::native_resources::GuiResources;
+use viewer_native_gui::native_windows::NativeWindows;
+use viewer_foundation::perspective::Choice;
+use viewer_foundation::perspective::Country;
+use viewer_foundation::perspective::SharingUnknown;
+use viewer_gpu::province_admission::edge_boxes;
+use viewer_gpu::province_map::HeightField;
+use viewer_gpu::province_schedule::Shared;
 #[cfg(test)]
-use viewer_foundation::map::test_support::Fixture;
-use viewer_foundation::map::visibility::FogContent;
-use viewer_foundation::map::visibility::Relations;
-use viewer_foundation::map::visibility::test_defines;
-use viewer_foundation::table_access::TokenKeys;
+use viewer_native_gui::test_support::Fixture;
+use viewer_foundation::visibility::FogContent;
+use viewer_foundation::visibility::Relations;
+use viewer_foundation::visibility::test_defines;
+use dashboard_text::table_access::TokenKeys;
 #[test]
 fn a_stack_slot_the_file_leaves_out_takes_the_provinces_centroid_default() {
     use super::{STACK_KINDS, VICTORY_POINT, default_anchor, seeded_only, stack_anchor};
@@ -59,7 +59,7 @@ fn a_stack_slot_the_file_leaves_out_takes_the_provinces_centroid_default() {
     assert!(seeded_only(&anchors, 9, VICTORY_POINT));
     assert_eq!(at(4424, STACK_KINDS), None);
     assert_eq!(at(4425, 19), None);
-    let (labels, fallbacks) = viewer_foundation::map::label_reads::label_anchors(
+    let (labels, fallbacks) = viewer_runtime::label_reads::label_anchors(
         [0, 4424, 7, 9, 4425].into_iter(),
         |province| at(province, VICTORY_POINT),
         |province| {
@@ -218,7 +218,7 @@ fn dump_census_excludes_combat_window_quads() {
     );
     let mut sprites = Batch::default();
     assert_eq!(
-        viewer_foundation::map::sprites::dump_sprites(&map, &extra, &mut sprites)
+        viewer_native_gui::sprites::dump_sprites(&map, &extra, &mut sprites)
             .quads
             .len(),
         2
@@ -315,12 +315,12 @@ fn a_kept_report_assigned_from_another_equals_its_clone() {
         land_counters: 3,
         unavailable_railway_gun_locations: 2,
         moving: 1,
-        base_hits: vec![viewer_foundation::map::counter_hovers::unit_hits::Blocker {
+        base_hits: vec![viewer_native_gui::counter_hovers::unit_hits::Blocker {
             rect: [3.0, 4.0, 5.0, 6.0],
             layer: layer(-3, 1, 0),
         }],
         land_hovers: vec![CounterHover {
-            control: viewer_foundation::map::counter_hovers::land::CounterControl::Normal,
+            control: viewer_native_gui::counter_hovers::land::CounterControl::Normal,
             authored: None,
             rect: [1.0, 2.0, 3.0, 4.0],
             remaining: Some(5),
@@ -1023,9 +1023,9 @@ fn native_gui(source: impl AsRef<str>) -> native::Gui {
     native::read_at(source.as_ref().as_bytes(), [1920, 1080])
 }
 
-use viewer_foundation::map::test_support::SYNTHETIC_NAVAL_GUI;
+use viewer_native_gui::test_support::SYNTHETIC_NAVAL_GUI;
 
-use viewer_foundation::map::test_support::SYNTHETIC_NAVY_GUI;
+use viewer_native_gui::test_support::SYNTHETIC_NAVY_GUI;
 
 fn layouts() -> Layouts {
     let sprite = |name: &str, at: [f32; 2]| Child {
@@ -1214,7 +1214,7 @@ fn counter_assets_fixture(
     layouts: Layouts,
     sheets: BTreeMap<String, SpriteSheet>,
 ) -> (CounterAssets, text::Fonts) {
-    use viewer_foundation::map::{native_resources::GuiResources, sprites::Interface};
+    use viewer_native_gui::{native_resources::GuiResources, sprites::Interface};
     let sprites = SpriteSet::default();
     let decode = Default::default();
     let lazy = LazyTextures::new();
@@ -1538,7 +1538,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         terrain: Default::default(),
         wing_types: Ok(Arc::new(Default::default())),
         mission_content: Err("not needed".into()),
-        port_mission_defines: viewer_foundation::map::port_mission_defines::Defines::read(
+        port_mission_defines: viewer_unit_reads::port_mission_defines::Defines::read(
             &content_reader_core::defines::Defines::new().unwrap(),
         ),
         anchors: Arc::new(Default::default()),
@@ -1600,7 +1600,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
             height: 100.0,
             map: MapSize::TEST,
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         },
         viewport: [400, 400],
         ui_scale: 1.0,
@@ -1620,7 +1620,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         pressed: None,
         plate_hovered: None,
         schedule: &schedule,
-        moved: &viewer_foundation::map::counter_move::NO_MOVED_HOURS,
+        moved: &viewer_unit_reads::counter_move::NO_MOVED_HOURS,
         movement_history: &movement_history,
         visibility: Visibility::POLITICAL,
         art: 0,
@@ -1961,7 +1961,7 @@ fn a_column_nearer_the_camera_sorts_to_a_smaller_depth_and_draws_on_top() {
         height: 310.13113,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     };
     let matrix = camera.view_projection([2048, 1152]);
     let nearer = Camera::map_icon_depth(&matrix, [3092.0, 10.0, 1590.0]);
@@ -2183,7 +2183,7 @@ fn gun_unit(id: u64, owner: u32, name: &str, join_action: u8, group: u64) -> Lan
     LandUnit {
         orders_group: group,
         gun: Some(GunUnit {
-            timing: viewer_foundation::map::counter_hovers::land::Timing {
+            timing: viewer_native_gui::counter_hovers::land::Timing {
                 next: None,
                 kind: None,
             },
@@ -2794,7 +2794,7 @@ fn gun_inputs_need_the_whole_census_and_keep_rail_status_per_province() {
         inputs.rail,
         Some(BTreeMap::from([(
             9,
-            viewer_foundation::map::railway_gun_counter::RailStatus {
+            viewer_unit_reads::railway_gun_counter::RailStatus {
                 neighbor_pairs: -1,
                 cooldown_ticks: 0
             }
@@ -3227,7 +3227,7 @@ fn only_provinces_the_camera_admits_offer_unit_sources() {
     let camera = Placement {
         center: [3000.0, 1000.0],
         height: 50.0,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
     .on(MapSize::TEST, MapDefines::test());
     let bounds = edge_boxes();
@@ -3279,7 +3279,7 @@ fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMar
                 .to_vec(),
         ));
     *frame.tables[TableId::LandCombatSides.index()] = sides;
-    let route = |stack_kind| viewer_foundation::map::counter_move::DivisionRoute {
+    let route = |stack_kind| viewer_unit_reads::counter_move::DivisionRoute {
         stack_kind,
         kind_resolved: true,
         ..Default::default()
@@ -3302,7 +3302,7 @@ fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMar
 
 #[test]
 fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
-    use viewer_foundation::engaged::Engaged;
+    use viewer_engagements::engaged::Engaged;
     let unseen = || {
         TableView::Complete(TableRows::LandCombatSides(vec![
             replay_data::rows::LandCombatSideRow {
@@ -3352,10 +3352,7 @@ fn the_combat_wedge_points_from_the_first_attacker_with_a_map_entity() {
 
 #[test]
 fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
-    use viewer_foundation::{
-        engaged::Engaged,
-        icon_frames::{Kept, LAND_NO_HISTORY},
-    };
+    use viewer_engagements::{engaged::Engaged, icon_frames::{Kept, LAND_NO_HISTORY}};
     for flag in [Engaged::No, Engaged::Yes] {
         for (sides, how) in [
             (
@@ -3423,7 +3420,7 @@ fn an_icon_needs_its_side_row_and_counts_initial_frame_without_history() {
 #[test]
 fn naval_progress_turns_by_the_first_attacker_the_walk_decides() {
     use replay_data::{rows::FactionMemberRow, rows::WarRelationRow};
-    use viewer_foundation::map::perspective::{Choice, Country};
+    use viewer_foundation::perspective::{Choice, Country};
     let links = BTreeMap::from([(100, 0), (101, 1), (102, 2), (103, 3)]);
     let tags = BTreeMap::from([
         (0, "GER".to_owned()),
@@ -3606,7 +3603,7 @@ fn a_load_rebuilt_engaged_flag_is_a_named_limitation() {
 #[test]
 fn counter_parts_never_take_unknown_vision_sharing_as_no() {
     use replay_data::rows::FactionMemberRow;
-    use viewer_foundation::map::perspective::{Choice, Country};
+    use viewer_foundation::perspective::{Choice, Country};
     let links = BTreeMap::from([(100, 0), (101, 1), (102, 2)]);
     let tags = BTreeMap::from([(0, "GER".to_owned()), (1, "SOV".into()), (2, "ITA".into())]);
     let allies = [100, 102].map(|country| FactionMemberRow {
@@ -3712,7 +3709,7 @@ fn a_defending_side_needs_whole_relations_to_prove_a_negative() {
     use replay_data::{
         rows::DivisionRow, rows::FactionMemberRow, rows::LandCombatRow, rows::LandCombatSideRow,
     };
-    use viewer_foundation::map::perspective::{Choice, Country};
+    use viewer_foundation::perspective::{Choice, Country};
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 5,
@@ -4281,7 +4278,7 @@ fn synthetic_counter_buttons_resolve_and_draw_count_bg() {
 #[test]
 fn counter_button_sprite_aliases_and_frames_match_native_button_drawing() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::native_gui::{PartKind, lifecycle::Instance};
+    use viewer_native_gui::native_gui::{PartKind, lifecycle::Instance};
     let plate_sheet = sheet("GFX_plate", 3, [60, 10]);
     let resources = Fixture::new(&[("GFX_plate", 3, [60, 10])], &[]);
     for alias in ["quadTextureSprite", "spriteType"] {
@@ -4339,7 +4336,7 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
     let countries = Countries {
         ui_colors: UiColors {
             colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0])), (6, None)]),
-            inheritance: viewer_foundation::map::color_inheritance::Inheritance {
+            inheritance: viewer_foundation::color_inheritance::Inheritance {
                 inherited: BTreeMap::from([(4, 3)]),
                 ..Default::default()
             },
@@ -4366,7 +4363,7 @@ fn land_plates_take_the_counter_colour_mode_and_their_gaps_reach_the_warnings() 
                 (3, Some([0.5, 0.25, 0.125, 1.0])),
                 (5, Some([1.0; 4])),
             ]),
-            inheritance: viewer_foundation::map::color_inheritance::Inheritance {
+            inheritance: viewer_foundation::color_inheritance::Inheritance {
                 undecided: BTreeMap::from([(5, "Subjects is truncated".to_owned())]),
                 ..Default::default()
             },
@@ -4659,13 +4656,13 @@ fn a_mission_item_shows_its_hull_and_pride_only_from_the_first_members_150() {
         assert_eq!(tile.no_intel_type(), !detailed, "{byte}");
         assert_eq!(tile.shows_pride(), Some(detailed), "{byte}");
         let item = tile.item.unwrap();
-        let count = viewer_foundation::map::naval_count_approx::format_count(
+        let count = viewer_unit_reads::naval_count_approx::format_count(
             12,
             item.first,
             item.byte,
             false,
             12,
-            &viewer_foundation::map::naval_count_approx::Defines::VANILLA,
+            &viewer_unit_reads::naval_count_approx::Defines::VANILLA,
         );
         assert_eq!(count == "?", byte < 100, "{byte}: {count}");
     }
@@ -4846,7 +4843,7 @@ fn a_counter_flag_takes_its_group_flag_and_falls_back_to_its_tag() {
 
 #[test]
 fn window_flags_resolve_recorded_tags_through_the_small_atlas() {
-    use viewer_foundation::map::native_flags;
+    use viewer_native_gui::native_flags;
     let flags = flag_fixture(["GER"]);
     let countries = Countries {
         tags: BTreeMap::from([(1, "GER".into()), (2, "XXX".into())]),
@@ -5017,7 +5014,7 @@ fn the_batch_keeps_the_priority_order_the_engine_sorts_by() {
 
 #[test]
 fn an_icon_wholly_outside_the_viewport_and_its_pad_is_dropped() {
-    use viewer_foundation::map::{anchored::PAD, icon_windows::on_screen};
+    use viewer_native_gui::{anchored::PAD, icon_windows::on_screen};
     let viewport = [2048.0, 1152.0];
     assert!(on_screen([0.0, 0.0], [76.0, 24.0], viewport));
     assert!(on_screen([-70.0, -20.0], [76.0, 24.0], viewport));
@@ -5265,12 +5262,12 @@ fn counter_child_hovers_follow_presented_order_and_transparent_siblings() {
     ] {
         let gui = gui(transparent, action_transparent);
         let root = gui.template(LAND_WINDOW).unwrap();
-        let authored = viewer_foundation::map::counter_hovers::gui_authored::Authored::read(
+        let authored = viewer_native_gui::counter_hovers::gui_authored::Authored::read(
             root.find(kind, name).unwrap(),
             false,
         );
         let root_authored =
-            viewer_foundation::map::counter_hovers::gui_authored::Authored::read(root, false);
+            viewer_native_gui::counter_hovers::gui_authored::Authored::read(root, false);
         let (_, report) = draw_land_action_fixture(gui, std::slice::from_ref(&unit), false);
         let hit = report
             .land_hovers
@@ -5611,7 +5608,7 @@ fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
             metrics: Default::default(),
             tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
         };
-        let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+        let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
         for naval_missions in [false, true] {
             let need = Need { air_missions: false, by_key: true, shown: Shown { naval_missions, ..Shown::EVERY } };
             let tables = hour_tables_profiled(
@@ -5634,7 +5631,7 @@ fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
                 need,
                 &Carry::default(),
                 None,
-                &mut viewer_foundation::profiling::BuilderSpans::new(false),
+                &mut viewer_runtime::profiling::BuilderSpans::new(false),
             )
             .unwrap();
             assert_eq!((*tables.naval_dominance_sources()).as_ref().map(BTreeMap::len), Ok(0), "naval mission icons drawn: {naval_missions}");
@@ -5923,7 +5920,7 @@ fn tall_bar_matches_native_geometry_across_rotations() {
         assert_eq!(batch.quads.len(), 1);
         let quad = &batch.quads[0];
         let x = 14.0 + step;
-        let native = viewer_foundation::map::native_gui::Geometry {
+        let native = viewer_native_gui::native_gui::Geometry {
             rect: [x, 8.0, 2.0, 16.0],
             rotation,
             pivot: [x + 1.0, 16.0],
@@ -5967,7 +5964,7 @@ fn tall_bar_matches_native_geometry_across_rotations() {
     let x = 13.0 + scaled_step;
     let bottom = 15.0 + extent_h;
     let inset = (17.0 * scale - drawn) * 0.5;
-    let native_scaled = viewer_foundation::map::native_gui::Geometry {
+    let native_scaled = viewer_native_gui::native_gui::Geometry {
         rect: [x, bottom - inset - drawn, 3.0 * scale, drawn],
         rotation,
         pivot: [x + 1.5, bottom - 8.5],

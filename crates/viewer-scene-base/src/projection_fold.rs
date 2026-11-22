@@ -141,7 +141,7 @@ impl<V: Clone + PartialEq> RowFold<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::test_support::test_frame;
+    use viewer_foundation::test_support::test_frame;
     use replay_data::rows::{CountryLinkRow, TableRows};
     use replay_frame::frame::{FrameDecoder, FrameEncoder, TableView};
 

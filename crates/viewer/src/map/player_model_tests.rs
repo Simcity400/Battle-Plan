@@ -1,9 +1,9 @@
 use super::scene_failure_tests::Fixture;
 use crate::controls::flight::{Airframe, EXPLODE, Flight};
 use std::io;
-use viewer_foundation::errors::invalid;
-use viewer_foundation::map::camera::Pose;
-use viewer_foundation::map::province_map::HeightField;
+use viewer_runtime::errors::invalid;
+use viewer_gpu::camera::Pose;
+use viewer_gpu::province_map::HeightField;
 use viewer_world::scene::{PlayerModel, Request};
 
 #[test]

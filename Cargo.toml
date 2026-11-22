@@ -71,6 +71,11 @@ viewer-aircraft = { path = "crates/viewer-aircraft" }
 viewer-borders = { path = "crates/viewer-borders" }
 viewer-buildings = { path = "crates/viewer-buildings" }
 viewer-foundation = { path = "crates/viewer-foundation" }
+viewer-engagements = { path = "crates/viewer-engagements" }
+viewer-gpu = { path = "crates/viewer-gpu" }
+viewer-native-gui = { path = "crates/viewer-native-gui" }
+viewer-runtime = { path = "crates/viewer-runtime" }
+viewer-unit-reads = { path = "crates/viewer-unit-reads" }
 viewer-map-icons = { path = "crates/viewer-map-icons" }
 viewer-map-modes = { path = "crates/viewer-map-modes" }
 viewer-map-text = { path = "crates/viewer-map-text" }

@@ -346,18 +346,18 @@ fn today_with(
 pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = of(layer);
     let frame = document.frame()?;
-    let choice = viewer_foundation::map::perspective::Choice::default();
+    let choice = viewer_foundation::perspective::Choice::default();
     let content = &document.content;
     Ok(today_with(
         layer,
         frame,
         || document.vision(&choice).map(|vision| vision.ours()),
         |target| {
-            viewer_foundation::map::perspective::incremental::Fold::advance(
+            viewer_foundation::perspective::incremental::Fold::advance(
                 &mut None,
                 target,
                 &choice,
-                viewer_foundation::map::visibility::FogContent::loaded(&content.counters.fog),
+                viewer_foundation::visibility::FogContent::loaded(&content.counters.fog),
             )
             .map(|vision| vision.ours())
         },
@@ -521,7 +521,7 @@ mod tests {
             fn icons(
                 &self,
                 frame: &DecodedFrame,
-                _choice: &viewer_foundation::map::perspective::Choice,
+                _choice: &viewer_foundation::perspective::Choice,
             ) -> IntelIcons {
                 synthetic_eval_for_country(frame, 2)
             }
@@ -755,7 +755,7 @@ mod tests {
             fn icons(
                 &self,
                 frame: &DecodedFrame,
-                choice: &viewer_foundation::map::perspective::Choice,
+                choice: &viewer_foundation::perspective::Choice,
             ) -> IntelIcons {
                 let resolved = crate::layers::intel_icons::ours(frame, choice)
                     .map_err(|error| error.to_string());
@@ -768,19 +768,19 @@ mod tests {
             fn icons(
                 &self,
                 frame: &DecodedFrame,
-                _choice: &viewer_foundation::map::perspective::Choice,
+                _choice: &viewer_foundation::perspective::Choice,
             ) -> IntelIcons {
                 synthetic_eval_for_country(frame, 1)
             }
         }
 
-        let choice = viewer_foundation::map::perspective::Choice::default();
+        let choice = viewer_foundation::perspective::Choice::default();
         let doc = frame_with_unavailable(&[(
             TableId::CountryLinks,
             "recorded CountryLinks unavailable".into(),
         )]);
         let resolve = |target: &DecodedFrame| {
-            viewer_foundation::map::perspective::incremental::Fold::advance(
+            viewer_foundation::perspective::incremental::Fold::advance(
                 &mut None,
                 target,
                 &choice,

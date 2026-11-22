@@ -15,7 +15,8 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_combat::{Selector, Window, division_panel, land_marker_tooltips, naval_marker_tooltips, terrain_mode};
-use viewer_foundation::{combat_selection::Selection, map::perspective::Choice, tooltip_text::Tooltip};
+use viewer_engagements::combat_selection::Selection;
+use viewer_foundation::{perspective::Choice, tooltip_text::Tooltip};
 
 const LIMIT: Duration = Duration::from_secs(120);
 
@@ -60,7 +61,7 @@ impl Targets {
     }
 }
 
-fn outputs(name: &str, document: &Document, frame: &Arc<DecodedFrame>, targets: &Targets, ours: u32, vision: &viewer_foundation::map::perspective::Vision) -> Vec<String> {
+fn outputs(name: &str, document: &Document, frame: &Arc<DecodedFrame>, targets: &Targets, ours: u32, vision: &viewer_foundation::perspective::Vision) -> Vec<String> {
     let content = &document.combat;
     match name {
         "window" => {

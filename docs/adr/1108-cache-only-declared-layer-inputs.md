@@ -8,4 +8,4 @@ Build outside the shared lock. Callers needing the same key normally share one b
 
 Some row fields change every hour even though the layer ignores them. For those layers, settle a new build on an equal existing value so downstream identity caches still hit. Two equal builds for distinct keys can complete concurrently before either can see the other's value. The extra identities cause at most a miss for the downstream use.
 
-[Layer caches](../../crates/viewer-foundation/src/map/memo.rs) · [Cache contracts in tests](../../crates/viewer-foundation/src/map/memo/tests.rs)
+[Layer caches](../../crates/viewer-runtime/src/memo.rs) · [Cache contracts in tests](../../crates/viewer-runtime/src/memo/tests.rs)

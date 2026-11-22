@@ -2,18 +2,18 @@ use eframe::wgpu;
 use std::io;
 use std::sync::MutexGuard;
 use std::{fs, path::PathBuf, sync::Arc};
-use viewer_foundation::errors::invalid;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::frame::DayNight;
-use viewer_foundation::map::gpu_contract::OUTPUT_FORMAT;
-use viewer_foundation::map::gpu_contract::map_device_descriptor;
-use viewer_foundation::map::gpu_contract::select_adapter;
-use viewer_foundation::map::name_draw::Placements;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::presentation::Continuity;
+use viewer_runtime::errors::invalid;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::frame::DayNight;
+use viewer_gpu::gpu_contract::OUTPUT_FORMAT;
+use viewer_gpu::gpu_contract::map_device_descriptor;
+use viewer_gpu::gpu_contract::select_adapter;
+use viewer_runtime::name_draw::Placements;
+use viewer_foundation::perspective::Choice;
+use viewer_runtime::presentation::Continuity;
 #[cfg(test)]
-use viewer_foundation::map::test_support::serial as test_support_serial;
+use viewer_gpu::test_support::serial as test_support_serial;
 use viewer_models::ModelPass;
 use viewer_world::scene::passes;
 use viewer_world::scene::*;
@@ -108,7 +108,7 @@ impl Fixture {
             camera: Placement {
                 center: [x, z],
                 height,
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             }
             .on(MapSize::of(&self.document.map), self.document.map_defines),
             day_night: DayNight::at_hour(self.input.hour),
@@ -530,7 +530,7 @@ fn production_scene_fatal_encoder_is_not_submitted() -> io::Result<()> {
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
-    use viewer_foundation::map::name_draw::next_generation;
+    use viewer_runtime::name_draw::next_generation;
     let fixture = Fixture::load("near-names")?;
     let mut scene = fixture.scene()?;
     let names = Placements {
@@ -561,7 +561,7 @@ fn near_names_fade_in_as_the_country_names_fade_out() -> io::Result<()> {
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn installed_names_handed_nothing_for_frames_are_drawn_when_handed_again() -> io::Result<()> {
-    use viewer_foundation::map::name_draw::next_generation;
+    use viewer_runtime::name_draw::next_generation;
     let fixture = Fixture::load("names-handed-nothing")?;
     let mut scene = fixture.scene()?;
     scene.build_names_in_upload(false);

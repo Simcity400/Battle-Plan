@@ -383,7 +383,7 @@ mod tests {
         let index = Figures::current(&mut slot, 1, 1, width, || figures.clone(), |mesh| (mesh == 0).then(|| shape.reach()).flatten());
         let met = |figure: &LandFigure, eye: [f32; 3], ray: [f32; 3]| {
             let mut instance = figure.instance;
-            instance.position[0] = viewer_foundation::map::unit_pose::unwrap(instance.position[0], eye[0], width);
+            instance.position[0] = viewer_gpu::unit_pose::unwrap(instance.position[0], eye[0], width);
             shape.hit(instance, &[], eye, ray)
         };
         let rays = [DOWN, [0.3, -1.0, 0.2], [-0.6, -0.5, 0.1], [0.05, -1.0, -0.7], [1.0, 0.0, 0.2]];

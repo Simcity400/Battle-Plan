@@ -24,10 +24,7 @@ use viewer_counters::map::counters::{
     air_region_derive::{Filter, Retained, last_pass},
     counts_withheld, ground_of, interception_gate, interception_received_of, region_alerts, supplied, supply_refusal,
 };
-use viewer_foundation::map::{
-    mode_visibility::PriorityTable,
-    perspective::{Choice, Vision},
-};
+use viewer_foundation::{mode_visibility::PriorityTable, perspective::{Choice, Vision}};
 
 const WINDOW: i32 = 24;
 
@@ -106,7 +103,7 @@ impl Asker {
         let shared: Arc<(Mutex<Answers>, Condvar)> = Arc::default();
         let held = Arc::clone(&shared);
         let spawned = std::thread::Builder::new().name("air mission passes".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             while let Ok(question) = take.recv() {
                 let (branch, pass, slot) = question;
                 let answer = passes.visited(branch, pass, slot);

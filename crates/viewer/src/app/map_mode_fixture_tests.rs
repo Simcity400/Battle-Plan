@@ -1,7 +1,7 @@
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::test_support::TEST_HANG_GUARD;
+use viewer_gpu::camera::Placement;
+use viewer_runtime::test_support::TEST_HANG_GUARD;
 use viewer_map_modes::map_mode::MapMode;
 
 const MAP: [f32; 2] = [640., 480.];

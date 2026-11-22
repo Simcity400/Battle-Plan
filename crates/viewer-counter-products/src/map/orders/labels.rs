@@ -2,7 +2,7 @@
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 
 use super::fixed::{self, Point};
-use viewer_foundation::map::text::{self, Font, GlyphMetrics};
+use viewer_native_gui::text::{self, Font, GlyphMetrics};
 
 const FONT_PIXEL: f32 = 0.05;
 const BOUND: f32 = 9999.0;

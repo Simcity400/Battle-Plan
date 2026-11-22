@@ -1,7 +1,7 @@
 
 use eframe::wgpu;
 use std::io;
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 
 pub(crate) const COUNTS: usize = 11 + TILES;
 

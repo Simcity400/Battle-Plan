@@ -2,7 +2,7 @@
 use super::{ActivityDefines, CounterDefines, IntelDefines, OperationState};
 use crate::map::raids::tooltips::intel as counter;
 use replay_data::{rows::OperationRow, rows::RaidIntelInputRow};
-use viewer_foundation::map::native_text::COLOR;
+use viewer_native_gui::native_text::COLOR;
 
 pub const ONE: i64 = 100_000;
 
@@ -23,7 +23,7 @@ pub fn visible(height: f32, defines: &IntelDefines) -> bool {
 }
 
 pub fn container_point(screen: [f32; 2], size: [i32; 2], offset: [i32; 2]) -> [i32; 2] {
-    let point = viewer_foundation::map::icon_windows::point(screen, size, CENTRED);
+    let point = viewer_native_gui::icon_windows::point(screen, size, CENTRED);
     [
         point[0].wrapping_add(offset[0]),
         point[1].wrapping_add(offset[1]),

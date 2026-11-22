@@ -257,7 +257,7 @@ fn until_correct(
             &output.join(format!("{name}-settled.png")),
         )?;
     }
-    let (stages, counts) = viewer_foundation::load_record::take();
+    let (stages, counts) = viewer_runtime::load_record::take();
     let after = Totals::now();
     let gpu: serde_json::Map<String, Value> = shader_pipeline::gpu::stats::NAMES
         .iter()
@@ -320,7 +320,7 @@ fn open(
     let ctx = egui::Context::default();
     ctx.set_theme(egui::Theme::Dark);
     let requested = Instant::now();
-    viewer_foundation::load_record::begin(requested);
+    viewer_runtime::load_record::begin(requested);
     shader_pipeline::gpu::stats::take();
     let before = Totals::now();
     viewer.open(path.to_path_buf(), &ctx, Some(source.key().revision.clone()));
@@ -335,7 +335,7 @@ pub(crate) fn measure(
     run: Toggle,
     output: &Path,
 ) -> io::Result<Value> {
-    viewer_foundation::worker_priority::frame_priority();
+    viewer_runtime::worker_priority::frame_priority();
     shader_pipeline::gpu::stats::mark_window_thread();
     let state = render_state()?;
     let info = state.adapter.get_info();
@@ -354,7 +354,7 @@ pub(crate) fn measure(
         let name = format!("toggle-{toggle}-{}", label(set));
         save(&key, target)?;
         let requested = Instant::now();
-        viewer_foundation::load_record::begin(requested);
+        viewer_runtime::load_record::begin(requested);
         shader_pipeline::gpu::stats::take();
         let before = Totals::now();
         viewer.check_visual_mods(true, &ctx);

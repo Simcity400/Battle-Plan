@@ -22,7 +22,7 @@ use std::{
     sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{perspective, tables::core};
+use viewer_foundation::{perspective, tables::core};
 use viewer_foundation::trigger_content::TriggerContent;
 use viewer_raids::map::raids::{HourLayer, IconCache, RaidAssets, RaidIcons, RaidReport, cycle::Cycle, paths::HourPaths};
 
@@ -159,7 +159,7 @@ impl Open {
         let (jobs, receive) = mpsc::channel::<Work>();
         let (send, done) = mpsc::channel();
         std::thread::Builder::new().name(NAME.into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             let mut evaluating = Evaluating::default();
             for work in receive {
                 let job = match work {
@@ -214,7 +214,7 @@ fn learning<T>(missed: &mut Missed, read: impl FnOnce() -> T) -> T {
 }
 
 fn raid_notes(frame: &DecodedFrame, ours: u32) -> Vec<String> {
-    let mut out = viewer_foundation::map::tables::Limitations::default();
+    let mut out = viewer_foundation::tables::Limitations::default();
     if let Ok(raids) = frame.complete_fields::<tables::Raids>(replay_data::rows::mask::<replay_data::rows::RaidRow>(&["parent_slot", "phase"])) {
         let own: Vec<_> = raids.iter().filter(|raid| raid.parent_slot == ours && raid.phase != 5).collect();
         out.note_raid_arrows(own.len(), own.iter().filter(|raid| raid.phase == 4).count());
@@ -464,7 +464,7 @@ impl Scripts {
         let closing = self.open.take().and_then(|open| {
             self.stats.closed += 1;
             std::thread::Builder::new().name("scripts closing".into()).spawn(move || {
-                viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+                viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
                 drop((open, product));
             }).ok()
         });

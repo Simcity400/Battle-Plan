@@ -31,7 +31,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{perspective, tables};
+use viewer_foundation::{perspective, tables};
 use viewer_borders::{border_pass::{ClassPlan, land_class}, demilitarized::{Zone, ZonePlan}};
 use viewer_map_modes::map_mode::MapMode;
 
@@ -248,12 +248,12 @@ pub(crate) fn run(args: &[OsString]) -> io::Result<()> {
         if options.view.viewport == [0, 0] {
             options.view.viewport = [2048, 1152];
         }
-        let (size, defines) = (viewer_foundation::map::camera::MapSize::of(&document.content.map), document.content.map_defines);
+        let (size, defines) = (viewer_gpu::camera::MapSize::of(&document.content.map), document.content.map_defines);
         let camera = match spec.as_str() {
-            "fit" => viewer_foundation::map::camera::Camera::fit(size, defines, options.view.viewport),
+            "fit" => viewer_gpu::camera::Camera::fit(size, defines, options.view.viewport),
             placed => crate::parse_placement(placed)?.on(size, defines),
         };
-        let placement = viewer_foundation::map::camera::Placement { center: camera.center, height: camera.height, pose: camera.pose };
+        let placement = viewer_gpu::camera::Placement { center: camera.center, height: camera.height, pose: camera.pose };
         (options.view.camera, options.view.camera_height) = (Some(placement), camera.height);
     }
     let options = options;
@@ -1051,7 +1051,7 @@ fn orders_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> 
     match layer.plan() {
         None => note(format!("the layer has no plan: {:?}", layer.refused())),
         Some((_, plan)) => {
-            let parts = |field: &viewer_foundation::map::ribbon_content::OrderField| {
+            let parts = |field: &viewer_gpu::ribbon_content::OrderField| {
                 [
                     ("vertices", format!("{:?}", field.vertices)),
                     ("native vertices", format!("{:?}", field.native_vertices)),
@@ -1270,7 +1270,7 @@ mod sounds_line {
     }
 
     pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-        let fog = document.hour()?.fog_products(&viewer_foundation::map::perspective::Choice::default(), &map_products::FogMemos::new(), &mut viewer_foundation::profiling::BuilderSpans::new(false), true)?;
+        let fog = document.hour()?.fog_products(&viewer_foundation::perspective::Choice::default(), &map_products::FogMemos::new(), &mut viewer_runtime::profiling::BuilderSpans::new(false), true)?;
         let (today, ours) = (fog.battles.as_deref(), of(layer).battles());
         let (differing, first) = differ_battles(ours.map(Arc::as_ref), today);
         let battles = today.map_or(0, |battles| battles.battles.len());
@@ -1359,10 +1359,8 @@ mod engagements_line {
     use crate::layers::engagements::{Engagements, Index};
     use serde_json::json;
     use std::{collections::BTreeMap, io, sync::{Arc, Mutex}};
-    use viewer_foundation::{
-        engagement_history::CombatFlags,
-        map::{tables::core, visibility::Relations},
-    };
+    use viewer_engagements::engagement_history::CombatFlags;
+    use viewer_foundation::{tables::core, visibility::Relations};
 
     pub(super) static FOLDED: Mutex<Option<(Folded, u32)>> = Mutex::new(None);
 
@@ -1400,7 +1398,7 @@ mod engagements_line {
             compared.differing += 1;
             compared.first.get_or_insert(format!("provenance {provenance:?} against today's {:?}", [today.land_provenance, today.naval_provenance]));
         }
-        compared.notes = json!({"land": today.land.len(), "naval": today.naval.len(), "engaged": today.land.values().chain(today.naval.values()).filter(|flag| **flag == viewer_foundation::engaged::Engaged::Yes).count()});
+        compared.notes = json!({"land": today.land.len(), "naval": today.naval.len(), "engaged": today.land.values().chain(today.naval.values()).filter(|flag| **flag == viewer_engagements::engaged::Engaged::Yes).count()});
         Ok(compared)
     }
 

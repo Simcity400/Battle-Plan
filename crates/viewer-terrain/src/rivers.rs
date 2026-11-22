@@ -1,12 +1,12 @@
-use viewer_foundation::map::gpu_contract::Targets;
+use viewer_gpu::gpu_contract::Targets;
 use std::{cell::RefCell, collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::map::textures::load_uploadable;
+use viewer_gpu::textures::load_uploadable;
 
 use eframe::wgpu;
 use content_reader_core::{ResolvedLayers, defines::Defines};
 use content_reader_image::{dds, native::Decode};
 
-use viewer_foundation::map::{
+use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, buffer},
     province_map::{HeightField, world_from_pixel},
     textures::{Bound, ColorSpace, upload},
@@ -844,7 +844,7 @@ impl RiverPass {
         };
         self.warm(arena.device(), high);
         let compiled = self.compiled.borrow();
-        viewer_foundation::map::gpu_contract::compiled(&compiled[&high])?.draw(
+        viewer_gpu::gpu_contract::compiled(&compiled[&high])?.draw(
             arena,
             encoder,
             targets,

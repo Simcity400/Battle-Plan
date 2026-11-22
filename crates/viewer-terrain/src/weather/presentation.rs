@@ -2,7 +2,7 @@
 use map_display_data::{Refresh, SnowMud};
 use map_display_data::Paged;
 use std::{io, ops::Range, sync::Arc};
-use viewer_foundation::map::presentation::Continuity;
+use viewer_runtime::presentation::Continuity;
 
 #[derive(Default)]
 pub struct Presentation {
@@ -194,13 +194,13 @@ impl Presentation {
                     let start = page * map_display_data::PAGE_ITEMS;
                     self.upload(start..start + snow.texels.page(page).len());
                 }
-                if viewer_foundation::install_check::due(&CHECKED_GRIDS) {
+                if viewer_runtime::install_check::due(&CHECKED_GRIDS) {
                     let owed = |page: usize| {
                         let start = page * map_display_data::PAGE_ITEMS;
                         self.uploads.iter().any(|range| range.start <= start && start < range.end)
                     };
                     if let Some(page) = (0..snow.texels.pages().len()).find(|&page| !owed(page) && self.shown_page(page) != snow.texels.page(page)) {
-                        viewer_foundation::install_check::found(
+                        viewer_runtime::install_check::found(
                             "snow grid",
                             format_args!("page {page} of {} shows planes unlike the grid and is not written", snow.texels.pages().len()),
                         );
@@ -353,9 +353,9 @@ impl Presentation {
 
     fn installed_at_once(&mut self, texels: &Paged<u8>) {
         self.mismatched.clear();
-        if viewer_foundation::install_check::due(&CHECKED_GRIDS) {
+        if viewer_runtime::install_check::due(&CHECKED_GRIDS) {
             if let Some(page) = (0..texels.pages().len()).find(|&page| mismatching(texels.page(page))) {
-                viewer_foundation::install_check::found(
+                viewer_runtime::install_check::found(
                     "snow grid",
                     format_args!("page {page} of {} shows planes unlike its bytes, so an install at once owes it", texels.pages().len()),
                 );
@@ -506,10 +506,7 @@ impl Presentation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::presentation::{
-        Continuity::{Continue, Reset},
-        continuity,
-    };
+    use viewer_runtime::presentation::{Continuity::{Continue, Reset}, continuity};
 
     fn snapshot(snow: u8, mud: u8, identity: u64) -> Arc<SnowMud> {
         Arc::new(SnowMud {

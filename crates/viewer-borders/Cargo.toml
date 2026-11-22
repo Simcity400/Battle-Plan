@@ -13,6 +13,8 @@ doctest = false
 test-support = []
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 content-reader-image.workspace = true
@@ -23,15 +25,14 @@ map-display-data.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 shader-pipeline.workspace = true
-viewer-foundation.workspace = true
 viewer-scene-base.workspace = true
 
 [dev-dependencies]
+viewer-gpu = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
 
 [lints]

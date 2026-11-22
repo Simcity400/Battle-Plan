@@ -2630,8 +2630,11 @@ fn a_map_recording_offers_only_the_modes_whose_tables_it_records() {
 
 #[test]
 fn every_mode_a_map_recording_offers_fills_from_recorded_tables() {
-    use viewer_foundation::map::test_support::{
-        assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
+    use viewer_foundation::test_support::{
+        assert_reads_recorded,
+        complete_frame,
+        map_scoped,
+        put_sample_campaign,
     };
     let mut frame = complete_frame(11, |table| {
         replay_data::rows::sample_extended_table(table, 0)

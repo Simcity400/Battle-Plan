@@ -6,4 +6,4 @@ The pass updates the windows live at its start. Outside or empty icons are erase
 
 Refusals belong to the window instance while its inputs are unknown. A write clears only the named part it establishes. An update that establishes all unknown calls can clear their refusal. An inapplicable call that requires rebuilding the instance retains its latest reason. An occupied admitted window retains its list position and named refusal, and a released slot carries the same unknown state to its next owner until the required update occurs.
 
-[Window pool fixtures](../../crates/viewer-foundation/src/map/native_gui/tests.rs)
+[Window pool fixtures](../../crates/viewer-native-gui/src/native_gui/tests.rs)

@@ -6,11 +6,11 @@ fn member(row: &LandCombatDivisionRow) -> LandCombatMember<'_> {
         values: row.own.as_ref(),
     }
 }
-use viewer_foundation::combat_selection::Selection;
-use viewer_foundation::map::native_text::monospace;
-use viewer_foundation::map::test_support::ui_scale as tests;
-use viewer_foundation::map::ui_scale::Setting;
-use viewer_foundation::map::ui_scale::extent as ui_scale_extent;
+use viewer_engagements::combat_selection::Selection;
+use viewer_native_gui::native_text::monospace;
+use viewer_gpu::test_support::ui_scale as tests;
+use viewer_gpu::ui_scale::Setting;
+use viewer_gpu::ui_scale::extent as ui_scale_extent;
 use viewer_foundation::tooltip_text::NoIcons;
 
 #[test]
@@ -88,14 +88,11 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
 #[test]
 fn combat_raster_initiative_border_rasterises_before_display_stretch() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::{
+    use viewer_native_gui::{
         native_gui::{self, lifecycle::Tick},
         test_support::gui::{fixture, windows},
     };
-    use viewer_foundation::map::{
-        test_support::ui_scale::{MONITOR, borderless},
-        ui_scale::{Setting, extent},
-    };
+    use viewer_gpu::{test_support::ui_scale::{MONITOR, borderless}, ui_scale::{Setting, extent}};
     let (raster, note) =
         Setting::MatchGame.resolve_raster(Ok(&borderless()), Ok(&[Ok(MONITOR)]));
     assert!(note.is_none());
@@ -158,7 +155,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
 #[test]
 fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
     content_reader_core::test_game::enter();
-    use viewer_foundation::map::{
+    use viewer_native_gui::{
         native_gui::{Resources, lifecycle::Tick},
         test_support::gui::{fixture, windows},
     };

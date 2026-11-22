@@ -28,11 +28,11 @@ pub fn due(calls: &mut u64) -> bool {
 
 pub fn differs(what: &str, element: &dyn std::fmt::Debug, difference: &dyn std::fmt::Debug) {
     eprintln!("CHECK {what} DIFFERS at {element:?}: {difference:?}");
-    viewer_foundation::view_record::add("actors check", "differs", 1);
-    viewer_foundation::view_record::add_named("actors check", &format!("differs: {what}"), 1);
+    viewer_runtime::view_record::add("actors check", "differs", 1);
+    viewer_runtime::view_record::add_named("actors check", &format!("differs: {what}"), 1);
 }
 
 pub fn checked(what: &'static str, elements: u64) {
-    viewer_foundation::view_record::add("actors check", "checks", 1);
-    viewer_foundation::view_record::add_named("actors check", &format!("checked: {what}"), elements);
+    viewer_runtime::view_record::add("actors check", "checks", 1);
+    viewer_runtime::view_record::add_named("actors check", &format!("checked: {what}"), elements);
 }

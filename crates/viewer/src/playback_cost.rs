@@ -595,11 +595,11 @@ fn run(request: Request, window: Window) -> io::Result<()> {
     let Request { mut schedule, options, hours, frame_limit, gpu_pass_times, recording } = request;
     let output = options.out.as_ref().expect("an admitted run has --out");
     if gpu_pass_times {
-        viewer_foundation::map::gpu_passes::record();
+        viewer_gpu::gpu_passes::record();
     }
-    viewer_foundation::map::frame_limit::limit_to(frame_limit);
-    viewer_foundation::map::display_refresh::pace_at(schedule.refresh_hz);
-    schedule.refresh_hz = viewer_foundation::map::display_refresh::rate();
+    viewer_runtime::frame_limit::limit_to(frame_limit);
+    viewer_runtime::display_refresh::pace_at(schedule.refresh_hz);
+    schedule.refresh_hz = viewer_runtime::display_refresh::rate();
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;
     let _locks = lock(&output)?;
@@ -885,7 +885,7 @@ mod lean_tests {
             .expect("a playback-cost job")
             .expect_err("a refused lean run");
         assert!(refused.to_string().contains("--gpu-pass-times"), "{refused}");
-        assert_eq!(viewer_foundation::map::frame_limit::limit(), None);
+        assert_eq!(viewer_runtime::frame_limit::limit(), None);
         let sizeless: Vec<_> = args(&[])
             .into_iter()
             .filter(|arg| !["--width", "--height", "8"].iter().any(|dropped| arg == dropped))

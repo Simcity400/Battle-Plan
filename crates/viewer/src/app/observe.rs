@@ -2,7 +2,7 @@ use dashboard::protocol::{MapOptions, ObservedCountry};
 use content_reader_core::map::ProvinceKind;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::perspective::Country;
+use viewer_foundation::perspective::Country;
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub(crate) fn ctrl_click_target(
@@ -149,7 +149,7 @@ fn now_micros() -> u64 {
 mod tests {
     use super::*;
     use replay_data::rows::{CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows};
-    use viewer_foundation::map::test_support::{test_frame, test_put};
+    use viewer_foundation::test_support::{test_frame, test_put};
 
     fn frame() -> DecodedFrame {
         let mut frame = test_frame(7);

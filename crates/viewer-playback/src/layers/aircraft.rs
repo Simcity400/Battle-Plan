@@ -7,7 +7,9 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use viewer_foundation::map::{counter_move::RouteWorld, presentation::Continuity, province_map::HeightField, task_force_visual::TaskForceMotions};
+use viewer_unit_reads::{counter_move::RouteWorld, task_force_visual::TaskForceMotions};
+use viewer_runtime::presentation::Continuity;
+use viewer_gpu::province_map::HeightField;
 use viewer_aircraft::aircraft::{AircraftPlan, Kept, KeptModels, ModelsMade};
 use viewer_unit_models::equipment_graphics::{Decided, LimitValues, Limits};
 
@@ -66,11 +68,11 @@ pub const TABLES: &[TableId] = &[
 pub type Aircraft = Whole<Flights>;
 
 impl Aircraft {
-    pub fn notes(&self, statuses: &dyn viewer_foundation::map::tables::Statuses) -> Vec<String> {
+    pub fn notes(&self, statuses: &dyn viewer_foundation::tables::Statuses) -> Vec<String> {
         if !self.drawn() {
             return Vec::new();
         }
-        let mut out = viewer_foundation::map::tables::Limitations::default();
+        let mut out = viewer_foundation::tables::Limitations::default();
         out.note_aircraft(statuses);
         out.into_lines()
     }
@@ -100,7 +102,7 @@ pub struct Flights {
 }
 
 impl Flights {
-    fn make(&self, frame: &DecodedFrame, choice: &viewer_foundation::map::perspective::Choice, (kept, models): &mut (Kept, KeptModels)) -> io::Result<Flown> {
+    fn make(&self, frame: &DecodedFrame, choice: &viewer_foundation::perspective::Choice, (kept, models): &mut (Kept, KeptModels)) -> io::Result<Flown> {
         let content = &*self.content;
         let hour = crate::document::Hour::new(content, frame, 0.0);
         let ours = super::intel_icons::ours(frame, choice)?;

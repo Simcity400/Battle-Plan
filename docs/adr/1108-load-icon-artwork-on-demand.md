@@ -8,4 +8,4 @@ Both a load and a refusal bump the texture version because either can change whi
 
 Inline GUI flags apply the three-byte minimum after a first-NUL cut and use the small atlas. Resolve an unknown tag through the first database slot and an index beyond a signed count through record zero. Refuse an invalid negative index that would point before the atlas. A missing atlas page leaves the flag undrawn, while a shield's overlay draws independently. A missing required recording operand refuses the draw by name instead of selecting a different country.
 
-[Lazy textures and atlas pages](../../crates/viewer-foundation/src/map/lazy_icons.rs) · [Flag record resolution](../../crates/viewer-foundation/src/map/native_flags.rs)
+[Lazy textures and atlas pages](../../crates/viewer-native-gui/src/lazy_icons.rs) · [Flag record resolution](../../crates/viewer-native-gui/src/native_flags.rs)

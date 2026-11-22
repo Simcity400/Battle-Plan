@@ -3,8 +3,8 @@ use super::ModelPass;
 use viewer_models::{KeyedInstance, ModelField, ModelInstance, ModelLibrary};
 use eframe::wgpu;
 use std::io;
-use viewer_foundation::map::camera::{Camera, frustum};
-use viewer_foundation::map::frame::FrameConstants;
+use viewer_gpu::camera::{Camera, frustum};
+use viewer_gpu::frame::FrameConstants;
 
 #[derive(Clone)]
 pub struct PlayerModel<'a> {

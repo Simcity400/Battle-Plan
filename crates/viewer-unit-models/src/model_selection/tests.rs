@@ -342,7 +342,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
         ));
         assert_eq!(ordinary, measured, "frame {frame}");
     }
-    let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
+    let mut spans = viewer_runtime::profiling::BuilderSpans::new(true);
     stages.append_to(&mut spans);
     assert_eq!(
         spans
@@ -383,7 +383,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             .to_string(),
         "variant 40 equipment type: token 999 is not in lexical tokens"
     );
-    let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
+    let mut spans = viewer_runtime::profiling::BuilderSpans::new(true);
     stages.append_to(&mut spans);
     assert_eq!(
         spans
@@ -400,7 +400,7 @@ fn coarse_pair_scopes_keep_stable_ties_nulls_exclusions_and_first_errors() {
             .unwrap()
             .is_none()
     );
-    let mut spans = viewer_foundation::profiling::BuilderSpans::new(true);
+    let mut spans = viewer_runtime::profiling::BuilderSpans::new(true);
     stages.append_to(&mut spans);
     assert!(spans.into_records().is_empty());
 }

@@ -22,7 +22,7 @@ use std::{
     },
 };
 use viewer_counters::map::counters::Member;
-use viewer_foundation::map::perspective::{Choice, Country, Sight, Vision};
+use viewer_foundation::perspective::{Choice, Country, Sight, Vision};
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Default)]
@@ -492,7 +492,10 @@ fn reading_side() -> MapSide {
 }
 
 fn reading_side_with(fed: bool, more: impl Fn(u32, &mut Store)) -> MapSide {
-    use viewer_foundation::map::{perspective::VISION_TABLES, visibility::{FogContent, Topology, test_defines}};
+    use viewer_foundation::{
+        perspective::VISION_TABLES,
+        visibility::{FogContent, Topology, test_defines},
+    };
     let mut tables: Vec<TableId> = read();
     tables.extend(VISION_TABLES.iter().copied().filter(|table| !tables.contains(table)).collect::<Vec<_>>());
     let kinds = replay::columnar_frames::schema().unwrap();
@@ -937,7 +940,7 @@ fn moved_hours_are_read_against_the_mirrors_before_each_step_across_a_pack_and_a
         "A's deletion and 3's birth in its slot, written in one hour, are one step"
     );
     let mut mirrors = crate::playhead_host::mirror::Mirrors::default();
-    let mut moved = viewer_foundation::map::counter_move::MovedHours::default();
+    let mut moved = viewer_unit_reads::counter_move::MovedHours::default();
     for step in &steps {
         layer.moved_at(step, &mirrors, &mut moved);
         for changes in step.tables().iter().filter(|changes| changes.reset()) {

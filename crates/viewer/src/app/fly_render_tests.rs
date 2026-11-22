@@ -1,9 +1,9 @@
 use super::render_failure_tests::{target, until};
 use super::*;
 use crate::map::scene_failure_tests::Fixture;
-use viewer_foundation::errors::invalid;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::test_support::TEST_HANG_GUARD;
+use viewer_runtime::errors::invalid;
+use viewer_gpu::camera::Placement;
+use viewer_runtime::test_support::TEST_HANG_GUARD;
 
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
@@ -43,7 +43,7 @@ fn the_chosen_aircraft_is_drawn_while_the_frame_holds_the_document() -> std::io:
     viewer.camera = Some(Placement {
         center: request.camera.center,
         height: request.camera.height,
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     });
     viewer.camera_mode = CameraMode::Fly;
     viewer.install_map(document, fixture.scene()?, "fixture".into());

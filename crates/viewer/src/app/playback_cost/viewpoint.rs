@@ -13,7 +13,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective::Country;
+use viewer_foundation::perspective::Country;
 
 pub(crate) struct Switches {
     pub countries: Vec<String>,
@@ -189,7 +189,7 @@ fn summary(records: &[Value], playing: bool) -> Value {
 }
 
 pub(crate) fn measure(config: dashboard::Config, mut options: Options, path: PathBuf, switches: &Switches) -> io::Result<Value> {
-    viewer_foundation::worker_priority::frame_priority();
+    viewer_runtime::worker_priority::frame_priority();
     shader_pipeline::gpu::stats::mark_window_thread();
     let state = render_state()?;
     let info = state.adapter.get_info();

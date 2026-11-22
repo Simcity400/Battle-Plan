@@ -6,7 +6,7 @@ use replay_data::{
     rows::TableRows, rows::WarCell, rows::WarRelationRow,
 };
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::map::visibility::Relations;
+use viewer_foundation::visibility::Relations;
 
 fn built(
     links: &BTreeMap<u32, u32>,

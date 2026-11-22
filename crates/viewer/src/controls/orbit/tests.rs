@@ -1,6 +1,6 @@
 use super::*;
 use crate::controls::{Frame, Pad};
-use viewer_foundation::map::camera::{MapDefines, MapSize};
+use viewer_gpu::camera::{MapDefines, MapSize};
 
 const VIEWPORT: [u32; 2] = [1600, 900];
 

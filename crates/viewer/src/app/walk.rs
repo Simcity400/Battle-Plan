@@ -1,8 +1,8 @@
 
 use crate::controls::Frame;
 use crate::controls::walker::{FALLBACK_FIGURE, Start, Walker, World};
-use viewer_foundation::map::camera::{Camera, Placement};
-use viewer_foundation::map::perspective::Choice;
+use viewer_gpu::camera::{Camera, Placement};
+use viewer_foundation::perspective::Choice;
 use viewer_models::ModelLibrary;
 use viewer_world::scene::PlayerModel;
 use viewer_unit_models::unit_models::Figure;

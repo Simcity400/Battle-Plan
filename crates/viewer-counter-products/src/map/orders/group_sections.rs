@@ -9,7 +9,7 @@ use replay_data::{
 };
 use std::{cell::OnceCell, collections::BTreeMap};
 
-use viewer_foundation::map::ribbon_content::GROUP_SECTION_TYPE_NAME as TYPE_NAME;
+use viewer_gpu::ribbon_content::GROUP_SECTION_TYPE_NAME as TYPE_NAME;
 
 pub fn extra_units(plan: &ArmyOrderPlanRow) -> Result<u8, &'static str> {
     let inputs = match &plan.child_fronts {
@@ -168,7 +168,7 @@ pub fn emit(
     key: super::OrderKey,
     children: &[Prepared],
     display: &Display<'_>,
-    callback: viewer_foundation::map::ribbon_content::ExecutionState,
+    callback: viewer_gpu::ribbon_content::ExecutionState,
     refused: &mut BTreeMap<&'static str, usize>,
 ) {
     if children.is_empty() {

@@ -13,18 +13,22 @@ doctest = false
 test-support = []
 
 [dependencies]
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 viewer-buildings.workspace = true
-viewer-foundation.workspace = true
 viewer-models.workspace = true
 viewer-scene-base.workspace = true
 
 [dev-dependencies]
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 viewer-buildings = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 

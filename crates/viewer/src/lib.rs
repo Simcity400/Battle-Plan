@@ -1,15 +1,15 @@
 use std::time::Instant;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::camera::Placement;
-use viewer_foundation::map::camera::{Free, Lens, Pose};
-use viewer_foundation::map::frame::shadow_fade_factor;
-use viewer_foundation::map::layers::Omissions;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::perspective::Country;
-use viewer_foundation::map::perspective::Resolution;
-use viewer_foundation::map::ui_scale::extent;
-use viewer_foundation::map::ui_scale::valid;
-use viewer_foundation::profile_writer::profile_flush;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::camera::Placement;
+use viewer_gpu::camera::{Free, Lens, Pose};
+use viewer_gpu::frame::shadow_fade_factor;
+use viewer_gpu::layers::Omissions;
+use viewer_foundation::perspective::Choice;
+use viewer_foundation::perspective::Country;
+use viewer_foundation::perspective::Resolution;
+use viewer_gpu::ui_scale::extent;
+use viewer_gpu::ui_scale::valid;
+use viewer_runtime::profile_writer::profile_flush;
 mod app;
 use viewer_combat as combat;
 #[cfg(test)]
@@ -22,7 +22,7 @@ mod counter_integration_tests;
 mod dashboard_maps;
 use viewer_playback::document;
 mod dump_head;
-use viewer_foundation::errors::invalid;
+use viewer_runtime::errors::invalid;
 mod embedded;
 use viewer_playback::engaged_index;
 pub mod host;
@@ -66,7 +66,7 @@ use dashboard::Config;
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
-use {viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight};
+use viewer_gpu::{camera::Camera, frame::DayNight};
 use replay_data::{BranchId, Hour};
 use std::{
     collections::BTreeSet,
@@ -367,7 +367,7 @@ impl Options {
     }
 
     fn parse(args: impl Iterator<Item = OsString>) -> io::Result<Self> {
-        Self::parse_profiled(args, viewer_foundation::profile_writer::profiling())
+        Self::parse_profiled(args, viewer_runtime::profile_writer::profiling())
     }
 
     fn parse_profiled(args: impl Iterator<Item = OsString>, profiling: bool) -> io::Result<Self> {
@@ -1283,7 +1283,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if visibility.fog_of_war {
             println!(
                 "{}",
-                viewer_foundation::map::textures::intel_line(
+                viewer_gpu::textures::intel_line(
                     &intel_map,
                     &camera.defines,
                     camera.height,
@@ -1334,7 +1334,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             window.set_settled(true);
             let raids = Arc::clone(&document.icons.raids);
             window.set_rule_relations(Arc::new(move |frame, rule, country| {
-                viewer_foundation::map::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
+                viewer_unit_reads::movement_reads::rule_relation(frame, raids.movement_reads(), rule, country)
             }));
             let content = Arc::clone(&document.content);
             window.set_navy_sources_of(Arc::new(move |frame, ours, region| content.naval_dominance_sources(frame, ours, region)));
@@ -1509,7 +1509,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     country_names: interface,
                     ground: camera
                         .free()
-                        .map(|_| viewer_foundation::map::free_icons::Ground {
+                        .map(|_| viewer_native_gui::free_icons::Ground {
                             field: document.assets.height_field(),
                             sight: document.assets.terrain_sight(),
                         }),
@@ -1556,7 +1556,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 crate::app::map_hits::local(
                     None,
                     dump_overlay.looks(),
-                    viewer_foundation::map::free_icons::IconFamily::Intel,
+                    viewer_gpu::icon_tracks::IconFamily::Intel,
                     hit.layer,
                     point,
                 )
@@ -1626,7 +1626,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         );
         let tooltip_refused =
             viewer_counter_products::map::counter_tooltips::count_refusals(tooltips);
-        for warning in viewer_foundation::diagnostics_panel::tooltip_warning_lines(&tooltip_refused)
+        for warning in viewer_runtime::diagnostics_panel::tooltip_warning_lines(&tooltip_refused)
         {
             eprintln!("Warning: {warning}");
         }
@@ -2046,7 +2046,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             document.names.graph.edge_count(),
             report.icon_pages
         );
-        let mut placed: Vec<&viewer_foundation::map::name_draw::WorldName> =
+        let mut placed: Vec<&viewer_runtime::name_draw::WorldName> =
             placements.country.iter().collect();
         placed.sort_by(|a, b| {
             b.font_size
@@ -2248,10 +2248,10 @@ pub(crate) fn background_window(value: Option<&std::ffi::OsStr>) -> bool {
 
 pub fn cli() -> std::process::ExitCode {
     engine_heap::return_freed_memory_promptly();
-    viewer_foundation::parallel::name_shared_pool();
-    viewer_foundation::frame_writer::initialize(Instant::now());
+    viewer_runtime::parallel::name_shared_pool();
+    viewer_runtime::frame_writer::initialize(Instant::now());
     let result = run();
-    viewer_foundation::frame_writer::flush();
+    viewer_runtime::frame_writer::flush();
     profile_flush();
     perf_log::finish();
     match result {

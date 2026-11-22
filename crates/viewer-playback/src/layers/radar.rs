@@ -270,7 +270,7 @@ impl Layer for Radar {
             return Ok(());
         }
         let assets = &gpu.content.assets;
-        let heights = viewer_foundation::map::province_map::HeightField { width: assets.heightmap.width, height: assets.heightmap.height, values: assets.heightmap_texels() };
+        let heights = viewer_gpu::province_map::HeightField { width: assets.heightmap.width, height: assets.heightmap.height, values: assets.heightmap_texels() };
         let mut field = viewer_aircraft::radar_symbols::Field::default();
         match (self.ours, self.groups(self.ours.unwrap_or(u32::MAX))) {
             (Some(ours), Ok(groups)) => field.groups(groups, ours, heights, &gpu.content.radar_centers),

@@ -13,12 +13,17 @@ doctest = false
 test-support = [
     "dashboard-text/test-support",
     "shader-pipeline/test-support",
-    "viewer-foundation/test-support",
     "viewer-map-text/test-support",
     "viewer-weather-effects/test-support",
+    "viewer-gpu/test-support",
 ]
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-native-gui.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 content-reader-image.workspace = true
@@ -34,7 +39,6 @@ shader-pipeline.workspace = true
 viewer-aircraft.workspace = true
 viewer-borders.workspace = true
 viewer-buildings.workspace = true
-viewer-foundation.workspace = true
 viewer-map-modes.workspace = true
 viewer-map-text.workspace = true
 viewer-models.workspace = true
@@ -46,13 +50,15 @@ viewer-unit-models.workspace = true
 viewer-weather-effects.workspace = true
 
 [dev-dependencies]
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 pollster.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 shader-pipeline = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }

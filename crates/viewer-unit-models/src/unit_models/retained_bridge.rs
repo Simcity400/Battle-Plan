@@ -1,6 +1,6 @@
 use super::*;
 use replay_data::rows::TableId;
-use viewer_foundation::map::memo::Keyed;
+use viewer_runtime::memo::Keyed;
 
 const INPUTS: &[TableId] = &[
     TableId::VariantDefinitions,

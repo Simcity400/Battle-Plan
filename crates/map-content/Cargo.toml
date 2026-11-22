@@ -10,6 +10,8 @@ license.workspace = true
 test-support = []
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
 content-witness.workspace = true
 dashboard-text.workspace = true
 content-reader-core.workspace = true
@@ -23,7 +25,6 @@ content-reader-states.workspace = true
 product-codec.workspace = true
 sha2.workspace = true
 viewer-audio = { path = "../viewer-audio" }
-viewer-foundation = { path = "../viewer-foundation" }
 
 [dev-dependencies]
 engine-heap.workspace = true

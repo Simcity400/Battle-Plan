@@ -4,13 +4,13 @@ use eframe::wgpu;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::map::{
+use viewer_gpu::{
     gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets, buffer},
     province_map::HeightField,
     ribbon_content::SymbolPage,
     textures::{ColorSpace, upload},
-    visibility::Families,
 };
+use viewer_foundation::visibility::Families;
 
 const FIXED5: f64 = 100_000.0;
 
@@ -357,7 +357,7 @@ impl Pass {
         encoder: &mut wgpu::CommandEncoder,
         targets: &Targets,
         native: NativeInputs<'_>,
-        planes: &viewer_foundation::map::province_admission::Planes,
+        planes: &viewer_gpu::province_admission::Planes,
         time: f32,
         visible: bool,
     ) -> io::Result<()> {
@@ -383,7 +383,7 @@ impl Pass {
         {
             let [x, y, z] = symbol.position;
             let half = symbol.diameter * self.size * 0.5;
-            if !viewer_foundation::map::province_admission::admits_box(
+            if !viewer_gpu::province_admission::admits_box(
                 [[x - half, y, z - half], [x + half, y + 0.01, z + half]],
                 0.,
                 planes,

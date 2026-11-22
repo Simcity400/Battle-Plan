@@ -456,7 +456,7 @@ fn delta(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>) -> BTree
 #[ignore = "requires a GPU"]
 fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
     content_reader_core::test_game::enter();
-    let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+    let (_serial, device, queue) = viewer_gpu::test_support::gpu::device();
     let image = |rgba: [u8; 4]| {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("particle proof page"),
@@ -485,7 +485,7 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
         texture.create_view(&Default::default())
     };
     let pages = vec![image([255_u8, 210, 170, 255]), image([160, 255, 210, 255])];
-    let targets = Targets::new(&device, [16, 16], [16, 16], 1, viewer_foundation::map::gpu_contract::SeaBed::Half);
+    let targets = Targets::new(&device, [16, 16], [16, 16], 1, viewer_gpu::gpu_contract::SeaBed::Half);
     let arena = gpu::Arena::new(&device);
     let expected_arena = gpu::Arena::new(&device);
     let frame_bytes = [0_u8; 416];
@@ -724,7 +724,7 @@ fn weather_draws_match_fixed_bytes_states_and_pixels_many_frames() {
 #[ignore = "requires a GPU"]
 fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures() {
     content_reader_core::test_game::enter();
-    let _serial = viewer_foundation::map::test_support::serial();
+    let _serial = viewer_gpu::test_support::serial();
     let instance =
         shader_pipeline::gpu::instance();
     let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();

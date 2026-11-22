@@ -1,0 +1,29 @@
+[package]
+name = "viewer-engagements"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = []
+
+[dependencies]
+content-reader-core.workspace = true
+replay-data.workspace = true
+replay-frame.workspace = true
+viewer-foundation.workspace = true
+viewer-runtime.workspace = true
+
+[dev-dependencies]
+engine-heap.workspace = true
+replay-data = { workspace = true, features = ["test-support"] }
+replay-frame = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

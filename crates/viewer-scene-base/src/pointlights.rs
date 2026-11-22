@@ -74,10 +74,10 @@ impl PointLightMaps {
 
 use eframe::wgpu;
 use std::io;
-use viewer_foundation::map::camera::Camera;
+use viewer_gpu::camera::Camera;
 #[cfg(test)]
-use viewer_foundation::map::camera::MapDefines;
-use viewer_foundation::map::textures::{Bound, data_texture};
+use viewer_gpu::camera::MapDefines;
+use viewer_gpu::textures::{Bound, data_texture};
 
 pub const INDEX_SIZE: u32 = 64;
 pub const DATA_WIDTH: u32 = 128;
@@ -188,7 +188,7 @@ impl Tiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::camera::MapSize;
+    use viewer_gpu::camera::MapSize;
 
     #[test]
     fn tiles_equal_to_those_written_are_not_written_again() {
@@ -260,7 +260,7 @@ mod tests {
                 height: 300.0,
                 map: MapSize::TEST,
                 defines: MapDefines::test(),
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             },
             &lights,
         );
@@ -276,7 +276,7 @@ mod tests {
                     height: 100,
                 },
                 defines: MapDefines::test(),
-                pose: viewer_foundation::map::camera::Pose::Map,
+                pose: viewer_gpu::camera::Pose::Map,
             },
             &lights,
         );

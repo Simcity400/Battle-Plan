@@ -13,6 +13,8 @@ doctest = false
 test-support = ["viewer-models/test-support"]
 
 [dependencies]
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 content-reader-image.workspace = true
@@ -23,17 +25,17 @@ job-priority.workspace = true
 map-display-data.workspace = true
 replay-frame.workspace = true
 shader-pipeline.workspace = true
-viewer-foundation.workspace = true
 viewer-models.workspace = true
 viewer-scene-base.workspace = true
 
 [dev-dependencies]
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 pollster.workspace = true
 shader-pipeline = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-unit-history = { workspace = true, features = ["test-support"] }
 

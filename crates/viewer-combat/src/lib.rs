@@ -6,8 +6,8 @@ static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 use std::time::Duration;
 use std::time::Instant;
 #[cfg(test)]
-use viewer_foundation::engaged::Ambiguity;
-use viewer_foundation::map::naval_dominance_sources::RegionalDominanceSourcesMap as NavySources;
+use viewer_engagements::engaged::Ambiguity;
+use viewer_unit_reads::naval_dominance_sources::RegionalDominanceSourcesMap as NavySources;
 
 pub type NavySourcesOf = Arc<dyn Fn(&replay_frame::frame::DecodedFrame, u32, u32) -> NavySources + Send + Sync>;
 
@@ -16,23 +16,23 @@ pub type RuleRelations = Arc<
             &replay_frame::frame::DecodedFrame,
             &content_reader_core::adjacency_rules::AdjacencyRule,
             u32,
-        ) -> Result<viewer_foundation::map::movement_reads::RuleReason, String>
+        ) -> Result<viewer_unit_reads::movement_reads::RuleReason, String>
         + Send
         + Sync,
 >;
-use viewer_foundation::engagement_history::CombatFlags;
-use viewer_foundation::engagement_history::History;
-use viewer_foundation::map::native_gui::lifecycle;
-use viewer_foundation::map::native_gui::pointer::Input;
-use viewer_foundation::map::native_text::RESOLVED_FLAG;
-use viewer_foundation::map::perspective::Choice;
-use viewer_foundation::map::perspective::cached_vision;
-use viewer_foundation::map::sprites::gui_layer;
-use viewer_foundation::map::visibility::FogContent;
-use viewer_foundation::map::visibility::Relations;
-use viewer_foundation::tooltip_painter::HoverState;
-use viewer_foundation::tooltip_painter::TooltipDefines;
-use viewer_foundation::tooltip_painter::{Explicit, TooltipPosition};
+use viewer_engagements::engagement_history::CombatFlags;
+use viewer_engagements::engagement_history::History;
+use viewer_native_gui::native_gui::lifecycle;
+use viewer_native_gui::native_gui::pointer::Input;
+use viewer_native_gui::native_text::RESOLVED_FLAG;
+use viewer_foundation::perspective::Choice;
+use viewer_foundation::perspective::cached_vision;
+use viewer_native_gui::sprites::gui_layer;
+use viewer_foundation::visibility::FogContent;
+use viewer_foundation::visibility::Relations;
+use viewer_native_gui::tooltip_painter::HoverState;
+use viewer_native_gui::tooltip_painter::TooltipDefines;
+use viewer_native_gui::tooltip_painter::{Explicit, TooltipPosition};
 mod air_menu;
 mod assets;
 pub(crate) mod availability;
@@ -91,10 +91,11 @@ pub use assets::CombatContent;
 use binding::Bindings;
 use std::{collections::BTreeMap, io, sync::Arc};
 #[cfg(test)]
-use viewer_foundation::combat_selection::Hit;
-use viewer_foundation::combat_selection::Selection;
-use viewer_foundation::map::gui_resources::contains;
-use {self::content::Content as StaticContent, viewer_foundation::map::sprites::Batch};
+use viewer_engagements::combat_selection::Hit;
+use viewer_engagements::combat_selection::Selection;
+use viewer_runtime::geometry::contains;
+use self::content::Content as StaticContent;
+use viewer_native_gui::sprites::Batch;
 use viewer_counter_products::map::province_tooltips::air_region::{RosterHistory, Sampler};
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -125,7 +126,7 @@ impl Selector {
             return Ok(selection);
         }
         use replay_data::rows::tables;
-        use viewer_foundation::map::tables::rows;
+        use viewer_foundation::tables::rows;
         let mut matches = Vec::new();
         for row in rows::<tables::LandCombats>(frame)?.rows() {
             if match self {
@@ -289,7 +290,7 @@ fn combat_flags(
     engaged: Option<&History>,
 ) -> io::Result<CombatFlags> {
     use replay_data::rows::tables;
-    use viewer_foundation::map::tables::rows;
+    use viewer_foundation::tables::rows;
     let links: BTreeMap<u32, u32> = rows::<tables::CountryLinks>(frame)?
         .rows()
         .iter()
@@ -316,7 +317,7 @@ enum Update {
 }
 
 fn update(selection: Selection, flags: &CombatFlags) -> Update {
-    use viewer_foundation::engaged::Engaged;
+    use viewer_engagements::engaged::Engaged;
     let flag = |flags: &BTreeMap<u64, Engaged>, id| flags.get(&id).copied();
     match selection {
         Selection::Land(id) => Update::Refresh(flag(&flags.land, id) != Some(Engaged::No)),
@@ -1239,7 +1240,7 @@ pub struct Drawn {
     tactics_button: Option<[f32; 4]>,
     tactics_close: Option<[f32; 4]>,
     tactics_rect: Option<[f32; 4]>,
-    pub sounds: Vec<viewer_foundation::map::native_gui::pointer::Played>,
+    pub sounds: Vec<viewer_native_gui::native_gui::pointer::Played>,
     pub clicks: Vec<(String, [f32; 4], usize)>,
 }
 impl Drawn {
@@ -1380,10 +1381,8 @@ mod tests {
     #[test]
     fn the_window_updates_only_while_its_combat_is_engaged() {
         use std::collections::BTreeMap;
-        use {
-            super::{Selection, Update, update},
-            viewer_foundation::engaged::Engaged,
-        };
+        use super::{Selection, Update, update};
+        use viewer_engagements::engaged::Engaged;
         let flags = |flag: Engaged| CombatFlags {
             land: BTreeMap::from([(1, flag)]),
             naval: BTreeMap::from([(2, flag)]),
@@ -1736,7 +1735,7 @@ mod tests {
                 Err(format!("the sources of hour {} for slot {ours} in region {region}", frame.hour))
             })
         };
-        let frame = viewer_foundation::map::test_support::complete_frame(12, |table| replay_data::rows::sample_extended_table(table, 0));
+        let frame = viewer_foundation::test_support::complete_frame(12, |table| replay_data::rows::sample_extended_table(table, 0));
         assert_eq!(navy_sources(Selection::NavalRegion(7), Some(&of), &frame, 3), Err("the sources of hour 12 for slot 3 in region 7".into()));
         assert_eq!(*asked.lock().unwrap(), [(12, 3, 7)], "derived once, from the read's own hour, viewer and region");
         assert_eq!(navy_sources(Selection::Land(1), Some(&of), &frame, 3), Ok(BTreeMap::new()), "another window derives none");

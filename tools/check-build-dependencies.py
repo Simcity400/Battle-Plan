@@ -87,7 +87,9 @@ def check(normal, all_targets):
                 failures.append(" -> ".join(path) + ": capture helpers must not pull in recording I/O")
     windows = "dashboard-game-window"
     viewer = {
-        "viewer-foundation", "viewer-scene-base", "viewer-terrain", "viewer-map-modes",
+        "viewer-runtime", "viewer-foundation", "viewer-gpu", "viewer-native-gui",
+        "viewer-unit-reads", "viewer-engagements", "viewer-scene-base", "viewer-terrain",
+        "viewer-map-modes",
         "viewer-map-icons", "viewer-borders", "viewer-map-text", "viewer-models",
         "viewer-buildings", "viewer-unit-history", "viewer-unit-models", "viewer-rail",
         "viewer-aircraft", "viewer-weather-effects", "viewer-world",

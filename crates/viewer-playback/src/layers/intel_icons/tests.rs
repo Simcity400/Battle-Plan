@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective;
+use viewer_foundation::perspective;
 use viewer_raids::map::intel_icons::IntelIcons;
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
