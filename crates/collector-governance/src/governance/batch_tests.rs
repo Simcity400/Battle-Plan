@@ -568,6 +568,45 @@ fn governance_batch_carried_research_aliased_technologies_do_not_reread_complete
             .count(),
         1
     );
+
+    let banked_b = country + SLOT + 0x80 + cresearch_slot::BANKED_DAYS;
+    let trace = Trace::fault(&world, "Research alias banked one-shot", banked_b, true);
+    let mut inputs = vec![research_inputs::Row::default(); 3];
+    let mut bonuses = vec![research_inputs::BonusRow::default(); 2];
+    let mut modifiers = vec![research_modifiers::Row::default(); 64];
+    let growths = engine_allocation::growths();
+    let outcome = store.carry_research(
+        &trace,
+        0,
+        1,
+        country,
+        engine_native::walk::Buffer::Growing(&mut inputs),
+        engine_native::walk::Buffer::Growing(&mut bonuses),
+        engine_native::walk::Buffer::Growing(&mut modifiers),
+    );
+    assert_eq!(engine_allocation::growths() - growths, 2);
+    assert!(matches!(outcome, drift::Carried::Rows([3, 2, _])));
+    assert_eq!(inputs[0].progress_raw, 777_001);
+    assert_eq!(inputs[1].progress_raw, 888_002);
+    assert_eq!(inputs[2].progress_raw, 777_001);
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_a)
+            .count(),
+        1
+    );
+    assert_eq!(
+        trace
+            .operands
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == tech_b)
+            .count(),
+        1
+    );
 }
 #[test]
 fn governance_batch_carried_multiple_persistent_faults_keep_serial_first_reason() {
