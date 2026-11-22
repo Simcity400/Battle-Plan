@@ -1,6 +1,6 @@
 use crate::playback::Current;
 use replay::{
-    campaign::{Parallel, Replay},
+    campaign::Replay,
     columnar_frames::Pool,
     columnar_natives::{Cursor, Natives},
 };
@@ -34,26 +34,19 @@ impl Columnar {
         Self { natives }
     }
 
-    pub fn open(&self, replay: Arc<Replay>, workers: usize) -> io::Result<MapSource> {
+    pub fn open(&self, replay: Arc<Replay>) -> io::Result<MapSource> {
         let cursor = Cursor::new(
             Arc::clone(&self.natives),
             dashboard_base::map_tables::selected_tables(),
-            replay.format,
-            replay.capture_mode,
         )?
         .with_change_facts();
-        Ok(MapSource {
-            cursor,
-            replay,
-            workers: workers.max(1),
-        })
+        Ok(MapSource { cursor, replay })
     }
 }
 
 pub struct MapSource {
     cursor: Cursor,
     replay: Arc<Replay>,
-    workers: usize,
 }
 
 impl MapSource {
@@ -71,11 +64,6 @@ impl MapSource {
         let priority = viewer_foundation::worker_priority::current_priority();
         let behind = priority.is_some_and(|priority| priority < 0);
         self.cursor.set_pool(if behind { Some(background()?) } else { None });
-        let on_worker = || {};
-        let parallel = Parallel {
-            workers: self.workers,
-            on_worker: &on_worker,
-        };
         let gap = |reason: String| Current::Gap {
             branch,
             hour,
@@ -90,9 +78,7 @@ impl MapSource {
         };
         let read = (|| -> io::Result<Option<DecodedFrame>> {
             self.cursor.move_to(segment, branch, hour, cancelled)?;
-            materialize
-                .then(|| self.cursor.build(Some(&parallel)))
-                .transpose()
+            materialize.then(|| self.cursor.build()).transpose()
         })();
         let refused = |reason: String| Current::Refused {
             branch,

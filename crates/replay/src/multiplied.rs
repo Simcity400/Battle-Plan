@@ -5,7 +5,7 @@ use crate::{
 };
 use replay_columnar::{
     leaf::Reader,
-    manifest::{INSERTS, FILLS, Manifest, Section, Status},
+    manifest::{INSERTS, FILLS, Manifest, SAMPLES, Section, Status},
     section::{self, Op, PatchItems, Patches, Run, TableHour},
     state::{Bits, Cell, Kind, Table, Values},
 };
@@ -579,12 +579,11 @@ impl Synthetic {
 
 pub fn preroll(directory: &Path, capture: u32, block: u32, out: &Path) -> io::Result<()> {
     let kinds = schema()?;
-    let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
-    let recorded = recorded_tables(&kinds)?;
-    let mut scan = scan_journal(directory, capture, &kinds, recorded, &REMOVED, true, true)?;
+    let derived = derived_tables(kinds.len());
+    let mut scan = scan_journal(directory, capture, &kinds, &derived, &REMOVED, true, true)?;
     let at = start_segment(&scan.scanned, block)?;
     let appends: Vec<Vec<u8>> = scan.scanned[..at].iter_mut().flat_map(|held| std::mem::take(&mut held.appends)).collect();
-    let (witness, manifest, tables) = restored(directory, capture, scan.segments[at].0, &kinds, &columns, &scan.journal, appends)?;
+    let (witness, manifest, tables) = restored(directory, capture, scan.segments[at].0, &kinds, &derived, &scan.journal, appends)?;
     let mut sections = Vec::new();
     let mut lengths = Vec::with_capacity(tables.len());
     for (table, decoded) in tables.iter().enumerate() {
@@ -715,6 +714,9 @@ impl JournalTables {
         manifest.statuses = statuses;
         manifest.read = read;
         manifest.samples = manifest.samples.iter().filter_map(|&(at, hour)| place(at).map(|table| (table, hour))).collect();
+        if manifest.samples.is_empty() {
+            manifest.flags &= !SAMPLES;
+        }
         for entry in &mut manifest.sections {
             entry.table = place(entry.table).ok_or_else(|| {
                 let name = self.removed.iter().find(|&&(at, _)| at == entry.table).map_or("a removed table", |&(_, name)| name);
@@ -725,15 +727,21 @@ impl JournalTables {
     }
 }
 
-fn widen(mut manifest: Manifest<'_>, tables: usize, recorded: usize) -> Manifest<'_> {
+fn widen<'a>(mut manifest: Manifest<'a>, derived: &[bool]) -> Manifest<'a> {
+    let tables = derived.len();
     manifest.statuses.resize(tables, Status::NotRecorded);
     manifest.read.resize(tables.div_ceil(64), 0);
-    for table in recorded..tables {
-        manifest.statuses[table] = Status::NotRecorded;
-        manifest.read[table / 64] &= !(1 << (table % 64));
+    for (table, &is_derived) in derived.iter().enumerate() {
+        if is_derived {
+            manifest.statuses[table] = Status::NotRecorded;
+            manifest.read[table / 64] &= !(1 << (table % 64));
+        }
     }
-    manifest.samples.retain(|&(table, _)| table < recorded);
-    manifest.sections.retain(|entry| entry.table < recorded);
+    manifest.samples.retain(|&(table, _)| !derived[table]);
+    if manifest.samples.is_empty() {
+        manifest.flags &= !SAMPLES;
+    }
+    manifest.sections.retain(|entry| !derived[entry.table]);
     manifest
 }
 
@@ -765,13 +773,12 @@ fn journal_tables(segments: &[(u32, PathBuf)], kinds: &[Vec<Kind>], removed: &[R
     Ok((JournalTables::written(kinds, removed), None))
 }
 
-fn recorded_tables(kinds: &[Vec<Kind>]) -> io::Result<usize> {
-    let derived = recorder_derive::writers().tables();
-    let recorded = kinds.len() - derived.len();
-    if derived.iter().any(|&table| table < recorded) {
-        return Err(invalid("This schema's derived tables are not its tail"));
+fn derived_tables(tables: usize) -> Vec<bool> {
+    let mut derived = vec![false; tables];
+    for table in recorder_derive::writers().tables() {
+        derived[table] = true;
     }
-    Ok(recorded)
+    derived
 }
 
 struct Scanned {
@@ -790,16 +797,21 @@ struct Scan {
     partial: Vec<bool>,
 }
 
-fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: usize, removed: &[Removed], appends: bool, one_run: bool) -> io::Result<Scan> {
+fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], derived: &[bool], removed: &[Removed], appends: bool, one_run: bool) -> io::Result<Scan> {
     let segments: Vec<(u32, PathBuf)> = crate::columnar_journal::segments(directory)?
         .into_iter()
         .filter(|(held, _, _)| *held == capture)
         .map(|(_, segment, path)| (segment, path))
         .collect();
     let (written, exact) = journal_tables(&segments, kinds, removed)?;
+    let first_derived = written
+        .places
+        .iter()
+        .position(|place| place.is_some_and(|table| derived[table]))
+        .unwrap_or(written.columns.len());
     let mut candidates: Vec<usize> = match exact {
         Some(tables) => vec![tables],
-        None => (recorded + written.removed.len()..=written.columns.len()).collect(),
+        None => (first_derived.max(1)..=written.columns.len()).collect(),
     };
     let mut partial = vec![false; kinds.len()];
     let mut scanned: Vec<Scanned> = Vec::with_capacity(segments.len());
@@ -811,7 +823,7 @@ fn scan_journal(directory: &Path, capture: u32, kinds: &[Vec<Kind>], recorded: u
                     let bytes = scanned_manifest(bytes)?;
                     candidates.retain(|&tables| Manifest::read(bytes, &written.columns[..tables]).is_ok());
                     let tables = *candidates.first().ok_or_else(|| invalid("No table count reads every manifest of the journal"))?;
-                    let manifest = widen(written.first(tables).read(bytes, kinds.len())?, kinds.len(), recorded);
+                    let manifest = widen(written.first(tables).read(bytes, kinds.len())?, derived);
                     for (table, status) in manifest.statuses.iter().enumerate() {
                         if *status != Status::Complete {
                             partial[table] = true;
@@ -962,7 +974,7 @@ pub struct Multiplied {
     begin: Option<(Vec<u8>, Vec<u8>)>,
     start: Option<Arc<Synthetic>>,
     pub exact_schema: bool,
-    recorded: usize,
+    derived: Vec<bool>,
     factors: Factors,
     first: Upstream,
     copies: Vec<Upstream>,
@@ -999,9 +1011,9 @@ impl Multiplied {
         let _label = label();
         let kinds = schema()?;
         let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
-        let recorded = recorded_tables(&kinds)?;
+        let derived = derived_tables(kinds.len());
         let one_run = start.is_some() || factors.factor.iter().any(|&factor| factor > 1);
-        let Scan { journal, exact, mut scanned, segments, partial } = scan_journal(directory, capture, &kinds, recorded, removed, false, one_run)?;
+        let Scan { journal, exact, mut scanned, segments, partial } = scan_journal(directory, capture, &kinds, &derived, removed, false, one_run)?;
         for (table, partial) in partial.into_iter().enumerate() {
             factors.in_phase[table] |= partial;
         }
@@ -1037,7 +1049,7 @@ impl Multiplied {
         let out_of_phase = (0..factors.factor.len()).filter(|&table| !factors.in_phase[table]).map(|table| factors.factor[table]).max().unwrap_or(1);
         let copies = (1..out_of_phase).map(|_| upstream(Vec::new())).collect::<io::Result<_>>()?;
         let live = factors.factor.iter().map(|&factor| if factor > 1 { vec![Bits::default(); factor as usize] } else { Vec::new() }).collect();
-        Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, recorded, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, one_run, segment_hours, spent: std::time::Duration::ZERO })
+        Ok(Self { kinds, columns, journal, begin: None, start: synthetic.clone(), exact_schema: exact, derived, factors, first, copies, hours: 0, live, built: None, passing: None, runs: 0, one_run, segment_hours, spent: std::time::Duration::ZERO })
     }
 
     pub fn blocks_before(&self, segment: u32) -> u64 {
@@ -1057,7 +1069,8 @@ impl Multiplied {
 
     fn copy_hour(&mut self, copy: usize) -> io::Result<Option<CopyHour>> {
         let factors = &self.factors;
-        let wanted = |table: usize| !factors.in_phase[table] && factors.factor[table] as usize > copy;
+        let derived = &self.derived;
+        let wanted = |table: usize| !derived[table] && !factors.in_phase[table] && factors.factor[table] as usize > copy;
         let upstream = &mut self.copies[copy - 1];
         loop {
             let mut run = false;
@@ -1232,10 +1245,10 @@ impl Multiplied {
             return Ok(false);
         };
         let original = self.journal.read(manifest, self.kinds.len())?;
-        if original.sections.iter().any(|entry| entry.table >= self.recorded) {
+        if original.sections.iter().any(|entry| self.derived[entry.table]) {
             return Ok(false);
         }
-        let widened = widen(original, self.columns.len(), self.recorded).write(&self.columns)?;
+        let widened = widen(original, &self.derived).write(&self.columns)?;
         self.passing = Some((witness, widened));
         Ok(true)
     }
@@ -1255,7 +1268,7 @@ impl Multiplied {
                 let manifest = Manifest::read(&bytes, &self.columns)?;
                 let mut firsts: Vec<Option<(First, Vec<u64>, u8)>> = (0..tables).map(|_| None).collect();
                 for entry in &manifest.sections {
-                    if synthetic.sections[entry.table].is_some() {
+                    if !self.derived[entry.table] && synthetic.sections[entry.table].is_some() {
                         firsts[entry.table] = Some((First::Start, entry.columns.clone(), entry.ops));
                     }
                 }
@@ -1264,13 +1277,13 @@ impl Multiplied {
             Some(Item::Record(Record::Hour { witness, manifest, mut sections })) => {
                 let original = self.journal.read(manifest, self.kinds.len())?;
                 let journal_sections = original.sections.clone();
-                let manifest = widen(original, self.columns.len(), self.recorded);
+                let manifest = widen(original, &self.derived);
                 let manifest_bytes = manifest.write(&self.columns)?;
                 let mut firsts: Vec<Option<(First, Vec<u64>, u8)>> = (0..tables).map(|_| None).collect();
                 for entry in &journal_sections {
                     let bytes = sections.next(entry.bytes)?;
                     let table = entry.table;
-                    if table >= self.recorded {
+                    if self.derived[table] {
                         continue;
                     }
                     let first = if self.factors.factor[table] > 1 {
@@ -1294,6 +1307,9 @@ impl Multiplied {
         let mut sections = Vec::new();
         let mut entries = Vec::new();
         for (table, first) in firsts.into_iter().enumerate() {
+            if self.derived[table] {
+                continue;
+            }
             let factor = self.factors.factor[table] as usize;
             let mut column_bits: Vec<u64> = first.as_ref().map(|held| held.1.clone()).unwrap_or_default();
             let mut ops = first.as_ref().map_or(0, |held| held.2);
@@ -1439,11 +1455,11 @@ fn restored(
     capture: u32,
     segment: u32,
     kinds: &[Vec<Kind>],
-    columns: &[usize],
+    derived: &[bool],
     journal_tables: &JournalTables,
     mut appends: Vec<Vec<u8>>,
 ) -> io::Result<(Option<crate::columnar_journal::Witness>, Vec<u8>, Vec<Option<Decoded>>)> {
-    let recorded = recorded_tables(kinds)?;
+    let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
     let mut state = replay_columnar::walk::State::new(kinds.to_vec())?;
     let mut journal = Journal::open_read_only(directory, capture);
     journal.start(0)?;
@@ -1462,12 +1478,12 @@ fn restored(
                 let mut spans = Vec::new();
                 let mut at = 0_usize;
                 for entry in &original.sections {
-                    if entry.table < recorded {
+                    if !derived[entry.table] {
                         spans.push(at..at + entry.bytes as usize);
                     }
                     at += entry.bytes as usize;
                 }
-                let manifest = widen(original, columns.len(), recorded);
+                let manifest = widen(original, derived);
                 state.apply(&manifest, |index| Ok(&all[spans[index].clone()]))?;
             }
             Some(_) => {}
@@ -1478,18 +1494,17 @@ fn restored(
     let mut spans = Vec::new();
     let mut at = 0_usize;
     for entry in &original.sections {
-        if entry.table < recorded {
+        if !derived[entry.table] {
             spans.push(at..at + entry.bytes as usize);
         }
         at += entry.bytes as usize;
     }
-    let manifest = widen(original, columns.len(), recorded);
+    let manifest = widen(original, derived);
     state.apply(&manifest, |index| Ok(&sections[spans[index].clone()]))?;
-    let derived = recorder_derive::writers().tables();
     let mut tables = vec![None; kinds.len()];
     let mut entries = Vec::new();
     for (table, table_kinds) in kinds.iter().enumerate() {
-        if derived.contains(&table) {
+        if derived[table] {
             continue;
         }
         let Some(held) = state.table(table) else { continue };
@@ -1507,7 +1522,7 @@ fn restored(
     appends.extend(manifest.appends.iter().map(|text| text.to_vec()));
     let given: Vec<&[u8]> = appends.iter().map(Vec::as_slice).collect();
     let rebuilt = Manifest { appends: given, sections: entries, ..manifest.clone() };
-    Ok((witness, rebuilt.write(columns)?, tables))
+    Ok((witness, rebuilt.write(&columns)?, tables))
 }
 
 #[cfg(test)]
@@ -1616,9 +1631,7 @@ mod tests {
         Ok((exact, hours))
     }
 
-    // quarantine: #145 the current schema's recorded tables follow the derived ones
     #[test]
-    #[ignore = "quarantined under #145"]
     fn a_journal_written_with_a_table_removed_since_reads_with_every_other_table_where_this_schema_holds_it() {
         let before = before();
         for (digest, exact) in [(None, true), (Some([0xab; 32]), false)] {
@@ -1642,9 +1655,7 @@ mod tests {
         }
     }
 
-    // quarantine: #145 the current schema's recorded tables follow the derived ones
     #[test]
-    #[ignore = "quarantined under #145"]
     fn the_capture_s_committed_blocks_are_its_segments_that_hold_hours() {
         let folder = Folder::new("blocks");
         journal(&folder.0, None, false);
@@ -1653,13 +1664,288 @@ mod tests {
         assert_eq!([0, 1, 2, 3].map(|segment| source.blocks_before(segment)), [0, 0, 1, 1], "the opening segment holds no block; the run's segment holds block 0");
     }
 
-    // quarantine: #145 the current schema's recorded tables follow the derived ones
     #[test]
-    #[ignore = "quarantined under #145"]
     fn a_section_of_a_table_removed_since_is_refused_by_name() {
         let folder = Folder::new("removed");
         journal(&folder.0, None, true);
         let refused = read(&folder.0).unwrap_err().to_string();
         assert!(refused.contains("The journal holds a section of Removed, a table removed from this schema since it was written"), "{refused}");
+    }
+
+    fn test_capture() -> crate::columnar_file::Capture {
+        crate::columnar_file::Capture {
+            campaign_id: b"campaign".to_vec(),
+            content: Vec::new(),
+            capture_mode: 0,
+            sessions: Vec::new(),
+            run_sessions: Vec::new(),
+            stop: None,
+            format: 0,
+            journaled: 0,
+            controls: Vec::new(),
+        }
+    }
+
+    fn insert_section(kinds: &[Vec<Kind>], table: usize, key: u128, inserts: &[Values<'_>]) -> (usize, Vec<u8>) {
+        let hour = TableHour { read: None, changed: &[], deleted: &[], inserted: &[0], keys: &[key], inserts, runs: &[], unrecorded: &[], touched: &[] };
+        (table, section::write(&kinds[table], &hour).unwrap())
+    }
+
+    fn write_hour(
+        writer: &mut JournalWriter,
+        kinds: &[Vec<Kind>],
+        hour: i32,
+        sections: &[(usize, Vec<u8>)],
+        samples: Vec<(usize, Option<i32>)>,
+        appends: Vec<&[u8]>,
+    ) {
+        let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
+        let mut statuses = vec![Status::NotRecorded; kinds.len()];
+        let mut read = vec![0_u64; kinds.len().div_ceil(64)];
+        let mut entries = Vec::with_capacity(sections.len());
+        for (table, bytes) in sections {
+            statuses[*table] = Status::Complete;
+            read[*table / 64] |= 1 << (*table % 64);
+            let mut bits = vec![u64::MAX; kinds[*table].len().div_ceil(64)];
+            if kinds[*table].len() % 64 != 0 {
+                *bits.last_mut().expect("a word") = (1 << (kinds[*table].len() % 64)) - 1;
+            }
+            entries.push(Section { table: *table, bytes: bytes.len() as u64, columns: bits, ops: INSERTS });
+        }
+        let manifest = Manifest {
+            branch: 1,
+            hour,
+            flags: if samples.is_empty() { 0 } else { SAMPLES },
+            total_ns: 0,
+            pool_bytes: 0,
+            dropped_frames: 0,
+            appends,
+            statuses,
+            read,
+            samples,
+            sections: entries,
+        };
+        let held: Vec<&[u8]> = sections.iter().map(|(_, bytes)| bytes.as_slice()).collect();
+        writer.hour(None, &manifest.write(&columns).unwrap(), &held).unwrap();
+    }
+
+    #[test]
+    fn recorded_tables_after_derived_ones_pass_multiply_and_preroll_while_derived_tables_stay_excluded() {
+        let kinds = schema().unwrap();
+        let columns: Vec<usize> = kinds.iter().map(Vec::len).collect();
+        let derived = recorder_derive::writers().tables();
+        let tag_holders = TableId::TagHolders.index();
+        let land_order = TableId::LandUnitOrder.index();
+        let region_weights = TableId::StrategicRegionWeights.index();
+        let building_inputs = TableId::StateBuildingInputs.index();
+        assert!(derived.contains(&tag_holders));
+        for after in [land_order, region_weights, building_inputs] {
+            assert!(after > tag_holders && !derived.contains(&after));
+        }
+
+        let empty_opt = Values::OptionalI64 { present: &[0], values: &[] };
+        let building_values = [
+            Values::U32(&[1]),
+            Values::U32(&[2]),
+            Values::I32(&[3]),
+            empty_opt,
+            empty_opt,
+            empty_opt,
+            empty_opt,
+            empty_opt,
+            empty_opt,
+            empty_opt,
+            empty_opt,
+            empty_opt,
+        ];
+        let identity = Identity { schema: schema_digest(&kinds), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+        let unit_factors = || Factors { factor: vec![1; kinds.len()], in_phase: vec![false; kinds.len()] };
+
+        let folder = Folder::new("post-derived-pass");
+        let mut writer = JournalWriter::create(&folder.0, 0, &identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        let sections = vec![
+            insert_section(&kinds, TableId::Campaign.index(), 1, &[Values::Bytes(&[0])]),
+            insert_section(&kinds, land_order, 2, &[Values::Opaque { ends: &[2], items: &[9, 8] }]),
+            insert_section(&kinds, region_weights, 3, &[Values::I32(&[77])]),
+            insert_section(&kinds, building_inputs, 4, &building_values),
+        ];
+        write_hour(&mut writer, &kinds, 0, &sections, vec![(region_weights, Some(0))], vec![&b"campaign"[..]]);
+        writer.finish(None).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
+        assert!(source.exact_schema);
+        let mut saw_hour = false;
+        while let Some(record) = source.record().unwrap() {
+            if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
+                let manifest = Manifest::read(manifest, &columns).unwrap();
+                assert_eq!(manifest.samples, [(region_weights, Some(0))]);
+                assert_ne!(manifest.flags & SAMPLES, 0);
+                assert_eq!(manifest.statuses[tag_holders], Status::NotRecorded);
+                assert_eq!(manifest.read[tag_holders / 64] >> (tag_holders % 64) & 1, 0);
+                let mut got = Vec::new();
+                for entry in &manifest.sections {
+                    assert_eq!(manifest.statuses[entry.table], Status::Complete);
+                    assert_eq!(manifest.read[entry.table / 64] >> (entry.table % 64) & 1, 1);
+                    let decoded = Decoded::read(read_sections.next(entry.bytes).unwrap(), &kinds[entry.table], false).unwrap();
+                    got.push((entry.table, decoded.keys));
+                }
+                assert_eq!(got, [(TableId::Campaign.index(), vec![1]), (land_order, vec![2]), (region_weights, vec![3]), (building_inputs, vec![4])]);
+                saw_hour = true;
+            }
+            source.advance();
+        }
+        assert!(saw_hour);
+
+        let folder = Folder::new("post-derived-filter");
+        let mut writer = JournalWriter::create(&folder.0, 0, &identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        let first = vec![
+            insert_section(&kinds, tag_holders, 5, &[Values::Bytes(&[0])]),
+            insert_section(&kinds, region_weights, 6, &[Values::I32(&[88])]),
+        ];
+        write_hour(&mut writer, &kinds, 0, &first, vec![(tag_holders, Some(0)), (region_weights, Some(0))], vec![&b"TAG"[..]]);
+        let second = vec![
+            insert_section(&kinds, tag_holders, 7, &[Values::Bytes(&[0])]),
+            insert_section(&kinds, region_weights, 8, &[Values::I32(&[99])]),
+        ];
+        write_hour(&mut writer, &kinds, 1, &second, vec![(tag_holders, Some(1))], Vec::new());
+        writer.finish(None).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), None).unwrap();
+        let mut seen = Vec::new();
+        while let Some(record) = source.record().unwrap() {
+            if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
+                let manifest = Manifest::read(manifest, &columns).unwrap();
+                assert_eq!(manifest.statuses[tag_holders], Status::NotRecorded);
+                assert_eq!(manifest.read[tag_holders / 64] >> (tag_holders % 64) & 1, 0);
+                assert_eq!(manifest.statuses[region_weights], Status::Complete);
+                assert_eq!(manifest.read[region_weights / 64] >> (region_weights % 64) & 1, 1);
+                let mut rows = Vec::new();
+                for entry in &manifest.sections {
+                    let decoded = Decoded::read(read_sections.next(entry.bytes).unwrap(), &kinds[entry.table], false).unwrap();
+                    rows.push((entry.table, decoded.keys));
+                }
+                seen.push((manifest.flags & SAMPLES, manifest.samples, rows));
+            }
+            source.advance();
+        }
+        assert_eq!(
+            seen,
+            [
+                (SAMPLES, vec![(region_weights, Some(0))], vec![(region_weights, vec![6])]),
+                (0, Vec::new(), vec![(region_weights, vec![8])]),
+            ]
+        );
+
+        let folder = Folder::new("post-derived-multiply");
+        let mut writer = JournalWriter::create(&folder.0, 0, &identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        for hour in 0..=(LAG as i32) {
+            let mut statuses = vec![Status::NotRecorded; kinds.len()];
+            statuses[region_weights] = Status::Complete;
+            let mut read = vec![0_u64; kinds.len().div_ceil(64)];
+            read[region_weights / 64] |= 1 << (region_weights % 64);
+            let sections = if hour == 0 { vec![insert_section(&kinds, region_weights, 10, &[Values::I32(&[55])])] } else { Vec::new() };
+            let entries: Vec<Section> = sections.iter().map(|(table, bytes)| Section { table: *table, bytes: bytes.len() as u64, columns: vec![1], ops: INSERTS }).collect();
+            let manifest = Manifest { branch: 1, hour, flags: 0, total_ns: 0, pool_bytes: 0, dropped_frames: 0, appends: Vec::new(), statuses, read, samples: Vec::new(), sections: entries };
+            let held: Vec<&[u8]> = sections.iter().map(|(_, bytes)| bytes.as_slice()).collect();
+            writer.hour(None, &manifest.write(&columns).unwrap(), &held).unwrap();
+        }
+        writer.finish(None).unwrap();
+        let mut factors = unit_factors();
+        factors.factor[region_weights] = 2;
+        let mut source = Multiplied::open(&folder.0, 0, factors, None).unwrap();
+        assert!(!source.in_phase().contains(&"StrategicRegionWeights".to_owned()));
+        let mut multiplied = Vec::new();
+        while let Some(record) = source.record().unwrap() {
+            if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
+                let manifest = Manifest::read(manifest, &columns).unwrap();
+                for entry in &manifest.sections {
+                    let decoded = Decoded::read(read_sections.next(entry.bytes).unwrap(), &kinds[entry.table], false).unwrap();
+                    if entry.table == region_weights {
+                        multiplied.push((manifest.hour, decoded.inserted, decoded.keys));
+                    }
+                }
+            }
+            source.advance();
+        }
+        assert_eq!(multiplied, [(0, vec![0], vec![10]), (LAG as i32, vec![1], vec![10 | (1_u128 << 120)])]);
+
+        let folder = Folder::new("post-derived-preroll");
+        let mut writer = JournalWriter::create(&folder.0, 0, &identity, &test_capture()).unwrap();
+        let _ = writer.next_segment().unwrap();
+        writer.run(1, 0, 0).unwrap();
+        for hour in 0..720_i32 {
+            let mut statuses = vec![Status::NotRecorded; kinds.len()];
+            statuses[region_weights] = Status::Complete;
+            statuses[tag_holders] = Status::Complete;
+            let mut read = vec![0_u64; kinds.len().div_ceil(64)];
+            read[region_weights / 64] |= 1 << (region_weights % 64);
+            let sections = if hour == 0 {
+                vec![
+                    insert_section(&kinds, tag_holders, 5, &[Values::Bytes(&[0])]),
+                    insert_section(&kinds, region_weights, 99, &[Values::I32(&[123])]),
+                ]
+            } else {
+                Vec::new()
+            };
+            let appends = if hour == 0 { vec![&b"TAG"[..]] } else { Vec::new() };
+            let entries: Vec<Section> = sections.iter().map(|(table, bytes)| Section { table: *table, bytes: bytes.len() as u64, columns: vec![1], ops: INSERTS }).collect();
+            let manifest = Manifest { branch: 1, hour, flags: 0, total_ns: 0, pool_bytes: 0, dropped_frames: 0, appends, statuses, read, samples: Vec::new(), sections: entries };
+            let held: Vec<&[u8]> = sections.iter().map(|(_, bytes)| bytes.as_slice()).collect();
+            writer.hour(None, &manifest.write(&columns).unwrap(), &held).unwrap();
+        }
+        let _ = writer.next_segment().unwrap();
+        let second_hour = TableHour { read: None, changed: &[], deleted: &[], inserted: &[1], keys: &[100], inserts: &[Values::I32(&[456])], runs: &[], unrecorded: &[], touched: &[] };
+        let sections = vec![
+            insert_section(&kinds, tag_holders, 6, &[Values::Bytes(&[0])]),
+            (region_weights, section::write(&kinds[region_weights], &second_hour).unwrap()),
+        ];
+        write_hour(&mut writer, &kinds, 720, &sections, Vec::new(), Vec::new());
+        writer.finish(None).unwrap();
+        let start_file = folder.0.join("start.bin");
+        preroll(&folder.0, 0, 0, &start_file).unwrap();
+        let mut source = Multiplied::open(&folder.0, 0, unit_factors(), Some(Start { block: 0, file: start_file })).unwrap();
+        let mut synthetic_rows = None;
+        while let Some(record) = source.record().unwrap() {
+            if let Record::Hour { manifest, sections: mut read_sections, .. } = record {
+                let manifest = Manifest::read(manifest, &columns).unwrap();
+                assert_eq!(manifest.statuses[tag_holders], Status::NotRecorded);
+                assert_eq!(manifest.statuses[region_weights], Status::Complete);
+                let mut tables = Vec::new();
+                for entry in &manifest.sections {
+                    let decoded = Decoded::read(read_sections.next(entry.bytes).unwrap(), &kinds[entry.table], false).unwrap();
+                    tables.push((entry.table, decoded.keys, format!("{:?}", decoded.inserts)));
+                }
+                synthetic_rows = Some(tables);
+                break;
+            }
+            source.advance();
+        }
+        assert_eq!(synthetic_rows, Some(vec![(region_weights, vec![99, 100], "[I32([123, 456])]".to_owned())]));
+
+        let before = before();
+        for (digest, exact) in [(None, true), (Some([0xab; 32]), false)] {
+            let folder = Folder::new(if exact { "post-derived-middle-named" } else { "post-derived-middle-unnamed" });
+            let identity = Identity { schema: digest.unwrap_or_else(|| schema_digest(&before)), campaign: b"campaign".to_vec(), content: Vec::new(), capture_mode: 0 }.chain_bytes().unwrap();
+            let mut writer = JournalWriter::create(&folder.0, 0, &identity, &test_capture()).unwrap();
+            let _ = writer.next_segment().unwrap();
+            writer.run(1, 0, 0).unwrap();
+            let sections = vec![
+                insert_section(&before, TableId::Campaign.index(), 1, &[Values::Bytes(&[0])]),
+                insert_section(&before, region_weights + 1, 77, &[Values::I32(&[321])]),
+            ];
+            write_hour(&mut writer, &before, 0, &sections, Vec::new(), vec![&b"campaign"[..]]);
+            writer.finish(None).unwrap();
+            let (named, hours) = read(&folder.0).unwrap();
+            assert_eq!(named, exact);
+            assert_eq!(hours.len(), 1);
+            assert_eq!(hours[0].0.iter().map(|(table, _)| *table).collect::<Vec<_>>(), [TableId::Campaign.index(), region_weights]);
+            assert_eq!(hours[0].0[1].1, "[77] [I32([321])]");
+            assert_eq!(hours[0].1[region_weights], Status::Complete);
+            assert_eq!(hours[0].1[tag_holders], Status::NotRecorded);
+        }
     }
 }
