@@ -722,7 +722,7 @@ struct State {
     #[cfg(test)]
     waiting: bool,
     #[cfg(test)]
-    held: Option<(u64, BTreeSet<u64>)>,
+    units: BTreeSet<u64>,
     #[cfg(test)]
     applied: u64,
 }
@@ -775,7 +775,7 @@ impl Queue {
     fn give(&self, message: Message) {
         let mut state = self.lock();
         #[cfg(test)]
-        state.later(&message);
+        state.gave(&message);
         state.given.push(message);
         drop(state);
         self.given.notify_all();
