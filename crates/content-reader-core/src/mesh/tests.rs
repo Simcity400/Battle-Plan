@@ -2249,10 +2249,15 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     use std::sync::atomic::AtomicBool;
 
     let unsettled = br#"
-        @extra = overlay_only
+        entity = {
+            game_data = { atlas_size = { @extra = overlay_only x = 4 } }
+            name = @extra
+            pdxmesh = "m"
+        }
         entity = { name = "first" pdxmesh = "m" scale = 9.0 locator = { name = "point" position = { @x = 2 0 0 } } }
         entity = { name = "second" pdxmesh = "m" scale = 9.0 }
-        entity = { name = @extra pdxmesh = "m" }
+        @after_extra = overlay_after
+        entity = { name = @after_extra pdxmesh = "m" }
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
 
@@ -2327,8 +2332,10 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.unreadable_names.get("m"), None);
     assert_eq!(roster.unreadable_names.get("@model"), None);
     assert_eq!(roster.unreadable_names.get("@extra"), None);
+    assert_eq!(roster.unreadable_names.get("@after_extra"), None);
     assert_eq!(roster.unreadable_names.get("@broken_var"), None);
     assert!(roster.refused_declaration("overlay_only").is_some());
+    assert!(roster.refused_declaration("overlay_after").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
     assert_eq!(
