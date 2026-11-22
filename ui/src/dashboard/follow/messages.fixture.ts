@@ -4,7 +4,7 @@ import type { PageReading, Placed } from './store';
 
 export type Spec =
   | { notRecorded: string }
-  | { keys: bigint[]; columns: number; values: bigint[]; states?: number[]; reasons?: (string | null)[]; names?: (string | null)[]; hours?: number[]; changed?: boolean };
+  | { keys: bigint[]; columns: number; values: bigint[]; states?: number[]; reasons?: (string | null)[]; names?: (string | null)[]; hours?: number[]; changed?: boolean; window?: number };
 
 class Bytes {
   bytes: number[] = [];
@@ -13,14 +13,24 @@ class Bytes {
   u32(value: number) { for (let i = 0; i < 4; i++) this.u8(Number((BigInt(value) >> BigInt(8 * i)) & 0xffn)); }
   u64(value: bigint) { for (let i = 0; i < 8; i++) this.u8(Number((BigInt.asUintN(64, value) >> BigInt(8 * i)) & 0xffn)); }
   pad() { while (this.bytes.length % 8) this.u8(0); }
-  text(text: string) { const bytes = new TextEncoder().encode(text); this.u32(bytes.length); bytes.forEach(byte => this.u8(byte)); }
+  texts(texts: readonly string[]) {
+    const encoded = texts.map(text => new TextEncoder().encode(text));
+    let end = 0;
+    this.u32(0);
+    for (const bytes of encoded) { end += bytes.length; this.u32(end); }
+    this.pad();
+    for (const bytes of encoded) bytes.forEach(byte => this.u8(byte));
+    this.pad();
+  }
 }
+
+export const answerBody = (spec: Spec) => new Uint8Array(body(spec));
 
 function body(spec: Spec): number[] {
   const out = new Bytes();
   if ('notRecorded' in spec) {
     out.u8(0); out.u8(0); out.u16(0); out.u32(0); out.u32(0); out.u32(1);
-    out.text(spec.notRecorded); out.pad();
+    out.texts([spec.notRecorded]);
     return out.bytes;
   }
   const rows = spec.keys.length;
@@ -36,7 +46,8 @@ function body(spec: Spec): number[] {
     reasons.push(index(spec.reasons?.[row]));
     names.push(index(spec.names?.[row]));
   }
-  out.u8(spec.hours ? 2 : spec.changed ? 3 : 1); out.u8(0); out.u16(0); out.u32(rows); out.u32(spec.columns); out.u32(texts.length);
+  const ascending = !spec.hours && spec.keys.every((key, at) => at === 0 || spec.keys[at - 1]! < key);
+  out.u8(spec.hours ? 2 : spec.changed ? 3 : 1); out.u8(ascending ? 1 : 0); out.u16(spec.window ?? 0); out.u32(rows); out.u32(spec.columns); out.u32(texts.length);
   spec.keys.forEach(key => out.u64(key));
   spec.keys.forEach(key => out.u64(key >> 64n));
   spec.values.forEach(value => out.u64(value));
@@ -47,13 +58,13 @@ function body(spec: Spec): number[] {
   out.pad();
   for (let row = 0; row < rows; row++) out.u32(names[row] ?? 0xffff_ffff);
   out.pad();
-  texts.forEach(text => out.text(text)); out.pad();
+  out.texts(texts);
   return out.bytes;
 }
 
 export function message(hour: number, answers: { id: number; hour?: number; answer: Spec }[], reset = false, route = 0, seek = 0): Uint8Array {
   const out = new Bytes();
-  out.u32(0x324c4f46); out.u32(route * 2 + (reset ? 1 : 0)); out.u32(hour); out.u32(answers.length); out.u32(seek); out.u32(0);
+  out.u32(0x334c4f46); out.u32(route * 2 + (reset ? 1 : 0)); out.u32(hour); out.u32(answers.length); out.u32(seek); out.u32(0);
   for (const { id, hour: at, answer } of answers) {
     const held = body(answer);
     out.u32(id); out.u32(at ?? hour); out.u32(held.length); out.u32(0);

@@ -17,6 +17,8 @@ export interface MessageViews {
 
 export interface FollowedRows {
   kind: 'rows' | 'log' | 'changed';
+  canonical: boolean;
+  window: number;
   rows: number;
   columns: number;
   views: MessageViews;
@@ -26,11 +28,12 @@ export interface FollowedRows {
   states: number;
   reasons: number;
   names: number;
-  texts: Uint32Array;
+  ends: Uint32Array;
+  text: number;
   decoded: (string | undefined)[];
 }
 
-export type FollowedAnswer = { kind: 'notRecorded'; reason: string } | FollowedRows;
+export type FollowedAnswer = { kind: 'notRecorded'; reason: string; window?: number } | FollowedRows;
 
 export interface FollowedPanel {
   data?: unknown;
@@ -58,45 +61,31 @@ export interface FollowedMessage {
 const decoder = new TextDecoder();
 const aligned = (at: number) => (at + 7) & ~7;
 
-function texts(views: MessageViews, data: DataView, at: number, count: number): [string[], number] {
-  const out: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const length = data.getUint32(at, true);
-    out.push(decoder.decode(views.u8.subarray(at + 4, at + 4 + length)));
-    at += 4 + length;
-  }
-  return [out, aligned(at)];
+function textTable(views: MessageViews, at: number, count: number, end: number): { ends: Uint32Array; text: number; next: number } {
+  if (at + (count + 1) * 4 > end) throw new Error('A followed answer ends early.');
+  const ends = new Uint32Array(views.u8.buffer, views.u8.byteOffset + at, count + 1);
+  if (ends[0] !== 0) throw new Error("A followed answer's text offsets do not start at zero.");
+  for (let i = 0; i < count; i++) if (ends[i]! > ends[i + 1]!) throw new Error("A followed answer's text offsets do not ascend.");
+  const text = aligned(at + (count + 1) * 4), next = aligned(text + ends[count]!);
+  if (next > end) throw new Error('A followed answer ends early.');
+  return { ends, text, next };
 }
 
-function textStarts(data: DataView, at: number, count: number, end: number): [Uint32Array, number] {
-  const starts = new Uint32Array(count);
-  for (let i = 0; i < count; i++) {
-    if (at + 4 > end) throw new Error('A followed answer ends early.');
-    starts[i] = at;
-    at += 4 + data.getUint32(at, true);
-  }
-  return [starts, aligned(at)];
-}
-
-function textAt(answer: FollowedRows, at: number): string | null {
-  if (at >= answer.texts.length) return null;
+export function textAt(answer: FollowedRows, at: number): string | null {
+  if (at + 1 >= answer.ends.length) return null;
   let text = answer.decoded[at];
-  if (text === undefined) {
-    const start = answer.texts[at]!, u8 = answer.views.u8;
-    const length = u8[start]! | u8[start + 1]! << 8 | u8[start + 2]! << 16 | u8[start + 3]! << 24;
-    text = answer.decoded[at] = decoder.decode(u8.subarray(start + 4, start + 4 + length));
-  }
+  if (text === undefined) text = answer.decoded[at] = decoder.decode(answer.views.u8.subarray(answer.text + answer.ends[at]!, answer.text + answer.ends[at + 1]!));
   return text;
 }
 
 function body(views: MessageViews, data: DataView, start: number, end: number): FollowedAnswer {
-  const kind = data.getUint8(start);
+  const kind = data.getUint8(start), flags = data.getUint8(start + 1), window = data.getUint16(start + 2, true);
   const rows = data.getUint32(start + 4, true), columns = data.getUint32(start + 8, true), count = data.getUint32(start + 12, true);
   let at = start + 16;
   if (kind === 0) {
-    const [[reason]] = texts(views, data, at, count);
-    if (reason === undefined) throw new Error('A followed answer that is not recorded gives no reason.');
-    return { kind: 'notRecorded', reason };
+    const table = textTable(views, at, count, end);
+    if (count < 1) throw new Error('A followed answer that is not recorded gives no reason.');
+    return { kind: 'notRecorded', reason: decoder.decode(views.u8.subarray(table.text + table.ends[0]!, table.text + table.ends[1]!)), window };
   }
   if (kind !== 1 && kind !== 2 && kind !== 3) throw new Error(`No followed answer kind ${kind}.`);
   const cells = rows * columns;
@@ -108,9 +97,10 @@ function body(views: MessageViews, data: DataView, start: number, end: number): 
   const states = at; at = aligned(at + cells);
   const reasons = at / 4; at = aligned(at + rows * 4);
   const names = at / 4; at = aligned(at + rows * 4);
-  const [starts, next] = textStarts(data, at, count, end);
+  const { ends, text, next } = textTable(views, at, count, end);
   if (next !== end) throw new Error('A followed answer holds bytes past its texts.');
-  return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', rows, columns, views, keys, values, hours, states, reasons, names, texts: starts, decoded: [] };
+  return { kind: kind === 2 ? 'log' : kind === 3 ? 'changed' : 'rows', canonical: (flags & 1) !== 0, window, rows, columns, views, keys, values, hours, states, reasons, names,
+    ends, text, decoded: [] };
 }
 
 function viewsOf(bytes: ArrayBuffer | Uint8Array) {
@@ -130,7 +120,7 @@ export function parseAnswer(bytes: Uint8Array): FollowedAnswer {
   return body(views, data, 0, byteLength);
 }
 
-export const DATED_FOLLOW = 0x324c4f46, DATED_PANEL = 0x324c4e50;
+export const DATED_FOLLOW = 0x334c4f46, DATED_PANEL = 0x324c4e50;
 
 export function wireKind(bytes: ArrayBuffer | Uint8Array): number {
   const v = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);

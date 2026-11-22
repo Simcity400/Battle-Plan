@@ -90,7 +90,7 @@ interface Widget<B extends Bitmap> {
   status: Shown; reason?: string; inspect: string | null; rank?: number; early: Entry<B> | null; changed?: () => void;
 }
 
-interface RouteState { seek: number; reset: number; command: number; failed: { seek: number; reason: string } | null }
+interface RouteState { reset: number; command: number; failed: { seek: number; reason: string } | null }
 
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null; rank?: number }
 
@@ -100,6 +100,7 @@ const closeParts = <B extends Bitmap>(entry: Entry<B>) => {
 
 export class Page<B extends Bitmap = Bitmap> {
   T = 0;
+  seek = 0;
   playing = false;
   step = 0;
   speed = 0;
@@ -118,8 +119,8 @@ export class Page<B extends Bitmap = Bitmap> {
   private queue: Presentation<B>[] = [];
   private touched = new Set<Widget<B>>();
 
-  constructor({ lanes = 1, post = () => {} }: { lanes?: number; post?: (lane: number | 'all', message: PageMessage) => void } = {}) {
-    this.lanes = lanes; this.post = post;
+  constructor({ lanes = 1, post = () => {}, seek = 0 }: { lanes?: number; post?: (lane: number | 'all', message: PageMessage) => void; seek?: number } = {}) {
+    this.lanes = lanes; this.post = post; this.seek = seek;
     this.ahead = Array.from({ length: lanes }, () => 1);
     this.targets = Array.from({ length: lanes }, () => -Infinity);
     this.acks = Array.from({ length: lanes }, () => []);
@@ -128,11 +129,11 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private route(id: number): RouteState {
     let route = this.routes.get(id);
-    if (!route) this.routes.set(id, route = { seek: 0, reset: 0, command: 0, failed: null });
+    if (!route) this.routes.set(id, route = { reset: 0, command: 0, failed: null });
     return route;
   }
 
-  generation(route: number): Generation { const at = this.route(route); return { seek: at.seek, reset: at.reset }; }
+  generation(route: number): Generation { return { seek: this.seek, reset: this.route(route).reset }; }
 
   mount(id: number, mount: Mount<B>) {
     this.route(mount.route);
@@ -149,17 +150,18 @@ export class Page<B extends Bitmap = Bitmap> {
 
   target(widget: Pick<Widget<B>, 'pin' | 'offset'>) { return widget.pin ?? this.T + widget.offset; }
 
-  publish(T: number, { playing = this.playing, seek = false, step = this.step, speed = this.speed }: { playing?: boolean; seek?: boolean; step?: number; speed?: number } = {}) {
-    const wake = seek || playing !== this.playing || speed !== this.speed;
+  publish(T: number, { playing = this.playing, seek = false, step = this.step, speed = this.speed }: { playing?: boolean; seek?: boolean | number; step?: number; speed?: number } = {}) {
+    const sought = seek === true || (typeof seek === 'number' && seek !== this.seek);
+    const wake = sought || playing !== this.playing || speed !== this.speed;
     const moved = T !== this.T;
     this.T = T; this.playing = playing; this.step = step; this.speed = speed; this.publishes++;
-    if (seek) {
-      for (const route of this.routes.values()) route.seek++;
+    if (sought) {
+      this.seek = typeof seek === 'number' ? seek : this.seek + 1;
       for (const widget of this.widgets.values()) this.revalidate(widget);
-      for (const [route, at] of this.routes) this.post('all', { type: 'stream', route, seek: at.seek, target: T });
+      for (const route of this.routes.keys()) this.post('all', { type: 'stream', route, seek: this.seek, target: T });
     }
     this.commit();
-    if (moved || seek) for (const widget of this.widgets.values()) if (widget.pin === null) this.touched.add(widget);
+    if (moved || sought) for (const widget of this.widgets.values()) if (widget.pin === null) this.touched.add(widget);
     this.tell();
     this.request(wake || !playing, wake);
   }
@@ -223,7 +225,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private reject(widget: Widget<B>, entry: Entry<B>): string | null {
     const route = this.route(widget.route), at = this.target(widget);
     if (widget.pin === null) {
-      if (entry.gen.seek !== route.seek) return 'stream';
+      if (entry.gen.seek !== this.seek) return 'stream';
       if (entry.gen.reset < route.reset) return 'reset';
       if (route.failed && route.failed.seek >= entry.gen.seek) return 'failed stream';
     }
@@ -343,12 +345,12 @@ export class Page<B extends Bitmap = Bitmap> {
   fail(route: number, command: number, reason: string): boolean {
     const at = this.route(route);
     if (command !== at.command) return false;
-    at.failed = { seek: at.seek, reason };
+    at.failed = { seek: this.seek, reason };
     for (const widget of this.widgets.values()) if (widget.route === route && widget.pin === null) {
       if (widget.early) { this.refuse(widget, widget.early, 'failed stream'); widget.early = null; }
       this.clear(widget, 'failed', reason);
     }
-    this.post('all', { type: 'fail', route, seek: at.seek, command, reason });
+    this.post('all', { type: 'fail', route, seek: this.seek, command, reason });
     this.tell();
     return true;
   }
