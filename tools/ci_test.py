@@ -474,12 +474,17 @@ class RestoredTarget(unittest.TestCase):
                                                      'command = ["boat", "test", "{packages}"]\nshards = 2\nwarm = '
                                                      + ci.json.dumps([sys.executable, "-c", f"import sys; sys.exit({code})"]) + "\n"), encoding="utf-8")
                 ci.PIPELINE = pipeline
-                ci.warm("test", Path(folder, "target"))
-                return Path(folder, "target", ci.BUILT_FROM)
+                output = Path(folder, f"output-{code}")
+                ci.warm("test", Path(folder, "target"), github_output=output)
+                return Path(folder, "target", ci.BUILT_FROM), output.read_text(encoding="utf-8")
             try:
                 Path(folder, "target", "debug").mkdir(parents=True)
-                self.assertFalse(run(1).exists())
-                self.assertEqual(run(0).read_text(encoding="utf-8").strip(), ci.git("rev-parse", "HEAD").strip())
+                named, output = run(1)
+                self.assertFalse(named.exists())
+                self.assertEqual(output, "save=false\n")
+                named, output = run(0)
+                self.assertEqual(named.read_text(encoding="utf-8").strip(), ci.git("rev-parse", "HEAD").strip())
+                self.assertEqual(output, "save=true\n")
             finally:
                 ci.PIPELINE = original
 
