@@ -260,15 +260,15 @@ fn compare_raid_archetype_totals(
     let mut in_bound = BTreeMap::new();
     for (&archetype, &total) in row.archetype_tokens.iter().zip(&row.archetype_amounts) {
         let field = format!("{label}.archetype[{archetype}]");
-        if !seen.insert(archetype) {
-            report.difference(field, "repeated archetype", "one total per archetype");
-            continue;
+        let first = seen.insert(archetype);
+        if !first {
+            report.difference(&field, "repeated archetype", "one total per archetype");
         }
         if i128::from(total).abs() > LIMIT {
-            report.difference(field, total, format!("within clamp bound +-{LIMIT}"));
-            continue;
+            report.difference(&field, total, format!("within clamp bound +-{LIMIT}"));
+        } else if first {
+            in_bound.insert(archetype, total);
         }
-        in_bound.insert(archetype, total);
     }
     let Some(archetype_of) = archetype_of else {
         report.limitation(
@@ -293,9 +293,13 @@ fn compare_raid_archetype_totals(
         sum.0 += amount;
         sum.1 |= amount.abs() >= LIMIT;
     }
-    for (&archetype, &(sum, _)) in &expected {
+    for &archetype in expected.keys() {
         if !seen.contains(&archetype) {
-            report.difference(format!("{label}.archetype[{archetype}]"), "absent", sum);
+            report.difference(
+                format!("{label}.archetype[{archetype}]"),
+                "absent",
+                "present",
+            );
         }
     }
     if missing_definition {

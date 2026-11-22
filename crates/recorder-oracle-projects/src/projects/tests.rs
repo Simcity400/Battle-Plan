@@ -1258,37 +1258,42 @@ fn raid_equipment_structural_checks_run_even_when_variant_definitions_are_missin
     *frame.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
         reason: "fixture".into(),
     };
-    let unavailable = run_totals(
-        &frame,
-        &pack,
-        &items,
-        &[(0x3309, BOUND + 1), (0x3309, 100)],
-    );
-    assert_eq!(unavailable.differences.len(), 2, "{:?}", unavailable.differences);
-    assert!(
-        unavailable
-            .differences
-            .iter()
-            .any(|d| d.contains("within clamp bound")),
-        "{:?}",
-        unavailable.differences
-    );
-    assert!(
-        unavailable
-            .differences
-            .iter()
-            .any(|d| d.contains("repeated")),
-        "{:?}",
-        unavailable.differences
-    );
-    assert!(
-        unavailable
-            .limitations
-            .keys()
-            .any(|reason| reason.contains("VariantDefinitions is not complete")),
-        "{:?}",
-        unavailable.limitations
-    );
+    for pair in [
+        [(0x3309, BOUND + 1), (0x3309, 100)],
+        [(0x3309, 100), (0x3309, BOUND + 1)],
+    ] {
+        let unavailable = run_totals(&frame, &pack, &items, &pair);
+        assert_eq!(
+            unavailable.differences.len(),
+            2,
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .differences
+                .iter()
+                .any(|d| d.contains("within clamp bound")),
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .differences
+                .iter()
+                .any(|d| d.contains("repeated")),
+            "{pair:?}: {:?}",
+            unavailable.differences
+        );
+        assert!(
+            unavailable
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("VariantDefinitions is not complete")),
+            "{pair:?}: {:?}",
+            unavailable.limitations
+        );
+    }
 
     *frame.tables[TableId::VariantDefinitions.index()] =
         TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
@@ -1300,7 +1305,7 @@ fn raid_equipment_structural_checks_run_even_when_variant_definitions_are_missin
         &frame,
         &pack,
         &items,
-        &[(0x330a, BOUND + 1), (0x330a, 100)],
+        &[(0x330a, 100), (0x330a, BOUND + 1)],
     );
     assert_eq!(partial.differences.len(), 3, "{:?}", partial.differences);
     assert!(
@@ -1317,10 +1322,12 @@ fn raid_equipment_structural_checks_run_even_when_variant_definitions_are_missin
         partial.differences
     );
     assert!(
-        partial
-            .differences
-            .iter()
-            .any(|d| d.contains("archetype[13065]") && d.contains("absent")),
+        partial.differences.iter().any(|d| {
+            d.contains("archetype[13065]")
+                && d.contains("absent")
+                && d.contains("present")
+                && !d.contains("500000")
+        }),
         "{:?}",
         partial.differences
     );
