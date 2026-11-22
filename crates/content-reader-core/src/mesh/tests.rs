@@ -2249,9 +2249,10 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     use std::sync::atomic::AtomicBool;
 
     let unsettled = br#"
+        @extra = overlay_only
         entity = { name = "first" pdxmesh = "m" scale = 9.0 locator = { name = "point" position = { @x = 2 0 0 } } }
         entity = { name = "second" pdxmesh = "m" scale = 9.0 }
-        entity = { name = "overlay_only" pdxmesh = "m" }
+        entity = { name = @extra pdxmesh = "m" }
     "#;
     assert!(parse_descriptors(unsettled, "gfx/entities/a.asset").is_err());
 
@@ -2276,15 +2277,17 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     write(
         "base/gfx/entities/a.asset",
         br#"
-            entity = { name = "first" pdxmesh = "m" scale = 2.0 }
+            @model = first
+            entity = { name = @model pdxmesh = "m" scale = 2.0 }
             entity = { name = "second" pdxmesh = "m" scale = 4.0 }
         "#,
     );
     write(
         "base/gfx/entities/broken.asset",
         br#"
+            @broken_var = broken_second
             entity = { name = "broken_first" pdxmesh = "m" locator = { name = "point" position = { @x = 2 0 0 } } }
-            entity = { name = "broken_second" pdxmesh = "m" }
+            entity = { name = @broken_var pdxmesh = "m" }
         "#,
     );
     let overlay_dir = root.join("overlay");
@@ -2322,6 +2325,9 @@ fn unsettled_entity_read_is_refused_and_falls_back_to_recorded_file() {
     assert_eq!(roster.refused_declaration("first"), None);
     assert_eq!(roster.refused_declaration("second"), None);
     assert_eq!(roster.unreadable_names.get("m"), None);
+    assert_eq!(roster.unreadable_names.get("@model"), None);
+    assert_eq!(roster.unreadable_names.get("@extra"), None);
+    assert_eq!(roster.unreadable_names.get("@broken_var"), None);
     assert!(roster.refused_declaration("overlay_only").is_some());
     assert!(roster.refused_declaration("broken_first").is_some());
     assert!(roster.refused_declaration("broken_second").is_some());
