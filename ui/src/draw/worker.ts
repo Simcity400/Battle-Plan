@@ -581,7 +581,7 @@ self.onmessage = ({ data: m }: MessageEvent<ToWorker>) => {
     }
     case 'inspect': post({ type: 'inspection', request: m.request, reading: followed.snapshot(m.id) }); return;
     case 'clock':
-      const speedChanged = anchor.speed !== m.anchor.speed;
+      const speedChanged = anchor.playing && m.anchor.playing && anchor.speed !== m.anchor.speed;
       if (speedChanged || anchor.seek !== m.anchor.seek || anchor.playing !== m.anchor.playing) responding = true;
       if (anchor.playing && !m.anchor.playing) followed.paused();
       if (anchor.playing !== m.anchor.playing || !m.anchor.playing && anchor.position !== m.anchor.position) {

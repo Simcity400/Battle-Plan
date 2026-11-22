@@ -10,6 +10,7 @@ import type { ArsenalModel, RaceInspection, RaceTarget } from '../../draw/arsena
 import { arsenalNotice, arsenalRows, validateNuclearArsenal } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
 import { noticeMatchesAnchor, shownTime } from '../../draw/anchorGeneration.ts';
+import { motionOf } from '../easing.ts';
 
 type ExactRead = (hour: number) => Promise<unknown>;
 export default function DatedArsenal(props: RaceChartProps & { exactRead?: ExactRead; clock: PlaybackController; model: Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined } }) {
@@ -120,7 +121,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     };
     const anchor = clock.onDiscard(() => { if (latest.current.model.fixed === undefined) clear(); });
     const stopClockAnchor = clock.onAnchor((previous, next) => {
-      if (latest.current.model.fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) clear();
+      if (latest.current.model.fixed === undefined && motionOf(previous) !== motionOf(next)) clear();
     });
     const resize = new ResizeObserver(send); resize.observe(canvas);
     canvas.addEventListener('pointermove', pointer); canvas.addEventListener('click', pointer); canvas.addEventListener('contextmenu', pointer);

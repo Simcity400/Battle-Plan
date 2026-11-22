@@ -4,6 +4,7 @@ import type { PanelModel } from './panels/view';
 import { perfLog } from '../shell/perf.ts';
 import { pictureHour } from './pictureDate.ts';
 import { cancelGeometry, invalidateGeometry } from '../charts/geometry.ts';
+import { motionOf } from '../charts/easing.ts';
 import { noticeMatchesAnchor, shownTime } from './anchorGeneration.ts';
 
 export function attachPanel(content: HTMLElement, clock: PlaybackController, model: (id: number, owner: number) => PanelModel | null,
@@ -72,7 +73,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     if (fixed === undefined) { release(); refresh(); }
   });
   const stopClockAnchor = clock.onAnchor((previous, next) => {
-    if (fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) release();
+    if (fixed === undefined && motionOf(previous) !== motionOf(next)) release();
   });
   refresh();
   return { refresh, close() {
