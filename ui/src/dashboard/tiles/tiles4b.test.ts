@@ -144,15 +144,17 @@ test('a view of many keys asks its groups once, side by side, and a second chart
   assert.equal(other.current!.size, 3);
 });
 
-test('a full group of keys, every bin present with four values, reads every value from base64 or decoded bytes', () => {
-  const tags = Array.from({ length: TILE_GROUP }, (_, at) => `T${at}`);
-  const bytes = new Uint8Array(TILE_GROUP * TILE_BINS * (1 + 16 + 5));
-  bytes.fill(PRESENT, 0, TILE_GROUP * TILE_BINS);
-  const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
-  const key = (tag: string) => tag;
-  const tiles = tilesOf(reply, tags, 6, 10, key);
-  assert.equal(tiles.at(-1)!.values.length, 4 * TILE_BINS);
-  assert.deepEqual(tilesOf({ ...reply, bins: bytesOf(reply.bins as string) } as never, tags, 6, 10, key), tiles);
+test('a tile of 8, a full group or 100 keys, every bin present with four values, reads every value from base64 or decoded bytes', () => {
+  for (const keys of [8, TILE_GROUP, 100]) {
+    const tags = Array.from({ length: keys }, (_, at) => `T${at}`);
+    const bytes = new Uint8Array(keys * TILE_BINS * (1 + 16 + 5));
+    bytes.fill(PRESENT, 0, keys * TILE_BINS);
+    const reply: SeriesTileReply = { ...binned(tags, 6, 10, false), hourBytes: 1, bins: base64(bytes) };
+    const key = (tag: string) => tag;
+    const tiles = tilesOf(reply, tags, 6, 10, key);
+    assert.equal(tiles.at(-1)!.values.length, 4 * TILE_BINS, `${keys} keys`);
+    assert.deepEqual(tilesOf({ ...reply, bins: bytesOf(reply.bins as string) }, tags, 6, 10, key), tiles, `${keys} keys`);
+  }
 });
 
 test('a landing tile is decoded where replies are parsed, its bytes handed over, and reads as the same tiles', () => {
