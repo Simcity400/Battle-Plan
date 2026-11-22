@@ -249,27 +249,80 @@ fn contribution(
     memory: &impl Memory,
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
+    resolver: &mut crate::creference_registry::HeaderResolver,
     country: u32,
     handle: u64,
 ) -> Result<Option<Operative>, &'static str> {
-    let Some(object) = crate::creference_registry::resolve(memory, base, handle)? else {
+    let Some(object) = resolver.resolve(memory, base, handle)? else {
         return Ok(None);
     };
-    authenticate(memory, base, object, operative::VTABLE_RVA)?;
-    if field::<u64>(memory, object, operative::IDENTITY)? != handle {
+    if object == 0 {
+        return Err("raid intel object vtable mismatch");
+    }
+    let expected_op = site(base, operative::VTABLE_RVA)? as u64;
+    let mission = at(object, operative::ACTION)?;
+    let mut op_vtable = [0u8; 8];
+    let mut op_id = [0u8; 8];
+    let mut action_variant = [0u8; 4];
+    let mut action_impl = [0u8; 8];
+    let completed = memory.copy_scattered_prefetched(
+        [
+            object,
+            at(object, operative::IDENTITY)?,
+            at(mission, action::VARIANT)?,
+            at(mission, action::IMPLEMENTATION)?,
+        ],
+        &mut [&mut op_vtable, &mut op_id, &mut action_variant, &mut action_impl],
+    );
+    if completed == 0 {
+        return Err("raid intel field unreadable");
+    }
+    if u64::from_le_bytes(op_vtable) != expected_op {
+        return Err("raid intel object vtable mismatch");
+    }
+    if completed < 2 {
+        return Err("raid intel field unreadable");
+    }
+    if u64::from_le_bytes(op_id) != handle {
         return Err("raid counteroperative identity mismatch");
     }
-    let mission = at(object, operative::ACTION)?;
-    if field::<u32>(memory, mission, action::VARIANT)? != action::COUNTER_INTELLIGENCE {
+    if completed < 3 {
+        return Err("raid intel field unreadable");
+    }
+    if u32::from_le_bytes(action_variant) != action::COUNTER_INTELLIGENCE {
         return Ok(None);
     }
-    let implementation = pointer(memory, mission, action::IMPLEMENTATION)?;
-    authenticate(memory, base, implementation, MISSION_VTABLE_RVA)?;
-    let target = field::<u32>(
-        memory,
-        implementation,
-        crate::operative_action_implementation::TARGET_COUNTRY,
-    )?;
+    if completed < 4 {
+        return Err("raid intel field unreadable");
+    }
+    let implementation = usize::try_from(u64::from_le_bytes(action_impl))
+        .map_err(|_| "raid intel pointer overflow")?;
+    if implementation == 0 {
+        return Err("raid intel object vtable mismatch");
+    }
+    let expected_mission = site(base, MISSION_VTABLE_RVA)? as u64;
+    let mut mission_vtable = [0u8; 8];
+    let mut target_bytes = [0u8; 4];
+    let done = memory.copy_scattered_prefetched(
+        [
+            implementation,
+            at(
+                implementation,
+                crate::operative_action_implementation::TARGET_COUNTRY,
+            )?,
+        ],
+        &mut [&mut mission_vtable, &mut target_bytes],
+    );
+    if done == 0 {
+        return Err("raid intel field unreadable");
+    }
+    if u64::from_le_bytes(mission_vtable) != expected_mission {
+        return Err("raid intel object vtable mismatch");
+    }
+    if done < 2 {
+        return Err("raid intel field unreadable");
+    }
+    let target = u32::from_le_bytes(target_bytes);
     if target != country
         && (target == 0
             || countries.resolve(target)?.canonical_slot
@@ -335,9 +388,25 @@ pub fn required_operatives(
         if strategic == 0 {
             continue;
         }
-        authenticate(memory, base, strategic, strategic::VTABLE_RVA)?;
+        let expected_strategic = site(base, strategic::VTABLE_RVA)? as u64;
+        let mut strat_vtable = [0u8; 8];
+        let mut mission_header = [0u8; 16];
+        let done = memory.copy_scattered_prefetched(
+            [strategic, at(strategic, MISSIONS)?],
+            &mut [&mut strat_vtable, &mut mission_header],
+        );
+        if done == 0 {
+            return Err("raid intel field unreadable");
+        }
+        if u64::from_le_bytes(strat_vtable) != expected_strategic {
+            return Err("raid intel object vtable mismatch");
+        }
+        if done < 2 {
+            return Err("raid intel array invalid");
+        }
+        let missions = Array::from_header(mission_header, 8).ok_or("raid intel array invalid")?;
         count = count
-            .checked_add(array(memory, strategic, MISSIONS, 8)?.count as usize)
+            .checked_add(missions.count as usize)
             .ok_or("raid mission count overflow")?;
     }
     Ok(count)
@@ -390,6 +459,10 @@ fn walk_carrying(
         };
         let mut len = 0usize;
         let mut entries = [0_u8; ACCUMULATOR_ENTRIES * STRIDE];
+        let mut resolver = crate::creference_registry::HeaderResolver::default();
+        let expected_crypto = site(base, ccryptology::VTABLE_RVA)? as u64;
+        let expected_strategic = site(base, strategic::VTABLE_RVA)? as u64;
+        let mut mission_chunk = [0u8; 64 * 8];
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -403,8 +476,24 @@ fn walk_carrying(
             if let Some(agency) = agency::root(memory, base, country)? {
                 let crypto = pointer(memory, agency, agency::CRYPTOLOGY)?;
                 if crypto != 0 {
-                    authenticate(memory, base, crypto, ccryptology::VTABLE_RVA)?;
-                    if pointer(memory, crypto, ccryptology::OWNER_COUNTRY)? != country.pointer {
+                    let mut vtable = [0u8; 8];
+                    let mut owner = [0u8; 8];
+                    let done = memory.copy_scattered_prefetched(
+                        [crypto, at(crypto, ccryptology::OWNER_COUNTRY)?],
+                        &mut [&mut vtable, &mut owner],
+                    );
+                    if done == 0 {
+                        return Err("raid intel field unreadable");
+                    }
+                    if u64::from_le_bytes(vtable) != expected_crypto {
+                        return Err("raid intel object vtable mismatch");
+                    }
+                    if done < 2 {
+                        return Err("raid intel field unreadable");
+                    }
+                    let owner = usize::try_from(u64::from_le_bytes(owner))
+                        .map_err(|_| "raid intel pointer overflow")?;
+                    if owner != country.pointer {
                         return Err("raid cryptology owner mismatch");
                     }
                     row.crypto_strength = Some(modifiers.effective(memory, base, CRYPTO, carry)?);
@@ -419,37 +508,98 @@ fn walk_carrying(
                     0,
                 )?;
                 if strategic != 0 {
-                    authenticate(memory, base, strategic, strategic::VTABLE_RVA)?;
-                    let owner = field::<u32>(memory, strategic, strategic::OWNER)?;
+                    let mut vtable = [0u8; 8];
+                    let mut owner_bytes = [0u8; 4];
+                    let mut missions_header = [0u8; 16];
+                    let done = memory.copy_scattered_prefetched(
+                        [
+                            strategic,
+                            at(strategic, strategic::OWNER)?,
+                            at(strategic, MISSIONS)?,
+                        ],
+                        &mut [&mut vtable, &mut owner_bytes, &mut missions_header],
+                    );
+                    if done == 0 {
+                        return Err("raid intel field unreadable");
+                    }
+                    if u64::from_le_bytes(vtable) != expected_strategic {
+                        return Err("raid intel object vtable mismatch");
+                    }
+                    if done < 2 {
+                        return Err("raid intel field unreadable");
+                    }
+                    let owner = u32::from_le_bytes(owner_bytes);
                     if countries.resolve(owner)?.pointer != country.pointer {
                         return Err("raid strategic owner mismatch");
                     }
                     row.strategic_present = true;
                     row.country_defense = modifiers.effective(memory, base, DEFENSE, carry)?;
-                    let missions = array(memory, strategic, MISSIONS, 8)?;
+                    if done < 3 {
+                        return Err("raid intel array invalid");
+                    }
+                    let missions =
+                        Array::from_header(missions_header, 8).ok_or("raid intel array invalid")?;
                     operatives.ensure(
                         operative_len
                             .checked_add(missions.count as usize)
                             .ok_or("raid operative row count overflow")?,
                     )?;
-                    for ordinal in 0..missions.count {
-                        let handle = field::<u64>(
-                            memory,
-                            missions
-                                .element(ordinal, 8)
-                                .ok_or("raid mission address overflow")?,
-                            0,
-                        )?;
-                        if let Some(value) =
-                            contribution(memory, base, &countries, country.id, handle)?
-                        {
-                            if let Some(out) = operatives.get_mut(operative_len) {
-                                *out = value;
+                    let mut ordinal = 0u32;
+                    while ordinal < missions.count {
+                        let take = (missions.count - ordinal).min(64) as usize;
+                        let start = missions
+                            .element(ordinal, 8)
+                            .ok_or("raid mission address overflow")?;
+                        let buf = &mut mission_chunk[..take * 8];
+                        if !memory.copy(start, buf) {
+                            for offset in 0..take {
+                                let handle = field::<u64>(
+                                    memory,
+                                    missions
+                                        .element(ordinal + offset as u32, 8)
+                                        .ok_or("raid mission address overflow")?,
+                                    0,
+                                )?;
+                                if let Some(value) = contribution(
+                                    memory,
+                                    base,
+                                    &countries,
+                                    &mut resolver,
+                                    country.id,
+                                    handle,
+                                )? {
+                                    if let Some(out) = operatives.get_mut(operative_len) {
+                                        *out = value;
+                                    }
+                                    operative_len = operative_len
+                                        .checked_add(1)
+                                        .ok_or("raid operative count overflow")?;
+                                }
                             }
-                            operative_len = operative_len
-                                .checked_add(1)
-                                .ok_or("raid operative count overflow")?;
+                            ordinal += take as u32;
+                            continue;
                         }
+                        for offset in 0..take {
+                            let handle = u64::from_le_bytes(
+                                buf[offset * 8..offset * 8 + 8].try_into().unwrap(),
+                            );
+                            if let Some(value) = contribution(
+                                memory,
+                                base,
+                                &countries,
+                                &mut resolver,
+                                country.id,
+                                handle,
+                            )? {
+                                if let Some(out) = operatives.get_mut(operative_len) {
+                                    *out = value;
+                                }
+                                operative_len = operative_len
+                                    .checked_add(1)
+                                    .ok_or("raid operative count overflow")?;
+                            }
+                        }
+                        ordinal += take as u32;
                     }
                     row.operatives_len = operative_len - row.operatives_start;
                 }

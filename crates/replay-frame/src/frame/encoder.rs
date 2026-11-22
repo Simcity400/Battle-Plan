@@ -574,9 +574,20 @@ impl FrameEncoder {
         force_keyframe: bool,
         segments: &mut [Option<TableSegment>; TABLE_COUNT],
         kept: impl Fn(TableId) -> bool,
-        mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
+        refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
     ) -> io::Result<PreparedFrame> {
         source.round_to_display();
+        self.prepare_rounded_contained_keeping(source, force_keyframe, segments, kept, refuse)
+    }
+
+    pub fn prepare_rounded_contained_keeping(
+        &mut self,
+        mut source: FrameInput,
+        force_keyframe: bool,
+        segments: &mut [Option<TableSegment>; TABLE_COUNT],
+        kept: impl Fn(TableId) -> bool,
+        mut refuse: impl FnMut(TableId, io::Error) -> io::Result<String>,
+    ) -> io::Result<PreparedFrame> {
         let new_branch = self.state.branch != Some(source.branch);
         if !new_branch && self.state.last_hour.is_some_and(|hour| hour >= source.hour) {
             return Err(invalid("frame hour did not advance on its branch"));

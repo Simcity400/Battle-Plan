@@ -9,6 +9,10 @@ use engine_native::{
     Memory, carmy, cprovince, cprovince::KnownUnit, cprovince::UnitOrderRow, walk::Outcome,
 };
 use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
+#[cfg(test)]
+use crate::table_conversion::table;
+#[cfg(test)]
+use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceUnitOrder];
 

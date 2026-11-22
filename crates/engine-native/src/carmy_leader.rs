@@ -672,6 +672,26 @@ impl<V: Copy> PassTable<V> {
         }
     }
 
+    pub(crate) fn contains(&self, key: usize) -> bool {
+        if self.slots.is_empty() {
+            return false;
+        }
+        let mask = self.slots.len() - 1;
+        let hash = (key as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut at = ((hash ^ (hash >> 32)) as usize) & mask;
+        loop {
+            match self.slots[at] {
+                Some(entry) if entry.generation == self.generation => {
+                    if entry.key == key {
+                        return true;
+                    }
+                    at = (at + 1) & mask;
+                }
+                _ => return false,
+            }
+        }
+    }
+
     pub(crate) fn get_or(&mut self, key: usize, compute: impl FnOnce() -> V) -> V {
         self.get_or_if(key, compute, |_| true)
     }

@@ -1,5 +1,8 @@
-use engine_native::{Memory, cair_wing, cship, read};
+#[cfg(test)]
+use engine_native::cship;
+use engine_native::{Memory, cair_wing, read};
 
+#[cfg(test)]
 pub(crate) fn ship(
     memory: &impl Memory,
     ship: usize,

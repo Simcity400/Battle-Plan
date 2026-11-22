@@ -7,7 +7,7 @@ use engine_sites::Rva;
 
 mod air_capacity;
 mod naming;
-pub use naming::{NamingOperands, naming};
+pub use naming::{NamingOperands, ShipNamesAndCrew, capture_names_and_crew, naming};
 mod gathered;
 mod hull_variant;
 mod naval_power;

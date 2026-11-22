@@ -1188,7 +1188,9 @@ impl<B: SegmentBackend> Campaign<B> {
         unknown: u64,
         work: &mut WorkSample,
     ) -> io::Result<()> {
-        self.write_with(source.into(), qpc, signal, unknown, work, None)
+        let mut source = source.into();
+        source.round_to_display();
+        self.write_with(source, qpc, signal, unknown, work, None)
     }
 
     fn write_with(
@@ -1263,7 +1265,7 @@ impl<B: SegmentBackend> Campaign<B> {
                 ),
                 None => std::array::from_fn(|_| None),
             };
-            self.encoder.prepare_contained_keeping(
+            self.encoder.prepare_rounded_contained_keeping(
                 source,
                 restarting,
                 &mut segments,
@@ -2463,6 +2465,19 @@ impl Processor {
         campaign
             .try_apply_staggered_inputs(&mut source, captured.extended.country_intel_sample())?;
         campaign.assemble_reserved_intel_sample(&mut source);
+        for table in [
+            TableId::ProductionLineOutput,
+            TableId::OperationCompletions,
+            TableId::MapEvents,
+            TableId::ConstructionLineOutput,
+            TableId::CountryFuel,
+            TableId::ReservedCountryNaming,
+        ]
+        .into_iter()
+        .chain(crate::extended::politics::TABLES)
+        {
+            source.tables[table.index()].round_to_display();
+        }
         if let Some(layout) = &captured.fixed_layout {
             crate::fixed_layout::apply(&mut source.tables, layout)?;
         }

@@ -145,14 +145,18 @@ impl NativeReads {
             + self.variants_used
             + self.states.values().filter(|state| state.read.is_some()).count()
     }
+    #[cfg(test)]
     pub fn begin(&mut self, divisions: usize) -> std::io::Result<()> {
+        self.begin_part(divisions, true)
+    }
+    pub fn begin_part(&mut self, divisions: usize, read_dirty: bool) -> std::io::Result<()> {
         self.complete = true;
         self.membership_observation = None;
         self.root_indices.clear();
         self.roots_used = 0;
         self.variants_used = 0;
         self.variant_refresh = None;
-        self.dirty_read = false;
+        self.dirty_read = !read_dirty;
         self.membership_indices.clear();
         self.states.clear();
         self.variant_indices.clear();
@@ -160,6 +164,32 @@ impl NativeReads {
         engine_allocation::reserve_map(&mut self.membership_indices, divisions)?;
         engine_allocation::reserve_map(&mut self.states, divisions.saturating_mul(2))?;
         engine_allocation::reserve_map(&mut self.variant_indices, divisions)
+    }
+    pub fn capture_dirty(&mut self, memory: &impl Memory, base: usize, store: &Store) {
+        if self.dirty_read {
+            return;
+        }
+        let Some(store) = store.admitted() else {
+            self.incomplete();
+            return;
+        };
+        if store.variant_epoch != store.boundary.variant_epoch {
+            return;
+        }
+        if *self.variant_refresh.get_or_insert_with(|| {
+            let stamp = operands::observed_variant_stamp();
+            stamp.is_some() && store.variant_observation != stamp
+        }) {
+            self.dirty_read = true;
+            for &pointer in &store.boundary.dirty {
+                if store.boundary.retired.binary_search(&pointer).is_ok() {
+                    continue;
+                }
+                if let Some(&handle) = store.variant_handles.get(&pointer) {
+                    self.capture_variant(memory, base, store, handle, pointer, false);
+                }
+            }
+        }
     }
     pub fn allocated_bytes(&self) -> usize {
         self.roots.capacity() * std::mem::size_of::<RootRead>()
@@ -231,7 +261,14 @@ impl NativeReads {
             }
         }
         let pool = store.pools.get(&seed.division);
-        self.capture_membership(memory, base, pool, seed, &store.boundary.operands);
+        self.capture_membership(
+            memory,
+            base,
+            pool,
+            seed,
+            &store.boundary.operands,
+            &store.boundary.retired,
+        );
         if let Some(&index) = self.membership_indices.get(&seed.division)
             && self.memberships[index].ready
             && self.memberships[index].result.is_ok()
@@ -252,6 +289,9 @@ impl NativeReads {
                 }
             } else if !std::mem::replace(&mut self.dirty_read, true) {
                 for &pointer in &store.boundary.dirty {
+                    if store.boundary.retired.binary_search(&pointer).is_ok() {
+                        continue;
+                    }
                     if let Some(&handle) = store.variant_handles.get(&pointer) {
                         self.capture_variant(memory, base, store, handle, pointer, false);
                     }
@@ -370,6 +410,7 @@ impl NativeReads {
         held: Option<&Pool>,
         seed: &DivisionSeed,
         quiet: &crate::observations::Taken,
+        retired: &[usize],
     ) {
         if self.membership_indices.contains_key(&seed.division) {
             self.incomplete();
@@ -382,7 +423,15 @@ impl NativeReads {
             self.complete = false;
             return;
         };
-        if let Some(held) = held.filter(|held| held.army == seed.pointer)
+        let retired_pool = held.is_some_and(|held| {
+            !retired.is_empty()
+                && held
+                    .variants
+                    .iter()
+                    .any(|&(_, _, pointer)| retired.binary_search(&pointer).is_ok())
+        });
+        if !retired_pool
+            && let Some(held) = held.filter(|held| held.army == seed.pointer)
             && let Some(certificate) = held.certificate
             && quiet.quiet(pool, certificate.0)
         {
@@ -397,7 +446,9 @@ impl NativeReads {
         };
         self.membership_observation = Some((certificate, slot));
         let certificate = Some(certificate);
-        if held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate) {
+        if !retired_pool
+            && held.is_some_and(|held| held.army == seed.pointer && held.certificate == certificate)
+        {
             return;
         }
         let index = self.membership_indices.len();

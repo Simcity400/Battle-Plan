@@ -74,7 +74,6 @@ impl Store {
             && self.boundary.result.is_ok()
             && self.world_epoch == self.boundary.world_epoch
             && self.lifetime_epoch == self.boundary.lifetime_epoch
-            && self.boundary.retired.is_empty()
             && self.boundary.availability.is_some()
     }
     #[allow(clippy::too_many_arguments)]

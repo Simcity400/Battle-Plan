@@ -77,6 +77,9 @@ macro_rules! spool_inputs {
     (country_appearance, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
         $captured.tables_at(Some($hour)).map(TableInput::Sampled)
     };
+    (country_counters, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
 
     (division_templates, $captured:expr, $conversion:expr) => {
         $captured.projected_inputs($conversion.projection.as_deref_mut())
@@ -109,10 +112,11 @@ macro_rules! spool_inputs {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (intel, $captured:expr, $conversion:expr) => {
-        $captured.table_inputs(
+        $captured.table_inputs_projected(
             $conversion.variables_baseline,
             $conversion.variables_scratch,
             $conversion.intel.as_deref_mut(),
+            $conversion.projection.as_deref_mut(),
         )
     };
     (governance, $captured:expr, $conversion:expr) => {

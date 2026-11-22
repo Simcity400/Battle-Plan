@@ -170,7 +170,8 @@ impl PreparationPart {
                 engine_allocation::reserve(&mut self.supply, seeds.len())
             })
             .is_ok();
-        let source_reads = self.sources.begin(seeds.len());
+        let read_dirty = self.range.start == 0;
+        let source_reads = self.sources.begin_part(seeds.len(), read_dirty);
         let countries = source_reads
             .then(|| engine_native::ccountry::Reader::new(memory, base, state).ok())
             .flatten();
@@ -352,6 +353,9 @@ impl PreparationPart {
                             .prefetch_certificates(index, seed, &mut self.orders[4])
                     }),
             });
+        }
+        if self.source_ready && read_dirty {
+            self.sources.capture_dirty(memory, base, &store.sources);
         }
         self.stage_maxima(memory, base, seeds, store);
     }

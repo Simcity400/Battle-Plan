@@ -202,6 +202,9 @@ impl Preparation {
             + table_bytes::<usize, Option<(u32, usize)>>(self.provinces.capacity())
     }
     pub fn begin(&mut self, divisions: usize) -> bool {
+        self.begin_part(divisions, true)
+    }
+    pub fn begin_part(&mut self, divisions: usize, read_dirty: bool) -> bool {
         self.local_province_refusal = false;
         self.countries.clear();
         self.commanders.clear();
@@ -215,9 +218,12 @@ impl Preparation {
             engine_allocation::reserve_map(&mut self.countries, divisions)?;
             engine_allocation::reserve_map(&mut self.commanders, divisions)?;
             engine_allocation::reserve_map(&mut self.provinces, divisions)?;
-            self.reads.begin(divisions)
+            self.reads.begin_part(divisions, read_dirty)
         })
         .is_ok()
+    }
+    pub fn capture_dirty(&mut self, memory: &impl Memory, base: usize, store: &Store) {
+        self.reads.capture_dirty(memory, base, store);
     }
     pub fn capture(
         &mut self,

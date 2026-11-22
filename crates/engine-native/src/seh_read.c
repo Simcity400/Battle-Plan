@@ -276,7 +276,6 @@ static __forceinline void hint_copy_span(const CopySpan *span) {
 
 size_t seh_guarded_copy_scattered_prefetched(const CopySpan *spans, size_t count) {
     volatile size_t completed = 0;
-    volatile int active_read = 0;
     __try {
         size_t hinted = 0;
         while (hinted < 4 && hinted < count) {
@@ -288,13 +287,11 @@ size_t seh_guarded_copy_scattered_prefetched(const CopySpan *spans, size_t count
             }
             const CopySpan *span = &spans[index];
             if (span->len != 0) {
-                active_read = 1;
                 copy_bytes(span->dst, span->src, span->len);
-                active_read = 0;
             }
             completed = index + 1;
         }
-    } __except (active_read && completed < count &&
+    } __except (completed < count &&
                         copy_fault(GetExceptionInformation(), spans[completed].src,
                                    spans[completed].len, spans[completed].dst)
                     ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {

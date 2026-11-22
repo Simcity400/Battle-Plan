@@ -14,10 +14,6 @@ pub const MAP_TABLES: usize = 10;
 mod combat;
 pub(crate) use combat::{CombatReport, CombatRequest};
 
-fn ship_name_result<T>(result: Result<Option<T>, &'static str>) -> Option<T> {
-    result.ok().flatten()
-}
-
 pub trait MapSources {
     fn begin_land(&mut self) -> u64 {
         0
@@ -223,39 +219,29 @@ impl ShipCensus {
                 qpc() as u64
             },
             |pointer, row| {
-                row.name = ship_name_result(cship::cached_name_growing(
-                        memory,
-                        base,
-                        pointer,
-                        row.id,
-                        &mut self.ship_names,
-                        &mut name_len,
-                        &mut name_required,
-                    ),
+                let captured = cship::capture_names_and_crew(
+                    memory,
+                    base,
+                    pointer,
+                    row.id,
+                    &mut self.ship_names,
+                    &mut name_len,
+                    &mut name_required,
+                    &mut self.ship_overrides,
+                    &mut override_len,
+                    &mut override_required,
+                    collector_observers::crew_changes::quiet,
                 );
+                row.name = captured.name;
                 if let Some((_, len)) = row.name {
                     name_len += len;
                 }
-                row.naming = ship_name_result(cship::naming(
-                        memory,
-                        base,
-                        pointer,
-                        row.id,
-                        &mut self.ship_overrides,
-                        &mut override_len,
-                        &mut override_required,
-                    ),
-                );
+                row.naming = captured.naming;
                 if let Some(naming) = row.naming {
                     override_len += naming.override_name.1;
                 }
-                let crew = crate::crew::ship(
-                    memory,
-                    pointer,
-                    collector_observers::crew_changes::quiet,
-                );
-                row.acquired_manpower = crew.map(|value| value[0]);
-                row.required_manpower = crew.map(|value| value[1]);
+                row.acquired_manpower = captured.crew.map(|value| value[0]);
+                row.required_manpower = captured.crew.map(|value| value[1]);
                 models.visit_source(pointer, row);
                 management.borrow_mut().ship(pointer, row);
             },

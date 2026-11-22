@@ -8,7 +8,10 @@ use crate::{
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
     table_conversion::{table, table_iter, unavailable},
 };
-use collector_projection::table_clock::timed;
+use collector_projection::{
+    projection::{Projection, scalar_table},
+    table_clock::timed,
+};
 use engine_allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine_events::incoming_diplomatic_action_queue;
 use engine_intelligence::{
@@ -1939,6 +1942,17 @@ impl Captured {
         scratch: &mut ScriptVariableComparison,
         reuse: Option<&mut IntelConversion<'_>>,
     ) -> [TableInput; N] {
+        self.table_inputs_projected(baseline, scratch, reuse, None)
+    }
+
+    pub fn table_inputs_projected(
+        &self,
+        baseline: Option<(BaselineToken, &[rows::ScriptVariablesRow])>,
+        scratch: &mut ScriptVariableComparison,
+        reuse: Option<&mut IntelConversion<'_>>,
+        mut projection: Option<&mut Projection<'_>>,
+    ) -> [TableInput; N] {
+        use replay_data::rows::RowCodec;
         let outcomes = self.outcomes();
         let flags = timed(TableId::ScriptFlags, || {
             if let Some(reuse) = reuse {
@@ -1953,18 +1967,207 @@ impl Captured {
                 TableInput::Sampled(self.flags_table(outcomes[7]))
             }
         });
-        let country_intel = TableInput::Sampled(self.country_intel_table(outcomes[15]));
-        self.convert_tables(
-            TableInput::Sampled,
-            TableInput::SharedComplete,
+        let cryptology_row = |r: &ccryptology::Row| rows::CryptologyRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            amount_raw: r.amount_raw,
+            bonus_days: r.bonus_days,
+            bonus_active: r.bonus_active,
+            decrypting: r.decrypting,
+            ordinal: rows::Recorded::Value(r.ordinal),
+        };
+        let network_row = |r: &ccountry_intel_network::Row| rows::IntelNetworkRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            state_id: r.state_id,
+            strength_raw: r.strength_raw,
+            subnetwork_selector: r.subnetwork_selector,
+            local_strength_raw: r.local_strength_raw,
+            gain_raw: r.gain_raw,
+            gain_from_operatives_raw: r.gain_from_operatives_raw,
+            gain_from_adjacency_raw: r.gain_from_adjacency_raw,
+            local_quiet: r.local_quiet,
+            gain_factor_raw: r.gain_factor_raw,
+            strength_target_raw: r.strength_target_raw,
+            target_from_operatives_raw: r.target_from_operatives_raw,
+            target_from_counterintelligence_raw: r.target_from_counterintelligence_raw,
+            subnetwork_quiet: r.subnetwork_quiet,
+        };
+        let assignment_row = |r: &operation_assigned_operative::Row| rows::OperationAssignmentRow {
+            operation: r.operation,
+            ordinal: r.ordinal,
+            operative: r.operative,
+            selection: r.selection,
+        };
+        let action_row =
+            |r: &incoming_diplomatic_action_queue::Row| rows::IncomingDiplomaticActionRow {
+                country: r.country,
+                ordinal: r.ordinal,
+                handle: r.handle,
+                status: r.status,
+                action_type: r.action_type,
+                actor: r.actor,
+                original_actor: r.original_actor,
+                recipient: r.recipient,
+                original_recipient: r.original_recipient,
+                hour: r.hour,
+                last_command_hour: r.last_command_hour,
+            };
+        let opinion_row = |r: &crelation_status::OpinionRow| rows::RelationOpinionRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            opinion: r.opinion,
+        };
+        let country_intel_row = |r: &engine_native::country_intel_row::Row| rows::CountryIntelRow {
+            owner_country: r.owner_country,
+            target_index: r.target_index,
+            army: r.army,
+            air: r.air,
+            civilian: r.civilian,
+            navy: r.navy,
+        };
+        let captured_row =
+            |r: &cintelligence_agency::CapturedOperativeRow| rows::CapturedOperativeReferenceRow {
+                country: r.country,
+                ordinal: r.ordinal,
+                operative: r.operative,
+                owner: r.owner,
+            };
+        let summary_row = |r: &ccountry_intel_network::Summary| rows::IntelNetworkSummaryRow {
+            owner_country: r.owner_country,
+            target_country: r.target_country,
+            covered_core_states: r.covered_core_states,
+            ordinal: r.ordinal,
+            covered_controlled_states: r.covered_controlled_states,
+            covered_worth: r.covered_worth,
+            controlled_strength_sum: r.controlled_strength_sum,
+            core_strength_sum: r.core_strength_sum,
+            max_state_strength: r.max_state_strength,
+        };
+        let propaganda_row = |r: &crate::propaganda_changes::Row| rows::PropagandaEffortRow {
+            slot: r.slot,
+            country: r.country,
+            sequence: r.sequence,
+            stability: r.stability,
+            war_support: r.war_support,
+            derived_drift: r.derived_drift,
+        };
+        let certified_or = |slot: usize, fallback: &mut dyn FnMut() -> TableInput| match &self
+            .certified_snapshots[slot - 22]
+        {
+            Some(snapshot) => snapshot.input(),
+            None => fallback(),
+        };
+        [
+            TableInput::Sampled(self.capitulation_table(outcomes[0])),
+            TableInput::Sampled(self.subjects_table(outcomes[1])),
+            TableInput::Sampled(self.autonomy_table(outcomes[2])),
+            TableInput::Sampled(self.agencies_table(outcomes[3])),
+            TableInput::Sampled(self.operatives_table(outcomes[4])),
+            scalar_table::<tables::Cryptology, _>(
+                projection.as_deref_mut(),
+                outcomes[5],
+                &self.cryptology.rows,
+                |r| RowCodec::key(&cryptology_row(r)),
+                cryptology_row,
+            ),
+            scalar_table::<tables::IntelNetworks, _>(
+                projection.as_deref_mut(),
+                outcomes[6],
+                &self.networks.rows,
+                |r| RowCodec::key(&network_row(r)),
+                network_row,
+            ),
             flags,
-            country_intel,
-            |outcome| {
-                timed(TableId::ScriptVariables, || {
-                    self.variables_input(outcome, baseline, scratch)
-                })
-            },
-        )
+            timed(TableId::ScriptVariables, || {
+                self.variables_input(outcomes[8], baseline, scratch)
+            }),
+            TableInput::Sampled(self.operations_table(outcomes[9])),
+            scalar_table::<tables::OperationAssignments, _>(
+                projection.as_deref_mut(),
+                outcomes[10],
+                &self.assignments.rows,
+                |r| RowCodec::key(&assignment_row(r)),
+                assignment_row,
+            ),
+            TableInput::Sampled(self.operation_tokens_table(outcomes[11])),
+            scalar_table::<tables::IncomingDiplomaticActions, _>(
+                projection.as_deref_mut(),
+                outcomes[12],
+                &self.incoming_actions.rows,
+                |r| RowCodec::key(&action_row(r)),
+                action_row,
+            ),
+            scalar_table::<tables::RelationOpinions, _>(
+                projection.as_deref_mut(),
+                outcomes[13],
+                &self.relation_opinions.rows,
+                |r| RowCodec::key(&opinion_row(r)),
+                opinion_row,
+            ),
+            TableInput::Sampled(self.relation_tuples_table(outcomes[14])),
+            scalar_table::<tables::CountryIntel, _>(
+                projection.as_deref_mut(),
+                outcomes[15],
+                self.country_intel.rows().unwrap_or_default(),
+                |r| RowCodec::key(&country_intel_row(r)),
+                country_intel_row,
+            ),
+            scalar_table::<tables::CapturedOperativeReferences, _>(
+                projection.as_deref_mut(),
+                outcomes[16],
+                &self.captured_operatives.rows,
+                |r| RowCodec::key(&captured_row(r)),
+                captured_row,
+            ),
+            TableInput::Sampled(self.agency_upgrades_table(outcomes[17])),
+            TableInput::Sampled(self.operative_missions_table(outcomes[18])),
+            TableInput::Sampled(self.strategic_operatives_table(outcomes[19])),
+            TableInput::Sampled(self.agency_operation_buffers_table(outcomes[20])),
+            scalar_table::<tables::IntelNetworkSummaries, _>(
+                projection.as_deref_mut(),
+                outcomes[21],
+                &self.network_summaries.rows,
+                |r| RowCodec::key(&summary_row(r)),
+                summary_row,
+            ),
+            certified_or(22, &mut || {
+                scalar_table::<tables::PropagandaEfforts, _>(
+                    projection.as_deref_mut(),
+                    outcomes[22],
+                    &self.propaganda.rows,
+                    |r| RowCodec::key(&propaganda_row(r)),
+                    propaganda_row,
+                )
+            }),
+            certified_or(23, &mut || {
+                scalar_table::<tables::IntelContributions, _>(
+                    projection.as_deref_mut(),
+                    outcomes[23],
+                    &self.source_contributions.rows,
+                    |row| RowCodec::key(row),
+                    |row| *row,
+                )
+            }),
+            certified_or(24, &mut || {
+                scalar_table::<tables::IntelSources, _>(
+                    projection.as_deref_mut(),
+                    outcomes[24],
+                    &self.source_values.rows,
+                    |row| RowCodec::key(row),
+                    |row| *row,
+                )
+            }),
+            certified_or(25, &mut || {
+                scalar_table::<tables::IntelNetworkAuxiliaries, _>(
+                    projection.as_deref_mut(),
+                    outcomes[25],
+                    &self.network_auxiliary.rows,
+                    |row| RowCodec::key(row),
+                    |row| *row,
+                )
+            }),
+        ]
     }
 
     #[cfg(test)]
@@ -1979,6 +2182,7 @@ impl Captured {
         )
     }
 
+    #[cfg(test)]
     fn certified_table<V>(
         &self,
         slot: usize,
@@ -1996,6 +2200,7 @@ impl Captured {
         }
     }
 
+    #[cfg(test)]
     fn convert_tables<V>(
         &self,
         sample: impl Fn(TableView) -> V,
@@ -2150,6 +2355,7 @@ impl Captured {
 }
 
 impl Captured {
+    #[cfg(test)]
     fn country_intel_table(&self, outcome: Outcome) -> TableView {
         let source = self.country_intel.rows().unwrap_or_default();
         table::<tables::CountryIntel, _>(outcome, source, |r| rows::CountryIntelRow {

@@ -1511,23 +1511,35 @@ impl Captured {
             self.attack_deferred = true;
             return;
         }
+        let row_count = sources.rows.len();
         if let Some(store) = store.as_deref_mut() {
-            let parts = &self.preparation_parts;
+            let parts = &self.preparation_parts[..self.status_part_count.min(self.preparation_parts.len())];
             self.attack.settle_certification(
                 context.base,
                 sources.rows,
                 sources.outcome,
                 store,
                 |index| {
+                    if parts.is_empty() {
+                        return None;
+                    }
+                    if row_count != 0 {
+                        let guess = (index * parts.len() / row_count).min(parts.len() - 1);
+                        if parts[guess].range.contains(&index) {
+                            return parts[guess].get(index);
+                        }
+                    }
+                    let pos = parts.partition_point(|part| part.range.end <= index);
                     parts
-                        .iter()
-                        .find(|part| part.range.contains(&index))
+                        .get(pos)
+                        .filter(|part| part.range.contains(&index))
+                        .or_else(|| parts.iter().find(|part| part.range.contains(&index)))
                         .and_then(|part| part.get(index))
                 },
             );
         }
         let status = &self.status_packet;
-        let parts = &self.attack_parts;
+        let parts = &self.attack_parts[..self.status_part_count.min(self.attack_parts.len())];
         let ready = self.attack_ready;
         self.attack.capture_prepared(
             memory,
@@ -1538,14 +1550,21 @@ impl Captured {
             store,
             |index| status.unit_maxima(index),
             |index| {
-                ready
-                    .then(|| {
-                        parts
-                            .iter()
-                            .find(|part| part.range.contains(&index))
-                            .and_then(|part| part.get(index))
-                    })
-                    .flatten()
+                if !ready || parts.is_empty() {
+                    return None;
+                }
+                if row_count != 0 {
+                    let guess = (index * parts.len() / row_count).min(parts.len() - 1);
+                    if parts[guess].range.contains(&index) {
+                        return parts[guess].get(index);
+                    }
+                }
+                let pos = parts.partition_point(|part| part.range.end <= index);
+                parts
+                    .get(pos)
+                    .filter(|part| part.range.contains(&index))
+                    .or_else(|| parts.iter().find(|part| part.range.contains(&index)))
+                    .and_then(|part| part.get(index))
             },
         );
         self.attack_ready = false;
