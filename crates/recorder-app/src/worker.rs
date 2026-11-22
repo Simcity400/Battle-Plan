@@ -45,8 +45,8 @@ struct Inner {
     quit_after_stop: Option<u64>,
     prompts: panel::Prompts,
     prompt_revision: u64,
-    seen_prompt: Option<(u64, u64)>,
-    closing_itself: Option<(u64, u64)>,
+    seen_prompt: BTreeMap<u64, u64>,
+    closing_itself: BTreeMap<u64, u64>,
     sessions: u64,
     stopped: Option<(u64, bool)>,
     capturing: bool,
@@ -149,27 +149,26 @@ impl Inner {
     fn dismiss(&mut self, panel: u64, revision: u64) -> bool {
         let dismissible = self.snapshot.prompt.is_none() || self.prompt_revision <= revision;
         if dismissible {
-            self.closing_itself = Some((panel, self.prompts.issued()));
+            self.closing_itself.insert(panel, self.prompts.issued());
         }
         dismissible
     }
 
     fn dismissal_failed(&mut self, panel: u64) {
-        if self.closing_itself.is_some_and(|(closing, _)| closing == panel) {
-            self.closing_itself = None;
-        }
+        self.closing_itself.remove(&panel);
     }
 
     fn prompt_seen(&mut self, panel: u64, prompt: u64) {
-        let seen = self.seen_prompt.filter(|&(by, _)| by == panel).map_or(prompt, |(_, seen)| seen.max(prompt));
-        self.seen_prompt = Some((panel, seen));
+        let seen = self.seen_prompt.entry(panel).or_insert(prompt);
+        *seen = (*seen).max(prompt);
     }
 
     fn panel_gone(&mut self, panel: u64, stopping: bool, dismissed: bool) -> bool {
         self.panel_open = false;
-        let own = |taken: Option<(u64, u64)>| taken.filter(|&(by, _)| by == panel).map(|(_, value)| value);
-        let issued = own(self.closing_itself.take());
-        let seen = own(self.seen_prompt.take());
+        let issued = self.closing_itself.remove(&panel);
+        let seen = self.seen_prompt.remove(&panel);
+        self.closing_itself.retain(|&by, _| by > panel);
+        self.seen_prompt.retain(|&by, _| by > panel);
         let through = match issued {
             Some(issued) => seen.filter(|_| issued > 0).map(|seen| seen.min(issued - 1)),
             None => seen,
@@ -1894,6 +1893,28 @@ mod tests {
         assert!(!inner.panel_gone(2, false, true), "panel 2 closes on a click away after the user acted on the Quit in it");
         assert_eq!(inner.prompts.pending(Some(session)), None, "so the Quit is answered, though panel 1 closed itself before it was asked");
         assert_eq!(inner.quit_after_stop, None);
+    }
+
+    #[test]
+    fn a_retired_panels_late_close_leaves_its_replacements_own_close_in_place() {
+        let mut inner = Inner {
+            capturing: true,
+            ..Inner::default()
+        };
+        inner.snapshot.phase = Phase::Recording;
+        inner.new_session();
+        let session = inner.snapshot.session_key.unwrap();
+        let judged = inner.publish(&Snapshot::default()).unwrap();
+        assert!(!inner.panel_gone(1, false, true), "panel 1 closes on a click away");
+        assert!(inner.dismiss(2, judged.revision), "panel 2 closes itself with nothing pending");
+        assert!(inner.dismiss(1, judged.revision), "panel 1’s page asked to close before its window went, and its request lands now");
+        let quit = inner.ask(session, true);
+        let before = inner.snapshot.clone();
+        inner.publish(&before);
+        inner.prompt_seen(2, quit.id);
+        assert!(inner.panel_gone(2, false, false), "the Quit asked after panel 2 judged its status asks again");
+        assert_eq!(inner.prompts.pending(Some(session)).map(|prompt| prompt.id), Some(quit.id));
+        assert_eq!(inner.quit_after_stop, Some(quit.id));
     }
 
     #[test]

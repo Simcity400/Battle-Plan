@@ -117,6 +117,7 @@ fn update(
     change: impl FnOnce(&mut VideoSettings),
 ) -> Result<VideoSettings, String> {
     let folder = path.parent().ok_or("Video settings have no folder")?;
+    let _writing = replay::writes::WRITES.begin().map_err(|e| e.to_string())?;
     fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let lock = fs::OpenOptions::new()
         .create(true)

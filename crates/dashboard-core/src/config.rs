@@ -79,6 +79,7 @@ fn locked<T>(path: &Path, work: impl FnOnce() -> io::Result<T>) -> io::Result<T>
     let folder = path
         .parent()
         .ok_or_else(|| invalid("content preferences have no folder"))?;
+    let _writing = replay::writes::WRITES.begin()?;
     fs::create_dir_all(folder)?;
     let lock = fs::OpenOptions::new()
         .create(true)

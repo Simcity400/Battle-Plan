@@ -647,6 +647,7 @@ fn main() {
         tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
             shutdown(app);
             perf::close();
+            replay::writes::WRITES.close();
         }
         _ => {}
     });
@@ -665,6 +666,18 @@ fn within<T: Send + 'static>(limit: std::time::Duration, work: impl FnOnce() -> 
     finished.recv_timeout(limit).ok()
 }
 
+fn ordered<P>(page: impl FnOnce() -> P, steps: impl FnOnce() -> bool + Send + 'static, summary: impl FnOnce(P), limit: std::time::Duration) -> Option<bool> {
+    let page = page();
+    let ended = within(limit, steps);
+    summary(page);
+    ended
+}
+
+fn end_now() -> ! {
+    replay::writes::WRITES.close();
+    std::process::exit(0);
+}
+
 fn exit_after_maps(app: &tauri::AppHandle) -> bool {
     static EXIT: ExitOrder = ExitOrder::new();
     EXIT.begin(
@@ -673,12 +686,9 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
             std::thread::Builder::new()
                 .name("ordered exit".into())
                 .spawn(move || {
-                    let ordered = handle.clone();
-                    let ended = within(EXIT_BOUND, move || {
-                        let ended = shutdown(&ordered);
-                        perf::finish(&ordered);
-                        ended
-                    });
+                    handle.state::<Leaving>().until_launched();
+                    let ordered_steps = handle.clone();
+                    let ended = ordered(|| perf::finish_page(&handle), move || shutdown(&ordered_steps), perf::finish, EXIT_BOUND);
                     EXIT.done();
                     if ended == Some(true) {
                         handle.exit(0);
@@ -686,14 +696,15 @@ fn exit_after_maps(app: &tauri::AppHandle) -> bool {
                         if ended.is_none() {
                             eprintln!("BattlePlan’s shutdown didn’t finish within {} seconds, so it ends now.", EXIT_BOUND.as_secs());
                         }
-                        std::process::exit(0);
+                        end_now();
                     }
                 })
                 .map(drop)
         },
         || {
+            app.state::<Leaving>().until_launched();
             perf::close();
-            std::process::exit(0);
+            end_now();
         },
     )
 }
@@ -739,7 +750,7 @@ fn shutdown(app: &tauri::AppHandle) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExitOrder, Shut, shut, within};
+    use super::{ExitOrder, Shut, ordered, shut, within};
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -749,6 +760,11 @@ mod tests {
         let ended = within(Duration::ZERO, move || stalled.recv().is_ok());
         assert_eq!(ended, None, "a dashboard worker stuck reading an unresponsive share doesn’t hold the exit");
         assert_eq!(within(Duration::MAX, || true), Some(true), "a shutdown that finishes ends in order");
+
+        let (_never, stalled) = std::sync::mpsc::channel::<()>();
+        let mut written = None;
+        let ended = ordered(|| Some(true), move || stalled.recv().is_ok(), |page| written = Some(page), Duration::ZERO);
+        assert_eq!((ended, written), (None, Some(Some(true))), "a page that took its whole wait still has its summary written, though the steps after it overran");
     }
 
     struct Window {

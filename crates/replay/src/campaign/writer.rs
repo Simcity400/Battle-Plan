@@ -24,6 +24,11 @@ pub struct Addition<'a> {
 }
 
 pub fn revise(path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
+    revise_under(&crate::writes::WRITES, path, recording, addition, saved, level)
+}
+
+pub(crate) fn revise_under(writes: &crate::writes::Writes, path: &Path, recording: &Recording, addition: &Addition<'_>, saved: bool, level: i32) -> io::Result<Revision> {
+    let _writing = writes.begin()?;
     let (root, before): (&Root, Revision) = (recording.root(), recording.revision());
     let records = match addition.records.filter(|records| !records.is_empty()) {
         Some(records) => Some(records.encode(FormatVersion::read(recording.format())?)?),

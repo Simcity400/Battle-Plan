@@ -37,7 +37,8 @@ export const UNKEPT = 'Couldn’t tell BattlePlan to stay open for your unsaved 
 export const UNANSWERED_SAVED = 'Couldn’t tell BattlePlan your changes are saved, so its update waits.';
 export const UNANSWERED_UNSAVED = 'Couldn’t tell BattlePlan you have unsaved changes, so its update waits.';
 export const UNJUDGED = 'Couldn’t check for unsaved changes, so BattlePlan’s close and update questions wait.';
-export const UNRECHECKED = 'The update didn’t start, and BattlePlan couldn’t say whether anything still holds this window, so it stays locked.';
+export const UNRECHECKED = 'The update didn’t start, and BattlePlan hasn’t said whether anything still holds this window, so it stays locked.';
+export const AWAITED = 'BattlePlan hasn’t yet told this window what stands.';
 
 const unanswered = (about: CloseAbout, stays: boolean) =>
   about === 'close' ? stays ? UNKEPT : UNCLOSED : stays ? UNANSWERED_UNSAVED : UNANSWERED_SAVED;
@@ -45,6 +46,7 @@ const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
   let ended = false, watching = false, watched = false, leavingByChoice = false, applied = -1;
+  let recheckAfter: number | undefined;
   let shown: LeavingFor | null | undefined;
   const committed = new Map<number, { leaving: LeavingFor; accepted: boolean }>();
   const judged = new Set<number>();
@@ -76,10 +78,18 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     }
   };
   const rejudge = () => refresh('judge', UNJUDGED, rejudge);
-  const recheck = () => refresh('recheck', UNRECHECKED, recheck, () => clear('recheck'), () => committed.size > 0);
+  const recheck = () => {
+    if (!failures.has('recheck')) fail('recheck', UNRECHECKED, AWAITED, recheck);
+    refresh('recheck', UNRECHECKED, recheck, seq => {
+      if (applied < seq) { recheckAfter = seq; fail('recheck', UNRECHECKED, AWAITED, recheck); return; }
+      recheckAfter = undefined;
+      clear('recheck');
+    }, () => committed.size > 0);
+  };
 
   const leaving = () => leavingByChoice || committed.size > 0;
   const show = () => {
+    if (committed.size === 0) { recheckAfter = undefined; clear('recheck'); }
     const now = [...committed.values()].some(commitment => commitment.leaving === 'update') ? 'update' : leaving() ? 'close' : null;
     if (ended || now === shown) return;
     shown = now;
@@ -162,7 +172,9 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     const live = new Set([...batch.waiting, ...batch.holds].map(ask => ask.id));
     for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
     for (const id of [...judged]) if (!live.has(id)) judged.delete(id);
-    const settled = [...failures.keys()].filter(key => key === 'recheck' || (key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length)))));
+    const rechecked = recheckAfter !== undefined && batch.seq >= recheckAfter;
+    if (rechecked) recheckAfter = undefined;
+    const settled = [...failures.keys()].filter(key => (key === 'recheck' && rechecked) || (key.startsWith('answer:') && !asked(Number(key.slice('answer:'.length)))));
     for (const key of settled) failures.delete(key);
     if (settled.length) publish();
     for (const hold of batch.holds) {

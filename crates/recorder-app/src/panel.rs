@@ -140,12 +140,19 @@ impl State {
 #[derive(Default)]
 pub struct Panel(Mutex<State>);
 
+impl Panel {
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn at_window<T>(&self, hwnd: impl FnOnce() -> Option<isize>, read: impl FnOnce(&mut State, Option<isize>) -> T) -> T {
+        let hwnd = hwnd();
+        read(&mut self.lock(), hwnd)
+    }
+}
+
 fn state(app: &AppHandle) -> std::sync::MutexGuard<'_, State> {
-    app.state::<Panel>()
-        .inner()
-        .0
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
+    app.state::<Panel>().inner().lock()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -383,11 +390,11 @@ fn hwnd_of(window: &WebviewWindow) -> Option<isize> {
 }
 
 pub fn instance_of(app: &AppHandle, window: &WebviewWindow) -> Option<u64> {
-    state(app).instance_at(hwnd_of(window))
+    app.state::<Panel>().at_window(|| hwnd_of(window), |state, hwnd| state.instance_at(hwnd))
 }
 
 pub fn opening(app: &AppHandle, window: &WebviewWindow, panel: &str) -> Result<bool, &'static str> {
-    let (compact, previous, registered) = state(app).register(hwnd_of(window), panel)?;
+    let (compact, previous, registered) = app.state::<Panel>().at_window(|| hwnd_of(window), |state, hwnd| state.register(hwnd, panel))?;
     let library = app.state::<crate::recordings::Library>();
     if let Some(previous) = previous {
         library.close(&previous);
@@ -974,6 +981,17 @@ mod tests {
         assert!(!state.dismissed, "a retired panel’s dismissal says nothing of this one");
         state.dismiss(Some(2));
         assert!(state.dismissed, "the tray icon closing the panel dismisses it too");
+    }
+
+    #[test]
+    fn the_panels_window_handle_is_read_before_its_state_is_locked() {
+        let panel = Panel(Mutex::new(State { instance: 1, live: Some((1, 10)), ..State::default() }));
+        let read = || {
+            assert!(panel.0.try_lock().is_ok(), "the handle is read on the UI thread, which may itself wait on this lock");
+            Some(10)
+        };
+        assert_eq!(panel.at_window(read, |state, hwnd| state.instance_at(hwnd)), Some(1));
+        assert_eq!(panel.at_window(read, |state, hwnd| state.register(hwnd, "a")), Ok((false, None, true)));
     }
 
     #[test]

@@ -100,27 +100,35 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     if let Some(hours) = snapshot.behind.filter(|_| snapshot.phase == Phase::Recording) {
         text = format!("{text} · falling behind by {hours} hours");
     }
-    if let Some(prompt) = snapshot.prompt {
+    let question = snapshot.prompt.map(|prompt| {
         let question = match (prompt.quitting, prompt.discarding) {
             (true, true) => "Discard and quit?",
             (false, true) => "Discard this session?",
             (true, false) => "Quit BattlePlan Recorder?",
             (false, false) => "Stop recording?",
         };
-        text = format!("{text}\n{question} Click to answer.");
+        format!("\n{question} Click to answer.")
+    }).unwrap_or_default();
+    let units = |text: &str| text.encode_utf16().count();
+    let status = cut(&text, TOOLTIP_UNITS - units(&question));
+    let problem = snapshot.problem.as_ref().map(|problem| format!("\n{}", problem.text)).unwrap_or_default();
+    let problem = cut(&problem, TOOLTIP_UNITS - units(&status) - units(&question));
+    format!("{status}{question}{problem}")
+}
+
+fn cut(text: &str, room: usize) -> String {
+    if text.encode_utf16().count() <= room {
+        return text.to_owned();
     }
-    if let Some(problem) = &snapshot.problem {
-        text = format!("{text}\n{}", problem.text);
-    }
-    if text.encode_utf16().count() <= TOOLTIP_UNITS {
-        return text;
+    if room == 0 {
+        return String::new();
     }
     let mut units = 0;
     let mut cut: String = text
         .chars()
         .take_while(|character| {
             units += character.len_utf16();
-            units < TOOLTIP_UNITS
+            units < room
         })
         .collect();
     cut.push('…');
@@ -362,6 +370,20 @@ mod tests {
         assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
         assert!(text.starts_with("BattlePlan Recorder\nSaved · Nederland 🇳🇱"));
         assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn a_long_recording_name_leaves_room_for_the_question_that_waits() {
+        let snapshot = Snapshot {
+            phase: Phase::Recording,
+            name: Some("Nederland 🇳🇱 ".repeat(20)),
+            prompt: Some(crate::panel::Prompt { id: 1, quitting: true, discarding: false, session_key: 1 }),
+            ..Snapshot::default()
+        };
+        let text = tooltip(&snapshot);
+        assert!(text.encode_utf16().count() <= TOOLTIP_UNITS);
+        assert!(text.starts_with("BattlePlan Recorder\nRecording · Nederland 🇳🇱"), "{text}");
+        assert!(text.ends_with("…\nQuit BattlePlan Recorder? Click to answer."), "the name is cut, never the question: {text}");
     }
 
     #[test]

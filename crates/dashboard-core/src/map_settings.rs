@@ -196,11 +196,12 @@ impl Store {
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
     ) -> io::Result<()> {
         self.check().map_err(crate::invalid)?;
-        self.update_at(&path()?, key, choose)
+        self.update_at(&replay::writes::WRITES, &path()?, key, choose)
     }
 
     fn update_at(
         &mut self,
+        writes: &replay::writes::Writes,
         path: &std::path::Path,
         key: String,
         choose: impl FnOnce(&Self, &str) -> io::Result<CampaignMapSettings>,
@@ -208,6 +209,7 @@ impl Store {
         let folder = path
             .parent()
             .ok_or_else(|| crate::invalid("Map settings have no folder"))?;
+        let _writing = writes.begin()?;
         fs::create_dir_all(folder)?;
         let lock = fs::OpenOptions::new()
             .create(true)
@@ -802,18 +804,19 @@ mod tests {
             rivers: Some(false),
             ..Default::default()
         });
+        let writes = replay::writes::Writes::new();
         first
-            .update_at(&path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
+            .update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(night_off.clone()))
             .unwrap();
         second
-            .update_at(&path, "campaign-b".into(), |_, _| Ok(rivers_off.clone()))
+            .update_at(&writes, &path, "campaign-b".into(), |_, _| Ok(rivers_off.clone()))
             .unwrap();
         let saved = Store::load_from(&path).unwrap();
         assert_eq!(saved.preferences("campaign-a"), night_off);
         assert_eq!(saved.preferences("campaign-b"), rivers_off);
         assert_eq!(second.preferences("campaign-a"), night_off);
         first
-            .update_at(&path, "campaign-b".into(), |saved, key| {
+            .update_at(&writes, &path, "campaign-b".into(), |saved, key| {
                 saved
                     .flipped(key, MapSetting::DayNight)
                     .map_err(crate::invalid)
@@ -824,6 +827,10 @@ mod tests {
         assert_eq!(flipped.day_night, Some(false));
         assert_eq!(flipped.rivers, Some(false));
         assert_eq!(saved.preferences("campaign-a"), night_off);
+        writes.close();
+        let refused = second.update_at(&writes, &path, "campaign-a".into(), |_, _| Ok(rivers_off.clone())).unwrap_err();
+        assert_eq!(refused.to_string(), replay::writes::CLOSED, "a save asked for once BattlePlan closes is refused, never cut off part way");
+        assert_eq!(Store::load_from(&path).unwrap().preferences("campaign-a"), night_off);
         std::fs::remove_dir_all(&folder).unwrap();
     }
 

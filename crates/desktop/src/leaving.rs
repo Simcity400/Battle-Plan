@@ -127,6 +127,7 @@ struct State {
     outbox: Vec<Out>,
     offering: bool,
     hung: bool,
+    launching: usize,
     stop: Option<Stop>,
     lock: Option<Lock>,
 }
@@ -243,6 +244,7 @@ impl Default for Leaving {
                 outbox: Vec::new(),
                 offering: false,
                 hung: false,
+                launching: 0,
                 stop: None,
                 lock: None,
             }),
@@ -537,6 +539,10 @@ impl Leaving {
     }
 
     fn wait(&self, posed: Result<Posed, Verdict>) -> (Verdict, Option<u64>) {
+        self.wait_for(posed, false)
+    }
+
+    fn wait_for(&self, posed: Result<Posed, Verdict>, launches: bool) -> (Verdict, Option<u64>) {
         let Posed(key) = match posed {
             Ok(posed) => posed,
             Err(verdict) => return (verdict, None),
@@ -544,34 +550,58 @@ impl Leaving {
         let mut state = self.lock();
         loop {
             if let Some(taken) = Self::taken(&mut state, key) {
+                state.launching += usize::from(launches && taken.0 == Verdict::Leaving);
                 return taken;
             }
             state = self.answered.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
     }
 
+    fn release(state: &mut State, id: u64) {
+        let Some(at) = state.holds.iter().position(|hold| hold.id == id && hold.about == About::Install) else {
+            return;
+        };
+        state.holds.remove(at);
+        state.send();
+    }
+
+    #[cfg(test)]
     fn stay(&self, id: u64) {
-        self.act(|state| {
-            let Some(at) = state.holds.iter().position(|hold| hold.id == id && hold.about == About::Install) else {
-                return;
-            };
-            state.holds.remove(at);
-            state.send();
-        });
+        self.act(|state| Self::release(state, id));
+    }
+
+    fn launched(state: &mut State, launched: bool, id: Option<u64>) {
+        state.launching -= 1;
+        match id {
+            _ if launched => state.exit(),
+            Some(id) => Self::release(state, id),
+            None => {}
+        }
     }
 
     fn leave_after(&self, posed: Result<Posed, Verdict>, launch: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
-        let (verdict, id) = self.wait(posed);
+        struct Launching<'a>(&'a Leaving, Option<u64>, bool);
+        impl Drop for Launching<'_> {
+            fn drop(&mut self) {
+                let Self(leaving, id, launched) = *self;
+                leaving.act(|state| Leaving::launched(state, launched, id));
+            }
+        }
+        let (verdict, id) = self.wait_for(posed, true);
         if let Some(refused) = verdict.refusal() {
             return Err(refused.to_owned());
         }
+        let mut launching = Launching(self, id, false);
         let launched = launch();
-        match (&launched, id) {
-            (Ok(()), _) => self.exit(),
-            (Err(_), Some(id)) => self.stay(id),
-            (Err(_), None) => {}
-        }
+        launching.2 = launched.is_ok();
         launched
+    }
+
+    pub fn until_launched(&self) {
+        let mut state = self.lock();
+        while state.launching > 0 {
+            state = self.answered.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     pub fn install(&self, launch: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
@@ -1043,6 +1073,35 @@ mod tests {
     }
 
     #[test]
+    fn a_close_the_page_agrees_to_while_its_installer_starts_leaves_only_once_the_launch_ends() {
+        let page = Page::default();
+        let leaving = Leaving::default();
+        watched(&leaving, &page, 7);
+        let asking = leaving.pose(About::Install);
+        let (_, id, _) = heard(&leaving, &page);
+        leaving.answer(id, false, &[]);
+        std::thread::scope(|scope| {
+            let (started, begun) = channel();
+            let (launching, launch) = channel::<Result<(), String>>();
+            let install = scope.spawn(|| {
+                leaving.leave_after(asking, move || {
+                    started.send(()).unwrap();
+                    launch.recv().unwrap()
+                })
+            });
+            begun.recv().unwrap();
+            assert_eq!(leaving.close_requested(), Closing::Held);
+            let (_, close, _) = heard(&leaving, &page);
+            assert_eq!(leaving.answer(close, false, &[]), Answered::Leave, "the locked page agrees to Alt+F4");
+            assert_eq!(leaving.lock().launching, 1, "so the exit waits for the installer still being written and opened");
+            launching.send(Err("The installer couldn’t be started.".into())).unwrap();
+            assert!(install.join().unwrap().is_err());
+        });
+        assert_eq!(leaving.lock().launching, 0, "a launch that fails ends the wait too");
+        leaving.until_launched();
+    }
+
+    #[test]
     fn leaving_by_choice_refuses_reloads_while_the_maps_shut_down() {
         let page = Page::default();
         let leaving = Leaving::default();
@@ -1294,6 +1353,7 @@ mod tests {
         use std::sync::{Arc, Mutex, Weak};
 
         const SEEDS: u64 = 4000;
+        const REGRESSIONS: [u64; 1] = [10103];
         const TRACES: &str = "../../ui/src/shell/closeGuard.traces.json";
 
         struct Rng(u64);
@@ -1333,6 +1393,7 @@ mod tests {
             failed: u64,
             refreshing: BTreeSet<u64>,
             refreshes: usize,
+            recheck_after: Option<u64>,
             shown: Option<Option<bool>>,
         }
 
@@ -1397,7 +1458,6 @@ mod tests {
             Refresh,
             RefreshLost,
             RefreshReply,
-            Remount,
             Register,
             RegistrationLost,
             Reload,
@@ -1412,7 +1472,7 @@ mod tests {
             Choose,
         }
 
-        const STEPS: [(Step, usize); 30] = [
+        const STEPS: [(Step, usize); 29] = [
             (Step::Edit, 18),
             (Step::Save, 6),
             (Step::Restart, 9),
@@ -1430,7 +1490,6 @@ mod tests {
             (Step::Refresh, 9),
             (Step::RefreshLost, 2),
             (Step::RefreshReply, 9),
-            (Step::Remount, 6),
             (Step::Register, 18),
             (Step::RegistrationLost, 3),
             (Step::Reload, 6),
@@ -1445,7 +1504,7 @@ mod tests {
             (Step::Choose, 3),
         ];
 
-        const AFTER_EXIT: [Step; 15] = [
+        const AFTER_EXIT: [Step; 14] = [
             Step::Edit,
             Step::CloseWindow,
             Step::RunBatch,
@@ -1455,7 +1514,6 @@ mod tests {
             Step::Retry,
             Step::Refresh,
             Step::RefreshReply,
-            Step::Remount,
             Step::Register,
             Step::Reload,
             Step::ReloadLoads,
@@ -1632,6 +1690,9 @@ mod tests {
                 self.docs.push(Doc { alive: true, ..Doc::default() });
                 self.live = self.docs.len() - 1;
                 self.mount();
+                if self.rng.below(2) == 0 {
+                    self.mount();
+                }
             }
 
             fn mount(&mut self) {
@@ -1696,6 +1757,10 @@ mod tests {
             fn show(&mut self, doc: usize, guard: usize) {
                 let doc = &mut self.docs[doc];
                 let state = &mut doc.guards[guard];
+                if state.committed.is_empty() {
+                    state.recheck_after = None;
+                    state.failures.remove("recheck");
+                }
                 let now = if state.committed.values().any(|&(update, _)| update) {
                     Some(true)
                 } else if state.by_choice || !state.committed.is_empty() {
@@ -1802,7 +1867,11 @@ mod tests {
                 state.committed.retain(|id, _| live.contains(id));
                 state.judged.retain(|id| live.contains(id));
                 let asked: BTreeSet<u64> = batch.waiting.iter().map(|ask| ask.id).collect();
-                state.failures.retain(|key, _| key != "recheck" && key.strip_prefix("answer:").is_none_or(|id| asked.contains(&id.parse().unwrap())));
+                let rechecked = state.recheck_after.is_some_and(|after| batch.seq >= after);
+                if rechecked {
+                    state.recheck_after = None;
+                }
+                state.failures.retain(|key, _| (key != "recheck" || !rechecked) && key.strip_prefix("answer:").is_none_or(|id| asked.contains(&id.parse().unwrap())));
                 for hold in &batch.holds {
                     state.committed.entry(hold.id).and_modify(|(_, accepted)| *accepted = true).or_insert((hold.about != About::Close, true));
                 }
@@ -1844,8 +1913,11 @@ mod tests {
 
             fn recheck(&mut self, doc: usize, guard: usize) {
                 self.begin();
-                let state = &self.docs[doc].guards[guard];
+                let state = &mut self.docs[doc].guards[guard];
                 if !state.ended && !state.committed.is_empty() {
+                    if !state.failures.contains_key("recheck") {
+                        state.fail("recheck".into(), Failure::Recheck);
+                    }
                     self.ask_again(doc, guard, "recheck".into());
                 }
                 let trace = self.docs[doc].guards[guard].trace;
@@ -1872,7 +1944,13 @@ mod tests {
                     return;
                 };
                 if asking.key == "recheck" {
-                    state.failures.remove("recheck");
+                    if state.applied.is_some_and(|applied| applied >= after) {
+                        state.recheck_after = None;
+                        state.failures.remove("recheck");
+                    } else {
+                        state.recheck_after = Some(after);
+                        state.fail("recheck".into(), Failure::Recheck);
+                    }
                 }
                 if let (Some(id), Some(bound)) = (asking.key.strip_prefix("answer:").and_then(|id| id.parse().ok()), asking.bound) {
                     match state.resend.iter_mut().find(|(resent, _, _)| *resent == id) {
@@ -2113,7 +2191,6 @@ mod tests {
                         let out = self.out(asking.doc, asking.guard);
                         self.record(json!(["f", trace, asking.ordinal, answered, out]));
                     }
-                    Step::Remount if alive => self.mount(),
                     Step::Register | Step::RegistrationLost => {
                         let Some((doc, guard, document)) = self.registrations.pop_front() else { return false };
                         if !self.docs[doc].alive {
@@ -2361,15 +2438,6 @@ mod tests {
                     "{}",
                     self.fail("the host waits on an answer no page will send")
                 );
-                let inherited = self.active().is_some_and(|guard| self.docs[self.live].guards[guard].shown.flatten().is_none());
-                if self.stuck() && inherited {
-                    self.run(Step::CloseWindow);
-                    self.settled(true);
-                    if self.exited {
-                        return self.after_exit();
-                    }
-                    assert!(!self.stuck(), "{}", self.fail("a page left locked by the guard it replaced stays locked though nothing stands, even after a close"));
-                }
                 if self.stuck() {
                     let guards: Vec<String> = self.docs[self.live]
                         .guards
@@ -2416,7 +2484,7 @@ mod tests {
         fn no_interleaving_loses_unsaved_work_or_leaves_a_question_unanswered() {
             let mut traces = Vec::new();
             let mut covered = BTreeSet::new();
-            for seed in 1..=SEEDS {
+            for seed in (1..=SEEDS).chain(REGRESSIONS) {
                 let mut world = World::new(seed);
                 world.explore();
                 if !world.shapes.is_subset(&covered) {

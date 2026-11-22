@@ -1019,11 +1019,14 @@ pub async fn perf_stop() -> Result<Value, String> {
     .map_err(|error| error.to_string())?
 }
 
-pub fn finish(app: &AppHandle) {
+pub fn finish_page(app: &AppHandle) -> Option<bool> {
+    log()?.finish_page(app)
+}
+
+pub fn finish(page: Option<bool>) {
     let Some(log) = log() else {
         return;
     };
-    let page = log.finish_page(app);
     if !log.summarized.swap(true, Ordering::AcqRel) {
         let _ = log.summarize(Some(epoch_ms()), false, page);
     }

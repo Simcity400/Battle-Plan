@@ -179,6 +179,7 @@ impl RecorderSettings {
         self.save_to(&Self::path())
     }
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
+        let _writing = crate::writes::WRITES.begin()?;
         write_atomic(path, &serde_json::to_vec_pretty(self)?)
     }
 
@@ -186,6 +187,7 @@ impl RecorderSettings {
         Self::update_at(&Self::path(), change)
     }
     pub fn update_at<T>(path: &Path, change: impl FnOnce(&mut Self) -> T) -> io::Result<(Self, T)> {
+        let _writing = crate::writes::WRITES.begin()?;
         fs::create_dir_all(
             path.parent()
                 .ok_or_else(|| io::Error::other("Missing settings directory"))?,

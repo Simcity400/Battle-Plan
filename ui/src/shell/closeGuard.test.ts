@@ -506,6 +506,27 @@ test('an install that couldn’t start asks the host what stands, so a lost stay
   assert.equal(host.refreshes, 2, 'a page that holds nothing has nothing to ask');
 });
 
+test('a recheck the host dispatched keeps its Try again until the page runs a batch at least as new as the one it named', async () => {
+  const { host, start, deliver, send, ask, hold, retire, shown, locked } = desktop();
+  const guard = start();
+  await flush();
+  ask(1, 'install');
+  hold(1, 'install');
+  send();
+  retire(1);
+  const queued = ++host.seq;
+  guard.recheck();
+  await flush();
+  assert.deepEqual([host.refreshes, shown().map(({ message }) => message), locked()], [1, [UNRECHECKED], 'update'], 'the host dispatched its batch, but the page hasn’t run it, so Restarting… keeps Try again');
+  deliver({ seq: queued, waiting: [], holds: [{ id: 1, about: 'install' }] });
+  assert.deepEqual([shown().map(({ message }) => message), locked()], [[UNRECHECKED], 'update'], 'a batch older than the one named doesn’t settle it');
+  shown()[0]!.retry();
+  await flush();
+  assert.equal(host.refreshes, 2, 'Try again asks again');
+  send();
+  assert.deepEqual([locked(), shown()], [null, []], 'the batch the request named unlocks the page');
+});
+
 test('an answer that fails says which way it failed', async () => {
   const { host, start, ask, shown } = desktop();
   start();
