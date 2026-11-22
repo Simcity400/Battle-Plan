@@ -53,6 +53,11 @@
         "files": ["eframe-LICENSE-MIT.txt", "eframe-LICENSE-APACHE.txt"]
       },
       {
+        "name": "Tauri 2.11.5",
+        "use": "The desktop app's and recorder panel's IPC script is adapted from Tauri's IPC protocol script. Copyright 2019-2024 Tauri Programme within The Commons Conservancy.",
+        "files": ["tauri-LICENSE-MIT.txt", "tauri-LICENSE-APACHE.txt"]
+      },
+      {
         "name": "tao 0.35.3",
         "use": "The desktop app's windows and event loop, included in modified form.",
         "files": ["tao-LICENSE-APACHE.txt", "tao-LICENSE.spdx"]

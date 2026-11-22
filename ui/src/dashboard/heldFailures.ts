@@ -1,5 +1,5 @@
-import { type Failure, failureKey, failureWire, queryFailure } from './queryError.ts';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { type Failure, failureKey } from './queryError.ts';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 interface HeldFailure { error: Failure; retry?: () => void }
 const NONE: readonly Failure[] = [];
@@ -39,8 +39,10 @@ export const HeldFailuresContext = createContext<HeldFailures | null>(null);
 export function useHeldFailures(errors: readonly Failure[], retry: () => void): boolean {
   const failures = useContext(HeldFailuresContext);
   const [owner] = useState(() => ({}));
-  const key = JSON.stringify(failures ? errors.map(failureWire) : NONE);
-  useEffect(() => { failures?.put(owner, (JSON.parse(key) as import('../generated/dashboard').QueryError[]).map(error => ({ error: queryFailure(error), retry }))); }, [failures, owner, key, retry]);
+  const latest = useRef(errors);
+  latest.current = errors;
+  const key = failures ? JSON.stringify(errors.map(failureKey)) : '';
+  useEffect(() => { failures?.put(owner, latest.current.map(error => ({ error, retry }))); }, [failures, owner, key, retry]);
   useEffect(() => () => failures?.put(owner, []), [failures, owner]);
   return !!failures;
 }

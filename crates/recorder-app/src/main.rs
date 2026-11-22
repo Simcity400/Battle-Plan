@@ -32,6 +32,7 @@ fn main() {
     let recorder = Arc::new(worker::Recorder::default());
     let jobs = Arc::new(compress::Jobs::default());
     let app = tauri::Builder::default()
+        .invoke_system(include_str!("../../desktop/src/ipc.js"))
         .manage(Arc::clone(&recorder))
         .manage(Arc::clone(&jobs))
         .manage(panel::Panel::default())

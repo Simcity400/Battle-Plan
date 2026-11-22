@@ -2,13 +2,12 @@
   const invokeKey = __INVOKE_KEY__
   const internals = window.__TAURI_INTERNALS__
   let leaving = false
-  window.addEventListener('pagehide', () => { leaving = true })
+  window.addEventListener('pagehide', event => { leaving = !event.persisted })
   window.addEventListener('pageshow', () => { leaving = false })
 
   function encoded(payload) {
-    if (payload instanceof ArrayBuffer || ArrayBuffer.isView(payload) || Array.isArray(payload)) {
-      return { contentType: 'application/octet-stream', data: payload }
-    }
+    if (payload instanceof ArrayBuffer || ArrayBuffer.isView(payload)) return { contentType: 'application/octet-stream', data: payload }
+    if (Array.isArray(payload)) return { contentType: 'application/octet-stream', data: Uint8Array.from(payload) }
     const data = JSON.stringify(payload, (_key, value) => {
       if (value instanceof Map) return Object.fromEntries(value.entries())
       if (value instanceof Uint8Array) return Array.from(value)

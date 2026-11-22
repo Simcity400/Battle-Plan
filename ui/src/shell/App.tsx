@@ -46,6 +46,7 @@ import { commitZone } from './commitCount';
 import { RestartGuardContext, UpdateButton } from '../update/UpdateControl';
 import type { RestartGuard } from '../update/UpdateControl';
 import { leavePrompt, unsavedDetail } from './unsaved';
+import { closeGuard, type CloseGuard, type CloseGuardFailure } from './closeGuard.ts';
 import type { LeavePrompt, Leaving } from './unsaved';
 import { useUpdateState } from '../update/useUpdateState';
 
@@ -242,6 +243,8 @@ export default function App() {
   const layoutsUnsaved = unsavedPages.length > 0;
   const [saveRequest, setSaveRequest] = useState(0);
   const [leaving, setLeaving] = useState<{ kind: Leaving; opener: Element | null; restart?: () => Promise<boolean> } | null>(null);
+  const [guardFailure, setGuardFailure] = useState<CloseGuardFailure | null>(null);
+  const guard = useRef<CloseGuard | null>(null);
   useEffect(() => {
     if (tab !== 'settings' || widgetDefinitions().length) return;
     import('../widgets/definitions').then(() => setWidgetsLoading('loaded'), () => setWidgetsLoading('failed'));
@@ -379,7 +382,13 @@ export default function App() {
 
   const themeUnsaved = !!themeEditing && (!!themeEditing.typing || JSON.stringify([themeEditing.draft.name, themeEditing.draft.variants]) !== JSON.stringify([themeEditing.original.name, themeEditing.original.variants]));
   const unsavedWork = layoutsUnsaved || themeUnsaved;
-  useEffect(() => { void setUnsavedWork(unsavedWork).catch(() => {}); }, [unsavedWork]);
+  useEffect(() => {
+    const current = closeGuard({ mark: setUnsavedWork, listen: onCloseRequested },
+      () => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement }), setGuardFailure);
+    guard.current = current;
+    return () => { current.end(); if (guard.current === current) guard.current = null; };
+  }, []);
+  useEffect(() => { guard.current?.mark(unsavedWork); }, [unsavedWork]);
   useEffect(() => {
     if (!unsavedWork) { setLeaving(null); return; }
     if (desktopAvailable) return;
@@ -387,11 +396,6 @@ export default function App() {
     window.addEventListener('beforeunload', guard);
     return () => window.removeEventListener('beforeunload', guard);
   }, [unsavedWork]);
-  useEffect(() => {
-    let stop: (() => void) | null = null, live = true;
-    void onCloseRequested(() => setLeaving(previous => previous ?? { kind: 'close', opener: document.activeElement })).then(unlisten => { if (live) stop = unlisten; else unlisten(); }, () => {});
-    return () => { live = false; stop?.(); };
-  }, []);
   const unsavedNames = unsavedDetail(unsavedPages.map(id => pages.find(entry => entry.id === id)?.label ?? id), themeUnsaved ? themeEditing!.draft.name.trim() : null);
   const prompt = leaving ? leavePrompt(leaving.kind, unsavedNames) : null;
   const unsavedRef = useRef(unsavedNames);
@@ -410,7 +414,7 @@ export default function App() {
     const { restart } = leaving;
     await setUnsavedWork(false);
     if (await restart()) return;
-    await setUnsavedWork(true).catch(() => {});
+    guard.current?.mark(true);
     stayHere();
   };
   const saveBeforeClose = () => {
@@ -496,6 +500,7 @@ export default function App() {
         {pageStorageWarning && <div className="notice warning shell-page-storage-warning" role="status"><Icon name="alert" /><span>{pageStorageWarning}</span></div>}
         {switchFailure && <FailureLine className="shell-switch-failure" message={`Couldn’t show ${TAB_NAMES[switchFailure.tab]}.`}
           detail={switchFailure.message} retryDisabled={switching} onRetry={() => void changeTab(switchFailure.tab)} />}
+        {guardFailure && <FailureLine className="shell-guard-failure" message={guardFailure.message} detail={guardFailure.detail} onRetry={() => guard.current?.retry()} />}
       </header>
 
       <main className="workspace" ref={content}>
