@@ -3348,7 +3348,6 @@ pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
         ("peace bids", peace_bids::TABLES.to_vec()),
         ("logistics", logistics::TABLES.to_vec()),
         ("country factories", country_factories::TABLES.to_vec()),
-        ("state building inputs", state_building_inputs::TABLES.to_vec()),
         ("hired advisors", hired_advisors::TABLES.to_vec()),
         (
             "doctrines",
@@ -3364,9 +3363,7 @@ pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
     ]
 }
 
-// quarantine: #146 not updated for the format 142 capture additions
 #[test]
-#[ignore = "quarantined under #146"]
 fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
     use replay_data::scope::{self, CaptureMode};
     for (name, tables) in mode_gated_walks() {
@@ -3388,6 +3385,7 @@ fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
     }
     assert!(scope::records(CaptureMode::Map, TableId::DivisionMovement));
     assert!(scope::records(CaptureMode::Map, TableId::Politics));
+    assert!(scope::records(CaptureMode::Map, TableId::StateBuildingInputs));
 }
 
 #[test]
