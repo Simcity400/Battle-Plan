@@ -12,4 +12,4 @@ Strait adjacency records preserve raster order and later authored updates. An ex
 
 Border textures use the selected quality and sRGB views. Strait art has no quality suffix and keeps linear color. Province and state material can fade with camera height. The resources, infrastructure and manpower modes suppress ordinary province borders. The border pass preserves uses of its authored program, blend and samplers while forcing the map's depth and raster behavior. Hidden stages preserve the bindings needed by following passes. A visual replacement that cannot draw falls back to the recorded effect. Secondary-bank admission removes the edge from the ordinary bucket to avoid a second blend or depth interaction.
 
-[Contour and strip construction](../../crates/viewer-world/src/map/borders.rs) · [Class planning and draw pass](../../crates/viewer-world/src/map/border_pass.rs) · [Border shader](../../crates/viewer-world/src/map/border_shader.rs)
+[Contour and strip construction](../../crates/viewer-borders/src/borders.rs) · [Class planning and draw pass](../../crates/viewer-borders/src/border_pass.rs) · [Border shader](../../crates/viewer-borders/src/border_shader.rs)

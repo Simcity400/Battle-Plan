@@ -10,7 +10,7 @@ pub mod operative_content;
 pub mod placements;
 pub mod roster;
 
-use crate::Source;
+use dashboard_base::Source;
 use dashboard_core::config::LoadContext;
 use dashboard_text::cryptology;
 use content_reader_localisation::localisation::Localisation;

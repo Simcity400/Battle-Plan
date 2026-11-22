@@ -7,13 +7,7 @@ use super::{
 };
 #[cfg(any(test, feature = "export-types"))]
 use super::grants::{GrantRestriction, ResearchGrant};
-use crate::{
-    Source,
-    products::{
-        LoadContext, artwork,
-        at_hour::{At, AtHour, Keys, Owner, Read},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, artwork, at_hour::{At, AtHour, Keys, Owner, Read}}};
 use dashboard_follow::live::{Cells, Source as Cell};
 use replay_data::rows::{ResearchAssignmentRow, ResearchCoverageRow, ResearchInputRow, ResearchModifierRow, TableId, tables};
 use replay_frame::frame::DecodedFrame;

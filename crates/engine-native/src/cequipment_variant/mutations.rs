@@ -15,12 +15,13 @@ pub struct Mutation {
     pub witness: Option<usize>,
 }
 pub const COMMAND_VARIANT: usize = 0x28;
+pub const REBUILD_STATS_RVA: Rva = Rva(0x00c35f90);
 pub const FORWARDED_SITES: [usize; 3] = [2, 3, 9];
 pub const WRITER_AUDIT_REFUSAL: Option<&str> = None;
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: "RebuildStats",
-        rva: Rva(0x00c35f90),
+        rva: REBUILD_STATS_RVA,
         receiver: Receiver::Variant,
         witness: None,
     },

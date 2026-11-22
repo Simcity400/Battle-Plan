@@ -129,7 +129,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
         if (!values || held !== next) {
           held = next;
           values = {
-            get(key) { const v = next?.get(key); return typeof v === 'number' ? v : undefined; },
+            get(key) { const v = next?.get(key); return typeof v === 'number' ? v : typeof v === 'bigint' ? Number(v) : undefined; },
+            raw(key) { const v = next?.get(key); return typeof v === 'bigint' ? v : typeof v === 'number' && Number.isSafeInteger(v) ? BigInt(v) : undefined; },
             missing(key) { const v = next?.get(key); return typeof v === 'string' ? v : 'Not recorded'; },
           };
         }

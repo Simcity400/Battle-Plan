@@ -7,28 +7,16 @@ pub mod answer;
 pub mod content_check;
 pub mod products;
 pub mod reply_check;
-mod reply_dto;
+pub mod panel;
 pub mod service;
 
-pub use dashboard_base::{catalogue, content, presentation, ranking, read_runs, source, span};
-pub(crate) use dashboard_core::invalid;
-pub use dashboard_core::{
-    QueryError, blocks, config, dto::*, map_display, map_settings, protocol, refusal, refused,
-    transport,
-};
-pub use dashboard_text::{
-    artwork, character_scope, cryptology, effect_description, flag_choices, identity, metadata,
-    modifier_text, naval_battle_name, scope, scripted_text, state_resources, triggers, unit_names,
-};
-
-pub use config::Config;
-pub use reply_dto::*;
 pub use service::Service;
-pub use source::{Source, SourceKey};
 
 #[cfg(any(test, feature = "export-types"))]
 pub fn typescript_contract() -> String {
-    #[cfg(any(test, feature = "export-types"))]
+    use dashboard_core::{QueryError, dto::*, map_display, map_settings, protocol, transport};
+    use dashboard_land::products::army;
+    use dashboard_politics::products::focus_dto::*;
     use ts_rs::TS;
     let mut declarations = vec![
         QueryError::decl(),
@@ -93,8 +81,8 @@ pub fn typescript_contract() -> String {
         dashboard_query::series::ranked::RankedSpan::decl(),
         dashboard_query::series::ranked::SeriesRankedLine::decl(),
         dashboard_query::series::ranked::SeriesRankedReply::decl(),
-        products::army::ArmyChartLine::decl(),
-        products::army::ArmyChartReply::decl(),
+        army::ArmyChartLine::decl(),
+        army::ArmyChartReply::decl(),
     ];
     for product in products::PRODUCTS {
         declarations.extend(product.types.expect("every exported product registers its types")());
@@ -201,5 +189,3 @@ pub fn typescript_contract() -> String {
 
 #[cfg(test)]
 mod contract_tests;
-#[cfg(test)]
-pub(crate) use dashboard_base::test_fixtures;

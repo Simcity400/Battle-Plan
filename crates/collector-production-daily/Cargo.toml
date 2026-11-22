@@ -41,7 +41,6 @@ workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-collector-certificates = { workspace = true, features = ["test-support"] }
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-intel = { workspace = true, features = ["default", "flag_changes", "opinion_changes", "test-support", "variable_changes"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
@@ -55,5 +54,4 @@ replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-crossbeam-utils = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

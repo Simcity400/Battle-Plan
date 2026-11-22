@@ -1902,7 +1902,9 @@ impl<'w, 'a> Context<'w, 'a> {
             let mut stats = BTreeMap::new();
             for row in table::<tables::VariantStats>(self.world)? {
                 if transports.contains(&row.variant) {
-                    stats.entry(row.variant).or_insert(row.values[0]);
+                    stats
+                        .entry(row.variant)
+                        .or_insert(row.stat(replay_data::rows::VariantStatsRow::AIR_RANGE)?);
                 }
             }
             let air = registered(self.inputs(self.ours)?.air_range_factor, "air_range_factor")?;

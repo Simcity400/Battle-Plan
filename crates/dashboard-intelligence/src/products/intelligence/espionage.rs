@@ -1,14 +1,6 @@
 
 use super::{Country, IDENTITY, Tags, branch, missing, operative_content};
-use crate::{
-    Source,
-    products::{
-        LoadContext, Product,
-        at_hour::{At, AtHour, Owner, Read as RowRead},
-        country_ids::{Names, RunLinks},
-        logs::{self, LogCell, LogPageParams, LogPageReply, LogPageRow},
-    },
-};
+use dashboard_base::{Source, products::{LoadContext, Product, at_hour::{At, AtHour, Owner, Read as RowRead}, log_page::{self as logs, LogCell, LogPageParams, LogPageReply, LogPageRow}}, queries::country_ids::{Names, RunLinks}};
 use dashboard_query::{
     Query,
     log::{Cell, FacetFilter},
@@ -374,11 +366,11 @@ impl Product for EspionageOperation {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let id: u64 = params.id.parse().map_err(|_| dashboard_core::invalid("Invalid operation id"))?;
         let stretch = *query.timeline.at(params.hour).ok_or_else(|| dashboard_core::refused("The operation's hour is not recorded"))?;
-        let lives = crate::answer::lifetimes(source, stretch.run, TableId::Operations)?;
+        let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::Operations)?;
         let (first, last) = lives
             .iter()
             .find(|(key, ..)| *key == u128::from(id))
@@ -527,8 +519,8 @@ impl Product for EspionageEnded {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let from = params.from.unwrap_or(query.timeline.first);
         let recording = query.replay.recording();
         let names = Names::new(&query.holders);
@@ -536,9 +528,9 @@ impl Product for EspionageEnded {
         let mut warnings = Vec::new();
         let stretches: Vec<_> = query.timeline.stretches.iter().filter(|stretch| stretch.last >= from && stretch.first <= params.to).copied().collect();
         for stretch in stretches {
-            crate::metadata::check_cancel(cancelled)?;
+            dashboard_text::metadata::check_cancel(cancelled)?;
             let end = stretch.last.min(params.to);
-            let lives = crate::answer::lifetimes(source, stretch.run, TableId::Operations)?;
+            let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::Operations)?;
             let reads = dashboard_query::cost::storage(|| lanes::complete_reads(recording, stretch.run, TableId::Operations, stretch.first, end))?;
             let ended = endings(&lives, (stretch.first, stretch.last), &reads, from, end);
             if ended.is_empty() {
@@ -551,7 +543,7 @@ impl Product for EspionageEnded {
             let rows = rows_at(recording, stretch.run, &ended.iter().map(|ending| (ending.last, ending.key)).collect::<Vec<_>>())?;
             let tokens: Vec<u128> = rows.values().map(|row| u128::from(row.definition_token)).collect::<BTreeSet<_>>().into_iter().collect();
             let keys = literals(recording, stretch.run, end, &tokens)?;
-            let links = crate::answer::links(source, stretch.run)?;
+            let links = dashboard_base::queries::links(source, stretch.run)?;
             let mut unread = 0usize;
             for ending in ended {
                 let Some(row) = rows.get(&(ending.last, ending.key)) else {
@@ -669,7 +661,7 @@ impl Product for EspionageTypes {
     }
 
     fn load(source: &Source, _params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
         let content = match operative_content::content(source, context) {
             Ok(content) => content,
             Err(why) => return Ok(EspionageTypesReply { types: Vec::new(), missing: Some(why), warnings: Vec::new() }),
@@ -728,8 +720,8 @@ impl Product for EspionageTypeTokens {
     }
 
     fn load(source: &Source, params: &Self::Params, context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let content = match operative_content::content(source, context) {
             Ok(content) => content,
             Err(why) => return Ok(EspionageTypeTokensReply { types: Vec::new(), missing: Some(why), warnings: Vec::new() }),
@@ -743,8 +735,8 @@ impl Product for EspionageTypeTokens {
         }
         let mut lexicons = Vec::with_capacity(runs.len());
         for &(run, first, last) in &runs {
-            crate::metadata::check_cancel(cancelled)?;
-            lexicons.push((crate::answer::lexicon(source, run)?, first, last));
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            lexicons.push((dashboard_base::queries::lexicon(source, run)?, first, last));
         }
         let types = content
             .operation_tokens()
@@ -814,7 +806,7 @@ impl Sightings {
         let recording = query.replay.recording();
         let mut out = HashMap::new();
         for (run, (first, last, ids)) in by_run {
-            let lives = crate::answer::lifetimes(source, run, TableId::Operations)?;
+            let lives = dashboard_base::queries::lifetimes(source, run, TableId::Operations)?;
             let mine: HashMap<u128, (i32, i32)> = lives
                 .iter()
                 .filter(|(key, ..)| ids.contains(key))
@@ -866,8 +858,8 @@ impl Product for EspionageLog {
     }
 
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
-        crate::metadata::check_cancel(cancelled)?;
-        let query = crate::answer::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let query = dashboard_base::queries::query(source, params.branch_id.parse().map_err(|_| dashboard_core::invalid("Invalid branch"))?)?;
         let asked = LogPageParams {
             branch_id: params.branch_id.clone(),
             log: LOG.to_owned(),
@@ -887,7 +879,7 @@ impl Product for EspionageLog {
         for (row, ..) in &rows {
             if let Some(stretch) = query.timeline.at(row.hour) {
                 if !links.contains_key(&stretch.run) {
-                    links.insert(stretch.run, crate::answer::links(source, stretch.run)?);
+                    links.insert(stretch.run, dashboard_base::queries::links(source, stretch.run)?);
                 }
                 if let Some(token) = number(&row.cells, DEFINITION) {
                     tokens.entry(stretch.run).or_default().insert(u128::from(token as u32));

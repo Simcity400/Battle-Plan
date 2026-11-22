@@ -56,7 +56,9 @@ mod tests {
         for workers in [0, 1, 3] {
             let calls = Arc::new(AtomicUsize::new(0));
             let observed = Arc::clone(&calls);
-            let pool = collector_workers::acquisition::Pool::start(
+            let pool =
+            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+            unsafe { collector_workers::acquisition::Pool::start(
                 workers,
                 1,
                 move |request: &mut Request<Vec<u32>>| {
@@ -66,7 +68,7 @@ mod tests {
                         Outcome::Rows { len: 1 }
                     })
                 },
-            )
+            ) }
             .unwrap();
             let mut rows = vec![0; 4];
             let pointer = rows.as_ptr();
@@ -112,7 +114,9 @@ mod tests {
     fn gather_panic_returns_partial_payload_without_retry() {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let pool = collector_workers::acquisition::Pool::start(
+        let pool =
+        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
+        unsafe { collector_workers::acquisition::Pool::start(
             0,
             1,
             move |request: &mut Request<Vec<u32>>| {
@@ -122,7 +126,7 @@ mod tests {
                     panic!("synthetic acquisition failure");
                 })
             },
-        )
+        ) }
         .unwrap();
         let mut rows = vec![0; 4];
         let pointer = rows.as_ptr();

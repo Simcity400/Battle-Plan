@@ -412,7 +412,7 @@ fn flying_into_a_ridge_crashes_explodes_for_the_content_s_time_and_flies_again_a
     let exploding = held.aircraft.expect("exploding");
     assert_eq!(
         exploding.animation,
-        viewer_world::map::entity_animation::named_request(EXPLODE)
+        viewer_models::entity_animation::named_request(EXPLODE)
     );
     assert_eq!(exploding.position, struck);
     fly(&mut flight, &idle(), &cliff, PLANE.ground.explosion + STEP);

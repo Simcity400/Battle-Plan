@@ -21,7 +21,7 @@ use viewer_foundation::{
     },
     unit_handle::Unit,
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const VIEWPORT: [u32; 2] = [3840, 2160];
 const MODES: [Stock; 5] = [Stock::StrategicAir, Stock::StrategicNavy, Stock::Resistance, Stock::Compliance, Stock::Resources];

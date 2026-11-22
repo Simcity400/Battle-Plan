@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use viewer_world::map::railways::{Bridge, BridgeKind, RailMesh, RailNetwork, RailRun};
+use viewer_rail::railways::{Bridge, BridgeKind, RailMesh, RailNetwork, RailRun};
 
 #[derive(Default)]
 struct Memory {
