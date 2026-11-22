@@ -96,8 +96,17 @@ pub async fn close_panel(
 }
 
 #[tauri::command]
-pub fn prompt_shown(recorder: State<'_, Arc<Recorder>>, prompt: u64) {
+pub fn prompt_shown(
+    app: AppHandle,
+    window: WebviewWindow,
+    recorder: State<'_, Arc<Recorder>>,
+    prompt: u64,
+) -> Result<(), String> {
+    if window.label() != panel::LABEL || !panel::shown(&app) {
+        return Err("The recorder panel isn’t on screen, so its prompt doesn’t count as seen.".into());
+    }
     recorder.prompt_shown(prompt);
+    Ok(())
 }
 
 #[tauri::command]

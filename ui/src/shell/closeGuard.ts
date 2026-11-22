@@ -1,7 +1,8 @@
 import { errorMessage } from './errors.ts';
 
-export type CloseAbout = 'close' | 'leave' | 'query';
-export type CloseRequest = { kind: 'ask'; id: number; about: CloseAbout } | { kind: 'stay'; id: number };
+export type CloseAbout = 'close' | 'install' | 'leave' | 'query';
+export interface CloseAsk { id: number; about: CloseAbout }
+export interface CloseBatch { asks: readonly CloseAsk[]; waiting: readonly number[]; holds: readonly CloseAsk[] }
 export type LeavingFor = 'close' | 'update';
 
 export interface CloseRequests {
@@ -9,8 +10,8 @@ export interface CloseRequests {
 }
 
 export interface CloseGuardHost {
-  requests(onRequests: (requests: readonly CloseRequest[]) => void): CloseRequests;
-  answer(id: number, stays: boolean): Promise<boolean>;
+  requests(onBatch: (batch: CloseBatch) => boolean): CloseRequests;
+  answer(id: number, stays: boolean, basis: readonly number[]): Promise<boolean>;
   leave(): Promise<void>;
 }
 
@@ -36,11 +37,14 @@ export const UNANSWERED_UNSAVED = 'Couldn’t tell BattlePlan you have unsaved c
 
 const unanswered = (about: CloseAbout, stays: boolean) =>
   about === 'close' ? stays ? UNKEPT : UNCLOSED : stays ? UNANSWERED_UNSAVED : UNANSWERED_SAVED;
+const leavingFor = (about: CloseAbout): LeavingFor => about === 'close' ? 'close' : 'update';
 
 export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (failures: readonly CloseGuardFailure[]) => void): CloseGuard {
-  let ended = false, watching = false, watched = false, leavingByChoice = false, shown: LeavingFor | null = null;
+  let ended = false, watching = false, watched = false, leavingByChoice = false;
+  let shown: LeavingFor | null | undefined;
   const committed = new Map<number, LeavingFor>();
   const failures = new Map<string, CloseGuardFailure>();
+  let live = new Set<number>();
   const publish = () => { if (!ended) report([...failures.values()]); };
   const clear = (key: string) => { if (failures.delete(key)) publish(); };
   const fail = (key: string, message: string, cause: unknown, again: () => void) => {
@@ -52,28 +56,37 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
   const leaving = () => leavingByChoice || committed.size > 0;
   const show = () => {
     const now = [...committed.values()].includes('update') ? 'update' : leaving() ? 'close' : null;
-    if (now === shown) return;
+    if (ended || now === shown) return;
     shown = now;
     page.leaving(now);
   };
   const release = (id: number) => { if (committed.delete(id)) show(); };
 
-  const answer = (id: number, about: CloseAbout) => {
+  const send = (id: number, about: CloseAbout, stays: boolean, basis: readonly number[]) => {
+    if (ended) return;
     const key = `answer:${id}`;
     clear(key);
-    let stays: boolean;
-    if (about === 'query') stays = !leaving() && page.unsaved();
+    host.answer(id, stays, basis).then(heard => {
+      if (ended) return;
+      clear(key);
+      if (!heard) release(id);
+    }, cause => { if (!ended && live.has(id)) fail(key, unanswered(about, stays), cause, () => send(id, about, stays, basis)); });
+  };
+
+  const answer = (id: number, about: CloseAbout) => {
+    if (ended) return;
+    const unsaved = page.unsaved();
+    let stays: boolean, basis: readonly number[] = [];
+    if (about === 'query') stays = !leaving() && unsaved;
     else {
-      stays = !leaving() && page.unsaved() && !(about === 'leave' && page.confirmed());
+      stays = !leaving() && unsaved && !(about === 'install' && page.confirmed());
       if (!stays) {
-        committed.set(id, about === 'leave' ? 'update' : 'close');
+        if (unsaved && !leavingByChoice) basis = [...committed.keys()];
+        committed.set(id, leavingFor(about));
         show();
       } else if (about === 'close') page.prompt();
     }
-    host.answer(id, stays).then(heard => {
-      clear(key);
-      if (!heard) release(id);
-    }, cause => fail(key, unanswered(about, stays), cause, () => answer(id, about)));
+    send(id, about, stays, basis);
   };
 
   const leave = () => {
@@ -81,18 +94,20 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
     clear('close');
     leavingByChoice = true;
     show();
-    host.leave().catch(cause => fail('close', UNCLOSED, cause, leave));
+    host.leave().catch(cause => { if (!ended) fail('close', UNCLOSED, cause, leave); });
   };
 
   const requests = host.requests(batch => {
-    for (const request of batch) {
-      if (ended) return;
-      if (request.kind === 'ask') answer(request.id, request.about);
-      else {
-        clear(`answer:${request.id}`);
-        release(request.id);
-      }
-    }
+    if (ended) return false;
+    live = new Set([...batch.waiting, ...batch.holds.map(hold => hold.id)]);
+    for (const id of [...committed.keys()]) if (!live.has(id)) committed.delete(id);
+    const retired = [...failures.keys()].filter(key => key.startsWith('answer:') && !live.has(Number(key.slice('answer:'.length))));
+    for (const key of retired) failures.delete(key);
+    if (retired.length) publish();
+    for (const hold of batch.holds) if (!committed.has(hold.id)) committed.set(hold.id, leavingFor(hold.about));
+    show();
+    for (const ask of batch.asks) answer(ask.id, ask.about);
+    return true;
   });
   const watch = () => {
     if (ended || watching || watched) return;
@@ -103,7 +118,7 @@ export function closeGuard(host: CloseGuardHost, page: CloseGuardPage, report: (
       clear('watch');
     }, cause => {
       watching = false;
-      fail('watch', UNHEARD, cause, watch);
+      if (!ended) fail('watch', UNHEARD, cause, watch);
     });
   };
   watch();

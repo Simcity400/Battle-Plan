@@ -291,12 +291,16 @@ pub fn fit(app: &AppHandle, window: &WebviewWindow, height: f64) -> tauri::Resul
         }
         None => window.set_size(tauri::LogicalSize::new(WIDTH, height))?,
     }
-    let first = !std::mem::replace(&mut state(app).shown, true);
-    if first {
+    if !state(app).shown {
         window.show()?;
+        state(app).shown = true;
         window.set_focus()?;
     }
     Ok(())
+}
+
+pub fn shown(app: &AppHandle) -> bool {
+    state(app).shown
 }
 
 fn screen(monitor: &Monitor) -> Screen {

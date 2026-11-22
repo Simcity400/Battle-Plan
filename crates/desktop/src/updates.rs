@@ -25,6 +25,7 @@ impl app_update::Host for Host {
     }
 
     fn closed_for_update(&self) {
+        self.leaving().exit();
         self.0.exit(0);
     }
 }

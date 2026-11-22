@@ -237,14 +237,14 @@ impl Drop for Receipt {
 fn reach(webview: tauri::Webview, callback: u32) -> Reach {
     Arc::new(move |batch: Batch| {
         let receipt = std::sync::Mutex::new(Receipt { app: webview.app_handle().clone(), token: batch.token, reported: false });
-        let requests = match serde_json::to_string(&batch.requests) {
-            Ok(requests) => requests,
+        let questions = match serde_json::to_string(&batch) {
+            Ok(questions) => questions,
             Err(error) => {
                 eprintln!("BattlePlan couldn’t write its close questions for its page: {error}");
                 return;
             }
         };
-        let script = format!("window.__TAURI_INTERNALS__.callbacks.get({callback})?.({requests}) === true");
+        let script = format!("window.__TAURI_INTERNALS__.callbacks.get({callback})?.({questions}) === true");
         let ran = move |result: String| receipt.lock().unwrap_or_else(std::sync::PoisonError::into_inner).report(result == "true");
         if let Err(error) = webview.eval_with_callback(script, ran) {
             eprintln!("BattlePlan couldn’t pass its close questions to its page: {error}");
@@ -271,9 +271,15 @@ fn watch_close_requests(
 }
 
 #[tauri::command]
-fn answer_close_question(webview: tauri::Webview, leaving: State<'_, Leaving>, id: u64, stays: bool) -> Result<bool, String> {
+fn answer_close_question(
+    webview: tauri::Webview,
+    leaving: State<'_, Leaving>,
+    id: u64,
+    stays: bool,
+    basis: Vec<u64>,
+) -> Result<bool, String> {
     main_page(&webview)?;
-    Ok(match leaving.answer(id, stays) {
+    Ok(match leaving.answer(id, stays, &basis) {
         Answered::Leave => {
             webview.app_handle().exit(0);
             true
@@ -284,8 +290,9 @@ fn answer_close_question(webview: tauri::Webview, leaving: State<'_, Leaving>, i
 }
 
 #[tauri::command]
-fn leave_app(webview: tauri::Webview) -> Result<(), String> {
+fn leave_app(webview: tauri::Webview, leaving: State<'_, Leaving>) -> Result<(), String> {
     main_page(&webview)?;
+    leaving.exit();
     webview.app_handle().exit(0);
     Ok(())
 }
@@ -309,8 +316,10 @@ fn offer_to_close(app: &tauri::AppHandle, why: Unanswered) {
     let handle = app.clone();
     let shown = std::thread::Builder::new().name("close choice".into()).spawn(move || {
         let close = close_without_answer(owner, why);
-        handle.state::<Leaving>().chosen();
+        let leaving = handle.state::<Leaving>();
+        leaving.chosen();
         if close {
+            leaving.exit();
             handle.exit(0);
         }
     });
@@ -320,33 +329,76 @@ fn offer_to_close(app: &tauri::AppHandle, why: Unanswered) {
     }
 }
 
-fn watch_page_process(window: &WebviewWindow) -> tauri::Result<()> {
+fn watch_page(window: &WebviewWindow) -> tauri::Result<()> {
     let app = window.app_handle().clone();
     window.with_webview(move |webview| {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
             COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED, COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
         };
-        let handler = webview2_com::ProcessFailedEventHandler::create(Box::new(move |_, args| {
+        use webview2_com::{ContentLoadingEventHandler, NavigationCompletedEventHandler, NavigationStartingEventHandler, ProcessFailedEventHandler};
+        let failed = {
+            let app = app.clone();
+            ProcessFailedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                unsafe { args.ProcessFailedKind(&mut kind)? };
+                let leaving = app.state::<Leaving>();
+                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+                    || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                {
+                    eprintln!("BattlePlan’s page process ended, so closing no longer waits for it.");
+                    if leaving.page_gone() {
+                        app.exit(0);
+                    }
+                } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE && leaving.page_unresponsive() {
+                    eprintln!("BattlePlan’s page isn’t responding, so its update questions were refused and the user is asked whether to close.");
+                    offer_to_close(&app, Unanswered::Unresponsive);
+                }
+                Ok(())
+            }))
+        };
+        let starting = {
+            let app = app.clone();
+            NavigationStartingEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut navigation = 0_u64;
+                unsafe { args.NavigationId(&mut navigation)? };
+                if !app.state::<Leaving>().navigation_starting(navigation) {
+                    eprintln!("BattlePlan is leaving, so its page doesn’t reload until it has left or stays.");
+                    unsafe { args.SetCancel(true)? };
+                }
+                Ok(())
+            }))
+        };
+        let loading = {
+            let app = app.clone();
+            ContentLoadingEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut navigation = 0_u64;
+                unsafe { args.NavigationId(&mut navigation)? };
+                app.state::<Leaving>().content_loading(navigation);
+                Ok(())
+            }))
+        };
+        let completed = NavigationCompletedEventHandler::create(Box::new(move |_, args| {
             let Some(args) = args else { return Ok(()) };
-            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
-            unsafe { args.ProcessFailedKind(&mut kind)? };
-            let leaving = app.state::<Leaving>();
-            if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
-                || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
-            {
-                eprintln!("BattlePlan’s page process ended, so closing no longer waits for it.");
-                leaving.page_gone();
-            } else if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE && leaving.page_unresponsive() {
-                eprintln!("BattlePlan’s page isn’t responding, so its update questions were refused and the user is asked whether to close.");
-                offer_to_close(&app, Unanswered::Unresponsive);
-            }
+            let mut navigation = 0_u64;
+            unsafe { args.NavigationId(&mut navigation)? };
+            app.state::<Leaving>().navigation_completed(navigation);
             Ok(())
         }));
         let mut token = 0_i64;
-        let watched = unsafe { webview.controller().CoreWebView2().and_then(|page| page.add_ProcessFailed(&handler, &mut token)) };
+        let watched = unsafe {
+            webview.controller().CoreWebView2().and_then(|page| {
+                page.add_ProcessFailed(&failed, &mut token)?;
+                page.add_NavigationStarting(&starting, &mut token)?;
+                page.add_ContentLoading(&loading, &mut token)?;
+                page.add_NavigationCompleted(&completed, &mut token)
+            })
+        };
         if let Err(error) = watched {
-            eprintln!("BattlePlan can’t tell if its page process ends, so a crashed page could keep it from closing: {error}");
+            eprintln!("BattlePlan can’t follow its page’s reloads and crashes, so a reload or a crashed page could keep it from closing: {error}");
         }
     })
 }
@@ -410,16 +462,6 @@ fn main() {
         .register_asynchronous_uri_scheme_protocol("artwork", move |_, request, responder| {
             serve_artwork(request, responder, artwork_origin.clone())
         })
-        .plugin(
-            tauri::plugin::Builder::<tauri::Wry>::new("leaving")
-                .on_navigation(|webview, _| webview.label() != "main" || webview.state::<Leaving>().navigating())
-                .build(),
-        )
-        .on_page_load(|webview, payload| {
-            if webview.label() == "main" && payload.event() == tauri::webview::PageLoadEvent::Started {
-                webview.state::<Leaving>().page_started();
-            }
-        })
         .manage(video::VideoState::default())
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main")
@@ -444,7 +486,7 @@ fn main() {
                 }
             })?;
             if let Some(window) = app.get_webview_window("main") {
-                watch_page_process(&window)?;
+                watch_page(&window)?;
                 app.state::<NativeHost>().ensure_started(&window)?;
             }
             Ok(())

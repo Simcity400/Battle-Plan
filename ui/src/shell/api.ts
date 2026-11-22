@@ -1,5 +1,5 @@
 import { invoke, isTauri, transformCallback } from '@tauri-apps/api/core';
-import type { CloseRequest, CloseRequests } from './closeGuard.ts';
+import type { CloseBatch, CloseRequests } from './closeGuard.ts';
 import { listen } from '@tauri-apps/api/event';
 import type { CameraMode, FlyAircraftStatus, ReplayMetadata as GeneratedReplayMetadata } from '../generated/dashboard';
 import type { MapPlayback } from '../dashboard/mapPlayback';
@@ -86,13 +86,10 @@ export function seekMap(path: string, revision: string, branch: string, hour: nu
 
 let closeWatches = 0;
 
-export function closeRequests(onRequests: (requests: readonly CloseRequest[]) => void): CloseRequests {
+export function closeRequests(onBatch: (batch: CloseBatch) => boolean): CloseRequests {
   if (!desktopAvailable) return { watch: () => Promise.resolve() };
   const seq = ++closeWatches;
-  const callback = transformCallback<readonly CloseRequest[]>(requests => {
-    onRequests(requests);
-    return true;
-  });
+  const callback = transformCallback<CloseBatch>(batch => onBatch(batch) === true);
   return {
     watch: async () => {
       const document = await invoke<number>('close_watch_document');
@@ -101,9 +98,9 @@ export function closeRequests(onRequests: (requests: readonly CloseRequest[]) =>
   };
 }
 
-export function answerCloseQuestion(id: number, stays: boolean): Promise<boolean> {
+export function answerCloseQuestion(id: number, stays: boolean, basis: readonly number[]): Promise<boolean> {
   requireDesktop();
-  return invoke<boolean>('answer_close_question', { id, stays });
+  return invoke<boolean>('answer_close_question', { id, stays, basis });
 }
 
 export function leaveApp(): Promise<void> {

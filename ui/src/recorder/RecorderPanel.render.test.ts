@@ -379,6 +379,9 @@ test('the Stop prompt beside the tray icon asks one question with Save focused, 
     const lost = { text: 'Couldn’t save the recording.', detail: 'the reply was lost', retry() {} };
     assert.match(text(render({ snapshot: { ...recording, stopping: true }, promptFailure: lost })), /Couldn’t save the recording\. .*Try again/,
       'a failed reply outlives the prompt the status already retired, so the panel it keeps open isn’t blank');
+    const unclosed = { text: 'Couldn’t close the recorder panel.', detail: 'the request failed', retry() {} };
+    assert.match(text(render({ asking: false, windowFailures: [unclosed] })), /Couldn’t close the recorder panel\. .*Try again/,
+      'a panel that couldn’t close itself says so, with Try again, instead of standing blank');
   } finally { await vite.close(); }
 });
 

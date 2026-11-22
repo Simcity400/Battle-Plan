@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { type CloseAbout, type CloseGuardFailure, type CloseRequest, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNKEPT } from './closeGuard.ts';
+import { type CloseAbout, type CloseAsk, type CloseBatch, type CloseGuardFailure, closeGuard, type LeavingFor, UNANSWERED_SAVED, UNANSWERED_UNSAVED, UNCLOSED, UNHEARD, UNKEPT } from './closeGuard.ts';
 import { keepLatest } from './latest.ts';
 import { unsavedDrafts } from '../dashboard/layoutDrafts.ts';
 import { loadLayouts } from '../dashboard/storage.ts';
@@ -18,15 +18,18 @@ function desktop(judge?: () => boolean) {
     watchFails: false,
     answerFails: false,
     leaveFails: false,
-    subscriptions: [] as ((requests: readonly CloseRequest[]) => void)[],
+    subscriptions: [] as ((batch: CloseBatch) => boolean)[],
+    waiting: new Set<number>(),
+    holds: new Map<number, CloseAbout>(),
     watched: [] as number[],
     answers: [] as [number, boolean][],
+    bases: [] as (readonly number[])[],
     leaves: 0,
     prompts: 0,
     leaving: [] as (LeavingFor | null)[],
     reports: [] as (readonly CloseGuardFailure[])[],
   };
-  const watcher = new Map<number, (requests: readonly CloseRequest[]) => void>();
+  const watcher = new Map<number, (batch: CloseBatch) => boolean>();
   const start = () => closeGuard({
     requests: onRequest => {
       const subscription = host.subscriptions.push(onRequest) - 1;
@@ -38,8 +41,9 @@ function desktop(judge?: () => boolean) {
         },
       };
     },
-    answer: async (id, stays) => {
+    answer: async (id, stays, basis) => {
       host.answers.push([id, stays]);
+      host.bases.push(basis);
       if (host.answerFails) throw lost;
       return host.heard;
     },
@@ -53,12 +57,18 @@ function desktop(judge?: () => boolean) {
     prompt: () => { host.prompts++; },
     leaving: leaving => { host.leaving.push(leaving); },
   }, failures => { host.reports.push(failures); });
-  const send = (...requests: CloseRequest[]) => watcher.get(0)?.(requests);
-  const ask = (id: number, about: CloseAbout) => send({ kind: 'ask', id, about });
-  const stay = (id: number) => send({ kind: 'stay', id });
+  const batch = (...asks: CloseAsk[]): CloseBatch => {
+    for (const { id } of asks) host.waiting.add(id);
+    return { asks, waiting: [...host.waiting], holds: [...host.holds].map(([id, about]) => ({ id, about })) };
+  };
+  const send = (...asks: CloseAsk[]) => watcher.get(0)?.(batch(...asks));
+  const ask = (id: number, about: CloseAbout) => send({ id, about });
+  const hold = (id: number, about: CloseAbout) => { host.waiting.delete(id); host.holds.set(id, about); };
+  const retire = (...ids: number[]) => { for (const id of ids) { host.waiting.delete(id); host.holds.delete(id); } };
+  const stay = (id: number) => { retire(id); send(); };
   const shown = () => host.reports.at(-1) ?? [];
   const locked = () => host.leaving.at(-1) ?? null;
-  return { host, start, send, ask, stay, shown, locked };
+  return { host, start, batch, send, ask, hold, retire, stay, shown, locked };
 }
 
 test('a close is judged by the page’s work at that moment, and saved work locks editing before it leaves', async () => {
@@ -105,43 +115,78 @@ test('a question the host asks is answered from the page’s work at that moment
 });
 
 test('Discard and restart lets the update leave only while its confirmation stands, and editing stays locked until the host says stay', async () => {
-  const { host, start, ask, stay, locked } = desktop();
+  const { host, start, ask, hold, stay, locked } = desktop();
   start();
   await flush();
   host.unsaved = true;
   host.confirmed = true;
   host.confirmed = false;
-  ask(1, 'leave');
+  ask(1, 'install');
   assert.deepEqual([host.answers.at(-1), locked()], [[1, true], null], 'a confirmation cancelled before the update asked authorises nothing');
   host.confirmed = true;
-  ask(2, 'leave');
-  assert.deepEqual([host.answers.at(-1), locked()], [[2, false], 'update'], 'the confirmed restart leaves, and editing locks before it answers');
+  ask(4, 'leave');
+  assert.deepEqual([host.answers.at(-1), locked()], [[4, true], null], 'a setup’s close isn’t the restart the user agreed to');
+  ask(2, 'install');
+  assert.deepEqual([host.answers.at(-1), host.bases.at(-1), locked()], [[2, false], [], 'update'],
+    'the confirmed restart leaves on the user’s word alone, and editing locks before it answers');
+  hold(2, 'install');
   host.confirmed = false;
   ask(3, 'leave');
-  assert.deepEqual(host.answers.at(-1), [3, false], 'once leaving, the page doesn’t take it back');
+  assert.deepEqual([host.answers.at(-1), host.bases.at(-1)], [[3, false], [2]], 'once leaving, the page doesn’t take it back, and says why');
+  hold(3, 'leave');
   stay(2);
   assert.equal(locked(), 'update', 'another update still holds the lock');
   stay(3);
   assert.equal(locked(), null, 'an install that couldn’t start lets the page go on');
   stay(3);
-  assert.deepEqual(host.leaving, ['update', null], 'a stay sent again changes nothing');
+  assert.deepEqual(host.leaving, [null, 'update', null], 'a stay sent again changes nothing');
 });
 
-test('a Stay and the close sent with it are taken in order, so the close is judged after the page stops leaving', async () => {
-  const { host, start, send, ask, locked } = desktop();
+test('a batch that retires a leave and asks a close is taken in order, so the close is judged after the page stops leaving', async () => {
+  const { host, start, send, ask, hold, retire, locked } = desktop();
   start();
   await flush();
   host.unsaved = true;
   host.confirmed = true;
-  ask(1, 'leave');
+  ask(1, 'install');
+  hold(1, 'install');
   assert.equal(locked(), 'update');
   host.confirmed = false;
-  send({ kind: 'stay', id: 1 }, { kind: 'ask', id: 2, about: 'close' });
+  retire(1);
+  send({ id: 2, about: 'close' });
   assert.deepEqual([host.answers.at(-1), host.prompts, locked()], [[2, true], 1, null], 'the failed restart no longer speaks for the unsaved work');
 });
 
+test('a close judged while an install stood is retired with it, so the close asked again is judged afresh', async () => {
+  const { host, start, send, ask, hold, retire, locked } = desktop();
+  start();
+  await flush();
+  host.unsaved = true;
+  host.confirmed = true;
+  ask(1, 'install');
+  hold(1, 'install');
+  ask(2, 'close');
+  assert.deepEqual([host.answers.at(-1), host.bases.at(-1), locked()], [[2, false], [1], 'update'],
+    'a close while restarting goes with the restart, and names it, so the host can refuse it if the restart no longer stands');
+  host.confirmed = false;
+  retire(1, 2);
+  send({ id: 3, about: 'close' });
+  assert.deepEqual([host.answers.at(-1), host.prompts, locked()], [[3, true], 1, null],
+    'the installer couldn’t start, so neither the restart nor the close judged under it speaks for the unsaved work');
+});
+
+test('a page that loads while BattlePlan holds a leave is locked by the first batch it hears', async () => {
+  const { host, start, send, hold, locked } = desktop();
+  hold(9, 'install');
+  start();
+  await flush();
+  host.unsaved = true;
+  assert.equal(send(), true);
+  assert.equal(locked(), 'update');
+});
+
 test('a leave whose answer was lost stays locked until the host says stay, and the stay clears that answer’s Try again', async () => {
-  const { host, start, ask, stay, shown, locked } = desktop();
+  const { host, start, ask, hold, stay, shown, locked } = desktop();
   start();
   await flush();
   host.answerFails = true;
@@ -152,6 +197,7 @@ test('a leave whose answer was lost stays locked until the host says stay, and t
   shown()[0]!.retry();
   await flush();
   assert.deepEqual([host.answers.at(-1), locked(), shown()], [[4, false], 'update', []], 'the same leave is sent again, and the host still holds it');
+  hold(4, 'leave');
   host.answerFails = true;
   ask(5, 'leave');
   await flush();
@@ -208,17 +254,18 @@ test('a registration whose reply was lost is sent again on Try again, with the s
   assert.equal(host.prompts, 1, 'a close is heard once');
 });
 
-test('a superseded guard’s subscription is inert', async () => {
-  const { host, start } = desktop();
+test('a guard that has ended reports that it handled nothing, so the host never counts its batch as heard', async () => {
+  const { host, start, batch, hold, locked } = desktop();
   const first = start();
   first.end();
   start();
   await flush();
   host.unsaved = true;
-  host.subscriptions[0]!([{ kind: 'ask', id: 1, about: 'close' }, { kind: 'ask', id: 2, about: 'query' }]);
-  assert.deepEqual([host.prompts, host.answers.length, host.leaves], [0, 0, 0]);
-  host.subscriptions[1]!([{ kind: 'ask', id: 3, about: 'close' }]);
-  assert.equal(host.prompts, 1);
+  assert.equal(host.subscriptions[0]!(batch({ id: 1, about: 'close' }, { id: 2, about: 'query' })), false);
+  assert.deepEqual([host.prompts, host.answers.length, host.leaves, host.leaving], [0, 0, 0, []]);
+  hold(5, 'leave');
+  assert.equal(host.subscriptions[1]!(batch({ id: 3, about: 'close' })), true);
+  assert.deepEqual([host.answers, locked()], [[[3, false]], 'update'], 'the guard that replaced it takes the leave the host holds');
 });
 
 test('each failure is shown by name with its own retry, and no retry replays another failure’s work', async () => {
@@ -235,7 +282,7 @@ test('each failure is shown by name with its own retry, and no retry replays ano
   host.answerFails = false;
   unanswered!.retry();
   await flush();
-  assert.deepEqual(host.answers, [[7, false], [7, false]], 'the answer is sent again from the page as it is now');
+  assert.deepEqual(host.answers, [[7, false], [7, false]], 'the same answer is sent again');
   assert.equal(host.leaves, 1, 'retrying the answer doesn’t close BattlePlan');
   assert.deepEqual(shown().map(({ message }) => message), [UNCLOSED]);
   host.leaveFails = false;
@@ -244,6 +291,25 @@ test('each failure is shown by name with its own retry, and no retry replays ano
   assert.deepEqual([host.leaves, shown()], [2, []]);
   unclosed!.retry();
   assert.equal(host.leaves, 2, 'a retry is bound to the failure it was shown with');
+});
+
+test('Try again sends the answer the page gave, not a new judgment made while it was leaving', async () => {
+  const { host, start, ask, hold, shown } = desktop();
+  start();
+  await flush();
+  host.unsaved = true;
+  host.confirmed = true;
+  ask(1, 'install');
+  hold(1, 'install');
+  host.answerFails = true;
+  ask(2, 'close');
+  await flush();
+  host.answerFails = false;
+  host.confirmed = false;
+  shown()[0]!.retry();
+  await flush();
+  assert.deepEqual([host.answers.slice(-2), host.bases.slice(-2)], [[[2, false], [2, false]], [[1], [1]]],
+    'the retry rests on the restart, as the answer did, and never on the close’s own lock');
 });
 
 test('an answer that fails says which way it failed', async () => {

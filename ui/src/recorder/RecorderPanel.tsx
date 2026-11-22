@@ -72,8 +72,12 @@ export interface PanelViewProps {
   promptFailure?: PromptFailure | null;
   shownPrompt?: number | null;
   onPromptShown?: (prompt: number) => void;
+  windowFailures?: readonly PromptFailure[];
   update?: PanelUpdate;
 }
+
+const PANEL_UNSHOWN = 'Couldn’t show the recorder panel.';
+const PANEL_UNCLOSED = 'Couldn’t close the recorder panel.';
 
 function PromptShown({ prompt, onShown }: { prompt: number; onShown(prompt: number): void }) {
   useEffect(() => { onShown(prompt); }, [prompt, onShown]);
@@ -164,7 +168,7 @@ export function PanelPending({ failure, title = PANEL_UNOPENED, retry, root }: {
 const waitingCount = (recordings: Recordings | null | undefined) => recordings?.unsaved.filter(row => row.status !== 'recording').length ?? 0;
 
 export function PanelView({ snapshot, settings, view, asking, error, errorDetail = null, errorCaveat = false, now, actions, root, compact = false, recordings = null, relisting = false, quitting = false,
-  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, shownPrompt = null, onPromptShown, update }: PanelViewProps) {
+  discarding = false, confirmingWaiting = null, promptBusy = false, promptFailure = null, shownPrompt = null, onPromptShown, windowFailures = [], update }: PanelViewProps) {
   const [disclosed, setDisclosed] = useState<string | null>(null);
   const shown = head(snapshot);
   const files = snapshot.session != null && snapshot.problem?.failed === true;
@@ -185,6 +189,8 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
   const preparationNotice: ReactNode = preparation && (preparation.failed
     ? <div className="notice error" role="status"><Icon name="alert" /><span>{preparation.text}</span></div>
     : <p className="recorder-note" role="status"><Icon name="info" /><span>{preparation.text}</span></p>);
+  const windowLines = windowFailures.map(failure => <FailureLine key={failure.text} className="recorder-failure" message={failure.text} detail={failure.detail}
+    onRetry={failure.retry} />);
   const prompt = stopPromptVisible(asking, snapshot);
   const length = sessionLength(snapshot.startedAt, now);
   const promptFailureLine = promptFailure && <FailureLine className="recorder-failure" message={promptFailure.text} detail={promptFailure.detail}
@@ -201,7 +207,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
   </>}</div></>;
 
   if (compact) return <div ref={root} className="recorder recorder-compact">
-    {error && notice}
+    {error && notice}{windowLines}
     {!prompt && promptFailureLine}
     {prompt && <div className="recorder-prompt" role="alertdialog" aria-labelledby="recorder-prompt-title"
       aria-describedby={discarding ? 'recorder-prompt-question recorder-prompt-consequence' : 'recorder-prompt-question'}>
@@ -229,7 +235,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
     const folders = distinguishingFolders(saved.map(row => row.path));
     return <div ref={root} className="recorder">
       <div className="recorder-top" data-tauri-drag-region="deep">{back('main')}Recordings</div>
-      {error && notice}
+      {error && notice}{windowLines}
       {recordings ? <div className="recorder-list themed-scrollbar">
         <section className="recorder-section is-first" aria-label="Not saved yet">
           <div className="group-label recorder-label recorder-label-row"><span>Not saved yet</span>{total && <span className="recorder-total">{total}</span>}</div>
@@ -257,7 +263,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
       const mode = snapshot.captureMode ?? settings.captureMode;
       return <div ref={root} className="recorder">
         <div className="recorder-top" data-tauri-drag-region="deep">{back('settings')}What to record</div>
-        {error && notice}
+        {error && notice}{windowLines}
         <section className="recorder-section is-first is-last">
           <div className="group-label recorder-label">Capture mode</div>
           <CaptureModeChoice value={mode} fixed={fixed} onChange={captureMode => actions.settings({ captureMode })} />
@@ -275,7 +281,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
       { value: 'choose', label: 'Choose folder…' }];
     return <div ref={root} className="recorder">
       <div className="recorder-top" data-tauri-drag-region="deep">{back('main')}Settings</div>
-      {error && notice}
+      {error && notice}{windowLines}
       <section className="recorder-section is-first">
         <div className="group-label recorder-label">Recording</div>
         <Toggle label="Auto record" description="Records each campaign when it loads." checked={settings.recordEveryCampaign}
@@ -340,7 +346,7 @@ export function PanelView({ snapshot, settings, view, asking, error, errorDetail
       </div>}
       <div className={`recorder-under${prompt ? ' is-covered' : ''}`} inert={prompt}>
       {!prompt && promptFailureLine}
-      {notice}
+      {notice}{windowLines}
       {preparationNotice}
       {shown.busy && <div className="recorder-bar" role="progressbar" aria-label={shown.label ?? undefined}><i /></div>}
       {shown.campaign && campaign && settings && <section className="recorder-section">
@@ -463,6 +469,9 @@ export default function RecorderPanel() {
   const [promptFailure, setPromptFailure] = useState<PromptFailure | null>(null);
   const [confirmingWaiting, setConfirmingWaiting] = useState<string | null>(null);
   const [compact, setCompact] = useState<boolean | null>(null);
+  const [visible, setVisible] = useState(false);
+  const [fitFailure, setFitFailure] = useState<PromptFailure | null>(null);
+  const [closeFailure, setCloseFailure] = useState<PromptFailure | null>(null);
   const [failure, setFailure] = useState<{ text: string; detail?: string; caveat?: boolean } | null>(null);
   const setError = (sentence: string, cause: unknown) => setFailure(actionFailure(sentence, errorMessage(cause)));
   const clearError = () => setFailure(null);
@@ -529,12 +538,23 @@ export default function RecorderPanel() {
   useEffect(() => {
     const element = root.current;
     if (!element) return;
-    const fit = () => { void api.panelFit(Math.ceil(element.getBoundingClientRect().height)).catch(() => {}); };
+    let active = true;
+    const fit = () => {
+      void api.panelFit(Math.ceil(element.getBoundingClientRect().height)).then(() => {
+        if (!active) return;
+        setVisible(true);
+        setFitFailure(null);
+      }, cause => { if (active) setFitFailure({ ...actionFailure(PANEL_UNSHOWN, errorMessage(cause)), retry: fit }); });
+    };
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => { active = false; observer.disconnect(); };
   }, [stage]);
+  const closeSelf = useCallback(function close(revision: number) {
+    setCloseFailure(null);
+    void api.closePanel(revision).catch(cause => setCloseFailure({ ...actionFailure(PANEL_UNCLOSED, errorMessage(cause)), retry: () => close(revision) }));
+  }, []);
 
   const asked = askedPrompt(snapshot, opened);
   const prompting = asked !== null;
@@ -603,7 +623,7 @@ export default function RecorderPanel() {
       else if (prompting && discarding) cancelDiscard();
       else if (prompting) cancelPrompt();
       else if (up) navigate(up);
-      else void api.closePanel(snapshot?.revision ?? 0);
+      else closeSelf(snapshot?.revision ?? 0);
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
@@ -631,12 +651,12 @@ export default function RecorderPanel() {
     askedSession.current = sessionKey;
   }, [sessionKey]);
 
-  const shownPrompt = hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
+  const shownPrompt = visible && hostPrompt !== null && asked === hostPrompt ? hostPrompt.id : null;
   const promptShown = useCallback((prompt: number) => { void api.promptShown(prompt).catch(() => {}); }, []);
   const settled = !prompting && !promptAction && !failure && !promptFailure;
   useEffect(() => {
-    if (compact && snapshot && settled) void api.closePanel(snapshot.revision);
-  }, [compact, snapshot, settled]);
+    if (compact && snapshot && settled) closeSelf(snapshot.revision);
+  }, [compact, snapshot, settled, closeSelf]);
 
   if (stage === 'pending') {
     if (openFailure) return <PanelPending root={root} title={openFailure.title} failure={openFailure.detail} retry={openFailure.retry} />;
@@ -707,5 +727,6 @@ export default function RecorderPanel() {
   return <PanelView snapshot={snapshot} settings={settings} view={view} asking={prompting} error={failure?.text ?? null} errorDetail={failure?.detail}
     errorCaveat={failure?.caveat} now={Date.now()}
     actions={actions} root={root} compact={compact} recordings={recordings} relisting={relisting} quitting={quitting} discarding={discarding} confirmingWaiting={confirmingWaiting}
-    promptBusy={promptAction} promptFailure={promptFailure} shownPrompt={shownPrompt} onPromptShown={promptShown} update={updatesAvailable ? update : undefined} />;
+    promptBusy={promptAction} promptFailure={promptFailure} shownPrompt={shownPrompt} onPromptShown={promptShown}
+    windowFailures={[fitFailure, closeFailure].filter((failure): failure is PromptFailure => failure !== null)} update={updatesAvailable ? update : undefined} />;
 }
