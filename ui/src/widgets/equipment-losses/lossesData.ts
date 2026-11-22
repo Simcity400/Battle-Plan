@@ -136,7 +136,7 @@ export function pointAt(leaf: LossLeaf, hour: number): LossPoint | null {
   return found;
 }
 
-function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): LossPoint | null {
+export function pointIn(leaf: LossLeaf, hour: number, minHour: number | null): LossPoint | null {
   const point = pointAt(leaf, hour);
   return point && (minHour === null || point.hour >= minHour) ? point : null;
 }

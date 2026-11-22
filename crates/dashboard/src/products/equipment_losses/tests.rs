@@ -727,3 +727,204 @@ fn contiguous_load_with_supplemental_gap_exports_exact_run_boundaries_and_gates_
     assert!(!points.iter().any(|point| point.hour == 120), "uncounted startup hour must never receive a synthetic zero or backdated point: {points:?}");
     assert!(points.iter().any(|point| point.hour == 121 && point.total_raw == "200000"), "{points:?}");
 }
+
+#[test]
+fn destruction_chart_bins_clip_before_first_withheld_hour() {
+    use crate::test_fixtures::{CAMPAIGN, records, source as base_frame};
+    use replay::campaign::Replay;
+    use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
+    use replay_frame::frame::TableView;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let variant = (7_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let partial = vec![EquipmentDestructionRow {
+        coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+        unavailable_reason: Recorded::Value("startup partial".to_owned()),
+        ..Default::default()
+    }];
+    let loss = |amount_raw: i64| {
+        vec![EquipmentDestructionRow {
+            country: 9001,
+            cause: EquipmentDestructionCause::LandCombat,
+            variant,
+            amount_raw,
+            coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+            unavailable_reason: Recorded::Value(String::new()),
+        }]
+    };
+    let frames: Vec<_> = (100..=115)
+        .map(|hour| {
+            let mut frame = base_frame(1, hour, Some(1));
+            frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+            *frame.tables[TableId::EquipmentDestruction.index()] = match hour {
+                100 => TableView::Complete(TableRows::EquipmentDestruction(partial.clone())),
+                102 => TableView::Complete(TableRows::EquipmentDestruction(loss(200_000))),
+                104 => TableView::Complete(TableRows::EquipmentDestruction(loss(300_000))),
+                105..=115 => TableView::Unavailable { reason: "drain overflowed".into() },
+                _ => TableView::Complete(TableRows::EquipmentDestruction(Vec::new())),
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(
+        crate::SourceKey { source_id: "losses-withheld-bin".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let params = LossesParams {
+        branch_id: "1".into(),
+        country: "GER".into(),
+        land_source: LandSource::Destruction,
+        identity: None,
+        from: 100,
+        to: 115,
+        width: 2,
+        reads: Vec::new(),
+    };
+    let reply = EquipmentLosses::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
+    assert_eq!(reply.destruction_runs, vec![DestructionRun { first_hour: 100, last_hour: 115, counted_from: Some(101), withheld_from: Some(105) }]);
+    let land = reply
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .expect("land combat cause");
+    assert_eq!(land.leaves.len(), 1);
+    let points = &land.leaves[0].points;
+    assert!(points.iter().all(|point| point.hour < 105), "destruction bin points must clip strictly before withheld_from: {points:?}");
+    assert!(points.iter().any(|point| point.hour == 104 && point.total_raw == "500000"), "{points:?}");
+}
+
+#[test]
+fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_parent_design() {
+    use crate::test_fixtures::{CAMPAIGN, records, source as base_frame};
+    use replay::{campaign::Replay, spool::Record};
+    use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
+    use replay_frame::{
+        branches::{BranchReason, BranchStart, Parentage},
+        frame::TableView,
+    };
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    let parent_variant = (7_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let child_later_variant = (8_u64 << 32) | u64::from(engine_native::cequipment_variant::REFERENCE_TYPE);
+    let make_frame = |branch: u64, hour: i32, rows: Vec<EquipmentDestructionRow>| {
+        let mut frame = base_frame(branch, hour, Some(1));
+        *frame.tables[TableId::EquipmentDestruction.index()] = TableView::Complete(TableRows::EquipmentDestruction(rows));
+        frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+        frame
+    };
+    let partial = |reason: &str| {
+        vec![EquipmentDestructionRow {
+            coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+            unavailable_reason: Recorded::Value(reason.to_owned()),
+            ..Default::default()
+        }]
+    };
+    let supplemental = |reason: &str| {
+        vec![EquipmentDestructionRow {
+            coverage: Recorded::Value(EquipmentDestructionCoverage::SupplementalUnavailable),
+            unavailable_reason: Recorded::Value(reason.to_owned()),
+            ..Default::default()
+        }]
+    };
+    let loss = |variant: u64, amount_raw: i64| {
+        vec![EquipmentDestructionRow {
+            country: 9001,
+            cause: EquipmentDestructionCause::LandCombat,
+            variant,
+            amount_raw,
+            coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+            unavailable_reason: Recorded::Value(String::new()),
+        }]
+    };
+
+    let parent_frames: Vec<_> = (100..=119)
+        .map(|hour| match hour {
+            100 => make_frame(1, hour, partial("parent startup")),
+            101 => make_frame(1, hour, loss(parent_variant, 500_000)),
+            _ => make_frame(1, hour, Vec::new()),
+        })
+        .collect();
+    let child_frames: Vec<_> = (120..=130)
+        .map(|hour| match hour {
+            120 => make_frame(2, hour, partial("child startup")),
+            121..=123 => make_frame(2, hour, supplemental("supplemental hooks unavailable")),
+            125 => make_frame(2, hour, loss(child_later_variant, 100_000)),
+            _ => make_frame(2, hour, Vec::new()),
+        })
+        .collect();
+
+    let parent = records(1, parent_frames);
+    let mut child = records(2, child_frames);
+    child[1] = Record::BranchStart(BranchStart {
+        id: 2,
+        session: 2,
+        loaded_hour: Some(119),
+        first_hour: 120,
+        parent: Parentage::Probable { branch: 1, hour: 119 },
+        reason: BranchReason::LoadSignal,
+    });
+    let replay = Replay::from_records(CAMPAIGN.into(), &[parent, child]).unwrap().into_timelines(&Default::default()).unwrap();
+    let branch_id = replay.timelines().expect("timelines").list[0].id;
+    let source = Source::from_replay(
+        crate::SourceKey { source_id: "losses-supp-zero".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+
+    let load_at = |from: i32| {
+        let params = LossesParams {
+            branch_id: branch_id.to_string(),
+            country: "GER".into(),
+            land_source: LandSource::Destruction,
+            identity: None,
+            from,
+            to: 130,
+            width: 64,
+            reads: vec![121],
+        };
+        EquipmentLosses::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap()
+    };
+
+    let spanning = load_at(100);
+    let child_only = load_at(120);
+    for (label, reply) in [("spanning", &spanning), ("child-only", &child_only)] {
+        let land = reply
+            .causes
+            .iter()
+            .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+            .expect("land combat cause");
+        for leaf in &land.leaves {
+            assert!(
+                !leaf.points.iter().any(|point| point.hour == 121),
+                "{label} query must not synthesize a measured zero at supplemental-unavailable hour 121: {:?}",
+                leaf.points
+            );
+        }
+    }
+    let spanning_at_121: Vec<_> = spanning
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .unwrap()
+        .leaves
+        .iter()
+        .filter(|leaf| leaf.points.iter().any(|point| point.hour >= 120 && point.hour <= 121))
+        .collect();
+    let child_at_121: Vec<_> = child_only
+        .causes
+        .iter()
+        .find(|cause| cause.source == LossSource::Destruction(Cause(EquipmentDestructionCause::LandCombat)))
+        .unwrap()
+        .leaves
+        .iter()
+        .filter(|leaf| leaf.points.iter().any(|point| point.hour >= 120 && point.hour <= 121))
+        .collect();
+    assert!(spanning_at_121.is_empty());
+    assert!(child_at_121.is_empty());
+}

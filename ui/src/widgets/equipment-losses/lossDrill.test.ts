@@ -116,6 +116,48 @@ test('an absent opening destruction drain leaves unknown edges and boolean gap m
   assert.deepEqual(lossRows(data, { first: 100, hour: 201, end: 210, campaign: false, from: null }).map(row => [row.exact, row.readHour]), [[200000n, 201]]);
 });
 
+test('destruction history resets running totals and range baselines across recorded run boundaries', () => {
+  const data = reply(2);
+  data.from = 100;
+  data.to = 250;
+  data.landSource = 'destruction';
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 199, countedFrom: 101, withheldFrom: null },
+    { firstHour: 200, lastHour: 250, countedFrom: 201, withheldFrom: null },
+  ];
+  data.destructionCoverage = [
+    { firstHour: 101, lastHour: 199, reason: null },
+    { firstHour: 201, lastHour: 250, reason: null },
+  ];
+  data.causes[0].source = { kind: 'destruction', reason: 'land_combat' };
+  data.causes[0].leaves[0].points = [{ hour: 101, totalRaw: '500000' }, { hour: 201, totalRaw: '200000' }];
+  data.causes[0].leaves[1].points = [{ hour: 101, totalRaw: '900000' }];
+
+  const full = lossHistory(data, 100, 250);
+  assert.deepEqual(edgeAt(full, 101), [{ low: 0, high: 14 }]);
+  assert.equal(edgeAt(full, 200), null);
+  assert.deepEqual(edgeAt(full, 201), [{ low: 0, high: 2 }]);
+  assert.equal(full.model.breakBefore[full.model.hours.indexOf(201)], true);
+  assert.equal(lossesTotal(lossItems(data, { first: 100, hour: 201, end: 250, campaign: false, from: null })).exact, 200000n);
+
+  const ranged = lossHistory(data, 150, 250, 150);
+  assert.deepEqual(edgeAt(ranged, 150), [{ low: 0, high: 0 }]);
+  assert.equal(edgeAt(ranged, 200), null);
+  assert.deepEqual(edgeAt(ranged, 201), [{ low: 0, high: 2 }]);
+
+  data.destructionRuns = [
+    { firstHour: 100, lastHour: 149, countedFrom: 100, withheldFrom: null },
+    { firstHour: 150, lastHour: 199, countedFrom: 150, withheldFrom: null },
+  ];
+  data.destructionCoverage = [{ firstHour: 100, lastHour: 199, reason: null }];
+  data.causes[0].leaves[0].points = [{ hour: 100, totalRaw: '500000' }, { hour: 150, totalRaw: '200000' }];
+  data.causes[0].leaves[1].points = [{ hour: 100, totalRaw: '900000' }];
+  const contiguous = lossHistory(data, 100, 199);
+  assert.deepEqual(edgeAt(contiguous, 100), [{ low: 0, high: 14 }]);
+  assert.deepEqual(edgeAt(contiguous, 150), [{ low: 0, high: 2 }]);
+  assert.equal(contiguous.model.breakBefore[contiguous.model.hours.indexOf(150)], true);
+});
+
 test('missing rows invent no amount or date, and exchange uncertainty belongs to its affected design', () => {
   const data = reply(2), cause = data.causes[0];
   cause.source = { kind: 'lendLeaseSunk' }; cause.domain = 'other';

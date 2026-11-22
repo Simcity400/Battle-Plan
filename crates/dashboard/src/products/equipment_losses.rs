@@ -426,6 +426,33 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
         let stretch_cells = &covered.run[before_run..];
         let stretch_counted = stretch_cells.iter().filter_map(|(_, _, cells)| cells.as_ref()?.counted_from).min();
         let stretch_withheld = stretch_cells.iter().filter_map(|(_, _, cells)| cells.as_ref()?.withheld_from).min();
+        let stretch_complete_through = |target: i32| -> bool {
+            let Some(counted) = stretch_counted else { return false };
+            if target < counted || stretch_withheld.is_some_and(|withheld| target >= withheld) {
+                return false;
+            }
+            let mut cursor = counted;
+            for (first, last, cells) in stretch_cells {
+                if *last < counted {
+                    continue;
+                }
+                if *first > target {
+                    break;
+                }
+                if *first > cursor {
+                    return false;
+                }
+                let Some(cells) = cells.as_ref() else { return false };
+                if !coverage::is_complete_drain(cells, covered.legacy_partial_text)
+                    || cells.incomplete_from.is_some_and(|incomplete| incomplete <= target)
+                    || cells.withheld_from.is_some_and(|withheld| withheld <= target)
+                {
+                    return false;
+                }
+                cursor = (*last).min(target).saturating_add(1);
+            }
+            cursor > target
+        };
         if stretch.last < lowest {
             continue;
         }
@@ -440,17 +467,18 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
             for (chart, (first, end)) in charts {
                 for (at, &key) in chart.keys.iter().enumerate() {
                     let is_destruction = matches!(leaf_of(key), Some((LossSource::Destruction(_), _)));
-                    let leaf_first = if is_destruction {
+                    let (leaf_first, leaf_end) = if is_destruction {
                         let Some(counted) = stretch_counted else { continue };
-                        first.max(counted)
+                        let clipped_end = stretch_withheld.map_or(end, |withheld| end.min(withheld.saturating_sub(1)));
+                        (first.max(counted), clipped_end)
                     } else {
-                        first
+                        (first, end)
                     };
-                    if leaf_first > end {
+                    if leaf_first > leaf_end {
                         continue;
                     }
                     let leaf = leaves.entry(key).or_default();
-                    for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, end) {
+                    for (hour, value) in bin_points(chart.values(at), chart.first_bin_hour, chart.bin_hours, leaf_first, leaf_end) {
                         leaf.points.insert(hour, Some(value));
                     }
                 }
@@ -459,12 +487,19 @@ pub fn load(query: &Query<'_>, params: &LossesParams, content: &Content, cancell
         for &hour in reads.iter().filter(|hour| (stretch.first..=stretch.last).contains(*hour)) {
             crate::metadata::check_cancel(cancelled)?;
             let Some(found) = totals_at(query, hour, (low, high))? else { continue };
+            let destruction_complete = stretch_complete_through(hour);
             for (key, leaf) in leaves.iter_mut() {
                 let is_destruction = matches!(leaf_of(*key), Some((LossSource::Destruction(_), _)));
-                let value = if is_destruction && stretch_counted.is_none_or(|counted| hour < counted) {
-                    None
-                } else if is_destruction && !found.contains_key(key) && stretch_withheld.is_some_and(|withheld| hour >= withheld) {
-                    None
+                let value = if is_destruction {
+                    if stretch_counted.is_none_or(|counted| hour < counted) {
+                        None
+                    } else {
+                        match found.get(key) {
+                            Some(&(total, _)) => total,
+                            None if last.contains_key(key) && destruction_complete => Some(0),
+                            None => None,
+                        }
+                    }
                 } else {
                     found.get(key).map_or(Some(0), |&(total, _)| total)
                 };

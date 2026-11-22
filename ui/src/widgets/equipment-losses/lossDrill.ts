@@ -8,7 +8,7 @@ import type { DrillPart } from '../../charts/drill/parts';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import { entryAt } from '../../dashboard/reads.ts';
 import type { LossesReply } from '../../generated/dashboard';
-import { causeName, lossDesignName, lossItems, lossKey, pointAt, sourceKey, typeName } from './lossesData.ts';
+import { causeName, lossDesignName, lossItems, lossKey, pointAt, pointIn, sourceKey, typeName } from './lossesData.ts';
 import type { LossWindow } from './lossesData';
 import type { DrillCountry } from '../country-measure/drillCountry';
 import { DETAIL } from './definition.ts';
@@ -99,10 +99,10 @@ export function lossSegments(model: StackModel, first: number, last: number, hou
 
 export function lossHistory(reply: LossesReply, first: number, last: number, from?: number | null,
   selected: ReadonlySet<string> | null = null, countries?: readonly Span[]): { model: StackModel; keys: string[]; labels: string[] } {
-  const events = new Map<number, { deltas: Map<string, bigint>; unread: number }>();
+  const events = new Map<number, { deltas: Map<string, bigint>; unread: number; runBreak: boolean }>();
   const at = (hour: number) => {
     let event = events.get(hour);
-    if (!event) { event = { deltas: new Map(), unread: 0 }; events.set(hour, event); }
+    if (!event) { event = { deltas: new Map(), unread: 0, runBreak: false }; events.set(hour, event); }
     return event;
   };
   const keys: string[] = [], labels: string[] = [];
@@ -112,10 +112,37 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
     if (!cause.loss || cause.unknown !== null) continue;
     const key = sourceKey(cause.source);
     let included = false;
+    const isDestruction = cause.source.kind === 'destruction';
     for (const leaf of cause.leaves) {
       const design = leaf.design === null ? undefined : reply.designs[leaf.design];
       if (selected && !selected.has(lossKey(cause, design))) continue;
       included = true;
+      if (isDestruction) {
+        for (const [index, run] of reply.destructionRuns.entries()) {
+          if (run.countedFrom === null) continue;
+          const runStart = Math.max(run.firstHour, run.countedFrom);
+          const segFirst = Math.max(first, runStart);
+          const segLast = Math.min(last, run.lastHour);
+          if (segFirst > segLast) continue;
+          if (index > 0 && segFirst === run.firstHour) at(segFirst).runBreak = true;
+          const baseline = from != null && from > runStart ? BigInt(pointIn(leaf, from - 1, runStart)?.totalRaw ?? '0') : 0n;
+          const initial = pointIn(leaf, segFirst, runStart);
+          let previous = initial ? BigInt(initial.totalRaw) - baseline : 0n;
+          if (previous !== 0n) at(segFirst).deltas.set(key, (at(segFirst).deltas.get(key) ?? 0n) + previous);
+          for (const point of leaf.points) {
+            if (point.hour <= segFirst || point.hour > segLast) continue;
+            const next = BigInt(point.totalRaw) - baseline;
+            const event = at(point.hour);
+            event.deltas.set(key, (event.deltas.get(key) ?? 0n) + next - previous);
+            previous = next;
+          }
+          if (previous !== 0n) {
+            const endEvent = at(segLast + 1);
+            endEvent.deltas.set(key, (endEvent.deltas.get(key) ?? 0n) - previous);
+          }
+        }
+        continue;
+      }
       const baseline = from == null ? 0n : BigInt(pointAt(leaf, from - 1)?.totalRaw ?? '0');
       let previous = BigInt(pointAt(leaf, first)?.totalRaw ?? '0') - baseline;
       at(first).deltas.set(key, (at(first).deltas.get(key) ?? 0n) + previous);
@@ -129,7 +156,7 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
     }
     if (!included) continue;
     keys.push(key); labels.push(causeName(cause));
-    destruction ||= cause.source.kind === 'destruction';
+    destruction ||= isDestruction;
     for (const span of cause.unknownSpans) if (span.reason === 'unread' && span.firstHour <= last && span.lastHour >= first) {
       at(Math.max(first, span.firstHour)).unread++;
       at(Math.min(last + 1, span.lastHour + 1)).unread--;
@@ -151,7 +178,7 @@ export function lossHistory(reply: LossesReply, first: number, last: number, fro
     const drain = entryAt(reply.destructionCoverage, hour);
     const known = hour <= last && unread === 0 && (!countries || runAt(countries, hour) !== null) && (!destruction || drain !== null && drain.lastHour >= hour && drain.reason === null);
     model.edges.push(known ? stackEdges(keys.map(key => Math.max(0, Number(amounts.get(key) ?? 0n) / reply.amountScale))) : null);
-    model.breakBefore.push(known && broken); broken = !known;
+    model.breakBefore.push(known && (broken || event.runBreak)); broken = !known;
   }
   return { model, keys, labels };
 }

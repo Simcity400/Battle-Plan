@@ -372,6 +372,15 @@ impl Held {
     }
 }
 
+pub fn is_complete_drain(cells: &RunCells, legacy_partial_text: bool) -> bool {
+    match cells.drain_state {
+        Some(Row::DRAIN_STATE_COMPLETE) => cells.drain.as_deref() == Some(""),
+        Some(_) => false,
+        None if legacy_partial_text => cells.drain.as_deref() == Some(""),
+        None => false,
+    }
+}
+
 fn default_drain_reason(state: u8) -> &'static str {
     if state & Row::DRAIN_STATE_WITHHELD != 0 {
         Row::DRAIN_WITHHELD
