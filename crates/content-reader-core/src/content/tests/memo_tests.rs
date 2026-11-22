@@ -368,3 +368,469 @@ fn pinned_generations_refresh_changed_settings_snapshots() {
     assert!(absent.validate_generation().is_err());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn warm_recorded_projection_replays_reads_to_new_traced_readers_and_parent_products() {
+    let root = std::env::temp_dir().join(format!(
+        "warm-projection-trace-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = root.join("base");
+    let visual = root.join("visual");
+    fs::create_dir_all(base.join("common/defines")).unwrap();
+    fs::create_dir_all(visual.join("gfx/world")).unwrap();
+    fs::write(
+        base.join("common/defines/00_base.lua"),
+        b"NDefines = { Synthetic = { Value = 1 } }",
+    )
+    .unwrap();
+    fs::write(visual.join("gfx/world/visual.mesh"), b"visual").unwrap();
+    let _generation = Generation::enter();
+    let mut source = ResolvedLayers::from_folders(&[(&base, &[]), (&visual, &[])]).unwrap();
+    source.layers[1].overlay = Some(Overlay {
+        name: "Art".into(),
+        verified: false,
+    });
+    source.layers[1].role = LayerRole::Visual;
+    source.finish().unwrap();
+    let traced = |purpose: &str| {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&log);
+        let layers = source
+            .with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)))
+            .with_read_purpose(purpose);
+        (layers, log)
+    };
+    let (p1, log1) = traced("p1");
+    let (p2, log2) = traced("p2");
+    assert_eq!(
+        crate::defines::read(&p1)
+            .unwrap()
+            .number("Synthetic", "Value")
+            .unwrap(),
+        1.0
+    );
+    let first_len = log1.lock().unwrap().len();
+    assert!(log1.lock().unwrap().iter().any(|read| {
+        read.path == b"common/defines/00_base.lua"
+            && read.purpose == "p1"
+            && matches!(read.outcome, ReadOutcome::Bytes { .. })
+    }));
+    assert_eq!(
+        crate::defines::read(&p1)
+            .unwrap()
+            .number("Synthetic", "Value")
+            .unwrap(),
+        1.0
+    );
+    assert_eq!(log1.lock().unwrap().len(), first_len);
+    assert_eq!(
+        crate::defines::read(&p2)
+            .unwrap()
+            .number("Synthetic", "Value")
+            .unwrap(),
+        1.0
+    );
+    assert!(log2.lock().unwrap().iter().any(|read| {
+        read.path == b"common/defines/00_base.lua"
+            && read.purpose == "p2"
+            && matches!(read.outcome, ReadOutcome::Bytes { .. })
+    }));
+    let parent_value = p1
+        .product("parent over defines", 1, &[], |reader| {
+            let defines = crate::defines::read(reader)?;
+            Ok(defines.number("Synthetic", "Value").unwrap() as u32)
+        })
+        .unwrap();
+    assert_eq!(*parent_value, 1);
+    let (p3, log3) = traced("p3");
+    let cached_parent = p3
+        .product("parent over defines", 1, &[], |_| -> io::Result<u32> {
+            panic!("parent product must be reused");
+        })
+        .unwrap();
+    assert_eq!(*cached_parent, 1);
+    assert!(log3.lock().unwrap().iter().any(|read| {
+        read.path == b"common/defines/00_base.lua"
+            && read.purpose == "p3"
+            && matches!(read.outcome, ReadOutcome::Bytes { .. })
+    }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn standalone_parse_file_refuses_a_file_that_appeared_within_the_same_generation() {
+    let root = std::env::temp_dir().join(format!(
+        "parse-file-appeared-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("gfx/world")).unwrap();
+    let file = root.join("gfx/world/late.mesh");
+    let _generation = Generation::enter();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    for _ in 0..2 {
+        let missing = Generation::parse_file(&file, "synthetic late", 1, &[], |bytes| {
+            Ok(bytes.to_vec())
+        })
+        .unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
+    fs::write(&file, b"appeared").unwrap();
+    assert_eq!(
+        layers.read_uncovered("gfx/world/late.mesh").unwrap(),
+        b"appeared"
+    );
+    let appeared = Generation::parse_file(&file, "synthetic late", 1, &[], |bytes| {
+        Ok(bytes.to_vec())
+    })
+    .unwrap_err();
+    assert_eq!(appeared.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        appeared.to_string().contains("content generation changed"),
+        "{appeared}"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn deferred_watch_arming_forces_sweep_and_catches_pre_scope_changes() {
+    let root = std::env::temp_dir().join(format!(
+        "deferred-watch-arming-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let layer_root = root.join("layer");
+    fs::create_dir_all(layer_root.join("gfx/world")).unwrap();
+    let extra = root.join("extra");
+    fs::create_dir_all(&extra).unwrap();
+    let file = layer_root.join("gfx/world/a.mesh");
+    fs::write(&file, b"old").unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&layer_root, &[])]).unwrap();
+    assert_eq!(layers.read_uncovered("gfx/world/a.mesh").unwrap(), b"old");
+    layers.admit_generation().unwrap();
+    rewrite_preserving_modified_time(&file, b"new");
+    {
+        let _scope = layers.enter_generation();
+        assert!(layers.admit_generation().is_err());
+    }
+    let fresh = ResolvedLayers::from_folders(&[(&layer_root, &[])]).unwrap();
+    assert_eq!(fresh.read_uncovered("gfx/world/a.mesh").unwrap(), b"new");
+    {
+        let _scope = fresh.enter_generation();
+        fresh.admit_generation().unwrap();
+        let validations = fresh
+            .generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        fresh.admit_generation().unwrap();
+        assert_eq!(
+            fresh
+                .generation
+                .changes
+                .validations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            validations
+        );
+    }
+    let mid = ResolvedLayers::from_folders(&[(&layer_root, &[])]).unwrap();
+    assert_eq!(mid.read_uncovered("gfx/world/a.mesh").unwrap(), b"new");
+    assert!(mid.generation.has_unwatched_roots());
+    mid.admit_generation().unwrap();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+    let registered = std::sync::Mutex::new(Vec::new());
+    let mid_ref = &mid;
+    let registered_ref = &registered;
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut paused = false;
+            mid_ref.generation.arm_pending_watches_with(|path, subtree| {
+                if !paused {
+                    paused = true;
+                    entered_tx.send(()).unwrap();
+                    checked_rx.recv().unwrap();
+                }
+                registered_ref.lock().unwrap().push(path.to_path_buf());
+                mid_ref.generation.changes.watch_root(path, subtree);
+            });
+            drop(entered_tx);
+        });
+        entered_rx.recv().expect("arming entered watch registration");
+        assert!(mid.generation.has_unwatched_roots());
+        let before = mid
+            .generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        mid.admit_generation().unwrap();
+        assert_eq!(
+            mid.generation
+                .changes
+                .validations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            before + 1
+        );
+        mid.generation.watch_root(&extra, true);
+        checked_tx.send(()).unwrap();
+    });
+    assert!(!mid.generation.has_unwatched_roots());
+    assert!(registered.lock().unwrap().iter().any(|path| path == &extra));
+    let after_arm = mid
+        .generation
+        .changes
+        .validations
+        .load(std::sync::atomic::Ordering::Relaxed);
+    mid.admit_generation().unwrap();
+    assert_eq!(
+        mid.generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        after_arm + 1
+    );
+    mid.admit_generation().unwrap();
+    assert_eq!(
+        mid.generation
+            .changes
+            .validations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        after_arm + 1
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unscoped_visual_defines_rebuild_when_an_unverified_script_changes() {
+    let root = std::env::temp_dir().join(format!(
+        "unscoped-visual-defines-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = root.join("base");
+    let visual = root.join("visual");
+    fs::create_dir_all(base.join("common/defines")).unwrap();
+    fs::create_dir_all(visual.join("common/defines")).unwrap();
+    fs::write(
+        base.join("common/defines/00_base.lua"),
+        b"NDefines = { NGraphics = { X = 1 } }",
+    )
+    .unwrap();
+    let visual_script = visual.join("common/defines/zz_visual.lua");
+    fs::write(&visual_script, b"NDefines.NGraphics.X = 2").unwrap();
+    let mut layers = ResolvedLayers::from_folders(&[(&base, &[]), (&visual, &[])]).unwrap();
+    layers.layers[1].overlay = Some(Overlay {
+        name: "Visual".into(),
+        verified: false,
+    });
+    layers.layers[1].role = LayerRole::Visual;
+    layers.defines_visible = true;
+    layers.finish().unwrap();
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = Arc::clone(&log);
+    let traced = layers.with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)));
+    assert_eq!(
+        crate::defines::read(&traced)
+            .unwrap()
+            .number("NGraphics", "X")
+            .unwrap(),
+        2.0
+    );
+    let updated = b"NDefines.NGraphics.X = 3";
+    fs::write(&visual_script, updated).unwrap();
+    log.lock().unwrap().clear();
+    assert_eq!(
+        crate::defines::read(&traced)
+            .unwrap()
+            .number("NGraphics", "X")
+            .unwrap(),
+        3.0
+    );
+    assert!(log.lock().unwrap().iter().any(|read| {
+        read.path == b"common/defines/zz_visual.lua"
+            && matches!(
+                read.outcome,
+                ReadOutcome::Bytes { digest, .. } if digest == payload_digest(updated)
+            )
+    }));
+    let parent_script = b"NDefines.NGraphics.X = 4";
+    fs::write(&visual_script, parent_script).unwrap();
+    log.lock().unwrap().clear();
+    let parent_value = traced
+        .product("parent over unscoped visual defines", 1, &[], |reader| {
+            let defines = crate::defines::read(reader)?;
+            Ok(defines.number("NGraphics", "X").unwrap() as u32)
+        })
+        .unwrap();
+    assert_eq!(*parent_value, 4);
+    let visual_reads: Vec<_> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|read| read.path == b"common/defines/zz_visual.lua")
+        .cloned()
+        .collect();
+    assert!(!visual_reads.is_empty());
+    assert!(visual_reads.iter().all(|read| {
+        matches!(
+            read.outcome,
+            ReadOutcome::Bytes { digest, .. } if digest == payload_digest(parent_script)
+        )
+    }));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn concurrent_calls_on_same_traced_reader_never_duplicate_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "concurrent-traced-credit-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = root.join("base");
+    fs::create_dir_all(base.join("common/defines")).unwrap();
+    fs::write(
+        base.join("common/defines/00_base.lua"),
+        b"NDefines = { Synthetic = { Value = 1 } }",
+    )
+    .unwrap();
+    let _generation = Generation::enter();
+    let source = ResolvedLayers::from_folders(&[(&base, &[])]).unwrap();
+    for round in 0..4 {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&log);
+        let traced = source
+            .with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)))
+            .with_read_purpose(format!("round-{round}"));
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let traced = &traced;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    assert_eq!(
+                        crate::defines::read(traced)
+                            .unwrap()
+                            .number("Synthetic", "Value")
+                            .unwrap(),
+                        1.0
+                    );
+                });
+            }
+        });
+        let define_reads = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|read| read.path == b"common/defines/00_base.lua")
+            .count();
+        assert_eq!(define_reads, 1, "round {round}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unscoped_defines_match_scoped_error_and_trace_order() {
+    let root = std::env::temp_dir().join(format!(
+        "defines-error-order-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = root.join("base");
+    let visual = root.join("visual");
+    fs::create_dir_all(base.join("common/defines")).unwrap();
+    fs::create_dir_all(visual.join("common/defines")).unwrap();
+    let base_first = base.join("common/defines/00_first.lua");
+    let base_second = base.join("common/defines/01_second.lua");
+    fs::write(&base_first, b"NDefines = { NGraphics = { X = 1 } }").unwrap();
+    fs::write(&base_second, b"NDefines.NGraphics.X = 2").unwrap();
+    let visual_first = visual.join("common/defines/00_first.lua");
+    let visual_second = visual.join("common/defines/01_second.lua");
+    fs::write(&visual_first, b"NDefines = { NGraphics = { X = 10 } }").unwrap();
+    fs::write(&visual_second, b"NDefines.NGraphics.X = 20").unwrap();
+    let build_stack = || {
+        let mut layers = ResolvedLayers::from_folders(&[(&base, &[]), (&visual, &[])]).unwrap();
+        layers.layers[1].overlay = Some(Overlay {
+            name: "Visual".into(),
+            verified: false,
+        });
+        layers.layers[1].role = LayerRole::Visual;
+        layers.defines_visible = true;
+        layers.finish().unwrap();
+        layers
+    };
+    let read_traced = |layers: &ResolvedLayers| {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&log);
+        let traced = layers.with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)));
+        let err = crate::defines::read(&traced).unwrap_err().to_string();
+        let paths: Vec<LayerPath> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|read| read.path.clone())
+            .collect();
+        (err, paths)
+    };
+    let warm_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept_warm = Arc::clone(&warm_log);
+    let warm_traced = build_stack()
+        .with_read_trace(Arc::new(move |read| kept_warm.lock().unwrap().push(read)));
+    assert_eq!(
+        crate::defines::read(&warm_traced)
+            .unwrap()
+            .number("NGraphics", "X")
+            .unwrap(),
+        20.0
+    );
+    let cold_unscoped = build_stack();
+    let (scoped_err, scoped_paths) = {
+        let _generation = Generation::enter();
+        let scoped = build_stack();
+        fs::write(&visual_first, b"NDefines = {").unwrap();
+        fs::remove_file(&visual_second).unwrap();
+        fs::remove_file(&base_second).unwrap();
+        read_traced(&scoped)
+    };
+    let (cold_err, cold_paths) = read_traced(&cold_unscoped);
+    warm_log.lock().unwrap().clear();
+    let warm_err = crate::defines::read(&warm_traced).unwrap_err().to_string();
+    let warm_paths: Vec<LayerPath> = warm_log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|read| read.path.clone())
+        .collect();
+    assert_eq!(cold_err, scoped_err);
+    assert_eq!(warm_err, scoped_err);
+    assert!(scoped_err.contains("common/defines/00_first.lua"), "{scoped_err}");
+    assert_eq!(scoped_paths, vec![b"common/defines/00_first.lua".to_vec()]);
+    assert_eq!(cold_paths, scoped_paths);
+    assert_eq!(warm_paths, scoped_paths);
+    fs::write(&visual_second, b"NDefines.NGraphics.X = 20").unwrap();
+    fs::write(&base_second, b"NDefines.NGraphics.X = 2").unwrap();
+    let (present_cold_err, present_cold_paths) = read_traced(&cold_unscoped);
+    warm_log.lock().unwrap().clear();
+    let present_warm_err = crate::defines::read(&warm_traced).unwrap_err().to_string();
+    let present_warm_paths: Vec<LayerPath> = warm_log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|read| read.path.clone())
+        .collect();
+    assert_eq!(present_cold_err, scoped_err);
+    assert_eq!(present_warm_err, scoped_err);
+    assert_eq!(present_cold_paths, scoped_paths);
+    assert_eq!(present_warm_paths, scoped_paths);
+    fs::remove_dir_all(root).unwrap();
+}

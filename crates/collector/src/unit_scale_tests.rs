@@ -1,6 +1,7 @@
 #[path = "../../engine/tests/native/support/unit_world.rs"]
 pub(crate) mod fixture;
-use crate::{division_census::Census, division_detail::OwnedDetails};
+use crate::division_detail::OwnedDetails;
+use collector_divisions::division_census::Census;
 use engine_native::{carmy, cprovince, memory::ReadCounts, walk::Outcome};
 use fixture::Shape;
 
@@ -145,8 +146,8 @@ fn unit_scale_orders() {
             map.orders.walk(&live, world.base);
             assert_eq!(map.orders.rows.outcome, Outcome::Rows { len: groups * 2 });
         });
-        let mut plans = crate::extended::plans::Captured::vacant();
-        let mut capacities = crate::extended::plans::Capacities::default();
+        let mut plans = collector_plans::extended::plans::Captured::vacant();
+        let mut capacities = collector_plans::extended::plans::Capacities::default();
         for _ in 0..3 {
             plans.reset();
             plans.visit(
@@ -328,7 +329,7 @@ fn unit_scale_capture() {
                 );
             },
         );
-        use crate::extended::air;
+        use collector_air::extended::air;
         let charged = || {
             serde_json::to_value(crate::raw_memory::diagnostics()).unwrap()["current"]["total_capacity_lower_bound_bytes"]
                 .as_u64()
@@ -407,7 +408,7 @@ fn unit_scale_capture() {
 #[test]
 #[ignore = "release unit scaling benchmark"]
 fn division_input_parts_scale() {
-    use crate::division_census::{MAX_PARTS, parts_for};
+    use collector_divisions::division_census::{MAX_PARTS, parts_for};
     for (countries, divisions) in [(1_500, 3_300), (1_500, 6_000), (5_000, 30_000)] {
         let world = fixture::build(Shape {
             countries,

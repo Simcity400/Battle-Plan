@@ -215,7 +215,7 @@ impl<'a> Evaluator<'_, 'a> {
         }
     }
 
-    fn branches(&self, chain: &[Branch<'_, 'a>], scopes: Scopes) -> Eval {
+    pub(super) fn branches(&self, chain: &[Branch<'_, 'a>], scopes: Scopes) -> Eval {
         let mut taken = Eval::False;
         let mut outcome = Eval::True;
         for branch in chain {

@@ -1,4 +1,3 @@
-
 use replay::{
     columnar_file::{Capture, Stop, capture_of},
     columnar_journal::{JournalWriter, Witness, segment_of},
@@ -294,13 +293,16 @@ impl Lane {
                 let started = Instant::now();
                 let (branch, at) = (hour.branch, hour.hour);
                 #[cfg(feature = "columnar-fault-injection")]
-                let injected = lock(&self.directory)
-                    .as_ref()
-                    .is_some_and(|directory| fs::remove_file(directory.join("columnar.fail")).is_ok());
+                let injected = lock(&self.directory).as_ref().is_some_and(|directory| {
+                    fs::remove_file(directory.join("columnar.fail")).is_ok()
+                });
                 #[cfg(not(feature = "columnar-fault-injection"))]
                 let injected = false;
                 let written = match writer.as_mut() {
-                    _ if injected => Err((APPEND, io::Error::other("a fault injected by columnar.fail"))),
+                    _ if injected => Err((
+                        APPEND,
+                        io::Error::other("a fault injected by columnar.fail"),
+                    )),
                     Some(journal) => write(journal, &hour, timing),
                     None => Err((APPEND, io::Error::from(io::ErrorKind::NotConnected))),
                 };
@@ -356,7 +358,11 @@ fn write(
         sections[at] = section;
     }
     journal
-        .hour(hour.witness, &hour.manifest, &sections[..hour.sections.len()])
+        .hour(
+            hour.witness,
+            &hour.manifest,
+            &sections[..hour.sections.len()],
+        )
         .map_err(|error| (APPEND, error))?;
     if hour.ends_segment {
         let ended = journal
@@ -394,7 +400,7 @@ impl JournalThread {
             .name("hoi4-journal-writer".into())
             .stack_size(STACK_BYTES)
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 serve(&worker)
             })?;
         Ok(Arc::new(Self {
@@ -410,7 +416,9 @@ impl JournalThread {
         #[cfg(test)]
         let refused = self
             .refuse
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                left.checked_sub(1)
+            })
             .is_ok();
         #[cfg(not(test))]
         let refused = false;

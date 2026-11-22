@@ -603,6 +603,36 @@ class Pipeline(unittest.TestCase):
         with self.assertRaises(SystemExit):
             ci.load_pipeline(re.sub(r'(name = "scan"\ngroup = "all"\ntier = )"check"', r'\1"weekly"', PIPELINE))
 
+    def test_nextest_deps_dir_resolves_profile_and_target_dir(self):
+        root = Path("repo")
+        self.assertEqual(
+            ci.nextest_deps_dir(["cargo", "nextest", "run", "--cargo-profile", "ci"], root=root, env={}),
+            root / ".cargo-target" / "ci" / "deps",
+        )
+        self.assertEqual(
+            ci.nextest_deps_dir(["cargo", "nextest", "run", "--cargo-profile=release"], root=root, env={"CARGO_TARGET_DIR": "custom"}),
+            Path("custom") / "release" / "deps",
+        )
+        self.assertEqual(
+            ci.nextest_deps_dir(["cargo", "nextest", "run"], root=root, env={}),
+            root / ".cargo-target" / "debug" / "deps",
+        )
+
+    def test_stage_shader_compiler_copies_cached_dlls_beside_nextest_binaries(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            cache = root / ".cargo-target" / "shader-compiler"
+            cache.mkdir(parents=True)
+            for name in ci.SHADER_COMPILER:
+                (cache / name).write_bytes(name.encode("ascii"))
+            log = root / "stage.log"
+            code = ci.stage_shader_compiler(["cargo", "nextest", "run", "--cargo-profile", "ci"], log, root=root, env={})
+            self.assertEqual(code, 0)
+            deps = root / ".cargo-target" / "ci" / "deps"
+            for name in ci.SHADER_COMPILER:
+                self.assertEqual((deps / name).read_bytes(), name.encode("ascii"))
+
 
 if __name__ == "__main__":
     unittest.main()

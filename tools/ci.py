@@ -52,6 +52,46 @@ UNIFIED = "cfg(all())"
 UNIFY = "test-unify"
 WEIGHTS = ROOT / "tools" / "ci-weights.json"
 LEG_SLACK = 240
+SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
+
+
+def nextest_deps_dir(command, root=ROOT, env=None):
+    """The folder where `cargo nextest` places compiled test binaries (`<target>/<profile>/deps`)."""
+    profile = "debug"
+    for index, part in enumerate(command):
+        if part == "--cargo-profile" and index + 1 < len(command):
+            profile = command[index + 1]
+            break
+        if part.startswith("--cargo-profile="):
+            profile = part.split("=", 1)[1]
+            break
+    target_env = (os.environ if env is None else env).get("CARGO_TARGET_DIR")
+    target = Path(target_env) if target_env else root / ".cargo-target"
+    return target / profile / "deps"
+
+
+def stage_shader_compiler(command, log, root=ROOT, env=None):
+    """Stages the pinned DXC DLLs beside `cargo nextest`'s test binaries via tools/install-shader-compiler.ps1."""
+    deps = nextest_deps_dir(command, root=root, env=env)
+    cache = deps.parent.parent / "shader-compiler"
+    deps.mkdir(parents=True, exist_ok=True)
+    if not all((cache / name).is_file() for name in SHADER_COMPILER):
+        installer = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                     str(root / "tools" / "install-shader-compiler.ps1"), "-Destination", str(cache)]
+        with open(log, "ab") as out:
+            out.write(f"$ {' '.join(installer)}\n".encode())
+            out.flush()
+            try:
+                code = subprocess.run(installer, cwd=root, stdout=out, stderr=subprocess.STDOUT,
+                                      stdin=subprocess.DEVNULL).returncode
+            except OSError as error:
+                out.write(f"could not start: {error}\n".encode())
+                return 127
+        if code != 0:
+            return code
+    for name in SHADER_COMPILER:
+        shutil.copy2(cache / name, deps / name)
+    return 0
 
 
 @dataclass(frozen=True)
@@ -587,6 +627,10 @@ class Runner:
         else:
             if report:
                 report.unlink(missing_ok=True)
+            if not self.local and sys.platform == "win32" and job.name == "rust-test" and "shader-pipeline" in decision.crates:
+                stage_code = stage_shader_compiler(command, log)
+                if stage_code != 0:
+                    return Outcome(job.name, "fail", f"staging pinned shader compiler failed, exit {stage_code}", time.monotonic() - started, str(log))
             code = self.execute(expand(command, values), log, job.unset)
             if report and report.is_file() and code in (0, NEXTEST_TESTS_FAILED):
                 found = sorted_failures(report.read_text(encoding="utf-8", errors="replace"), job.not_run)

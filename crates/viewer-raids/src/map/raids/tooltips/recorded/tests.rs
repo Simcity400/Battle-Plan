@@ -85,16 +85,17 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
                 ..Default::default()
             }],
         );
-        let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
         let loc: Localisation = [("oilfield".into(), "Viewer project".into())]
             .into_iter()
             .collect();
+        let scripted_content = Err("no scripted content in this test".into());
+        let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
         let context = Context {
             assets: &assets,
             world: &world,
             loc: &loc,
             recorded_language: &loc.language,
-            scripted_content: &Err("no scripted content in this test".into()),
+            scripted_content: &scripted_content,
             ours: 0,
             nato: false,
             countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
@@ -176,7 +177,6 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                     ..Default::default()
                 }],
             );
-            let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
             let loc: Localisation = [
                 ("oilfield", "Default project"),
                 ("GER_oilfield", "Country project [ROOT.GetTag]"),
@@ -188,6 +188,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
             let scripted = Ok(scripted_content());
+            let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
             let context = Context {
                 assets: &assets,
                 world: &world,
@@ -242,16 +243,17 @@ fn captive_uses_original_leader_name_without_character_identity() {
             ..Default::default()
         }],
     );
-    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let loc: Localisation = [("original_name".into(), "Viewer language name".into())]
         .into_iter()
         .collect();
+    let scripted_content = Err("no scripted content in this test".into());
+    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let context = Context {
         assets: &assets,
         world: &world,
         loc: &loc,
         recorded_language: &loc.language,
-        scripted_content: &Err("no scripted content in this test".into()),
+        scripted_content: &scripted_content,
         ours: 0,
         nato: false,
         flag_exists: &|_| true,
@@ -348,7 +350,6 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
             ..Default::default()
         }],
     );
-    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let loc: Localisation = [
         ("ICON_TOOLTIP", "[IconEntry]"),
         ("ICON_BODY", "[ROOT.GetActiveRangeActivationEffect]"),
@@ -360,6 +361,7 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
+    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     for nato in [false, true, false] {
         let context = Context {
             assets: &assets,
@@ -388,11 +390,33 @@ fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
     std::fs::remove_dir_all(root).unwrap();
 }
 fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
+    use super::super::super::test_support::put;
     let assets = assets();
     let scripted = Ok(scripted_content());
-    let frame = positive_frame();
-    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
+    let mut frame = positive_frame();
+    put::<tables::CountryAppearance>(
+        &mut frame,
+        [10, 11]
+            .into_iter()
+            .map(|country| replay_data::rows::CountryAppearanceRow {
+                country,
+                ..Default::default()
+            })
+            .collect(),
+    );
+    put::<tables::Politics>(
+        &mut frame,
+        [10, 11]
+            .into_iter()
+            .map(|country| replay_data::rows::PoliticsRow {
+                country,
+                ..Default::default()
+            })
+            .collect(),
+    );
     let loc: Localisation = [
+        ("GER", "Viewer country"),
+        ("ENG", "Target country"),
         ("TRIGGER_ALWAYS_FALSE", "never"),
         ("TRIGGER_ALWAYS_TRUE", "always"),
         ("TRIGGER_FULLFILLED_PREFIX", "+"),
@@ -407,11 +431,13 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
             "[ROOT.GetTag]/[FROM.GetID]/[THIS.GetTag]/[PREV.GetTag]",
         ),
         ("scoped_NOT", "negative [FROM.GetID]"),
+        ("scoped_inner", "[ROOT.GetTag]/[THIS.GetTag]/[PREV.GetTag]/[PREV.FROM.GetTag]/[?target_province|0]"),
         ("chain", "[FROM.ROOT.GetTag]/[ROOT.FROM.PREV.GetTag]"),
     ]
     .into_iter()
     .map(|(k, v)| (k.into(), v.into()))
     .collect();
+    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let context = Context {
         assets: &assets,
         world: &world,
@@ -509,7 +535,6 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
             ..Default::default()
         }],
     );
-    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let loc: Localisation = [
         ("TRIGGER_FULLFILLED_PREFIX", "+"),
         ("TRIGGER_UNFULLFILLED_PREFIX", "-"),
@@ -525,12 +550,14 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
     .into_iter()
     .map(|(key, value)| (key.into(), value.into()))
     .collect();
+    let scripted_content = Err("no scripted content in this test".into());
+    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let context = Context {
         assets: &assets,
         world: &world,
         loc: &loc,
         recorded_language: &loc.language,
-        scripted_content: &Err("no scripted content in this test".into()),
+        scripted_content: &scripted_content,
         ours: 0,
         nato: false,
         countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
@@ -629,6 +656,19 @@ fn custom_tooltip_chains_follow_the_raid_scopes_links() {
         let text = context.trigger_text(&tooltip, nested, "test");
         let refused = text[0].1.as_ref().unwrap_err();
         assert!(refused.contains("Root link is not known"), "{refused}");
+        let scoped = context.trigger_text(
+            &triggers("FROM={custom_trigger_tooltip={tooltip=scoped_inner always=no}}"),
+            Scopes {
+                target_province: Some(9),
+                ..raid
+            },
+            "test",
+        );
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(
+            scoped[0].1.as_deref(),
+            Ok("-\u{11}YTarget country\u{11}!: GER/ENG/GER/ENG/9\n")
+        );
     });
 }
 
@@ -701,17 +741,18 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
             ..Default::default()
         }],
     );
-    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let mut loc: Localisation = [("owner cache $literal$".into(), "must not localise".into())]
         .into_iter()
         .collect();
     loc.language = "english".into();
+    let scripted_content = Err("no scripted content in this test".into());
+    let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
     let context = Context {
         assets: &assets,
         world: &world,
         loc: &loc,
         recorded_language: &loc.language,
-        scripted_content: &Err("no scripted content in this test".into()),
+        scripted_content: &scripted_content,
         ours: 0,
         nato: false,
         countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),
@@ -834,13 +875,14 @@ fn hover_build_cost() {
     let mut samples = Vec::new();
     for _ in 0..100 {
         let start = Instant::now();
+        let scripted_content = Err("no scripted content in this test".into());
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
         let context = Context {
             assets: &assets,
             world: &world,
             loc: &loc,
             recorded_language: &loc.language,
-            scripted_content: &Err("no scripted content in this test".into()),
+            scripted_content: &scripted_content,
             ours: 0,
             nato: false,
             flag_exists: &|_| true,
@@ -893,13 +935,14 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
                 ..Default::default()
             }],
         );
+        let scripted_content = Err("no scripted content in this test".into());
         let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
         let context = Context {
             assets: &assets,
             world: &world,
             loc: &loc,
             recorded_language: &loc.language,
-            scripted_content: &Err("no scripted content in this test".into()),
+            scripted_content: &scripted_content,
             ours: 0,
             nato: false,
             countries: content_reader_country_names::country_names::CountryNames::read(&frame, &loc),

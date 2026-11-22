@@ -32,8 +32,8 @@ fn request(count: i32) -> OrdersRequest {
         .unwrap(),
         base: 0,
         game_state: 0,
-        orders: map_capture::Orders::vacant(),
-        plans: crate::extended::plans::Captured::vacant(),
+        orders: collector_divisions::orders::Orders::vacant(),
+        plans: collector_plans::extended::plans::Captured::vacant(),
         group_source: Some(payload),
     }
 }
@@ -75,7 +75,7 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
     for mode in 0..3 {
         let calls = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&calls);
-        let pool = crate::acquisition::Pool::start(0, 1, move |job: &mut Job| {
+        let pool = collector_workers::acquisition::Pool::start(0, 1, move |job: &mut Job| {
             let Job::ChildFronts(request) = job else {
                 panic!("unexpected fixture runner");
             };
@@ -119,7 +119,7 @@ fn executor_success_plan_failure_and_caught_panic_return_the_original_naval_loan
 
 #[test]
 fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
-    let pool = crate::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
+    let pool = collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
         panic!("cancelled ChildFronts runner must not execute");
     })
     .unwrap();
@@ -137,7 +137,7 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
 
 #[test]
 fn admission_rejection_keeps_the_loan_for_refusal_and_ordinary_decode() {
-    let pool = crate::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
+    let pool = collector_workers::acquisition::Pool::start(0, 1, |_: &mut Job| -> Report {
         panic!("rejected ChildFronts must never run");
     })
     .unwrap();

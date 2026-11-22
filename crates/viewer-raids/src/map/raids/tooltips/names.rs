@@ -365,9 +365,7 @@ mod tests {
                 .contains("stored in english without its key")
         );
     }
-    // quarantine: #138 the refusal wording it expects is stale
     #[test]
-    #[ignore = "quarantined under #138"]
     fn raid_army_names_are_the_recorded_cached_division_name() {
         let raid = RaidRow {
             id: 9,
@@ -418,7 +416,7 @@ mod tests {
             (Recorded::Value(Some(Vec::new())), Ok("")),
             (
                 Recorded::Value(None),
-                Err("DivisionStatus.name unavailable"),
+                Err("name of division status unavailable"),
             ),
             (Recorded::NotRecorded, Err("programmatic unit name")),
         ] {
@@ -541,9 +539,7 @@ mod tests {
             assert_eq!(*count, 1);
         }
     }
-    // quarantine: #138 the refusal wording it expects is stale
     #[test]
-    #[ignore = "quarantined under #138"]
     fn raid_wing_name_empty_failure_and_invalid_utf8_remain_distinct() {
         let raid = RaidRow {
             id: 9,
@@ -553,9 +549,10 @@ mod tests {
         };
         let id = u64::from(raid.id) << 32 | u64::from(raid.reference_type);
         let mut frame = frame();
-        let loc: Localisation = [("raid_inst_unit_desc".into(), "$NAME$".into())]
+        let mut loc: Localisation = [("raid_inst_unit_desc".into(), "$NAME$".into())]
             .into_iter()
             .collect();
+        loc.language = "english".into();
         for (extra, expected) in [
             (vec![(u32::MAX, 0)], Ok("")),
             (vec![], Err("was not recorded")),

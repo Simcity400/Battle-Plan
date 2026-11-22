@@ -4,7 +4,7 @@ use engine_native::walk::Outcome;
 #[derive(Debug, Default)]
 pub(crate) struct DivisionsJob {
     pub(crate) presentation: Option<std::sync::Arc<crate::acquisition_jobs::PresentationInputs>>,
-    pub(crate) census: crate::division_census::Census,
+    pub(crate) census: collector_divisions::division_census::Census,
     pub(super) details: crate::division_detail::OwnedDetails,
     pub(super) context: DivisionsCopyContext,
     pub(super) acquisition_ticks: [u64; 6],
@@ -14,18 +14,18 @@ pub(crate) struct DivisionsJob {
     pub(super) capacity_charge: crate::raw_memory::Charge,
     pub(super) source_packet: Vec<engine_native::cequipment_variant_pool::DivisionSource>,
     pub(crate) slots: Option<(u32, u32)>,
-    pub(crate) join_capacity: crate::division_census::JoinCapacity,
+    pub(crate) join_capacity: collector_divisions::division_census::JoinCapacity,
 }
 impl DivisionsJob {
     pub(crate) fn new_worker() -> Self {
         Self {
-            census: crate::division_census::Census::new_worker(),
+            census: collector_divisions::division_census::Census::new_worker(),
             ..Self::default()
         }
     }
     #[cfg(test)]
     pub fn new() -> Self {
-        let census = crate::division_census::Census::new();
+        let census = collector_divisions::division_census::Census::new();
         let mut job = Self {
             details: crate::division_detail::OwnedDetails::new(census.source_requirement()),
             census,
@@ -88,7 +88,6 @@ impl DivisionsJob {
             };
         }
         captured.install_division_sources(&mut self.source_packet, outcome);
-        
     }
 }
 
@@ -182,7 +181,7 @@ fn copy_divisions_core_pass(
         return;
     }
     job.source_packet[..sources.len()].copy_from_slice(sources);
-    
+
     if !context.details_active {
         return;
     }

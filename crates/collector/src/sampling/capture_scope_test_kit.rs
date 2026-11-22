@@ -12,7 +12,7 @@ pub(crate) enum Fixture {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Read {
-    pub role: Option<acquisition::Role>,
+    pub role: Option<collector_workers::roles::Role>,
     pub address: usize,
     pub len: usize,
     pub accepted: bool,
@@ -24,12 +24,12 @@ struct World {
     fault: Option<usize>,
     changing: (usize, i64),
     reads: Mutex<Vec<Read>>,
-    roles: Mutex<Vec<acquisition::Role>>,
+    roles: Mutex<Vec<collector_workers::roles::Role>>,
 }
 
 struct Traced<'a> {
     world: &'a World,
-    role: Option<acquisition::Role>,
+    role: Option<collector_workers::roles::Role>,
 }
 impl Memory for Traced<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -70,7 +70,7 @@ pub(crate) fn capture(
     mode: CaptureMode,
     fixture: Fixture,
     refuse: bool,
-    mut visit: impl FnMut(&Captured, &[Read], &[acquisition::Role]),
+    mut visit: impl FnMut(&Captured, &[Read], &[collector_workers::roles::Role]),
 ) {
     let (bytes, fault) = match fixture {
         Fixture::Divisions => (
@@ -78,8 +78,8 @@ pub(crate) fn capture(
             divisions_test_kit::C0 + ccountry::DIVISIONS,
         ),
         Fixture::Wars => (
-            wars_test_kit::fixture(),
-            wars_test_kit::C0 + ccountry::DIPLOMACY_STATUS,
+            collector_states::wars_test_kit::fixture(),
+            collector_states::wars_test_kit::C0 + ccountry::DIPLOMACY_STATUS,
         ),
     };
     let field = match fixture {
@@ -89,7 +89,9 @@ pub(crate) fn capture(
                 + engine_native::cequipment_variant_pool::ITEMS;
             u64::from_le_bytes(bytes[header..header + 8].try_into().unwrap()) as usize + 8
         }
-        Fixture::Wars => wars_test_kit::WAR2 + engine_native::cwar_relation::FIRST_CASUALTIES,
+        Fixture::Wars => {
+            collector_states::wars_test_kit::WAR2 + engine_native::cwar_relation::FIRST_CASUALTIES
+        }
     };
     let initial = i64::from_le_bytes(bytes[field..field + 8].try_into().unwrap());
     let world = Arc::new(World {
@@ -129,7 +131,7 @@ pub(crate) fn capture(
         }))
         .ok()
         .unwrap();
-    let mut memo = extended::air::AirBasesMemo::default();
+    let mut memo = collector_air::extended::air::AirBasesMemo::default();
     for hour in 0..=26 {
         world.hour.store(hour as usize, Ordering::Release);
         world.reads.lock().unwrap().clear();

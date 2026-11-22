@@ -61,7 +61,7 @@ fn side(name: &str) -> MapSide {
 
 fn state(side: &MapSide) -> String {
     let layer = layer(side);
-    let open = layer.open.as_ref().map(|open| (open.busy, open.handed, open.seen.as_ref().map(|seen| seen.hour), open.reader.frame().map(|frame| frame.hour)));
+    let open = layer.open.as_ref().map(|open| (open.busy, open.handed, open.seen.as_ref().map(|(seen, _)| seen.hour), open.reader.frame().map(|frame| frame.hour)));
     format!("icons {:?}, applied {:?}, open (busy, handed, seen, rows, error) {open:?}, tables {:?}, {:?}", layer.icons().map(|(_, hour)| hour), layer.applied, layer.tables(), layer.stats())
 }
 
@@ -176,4 +176,118 @@ fn a_whole_settle_at_each_step_gets_the_icons_of_each_hour_with_no_one_else_mark
         steps += 1;
         steps >= 8
     });
+}
+
+#[test]
+fn same_hour_republication_retains_installed_icons_failure_provenance() {
+    use crate::playhead_host::views::{
+        apart::Apart,
+        tests::{COMBATS, combat, hourly_steps, record_with, write_rows},
+        view::HeadFailureKind,
+    };
+    use replay_columnar::manifest::Status;
+    use replay_data::scope::CaptureMode;
+    use replay_frame::frame::TableView;
+
+    struct StampEval;
+    impl Evaluate for StampEval {
+        fn icons(&self, frame: &DecodedFrame, _choice: &perspective::Choice) -> IntelIcons {
+            let mut icons = IntelIcons {
+                built_for: Some((frame.branch, frame.hour, 0)),
+                ..IntelIcons::default()
+            };
+            let status = if frame.tables[COMBATS.index()].is_not_declared() {
+                "combats_absent"
+            } else {
+                match &*frame.tables[COMBATS.index()] {
+                    TableView::Unavailable { .. } => "combats_unavailable",
+                    _ => "combats_complete",
+                }
+            };
+            icons.report.reasons.insert(status.to_owned(), 1);
+            icons
+        }
+    }
+
+    let mut broken = combat(2u128 << 32, 0);
+    broken.1[0] = crate::playhead_host::views::tests::Put::Unrecorded;
+    let units = record_with("same hour provenance", 1, |store, at| {
+        for table in super::CORE {
+            store.status(table.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+        }
+        store.status(COMBATS.index(), Status::Complete, true, Some(at as i32), true).unwrap();
+        write_rows(store, COMBATS, &[broken.clone()]);
+    });
+    let entry = open(units, hourly_steps()).unwrap();
+    entry.set_capture(CaptureMode::Full);
+    entry.playhead().seek(0);
+    let mut apart = Apart::new(&entry, RECORDING.branch).unwrap();
+    let mut icons = Icons::new(Arc::new(StampEval), Pace::Step);
+    icons.views(apart.store()).unwrap();
+    icons.shown = true;
+    icons.applied = Some(0);
+    icons.ensure_open();
+
+    assert!(apart.drive(0), "store reached hour 0");
+    let published_a = icons.open.as_ref().unwrap().reader.wait(|frame| frame.hour == 0, Duration::from_secs(10)).unwrap();
+    assert_eq!(published_a.hour, 0);
+    icons.offer();
+    let done_a = icons.open.as_ref().unwrap().done.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(!icons.take(done_a));
+    let (shown_a, hour_a, failures_a) = icons.icons_with_failures().expect("installed icons A");
+    assert_eq!(hour_a, 0);
+    assert!(shown_a.report.reasons.contains_key("combats_absent"));
+    assert!(failures_a.is_empty());
+
+    let mut with_broken = super::CORE.to_vec();
+    with_broken.push(COMBATS);
+    let before_b = icons.open.as_ref().unwrap().reader.published();
+    icons.open.as_ref().unwrap().reader.declare_only(&with_broken);
+    assert!(apart.drive(0), "store republished hour 0 with failing table");
+    let after_b = icons.open.as_ref().unwrap().reader.wait_newer(before_b, Duration::from_secs(10));
+    assert!(after_b > before_b);
+    let (latest_b, latest_failures_b) = icons.open.as_ref().unwrap().reader.frame_with_failures().unwrap();
+    assert_eq!(latest_b.hour, 0);
+    assert_eq!(latest_failures_b.len(), 1);
+    assert_eq!(latest_failures_b[0].table, COMBATS);
+    assert!(matches!(latest_failures_b[0].kind, HeadFailureKind::BuildError(_)));
+
+    let (still_a, still_hour_a, still_failures_a) = icons.icons_with_failures().expect("icons A still installed");
+    assert_eq!(still_hour_a, 0);
+    assert!(still_a.report.reasons.contains_key("combats_absent"));
+    assert!(
+        still_failures_a.is_empty(),
+        "same-hour republication with failure must not attach to older installed icons: {still_failures_a:?}"
+    );
+
+    icons.offer();
+    let done_b = icons.open.as_ref().unwrap().done.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(!icons.take(done_b));
+    let (shown_b, hour_b, failures_b) = icons.icons_with_failures().expect("installed icons B");
+    assert_eq!(hour_b, 0);
+    assert!(shown_b.report.reasons.contains_key("combats_unavailable"));
+    assert_eq!(failures_b.len(), 1);
+    assert_eq!(failures_b[0].failure.table, COMBATS);
+    assert!(matches!(failures_b[0].failure.kind, HeadFailureKind::BuildError(_)));
+    assert!(matches!(&*failures_b[0].view, TableView::Unavailable { .. }));
+
+    let before_c = icons.open.as_ref().unwrap().reader.published();
+    icons.open.as_ref().unwrap().reader.declare_only(&super::CORE);
+    assert!(apart.drive(0), "store republished clean hour 0");
+    let after_c = icons.open.as_ref().unwrap().reader.wait_newer(before_c, Duration::from_secs(10));
+    assert!(after_c > before_c);
+    let (latest_c, latest_failures_c) = icons.open.as_ref().unwrap().reader.frame_with_failures().unwrap();
+    assert_eq!(latest_c.hour, 0);
+    assert!(latest_failures_c.is_empty());
+
+    let (still_b, still_hour_b, still_failures_b) = icons.icons_with_failures().expect("icons B still installed");
+    assert_eq!(still_hour_b, 0);
+    assert!(still_b.report.reasons.contains_key("combats_unavailable"));
+    assert_eq!(
+        still_failures_b.len(),
+        1,
+        "same-hour clean republication must not drop genuine failure provenance for still-installed icons"
+    );
+    assert_eq!(still_failures_b[0].failure.table, COMBATS);
+    assert!(matches!(still_failures_b[0].failure.kind, HeadFailureKind::BuildError(_)));
 }

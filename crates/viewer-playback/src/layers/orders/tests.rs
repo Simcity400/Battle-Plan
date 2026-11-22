@@ -486,51 +486,93 @@ fn a_compose_shows_the_plan_before_it_and_counts_none_until_one_is_made_after_th
     assert_eq!(layer.published(), Published::Current);
 }
 
-struct HeldForFour(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+#[derive(Default)]
+struct HeldForFour {
+    gate: std::sync::Mutex<(bool, usize)>,
+    changed: std::sync::Condvar,
+}
+
+impl HeldForFour {
+    fn open(&self) {
+        self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0 = true;
+        self.changed.notify_all();
+    }
+
+    fn begun(&self) -> usize {
+        self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1
+    }
+
+    fn wait_begun(&self) {
+        let gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (gate, waited) = self.changed.wait_timeout_while(gate, LIMIT, |gate| gate.1 == 0).unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!waited.timed_out() || gate.1 > 0, "slot 4's build did not start within {LIMIT:?}");
+    }
+}
 
 impl Plans for HeldForFour {
-    fn build(&self, _frame: &DecodedFrame, ours: u32, _show_allied: bool) -> io::Result<OrderField> {
+    fn build(&self, frame: &DecodedFrame, ours: u32, _show_allied: bool) -> io::Result<OrderField> {
         if ours == 4 {
-            let _ = self.0.lock().unwrap().recv();
+            let mut gate = self.gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            gate.1 += 1;
+            self.changed.notify_all();
+            while !gate.0 {
+                gate = self.changed.wait(gate).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
         }
         let mut plan = OrderField::default();
         plan.report.recorded = ours as usize;
+        plan.report.drawn = frame.complete::<tables::CountryLinks>()?.len();
         Ok(plan)
+    }
+}
+
+struct OpenHeldForFour(Arc<HeldForFour>);
+
+impl Drop for OpenHeldForFour {
+    fn drop(&mut self) {
+        self.0.open();
     }
 }
 
 #[test]
 fn a_plan_made_for_another_viewing_country_is_withheld_until_its_own_is_made() {
     use viewer_foundation::map::perspective::Country;
+    const BEFORE: i32 = 0;
+    const AFTER: i32 = 50;
     let entry = open(recorded::record("orders viewer", 60, campaign), Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(CaptureMode::Full);
     let mut fed = Apart::new(&entry, 0).unwrap();
-    let (release, gate) = std::sync::mpsc::channel();
-    let mut layer = Orders::new(Arc::new(HeldForFour(std::sync::Mutex::new(gate))));
+    let held = Arc::new(HeldForFour::default());
+    let mut layer = Orders::new(Arc::clone(&held) as Arc<dyn Plans>);
+    let _release = OpenHeldForFour(Arc::clone(&held));
     layer.set_views(fed.store()).unwrap();
     layer.set_vision(Choice::default(), Arc::new(Vision::sharing(3, [])));
     entry.playhead().seek(0);
-    let settle = |fed: &mut Apart, layer: &mut Orders| {
-        let head = entry.playhead().newest().unwrap_or(0);
+    let settle = |fed: &mut Apart, layer: &mut Orders, head: i32| {
         assert!(fed.drive(head), "the store never reached hour {head}");
         layer.settle_at(head, crate::layers::Settling::step()).unwrap();
     };
-    let made_for = |layer: &Orders| layer.plan().map(|(_, plan)| plan.report.recorded);
+    let made_for = |layer: &Orders| layer.plan().map(|(_, plan)| (plan.report.recorded, plan.report.drawn));
     let deadline = std::time::Instant::now() + LIMIT;
     while made_for(&layer).is_none() {
-        settle(&mut fed, &mut layer);
+        settle(&mut fed, &mut layer, BEFORE);
         assert!(std::time::Instant::now() < deadline, "slot 3's plan within {LIMIT:?}");
     }
-    assert_eq!(made_for(&layer), Some(3));
+    assert_eq!(made_for(&layer), Some((3, 1)));
     layer.set_vision(Choice { country: Country::Tag("other".into()), ..Choice::default() }, Arc::new(Vision::sharing(4, [])));
+    settle(&mut fed, &mut layer, BEFORE);
+    assert_eq!(made_for(&layer), None, "slot 3's plan shown while slot 4's is made");
+    held.wait_begun();
+    assert!(fed.drive(AFTER), "the store never reached hour {AFTER}");
     for _ in 0..50 {
-        settle(&mut fed, &mut layer);
+        settle(&mut fed, &mut layer, AFTER);
         assert_eq!(made_for(&layer), None, "slot 3's plan shown while slot 4's is made");
     }
-    release.send(()).unwrap();
-    while made_for(&layer).is_none() {
-        settle(&mut fed, &mut layer);
-        assert!(std::time::Instant::now() < deadline, "slot 4's plan within {LIMIT:?}");
+    held.open();
+    while made_for(&layer) != Some((4, 2)) {
+        settle(&mut fed, &mut layer, AFTER);
+        assert!(std::time::Instant::now() < deadline, "slot 4's post-45 plan within {LIMIT:?}: {:?}", made_for(&layer));
     }
-    assert_eq!(made_for(&layer), Some(4));
+    assert_eq!(made_for(&layer), Some((4, 2)));
+    assert!(held.begun() >= 2, "slot 4 rebuilt for the hour-45 change: {} builds", held.begun());
 }
