@@ -715,11 +715,7 @@ impl<'n> Reader<'n> {
         self.misreads.push(note);
     }
 
-    pub fn advance(&mut self) -> bool {
-        if self.pending {
-            self.pending = false;
-            return self.pending_result;
-        }
+    fn advance_raw(&mut self) -> bool {
         let Some(token) = self.tokens.get(self.next) else {
             return false;
         };
@@ -741,9 +737,26 @@ impl<'n> Reader<'n> {
         false
     }
 
+    pub fn advance(&mut self) -> bool {
+        let more = if self.pending {
+            self.pending = false;
+            self.pending_result
+        } else {
+            self.advance_raw()
+        };
+        if !more && !self.unknown_scopes.is_empty() && self.has_tokens_after_end() {
+            let line = self
+                .tokens
+                .get(self.next.saturating_sub(1))
+                .map_or(self.current.line, |token| token.line);
+            self.refuse_embedded_end(line);
+        }
+        more
+    }
+
     pub fn peek(&mut self) -> &Token {
         if !self.pending {
-            let result = self.advance();
+            let result = self.advance_raw();
             if !result {
                 self.current.kind = Kind::End;
             }
@@ -835,9 +848,6 @@ impl<'n> Reader<'n> {
             return;
         }
         if !self.advance() {
-            if !self.unknown_scopes.is_empty() && self.has_tokens_after_end() {
-                self.refuse_embedded_end(name.line);
-            }
             return;
         }
         if self.current().kind != Kind::Equals {
@@ -901,13 +911,9 @@ impl<'n> Reader<'n> {
                 );
                 resolved
             }
-            peeked => {
+            _ => {
                 self.advance();
-                if peeked.kind == Kind::End
-                    && !self.unknown_scopes.is_empty()
-                    && self.has_tokens_after_end()
-                {
-                    self.refuse_embedded_end(peeked.line);
+                if self.unsettled.is_some() {
                     return;
                 }
                 let token = self.current();
@@ -952,9 +958,6 @@ impl<'n> Reader<'n> {
     pub fn key_operator_value(&mut self) -> Slots {
         loop {
             if !self.advance() {
-                if !self.unknown_scopes.is_empty() && self.has_tokens_after_end() {
-                    self.refuse_embedded_end(self.current.line);
-                }
                 return Slots::Ended;
             }
             if self.current().starts_with_at() {
@@ -983,10 +986,6 @@ impl<'n> Reader<'n> {
                         });
                         return Slots::Ended;
                     }
-                    if peek_kind == Kind::End && self.has_tokens_after_end() {
-                        self.refuse_embedded_end(line);
-                        return Slots::Ended;
-                    }
                 }
                 continue;
             }
@@ -1011,10 +1010,6 @@ impl<'n> Reader<'n> {
                     });
                     return Slots::Ended;
                 }
-                if peek_kind == Kind::End && self.has_tokens_after_end() {
-                    self.refuse_embedded_end(line);
-                    return Slots::Ended;
-                }
             }
             if !self.advance() || !self.current().operator() {
                 return Slots::NoOperator;
@@ -1028,15 +1023,11 @@ impl<'n> Reader<'n> {
                 Token::end(peek_line)
             } else {
                 self.advance();
-                let value = self.resolve(self.current());
                 if self.unsettled.is_some() {
                     return Slots::Ended;
                 }
-                if !self.unknown_scopes.is_empty()
-                    && peek_kind == Kind::End
-                    && self.has_tokens_after_end()
-                {
-                    self.refuse_embedded_end(peek_line);
+                let value = self.resolve(self.current());
+                if self.unsettled.is_some() {
                     return Slots::Ended;
                 }
                 value

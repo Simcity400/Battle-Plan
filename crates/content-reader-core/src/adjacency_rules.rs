@@ -1021,4 +1021,18 @@ adjacency_rule = {
         .to_string();
         assert!(error.contains("opaque"), "{error}");
     }
+
+    #[test]
+    fn embedded_end_marker_in_nested_unknown_object_refuses_before_accepting_icon() {
+        const INPUT: &[u8] = b"adjacency_rule = { name = A is_enemy = { owns_any_state_of = { nested = { \xff } } @x = 7 icon = @x } }";
+        crate::combat_tactics::own::register_owns_any_state_of();
+        let rules = parse(INPUT).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].icon, Ok(None));
+
+        engine_executable::executable_tables::enter(None);
+        let error = parse(INPUT).unwrap_err().to_string();
+        assert!(error.contains("nested"), "{error}");
+    }
 }

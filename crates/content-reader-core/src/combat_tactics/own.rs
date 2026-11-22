@@ -47,6 +47,18 @@ pub(crate) fn register_non_damaged_building_level() {
 }
 
 #[cfg(test)]
+pub(crate) fn register_owns_any_state_of() {
+    crate::test_game::with(|game| {
+        game.trigger(
+            "owns_any_state_of",
+            0,
+            crate::trigger_keys::Reader::Own(0x140490D60),
+            0,
+        )
+    });
+}
+
+#[cfg(test)]
 mod tests {
     use crate::{
         key_names::KeyNames,
@@ -229,7 +241,7 @@ mod tests {
 
     #[test]
     fn owns_any_state_of_is_a_raw_list_even_with_a_definition() {
-        own(&[("owns_any_state_of", 0x140490D60, 0)]);
+        super::register_owns_any_state_of();
         let result = read(b"body = { owns_any_state_of = { 1 @lost = 2 } } lost = @lost");
         assert!(result.unsettled.is_none());
         assert_eq!(result.items[1].value.scalar(), Some(&b"@lost"[..]));
