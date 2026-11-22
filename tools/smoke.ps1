@@ -590,6 +590,7 @@ function Invoke-UiExitFlow {
         [Parameter(Mandatory)][scriptblock]$IsMenuOpen,
         [Parameter(Mandatory)][scriptblock]$IsConfirmOpen,
         [scriptblock]$OnMenuOpened = {},
+        [scriptblock]$OnConfirmationSent = {},
         [int]$MaxAttempts = 3,
         [int]$MaxPolls = 20,
         [scriptblock]$Pause = { Start-Sleep -Milliseconds 250 }
@@ -666,6 +667,7 @@ function Invoke-UiExitFlow {
         }
         & $Click 'exit_confirm'
         $exitState.ConfirmationSent = $true
+        & $OnConfirmationSent
         foreach ($waitMs in @(20000, 40000)) {
             if ((& $WaitForExit $waitMs) -or (& $HasExited)) {
                 $code = & $GetExitCode
@@ -761,6 +763,26 @@ function Get-ActiveSmokeTools($Tracker) {
         if (-not $entry.Process.HasExited) { $active += $entry }
     }
     $active
+}
+
+function Invoke-FailureGamePause {
+    param(
+        $Game,
+        $Reader,
+        [bool]$ExitConfirmationSent,
+        [Parameter(Mandatory)]$Report,
+        [Parameter(Mandatory)][scriptblock]$SendEscape,
+        [Parameter(Mandatory)][scriptblock]$PauseGame
+    )
+    if ($null -eq $Game -or $null -eq $Reader -or $ExitConfirmationSent) { return }
+    try { if ($Game.PSObject.Methods['Refresh']) { $Game.Refresh() } } catch {}
+    if ($Game.HasExited) { return }
+    try {
+        & $SendEscape
+        & $PauseGame
+    } catch {
+        $Report.pause_cleanup_error = $_.Exception.Message
+    }
 }
 
 function Invoke-FailureRecorderCleanup {
@@ -906,7 +928,7 @@ function Invoke-FullSmoke {
         Remove-Item -LiteralPath $lock -Recurse -Force -ErrorAction SilentlyContinue
         throw
     }
-    $game = $null; $reader = $null; $recorderRun = $null; $foregroundState = @{ Handle = [IntPtr]::Zero }
+    $game = $null; $reader = $null; $recorderRun = $null; $foregroundState = @{ Handle = [IntPtr]::Zero }; $exitConfirmationState = @{ Sent = $false }
     $toolTracker = [Collections.Generic.List[object]]::new()
     $menuProbe = $uiProbes.Menu
     $saveDialogProbe = $uiProbes.SaveDialog
@@ -1081,7 +1103,8 @@ function Invoke-FullSmoke {
             -Click { param($pointName) Click-Point $pointName } `
             -SendEscape { $null = Drive 'Key' @{Key='Escape'} $true } `
             -IsMenuOpen { Test-SmokeDialog $menuProbe } `
-            -IsConfirmOpen { Test-SmokeDialog $exitConfirmProbe }
+            -IsConfirmOpen { Test-SmokeDialog $exitConfirmProbe } `
+            -OnConfirmationSent { $exitConfirmationState.Sent = $true }
         $report.exit_attempts = $result.Attempts
         $report.exit_confirmed = $result.ConfirmationSent
         $report.exit_code = $result.ExitCode
@@ -1382,9 +1405,9 @@ function Invoke-FullSmoke {
     } catch {
         $failure=$_; $report.passed=$false; $report.error=$_.Exception.Message
         Stage 'failed'
-        if ($game -and -not $game.HasExited -and $reader) {
-            try { $null=Drive 'Key' @{Key='Escape'}; Pause-Game $true } catch { $report.pause_cleanup_error=$_.Exception.Message }
-        }
+        Invoke-FailureGamePause -Game $game -Reader $reader -ExitConfirmationSent $exitConfirmationState.Sent -Report $report `
+            -SendEscape { $null = Drive 'Key' @{Key='Escape'} } `
+            -PauseGame { Pause-Game $true }
         Invoke-FailureRecorderCleanup -RecorderRun $recorderRun -ToolTracker $toolTracker -Report $report `
             -RunDetach { $null = Run-Tool $recorder @('detach','--out',$recordRoot) 'failure-detach' 120 } `
             -WaitRecorder { $null = Finish-Tool $recorderRun 180 }

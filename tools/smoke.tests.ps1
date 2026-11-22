@@ -23,7 +23,7 @@ foreach ($definition in $driverAst.FindAll({param($node)
         'Reset-UiToCleanMap', 'Invoke-ObservedUiStep', 'Invoke-BoundedUiSequence',
         'Invoke-UiSaveFlow', 'Invoke-UiExitFlow', 'Invoke-ExitThenVerify',
         'Read-SharedUtf8Text', 'Start-SmokeTool', 'Wait-SmokeTool',
-        'Get-ActiveSmokeTools', 'Invoke-FailureRecorderCleanup'
+        'Get-ActiveSmokeTools', 'Invoke-FailureGamePause', 'Invoke-FailureRecorderCleanup'
     )
 }, $false)) { . ([scriptblock]::Create($definition.Extent.Text)) }
 try { $ScratchRoot = Resolve-LaunchUserDirectory $ScratchRoot }
@@ -91,7 +91,9 @@ $snapshot = $smoke.Body.EndBlock.Statements | Where-Object { $_.Extent.Text -mat
 $write = $smoke.Find({param($node) $node -is [Management.Automation.Language.PipelineAst] -and $node.Extent.Text -match '^Write-LaunchSelection '}, $true)
 $writtenInit = $smoke.Body.EndBlock.Statements | Where-Object { $_.Extent.Text -eq '$selectionWritten = $false' }
 $writtenMark = $smoke.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Extent.Text -eq '$selectionWritten = $true'}, $true)
-$cleanup = $smoke.Find({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.Finally -and $node.Finally.Extent.Text -match '\$ownedGameStopped='}, $true).Finally
+$smokeTry = $smoke.Find({param($node) $node -is [Management.Automation.Language.TryStatementAst] -and $node.Finally -and $node.Finally.Extent.Text -match '\$ownedGameStopped='}, $true)
+$smokeCatch = $smokeTry.CatchClauses[0].Body
+$cleanup = $smokeTry.Finally
 function Assert-SmokeRestore([byte[]]$before, [string]$mode = 'normal') {
     $userPath = $fixtureProfile; $ExpectedSave = 'fixture.hoi4'
     . ([scriptblock]::Create($snapshot.Extent.Text))
@@ -782,6 +784,12 @@ throw "Unexpected action received by driver: $Action"
         PostConfirmCalls = 0
     }
     $hungAfterConfirmErr = $null
+    $exitConfirmationState = @{ Sent = $false }
+    $outerCatchCalls = @{ Escape = 0; Pause = 0 }
+    $outerGame = [pscustomobject]@{ HasExited = $false }
+    $outerReader = [pscustomobject]@{}
+    $outerCatchReport = [ordered]@{}
+    $outerToolTracker = [Collections.Generic.List[object]]::new()
     try {
         $null = Invoke-UiExitFlow -MaxAttempts 3 -MaxPolls 2 -Pause {} `
             -HasExited { $false } -GetExitCode { 0 } -WaitForExit { param($ms) $hungAfterConfirmState.Waits++; $false } `
@@ -794,12 +802,41 @@ throw "Unexpected action received by driver: $Action"
                 elseif ($name -eq 'exit_confirm') { $hungAfterConfirmState.Confirmed = $true }
             } -SendEscape { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ } } `
             -IsMenuOpen { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ }; $hungAfterConfirmState.Menu } `
-            -IsConfirmOpen { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ }; $hungAfterConfirmState.Confirm }
-    } catch { $hungAfterConfirmErr = $_.Exception.Message }
-    if ($hungAfterConfirmState.PostConfirmCalls -ne 0 -or $hungAfterConfirmState.Waits -lt 2 -or $hungAfterConfirmErr -notlike '*did not exit after exit_confirm*') {
-        throw "Hung shutdown after exit_confirm re-entered UI/clock/Escape or gave wrong error: postCalls=$($hungAfterConfirmState.PostConfirmCalls) waits=$($hungAfterConfirmState.Waits) err=$hungAfterConfirmErr"
+            -IsConfirmOpen { if ($hungAfterConfirmState.Confirmed) { $hungAfterConfirmState.PostConfirmCalls++ }; $hungAfterConfirmState.Confirm } `
+            -OnConfirmationSent { $exitConfirmationState.Sent = $true }
+    } catch {
+        $hungAfterConfirmErr = $_.Exception.Message
+        $game = $outerGame; $reader = $outerReader; $recorderRun = $null; $toolTracker = $outerToolTracker; $report = $outerCatchReport; $failure = $null
+        function Stage([string]$name) { $report.phase = $name }
+        function Drive([string]$act, [hashtable]$params) { if ($act -eq 'Key' -and $params.Key -eq 'Escape') { $outerCatchCalls.Escape++ } }
+        function Pause-Game([bool]$pause) { $outerCatchCalls.Pause++ }
+        . ([scriptblock]::Create($smokeCatch.Extent.Text.Trim().Substring(1, $smokeCatch.Extent.Text.Trim().Length - 2)))
     }
-    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0, waits cleanly without re-entering UI after confirmation, and verifies offline on failure'
+    if ($hungAfterConfirmState.PostConfirmCalls -ne 0 -or $hungAfterConfirmState.Waits -lt 2 -or $hungAfterConfirmErr -notlike '*did not exit after exit_confirm*' -or
+        -not $exitConfirmationState.Sent -or $outerCatchCalls.Escape -ne 0 -or $outerCatchCalls.Pause -ne 0) {
+        throw "Hung shutdown after exit_confirm re-entered UI/clock/Escape or outer catch sent Escape/Pause: postCalls=$($hungAfterConfirmState.PostConfirmCalls) waits=$($hungAfterConfirmState.Waits) confirmed=$($exitConfirmationState.Sent) outerEscape=$($outerCatchCalls.Escape) outerPause=$($outerCatchCalls.Pause) err=$hungAfterConfirmErr"
+    }
+
+    $preConfirmCatchCalls = @{ Escape = 0; Pause = 0 }
+    $exitConfirmationState = @{ Sent = $false }
+    $preConfirmCatchReport = [ordered]@{}
+    try {
+        throw 'Synthetic failure before exit confirmation.'
+    } catch {
+        $game = $outerGame; $reader = $outerReader; $recorderRun = $null; $toolTracker = $outerToolTracker; $report = $preConfirmCatchReport; $failure = $null
+        function Stage([string]$name) { $report.phase = $name }
+        function Drive([string]$act, [hashtable]$params) { if ($act -eq 'Key' -and $params.Key -eq 'Escape') { $preConfirmCatchCalls.Escape++ } }
+        function Pause-Game([bool]$pause) { $preConfirmCatchCalls.Pause++ }
+        . ([scriptblock]::Create($smokeCatch.Extent.Text.Trim().Substring(1, $smokeCatch.Extent.Text.Trim().Length - 2)))
+    }
+    if ($preConfirmCatchCalls.Escape -ne 1 -or $preConfirmCatchCalls.Pause -ne 1) {
+        throw "Outer catch before exit confirmation did not pause game: escape=$($preConfirmCatchCalls.Escape) pause=$($preConfirmCatchCalls.Pause)"
+    }
+    $stopOwnedGameAst = $smoke.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Stop-OwnedGame' }, $true)
+    if (-not $stopOwnedGameAst -or $stopOwnedGameAst.Extent.Text -notmatch '-OnConfirmationSent\s*\{\s*\$exitConfirmationState\.Sent\s*=\s*\$true\s*\}') {
+        throw 'Stop-OwnedGame does not propagate -OnConfirmationSent to $exitConfirmationState.Sent.'
+    }
+    $script:Passed++; Write-Host 'PASS exit requires confirmation and exit code 0, waits cleanly without re-entering UI or outer pause after confirmation, and verifies offline on failure'
 
     $box = Get-UiRegionBox @(10, 20) 1920 1080 120 60
     if (($box -join ',') -cne '0,0,130,80') { throw "Clamped top-left UI box mismatch: $($box -join ',')" }
