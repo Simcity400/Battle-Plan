@@ -174,6 +174,16 @@ collector_primitives::capacity_max!(Capacities { rows, lend_lease });
 impl Capacities {
     pub fn presize(
         &mut self,
+        _access: &collector_workers::CaptureAccess,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        self.presize_inner(memory, base, state)
+    }
+
+    pub(crate) fn presize_inner(
+        &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,

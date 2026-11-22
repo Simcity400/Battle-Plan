@@ -1,10 +1,7 @@
 use super::*;
 #[cfg(test)]
 use engine_native::memory::CountedMemory;
-use engine_native::{
-    ccountry, cgame_state, csub_unit_definition as subunit,
-    memory::SliceMemory,
-};
+use engine_native::{ccountry, cgame_state, csub_unit_definition as subunit, memory::SliceMemory};
 
 pub struct Fixture {
     pub bytes: Vec<u8>,
@@ -184,7 +181,7 @@ fn enabled_unsized_startup_records_known_template_and_country_values_through_spo
     source.bytes[0x3000 + ccountry::LOCK_ALL_TEMPLATES] = 1;
 
     let mut capacities = Capacities::default();
-    capacities.presize(&source, 0, 0x1000).unwrap();
+    capacities.presize_inner(&source, 0, 0x1000).unwrap();
     collector_model_inputs::local_subunit_changes::boundary(true);
     crate::template_changes::boundary(true);
     let mut capture = Captured::with_capacities(&capacities);
@@ -1234,7 +1231,7 @@ fn split_walk_equals_the_serial_walk_and_every_range_walks_its_share() {
 fn live_template_demand_and_same_capture_growth_keep_every_country() {
     let source = large_content(20, 4);
     let mut capacity = Capacities::default();
-    capacity.presize(&source, 0, 0x1000).unwrap();
+    capacity.presize_inner(&source, 0, 0x1000).unwrap();
     assert!(capacity.rows >= 80 && capacity.icon_rows >= 80);
     assert!(capacity.bytes >= 80 * 11);
     assert!(capacity.icon_bytes >= 80 * 20);
@@ -1244,7 +1241,10 @@ fn live_template_demand_and_same_capture_growth_keep_every_country() {
     assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 80 }; 2]);
     let grown = large_content(20, 5);
     captured.capture(&grown, 0, 0x1000, 10, true);
-    assert_eq!(template_outcomes(&captured), [Outcome::Rows { len: 100 }; 2]);
+    assert_eq!(
+        template_outcomes(&captured),
+        [Outcome::Rows { len: 100 }; 2]
+    );
     assert_eq!(captured.name_bytes.len, 100 * (3 + 8));
     assert_eq!(captured.counts.len, 100);
 }
@@ -1514,7 +1514,11 @@ fn a_writer_that_changes_no_template_keeps_the_witness_and_one_that_does_renews_
         }
         let recording = Recording::new(&source);
         capture.capture_original(&recording, 0, 0x1000, hour, false, &changes);
-        assert_eq!(recording.template(A) > 0, matches!(hour, 0 | 2 | 3), "hour {hour}");
+        assert_eq!(
+            recording.template(A) > 0,
+            matches!(hour, 0 | 2 | 3),
+            "hour {hour}"
+        );
         assert_eq!(capture.witness.is_some(), hour > 0, "hour {hour}");
         witnesses.push(capture.witness);
     }
@@ -1548,12 +1552,19 @@ fn country_refusal_recovery_and_loss_renew_the_template_witness() {
         }
         capture.capture_original(&source, 0, 0x1000, hour, false, &changes);
         let known = (2..5).contains(&hour);
-        assert_eq!(capture.model_failures.rows, u32::from(!known), "hour {hour}");
+        assert_eq!(
+            capture.model_failures.rows,
+            u32::from(!known),
+            "hour {hour}"
+        );
         let TableView::Complete(TableRows::CountryTemplateState(rows)) = capture.country_state()
         else {
             panic!("country configuration unavailable at hour {hour}");
         };
-        assert_eq!(rows[0].garrison_priority, Recorded::Value(known.then_some(0)));
+        assert_eq!(
+            rows[0].garrison_priority,
+            Recorded::Value(known.then_some(0))
+        );
         assert_eq!(matches!(rows[0].garrisons, Recorded::Value(Some(_))), known);
         assert_eq!(capture.witness.is_some(), matches!(hour, 1 | 3 | 4 | 6));
         witnesses.push(capture.witness);

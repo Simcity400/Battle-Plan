@@ -1,4 +1,3 @@
-
 use crate::{
     clock::qpc,
     projection::{Projection, project_table, scalar_table},
@@ -56,6 +55,7 @@ const FUEL_CONSUMERS: usize = ccountry_fuel_status::MAX_CONSUMERS as usize;
 impl Capacities {
     pub fn presize(
         &mut self,
+        _access: &collector_workers::CaptureAccess,
         memory: &impl Memory,
         base: usize,
         state: usize,
@@ -90,18 +90,9 @@ impl Capacities {
         }
         for (index, outcome) in [
             (2, sprovince_supply_data::count(memory, base, state)),
-            (
-                3,
-                ccountry_supply_system::count(memory, base, state),
-            ),
-            (
-                4,
-                disrupted_supply_bucket::count(memory, base, state),
-            ),
-            (
-                9,
-                cpurchase_contract::count(memory, base, state),
-            ),
+            (3, ccountry_supply_system::count(memory, base, state)),
+            (4, disrupted_supply_bucket::count(memory, base, state)),
+            (9, cpurchase_contract::count(memory, base, state)),
         ] {
             crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
         }
@@ -268,7 +259,7 @@ impl Captured {
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
             self.demand.capture(memory, base, game_state, hour);
-            
+
             ticks[0] = elapsed(begin);
         }
         if self.rest_raw_mode {
@@ -280,7 +271,6 @@ impl Captured {
                 let begin = qpc();
                 capture_rows(&mut self.$field, |rows| {
                     $worker(memory, base, game_state, rows)
-                    
                 });
                 ticks[$index] = elapsed(begin);
             }};
@@ -407,12 +397,7 @@ impl Captured {
         ticks
     }
 
-    fn capture_fuel_buffers(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-    ) {
+    fn capture_fuel_buffers(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
         let outcomes = ccountry_fuel_status::walk_buffer(
             memory,
             base,
@@ -770,8 +755,7 @@ mod owned;
 use owned::OwnedResources;
 use owned::skipped;
 pub use owned::{
-    EconomyRestCopyContext, EconomyRestCopyReport, EconomyRestJob,
-    copy_economy_rest_refresh,
+    EconomyRestCopyContext, EconomyRestCopyReport, EconomyRestJob, copy_economy_rest_refresh,
 };
 
 #[cfg(test)]

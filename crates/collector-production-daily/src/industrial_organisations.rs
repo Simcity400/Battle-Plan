@@ -39,6 +39,7 @@ collector_primitives::capacity_max!(Capacities {
 impl Capacities {
     pub fn presize(
         &mut self,
+        _access: &collector_workers::CaptureAccess,
         memory: &impl Memory,
         base: usize,
         state: usize,

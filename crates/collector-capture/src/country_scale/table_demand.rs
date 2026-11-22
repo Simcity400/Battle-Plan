@@ -14,17 +14,18 @@ pub fn presize(
 }
 
 pub fn presize_periodic(
-    _access: &collector_workers::CaptureAccess,
+    access: &collector_workers::CaptureAccess,
     memory: &impl Memory,
     base: usize,
     map: &mut MapCapacities,
     extended: &mut extended::Capacities,
     capacity_census: bool,
 ) -> Result<(), &'static str> {
-    measure_and_prepare(memory, base, map, extended, capacity_census)
+    measure_and_prepare(access, memory, base, map, extended, capacity_census)
 }
 
 fn measure_and_prepare(
+    access: &collector_workers::CaptureAccess,
     memory: &impl Memory,
     base: usize,
     map: &mut MapCapacities,
@@ -85,13 +86,15 @@ fn measure_and_prepare(
     size!(census, extended.projects.presize(memory, base, state));
     size!(
         prompt,
-        extended.division_templates.presize(memory, base, state)
+        extended
+            .division_templates
+            .presize(access, memory, base, state)
     );
     size!(
         prompt,
         extended
             .industrial_organisations
-            .presize(memory, base, state),
+            .presize(access, memory, base, state),
     );
     size!(census, extended.production.presize(memory, base, state));
     size!(census, extended.model_inputs.presize(memory, base, state));
@@ -146,8 +149,14 @@ fn measure_and_prepare(
         census,
         extended.raid_state_inputs.presize(memory, base, state)
     );
-    size!(prompt, extended.combat_log.presize(memory, base, state));
-    size!(prompt, extended.group_counters.presize(memory, base, state));
+    size!(
+        prompt,
+        extended.combat_log.presize(access, memory, base, state)
+    );
+    size!(
+        prompt,
+        extended.group_counters.presize(access, memory, base, state)
+    );
     size!(census, extended.air.presize(memory, base, state));
     size!(census, extended.naval_history.presize(memory, base, state));
     size!(census, extended.visibility.presize(memory, base, state));
@@ -157,7 +166,10 @@ fn measure_and_prepare(
         extended.country_tactic_unlocks.presize(memory, base, state),
     );
     size!(census, extended.construction.presize(memory, base, state));
-    size!(prompt, extended.economy.presize(memory, base, state));
+    size!(
+        prompt,
+        extended.economy.presize(access, memory, base, state)
+    );
     size!(census, extended.session.presize(memory, base, state));
     size!(
         census,
@@ -254,6 +266,9 @@ mod tests {
 
     #[test]
     fn attach_and_unchanged_country_count_follow_live_mod_map_population() {
+        // SAFETY: this isolated fixture does not publish hooks or start workers.
+        let owner = unsafe { collector_workers::Owner::claim() };
+        let access = owner.capture();
         let mut memory = LargeMap {
             slots: 5001,
             provinces: 20001,
@@ -262,7 +277,15 @@ mod tests {
         let mut sizing = super::super::Sizing::for_slots(5001);
         assert!(sizing.extended.economy.rows[2] < 20000);
         assert!(
-            measure_and_prepare(&memory, 0, &mut sizing.map, &mut sizing.extended, true).is_err()
+            measure_and_prepare(
+                &access,
+                &memory,
+                0,
+                &mut sizing.map,
+                &mut sizing.extended,
+                true
+            )
+            .is_err()
         );
         assert!(sizing.extended.economy.rows[2] >= 20000);
         let mut order =
@@ -273,13 +296,29 @@ mod tests {
         assert_eq!(order.outcomes(), [Outcome::Rows { len: 20000 }]);
         memory.provinces = 70001;
         assert!(
-            measure_and_prepare(&memory, 0, &mut sizing.map, &mut sizing.extended, true).is_err()
+            measure_and_prepare(
+                &access,
+                &memory,
+                0,
+                &mut sizing.map,
+                &mut sizing.extended,
+                true
+            )
+            .is_err()
         );
         assert!(sizing.extended.economy.rows[2] >= 70000);
         let retained = sizing.extended.economy.rows[2];
         memory.provinces = 2;
         assert!(
-            measure_and_prepare(&memory, 0, &mut sizing.map, &mut sizing.extended, true).is_err()
+            measure_and_prepare(
+                &access,
+                &memory,
+                0,
+                &mut sizing.map,
+                &mut sizing.extended,
+                true
+            )
+            .is_err()
         );
         assert_eq!(sizing.extended.economy.rows[2], retained);
     }

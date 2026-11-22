@@ -11,6 +11,16 @@ pub struct Capture<'a> {
     sequence: u64,
 }
 
+#[derive(Default)]
+pub struct Snapshot(Option<u64>);
+
+impl Snapshot {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_started(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 impl Frames {
     pub fn new(_owner: &crate::Owner) -> Self {
         Self::empty()
@@ -46,10 +56,10 @@ impl Frames {
 
     pub fn pending_snapshot<'a>(
         &self,
-        fence: &mut Option<u64>,
+        fence: &mut Snapshot,
         owned: impl IntoIterator<Item = &'a AtomicU64>,
     ) -> bool {
-        self.pending(*fence.get_or_insert_with(|| self.snapshot()), owned)
+        self.pending(*fence.0.get_or_insert_with(|| self.snapshot()), owned)
     }
 
     pub fn pending<'a>(&self, fence: u64, owned: impl IntoIterator<Item = &'a AtomicU64>) -> bool {

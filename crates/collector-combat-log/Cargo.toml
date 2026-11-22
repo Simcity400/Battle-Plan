@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-observers/test-support"]
 
 [dependencies]
+collector-workers.workspace = true
 engine-dlc.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
@@ -54,6 +55,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-combat-log = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
+collector-workers = { workspace = true, features = ["default", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

@@ -1,5 +1,6 @@
 use super::Processor;
 use collector_spool::spooling::HistoryReply;
+use collector_workers::frame_fence::Snapshot;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -60,7 +61,7 @@ enum Response {
 struct Mailbox {
     command: Option<Command>,
     response: Option<Response>,
-    fence: Option<u64>,
+    fence: Snapshot,
     refresh_failed: bool,
 }
 pub(super) struct SpoolHistory(Arc<Mutex<Mailbox>>);
@@ -80,11 +81,7 @@ impl SpoolHistory {
     }
 
     #[cfg(test)]
-    fn poll_fixture(
-        &self,
-        processor: &mut Processor,
-        pending: impl FnOnce(&mut Option<u64>) -> bool,
-    ) {
+    fn poll_fixture(&self, processor: &mut Processor, pending: impl FnOnce(&mut Snapshot) -> bool) {
         self.poll_fenced_with(pending, |text| processor.history_request_for_test(text));
         self.restore_with(|campaign, file| processor.exchange_history_lease(campaign, file));
     }
@@ -106,7 +103,7 @@ impl SpoolHistory {
     #[cfg(test)]
     fn poll_fenced_with(
         &self,
-        pending: impl FnOnce(&mut Option<u64>) -> bool,
+        pending: impl FnOnce(&mut Snapshot) -> bool,
         mut begin: impl FnMut(&str) -> io::Result<Option<(HistoryReply, Option<File>)>>,
     ) {
         self.poll_with_result(|text, fence| {
@@ -114,7 +111,7 @@ impl SpoolHistory {
             {
                 return None;
             }
-            *fence = None;
+            *fence = Snapshot::default();
             Some(begin(text))
         });
     }
@@ -123,7 +120,7 @@ impl SpoolHistory {
         &self,
         begin: impl FnOnce(
             &str,
-            &mut Option<u64>,
+            &mut Snapshot,
         ) -> Option<io::Result<Option<(HistoryReply, Option<File>)>>>,
     ) {
         let Ok(mut mailbox) = self.0.try_lock() else {
@@ -1087,7 +1084,7 @@ mod tests {
             |fence| frames.pending_snapshot(fence, std::iter::empty()),
             |_| panic!("capture has not drained"),
         );
-        assert!(handoff.0.lock().unwrap().fence.is_some());
+        assert!(handoff.0.lock().unwrap().fence.is_started());
         worker.finish().unwrap();
         assert!(root.join("history-requests/detached").exists());
         assert!(handoff.0.lock().unwrap().command.is_none());

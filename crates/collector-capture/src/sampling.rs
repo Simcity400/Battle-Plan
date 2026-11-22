@@ -1831,7 +1831,11 @@ impl Shared {
         true
     }
 
-    pub fn history_pending(&self, fence: &mut Option<u64>) -> bool {
+    pub fn history_pending(
+        &self,
+        _owner: &mut SpoolOwner,
+        fence: &mut collector_workers::frame_fence::Snapshot,
+    ) -> bool {
         self.history_frames
             .pending_snapshot(fence, self.frames.slots().map(|slot| &slot.fence))
     }

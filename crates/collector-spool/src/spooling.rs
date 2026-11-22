@@ -2251,20 +2251,25 @@ impl Processor {
         &mut self,
         ready: &mut collector_capture::sampling::ReadyFrame<'_>,
     ) -> io::Result<PreparedFrame> {
+        let preparation = self.writer.claim_preparation()?;
         let captured = ready.claim_preparation(&self.owner).ok_or_else(|| {
             invalid("decoded capture already prepared or belongs to another spool")
         })?;
-        self.prepare_owned_frame(captured)
+        self.prepare_owned_frame(captured, preparation)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn prepare_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
         assert!(self.owner.is_fixture());
-        self.prepare_owned_frame(captured)
+        let preparation = self.writer.claim_preparation()?;
+        self.prepare_owned_frame(captured, preparation)
     }
 
-    fn prepare_owned_frame(&mut self, captured: &Captured) -> io::Result<PreparedFrame> {
-        let preparation = self.writer.claim_preparation()?;
+    fn prepare_owned_frame(
+        &mut self,
+        captured: &Captured,
+        preparation: crate::spool_writer::Preparation,
+    ) -> io::Result<PreparedFrame> {
         let mut prepared = self.prepare_frame_owned(captured)?;
         prepared.preparation = Some(preparation);
         Ok(prepared)
@@ -2994,15 +2999,15 @@ impl Processor {
     pub fn try_history_request(
         &mut self,
         shared: &collector_capture::sampling::Shared,
-        fence: &mut Option<u64>,
+        fence: &mut collector_workers::frame_fence::Snapshot,
         request: &str,
     ) -> HistoryAttempt {
         if matches!(request.split_whitespace().nth(1), Some("close" | "release"))
-            && shared.history_pending(fence)
+            && shared.history_pending(&mut self.owner, fence)
         {
             return HistoryAttempt::Fenced;
         }
-        *fence = None;
+        *fence = Default::default();
         HistoryAttempt::Ready(self.history_request(request))
     }
 

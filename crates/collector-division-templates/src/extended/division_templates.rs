@@ -76,6 +76,16 @@ collector_primitives::capacity_max!(Capacities {
 impl Capacities {
     pub fn presize(
         &mut self,
+        _access: &collector_workers::CaptureAccess,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        self.presize_inner(memory, base, state)
+    }
+
+    pub(crate) fn presize_inner(
+        &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
@@ -705,8 +715,7 @@ impl Captured {
                 if let Some(reason) = row.garrison_failure {
                     context_failures.add(reason);
                 }
-                engine_native::walk::Buffer::Growing(&mut *country_rows)
-                    .ensure(country_len + 1)?;
+                engine_native::walk::Buffer::Growing(&mut *country_rows).ensure(country_len + 1)?;
                 country_rows[country_len] = row;
                 country_len += 1;
                 Ok::<(), &'static str>(())
@@ -811,7 +820,9 @@ impl Captured {
             let bytes = self.held.allocated_bytes()
                 + self.core.allocated_bytes()
                 + self.country_cache.allocated_bytes();
-            let mut shelf = home.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut shelf = home
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             shelf.bytes = shelf.bytes.max(bytes);
             shelf.stores = Some(Stores {
                 held: std::mem::take(&mut self.held),
@@ -874,7 +885,9 @@ impl Captured {
                     while next.is_some_and(|(staged, _)| staged < at) {
                         next = staged.next();
                     }
-                    let read = next.filter(|&(staged, _)| staged == at).map(|(_, keys)| keys);
+                    let read = next
+                        .filter(|&(staged, _)| staged == at)
+                        .map(|(_, keys)| keys);
                     let span = match read {
                         Some(keys) => keys.and_then(|keys| {
                             engine_allocation::reserve(&mut self.speed_keys, keys.len())

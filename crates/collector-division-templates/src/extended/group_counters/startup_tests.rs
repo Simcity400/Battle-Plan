@@ -115,7 +115,7 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
     assert!(observer.sequence(GROUPS).is_none());
     crate::template_changes::prepare(1, 1);
     let mut capacity = Capacities::default();
-    capacity.presize(&world, 0, 0).unwrap();
+    capacity.presize_inner(&world, 0, 0).unwrap();
     assert_eq!(capacity.rows, count);
     crate::template_changes::boundary(true);
     for receiver in [0x5000, 1, 0x8400, 0x8000] {
@@ -187,7 +187,7 @@ fn group_sizing_prepares_retreat_ban_watches_before_the_first_capture() {
     collector_observers::retreat_ban_changes::forwarder(true);
     assert!(Observer.sequence(GROUPS).is_none());
     let mut capacity = Capacities::default();
-    capacity.presize(&world, 0, 0).unwrap();
+    capacity.presize_inner(&world, 0, 0).unwrap();
     collector_observers::retreat_ban_changes::boundary(true);
     for ordinal in 0..COUNT {
         assert!(Observer.sequence(GROUPS + ordinal * GROUP_STRIDE).is_some());

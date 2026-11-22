@@ -538,6 +538,13 @@ mod tests {
                 for final_drain in [false, true] {
                     assert!(drain.take(final_drain).unwrap().is_empty());
                 }
+                // SAFETY: this fixture never publishes a tap.
+                unsafe { command_hooks.release_after_quiet(&lifecycle) };
+                // SAFETY: no publication round is active in this fixture.
+                assert_eq!(
+                    unsafe { command_hooks.set_enabled(&lifecycle, true) },
+                    Err("player command hooks already released")
+                );
                 assert!(source.tables.iter().all(|table| matches!(
                     table,
                     replay_frame::frame::TableInput::Sampled(TableView::Complete(_))

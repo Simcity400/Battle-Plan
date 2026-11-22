@@ -408,7 +408,7 @@ fn an_empty_attach_seed_cannot_limit_three_noncombat_writes_at_the_third_hour() 
     let mut c = Conversion::new();
     f.noncombat_sources(1, 11_133);
     let mut capacities = crate::combat_log::Capacities::default();
-    capacities.presize(&f, 0, GAME_STATE).unwrap();
+    capacities.presize_inner(&f, 0, GAME_STATE).unwrap();
     assert!(producer.capacity() >= 11_136);
     for _hour in 60_759_371..60_759_374 {
         let batch = capture_public(&mut state, &f);
@@ -468,7 +468,7 @@ fn pending_occurrences_survive_growth_deferred_until_public_begin_drains_them() 
     f.managers(&[(7, vec![g])]);
     let mut capacities = crate::combat_log::Capacities::default();
     producer.write(SIGNAL, |emit| {
-        capacities.presize(&f, 0, GAME_STATE).unwrap();
+        capacities.presize_inner(&f, 0, GAME_STATE).unwrap();
         assert_eq!(producer.capacity(), 1, "an active writer excludes growth");
         event::seed_group(&f, 0, g, 7, 0, &f.blocks[&g], emit).unwrap();
     });
@@ -1160,7 +1160,7 @@ fn noncombat_sizing_counts_all_fifteen_hundred_countries_without_combat_or_histo
         Ok(15_000)
     );
     crate::combat_log::Capacities::default()
-        .presize(&f, 0, GAME_STATE)
+        .presize_inner(&f, 0, GAME_STATE)
         .unwrap();
     assert!(producer.capacity() >= 15_000);
     let mut state = State::new();

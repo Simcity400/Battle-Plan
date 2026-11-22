@@ -1218,6 +1218,8 @@ mod players_split_tests {
         let mut tiny = PlayersJob {
             log: collector_raw::raw::RawLog::new(8, 8),
             game_state: 0,
+            access: None,
+            ticket: None,
         };
         let report = copy_players_refresh(&memory, ctx, &mut tiny);
 

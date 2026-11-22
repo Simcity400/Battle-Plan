@@ -248,6 +248,7 @@ fn combat_log_take_restore_moves_owned_storage_without_callback_allocation() {
         assert_eq!(map.land_combats.rows.capacity(), 0);
         assert_eq!(map.land_participants.capacity(), 0);
         let progress = map.restore_combat_request(request, report, None);
+        assert!(map.combat_ticks.is_none());
         map.take_combat_request(0, world.state(), progress, true)
     });
     map.restore_combat_request(request, report, None);

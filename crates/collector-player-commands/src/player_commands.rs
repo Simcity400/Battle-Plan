@@ -1252,9 +1252,12 @@ impl Drain {
     }
 }
 
+struct Installation {
+    id: Option<u64>,
+}
+
 pub struct Hooks {
-    installation: Option<u64>,
-    retired: bool,
+    installation: Option<Installation>,
     taps: Vec<Tap>,
     publication_attempted: bool,
     drain: Option<Drain>,
@@ -1312,8 +1315,7 @@ impl Hooks {
                 .collect::<Result<Vec<_>, _>>()
         })();
         Self {
-            installation: drain_id,
-            retired: false,
+            installation: Some(Installation { id: drain_id }),
             taps: result.unwrap_or_else(|reason| {
                 collector_hooks::hook::installation::refused(
                     collector_hooks::hook::installation::Kind::Construction,
@@ -1343,7 +1345,7 @@ impl Hooks {
         _owner: &collector_workers::Owner,
         enabled: bool,
     ) -> Result<bool, &'static str> {
-        if self.retired {
+        if self.installation.is_none() {
             return Err("player command hooks already released");
         }
         if !collector_hooks::hook::shared::defer_preparation(|| {
@@ -1372,12 +1374,11 @@ impl Hooks {
     /// # Safety
     /// All command taps must be restored and their in-flight callbacks must have quiesced.
     pub unsafe fn release_after_quiet(&mut self, _owner: &collector_workers::Owner) {
-        self.retired = true;
         self.release_installation();
     }
 
     fn release_installation(&mut self) {
-        let Some(id) = self.installation.take() else {
+        let Some(Installation { id: Some(id) }) = self.installation.take() else {
             return;
         };
         let mut store = STORE

@@ -501,13 +501,13 @@ impl WatchRegistry {
     }
 
     pub fn boundary(&self, invalidate: bool) -> Boundary {
+        if invalidate {
+            self.new_epoch();
+        }
         if self.boundary_owner.swap(true, SeqCst) {
             return Boundary::Deferred;
         }
         let _owner = BoundaryOwner(&self.boundary_owner);
-        if invalidate {
-            self.new_epoch();
-        }
         let full = self.purge && self.registered.load(Relaxed) * 2 > self.capacity.load(Relaxed);
         let first = self.table.load(SeqCst).is_null();
         let restart = invalidate || first;
