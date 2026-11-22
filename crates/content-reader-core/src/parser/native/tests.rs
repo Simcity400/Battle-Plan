@@ -1358,3 +1358,24 @@ fn duplicate_valueless_definition_before_close_under_unknown_dispatch_refuses_wi
     assert_eq!(keys(&read.items), ["a"]);
     assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
 }
+
+#[test]
+fn balanced_valueless_operator_before_close_refuses_without_swallowing_siblings() {
+    let read = read(
+        br#"a = { trigger = { loose k = } @x = 7 n = @x } b = { n = @x }"#,
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), field: &Field<'_>| match field.keyword().as_deref() {
+            Some(b"a" | b"b") => Shape::Object(()),
+            Some(b"trigger") => Shape::ByKey,
+            _ => Shape::One,
+        },
+    );
+    assert!(read.unsettled.is_some(), "{read:?}");
+    assert_eq!(keys(&read.items), ["a"]);
+    assert_eq!(keys(block(&read.items, "a")), ["trigger"]);
+    let trigger = block(block(&read.items, "a"), "trigger");
+    assert_eq!(trigger.len(), 1, "{trigger:?}");
+    assert_eq!(trigger[0].value, Value::Scalar(b"loose".to_vec()));
+}

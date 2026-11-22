@@ -2231,6 +2231,40 @@ impl<'n> Reader<'n> {
                     if operator {
                         self.advance();
                         let operator = self.current().as_operator();
+                        let (peek_kind, peek_line) = {
+                            let peek = self.peek();
+                            (peek.kind, peek.line)
+                        };
+                        if matches!(peek_kind, Kind::Close | Kind::End) {
+                            if peek_kind == Kind::Close && self.unsettled.is_none() {
+                                let what = match self.unknown_scopes.last() {
+                                    Some((_, block)) => format!(
+                                        "key {} ends block `{}` without a value under unknown dispatch: a key reader leaves `}}` unread while a list reader reads the operator as an entry",
+                                        token.shown(),
+                                        String::from_utf8_lossy(block),
+                                    ),
+                                    None => format!(
+                                        "key {} ends a block without a value under unknown dispatch: a key reader leaves `}}` unread while a list reader reads the operator as an entry",
+                                        token.shown(),
+                                    ),
+                                };
+                                self.unsettled = Some(Misread {
+                                    kind: crate::DiagnosticKind::Unsettled,
+                                    count: None,
+                                    line: peek_line,
+                                    what,
+                                });
+                                return items;
+                            }
+                            items.push(Item {
+                                key: Some(token.text),
+                                key_quoted: token.kind == Kind::Quoted,
+                                operator,
+                                kind: Kind::End,
+                                value: Value::Scalar(Vec::new()),
+                            });
+                            return items;
+                        }
                         self.advance();
                         let value = self.resolve(self.current());
                         if self.unsettled.is_some() {

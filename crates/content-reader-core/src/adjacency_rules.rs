@@ -951,4 +951,71 @@ adjacency_rule = {
         .to_string();
         assert!(error.contains("fixture withheld auxiliary"), "{error}");
     }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn read_map_loads_key_names_for_own_keys_that_need_buildings() {
+        crate::test_game::with(|game| {
+            game.trigger_at(
+                0x3BE4,
+                "non_damaged_building_level",
+                0,
+                crate::trigger_keys::Reader::Own(0x1404540c0),
+                0x140491A40,
+            )
+        });
+        let stack = crate::test_support::Stack::new("adjacency_rules_own_key_building");
+        stack.write(
+            &stack.base(),
+            "common/buildings/00_buildings.txt",
+            "buildings = { factory = { level_cap = { state_max = 10 } } }",
+        );
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A is_enemy = { non_damaged_building_level = { building = factory level > 2 } } }",
+        );
+        let layers = stack.layers(&[]);
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn withheld_auxiliary_tables_read_numeric_state_scope_without_catalogue() {
+        crate::test_game::with(|game| {
+            game.withhold(
+                synthetic_game::Part::Auxiliary,
+                "fixture withheld auxiliary",
+            )
+        });
+        let stack = crate::test_support::Stack::new("adjacency_rules_withheld_auxiliary_state");
+        stack.write(
+            &stack.base(),
+            "common/units/fixture.txt",
+            "sub_units = { infantry = { type = infantry } }",
+        );
+        stack.write(
+            &stack.base(),
+            "map/default.map",
+            "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp heightmap = h.bmp tree_definition = tr.bmp adjacencies = adjacencies.csv adjacency_rules = adjacency_rules.txt",
+        );
+        stack.write(
+            &stack.base(),
+            "map/adjacency_rules.txt",
+            "adjacency_rule = { name = A is_enemy = { 12 = { always = yes } } }",
+        );
+        let layers = stack.layers(&[]);
+        let rules = read(&layers).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "A");
+        assert_eq!(rules[0].is_enemy.len(), 1);
+    }
 }

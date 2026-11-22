@@ -96,23 +96,24 @@ impl<'n> Shaper<'n> {
         let keyword = keyword.as_deref();
         match node {
             Node::Limit(_) | Node::Trigger | Node::Modifier => {
-                matches!(key_names::load_key(None, field), Load::Unknown(_))
+                matches!(load_trigger_key(None, field), Load::Unknown(_))
             }
             Node::Conditional(_) if keyword == Some(b"limit") => false,
             Node::Conditional(_) => {
-                matches!(key_names::load_key(None, field), Load::Unknown(_))
+                matches!(load_trigger_key(None, field), Load::Unknown(_))
             }
             Node::Class(token) => {
                 let reader = trigger_keys::key_reader(token);
                 if let KeyReader::ThenLoadKey(keys) | KeyReader::Only(keys) = reader
-                    && keys
+                    && let Some(key) = keys
                         .iter()
-                        .any(|key| keyword == Some(key.name().as_bytes()))
+                        .find(|key| keyword == Some(key.name().as_bytes()))
                 {
-                    return false;
+                    return matches!(key, trigger_keys::OwnKey::Value(_))
+                        && Self::body_value_needs_names(token, field);
                 }
                 matches!(reader, KeyReader::ThenLoadKey(_))
-                    && matches!(key_names::load_key(None, field), Load::Unknown(_))
+                    && matches!(load_trigger_key(None, field), Load::Unknown(_))
             }
             Node::KeyReader(_)
             | Node::Mtth
@@ -167,7 +168,7 @@ impl<'n> Shaper<'n> {
                 )),
             },
             Node::Limit(index) => {
-                let load = key_names::load_key(self.names, field);
+                let load = load_trigger_key(self.names, field);
                 self.note_child(index, &load);
                 self.trigger_field(field, load)
             }
@@ -201,7 +202,7 @@ impl<'n> Shaper<'n> {
                 }
             }
             Node::Trigger | Node::Modifier | Node::Conditional(_) => {
-                let load = key_names::load_key(self.names, field);
+                let load = load_trigger_key(self.names, field);
                 self.trigger_field(field, load)
             }
         }
@@ -253,6 +254,46 @@ impl<'n> Shaper<'n> {
             }
             Load::Unknown(_) => Shape::One,
         }
+    }
+}
+
+fn token_only_scope(field: &Field<'_>) -> bool {
+    struct TokenOnly;
+
+    impl crate::scope::Names for TokenOnly {
+        fn is_country(&self, _tag: &str) -> bool {
+            false
+        }
+
+        fn is_character(&self, _token: &str) -> bool {
+            false
+        }
+
+        fn is_keyword(&self, text: &str) -> bool {
+            ["mio", "sp", "scope"]
+                .iter()
+                .any(|prefix| text.eq_ignore_ascii_case(prefix))
+        }
+    }
+
+    if !field.opens() {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(c_string(&field.key.text)) else {
+        return false;
+    };
+    !matches!(
+        crate::scope::parse(text, field.key.kind == native::Kind::Quoted, &TokenOnly),
+        crate::scope::Scope::Unknown(_)
+    )
+}
+
+fn load_trigger_key(names: Option<&KeyNames>, field: &Field<'_>) -> Load {
+    let load = key_names::load_key(names, field);
+    if names.is_none() && matches!(load, Load::Unknown(_)) && token_only_scope(field) {
+        Load::Scope
+    } else {
+        load
     }
 }
 
