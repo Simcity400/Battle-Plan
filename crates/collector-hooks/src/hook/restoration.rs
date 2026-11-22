@@ -552,17 +552,21 @@ impl Scratch {
                 {
                     for hook in hooks.iter_mut() {
                         hook.needs_flush = false;
+                        hook.verification_failed = false;
                     }
                 }
             } else {
                 for group in groups.iter_mut().filter(|group| restored(group)) {
                     let owned = group.start..group.start + group.len;
                     let members = &mut hooks[owned.clone()];
-                    if members
-                        .iter()
-                        .zip(&previous[owned])
-                        .any(|(hook, (_, owned))| *owned && !hook.bytes_match(false))
-                    {
+                    let mut verified = true;
+                    for (hook, (_, owned)) in members.iter_mut().zip(&previous[owned]) {
+                        if *owned && !hook.bytes_match(false) {
+                            hook.verification_failed = true;
+                            verified = false;
+                        }
+                    }
+                    if !verified {
                         group.outcome = Some(Outcome::Refused(Refusal {
                             reason: "restore hook bytes differ",
                             code: 0,
@@ -570,6 +574,7 @@ impl Scratch {
                     } else {
                         for hook in members.iter_mut() {
                             hook.needs_flush = false;
+                            hook.verification_failed = false;
                         }
                     }
                 }
@@ -668,6 +673,14 @@ impl Drop for Guard {
 
 pub fn active() -> bool {
     SCRATCH.with_borrow(|scratch| scratch.is_some())
+}
+
+pub fn collecting() -> bool {
+    SCRATCH.with_borrow(|scratch| {
+        scratch
+            .as_ref()
+            .is_some_and(|scratch| scratch.mode == Mode::Collect)
+    })
 }
 
 pub struct Batch(std::marker::PhantomData<*const ()>);

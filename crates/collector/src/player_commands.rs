@@ -154,6 +154,7 @@ struct Live {
     failed_qpc: AtomicU64,
     coverage_uncertain: AtomicBool,
     coverage_uncertain_until: AtomicU64,
+    transition_epoch: AtomicU64,
     first_failure: FirstReason,
     capacity_demand: AtomicUsize,
     name_demand: AtomicUsize,
@@ -316,6 +317,7 @@ impl Live {
             failed_qpc: AtomicU64::new(0),
             coverage_uncertain: AtomicBool::new(false),
             coverage_uncertain_until: AtomicU64::new(0),
+            transition_epoch: AtomicU64::new(0),
             first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(slots),
             name_demand: AtomicUsize::new(names),
@@ -1053,6 +1055,16 @@ impl Drain {
         final_drain: bool,
         out: &mut Vec<Drained>,
     ) -> io::Result<()> {
+        let transition = live.transition_epoch.load(Ordering::Acquire);
+        if transition & 1 != 0 {
+            return if final_drain {
+                Err(io::Error::other(
+                    "command observer transition is still pending at final drain",
+                ))
+            } else {
+                Ok(())
+            };
+        }
         let version = live.version.load(Ordering::Acquire);
         if version & 1 != 0 {
             return if final_drain {
@@ -1073,6 +1085,20 @@ impl Drain {
             return if final_drain {
                 Err(io::Error::other(
                     "command observer changed during final drain",
+                ))
+            } else {
+                Ok(())
+            };
+        }
+        let failed = live.failed.load(Ordering::Acquire);
+        let failed_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        let uncertain = live.coverage_uncertain.load(Ordering::Acquire);
+        let uncertain_until = live.coverage_uncertain_until.load(Ordering::Acquire);
+        fence(Ordering::Acquire);
+        if transition != live.transition_epoch.load(Ordering::Relaxed) {
+            return if final_drain {
+                Err(io::Error::other(
+                    "command observer transition changed during final drain",
                 ))
             } else {
                 Ok(())
@@ -1256,11 +1282,8 @@ impl Drain {
                 }
             }
         }
-        let failed = live.failed.load(Ordering::Acquire);
-        let uncertain = live.coverage_uncertain.load(Ordering::Acquire);
-        let uncertain_until = live.coverage_uncertain_until.load(Ordering::Acquire);
         let mut loss_until = if failed != self.failure {
-            self.loss_until.max(live.failed_qpc.load(Ordering::Relaxed))
+            self.loss_until.max(failed_qpc)
         } else {
             self.loss_until
         }
@@ -1400,6 +1423,7 @@ pub struct Hooks {
     owns_live: bool,
     publication_attempted: bool,
     was_enabled: bool,
+    transition_open: bool,
 }
 
 impl Hooks {
@@ -1451,11 +1475,30 @@ impl Hooks {
             owns_live,
             publication_attempted: false,
             was_enabled: false,
+            transition_open: false,
         }
     }
 
     fn live(&self) -> Option<&Live> {
         (!self.live.is_null()).then(|| unsafe { &*self.live })
+    }
+
+    fn begin_transition(&mut self) {
+        if !self.transition_open {
+            if let Some(live) = self.live() {
+                live.transition_epoch.fetch_add(1, Ordering::SeqCst);
+            }
+            self.transition_open = true;
+        }
+    }
+
+    fn end_transition(&mut self) {
+        if self.transition_open {
+            self.transition_open = false;
+            if let Some(live) = self.live() {
+                live.transition_epoch.fetch_add(1, Ordering::SeqCst);
+            }
+        }
     }
 
     fn record_coverage_loss(&self, reason: &'static str) {
@@ -1465,8 +1508,9 @@ impl Hooks {
     }
 
     fn mark_coverage_uncertain(&self, reason: &'static str) {
-        if let Some(live) = self.live() {
-            live.coverage_uncertain.store(true, Ordering::Release);
+        if let Some(live) = self.live()
+            && !live.coverage_uncertain.swap(true, Ordering::AcqRel)
+        {
             live.fail(reason);
         }
     }
@@ -1506,6 +1550,7 @@ impl Hooks {
             return Ok(true);
         }
         let previous = ENABLED.load(Ordering::Acquire);
+        self.begin_transition();
         if enabled && outcome.is_none() && !previous {
             let _ = crate::hook::shared::defer_preparation(|| {
                 ENABLED.store(false, Ordering::SeqCst);
@@ -1522,6 +1567,15 @@ impl Hooks {
                 .map_err(|_| "command observer publication failed")
             }
         };
+        let deferred = (enabled
+            && crate::hook::shared::attach_collecting()
+            && matches!(result, Ok(true)))
+            || (!enabled
+                && crate::hook::restoration::collecting()
+                && matches!(result, Ok(false)));
+        if deferred {
+            return result;
+        }
         match result {
             Ok(true) => {
                 if enabled {
@@ -1538,18 +1592,29 @@ impl Hooks {
                     ENABLED.store(false, Ordering::SeqCst);
                     self.clear_coverage_uncertain();
                 }
+                self.end_transition();
                 Ok(true)
             }
             Ok(false) => {
-                if previous && !self.taps_published() {
-                    self.mark_coverage_uncertain(ADMISSION_GAP);
+                if previous {
+                    if self.taps_published() {
+                        self.clear_coverage_uncertain();
+                    } else {
+                        self.mark_coverage_uncertain(ADMISSION_GAP);
+                    }
                 }
+                self.end_transition();
                 Ok(false)
             }
             Err(error) => {
-                if previous && !self.taps_published() {
-                    self.mark_coverage_uncertain(ADMISSION_GAP);
+                if previous {
+                    if self.taps_published() {
+                        self.clear_coverage_uncertain();
+                    } else {
+                        self.mark_coverage_uncertain(ADMISSION_GAP);
+                    }
                 }
+                self.end_transition();
                 Err(error)
             }
         }
@@ -1560,6 +1625,7 @@ impl Hooks {
     }
 
     pub fn release_after_quiet(&mut self) {
+        self.end_transition();
         self.publication_attempted = false;
         self.live = std::ptr::null();
         if self.owns_live {
@@ -1575,6 +1641,7 @@ impl Hooks {
 
 impl Drop for Hooks {
     fn drop(&mut self) {
+        self.end_transition();
         if !self.publication_attempted {
             self.release_after_quiet();
         }
@@ -1617,6 +1684,7 @@ pub(crate) mod tests {
             failed_qpc: AtomicU64::new(0),
             coverage_uncertain: AtomicBool::new(false),
             coverage_uncertain_until: AtomicU64::new(0),
+            transition_epoch: AtomicU64::new(0),
             first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(2),
             name_demand: AtomicUsize::new(0),
@@ -2730,6 +2798,7 @@ pub(crate) mod tests {
                 owns_live: false,
                 publication_attempted: false,
                 was_enabled: false,
+                transition_open: false,
             },
             site,
         )
@@ -3032,6 +3101,7 @@ pub(crate) mod tests {
         assert!(result.is_err());
         assert_eq!(live.failed.load(Ordering::Acquire), 1);
         assert!(hooks.set_enabled(true).is_err());
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
         let mismatch_qpc = live.failed_qpc.load(Ordering::Relaxed);
         let t1 = mismatch_qpc.max(120) + 10;
         live.closed_qpc.store(t1, Ordering::Relaxed);
@@ -3042,6 +3112,107 @@ pub(crate) mod tests {
         let d2 = drain.take_live(&live, false).unwrap();
         assert!(d2[0].batch.spans.iter().all(|span| !span.complete));
         unsafe { std::ptr::write(site as *mut u8, saved) };
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn batched_restore_defers_drain_until_report_records_refusal() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = crate::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        let _scratch = crate::hook::restoration::Scratch::prepare(4)
+            .unwrap()
+            .enter();
+        {
+            let mut batch = crate::hook::restoration::Batch::collect().unwrap();
+            assert_eq!(hooks.set_enabled(false), Ok(false));
+            crate::hook::fail_flushes(2);
+            assert_eq!(batch.publish(), 0);
+            live.closed_qpc.store(120, Ordering::Relaxed);
+            let between = drain.take_live(&live, false).unwrap();
+            assert!(between.is_empty());
+            assert_eq!(hooks.set_enabled(false), Ok(false));
+        }
+        let reported_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        live.closed_qpc
+            .store(reported_qpc.max(120) + 10, Ordering::Relaxed);
+        let after = drain.take_live(&live, false).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].lost, 1);
+        assert!(after[0].batch.spans.iter().all(|span| !span.complete));
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn verified_rollback_closes_prior_coverage_uncertainty() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = crate::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let initial = drain.take_live(&live, false).unwrap();
+        assert!(initial[0].batch.spans.iter().all(|span| span.complete));
+        let (mut hooks, _) = make_test_hooks(&code, &live);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        crate::hook::fail_flushes(2);
+        assert!(hooks.set_enabled(false).is_err());
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        let t1 = live.failed_qpc.load(Ordering::Relaxed).max(120) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let uncertain = drain.take_live(&live, false).unwrap();
+        assert_eq!(uncertain[0].lost, 1);
+        assert!(uncertain[0].batch.spans.iter().all(|span| !span.complete));
+        crate::hook::fail_flushes(1);
+        assert!(hooks.set_enabled(false).is_err());
+        assert!(ENABLED.load(Ordering::Acquire));
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        let closed_until = live.coverage_uncertain_until.load(Ordering::Acquire);
+        let t2 = closed_until.max(t1) + 10;
+        live.closed_qpc.store(t2, Ordering::Relaxed);
+        let straddling = drain.take_live(&live, false).unwrap();
+        assert!(straddling[0].batch.spans.iter().all(|span| !span.complete));
+        let t3 = t2 + 10;
+        live.closed_qpc.store(t3, Ordering::Relaxed);
+        let healthy = drain.take_live(&live, false).unwrap();
+        assert_eq!(healthy[0].lost, 0);
+        assert!(healthy[0].batch.spans.iter().all(|span| span.complete));
         assert_eq!(hooks.set_enabled(false), Ok(true));
         assert!(!ENABLED.load(Ordering::Acquire));
     }

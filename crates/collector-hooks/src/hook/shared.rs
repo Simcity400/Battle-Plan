@@ -125,6 +125,10 @@ impl Drop for Round {
     }
 }
 
+pub fn attach_collecting() -> bool {
+    PREFIX.get() && MODE.get() == Some(Mode::Collect)
+}
+
 pub fn attach_reporting() -> bool {
     PREFIX.get() && MODE.get() == Some(Mode::Report)
 }
