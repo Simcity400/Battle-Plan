@@ -1729,4 +1729,183 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
         handle.join().unwrap(),
         Ok(Some(Icon::Sprite("GFX_tail_ok".into())))
     );
+
+    let same_slot_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            europe = {
+                tanks_1 = {
+                    pool = { weight = 30 cultures = { western_european_gfx } icons = { GFX_a } }
+                    pool = { weight = 20 icons = { GFX_b } }
+                }
+            }
+            PRE = {
+                tanks_1 = { pool = { weight = 10 icons = { GFX_a } } }
+            }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned(), "PRE".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let same_slot_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        same_slot_pools,
+        Default::default(),
+        ["GFX_a".to_owned(), "GFX_b".to_owned()].into(),
+        Default::default(),
+    );
+    let mut same_slot_frame = frame.clone();
+    *same_slot_frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![
+            CountryLinkRow {
+                id: 11,
+                canonical_slot: 7,
+            },
+            CountryLinkRow {
+                id: 12,
+                canonical_slot: 7,
+            },
+            CountryLinkRow {
+                id: 21,
+                canonical_slot: 0,
+            },
+        ]));
+    *same_slot_frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            replay_data::rows::ReservedCountryNamingRow {
+                original_tag_reference: Recorded::Value(Some(12)),
+                original_tag: Recorded::Value(Some(b"PRE".to_vec())),
+                dynamic_tag_boundary: Recorded::Value(Some(50)),
+                ..Default::default()
+            },
+        ]));
+    *same_slot_frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+            country: 11,
+            graphical_culture: b"western_european_gfx".to_vec(),
+            original_tag_reference: Recorded::Value(Some(0)),
+            ..Default::default()
+        }]));
+    let same_slot_hour = IconHour::read(&same_slot_frame, &same_slot_content).unwrap();
+    let same_slot_variant = VariantDefinitionRow {
+        id: 2,
+        icon_kind: 1,
+        icon: b".".to_vec(),
+        creator_link: 11,
+        origin_link: 12,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(
+            &same_slot_content,
+            &same_slot_hour,
+            &same_slot_variant,
+            "tanks_1"
+        ),
+        Ok(Some(Icon::Sprite("GFX_a".into())))
+    );
+
+    let diff_country_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            europe = {
+                tanks_1 = { pool = { weight = 20 icons = { GFX_creator_missing } } }
+                tanks_root = { pool = { weight = 20 icons = { GFX_origin_eur } } }
+            }
+            default = {
+                tanks_root = { pool = { weight = 10 icons = { GFX_origin_def } } }
+            }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned(), "ITA".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let diff_country_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_root = { archetype = tanks }
+                tanks_mid = { archetype = tanks family = tanks_root }
+                tanks_1 = { archetype = tanks family = tanks_mid }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        diff_country_pools,
+        Default::default(),
+        ["GFX_origin_eur".to_owned(), "GFX_origin_def".to_owned()].into(),
+        Default::default(),
+    );
+    let mut diff_country_frame = same_slot_frame.clone();
+    *diff_country_frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        vec![
+            StateRow {
+                id: 1,
+                continent: Recorded::Value(None),
+                ..Default::default()
+            },
+            StateRow {
+                id: 2,
+                continent: Recorded::Value(None),
+                ..Default::default()
+            },
+        ],
+    ));
+    *diff_country_frame.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![
+            PoliticsRow {
+                country: 11,
+                original_capital: 1,
+                ..Default::default()
+            },
+            PoliticsRow {
+                country: 21,
+                original_capital: 2,
+                ..Default::default()
+            },
+        ]));
+    *diff_country_frame.tables[TableId::CountryAppearance.index()] =
+        TableView::Complete(TableRows::CountryAppearance(vec![
+            CountryAppearanceRow {
+                country: 11,
+                graphical_culture: b"western_european_gfx".to_vec(),
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+            CountryAppearanceRow {
+                country: 21,
+                graphical_culture: b"western_european_gfx".to_vec(),
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+        ]));
+    let diff_country_hour = IconHour::read(&diff_country_frame, &diff_country_content).unwrap();
+    let diff_country_variant = VariantDefinitionRow {
+        id: 3,
+        icon_kind: 1,
+        icon: b".".to_vec(),
+        creator_link: 11,
+        origin_link: 21,
+        ..Default::default()
+    };
+    let diff_err = chosen(
+        &diff_country_content,
+        &diff_country_hour,
+        &diff_country_variant,
+        "tanks_1",
+    )
+    .unwrap_err();
+    assert!(
+        diff_err.contains("capital state 2"),
+        "expected origin capital state 2 error, got: {diff_err}"
+    );
 }

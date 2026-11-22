@@ -61,6 +61,7 @@ pub enum Probe {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 struct ChoiceBranch {
+    assignment: Vec<Option<String>>,
     probes: Vec<Probe>,
     otherwise: Result<(), String>,
 }
@@ -68,17 +69,18 @@ struct ChoiceBranch {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct IconChoice {
     branches: Vec<ChoiceBranch>,
-    ambiguity: Option<String>,
+    reasons: Vec<String>,
 }
 
 impl IconChoice {
     pub fn unknown(reason: String) -> Self {
         Self {
             branches: vec![ChoiceBranch {
+                assignment: Vec::new(),
                 probes: Vec::new(),
                 otherwise: Err(reason),
             }],
-            ambiguity: None,
+            reasons: Vec::new(),
         }
     }
 
@@ -86,7 +88,7 @@ impl IconChoice {
         &self,
         answer: impl Fn(&Probe) -> Result<Option<Icon>, String>,
     ) -> Result<Option<Icon>, String> {
-        if self.branches.len() == 1 && self.ambiguity.is_none() {
+        if self.branches.len() == 1 && self.reasons.is_empty() {
             let branch = &self.branches[0];
             for probe in &branch.probes {
                 if let Some(icon) = answer(probe)? {
@@ -96,7 +98,7 @@ impl IconChoice {
             return branch.otherwise.clone().map(|()| None);
         }
         let mut cache: BTreeMap<&Probe, Option<Icon>> = BTreeMap::new();
-        let mut agreed: Option<Option<Icon>> = None;
+        let mut outcomes: Vec<Option<Icon>> = Vec::with_capacity(self.branches.len());
         for branch in &self.branches {
             let mut found = None;
             for probe in &branch.probes {
@@ -119,18 +121,37 @@ impl IconChoice {
                     None
                 }
             };
-            match &agreed {
-                None => agreed = Some(outcome),
-                Some(prev) if prev == &outcome => {}
-                Some(_) => {
-                    return Err(self
-                        .ambiguity
-                        .clone()
-                        .unwrap_or_else(|| "continent unknown".to_owned()));
+            outcomes.push(outcome);
+        }
+        let Some(first) = outcomes.first() else {
+            return Ok(None);
+        };
+        if outcomes.iter().all(|outcome| outcome == first) {
+            return Ok(first.clone());
+        }
+        for index in 0..self.reasons.len() {
+            for a in 0..self.branches.len() {
+                for b in (a + 1)..self.branches.len() {
+                    if outcomes[a] == outcomes[b] {
+                        continue;
+                    }
+                    let same_other = self.branches[a]
+                        .assignment
+                        .iter()
+                        .zip(&self.branches[b].assignment)
+                        .enumerate()
+                        .all(|(k, (left, right))| k == index || left == right);
+                    if same_other {
+                        return Err(self.reasons[index].clone());
+                    }
                 }
             }
         }
-        Ok(agreed.flatten())
+        Err(self
+            .reasons
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "continent unknown".to_owned()))
     }
 
     pub fn shown(&self, catalogue: &Catalogue) -> Result<Option<Icon>, String> {
@@ -864,27 +885,37 @@ pub fn icon_choice(
     );
     if unknowns.is_empty() {
         return IconChoice {
-            branches: vec![ChoiceBranch { probes, otherwise }],
-            ambiguity: None,
+            branches: vec![ChoiceBranch {
+                assignment: Vec::new(),
+                probes,
+                otherwise,
+            }],
+            reasons: Vec::new(),
         };
     }
-    let mut assignments: Vec<BTreeMap<u32, Option<String>>> = vec![BTreeMap::new()];
-    for (raw, _, relevant) in &unknowns {
+    let mut assignments: Vec<Vec<Option<String>>> = vec![Vec::new()];
+    for (_, _, relevant) in &unknowns {
         let mut next = Vec::with_capacity(assignments.len() * (1 + relevant.len()));
         for base in &assignments {
-            let mut none_map = base.clone();
-            none_map.insert(*raw, None);
-            next.push(none_map);
+            let mut none_vec = base.clone();
+            none_vec.push(None);
+            next.push(none_vec);
             for continent in relevant {
-                let mut some_map = base.clone();
-                some_map.insert(*raw, Some(continent.clone()));
-                next.push(some_map);
+                let mut some_vec = base.clone();
+                some_vec.push(Some(continent.clone()));
+                next.push(some_vec);
             }
         }
         assignments = next;
     }
-    let mut branches = Vec::new();
-    for continents in &assignments {
+    let reasons: Vec<String> = unknowns.iter().map(|(_, why, _)| why.clone()).collect();
+    let mut branches = Vec::with_capacity(assignments.len());
+    for assignment in assignments {
+        let continents: BTreeMap<u32, Option<String>> = unknowns
+            .iter()
+            .zip(&assignment)
+            .map(|((slot, _, _), continent)| (*slot, continent.clone()))
+            .collect();
         let mut branch_probes = Vec::new();
         let branch_otherwise = rule(
             content,
@@ -892,23 +923,31 @@ pub fn icon_choice(
             variant,
             spelling,
             &mut PoolMode::Assume {
-                continents,
+                continents: &continents,
                 probes: &mut branch_probes,
             },
         );
-        let branch = ChoiceBranch {
+        branches.push(ChoiceBranch {
+            assignment,
             probes: branch_probes,
             otherwise: branch_otherwise,
+        });
+    }
+    if let Some(first) = branches.first()
+        && branches
+            .iter()
+            .all(|branch| branch.probes == first.probes && branch.otherwise == first.otherwise)
+    {
+        return IconChoice {
+            branches: vec![ChoiceBranch {
+                assignment: Vec::new(),
+                probes: first.probes.clone(),
+                otherwise: first.otherwise.clone(),
+            }],
+            reasons: Vec::new(),
         };
-        if !branches.contains(&branch) {
-            branches.push(branch);
-        }
     }
-    let ambiguity = (branches.len() > 1).then(|| unknowns[0].1.clone());
-    IconChoice {
-        branches,
-        ambiguity,
-    }
+    IconChoice { branches, reasons }
 }
 
 fn rule(
@@ -1144,9 +1183,11 @@ fn pool(
         .family
         .map(|name| type_model(&content.units, name).map(|family| (name, family.archetype)))
         .transpose()?;
-    let (place, country_tag, capital_continent) = match country {
+    let (place, canonical_slot, country_tag, capital_continent) = match country {
         Some(raw) => {
-            let place = hour.prepared.as_ref().map_err(Clone::clone)?.context(raw)?;
+            let prepared = hour.prepared.as_ref().map_err(Clone::clone)?;
+            let place = prepared.context(raw)?;
+            let canonical_slot = prepared.slot(raw);
             let country_tag = if place.is_some() {
                 Some(hour.witnessed_tag(raw)?)
             } else {
@@ -1160,9 +1201,9 @@ fn pool(
                     .map_err(String::as_str),
                 None => Ok(None),
             };
-            (place, country_tag, capital_continent)
+            (place, canonical_slot, country_tag, capital_continent)
         }
-        None => (None, None, Ok(None)),
+        None => (None, None, None, Ok(None)),
     };
     let context = Context {
         equipment: key,
@@ -1176,8 +1217,8 @@ fn pool(
         capital_continent,
     };
     let has_dlc = |name: &str| Some(content.dlc.contains(name));
-    match (country, capital_continent, mode) {
-        (Some(raw), Err(why), PoolMode::Discover { unknowns, probes }) => {
+    match (canonical_slot, capital_continent, mode) {
+        (Some(slot), Err(why), PoolMode::Discover { unknowns, probes }) => {
             let relevant = content.pools.relevant_icon_continents(&context, has_dlc);
             if relevant.is_empty() {
                 let branch = content
@@ -1186,14 +1227,14 @@ fn pool(
                 for candidate in branch.items {
                     probes.push(Probe::Existing(candidate));
                 }
-            } else if let Some((_, _, set)) = unknowns.iter_mut().find(|(id, _, _)| *id == raw) {
+            } else if let Some((_, _, set)) = unknowns.iter_mut().find(|(id, _, _)| *id == slot) {
                 set.extend(relevant);
             } else {
-                unknowns.push((raw, why.to_owned(), relevant.into_iter().collect()));
+                unknowns.push((slot, why.to_owned(), relevant.into_iter().collect()));
             }
         }
-        (Some(raw), Err(why), PoolMode::Assume { continents, probes }) => {
-            let assumed = continents.get(&raw).and_then(|c| c.as_deref());
+        (Some(slot), Err(why), PoolMode::Assume { continents, probes }) => {
+            let assumed = continents.get(&slot).and_then(|c| c.as_deref());
             let branch = content
                 .pools
                 .lookup_icon_branch(&context, assumed, has_dlc)?;

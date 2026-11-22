@@ -488,7 +488,6 @@ pub(super) fn convoy_weapon_bound_from_database(
                 let mut pure_add_range = [equipment.stats[stat], equipment.stats[stat]];
                 let mut pure_mul_range = [0_i64, 0_i64];
                 let mut pure_avg_by_ratio: BTreeMap<(i64, i64), (i64, i64)> = BTreeMap::new();
-                let mut pure_avg_delta_range = [0_i64, 0_i64];
                 let mut pure_avg_pos_sum = 0_i64;
                 let mut pure_avg_neg_sum = 0_i64;
                 struct CorrelatedGroup {
@@ -497,8 +496,6 @@ pub(super) fn convoy_weapon_bound_from_database(
                     avg_sum: i64,
                     avg_cnt: i64,
                     count: usize,
-                    avg_min_delta: i64,
-                    avg_max_delta: i64,
                     avg_pos_sum: i64,
                     avg_neg_sum: i64,
                 }
@@ -537,10 +534,6 @@ pub(super) fn convoy_weapon_bound_from_database(
                                 pure_avg_neg_sum = pure_avg_neg_sum.checked_add(delta)?;
                                 pure_avg_neg_sum.checked_mul(100_000)?;
                             }
-                            pure_avg_delta_range = [
-                                pure_avg_delta_range[0].min(delta),
-                                pure_avg_delta_range[1].max(delta),
-                            ];
                         }
                         let mod_avg_cnt = i64::try_from(mod_avg.len()).ok()?;
                         mod_avg_sum.checked_mul(100_000)?;
@@ -574,14 +567,10 @@ pub(super) fn convoy_weapon_bound_from_database(
                         ];
                     } else {
                         let mut mod_avg_sum = 0_i64;
-                        let mut mod_avg_min = 0_i64;
-                        let mut mod_avg_max = 0_i64;
                         let mut mod_avg_pos = 0_i64;
                         let mut mod_avg_neg = 0_i64;
                         for &delta in &mod_avg {
                             mod_avg_sum = mod_avg_sum.checked_add(delta)?;
-                            mod_avg_min = mod_avg_min.min(delta);
-                            mod_avg_max = mod_avg_max.max(delta);
                             if delta > 0 {
                                 mod_avg_pos = mod_avg_pos.checked_add(delta)?;
                                 mod_avg_pos.checked_mul(100_000)?;
@@ -601,14 +590,10 @@ pub(super) fn convoy_weapon_bound_from_database(
                                 avg_sum: mod_avg_sum,
                                 avg_cnt: mod_avg_cnt,
                                 count: 0,
-                                avg_min_delta: 0,
-                                avg_max_delta: 0,
                                 avg_pos_sum: 0,
                                 avg_neg_sum: 0,
                             });
                         entry.count = entry.count.checked_add(1)?;
-                        entry.avg_min_delta = entry.avg_min_delta.min(mod_avg_min);
-                        entry.avg_max_delta = entry.avg_max_delta.max(mod_avg_max);
                         entry.avg_pos_sum = entry.avg_pos_sum.checked_add(mod_avg_pos)?;
                         entry.avg_pos_sum.checked_mul(100_000)?;
                         entry.avg_neg_sum = entry.avg_neg_sum.checked_add(mod_avg_neg)?;
@@ -712,25 +697,58 @@ pub(super) fn convoy_weapon_bound_from_database(
                 let (mul_coupled, non_mul): (Vec<_>, Vec<_>) = correlated_groups
                     .into_iter()
                     .partition(|group| group.mul != 0);
-                let mut add_range = pure_add_range;
-                let mut avg_range = pure_avg_delta_range;
                 let mut avg_pos_sum = pure_avg_pos_sum;
                 let mut avg_neg_sum = pure_avg_neg_sum;
-                for group in &non_mul {
-                    let count = i64::try_from(group.count).ok()?;
-                    let total_add = group.add.checked_mul(count)?;
-                    add_range = [
-                        add_range[0].checked_add(total_add.min(0))?,
-                        add_range[1].checked_add(total_add.max(0))?,
-                    ];
-                    avg_pos_sum = avg_pos_sum.checked_add(group.avg_pos_sum)?;
-                    avg_pos_sum.checked_mul(100_000)?;
-                    avg_neg_sum = avg_neg_sum.checked_add(group.avg_neg_sum)?;
-                    avg_neg_sum.checked_mul(100_000)?;
-                    avg_range = [
-                        avg_range[0].min(group.avg_min_delta),
-                        avg_range[1].max(group.avg_max_delta),
-                    ];
+                let mut total_avg_cnt = 0_i64;
+                let mut pure_avg_ratio_range: Option<[i64; 2]> = None;
+                for &(g_sum, g_cnt) in &pure_avg_groups {
+                    total_avg_cnt = total_avg_cnt.checked_add(g_cnt)?;
+                    total_avg_cnt.checked_mul(100_000)?;
+                    let ratio = g_sum.checked_mul(100_000)? / g_cnt.checked_mul(100_000)?;
+                    pure_avg_ratio_range = Some(match pure_avg_ratio_range {
+                        Some([lo, hi]) => [lo.min(ratio), hi.max(ratio)],
+                        None => [ratio, ratio],
+                    });
+                }
+                let mut non_mul_cases: Vec<([i64; 2], Option<[i64; 2]>)> =
+                    vec![([0, 0], None)];
+                if !non_mul.is_empty() {
+                    let mut neg_sum = 0_i64;
+                    let mut pos_sum = 0_i64;
+                    let mut has_neg = false;
+                    let mut has_pos = false;
+                    let mut min_single = i64::MAX;
+                    let mut max_single = i64::MIN;
+                    let mut nm_avg_range: Option<[i64; 2]> = None;
+                    for group in &non_mul {
+                        let count = i64::try_from(group.count).ok()?;
+                        let total_add = group.add.checked_mul(count)?;
+                        if group.add < 0 {
+                            has_neg = true;
+                            neg_sum = neg_sum.checked_add(total_add)?;
+                        } else if group.add > 0 {
+                            has_pos = true;
+                            pos_sum = pos_sum.checked_add(total_add)?;
+                        }
+                        min_single = min_single.min(group.add);
+                        max_single = max_single.max(group.add);
+                        avg_pos_sum = avg_pos_sum.checked_add(group.avg_pos_sum)?;
+                        avg_pos_sum.checked_mul(100_000)?;
+                        avg_neg_sum = avg_neg_sum.checked_add(group.avg_neg_sum)?;
+                        avg_neg_sum.checked_mul(100_000)?;
+                        total_avg_cnt =
+                            total_avg_cnt.checked_add(group.avg_cnt.checked_mul(count)?)?;
+                        total_avg_cnt.checked_mul(100_000)?;
+                        let ratio =
+                            group.avg_sum.checked_mul(100_000)? / group.avg_cnt.checked_mul(100_000)?;
+                        nm_avg_range = Some(match nm_avg_range {
+                            Some([lo, hi]) => [lo.min(ratio), hi.max(ratio)],
+                            None => [ratio, ratio],
+                        });
+                    }
+                    let min_nonempty_add = if has_neg { neg_sum } else { min_single };
+                    let max_nonempty_add = if has_pos { pos_sum } else { max_single };
+                    non_mul_cases.push(([min_nonempty_add, max_nonempty_add], nm_avg_range));
                 }
                 let mul_states = mul_coupled
                     .iter()
@@ -743,9 +761,11 @@ pub(super) fn convoy_weapon_bound_from_database(
                         let mut rem = state;
                         let mut corr_add = 0_i64;
                         let mut corr_mul = 0_i64;
-                        let mut mask_avg_range = avg_range;
+                        let mut corr_avg_sum = 0_i64;
+                        let mut corr_avg_cnt = 0_i64;
                         let mut mask_pos_sum = avg_pos_sum;
                         let mut mask_neg_sum = avg_neg_sum;
+                        let mut mask_total_cnt = total_avg_cnt;
                         for group in &mul_coupled {
                             let radix = group.count + 1;
                             let k = i64::try_from(rem % radix).ok()?;
@@ -755,50 +775,98 @@ pub(super) fn convoy_weapon_bound_from_database(
                             }
                             corr_add = corr_add.checked_add(group.add.checked_mul(k)?)?;
                             corr_mul = corr_mul.checked_add(group.mul.checked_mul(k)?)?;
+                            corr_avg_sum =
+                                corr_avg_sum.checked_add(group.avg_sum.checked_mul(k)?)?;
+                            corr_avg_cnt =
+                                corr_avg_cnt.checked_add(group.avg_cnt.checked_mul(k)?)?;
                             mask_pos_sum = mask_pos_sum.checked_add(group.avg_pos_sum)?;
                             mask_pos_sum.checked_mul(100_000)?;
                             mask_neg_sum = mask_neg_sum.checked_add(group.avg_neg_sum)?;
                             mask_neg_sum.checked_mul(100_000)?;
-                            mask_avg_range = [
-                                mask_avg_range[0].min(group.avg_min_delta),
-                                mask_avg_range[1].max(group.avg_max_delta),
-                            ];
+                            mask_total_cnt =
+                                mask_total_cnt.checked_add(group.avg_cnt.checked_mul(k)?)?;
+                            mask_total_cnt.checked_mul(100_000)?;
                         }
-                        let value_range = [
-                            add_range[0]
-                                .checked_add(corr_add)?
-                                .checked_add(mask_avg_range[0])?,
-                            add_range[1]
-                                .checked_add(corr_add)?
-                                .checked_add(mask_avg_range[1])?,
-                        ];
+                        let base_avg = if corr_avg_cnt > 0 {
+                            corr_avg_sum.checked_mul(100_000)?
+                                / corr_avg_cnt.checked_mul(100_000)?
+                        } else {
+                            0
+                        };
+                        let mut empty_nm_avg = [base_avg, base_avg];
+                        let mut pref_sum = corr_avg_sum;
+                        let mut pref_cnt = corr_avg_cnt;
+                        for &(g_sum, g_cnt) in &pure_avg_groups {
+                            pref_sum = pref_sum.checked_add(g_sum)?;
+                            pref_cnt = pref_cnt.checked_add(g_cnt)?;
+                            let val =
+                                pref_sum.checked_mul(100_000)? / pref_cnt.checked_mul(100_000)?;
+                            empty_nm_avg = [empty_nm_avg[0].min(val), empty_nm_avg[1].max(val)];
+                        }
+                        let mut suff_sum = corr_avg_sum;
+                        let mut suff_cnt = corr_avg_cnt;
+                        for &(g_sum, g_cnt) in pure_avg_groups.iter().rev() {
+                            suff_sum = suff_sum.checked_add(g_sum)?;
+                            suff_cnt = suff_cnt.checked_add(g_cnt)?;
+                            let val =
+                                suff_sum.checked_mul(100_000)? / suff_cnt.checked_mul(100_000)?;
+                            empty_nm_avg = [empty_nm_avg[0].min(val), empty_nm_avg[1].max(val)];
+                        }
                         let factor_range = [
                             pure_mul_range[0].checked_add(corr_mul)?.checked_add(100_000)?,
                             pure_mul_range[1].checked_add(corr_mul)?.checked_add(100_000)?,
                         ];
-                        let corners = [
-                            value_range[0].checked_mul(factor_range[0])? / 100_000,
-                            value_range[0].checked_mul(factor_range[1])? / 100_000,
-                            value_range[1].checked_mul(factor_range[0])? / 100_000,
-                            value_range[1].checked_mul(factor_range[1])? / 100_000,
-                        ];
-                        let low = *corners.iter().min().unwrap();
-                        let high = *corners.iter().max().unwrap();
-                        best = Some(match best {
-                            Some([lo, hi]) => [lo.min(low), hi.max(high)],
-                            None => [low, high],
-                        });
+                        for &(nm_add, nm_avg) in &non_mul_cases {
+                            let avg_bounds = match nm_avg {
+                                None => empty_nm_avg,
+                                Some([mut lo, mut hi]) => {
+                                    if let Some([p_lo, p_hi]) = pure_avg_ratio_range {
+                                        lo = lo.min(p_lo);
+                                        hi = hi.max(p_hi);
+                                    }
+                                    if corr_avg_cnt > 0 {
+                                        lo = lo.min(base_avg);
+                                        hi = hi.max(base_avg);
+                                    }
+                                    [lo, hi]
+                                }
+                            };
+                            let value_range = [
+                                pure_add_range[0]
+                                    .checked_add(nm_add[0])?
+                                    .checked_add(corr_add)?
+                                    .checked_add(avg_bounds[0])?,
+                                pure_add_range[1]
+                                    .checked_add(nm_add[1])?
+                                    .checked_add(corr_add)?
+                                    .checked_add(avg_bounds[1])?,
+                            ];
+                            let corners = [
+                                value_range[0].checked_mul(factor_range[0])? / 100_000,
+                                value_range[0].checked_mul(factor_range[1])? / 100_000,
+                                value_range[1].checked_mul(factor_range[0])? / 100_000,
+                                value_range[1].checked_mul(factor_range[1])? / 100_000,
+                            ];
+                            let low = *corners.iter().min().unwrap();
+                            let high = *corners.iter().max().unwrap();
+                            best = Some(match best {
+                                Some([lo, hi]) => [lo.min(low), hi.max(high)],
+                                None => [low, high],
+                            });
+                        }
                     }
                     return best;
                 }
+                let mut mul_add_range = [0_i64, 0_i64];
                 let mut mul_range = pure_mul_range;
+                let mut mul_avg_ratio_range: Option<[i64; 2]> = None;
                 for group in &mul_coupled {
                     let count = i64::try_from(group.count).ok()?;
                     let total_add = group.add.checked_mul(count)?;
                     let total_mul = group.mul.checked_mul(count)?;
-                    add_range = [
-                        add_range[0].checked_add(total_add.min(0))?,
-                        add_range[1].checked_add(total_add.max(0))?,
+                    mul_add_range = [
+                        mul_add_range[0].checked_add(total_add.min(0))?,
+                        mul_add_range[1].checked_add(total_add.max(0))?,
                     ];
                     mul_range = [
                         mul_range[0].checked_add(total_mul.min(0))?,
@@ -808,29 +876,57 @@ pub(super) fn convoy_weapon_bound_from_database(
                     avg_pos_sum.checked_mul(100_000)?;
                     avg_neg_sum = avg_neg_sum.checked_add(group.avg_neg_sum)?;
                     avg_neg_sum.checked_mul(100_000)?;
-                    avg_range = [
-                        avg_range[0].min(group.avg_min_delta),
-                        avg_range[1].max(group.avg_max_delta),
-                    ];
+                    total_avg_cnt =
+                        total_avg_cnt.checked_add(group.avg_cnt.checked_mul(count)?)?;
+                    total_avg_cnt.checked_mul(100_000)?;
+                    if group.avg_cnt > 0 {
+                        let ratio =
+                            group.avg_sum.checked_mul(100_000)? / group.avg_cnt.checked_mul(100_000)?;
+                        mul_avg_ratio_range = Some(match mul_avg_ratio_range {
+                            Some([lo, hi]) => [lo.min(ratio), hi.max(ratio)],
+                            None => [ratio, ratio],
+                        });
+                    }
                 }
-                let value_range = [
-                    add_range[0].checked_add(avg_range[0])?,
-                    add_range[1].checked_add(avg_range[1])?,
-                ];
                 let factor_range = [
                     mul_range[0].checked_add(100_000)?,
                     mul_range[1].checked_add(100_000)?,
                 ];
-                let corners = [
-                    value_range[0].checked_mul(factor_range[0])? / 100_000,
-                    value_range[0].checked_mul(factor_range[1])? / 100_000,
-                    value_range[1].checked_mul(factor_range[0])? / 100_000,
-                    value_range[1].checked_mul(factor_range[1])? / 100_000,
-                ];
-                Some([
-                    *corners.iter().min().unwrap(),
-                    *corners.iter().max().unwrap(),
-                ])
+                let mut best: Option<[i64; 2]> = None;
+                for &(nm_add, nm_avg) in &non_mul_cases {
+                    let [mut avg_lo, mut avg_hi] = nm_avg.unwrap_or([0, 0]);
+                    if let Some([p_lo, p_hi]) = pure_avg_ratio_range {
+                        avg_lo = avg_lo.min(p_lo);
+                        avg_hi = avg_hi.max(p_hi);
+                    }
+                    if let Some([m_lo, m_hi]) = mul_avg_ratio_range {
+                        avg_lo = avg_lo.min(m_lo);
+                        avg_hi = avg_hi.max(m_hi);
+                    }
+                    let value_range = [
+                        pure_add_range[0]
+                            .checked_add(nm_add[0])?
+                            .checked_add(mul_add_range[0])?
+                            .checked_add(avg_lo)?,
+                        pure_add_range[1]
+                            .checked_add(nm_add[1])?
+                            .checked_add(mul_add_range[1])?
+                            .checked_add(avg_hi)?,
+                    ];
+                    let corners = [
+                        value_range[0].checked_mul(factor_range[0])? / 100_000,
+                        value_range[0].checked_mul(factor_range[1])? / 100_000,
+                        value_range[1].checked_mul(factor_range[0])? / 100_000,
+                        value_range[1].checked_mul(factor_range[1])? / 100_000,
+                    ];
+                    let low = *corners.iter().min().unwrap();
+                    let high = *corners.iter().max().unwrap();
+                    best = Some(match best {
+                        Some([lo, hi]) => [lo.min(low), hi.max(high)],
+                        None => [low, high],
+                    });
+                }
+                best
             })();
             let Some([low, high]) = stat_range else {
                 return (

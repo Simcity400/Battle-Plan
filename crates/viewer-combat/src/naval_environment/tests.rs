@@ -928,6 +928,36 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
         bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
         Some(0)
     );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            m1 = { add_stats = { lg_attack = 0.074 } add_average_stats = { lg_attack = -0.1 } }
+            m2 = { add_stats = { lg_attack = 0.075 } add_average_stats = { lg_attack = -0.1 } }
+            m3 = { add_stats = { lg_attack = 0.076 } add_average_stats = { lg_attack = -0.1 } }
+            m4 = { add_stats = { lg_attack = 0.077 } add_average_stats = { lg_attack = -0.1 } }
+            m5 = { add_stats = { lg_attack = 0.078 } add_average_stats = { lg_attack = -0.1 } }
+            m6 = { add_stats = { lg_attack = 0.079 } add_average_stats = { lg_attack = -0.1 } }
+            m7 = { add_stats = { lg_attack = 0.080 } add_average_stats = { lg_attack = -0.1 } }
+            m8 = { add_stats = { lg_attack = 0.081 } add_average_stats = { lg_attack = -0.1 } }
+            m9 = { add_stats = { lg_attack = 0.082 } add_average_stats = { lg_attack = -0.1 } }
+            m10 = { add_stats = { lg_attack = 0.083 } add_average_stats = { lg_attack = -0.1 } }
+            m11 = { add_stats = { lg_attack = 0.084 } add_average_stats = { lg_attack = -0.1 } }
+            m12 = { add_stats = { lg_attack = 0.085 } add_average_stats = { lg_attack = -0.1 } }
+            m13 = { add_stats = { lg_attack = 0.086 } add_average_stats = { lg_attack = -0.1 } }
+         }
+         equipments = {
+            thirteen_distinct_combined = { type = convoy
+                default_modules = {
+                    s1 = m1 s2 = m2 s3 = m3 s4 = m4 s5 = m5 s6 = m6 s7 = m7
+                    s8 = m8 s9 = m9 s10 = m10 s11 = m11 s12 = m12 s13 = m13
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-2_600, 94_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
 }
 
 #[test]

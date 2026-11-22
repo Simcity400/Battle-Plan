@@ -296,6 +296,13 @@ impl Prepared {
         Ok(Self { slots, contexts })
     }
 
+    pub fn slot(&self, country_ref: u32) -> Option<u32> {
+        if (country_ref as i32) <= 0 {
+            return None;
+        }
+        self.slots.get(&country_ref).copied()
+    }
+
     pub fn context(&self, country_ref: u32) -> Result<Option<&CountryContext>, String> {
         if (country_ref as i32) <= 0 {
             return Ok(None);
