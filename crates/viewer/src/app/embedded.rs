@@ -149,61 +149,71 @@ impl Viewer {
             && !self.awaiting_folders
             && let Some(seek) = self.embedded_seek.take()
         {
-            let result = self
-                .document
+            if seek
+                .playback
                 .as_ref()
-                .filter(|document| seek.matches(&document.source_path, self.revision.as_deref()))
-                .ok_or_else(|| {
-                    self.error.clone().unwrap_or_else(|| {
-                        "The requested replay snapshot did not open; seek was not applied"
-                            .to_owned()
+                .is_some_and(|clock| self.page_clock.is_retired(&clock.clock_id))
+            {
+            } else {
+                let result = self
+                    .document
+                    .as_ref()
+                    .filter(|document| seek.matches(&document.source_path, self.revision.as_deref()))
+                    .ok_or_else(|| {
+                        self.error.clone().unwrap_or_else(|| {
+                            "The requested replay snapshot did not open; seek was not applied"
+                                .to_owned()
+                        })
                     })
-                })
-                .and_then(|document| match document.playback.range(seek.branch) {
-                    Some((first, last)) if (first..=last).contains(&seek.hour) => Ok(()),
-                    Some((first, last)) => Err(format!(
-                        "Hour {} is outside branch {} ({first}..{last})",
-                        seek.hour, seek.branch
-                    )),
-                    None => Err(format!("Unknown branch {}", seek.branch)),
-                });
-            match result {
-                Ok(()) => {
-                    self.error = None;
-                    let now = Instant::now();
-                    let last = self
-                        .document
-                        .as_ref()
-                        .expect("validated above")
-                        .playback
-                        .range(seek.branch)
-                        .expect("validated above")
-                        .1;
-                    let animation_target = Target {
-                        branch: seek.branch,
-                        hour: seek.hour,
-                        seek_sequence: seek.playback.map(|clock| clock.seek_sequence),
-                    };
-                    let sought = seek.playback.is_none()
-                        || self
-                            .map_animation_target
-                            .is_none_or(|old| animation_target.seeks_from(old));
-                    self.animation_seek |= sought;
-                    self.map_animation_target = Some(animation_target);
-                    let playing = seek.playback.is_some_and(|clock| clock.playing);
-                    let target = Playhead {
-                        branch: seek.branch,
-                        hour: seek.hour,
-                        fraction: seek.playback.map_or(0.0, |clock| clock.fraction),
-                    };
-                    let speed = seek
-                        .playback
-                        .map_or(self.speed, |clock| clock.hours_per_second);
-                    let composed_at = seek.playback.map(|clock| clock.composed_at);
-                    self.anchor_playback(target, playing, speed, sought, composed_at, now, last);
-                }
-                Err(error) => {
-                    self.error = Some(error);
+                    .and_then(|document| match document.playback.range(seek.branch) {
+                        Some((first, last)) if (first..=last).contains(&seek.hour) => Ok(()),
+                        Some((first, last)) => Err(format!(
+                            "Hour {} is outside branch {} ({first}..{last})",
+                            seek.hour, seek.branch
+                        )),
+                        None => Err(format!("Unknown branch {}", seek.branch)),
+                    });
+                match result {
+                    Ok(()) => {
+                        self.error = None;
+                        let now = Instant::now();
+                        let last = self
+                            .document
+                            .as_ref()
+                            .expect("validated above")
+                            .playback
+                            .range(seek.branch)
+                            .expect("validated above")
+                            .1;
+                        let playback = seek.playback.as_ref();
+                        let animation_target = Target {
+                            branch: seek.branch,
+                            hour: seek.hour,
+                            seek_sequence: playback.map(|clock| clock.seek_sequence),
+                        };
+                        let sought = playback.is_none()
+                            || self
+                                .map_animation_target
+                                .is_none_or(|old| animation_target.seeks_from(old));
+                        self.animation_seek |= sought;
+                        self.map_animation_target = Some(animation_target);
+                        let playing = playback.is_some_and(|clock| clock.playing);
+                        let target = Playhead {
+                            branch: seek.branch,
+                            hour: seek.hour,
+                            fraction: playback.map_or(0.0, |clock| clock.fraction),
+                        };
+                        let speed = playback
+                            .map_or(self.speed, |clock| clock.hours_per_second);
+                        let composed = playback.map(|clock| crate::page_clock::ClockSample {
+                            origin: &clock.clock_id,
+                            composed_at: clock.composed_at,
+                        });
+                        self.anchor_playback(target, playing, speed, sought, composed, now, last);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                    }
                 }
             }
         }

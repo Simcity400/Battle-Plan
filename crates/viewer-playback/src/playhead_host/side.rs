@@ -252,6 +252,31 @@ impl SideThread {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_window(&mut self, mut done: impl FnMut(&mut Self) -> bool) -> Result<(), String> {
+        loop {
+            if done(self) {
+                return Ok(());
+            }
+            let mut turn = lock(&self.shared.held);
+            while turn.framed && turn.side.failure().is_none() && !turn.stop {
+                turn = self.shared.signal.wait(turn).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            if let Some(failure) = turn.side.failure() {
+                let failure = failure.to_owned();
+                self.products.failure = Some(failure.clone());
+                return Err(failure);
+            }
+            if turn.stop {
+                return Err("the map's side thread stopped".to_owned());
+            }
+            self.products.missed = None;
+            let mut window = Window { turn, signal: &self.shared.signal, products: &mut self.products };
+            window.take(Default::default());
+            drop(window);
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn driven<T>(&mut self, drive: impl FnOnce(&mut MapSide) -> T) -> T {
         let turn = lock(&self.shared.held);
         self.products.missed = None;
@@ -491,8 +516,8 @@ fn advance(shared: &Shared) {
                 let made = if moving.is_some() || viewpoint || turn.side.hurrying() { Made::Playing } else { Made::Still };
                 if let Err(error) = toward(&mut turn.side, &ask, head, made) {
                     turn.side.fail(format!("The map's playhead stopped: {error}"));
-                    shared.signal.notify_all();
                 }
+                shared.signal.notify_all();
             }
         }
     }

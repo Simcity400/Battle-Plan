@@ -487,7 +487,7 @@ pub struct MapDetails {
 
 pub const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapPlayback {
     pub playing: bool,
@@ -495,15 +495,19 @@ pub struct MapPlayback {
     pub fraction: f64,
     pub hours_per_second: f64,
     pub composed_at: f64,
+    pub clock_id: String,
 }
 
 impl MapPlayback {
-    pub fn validate(self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), &'static str> {
         if !self.fraction.is_finite() || !(0.0..1.0).contains(&self.fraction) {
             return Err("Map hour fraction must be finite and in [0, 1)");
         }
         if !self.composed_at.is_finite() || self.composed_at < 0.0 {
             return Err("Map anchor compose time must be finite and not negative");
+        }
+        if self.clock_id.is_empty() || self.clock_id.len() > 128 || self.clock_id.contains('\0') {
+            return Err("Map clock identity is missing or exceeds its control budget");
         }
         if !self.hours_per_second.is_finite() || self.hours_per_second <= 0.0 {
             return Err("Map playback speed must be finite and positive");
@@ -534,6 +538,7 @@ pub struct DashboardMapView {
     #[serde(default)]
     pub seek_sequence: Option<u64>,
     pub composed_at: f64,
+    pub clock_id: String,
     pub bounds: ViewBounds,
     pub clip: ViewBounds,
     pub visible: bool,
@@ -549,6 +554,9 @@ impl DashboardMapView {
             if text.is_empty() || text.len() > 128 || text.contains('\0') {
                 return Err("Map identity is missing or exceeds its control budget");
             }
+        }
+        if self.clock_id.is_empty() || self.clock_id.len() > 128 || self.clock_id.contains('\0') {
+            return Err("Map clock identity is missing or exceeds its control budget");
         }
         if self.path.is_empty() || self.path.len() > 32_000 || self.path.contains('\0') {
             return Err("Map recording path is invalid");
@@ -714,26 +722,34 @@ mod tests {
             fraction: 0.375,
             hours_per_second: 1440.25,
             composed_at: 12_345.5,
+            clock_id: "page-origin-1".into(),
         };
-        let json = serde_json::to_value(clock).unwrap();
+        let json = serde_json::to_value(&clock).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
                 "playing": true, "seekSequence": 7, "fraction": 0.375, "hoursPerSecond": 1440.25,
-                "composedAt": 12_345.5,
+                "composedAt": 12_345.5, "clockId": "page-origin-1",
             })
         );
         let decoded: super::MapPlayback = serde_json::from_value(json).unwrap();
         assert_eq!(clock, decoded);
         assert!(decoded.validate().is_ok());
         for fraction in [-0.1, 1.0, f64::NAN, f64::INFINITY] {
-            assert!(super::MapPlayback { fraction, ..clock }.validate().is_err());
+            assert!(
+                super::MapPlayback {
+                    fraction,
+                    ..clock.clone()
+                }
+                .validate()
+                .is_err()
+            );
         }
         for hours_per_second in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(
                 super::MapPlayback {
                     hours_per_second,
-                    ..clock
+                    ..clock.clone()
                 }
                 .validate()
                 .is_err()
@@ -742,7 +758,7 @@ mod tests {
         assert!(
             super::MapPlayback {
                 seek_sequence: super::MAX_EXACT_JS_INTEGER + 1,
-                ..clock
+                ..clock.clone()
             }
             .validate()
             .is_err()
@@ -751,7 +767,17 @@ mod tests {
             assert!(
                 super::MapPlayback {
                     composed_at,
-                    ..clock
+                    ..clock.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for clock_id in [String::new(), "bad\0id".into(), "x".repeat(129)] {
+            assert!(
+                super::MapPlayback {
+                    clock_id,
+                    ..clock.clone()
                 }
                 .validate()
                 .is_err()
@@ -774,6 +800,7 @@ mod tests {
             "id": "map", "sourceId": "source", "path": "replay.battleplan",
             "revision": "1", "branchId": "1", "playing": true, "hoursPerSecond": 0.25,
             "hour": 20, "fraction": 0.0, "sequence": 8, "seekSequence": 2, "composedAt": 9.5,
+            "clockId": "page-origin-1",
             "bounds": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "clip": { "x": 0, "y": 0, "width": 640, "height": 360 },
             "visible": true
@@ -782,9 +809,15 @@ mod tests {
         view.validate().unwrap();
         assert_eq!(view.seek_sequence, Some(2));
         assert_eq!(view.hours_per_second, 0.25);
+        assert_eq!(view.clock_id, "page-origin-1");
         for speed in [0.0, -1.0, f64::INFINITY, f64::NAN] {
             let mut invalid = view.clone();
             invalid.hours_per_second = speed;
+            assert!(invalid.validate().is_err());
+        }
+        for clock_id in [String::new(), "bad\0id".into(), "x".repeat(129)] {
+            let mut invalid = view.clone();
+            invalid.clock_id = clock_id;
             assert!(invalid.validate().is_err());
         }
         let mut pinned = input;

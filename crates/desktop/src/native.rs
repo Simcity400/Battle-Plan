@@ -447,7 +447,7 @@ impl NativeHost {
         hour: i32,
         playback: Option<dashboard::protocol::MapPlayback>,
     ) -> Result<(), String> {
-        if let Some(playback) = playback {
+        if let Some(playback) = &playback {
             playback.validate()?;
         }
         branch.parse::<u64>().map_err(|_| "Invalid campaign history")?;

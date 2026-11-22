@@ -342,7 +342,9 @@ fn the_script_readers_read_rows_at_the_head_learning_their_tables_and_close_with
     let reached = loop {
         let tables: Vec<TableId> = scripts.needs().iter().map(|need| need.table).collect();
         assert!(fixture.hour + 2 < HOURS as Hour, "the recording ran out of hours before the scripts evaluated: {tables:?}");
-        step(&mut fixture, &mut scripts, Settling::still()).unwrap();
+        step(&mut fixture, &mut scripts, Settling::Whole).unwrap();
+        let _ = scripts.wait_evaluation().unwrap();
+        assert_eq!(scripts.stats().ran_out, 0, "deterministic catch-up must never run out");
         if let Some(reached) = published(&scripts, ours, fixture.hour) {
             break reached;
         }
@@ -359,6 +361,16 @@ fn the_script_readers_read_rows_at_the_head_learning_their_tables_and_close_with
     assert!(scripts.raids(RECORDING.branch, ours).is_none() && scripts.music_at().is_none(), "closed, it holds nothing");
     fixture.step();
     assert!(fixture.held().is_empty(), "no reader is left, so the store keeps no view: {:?}", fixture.held());
+    let mut stopped = fixture.scripts(&primed.iter().map(|&table| Need::every(table)).collect::<Vec<Need>>());
+    stopped.ensure_open();
+    let (dead_send, dead_done) = std::sync::mpsc::channel();
+    drop(dead_send);
+    if let Some(open) = stopped.open.as_mut() {
+        open.done = dead_done;
+        open.busy = true;
+    }
+    let err = stopped.wait_evaluation().unwrap_err().to_string();
+    assert!(err.contains("worker stopped"), "{err}");
 }
 
 #[test]
@@ -370,7 +382,9 @@ fn a_stopped_picture_shows_the_scripts_product_of_its_own_hour() {
     let mut stopped = 0;
     while stopped < 3 {
         assert!(fixture.hour + 2 < HOURS as Hour, "the recording ran out of hours");
-        step(&mut fixture, &mut scripts, Settling::still()).unwrap();
+        step(&mut fixture, &mut scripts, Settling::Whole).unwrap();
+        let _ = scripts.wait_evaluation().unwrap();
+        assert_eq!(scripts.stats().ran_out, 0, "deterministic catch-up must never run out");
         let Some(reached) = published(&scripts, ours, fixture.hour) else { continue };
         assert_eq!(reached, today(&fixture, fixture.hour, ours), "hour {}: the stopped picture is today's evaluation of its own hour", fixture.hour);
         assert_eq!(crate::layers::Layer::published(&scripts), crate::layers::Published::Current, "its product stands at the rows it has seen");
@@ -391,12 +405,12 @@ fn a_stopped_picture_shows_the_scripts_product_of_its_own_hour() {
     scripts.clock.step(super::MUSIC_RATE.interval());
     assert!(scripts.music_due(false), "its interval elapsed, the chances are read again");
     assert_eq!(scripts.stats().rated, withheld + 1, "and nothing more is withheld");
-    step(&mut fixture, &mut scripts, Settling::still()).unwrap();
+    step(&mut fixture, &mut scripts, Settling::Whole).unwrap();
     let stopped_at = fixture.hour;
     scripts.applied = Some(stopped_at);
-    for _ in 0..2 {
-        fixture.posted();
-        asked(&mut scripts, Settling::still()).unwrap();
-    }
+    fixture.posted();
+    asked(&mut scripts, Settling::Whole).unwrap();
+    let _ = scripts.wait_evaluation().unwrap();
+    assert_eq!(scripts.stats().ran_out, 0);
     assert_eq!(published(&scripts, ours, stopped_at), Some(today(&fixture, stopped_at, ours)), "the picture the hours stopped on is its own hour's");
 }

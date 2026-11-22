@@ -91,15 +91,7 @@ fn map(viewer: &mut Viewer) -> &mut crate::playhead_host::side::SideThread {
 
 fn frames_at(side: &mut crate::playhead_host::side::SideThread, hour: Hour, mut done: impl FnMut(&MapSide) -> bool) {
     side.with_side_mut(|side| {
-        loop {
-            let frame = side.frame(hour).unwrap();
-            if done(side) {
-                return;
-            }
-            if frame.steps == 0 && frame.swapped.is_none() {
-                std::thread::yield_now();
-            }
-        }
+        crate::layers::recorded::frames_at(side, hour, &format!("hour {hour}"), |side, _| done(side));
     });
     side.driven(|_| ());
 }
@@ -147,6 +139,7 @@ fn target(hour: Hour, playing: bool) -> dashboard::protocol::DashboardMapView {
         sequence: 1,
         seek_sequence: Some(1),
         composed_at: 0.0,
+        clock_id: "page-1".into(),
         bounds,
         clip: bounds,
         visible: true,

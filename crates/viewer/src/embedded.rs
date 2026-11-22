@@ -164,7 +164,7 @@ impl Pending {
                 hour,
                 playback,
             } => {
-                if let Some(playback) = playback {
+                if let Some(playback) = &playback {
                     playback.validate()?;
                 }
                 validate_snapshot(&path, Some(&revision))?;
@@ -1404,6 +1404,7 @@ mod tests {
                         fraction: 0.375,
                         hours_per_second: 1440.0,
                         composed_at: 0.0,
+                        clock_id: "page-1".into(),
                     }),
                 })
                 .unwrap();
@@ -1421,6 +1422,7 @@ mod tests {
                     fraction: 0.375,
                     hours_per_second: 1440.0,
                     composed_at: 0.0,
+                    clock_id: "page-1".into(),
                 }),
             })
         );

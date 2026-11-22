@@ -16,7 +16,7 @@ import type { PlaybackController, PlaybackSnapshot } from './playback';
 
 const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/night cycle', alliedPlans: 'Allied battle plans', fog: 'Fog of war' };
 
-export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt'>;
+export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible' | 'composedAt' | 'clockId'>;
 interface Layout { bounds: MapBounds; clip: MapBounds; onScreen: boolean }
 interface Surface { element: HTMLElement; target: (clock: PlaybackSnapshot) => MapTarget | null; layout: Layout | null; present: boolean }
 interface Rect { left: number; top: number; right: number; bottom: number }
@@ -298,6 +298,7 @@ export class MapViewsStore {
     if (this.layoutDirty) { this.layoutDirty = false; this.measure(this.viewport); }
     const clock = this.clock.getSnapshot();
     const composedAt = this.clock.composedAt();
+    const clockId = this.clock.clockId;
     const views: DashboardMapView[] = [];
     for (const [id, surface] of this.surfaces) {
       const target = surface.target(clock);
@@ -305,7 +306,7 @@ export class MapViewsStore {
       if (!target || !surface.layout) continue;
       const { bounds, clip, onScreen } = surface.layout;
       const visible = onScreen && !this.hidden && !document.hidden && !this.states.get(id)?.error;
-      const view = { id, ...target, composedAt, options: this.viewOptions(id, target.options), bounds, clip, visible };
+      const view = { id, ...target, composedAt, clockId, options: this.viewOptions(id, target.options), bounds, clip, visible };
       views.push(view);
       this.lastViews.set(id, view);
     }

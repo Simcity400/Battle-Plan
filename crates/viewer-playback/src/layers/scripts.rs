@@ -501,6 +501,19 @@ impl Scripts {
         false
     }
 
+    #[cfg(test)]
+    fn wait_evaluation(&mut self) -> io::Result<bool> {
+        let Some(open) = &mut self.open else { return Ok(false) };
+        if !open.busy {
+            return Ok(false);
+        }
+        let done = open
+            .done
+            .recv()
+            .map_err(|_| io::Error::other(format!("The {NAME} layer's worker stopped")))?;
+        Ok(self.take(done))
+    }
+
     fn ask_rows(&mut self) {
         if let Some(open) = &self.open {
             open.reader.ready();
@@ -569,8 +582,21 @@ impl Scripts {
                 return ran_out(format!("The {NAME} layer did not reach hour {hour} in {CATCH_UP:?}"), &mut self.stats);
             }
             if open.busy {
-                let Ok(done) = open.done.recv_timeout(left) else {
-                    return ran_out(format!("The {NAME} layer's worker did not answer for hour {hour}"), &mut self.stats);
+                let done = match open.done.recv_timeout(left) {
+                    Ok(done) => done,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        open.busy = false;
+                        open.evaluating = None;
+                        return Err(io::Error::other(format!(
+                            "The {NAME} layer's worker stopped before answering for hour {hour}"
+                        )));
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        return ran_out(
+                            format!("The {NAME} layer's worker did not answer for hour {hour}"),
+                            &mut self.stats,
+                        );
+                    }
                 };
                 if self.take(done) {
                     return Ok(());

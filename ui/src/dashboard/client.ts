@@ -53,6 +53,7 @@ export interface DashboardMapView {
   sequence: number;
   seekSequence?: number;
   composedAt: number;
+  clockId: string;
   bounds: MapBounds;
   clip: MapBounds;
   visible: boolean;

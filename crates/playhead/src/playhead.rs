@@ -871,6 +871,9 @@ impl Consumer {
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
             if control.published_steps > before.1 {
                 return Ok(true);
             }
@@ -885,6 +888,9 @@ impl Consumer {
             while control.version == seen {
                 if let Some(error) = &control.error {
                     return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
                 }
                 control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
@@ -1219,6 +1225,9 @@ impl Playhead {
             if let Some(error) = &control.error {
                 return Err(error.clone());
             }
+            if control.stop {
+                return Err("the playhead stopped".into());
+            }
             control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
@@ -1242,6 +1251,9 @@ impl Playhead {
                 if let Some(error) = &control.error {
                     return Err(error.clone());
                 }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
                 control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
@@ -1250,14 +1262,20 @@ impl Playhead {
     #[cfg(feature = "test-support")]
     pub fn wait_for(&self, mut ready: impl FnMut() -> bool) -> Result<(), String> {
         loop {
+            let version = lock(&self.shared.control).version;
             if ready() {
                 return Ok(());
             }
-            let control = lock(&self.shared.control);
-            if let Some(error) = &control.error {
-                return Err(error.clone());
+            let mut control = lock(&self.shared.control);
+            while control.version == version {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                if control.stop {
+                    return Err("the playhead stopped".into());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
             }
-            drop(self.shared.wake.wait_timeout(control, Duration::from_millis(50)).unwrap_or_else(std::sync::PoisonError::into_inner));
         }
     }
 

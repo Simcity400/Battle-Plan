@@ -256,6 +256,7 @@ struct Sum {
     entered: Option<mpsc::Sender<()>>,
     settle_gate: Option<Arc<Mutex<mpsc::Receiver<()>>>>,
     settling: Option<mpsc::Sender<()>>,
+    settle_armed: Option<Arc<std::sync::atomic::AtomicBool>>,
     settle_stops: bool,
     times_out_at: Option<i32>,
     frame: u64,
@@ -263,7 +264,7 @@ struct Sum {
 
 impl Sum {
     fn new(composes: &Arc<Mutex<u32>>) -> Self {
-        Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, settle_gate: None, settling: None, settle_stops: false, times_out_at: None, frame: 0 }
+        Self { column: None, second: false, refuse_high: false, hide_high: false, read: Vec::new(), viewed: Vec::new(), values: Vec::new(), dirty: Dirty::default(), composes: Arc::clone(composes), gate: None, entered: None, settle_gate: None, settling: None, settle_armed: None, settle_stops: false, times_out_at: None, frame: 0 }
     }
 
     fn gated(composes: &Arc<Mutex<u32>>) -> (Self, mpsc::Sender<()>) {
@@ -344,11 +345,13 @@ impl Layer for Sum {
     }
 
     fn settle(&mut self, mirrors: &Mirrors, _settling: Settling) -> io::Result<()> {
-        if let Some(settling) = &self.settling {
-            let _ = settling.send(());
-        }
-        if let Some(gate) = self.settle_gate.take() {
-            gate.lock().unwrap().recv().unwrap();
+        if self.settle_armed.as_ref().is_none_or(|armed| armed.load(Ordering::Acquire)) {
+            if let Some(settling) = &self.settling {
+                let _ = settling.send(());
+            }
+            if let Some(gate) = self.settle_gate.take() {
+                gate.lock().unwrap().recv().unwrap();
+            }
         }
         if self.settle_stops {
             return Err(io::Error::other("the test layer settles no further"));
@@ -456,19 +459,8 @@ fn quick() -> Settings {
     Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 4.0, rate: 1.0, ..Settings::default() }
 }
 
-fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &super::Frame) -> bool) {
-    for _ in 0..50_000_000u64 {
-        crate::layers::recorded::reads_landed(side);
-        let head = side.entry().playhead().newest().unwrap_or(0);
-        let frame = side.frame(head).unwrap();
-        if done(side, &frame) {
-            return;
-        }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
-    panic!("the map side never reached what the test waits for");
+fn frames_until(side: &mut MapSide, done: impl FnMut(&MapSide, &super::Frame) -> bool) {
+    crate::layers::recorded::frames_until(side, done);
 }
 
 fn sum_layer(side: &MapSide, at: usize) -> &Sum {
@@ -494,14 +486,11 @@ fn a_reset_swaps_mirrors_and_composed_arrays_together_and_applies_the_steps_take
     });
     assert!(side.composing() && side.parts().is_none(), "the mirrors and layers are on the worker");
     let deferred = side.held().pending;
-    let mut waited = 0;
-    frames_until(&mut side, |side, frame| {
-        assert!(frame.composing && frame.steps == 0, "nothing is applied while composing");
-        assert_eq!(side.held().pending, deferred, "steps built meanwhile stay in the ring");
-        waited += 1;
-        side.entry().playhead().newest().is_some_and(|newest| newest >= 100 + 3 * 4)
-    });
-    assert!(waited > 0);
+    entry.playhead().wait_newest(100 + 3 * 4).unwrap();
+    let head = entry.playhead().newest().unwrap();
+    let frame = side.frame(head).unwrap();
+    assert!(frame.composing && frame.steps == 0, "nothing is applied while composing");
+    assert_eq!(side.held().pending, deferred, "steps built meanwhile stay in the ring");
     release.send(()).unwrap();
     let mut swapped = false;
     frames_until(&mut side, |side, frame| {
@@ -1150,25 +1139,24 @@ fn a_held_dependent_sees_every_change_published_while_it_was_held() {
 
 fn frames_to_exact(side: &mut MapSide, head: i32, states: &[TableState]) -> usize {
     let before = side.parts().unwrap().0.get(table(0)).and_then(|mirror| mirror.head()).unwrap();
-    for frames in 1..=200_000 {
-        let frame = side.frame(head).unwrap();
+    let mut frames = 0;
+    crate::layers::recorded::frames_at(side, head, &format!("exact hour {head}"), |side, _| {
+        frames += 1;
         if let Some((mirrors, _)) = side.parts() {
             let at = mirrors.get(table(0)).and_then(|mirror| mirror.head());
             assert!(at.is_some_and(|at| at <= head.max(before)), "frame {frames} at {head} showed hour {at:?}, after {before}");
             assert!(side.draws("sum"), "the old picture stays while the exact one is made");
             if at == Some(head) && !side.composing() {
-                side.settle_all().unwrap();
-                let mirror = side.parts().unwrap().0.get(table(0)).unwrap();
-                assert_eq!(differ(mirror, &states[head as usize], &[0]), None, "the mirror at hour {head}");
-                assert_eq!(sum_layer(side, 0).total(), sum_of(mirror, Num::of(table(0), 0)), "the layer's arrays at hour {head}");
-                return frames;
+                return true;
             }
         }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
-    panic!("hour {head} was never shown exactly");
+        false
+    });
+    side.settle_all().unwrap();
+    let mirror = side.parts().unwrap().0.get(table(0)).unwrap();
+    assert_eq!(differ(mirror, &states[head as usize], &[0]), None, "the mirror at hour {head}");
+    assert_eq!(sum_layer(side, 0).total(), sum_of(mirror, Num::of(table(0), 0)), "the layer's arrays at hour {head}");
+    frames
 }
 
 #[test]
@@ -1181,17 +1169,10 @@ fn a_pause_inside_a_step_and_single_hours_while_paused_show_exactly_that_hour() 
     frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= 100) && !side.composing());
     let applied = side.parts().unwrap().0.get(table(0)).unwrap().head().unwrap();
     let paused = applied + 5;
-    for _ in 0..50_000_000u64 {
-        if entry.playhead().newest().is_some_and(|newest| newest > paused) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_newest(paused + 1).unwrap();
     assert!(entry.playhead().newest().unwrap() > paused, "the playhead built past the paused hour");
     entry.anchor(paused, false, 1440.0, false);
-    let started = std::time::Instant::now();
-    let frames = frames_to_exact(&mut side, paused, &states[0]);
-    eprintln!("pause: exact in {frames} frames, {:.2} ms", started.elapsed().as_secs_f64() * 1e3);
+    let _ = frames_to_exact(&mut side, paused, &states[0]);
     entry.anchor(paused + 1, false, 1440.0, true);
     frames_to_exact(&mut side, paused + 1, &states[0]);
     entry.anchor(paused, false, 1440.0, true);
@@ -1309,16 +1290,21 @@ fn a_layer_without_tables_on_a_map_joining_an_anchored_playhead_is_drawn() {
     entry.playhead().seek(0);
     frames_until(&mut first, |side, frame| frame.swapped.is_some() && !side.composing());
     let mut second = MapSide::new(Arc::clone(&entry), vec![Box::new(Tableless { composed: 0 })], View::default()).unwrap();
-    for _ in 0..200_000 {
-        let head = entry.playhead().newest().unwrap_or(0);
+    let last = entry.playhead().timeline().last();
+    loop {
+        crate::layers::recorded::reads_landed(&second);
+        let before = entry.playhead().step_state();
+        let head = before.0.unwrap_or(0);
         first.frame(head).unwrap();
-        second.frame(head).unwrap();
+        let frame = if second.composing() { second.frame_waiting(head) } else { second.frame(head) }.unwrap();
         if second.draws("tableless") {
             return;
         }
-        std::thread::yield_now();
+        if second.composing() || frame.steps > 0 || frame.swapped.is_some() {
+            continue;
+        }
+        assert!(second.wait_step_after(before, last).unwrap(), "the joining map's layer without tables was never drawn");
     }
-    panic!("the joining map's layer without tables was never drawn");
 }
 
 #[test]
@@ -1334,30 +1320,41 @@ fn a_map_composing_does_not_hold_the_steps_of_another_map() {
     let mut gated = Sum::new(&Arc::new(Mutex::new(0)));
     gated.gate = Some(Arc::new(Mutex::new(held)));
     let mut second = MapSide::new(Arc::clone(&entry), vec![Box::new(gated)], View::default()).unwrap();
-    for _ in 0..2_000_000 {
-        let head = entry.playhead().newest().unwrap_or(0);
+    let last = entry.playhead().timeline().last();
+    loop {
+        crate::layers::recorded::reads_landed(&second);
+        let before = entry.playhead().step_state();
+        let head = before.0.unwrap_or(0);
         first.frame(head).unwrap();
-        second.frame(head).unwrap();
+        let frame = second.frame(head).unwrap();
         if second.composing() {
             break;
         }
-        std::thread::yield_now();
+        if frame.steps > 0 || frame.swapped.is_some() {
+            continue;
+        }
+        assert!(second.wait_step_after(before, last).unwrap(), "the second map never started composing");
     }
     assert!(second.composing(), "the second map composes, held by the test");
     let from = first.applied().unwrap();
+    let target = from + 100;
     let mut reached = from;
-    for _ in 0..2_000_000 {
-        let head = entry.playhead().newest().unwrap_or(0);
-        first.frame(head).unwrap();
+    while reached < target {
+        let before = entry.playhead().step_state();
+        let head = before.0.unwrap_or(0);
+        let frame = first.frame(head).unwrap();
         second.frame(head).unwrap();
         reached = first.applied().unwrap();
-        if reached >= from + 100 {
+        if reached >= target {
             break;
         }
-        std::thread::yield_now();
+        if frame.steps > 0 || frame.swapped.is_some() {
+            continue;
+        }
+        assert!(first.wait_step_after(before, target).unwrap(), "the first map stepped from {from} only to {reached} while the second composed");
     }
     gate.send(()).unwrap();
-    assert!(reached >= from + 100, "the first map stepped from {from} only to {reached} while the second composed");
+    assert!(reached >= target, "the first map stepped from {from} only to {reached} while the second composed");
 }
 
 struct Worked {
@@ -1423,12 +1420,7 @@ fn a_map_with_a_worker_layer_is_drawn_at_its_shown_hour_and_keeps_up_while_playi
     let first = side.last_frame().drawn;
     for _ in 0..20 {
         let head = side.applied().unwrap() + 4;
-        for _ in 0..50_000_000u64 {
-            if entry.playhead().newest().is_some_and(|newest| newest >= head) {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        entry.playhead().wait_newest(head).unwrap();
         let frame = side.frame(head).unwrap();
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head - 4), "the worker holds the step: drawn at its product's hour, not the {head} applied");
@@ -1488,12 +1480,7 @@ fn the_oldest_hour_on_screen_counts_a_layer_of_rows_at_the_head_while_it_is_behi
     for lag in [3, 0, 5] {
         behind.store(lag, Ordering::Release);
         let head = side.applied().unwrap() + 4;
-        for _ in 0..50_000_000u64 {
-            if entry.playhead().newest().is_some_and(|newest| newest >= head) {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        entry.playhead().wait_newest(head).unwrap();
         let frame = side.frame(head).unwrap();
         assert_eq!(frame.applied, Some(head), "one step a frame");
         assert_eq!(frame.drawn, Some(head), "the window clock is not held by a layer of rows at the head");
@@ -1562,26 +1549,21 @@ fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_
         (side, entry)
     };
     let taking = |side: &mut MapSide, head: replay_data::Hour| {
-        for _ in 0..50_000_000u64 {
+        loop {
+            let before = side.entry().playhead().step_state();
             let frame = side.frame_still(head).unwrap();
             if frame.steps > 0 {
                 return frame;
             }
-            std::thread::yield_now();
+            assert!(side.wait_step_after(before, head).unwrap(), "no frame took the steps built to hour {head}");
         }
-        panic!("no frame took the steps built to hour {head}");
     };
     let (mut side, entry) = made("joined one by one");
     let ran_out = joined(&side).ran_out;
     let mut one_by_one = Vec::new();
     for _ in 0..8 {
         let head = side.applied().unwrap() + 4;
-        for _ in 0..50_000_000u64 {
-            if entry.playhead().newest().is_some_and(|newest| newest >= head) {
-                break;
-            }
-            std::thread::yield_now();
-        }
+        entry.playhead().wait_newest(head).unwrap();
         let frame = taking(&mut side, head);
         assert_eq!((frame.applied, frame.steps), (Some(head), 1), "one step a frame");
         assert_eq!(frame.oldest, frame.applied, "the step's picture is whole at the hour applied");
@@ -1591,12 +1573,7 @@ fn a_step_joins_the_products_made_from_rows_at_the_head_and_stands_whole_at_its_
 
     let (mut merged, entry) = made("joined merged");
     let head = merged.applied().unwrap() + 12;
-    for _ in 0..50_000_000u64 {
-        if entry.playhead().newest().is_some_and(|newest| newest >= head) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_newest(head).unwrap();
     let frame = taking(&mut merged, head);
     assert_eq!((frame.applied, frame.steps), (Some(head), 3), "the steps the head reached are merged into one");
     let last = one_by_one[2];
@@ -1665,12 +1642,7 @@ fn held_the_map_is_drawn_at_the_head_only_once_its_worker_layer_shows_it() {
     entry.playhead().seek(0);
     frames_until(&mut side, |side, frame| frame.swapped.is_some() && !side.composing());
     let head = side.applied().unwrap() + 4;
-    for _ in 0..50_000_000u64 {
-        if entry.playhead().newest().is_some_and(|newest| newest >= head) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_newest(head).unwrap();
     let frame = side.frame(head).unwrap();
     assert_eq!(frame.applied, Some(head), "the step to the held hour is applied");
     assert_ne!(frame.drawn, Some(head), "the worker has not shown it yet");
@@ -1709,7 +1681,7 @@ impl Layer for Meeting {
         }
         if let Some((started, other)) = &self.meet {
             let _ = started.send(());
-            other.recv_timeout(Duration::from_secs(60)).map_err(|_| io::Error::other(format!("{} composed alone: the layer it meets had not started a minute later", self.name)))?;
+            other.recv().map_err(|_| io::Error::other(format!("{} composed alone: the layer it meets stopped before starting", self.name)))?;
         }
         self.composed.lock().unwrap().push(self.name);
         Ok(())
@@ -1766,7 +1738,7 @@ fn a_second_seek_during_a_compose_discards_the_first() {
     entry.playhead().seek(100);
     frames_until(&mut side, |_, frame| frame.resets > 0);
     assert!(side.composing());
-    inside.recv_timeout(Duration::from_secs(60)).expect("the first seek's compose began within a minute");
+    inside.recv().expect("the first seek's compose began");
     entry.playhead().seek(300);
     release.send(()).unwrap();
     let mut drawn = Vec::new();
@@ -1778,7 +1750,7 @@ fn a_second_seek_during_a_compose_discards_the_first() {
         frame.resets > 0
     });
     assert!(discarded, "the first seek's compose came back and was discarded");
-    inside.recv_timeout(Duration::from_secs(60)).expect("the newer seek's compose began within a minute");
+    inside.recv().expect("the newer seek's compose began");
     release.send(()).unwrap();
     frames_until(&mut side, |side, frame| {
         drawn.extend(frame.drawn);
@@ -1797,17 +1769,16 @@ fn bare_consumer(entry: &super::Entry) -> playhead::Consumer {
     entry.playhead().consumer(reader)
 }
 
-fn take_reset(consumer: &mut playhead::Consumer, head: i32) {
-    let deadline = Instant::now() + Duration::from_secs(60);
+fn take_reset(entry: &super::Entry, consumer: &mut playhead::Consumer, head: i32) {
     let mut taken: Vec<Arc<Step>> = Vec::new();
     loop {
+        let before = entry.playhead().step_state();
         consumer.take(head, &mut taken);
         if taken.iter().any(|step| step.reset()) {
             return;
         }
         taken.clear();
-        assert!(Instant::now() < deadline, "no reset reached hour {head} within a minute");
-        std::thread::yield_now();
+        assert!(consumer.wait_step_after(before, head).unwrap(), "no reset reached hour {head}");
     }
 }
 
@@ -1840,7 +1811,7 @@ fn a_hidden_map_holds_no_clock_for_a_reader_beside_it() {
     let mut rows = bare_consumer(&entry);
     entry.playhead().play(4.0);
     entry.playhead().seek(100);
-    take_reset(&mut rows, 100);
+    take_reset(&entry, &mut rows, 100);
     runs_from(&entry, 100, "a map never drawn");
     drop(hidden);
 }
@@ -1856,7 +1827,7 @@ fn a_map_with_every_layer_refused_holds_no_clock() {
     let mut rows = bare_consumer(&entry);
     entry.playhead().play(4.0);
     entry.playhead().seek(100);
-    take_reset(&mut rows, 100);
+    take_reset(&entry, &mut rows, 100);
     runs_from(&entry, 100, "a map with every layer refused");
     frames_until(&mut side, |side, _| side.applied().is_some_and(|hour| hour >= 100));
     assert!(!side.composing(), "nothing to compose");
@@ -1871,26 +1842,37 @@ fn a_map_composing_slowly_holds_neither_the_clock_nor_another_map_on_its_playhea
     let mut second = MapSide::new(Arc::clone(&entry), vec![Box::new(slow)], View::default()).unwrap();
     entry.playhead().play(4.0);
     entry.playhead().seek(100);
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let (mut one_reset, mut other_reset) = (false, false);
     loop {
-        let head = entry.playhead().newest().unwrap_or(0);
-        let (one, other) = (first.frame(head).unwrap(), second.frame(head).unwrap());
-        if one.resets > 0 && other.resets > 0 {
+        crate::layers::recorded::reads_landed(&first);
+        let before = entry.playhead().step_state();
+        let head = before.0.unwrap_or(0);
+        if !one_reset {
+            one_reset = first.frame(head).unwrap().resets > 0;
+        }
+        if !other_reset {
+            other_reset = second.frame(head).unwrap().resets > 0;
+        }
+        if one_reset && other_reset {
             break;
         }
-        assert!(Instant::now() < deadline, "the maps did not take the reset within two minutes");
-        std::thread::yield_now();
+        let waiter = if !one_reset { &first } else { &second };
+        assert!(waiter.wait_step_after(before, 100).unwrap(), "the maps did not take the reset at hour 100");
     }
     runs_from(&entry, 100, "the maps' composes");
+    let target = 100 + 3 * 4;
     loop {
-        let head = entry.playhead().newest().unwrap_or(0);
-        first.frame(head).unwrap();
+        let before = entry.playhead().step_state();
+        let head = before.0.unwrap_or(0);
+        let frame = if first.composing() { first.frame_waiting(head) } else { first.frame(head) }.unwrap();
         second.frame(head).unwrap();
-        if !first.composing() && first.applied().is_some_and(|hour| hour >= 100 + 3 * 4) {
+        if !first.composing() && first.applied().is_some_and(|hour| hour >= target) {
             break;
         }
-        assert!(Instant::now() < deadline, "the first map did not play past the hour sought while the second composed");
-        std::thread::yield_now();
+        if first.composing() || frame.steps > 0 || frame.swapped.is_some() {
+            continue;
+        }
+        assert!(first.wait_step_after(before, target).unwrap(), "the first map did not play past the hour sought while the second composed");
     }
     assert!(second.composing(), "the second map still composes, its old picture on screen");
     release.send(()).unwrap();
@@ -1907,19 +1889,12 @@ fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
     let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), super::Entry::playhead, anchored, dashboard_follow::Follow::new(0), held).unwrap();
     entry.playhead().play(240.0);
     entry.playhead().seek(100);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while entry.playhead().holding().is_some() {
-        assert!(Instant::now() < deadline, "the clock was still held at the seek a minute later: held by the map beside the follow host");
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_for(|| entry.playhead().holding().is_none()).unwrap();
     runs_from(&entry, 100, "the map beside the follow host");
     frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= 100) && !side.composing());
     let last = side.last_frame().head;
     let past = last + 4 * (settings.ring as i32 + 2);
-    while entry.playhead().newest().is_none_or(|newest| newest < past) {
-        assert!(Instant::now() < deadline, "stepping stopped at {:?}, the ring's size past the held map's last head {last}", entry.playhead().newest());
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_newest(past).unwrap();
     frames_until(&mut side, |side, frame| frame.applied.is_some_and(|hour| hour >= past) && !side.composing());
     side.settle_all().unwrap();
     let mirror = side.parts().unwrap().0.get(table(0)).unwrap();
@@ -1931,6 +1906,18 @@ fn a_follow_host_is_held_neither_by_a_map_beside_it_nor_by_its_frames() {
 }
 
 type Permits = Arc<(Mutex<Option<u32>>, std::sync::Condvar)>;
+type AheadDone = Arc<(Mutex<(u64, Option<i32>, bool)>, std::sync::Condvar)>;
+
+struct AheadStop(AheadDone);
+
+impl Drop for AheadStop {
+    fn drop(&mut self) {
+        let (held, wake) = &*self.0;
+        let mut done = held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        done.2 = true;
+        wake.notify_all();
+    }
+}
 
 enum Fold {
     Reset { epoch: u64, values: Vec<Option<i32>> },
@@ -1945,6 +1932,7 @@ struct Ahead {
     jobs: Option<mpsc::Sender<Fold>>,
     made: Option<mpsc::Receiver<Summed>>,
     permits: Permits,
+    done: AheadDone,
     shown: Option<Summed>,
     made_through: Option<i32>,
     changed: crate::layers::Changed,
@@ -1953,10 +1941,21 @@ struct Ahead {
 impl Ahead {
     fn new(permits: Option<u32>) -> (Self, Permits) {
         let permits: Permits = Arc::new((Mutex::new(permits), std::sync::Condvar::new()));
-        (Self { fed: crate::layers::Fed::default(), epoch: 0, jobs: None, made: None, permits: Arc::clone(&permits), shown: None, made_through: None, changed: crate::layers::Changed::default() }, permits)
+        let done: AheadDone = Arc::new((Mutex::new((0, None, false)), std::sync::Condvar::new()));
+        (Self { fed: crate::layers::Fed::default(), epoch: 0, jobs: None, made: None, permits: Arc::clone(&permits), done, shown: None, made_through: None, changed: crate::layers::Changed::default() }, permits)
     }
 
-    fn run(jobs: mpsc::Receiver<Fold>, made: mpsc::Sender<Summed>, permits: Permits) {
+    fn wait_made(&self, hour: i32) {
+        let (held, wake) = &*self.done;
+        let mut done = held.lock().unwrap();
+        while !(done.0 == self.epoch && done.1 >= Some(hour)) {
+            assert!(!done.2, "the ahead worker stopped before producing hour {hour}");
+            done = wake.wait(done).unwrap();
+        }
+    }
+
+    fn run(jobs: mpsc::Receiver<Fold>, made: mpsc::Sender<Summed>, permits: Permits, state: AheadDone) {
+        let _stop = AheadStop(Arc::clone(&state));
         let (mut values, mut epoch, mut stamp): (Vec<Option<i32>>, u64, Option<i32>) = (Vec::new(), 0, None);
         for job in jobs {
             {
@@ -1995,6 +1994,14 @@ impl Ahead {
             if made.send((epoch, stamp, values.iter().flatten().copied().map(i64::from).sum())).is_err() {
                 return;
             }
+            let (held, wake) = &*state;
+            let mut done = held.lock().unwrap();
+            if epoch > done.0 {
+                *done = (epoch, stamp, false);
+            } else if epoch == done.0 {
+                done.1 = done.1.max(stamp);
+            }
+            wake.notify_all();
         }
     }
 
@@ -2043,7 +2050,8 @@ impl Layer for Ahead {
             let (jobs, receive) = mpsc::channel();
             let (send, made) = mpsc::channel();
             let permits = Arc::clone(&self.permits);
-            std::thread::Builder::new().name("ahead test fold".into()).spawn(move || Ahead::run(receive, send, permits))?;
+            let done = Arc::clone(&self.done);
+            std::thread::Builder::new().name("ahead test fold".into()).spawn(move || Ahead::run(receive, send, permits, done))?;
             (self.jobs, self.made) = (Some(jobs), Some(made));
         }
         let mirror = mirrors.get(table(0)).unwrap();
@@ -2160,26 +2168,18 @@ fn ahead_side(name: &str, permits: Option<u32>) -> (MapSide, Arc<super::Entry>, 
 }
 
 fn made_ahead(side: &mut MapSide, hour: i32) {
-    for _ in 0..50_000_000u64 {
-        let applied = side.applied().unwrap();
-        side.frame(applied).unwrap();
-        if ahead(side).made_through >= Some(hour) {
-            return;
-        }
-        std::thread::yield_now();
-    }
-    panic!("the worker never made the product of hour {hour}");
+    side.entry().playhead().wait_newest(hour).unwrap();
+    let applied = side.applied().unwrap();
+    side.frame(applied).unwrap();
+    ahead(side).wait_made(hour);
+    side.frame(applied).unwrap();
+    assert!(ahead(side).made_through >= Some(hour), "the worker never made the product of hour {hour}");
 }
 
 fn until_current(side: &mut MapSide, hour: i32) {
-    for _ in 0..50_000_000u64 {
-        side.frame(hour).unwrap();
-        if ahead(side).published() == crate::layers::Published::Current {
-            return;
-        }
-        std::thread::yield_now();
-    }
-    panic!("the layer never showed hour {hour}");
+    ahead(side).wait_made(hour);
+    side.frame(hour).unwrap();
+    assert_eq!(ahead(side).published(), crate::layers::Published::Current, "the layer never showed hour {hour}");
 }
 
 fn mirrored(side: &MapSide) -> i64 {
@@ -2205,12 +2205,7 @@ fn a_step_made_ahead_is_shown_current_in_the_frame_that_applies_it() {
 fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one_ahead() {
     let (mut side, entry, permits) = ahead_side("ahead held", Some(1));
     let from = side.applied().unwrap();
-    for _ in 0..50_000_000u64 {
-        if entry.playhead().newest() >= Some(from + 12) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_newest(from + 12).unwrap();
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
     let frame = side.frame(from + 4).unwrap();
@@ -2235,12 +2230,7 @@ fn a_held_worker_leaves_the_layer_at_the_newest_hour_it_made_and_never_shows_one
 fn a_layer_whose_product_is_older_than_the_hour_is_named_behind_for_a_sample() {
     let (mut side, entry, permits) = ahead_side("ahead behind", Some(1));
     let from = side.applied().unwrap();
-    for _ in 0..50_000_000u64 {
-        if entry.playhead().newest() >= Some(from + 12) {
-            break;
-        }
-        std::thread::yield_now();
-    }
+    entry.playhead().wait_newest(from + 12).unwrap();
     permit(&permits, Some(2));
     made_ahead(&mut side, from + 8);
     side.frame(from + 8).unwrap();
@@ -2439,7 +2429,7 @@ impl Layer for Maker {
 
     fn join(&mut self, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>, _settling: Settling) -> io::Result<()> {
         while self.out > 0 {
-            let Ok(hour) = self.made.recv_timeout(Duration::from_secs(30)) else { break };
+            let hour = self.made.recv().map_err(|_| io::Error::other(format!("{} worker stopped before answering", self.name)))?;
             (self.product, self.out) = (Some(hour), self.out - 1);
         }
         Ok(())
@@ -2512,8 +2502,11 @@ mod side_thread {
         side::SideThread,
     };
     use std::{
-        sync::{Arc, Mutex},
-        time::{Duration, Instant},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
     };
 
     fn side(name: &str, layer: Box<dyn Layer>) -> SideThread {
@@ -2524,41 +2517,24 @@ mod side_thread {
         side
     }
 
-    fn windows_until(side: &mut SideThread, limit: Duration, what: &str, mut done: impl FnMut(&mut SideThread) -> bool) {
-        let deadline = Instant::now() + limit;
-        while !done(side) {
-            if let Some(mut window) = side.window() {
-                window.take(Default::default());
-            }
-            assert!(Instant::now() < deadline, "{what} within {limit:?}");
-            std::thread::yield_now();
-        }
-    }
-
     #[test]
     fn the_frames_window_never_waits_while_the_sides_thread_prepares_a_step() {
         let composes = Arc::new(Mutex::new(0));
-        let (layer, release, began) = Sum::held_settle(&composes);
+        let armed = Arc::new(AtomicBool::new(false));
+        let (mut layer, release, began) = Sum::held_settle(&composes);
+        layer.settle_armed = Some(Arc::clone(&armed));
         let mut side = side("window never waits", Box::new(layer));
+        side.driven(|side| crate::layers::recorded::frames_at(side, 0, "composed at hour 0", |side, frame| frame.swapped.is_some() && !side.composing()));
+        armed.store(true, Ordering::Release);
         side.ask(View::default(), Head::Paced(7), None, None);
-        let settling = Instant::now() + Duration::from_secs(120);
-        while began.try_recv().is_err() {
-            if let Some(mut window) = side.window() {
-                window.take(Default::default());
-            }
-            assert!(Instant::now() < settling, "the layer settles within 120 s");
-            std::thread::yield_now();
-        }
+        began.recv().expect("the layer entered settle while holding the side");
         for _ in 0..100 {
             assert!(side.window().is_none(), "no window while the side's thread holds the side");
             assert!(side.products().missed.is_some(), "the frame is told what the side's thread was doing, rather than waiting for it");
         }
-        for _ in 0..64 {
-            let _ = release.send(());
-        }
-        windows_until(&mut side, Duration::from_secs(120), "the window is given again", |side| {
-            side.window().is_some()
-        });
+        release.send(()).unwrap();
+        side.wait_window(|side| side.applied() == Some(7)).unwrap();
+        assert_eq!(side.products().missed, None, "the window is given again once settle finishes");
     }
 
     #[test]
@@ -2567,9 +2543,9 @@ mod side_thread {
         let mut side = side("view between steps", Box::new(Sum::new(&composes)));
         let high = View { camera_height: 4.0, ..View::default() };
         side.ask(View::default(), Head::Paced(4), None, None);
-        windows_until(&mut side, Duration::from_secs(120), "the first picture", |side| side.applied() == Some(4));
+        side.wait_window(|side| side.applied() == Some(4)).unwrap();
         side.ask(high.clone(), Head::Paced(6), None, None);
-        windows_until(&mut side, Duration::from_secs(120), "the view asked is taken", |side| side.view().camera_height == 4.0);
+        side.wait_window(|side| side.view().camera_height == 4.0).unwrap();
         let heights = side.with_side(|side| side.parts().unwrap().1[0].any().downcast_ref::<Sum>().unwrap().viewed.clone());
         assert!(heights.contains(&4.0), "the camera the view asked for reached the layer: {heights:?}");
         assert_eq!(side.view().camera_height, 4.0, "and the products say the view its picture stands at");
@@ -2590,7 +2566,7 @@ mod side_thread {
         let (layer, release, began) = Sum::settle_stops(&composes);
         let mut side = side("stepped failure", Box::new(layer));
         side.ask(View::default(), Head::Stepped(5), None, None);
-        began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles the step within 120 s");
+        began.recv().expect("the side's thread settles the step");
         let _ = release.send(());
         assert!(side.stepped_window(5).is_none(), "no window once the side has stopped");
         let why = side.failure().expect("the frame is told why it has no window");
@@ -2603,7 +2579,7 @@ mod side_thread {
         let mut side = side("stepped bound", Box::new(Sum { times_out_at: Some(6), ..Sum::new(&composes) }));
         side.ask(View::default(), Head::Stepped(3), None, None);
         drop(side.stepped_window(3).expect("the picture of the hour asked"));
-        let short = (Duration::from_millis(20), Duration::from_millis(200));
+        let short = (Duration::ZERO, Duration::ZERO);
         assert!(side.whole_at(6, short.0, short.1).is_none(), "no window for an hour nothing stands at");
         let why = side.take_refusal().expect("refused by name");
         assert!(why.contains("hour 6") && why.contains("Stepped(3)") && why.contains("whole at Some(3)"), "says what it waited for: {why}");
@@ -2625,7 +2601,7 @@ mod side_thread {
         let (layer, release, began) = Sum::held_settle(&composes);
         let mut side = side("seek while catching up", Box::new(layer));
         side.ask(View::default(), Head::Stepped(6), None, None);
-        began.recv_timeout(Duration::from_secs(120)).expect("the side's thread settles within its catch-up in 120 s");
+        began.recv().expect("the side's thread settles within its catch-up");
         let before = side.entry().playhead().epoch();
         side.entry().anchor(2, false, 1.0, true);
         assert_ne!(side.entry().playhead().epoch(), before, "the seek is in force");

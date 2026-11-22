@@ -40,10 +40,13 @@ impl Apart {
     pub fn drive(&mut self, hour: Hour) -> bool {
         let entry = Arc::clone(&self.entry);
         let reached = entry.playhead().wait_for(|| {
-            self.step(hour);
+            self.advance_to(hour);
             self.applied == Some((hour, entry.playhead().epoch())) && self.home()
         });
         if reached.is_ok() {
+            if let Some((applied, epoch)) = self.applied {
+                self.store.post(&self.mirrors, applied, self.branch, epoch, false);
+            }
             self.store.settled();
         }
         reached.is_ok()
@@ -62,7 +65,7 @@ impl Apart {
         for_the_makers(&self.entry).keys().all(|&table| self.mirrors.get(replay_data::rows::TableId::ALL[table]).is_some())
     }
 
-    fn step(&mut self, hour: Hour) {
+    fn advance_to(&mut self, hour: Hour) {
         self.store.settled();
         let mut steps: Vec<Arc<Step>> = Vec::new();
         self.consumer.advance(hour);
@@ -85,6 +88,10 @@ impl Apart {
             mirrors.apply_timed(step, &mut tables, &mut Default::default(), &mut self.store.noting(&[]));
             self.applied = Some((step.last(), step.epoch()));
         }
+    }
+
+    fn step(&mut self, hour: Hour) {
+        self.advance_to(hour);
         if let Some((applied, epoch)) = self.applied {
             self.store.post(&self.mirrors, applied, self.branch, epoch, false);
         }

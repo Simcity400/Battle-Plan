@@ -54,6 +54,7 @@ fn restart_restores_unacknowledged_open_and_seek() {
             fraction: 0.375,
             hours_per_second: 1440.0,
             composed_at: 0.0,
+            clock_id: "page-1".into(),
         }),
     };
     let mut inner = Inner {
