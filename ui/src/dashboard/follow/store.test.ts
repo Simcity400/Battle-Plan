@@ -7,6 +7,9 @@ import { BarCell, TextCell, formatAmountFast, paintArmy, paintMeasure, paintStab
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { FollowStore } from './store.ts';
 import { Followed } from '../../draw/followed.ts';
+import type { OrderedReading } from '../../draw/followed';
+import type { FromWorker } from '../../draw/kit';
+import { StructureOutbox } from '../../draw/structureOutbox.ts';
 import { StructureQueue } from './structureQueue.ts';
 import { liveKey } from '../../charts/live.ts';
 import { DatedStore } from './datedStore.ts';
@@ -17,7 +20,8 @@ const one = (key: bigint, value: bigint) => ({ keys: [key], columns: 1, values: 
 
 test('queued row structures publish only at their hour and a reset removes abandoned rows through the next input', () => {
   const q = new StructureQueue(), published: number[] = [];
-  const record = (hour: number, seek = 5) => ({ id: 1, seek, hour, through: hour });
+  let sequence = 0;
+  const record = (hour: number, seek = 5) => ({ id: 1, seek, hour, through: hour, order: { generation: 0, from: hour, sequence: ++sequence } });
   const drain = (hour: number) => q.drain(hour, r => published.push(r.hour));
   q.add(record(12)); q.add(record(30)); q.add(record(20));
   drain(11); assert.deepEqual(published, []);
@@ -721,6 +725,65 @@ test('a shown panel stands only until the hour a new panel waiting on its first 
   followed.land([decoder.item(datedStep(20, [{ id: first, hour: 20, answer: one(1n, 10n) }], 1).slice().buffer)]);
   followed.drain(20);
   assert.equal(followed.snapshot(3)?.through, 11, 'a later waiting panel never moves the end of the shown one');
+});
+
+test('a structure the worker held for the page never replaces the newer lead the page shows, nor does an older inspection', () => {
+  const decoder = new FollowDecoder();
+  const followed = new Followed(what => decoder.release(what));
+  followed.add(3, 'branch'); followed.add(4, 'branch');
+  followed.bind('branch', 9, 1);
+  const sent: OrderedReading[][] = [], leads: OrderedReading[] = [], shown: string[] = [];
+  const outbox = new StructureOutbox(updates => sent.push(updates));
+  const page = new StructureQueue();
+  const take = (read: OrderedReading) => { if (page.take(read)) shown.push(`${read.id}@${read.hour}:${read.panel ? 'panel' : read.answer?.kind}`); };
+  const step = (hour: number, answers: Parameters<typeof message>[1]) => {
+    followed.land([decoder.item(datedStep(hour, answers, 1).slice().buffer)]);
+    followed.drain(hour);
+    outbox.add([...followed.structures(true)]);
+  };
+  step(9, [{ id: 4, answer: one(1n, 7n) }]);
+  step(10, [{ id: 3, answer: { notRecorded: 'No reading at 10' } }]);
+  assert.equal(sent.length, 1, 'the hour-10 snapshot waits in the worker until the page takes the first message');
+  followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
+    panels: [{ id: 3, hour: 20, stepped: true, panel: { data: { rows: [20] }, refused: null } }] } }], message => {
+    if (message.type === 'structureLead') leads.push(...message.updates);
+  });
+  for (const read of sent[0]!) take(read);
+  for (const read of leads) page.add(read);
+  page.drain(20, take);
+  const inspected = followed.snapshot(3)!;
+  outbox.taken();
+  assert.equal(sent.length, 2, 'the page took the first message, so the held hour-10 snapshot goes');
+  for (const read of sent[1]!) take(read);
+  take(inspected);
+  assert.deepEqual(shown, ['4@9:rows', '3@20:panel'], 'the late hour-10 snapshot and the hour-10 inspection are older than the hour-20 lead the page shows');
+  followed.drain(20);
+  outbox.add([...followed.structures(true)]);
+  assert.equal(sent.length, 2, 'the worker counts the hour-20 structure as sent, so nothing further comes');
+});
+
+test('a reset starts a new generation: the page takes the first reading after it whatever hour it holds from, and none from before it', () => {
+  const decoder = new FollowDecoder();
+  const followed = new Followed(what => decoder.release(what));
+  followed.add(3, 'branch');
+  followed.bind('branch', 9, 1);
+  const page = new StructureQueue(), shown: number[] = [];
+  const take = (read: OrderedReading) => { if (page.take(read)) shown.push(read.hour); };
+  const lead = (message: FromWorker) => {
+    if (message.type === 'resetStructures') page.discard(new Set([3]), message.from);
+    if (message.type === 'structureLead') for (const read of message.updates) page.add(read);
+  };
+  const panel = (hour: number, refused: string | null) => followed.land([{ kind: 'panels', batch: { route: 9, clock: 0, seek: 1, completed: undefined,
+    panels: [{ id: 3, hour, stepped: true, panel: refused === null ? { data: { rows: [hour] }, refused } : { refused } }] } }], lead);
+  panel(20, null);
+  page.drain(20, take);
+  followed.drain(20);
+  const before = followed.snapshot(3)!;
+  followed.land([decoder.item(datedStep(18, [], 1, true).slice().buffer)], lead);
+  panel(18, 'Not recorded from 18');
+  page.drain(20, take);
+  take(before);
+  assert.deepEqual(shown, [20, 18], 'the native reset at 18 replaces the hour-20 picture, and a reading from before the reset is refused');
 });
 
 test('a staged product computes its structural result only once', () => {

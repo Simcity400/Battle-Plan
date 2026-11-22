@@ -16,6 +16,8 @@ import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
+import { inFrame } from './frameUpdates.ts';
+import type { PlaybackController } from './playback';
 
 export function headRead(widget: Pick<WidgetSpec, 'time' | 'kind' | 'trackIds'>, track: BoundTrack | undefined, tracks: BoundTrack[],
   hoverHour: number | null): { follows: boolean; hourAt: (clockHour: number) => number | null } {
@@ -66,6 +68,13 @@ export function whenDue(hour: number, head: () => number, subscribe: (fn: () => 
   const stop = subscribe(frame);
   frame();
   return stop;
+}
+
+export function useRenderAt(hour: number | null, clock: Pick<PlaybackController, 'getHour' | 'subscribeFrame'>) {
+  const [, wake] = useState(0);
+  useEffect(() => {
+    if (hour !== null) return whenDue(hour, clock.getHour, clock.subscribeFrame, () => inFrame(() => wake(n => n + 1)));
+  }, [hour, clock]);
 }
 
 export function momentHour(moment: string | undefined): number | null {
@@ -146,10 +155,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const held = useRef<Retained<T> | null>(null);
   const targetHour: TargetHour = follows ? { through: runtime.clock.getHour() + (track?.axisOffset ?? 0) } : { exact: hour };
   const dueAt = 'through' in targetHour && askedAt !== null && askedAt > targetHour.through ? askedAt - (track?.axisOffset ?? 0) : null;
-  const [, wake] = useState(0);
-  useEffect(() => {
-    if (dueAt !== null) return whenDue(dueAt, runtime.clock.getHour, runtime.clock.subscribeFrame, () => wake(n => n + 1));
-  }, [dueAt, runtime.clock]);
+  useRenderAt(dueAt, runtime.clock);
   held.current = retain(held.current, runtime.client, headSubject(track, product, params), asked.data, askedAt, targetHour);
   const fromPanel = pushed ? panelReply(followed.entry?.panel, validate) : {};
   const kept = held.current ?? undefined;

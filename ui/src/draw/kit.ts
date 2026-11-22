@@ -79,12 +79,12 @@ export type FromWorker = { type: 'displayRate'; hz: number } | import('./notific
   | { type: 'raceHover'; id: number; owner: number; seek: number; item?: import('../charts/race/race').RaceItem }
   | { type: 'raceInspection'; id: number; owner: number; request: number; seek: number; picture?: import('./arsenal').RaceInspection }
   | { type: 'racePresent'; id: number; owner: number; seek: number; generation: number; head: number; hour: number | null; at: number; shown?: number; rows?: readonly { row: string; key: string; value: string }[] }
-  | { type: 'inspection'; request: number; reading?: import('./followed').PageReading }
+  | { type: 'inspection'; request: number; reading?: import('./followed').OrderedReading }
   | { type: 'tableRead'; id: number; owner: number; request: number; reading: import('./tables/surface').TableReading | null }
   | { type: 'tableRows'; id: number; owner: number; count: number; empty?: string }
   | { type: 'tableColumns'; id: number; owner: number; widths: Record<string, number> }
-  | { type: 'structure'; updates: import('./followed').PageReading[] }
-  | { type: 'structureLead'; updates: import('./followed').PageReading[] }
+  | { type: 'structure'; updates: import('./followed').OrderedReading[] }
+  | { type: 'structureLead'; updates: import('./followed').OrderedReading[] }
   | { type: 'resetStructures'; route: number; seek: number; from: number }
   | { type: 'followFailure'; reason: string }
   | { type: 'failed'; page: number; reason: string };

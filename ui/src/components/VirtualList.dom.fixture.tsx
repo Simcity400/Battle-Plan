@@ -50,11 +50,18 @@ function Histories({ columns, deferChildren, controls, noninteractive, rows = it
     </div><button data-control="after">After histories</button></>;
 }
 
+const observations = { observed: [] as Element[], unobserved: [] as Element[] };
+const virtualRow = (target: Element) => target instanceof HTMLLIElement && target.dataset.virtualKey !== undefined;
+const observe = ResizeObserver.prototype.observe, unobserve = ResizeObserver.prototype.unobserve;
+ResizeObserver.prototype.observe = function (target, options) { if (virtualRow(target)) observations.observed.push(target); observe.call(this, target, options); };
+ResizeObserver.prototype.unobserve = function (target) { if (virtualRow(target)) observations.unobserved.push(target); unobserve.call(this, target); };
+
 const host = document.createElement('div');
 document.body.replaceChildren(host);
 document.body.style.margin = '0';
 const root = createRoot(host);
 let mount = 0;
+let mounted: HistoryProps | null = null;
 function watchedScroller() {
   const node = document.createElement('div');
   node.style.cssText = 'height:300px;overflow:auto;width:700px';
@@ -75,8 +82,17 @@ export const fixture = {
   async mount(columns = 1, deferChildren = false, controls: RowControls = 'nested', noninteractive: readonly number[] = []) {
     rebinding?.dispose(); rebinding = null;
     rowHeights.clear();
-    root.render(<Histories key={++mount} columns={columns} deferChildren={deferChildren} controls={controls} noninteractive={noninteractive} />);
+    mounted = { columns, deferChildren, controls, noninteractive };
+    root.render(<Histories key={++mount} {...mounted} />);
     await settle();
+  },
+  async rerender() { root.render(<Histories key={mount} {...mounted!} rows={[...items]} />); await settle(); },
+  observations(reset = false) {
+    const kept = (targets: Element[]) => targets.filter(target => target.isConnected).length;
+    const seen = { observed: observations.observed.length, unobserved: observations.unobserved.length,
+      keptObserved: kept(observations.observed), keptUnobserved: kept(observations.unobserved) };
+    if (reset) { observations.observed.length = 0; observations.unobserved.length = 0; }
+    return seen;
   },
   async mountSparse(count: number, eligible: readonly number[], controls: RowControls = 'plain') {
     rebinding?.dispose(); rebinding = null; rowHeights.clear(); eligibilityCalls = 0;

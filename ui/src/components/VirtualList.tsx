@@ -113,6 +113,18 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       pending.add(details); restoring.set(node, pending); details.open = open;
     });
   };
+  const restoreLatest = useRef(restoreDetails);
+  restoreLatest.current = restoreDetails;
+  const rowRefs = useRef(new Map<string, (node: HTMLLIElement | null) => void>());
+  const rowRef = (key: string) => {
+    let ref = rowRefs.current.get(key);
+    if (!ref) rowRefs.current.set(key, ref = node => {
+      const old = nodes.current.get(key); if (old) observer.current?.unobserve(old);
+      if (node) { nodes.current.set(key, node); observer.current?.observe(node); restoreLatest.current(node); }
+      else { nodes.current.delete(key); rowRefs.current.delete(key); }
+    });
+    return ref;
+  };
   const gapShown = useRef(0);
   const index = useMemo(() => {
     const next = new VirtualListIndex(items.length, estimate, gapShown.current);
@@ -344,14 +356,7 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     } }}>
     {visible.map(at => <li key={keys[at]} {...rowProps?.(items[at], at)} data-virtual-index={at} data-virtual-key={keys[at]} aria-setsize={items.length} aria-posinset={at + 1}
       style={flow ? undefined : { position: 'absolute', top: rowOffset + index.offset(at), left: padding.left, right: padding.right }}
-      ref={node => {
-        const key = keys[at], old = nodes.current.get(key); if (old) observer.current?.unobserve(old);
-        if (node) {
-          nodes.current.set(key, node); observer.current?.observe(node);
-          restoreDetails(node);
-        }
-        else nodes.current.delete(key);
-      }}
+      ref={rowRef(keys[at])}
       onFocusCapture={event => {
         setFocus(keys[at]); setResume(null);
         sequential.current = { key: keys[at], target: event.target as HTMLElement, keys, gap: at };

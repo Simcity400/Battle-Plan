@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import { hideTooltip, tooltipStore } from '../charts/tooltip.ts';
-import { inspectFollow } from './pulled.ts';
+import { inspectFollow } from './follow/connection.ts';
 import { panelValues, panelViews } from '../draw/panels/views.ts';
 import { attachPanel } from '../draw/host.ts';
 import type { PanelFeed } from './panelFeed';
@@ -64,7 +64,9 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
   const widget = measuredWidget(), latest = useRef(feed);
   latest.current = feed;
   const element = root.current;
-  const reconcile = useRef<() => void>(undefined);
+  const reconcile = useRef<(rebinding: boolean) => void>(undefined);
+  const binding = feed && `${feed.follow}|${feed.fixed}|${feed.offset}`;
+  const bound = useRef(binding);
   useLayoutEffect(() => {
     const node = root.current;
     if (!node || !active || !latest.current) return;
@@ -80,7 +82,7 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       }
       return true;
     });
-    const handles = new Map<HTMLElement, { refresh: () => void; close: () => void }>();
+    const handles = new Map<HTMLElement, { refresh: () => void; rebind: () => void; close: () => void }>();
     let interaction = 0;
     const attach = (content: HTMLElement) => {
       let fields: HTMLElement[] = [];
@@ -105,16 +107,17 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
         else { delete content.dataset.drawnRow; }
       };
       const handle = attachPanel(content, clock, model, own, hit);
-      if (handle) handles.set(content, { refresh: handle.refresh, close() {
+      if (handle) handles.set(content, { refresh: handle.refresh, rebind: handle.rebind, close() {
         handle.close();
         for (const f of fields) delete f.dataset.rowInk;
       } });
     };
-    reconcile.current = () => {
+    reconcile.current = rebinding => {
       const contents = new Set([...node.querySelectorAll<HTMLElement>(fieldsSelector)].filter(owned).map(layer));
       for (const [content, handle] of handles) {
-        if (contents.has(content)) handle.refresh();
-        else { handle.close(); handles.delete(content); }
+        if (!contents.has(content)) { handle.close(); handles.delete(content); }
+        else if (rebinding) handle.rebind();
+        else handle.refresh();
       }
       for (const content of contents) if (!handles.has(content)) attach(content);
     };
@@ -160,7 +163,10 @@ export function useDrawnPanel(root: RefObject<HTMLElement | null>, clock: Playba
       node.removeEventListener('focusout', cancel); node.removeEventListener('pointerleave', cancel);
       reconcile.current = undefined; handles.forEach(handle => handle.close()); };
   }, [element, !!feed, active, clock, widget, root, feed?.view]);
-  useLayoutEffect(() => { reconcile.current?.(); },
-    [element, !!feed, active, clock, widget, root, feed?.view, feed?.offset, feed?.follow, feed?.fixed, feed?.structure, feed?.reply,
-      feed?.follow === undefined ? feed?.date?.through : undefined]);
+  useLayoutEffect(() => {
+    const rebinding = bound.current !== binding;
+    bound.current = binding;
+    reconcile.current?.(rebinding);
+  }, [element, !!feed, active, clock, widget, root, feed?.view, binding, feed?.structure, feed?.reply,
+    feed?.follow === undefined ? feed?.date?.through : undefined]);
 }

@@ -13,6 +13,9 @@ export interface PageReading {
   panel?: FollowedPanel | null; answer?: FollowedAnswer | null; values?: Map<string, number | string> | null;
 }
 
+export interface ReadingOrder { generation: number; from: number; sequence: number }
+export type OrderedReading = PageReading & { order: ReadingOrder };
+
 export interface Answered { answer: FollowedAnswer; date: { since: number; through: number } }
 
 export class Followed {
@@ -25,7 +28,10 @@ export class Followed {
   private readonly entries = new Map<number, FollowEntry>();
   private readonly routes = new Map<string, number>();
   private readonly upcoming = new Map<number, string>();
+  private readonly generations = new Map<number, number>();
   private staged = new WeakMap<FollowedPanel, string>();
+  private generation = 0;
+  private sequence = 0;
 
   constructor(release: (what: Release) => void, changed?: (id: number) => void) {
     this.store = new DatedStore(entry => { this.dirty.add(entry); changed?.(entry.id); }, release);
@@ -38,27 +44,32 @@ export class Followed {
     const entry: FollowEntry = { id, status: 'followed', answer: undefined, hour: 0, through: 0, version: 0 };
     this.branches.set(id, branch);
     this.entries.set(id, entry);
+    this.generations.set(id, this.generation);
     this.store.add(entry, branch);
   }
   remove(id: number) {
     const entry = this.entries.get(id);
     if (entry) this.dirty.delete(entry);
-    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id);
+    this.products.delete(id); this.store.remove(id); this.entries.delete(id); this.sent.delete(id); this.generations.delete(id);
     const branch = this.branches.get(id);
     this.branches.delete(id);
     this.upcoming.delete(id);
     if (branch && ![...this.branches.values()].includes(branch)) { this.seeks.delete(branch); this.routes.delete(branch); }
   }
   private resetLead(branch: string) {
-    for (const [id, key] of this.branches) if (key === branch) this.upcoming.delete(id);
+    const generation = ++this.generation;
+    for (const [id, key] of this.branches) if (key === branch) { this.upcoming.delete(id); this.generations.set(id, generation); }
     this.staged = new WeakMap();
+  }
+  private order(id: number, from: number): ReadingOrder {
+    return { generation: this.generations.get(id) ?? 0, from, sequence: ++this.sequence };
   }
   seek(branch: string, seek: number, retainThrough?: number) {
     for (const [id, key] of this.branches) if (key === branch) this.sent.delete(id);
     this.resetLead(branch); this.seeks.set(branch, seek); this.store.seek(branch, seek, retainThrough);
   }
   bind(branch: string, route: number, seek: number) {
-    if (this.routes.get(branch) !== route) this.resetLead(branch);
+    if (this.routes.get(branch) !== route || this.seeks.get(branch) !== seek) this.resetLead(branch);
     this.routes.set(branch, route);
     this.seeks.set(branch, seek); this.store.bind(branch, route, seek);
   }
@@ -70,7 +81,7 @@ export class Followed {
         lead({ type: 'resetStructures', route, seek, from: hour });
       }
       if (lead && item.kind === 'panels') {
-        const updates: PageReading[] = [];
+        const updates: OrderedReading[] = [];
         const { route, seek } = item.batch;
         for (const { panel, stepped, id, hour } of item.batch.panels) {
           const branch = this.branches.get(id);
@@ -80,13 +91,13 @@ export class Followed {
           const shape = this.panelShape(id, panel, hour);
           this.staged.set(panel, shape);
           if ((this.upcoming.get(id) ?? this.sent.get(id)?.shape) !== shape)
-            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel) });
+            updates.push({ id, seek, hour, through: hour, coverage: { start: hour, through: hour }, panel, values: this.values(id, panel), order: this.order(id, hour) });
           this.upcoming.set(id, shape);
         }
         if (updates.length) lead({ type: 'structureLead', updates });
       }
       if (item.kind !== 'failure') this.store.accept(item);
-      else for (const branch of new Set(this.branches.values())) this.store.seek(branch, this.seeks.get(branch) ?? 0);
+      else for (const branch of new Set(this.branches.values())) { this.resetLead(branch); this.store.seek(branch, this.seeks.get(branch) ?? 0); }
     }
   }
   drain(head: number) { this.store.drain(head); }
@@ -95,12 +106,12 @@ export class Followed {
     const entry = this.entries.get(id);
     return entry && this.store.receivedThrough(entry);
   }
-  snapshot(id: number): PageReading | undefined {
+  snapshot(id: number): OrderedReading | undefined {
     const entry = this.entries.get(id);
     if (!entry) return;
     const { hour, panel, answer } = entry;
     return { id, hour, through: this.store.eligibleThrough(entry), coverage: this.store.coverage(entry) ?? undefined, seek: this.seeks.get(this.branches.get(id)!) ?? 0,
-      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel) };
+      panel: panel ?? null, answer: answer ?? null, values: this.values(id, panel), order: this.order(id, panel || answer ? hour : -Infinity) };
   }
 
   private values(id: number, panel?: FollowedPanel) {
@@ -122,7 +133,7 @@ export class Followed {
     catch (error) { return String(error); }
   }
 
-  *structures(playing: boolean): Iterable<PageReading> {
+  *structures(playing: boolean): Iterable<OrderedReading> {
     for (const entry of this.dirty) {
       const { id, panel, answer, hour } = entry;
       const last = this.sent.get(id);

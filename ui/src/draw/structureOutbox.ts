@@ -1,13 +1,13 @@
-import type { PageReading } from './followed';
+import type { OrderedReading } from './followed';
 
 export class StructureOutbox {
-  private held: PageReading[] = [];
+  private held: OrderedReading[] = [];
   private waiting = false;
-  private readonly send: (updates: PageReading[]) => void;
+  private readonly send: (updates: OrderedReading[]) => void;
 
-  constructor(send: (updates: PageReading[]) => void) { this.send = send; }
+  constructor(send: (updates: OrderedReading[]) => void) { this.send = send; }
 
-  add(updates: readonly PageReading[]): void {
+  add(updates: readonly OrderedReading[]): void {
     if (!updates.length) return;
     const newer = new Set(updates.map(update => update.id));
     this.held = [...this.held.filter(update => !newer.has(update.id)), ...updates];

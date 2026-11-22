@@ -5,11 +5,28 @@ import type { Availability, FollowTransport } from './store.ts';
 import { baseClient, PerClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { drawClock, drawPost, openFollow, onDraw, playbackRate, onPlaybackRate } from '../pulled.ts';
-import { StructureQueue } from './structureQueue.ts';
-import type { PageReading } from '../../draw/followed';
+import { newer, StructureQueue } from './structureQueue.ts';
+import type { OrderedReading, ReadingOrder } from '../../draw/followed';
 
 let nextId = 1;
 const ids = () => nextId++;
+const shown = new Map<number, ReadingOrder>();
+
+let nextInspection = 1;
+export function inspectFollow(id: number) {
+  const request = nextInspection++;
+  return new Promise<OrderedReading | undefined>(resolve => {
+    const off = onDraw(message => {
+      if (message.type === 'inspection' && message.request === request) {
+        off();
+        const reading = message.reading, held = reading && shown.get(reading.id);
+        resolve(reading && !(held && newer(held, reading.order)) ? reading : undefined);
+      }
+      if (message.type === 'failed' || message.type === 'followFailure') { off(); resolve(undefined); }
+    });
+    drawPost({ type: 'inspect', id, request });
+  });
+}
 
 const clocks = new WeakMap<PlaybackController, PerClient<Map<string, FollowStore>>>();
 
@@ -26,7 +43,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
   const nameOf = (branch: string) => JSON.stringify([source.id, source.revision, offset, branch]);
   interface Branch { ready: boolean; ids: Set<number>; route?: number; key?: string; sequence?: number; paused?: number | null; serial: Promise<unknown>; ticket: number; seek: number }
   const branches = new Map<string, Branch>(), inFlight = new Map<number, Promise<Availability>>();
-  const structures = new StructureQueue();
+  const structures = new StructureQueue(shown);
   const ask = (product: string, params: Record<string, unknown>) => client.product({
     sourceId: source.id, revision: source.revision, product, params,
   }, new AbortController().signal);
@@ -62,7 +79,7 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     const owner = owners.get(id);
     if (!owner) return;
     owners.delete(id);
-    structures.discard(new Set([id]));
+    structures.forget(id);
     owner.ids.delete(id);
     drawPost({ type: 'remove', id });
     if (!owner.ids.size) {
@@ -107,11 +124,11 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
     },
     listen(receive, fail) {
       let stopFrame: (() => void) | undefined;
-      const publish = (r: PageReading) => {
-        if (owners.get(r.id)?.seek === r.seek && clock.getSnapshot().seekSequence === r.seek) receive(r);
+      const land = (r: OrderedReading) => {
+        if (owners.get(r.id)?.seek === r.seek && clock.getSnapshot().seekSequence === r.seek && structures.take(r)) receive(r);
       };
       const drain = () => {
-        structures.drain(Math.floor(clock.positionAt()) + offset, publish);
+        structures.drain(Math.floor(clock.positionAt()) + offset, land);
         if (!structures.pending) { stopFrame?.(); stopFrame = undefined; }
       };
       const off = clock.subscribe(anchor), offRate = onPlaybackRate(anchor);
@@ -127,12 +144,8 @@ function followTransport(client: DashboardClient, source: DashboardSource, clock
           for (const r of message.updates) if (owners.get(r.id)?.seek === r.seek) structures.add(r);
           if (structures.pending) stopFrame ??= clock.subscribeFrame(drain);
         }
-        if (message.type === 'inspection') {
-          const r = message.reading;
-          if (r && owners.has(r.id) && r.seek === clock.getSnapshot().seekSequence) receive(r);
-        }
-        if (message.type !== 'structure') return;
-        for (const update of message.updates) if (owners.get(update.id)?.seek === update.seek) receive(update);
+        if (message.type === 'inspection' && message.reading) land(message.reading);
+        if (message.type === 'structure') for (const update of message.updates) land(update);
       });
       return () => { stopFrame?.(); stop(); off(); offRate(); };
     },

@@ -44,6 +44,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     };
   };
   const refresh = () => { if (!closed) { owner++; invalidateGeometry(measure); } };
+  const rebind = () => { if (!closed) { release(); refresh(); } };
   const offPage = onDraw(message => { if (message.type === 'failed' && message.page === -1) release(); });
   const off = onSurface(id, notice => {
     if (notice.type === 'failed') { release(); return; }
@@ -75,7 +76,7 @@ export function attachPanel(content: HTMLElement, clock: PlaybackController, mod
     if (fixed === undefined && (previous.playing !== next.playing || previous.hoursPerSecond !== next.hoursPerSecond)) release();
   });
   refresh();
-  return { refresh, close() {
+  return { refresh, rebind, close() {
     closed = true; cancelGeometry(measure); release(); off(); offPage(); stopAnchor(); stopClockAnchor(); stopClock(); resize.disconnect();
     content.removeEventListener('pointermove', point); content.removeEventListener('pointerleave', leave); content.removeEventListener('toggle', refresh, true);
     drawPost({ type: 'detach', id }); canvas.remove(); content.removeAttribute('data-ink-content');

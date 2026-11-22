@@ -69,18 +69,6 @@ export function capturePicturesBatch(limit: number) {
   });
 }
 
-let nextInspection = 1;
-export function inspectFollow(id: number) {
-  const request = nextInspection++;
-  return new Promise<import('../draw/followed').PageReading | undefined>(resolve => {
-    const off = onDraw(message => {
-      if (message.type === 'inspection' && message.request === request) { off(); resolve(message.reading); }
-      if (message.type === 'failed' || message.type === 'followFailure') { off(); resolve(undefined); }
-    });
-    drawPost({ type: 'inspect', id, request });
-  });
-}
-
 const opened = new WeakMap<DashboardClient, Promise<void>>();
 export function openFollow(client: DashboardClient): Promise<void> {
   let opening = opened.get(client);
