@@ -152,6 +152,8 @@ struct Live {
     closed_world: AtomicU64,
     failed: AtomicU64,
     failed_qpc: AtomicU64,
+    coverage_uncertain: AtomicBool,
+    coverage_uncertain_until: AtomicU64,
     first_failure: FirstReason,
     capacity_demand: AtomicUsize,
     name_demand: AtomicUsize,
@@ -312,6 +314,8 @@ impl Live {
             closed_world: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             failed_qpc: AtomicU64::new(0),
+            coverage_uncertain: AtomicBool::new(false),
+            coverage_uncertain_until: AtomicU64::new(0),
             first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(slots),
             name_demand: AtomicUsize::new(names),
@@ -1167,12 +1171,14 @@ impl Drain {
             )?;
             engine_allocation::reserve(&mut group.batch.actors, 1)?;
             engine_allocation::reserve(&mut staged_actors, 1)?;
-            if !staged_known.contains_key(&key) {
-                engine_allocation::reserve_map(&mut staged_known, 1)?;
-            }
             let slot = staged_actors.len();
+            if let Some(existing_slot) = staged_known.get_mut(&key) {
+                *existing_slot = slot;
+            } else {
+                engine_allocation::reserve_map(&mut staged_known, 1)?;
+                staged_known.insert(key, slot);
+            }
             staged_actors.push((entry.world, known_actor));
-            staged_known.insert(key, slot);
             group.batch.actors.push(batch_actor);
         }
         for &(_, index) in &self.events {
@@ -1251,11 +1257,17 @@ impl Drain {
             }
         }
         let failed = live.failed.load(Ordering::Acquire);
-        let loss_until = if failed != self.failure {
+        let uncertain = live.coverage_uncertain.load(Ordering::Acquire);
+        let uncertain_until = live.coverage_uncertain_until.load(Ordering::Acquire);
+        let mut loss_until = if failed != self.failure {
             self.loss_until.max(live.failed_qpc.load(Ordering::Relaxed))
         } else {
             self.loss_until
-        };
+        }
+        .max(uncertain_until);
+        if uncertain {
+            loss_until = loss_until.max(time);
+        }
         let event_refused = live.events().rejected();
         let actor_refused = live.metadata().rejected();
         let lost = failed.saturating_sub(self.failure);
@@ -1285,21 +1297,25 @@ impl Drain {
                 .copied()
                 .or_else(|| self.windows.get(&group.world).copied())
                 .flatten();
+            let incomplete =
+                uncertain || lost != 0 || (loss_until != 0 && loss_until >= group.from);
             if let Some(mut window) = current_window {
                 engine_allocation::reserve(&mut group.batch.spans, 1)?;
                 group.batch.spans.push(Span {
                     from_qpc: window.from_qpc.max(group.from),
                     to_qpc: time,
-                    complete: lost == 0 && (loss_until == 0 || loss_until < group.from),
+                    complete: !incomplete,
                     ..window
                 });
                 window.from_qpc = time;
-                if !staged_windows.contains_key(&group.world) {
+                if let Some(slot) = staged_windows.get_mut(&group.world) {
+                    *slot = Some(window);
+                } else {
                     engine_allocation::reserve_map(&mut staged_windows, 1)?;
+                    staged_windows.insert(group.world, Some(window));
                 }
-                staged_windows.insert(group.world, Some(window));
             }
-            if lost != 0 || (loss_until != 0 && loss_until >= group.from) {
+            if incomplete {
                 for span in &mut group.batch.spans {
                     span.complete = false;
                 }
@@ -1314,13 +1330,28 @@ impl Drain {
         engine_allocation::reserve_map(&mut self.windows, staged_windows.len())?;
         engine_allocation::reserve(out, groups.len())?;
         for (world, context) in staged_contexts {
-            self.contexts.entry(world).or_insert(context);
+            if !self.contexts.contains_key(&world) {
+                self.contexts.insert(world, context);
+            }
         }
         for (world, actor) in staged_actors {
-            self.known_actors.insert((world, actor.id), actor);
+            let key = (world, actor.id);
+            if let Some(slot) = self.known_actors.get_mut(&key) {
+                *slot = actor;
+            } else {
+                self.known_actors.insert(key, actor);
+            }
         }
-        self.retired.extend(staged_retired);
-        self.windows.extend(staged_windows);
+        for key in staged_retired {
+            self.retired.insert(key);
+        }
+        for (world, window) in staged_windows {
+            if let Some(slot) = self.windows.get_mut(&world) {
+                *slot = window;
+            } else {
+                self.windows.insert(world, window);
+            }
+        }
         self.loss_until = loss_until;
         if let Some(latest) = groups.last() {
             self.last_world = latest.world;
@@ -1363,15 +1394,10 @@ impl Drain {
     }
 }
 
-fn record_coverage_loss(reason: &'static str) {
-    let pointer = LIVE.load(Ordering::Acquire);
-    if !pointer.is_null() {
-        unsafe { &*pointer }.fail(reason);
-    }
-}
-
 pub struct Hooks {
     taps: Vec<Tap>,
+    live: *const Live,
+    owns_live: bool,
     publication_attempted: bool,
     was_enabled: bool,
 }
@@ -1381,6 +1407,7 @@ impl Hooks {
     /// `base` identifies the authenticated executable in this process. The caller owns these sites
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+        let mut live_pointer: *const Live = std::ptr::null();
         let result = (|| -> Result<Vec<Tap>, Cow<'static, str>> {
             let mut located = [(0, [0; 16]); native::SITES.len()];
             for (site, slot) in native::SITES.iter().zip(&mut located) {
@@ -1395,6 +1422,7 @@ impl Hooks {
             )
             .map_err(|_| "command observer storage allocation failed")?;
             let pointer = std::ptr::from_ref(&*live).cast_mut();
+            live_pointer = pointer;
             *STORE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
@@ -1409,6 +1437,7 @@ impl Hooks {
                 })
                 .collect::<Result<Vec<_>, _>>()
         })();
+        let owns_live = !live_pointer.is_null();
         Self {
             taps: result.unwrap_or_else(|reason| {
                 crate::hook::installation::refused(
@@ -1418,8 +1447,43 @@ impl Hooks {
                 );
                 Vec::new()
             }),
+            live: live_pointer,
+            owns_live,
             publication_attempted: false,
             was_enabled: false,
+        }
+    }
+
+    fn live(&self) -> Option<&Live> {
+        (!self.live.is_null()).then(|| unsafe { &*self.live })
+    }
+
+    fn record_coverage_loss(&self, reason: &'static str) {
+        if let Some(live) = self.live() {
+            live.fail(reason);
+        }
+    }
+
+    fn mark_coverage_uncertain(&self, reason: &'static str) {
+        if let Some(live) = self.live() {
+            live.coverage_uncertain.store(true, Ordering::Release);
+            live.fail(reason);
+        }
+    }
+
+    fn coverage_uncertain(&self) -> bool {
+        self.live()
+            .is_some_and(|live| live.coverage_uncertain.load(Ordering::Acquire))
+    }
+
+    fn clear_coverage_uncertain(&self) {
+        if let Some(live) = self.live()
+            && live.coverage_uncertain.load(Ordering::Acquire)
+        {
+            let until = (qpc().max(0) as u64).max(live.closed_qpc.load(Ordering::Relaxed));
+            live.coverage_uncertain_until
+                .fetch_max(until, Ordering::Release);
+            live.coverage_uncertain.store(false, Ordering::Release);
         }
     }
 
@@ -1462,26 +1526,29 @@ impl Hooks {
             Ok(true) => {
                 if enabled {
                     if self.taps_published() {
-                        if self.was_enabled {
-                            record_coverage_loss(ADMISSION_GAP);
+                        let was_uncertain = self.coverage_uncertain();
+                        if self.was_enabled && !was_uncertain {
+                            self.record_coverage_loss(ADMISSION_GAP);
                         }
+                        self.clear_coverage_uncertain();
                         self.was_enabled = true;
                         ENABLED.store(true, Ordering::Release);
                     }
                 } else if !self.any_tap_enabled() {
                     ENABLED.store(false, Ordering::SeqCst);
+                    self.clear_coverage_uncertain();
                 }
                 Ok(true)
             }
             Ok(false) => {
                 if previous && !self.taps_published() {
-                    record_coverage_loss(ADMISSION_GAP);
+                    self.mark_coverage_uncertain(ADMISSION_GAP);
                 }
                 Ok(false)
             }
             Err(error) => {
                 if previous && !self.taps_published() {
-                    record_coverage_loss(ADMISSION_GAP);
+                    self.mark_coverage_uncertain(ADMISSION_GAP);
                 }
                 Err(error)
             }
@@ -1494,11 +1561,15 @@ impl Hooks {
 
     pub fn release_after_quiet(&mut self) {
         self.publication_attempted = false;
-        LIVE.store(std::ptr::null_mut(), Ordering::Release);
-        STORE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        self.live = std::ptr::null();
+        if self.owns_live {
+            self.owns_live = false;
+            LIVE.store(std::ptr::null_mut(), Ordering::Release);
+            STORE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+        }
     }
 }
 
@@ -1544,6 +1615,8 @@ pub(crate) mod tests {
             closed_world: AtomicU64::new(1),
             failed: AtomicU64::new(0),
             failed_qpc: AtomicU64::new(0),
+            coverage_uncertain: AtomicBool::new(false),
+            coverage_uncertain_until: AtomicU64::new(0),
             first_failure: FirstReason::new(),
             capacity_demand: AtomicUsize::new(2),
             name_demand: AtomicUsize::new(0),
@@ -2644,66 +2717,56 @@ pub(crate) mod tests {
         assert!(drain.take_live(&live, true).unwrap()[0].batch.spans[0].complete);
     }
 
-    fn install_test_live(live: Live) -> &'static Live {
-        let boxed = Box::new(live);
-        let pointer = std::ptr::from_ref(&*boxed).cast_mut();
-        *STORE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(boxed);
-        LIVE.store(pointer, Ordering::Release);
-        unsafe { &*pointer }
-    }
-
-    fn clear_test_live() {
-        ENABLED.store(false, Ordering::SeqCst);
-        LIVE.store(std::ptr::null_mut(), Ordering::Release);
-        STORE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
-
-    fn make_test_hooks(code: &crate::hook::TestCode) -> Hooks {
+    fn make_test_hooks(code: &crate::hook::TestCode, live: &Live) -> (Hooks, usize) {
         unsafe extern "system" fn target() -> usize {
             7
         }
         let (site, sentinel) = code.stub(0, target as *const () as usize);
         let tap = unsafe { Tap::new(site, observe, 0, sentinel) }.unwrap();
-        Hooks {
-            taps: vec![tap],
-            publication_attempted: false,
-            was_enabled: false,
-        }
+        (
+            Hooks {
+                taps: vec![tap],
+                live: std::ptr::from_ref(live),
+                owns_live: false,
+                publication_attempted: false,
+                was_enabled: false,
+            },
+            site,
+        )
     }
 
-    fn build_two_actor_burst_live() -> (Live, Vec<(i32, Vec<u8>, Vec<u8>)>, u32) {
+    fn build_actor_update_burst_live() -> (Live, Vec<(i32, u32, Vec<u8>, Vec<u8>)>, u32) {
         let live = live();
         unsafe {
             (*live.producer.get()).active = false;
         }
         attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
-        let actors = vec![
-            (1, b"alpha-user".to_vec(), b"alpha-name".to_vec()),
-            (2, b"bravo-user".to_vec(), b"bravo-name".to_vec()),
+        let initial_actors = [
+            (1_u64, 1_i32, 1_u32, b"alpha-user".as_slice(), b"alpha-name".as_slice()),
+            (2_u64, 2_i32, 2_u32, b"bravo-user".as_slice(), b"bravo-name".as_slice()),
+            (3_u64, 3_i32, 3_u32, b"charlie-user".as_slice(), b"charlie-name".as_slice()),
         ];
-        for (index, (player, user, name)) in actors.iter().enumerate() {
+        let publish_actor = |order: u64, actor: u64, player: i32, country: u32, user: &[u8], name: &[u8]| {
             let needed = user.len() + name.len();
             let mut reservation = live.metadata().reserve_bytes(needed).unwrap();
             let bytes = unsafe { std::slice::from_raw_parts_mut(reservation.bytes(), needed) };
             bytes[..user.len()].copy_from_slice(user);
             bytes[user.len()..].copy_from_slice(name);
             reservation.publish(Metadata::Actor(ActorEntry {
-                order: 2,
+                order,
                 world: 1,
-                actor: index as u64 + 1,
-                player: *player,
-                country: index as u32 + 1,
+                actor,
+                player,
+                country,
                 since_qpc: 101,
-                at_qpc: 101,
+                at_qpc: 100 + order,
                 user_len: user.len(),
                 name_len: name.len(),
                 tag_len: 0,
             }));
+        };
+        for &(actor, player, country, user, name) in &initial_actors {
+            publish_actor(2, actor, player, country, user, name);
         }
         live.publish(Entry {
             order: 2,
@@ -2713,12 +2776,37 @@ pub(crate) mod tests {
             ..Entry::default()
         })
         .unwrap();
+        publish_actor(3, 1, 1, 9, b"alpha-user", b"alpha-renamed");
+        live.publish(Entry {
+            order: 3,
+            world: 1,
+            qpc: 102,
+            code: 4,
+            ..Entry::default()
+        })
+        .unwrap();
+        live.publish(Entry {
+            order: 4,
+            world: 1,
+            qpc: 103,
+            hour: 10,
+            paused: false,
+            code: 5,
+            ..Entry::default()
+        })
+        .unwrap();
+        let expected_actors = vec![
+            (1, 1, b"alpha-user".to_vec(), b"alpha-name".to_vec()),
+            (2, 2, b"bravo-user".to_vec(), b"bravo-name".to_vec()),
+            (3, 3, b"charlie-user".to_vec(), b"charlie-name".to_vec()),
+            (1, 9, b"alpha-user".to_vec(), b"alpha-renamed".to_vec()),
+        ];
         let burst = 2 * live.events().len() as u32 + 3;
         for sequence in 0..burst {
             live.publish(Entry {
-                order: 3 + u64::from(sequence),
+                order: 5 + u64::from(sequence),
                 world: 1,
-                qpc: 102 + u64::from(sequence),
+                qpc: 104 + u64::from(sequence),
                 hour: 10,
                 actor: 1,
                 player: 1,
@@ -2730,14 +2818,14 @@ pub(crate) mod tests {
             .unwrap();
         }
         live.closed_order
-            .store(2 + u64::from(burst), Ordering::Relaxed);
+            .store(4 + u64::from(burst), Ordering::Relaxed);
         live.closed_qpc.store(200, Ordering::Relaxed);
-        (live, actors, burst)
+        (live, expected_actors, burst)
     }
 
     #[test]
     fn failed_lane_grow_and_metadata_copy_never_drop_drained_commands_or_actors() {
-        let (baseline_live, _, _) = build_two_actor_burst_live();
+        let (baseline_live, _, _) = build_actor_update_burst_live();
         let mut baseline_drain = Drain::default();
         let total_attempts = {
             let _guard = crate::test_support::NullGuard::new(usize::MAX);
@@ -2747,7 +2835,7 @@ pub(crate) mod tests {
         assert!(total_attempts > 0);
         let mut saw_grow_denial = false;
         for ordinal in 1..=total_attempts {
-            let (live, expected_actors, burst) = build_two_actor_burst_live();
+            let (live, expected_actors, burst) = build_actor_update_burst_live();
             let initial_events_len = live.events().len();
             let mut drain = Drain::default();
             let first = {
@@ -2763,7 +2851,14 @@ pub(crate) mod tests {
             let actors: Vec<_> = groups
                 .iter()
                 .flat_map(|group| &group.batch.actors)
-                .map(|actor| (actor.player, actor.user.clone(), actor.name.clone()))
+                .map(|actor| {
+                    (
+                        actor.player,
+                        actor.country,
+                        actor.user.clone(),
+                        actor.name.clone(),
+                    )
+                })
                 .collect();
             assert_eq!(
                 actors, expected_actors,
@@ -2775,7 +2870,7 @@ pub(crate) mod tests {
                 .map(|event| (event.sequence, event.qpc))
                 .collect();
             let expected_events: Vec<_> = (0..burst)
-                .map(|sequence| (sequence, 102 + u64::from(sequence)))
+                .map(|sequence| (sequence, 104 + u64::from(sequence)))
                 .collect();
             assert_eq!(
                 events, expected_events,
@@ -2798,13 +2893,13 @@ pub(crate) mod tests {
         impl Drop for Reset {
             fn drop(&mut self) {
                 crate::hook::fail_flushes(0);
-                clear_test_live();
+                ENABLED.store(false, Ordering::SeqCst);
             }
         }
         let _reset = Reset;
         let code = crate::hook::TestCode::new();
-        let live = install_test_live(live());
-        let mut hooks = make_test_hooks(&code);
+        let live = live();
+        let (mut hooks, _) = make_test_hooks(&code, &live);
         assert_eq!(hooks.set_enabled(true), Ok(true));
         assert!(ENABLED.load(Ordering::Acquire));
         crate::hook::fail_flushes(1);
@@ -2837,23 +2932,22 @@ pub(crate) mod tests {
         impl Drop for Reset {
             fn drop(&mut self) {
                 crate::hook::fail_flushes(0);
-                clear_test_live();
+                ENABLED.store(false, Ordering::SeqCst);
             }
         }
         let _reset = Reset;
         let code = crate::hook::TestCode::new();
-        let live_state = live();
+        let live = live();
         unsafe {
-            (*live_state.producer.get()).active = false;
+            (*live.producer.get()).active = false;
         }
-        attempt_mode(&live_state, &Fixture::new(), 1, 100, 1).unwrap();
-        let live = install_test_live(live_state);
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
         let mut drain = Drain::default();
         live.closed_qpc.store(110, Ordering::Relaxed);
-        let first = drain.take_live(live, false).unwrap();
+        let first = drain.take_live(&live, false).unwrap();
         assert_eq!(first[0].lost, 0);
         assert!(first[0].batch.spans.iter().all(|span| span.complete));
-        let mut hooks = make_test_hooks(&code);
+        let (mut hooks, _) = make_test_hooks(&code, &live);
         assert_eq!(hooks.set_enabled(true), Ok(true));
         assert!(ENABLED.load(Ordering::Acquire));
         assert_eq!(live.failed.load(Ordering::Acquire), 0);
@@ -2870,13 +2964,84 @@ pub(crate) mod tests {
         let loss_qpc = live.failed_qpc.load(Ordering::Relaxed);
         live.closed_qpc
             .store(loss_qpc.max(120) + 10, Ordering::Relaxed);
-        let after = drain.take_live(live, true).unwrap();
+        let after = drain.take_live(&live, false).unwrap();
         assert_eq!(after[0].lost, 1);
         assert!(after[0].batch.spans.iter().all(|span| !span.complete));
         crate::hook::fail_flushes(2);
         assert!(hooks.set_enabled(false).is_err());
         assert!(ENABLED.load(Ordering::Acquire));
         assert_eq!(live.failed.load(Ordering::Acquire), 2);
+        let rollback_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        let t1 = rollback_qpc.max(loss_qpc + 20) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let uncertain_one = drain.take_live(&live, false).unwrap();
+        assert_eq!(uncertain_one[0].lost, 1);
+        assert!(
+            uncertain_one[0]
+                .batch
+                .spans
+                .iter()
+                .all(|span| !span.complete)
+        );
+        let t2 = t1 + 10;
+        live.closed_qpc.store(t2, Ordering::Relaxed);
+        let uncertain_two = drain.take_live(&live, false).unwrap();
+        assert!(
+            uncertain_two[0]
+                .batch
+                .spans
+                .iter()
+                .all(|span| !span.complete)
+        );
+        let t3 = t2 + 10;
+        live.closed_qpc.store(t3, Ordering::Relaxed);
+        assert_eq!(hooks.set_enabled(false), Ok(true));
+        assert!(!ENABLED.load(Ordering::Acquire));
+        let detached = drain.take_live(&live, true).unwrap();
+        assert!(detached[0].batch.spans.iter().all(|span| !span.complete));
+    }
+
+    #[test]
+    fn detected_tap_mismatch_records_loss_and_blocks_idempotent_fast_path() {
+        let _guard = crate::hook::FAMILY_TEST
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::hook::fail_flushes(0);
+                ENABLED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset;
+        let code = crate::hook::TestCode::new();
+        let live = live();
+        unsafe {
+            (*live.producer.get()).active = false;
+        }
+        attempt_mode(&live, &Fixture::new(), 1, 100, 1).unwrap();
+        let mut drain = Drain::default();
+        live.closed_qpc.store(110, Ordering::Relaxed);
+        let _ = drain.take_live(&live, false).unwrap();
+        let (mut hooks, site) = make_test_hooks(&code, &live);
+        assert_eq!(hooks.set_enabled(true), Ok(true));
+        assert!(ENABLED.load(Ordering::Acquire));
+        let saved = unsafe { std::ptr::read(site as *const u8) };
+        unsafe { std::ptr::write(site as *mut u8, saved ^ 0xff) };
+        let result = hooks.set_enabled(false);
+        assert!(result.is_err());
+        assert_eq!(live.failed.load(Ordering::Acquire), 1);
+        assert!(hooks.set_enabled(true).is_err());
+        let mismatch_qpc = live.failed_qpc.load(Ordering::Relaxed);
+        let t1 = mismatch_qpc.max(120) + 10;
+        live.closed_qpc.store(t1, Ordering::Relaxed);
+        let d1 = drain.take_live(&live, false).unwrap();
+        assert!(d1[0].batch.spans.iter().all(|span| !span.complete));
+        let t2 = t1 + 10;
+        live.closed_qpc.store(t2, Ordering::Relaxed);
+        let d2 = drain.take_live(&live, false).unwrap();
+        assert!(d2[0].batch.spans.iter().all(|span| !span.complete));
+        unsafe { std::ptr::write(site as *mut u8, saved) };
         assert_eq!(hooks.set_enabled(false), Ok(true));
         assert!(!ENABLED.load(Ordering::Acquire));
     }

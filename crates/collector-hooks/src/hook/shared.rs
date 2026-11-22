@@ -668,6 +668,7 @@ impl<'a> Group<'a> {
             }
             if !hook.bytes_match(hook.enabled) {
                 hook.diagnostic_failure = true;
+                hook.verification_failed = true;
                 self.snapshot_refusal = enabled && self.previous.iter().all(|(_, owned)| !*owned);
                 return Err(0);
             }
@@ -975,6 +976,7 @@ fn verify(group: &mut Group<'_>) {
     for (hook, &(_, owned)) in group.hooks.iter_mut().zip(&group.previous) {
         if (group.enabled || owned) && !hook.bytes_match(group.enabled) {
             hook.diagnostic_failure = true;
+            hook.verification_failed = true;
             verified = false;
             break;
         }
@@ -982,6 +984,7 @@ fn verify(group: &mut Group<'_>) {
     if verified {
         for hook in group.hooks.iter_mut() {
             hook.needs_flush = false;
+            hook.verification_failed = false;
         }
     } else {
         group.checked = Some(Err(0));
@@ -1022,6 +1025,7 @@ fn rollback(
             {
                 for hook in group.hooks.iter_mut() {
                     hook.needs_flush = false;
+                    hook.verification_failed = false;
                 }
             }
         }

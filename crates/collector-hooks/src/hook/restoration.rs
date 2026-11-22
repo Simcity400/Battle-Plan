@@ -322,19 +322,20 @@ impl Scratch {
                     {
                         for hook in hooks.iter_mut() {
                             hook.needs_flush = false;
+                            hook.verification_failed = false;
                         }
                     }
                     return Err(code);
                 }
-                if hooks
-                    .iter()
-                    .zip(&self.previous)
-                    .any(|(hook, (_, owned))| *owned && !hook.bytes_match(false))
-                {
-                    return Err(0);
+                for (hook, (_, owned)) in hooks.iter_mut().zip(&self.previous) {
+                    if *owned && !hook.bytes_match(false) {
+                        hook.verification_failed = true;
+                        return Err(0);
+                    }
                 }
                 for hook in hooks.iter_mut() {
                     hook.needs_flush = false;
+                    hook.verification_failed = false;
                 }
                 Ok(true)
             })()
