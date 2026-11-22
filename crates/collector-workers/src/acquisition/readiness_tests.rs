@@ -34,7 +34,10 @@ fn held_pool(
     let hold = unsafe { pool.submit_with_priority(&mut Some(HOLD), 0, true, true) }.unwrap();
     let until = std::time::Instant::now() + collector_test_support::TEST_HANG_GUARD;
     while pool.calibration().active == 0 {
-        assert!(std::time::Instant::now() < until, "worker never took the held job");
+        assert!(
+            std::time::Instant::now() < until,
+            "worker never took the held job"
+        );
         std::thread::yield_now();
     }
     (pool, Held(release), hold)

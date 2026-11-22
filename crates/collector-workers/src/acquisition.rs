@@ -9,7 +9,10 @@ use std::{
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
 };
-use std::{os::windows::io::{AsHandle, AsRawHandle}, thread::JoinHandle};
+use std::{
+    os::windows::io::{AsHandle, AsRawHandle},
+    thread::JoinHandle,
+};
 
 use serde::Serialize;
 use windows_sys::Win32::System::Threading::{
@@ -82,15 +85,15 @@ type OnCompleted<J, R> = fn(&mut J, &Result<R, Failure>) -> Option<Arc<dyn Publi
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
     pub queued_qpc: i64,
-    pub claimed_qpc: i64,
-    pub runner_begin_qpc: i64,
-    pub runner_end_qpc: i64,
-    pub runner_thread_id: u32,
-    pub runner_thread_cycles: Option<u64>,
-    pub submit_lock_wait_ticks: u64,
-    pub finish_lock_wait_ticks: u64,
-    pub published_qpc: i64,
-    pub collected_qpc: i64,
+    pub(crate) claimed_qpc: i64,
+    pub(crate) runner_begin_qpc: i64,
+    pub(crate) runner_end_qpc: i64,
+    pub(crate) runner_thread_id: u32,
+    pub(crate) runner_thread_cycles: Option<u64>,
+    pub(crate) submit_lock_wait_ticks: u64,
+    pub(crate) finish_lock_wait_ticks: u64,
+    pub(crate) published_qpc: i64,
+    pub(crate) collected_qpc: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -138,18 +141,18 @@ pub struct Calibration {
     pub rejected: u64,
     pub caller_executed: u64,
     pub worker_executed: u64,
-    pub join_sleeps: u64,
-    pub join_help: bool,
-    pub help_executed: u64,
-    pub help_ns: u64,
+    pub(crate) join_sleeps: u64,
+    pub(crate) join_help: bool,
+    pub(crate) help_executed: u64,
+    pub(crate) help_ns: u64,
     pub callback_help: bool,
-    pub callback_help_executed: u64,
-    pub callback_help_ns: u64,
-    pub wake_boost_refusals: u64,
-    pub priority_refusals: u64,
+    pub(crate) callback_help_executed: u64,
+    pub(crate) callback_help_ns: u64,
+    pub(crate) wake_boost_refusals: u64,
+    pub(crate) priority_refusals: u64,
     pub joins: u64,
-    pub join_wall_ns: u64,
-    pub join_wall_max_ns: u64,
+    pub(crate) join_wall_ns: u64,
+    pub(crate) join_wall_max_ns: u64,
 }
 
 #[derive(Default)]
@@ -370,8 +373,7 @@ impl State {
         let slot = self.slots.get(ticket.slot)?;
         if slot.generation != ticket.generation
             || slot.phase != Phase::Queued
-            || shared.words[ticket.slot].load(Ordering::Acquire)
-                != word(ticket.generation, PENDING)
+            || shared.words[ticket.slot].load(Ordering::Acquire) != word(ticket.generation, PENDING)
         {
             return None;
         }
@@ -547,7 +549,7 @@ impl<J, R> Shared<J, R> {
         #[cfg(feature = "executor_join_help")]
         self.body_begin[index].store(runner_begin_qpc.max(0) as u64, Ordering::Release);
         #[cfg(feature = "callback_profile")]
-        let runner_cycles_begin = crate::callback_profile::thread_cycles();
+        let runner_cycles_begin = crate::callback_profile_state::thread_cycles();
         let mut report = if collector_memory::terminal::failed() {
             Err(Failure::Stopped)
         } else {
@@ -579,7 +581,7 @@ impl<J, R> Shared<J, R> {
             }
         };
         #[cfg(feature = "callback_profile")]
-        let runner_cycles_end = crate::callback_profile::thread_cycles();
+        let runner_cycles_end = crate::callback_profile_state::thread_cycles();
         #[cfg(any(feature = "callback_profile", feature = "executor_join_help"))]
         let runner_end_qpc = collector_primitives::clock::qpc();
         drop(borrowed_context);
@@ -1008,7 +1010,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                     .unwrap_or_else(|error| error.into_inner())
                     .push(thread),
                 Err(_) => {
-                    let _ = pool.shutdown();
+                    let _ =
+                    // SAFETY: This is the pool's owner. No submitted work is still borrowing its
+                    // storage at shutdown.
+                    unsafe { pool.shutdown() };
                     return Err("start native acquisition worker failed");
                 }
             }
@@ -1337,7 +1342,11 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
     pub fn run_unclaimed_child(&self, ticket: Ticket) -> bool {
         if ticket.pool != self.shared.id
-            || self.shared.words.get(ticket.slot).map(|value| value.load(Ordering::Acquire))
+            || self
+                .shared
+                .words
+                .get(ticket.slot)
+                .map(|value| value.load(Ordering::Acquire))
                 != Some(word(ticket.generation, PENDING))
         {
             return false;
@@ -1483,7 +1492,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             if self.help_callback() {
                 continue;
             }
-            self.shared.awaited.store(ticket.generation, Ordering::SeqCst);
+            self.shared
+                .awaited
+                .store(ticket.generation, Ordering::SeqCst);
             let observed = value.load(Ordering::SeqCst);
             if observed == word(ticket.generation, PENDING)
                 || observed == word(ticket.generation, RUNNING)
@@ -1565,7 +1576,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         let begin = collector_primitives::clock::qpc();
         let value = self.park_until_ready(&mut ready);
         #[cfg(feature = "callback_profile")]
-        crate::callback_profile::record_readiness(collector_primitives::clock::qpc() - begin);
+        crate::callback_profile_state::record_readiness(collector_primitives::clock::qpc() - begin);
         value
     }
 
@@ -1663,7 +1674,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_join_wait_hook(&self, hook: impl Fn(Ticket) + Send + Sync + 'static) {
+    /// # Safety
+    /// Install only on an isolated fixture's pool, before the join begins. The hook must release
+    /// any test barrier before the pool shuts down.
+    pub unsafe fn set_join_wait_hook(&self, hook: impl Fn(Ticket) + Send + Sync + 'static) {
         assert!(
             self.shared
                 .hooks
@@ -1674,7 +1688,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_work_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+    /// # Safety
+    /// Install only on an isolated fixture's pool. The hook must let the worker return before
+    /// shutdown joins it.
+    pub unsafe fn set_work_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         assert!(
             self.shared
                 .hooks
@@ -1730,13 +1747,22 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
     pub fn stopped(&self) -> bool {
         self.shared.lock().stop
     }
-    pub fn stop_for_contained_panic(&self) {
+    /// # Safety
+    /// Only the owner settling a contained panic may stop this pool before joining its requests and
+    /// workers.
+    pub unsafe fn stop_for_contained_panic(&self) {
         add(&self.shared.counters.panicked, 1);
         self.shared.stop();
     }
-    pub fn shutdown(&self) -> Result<(), &'static str> {
+    /// # Safety
+    /// Only the pool's owner may shut it down after admission closes and all requests settle, while
+    /// its sampler and payload storage are still live.
+    pub unsafe fn shutdown(&self) -> Result<(), &'static str> {
         #[cfg(feature = "worker_sampler")]
-        crate::worker_sampler::stop_before_thread_exit();
+        // SAFETY: This owned sampled worker completes the exit handshake before leaving.
+        unsafe {
+            crate::worker_sampler_state::stop_before_thread_exit()
+        };
         self.shared.stop();
         let mut threads = self
             .threads
@@ -1757,7 +1783,10 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
 }
 impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
     fn drop(&mut self) {
-        let _ = self.shutdown();
+        let _ =
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { self.shutdown() };
     }
 }
 
@@ -1769,7 +1798,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
     // SAFETY: This thread is a collector-owned acquisition worker reading under the capture gate.
     unsafe { collector_timing::capture_gate::reader() };
     #[cfg(feature = "worker_sampler")]
-    let _sampler_registration = crate::worker_sampler::register_worker();
+    let _sampler_registration = crate::worker_sampler_state::register_worker();
     {
         if !wake_boost && unsafe { SetThreadPriorityBoost(GetCurrentThread(), 1) } == 0 {
             BOOST_REFUSALS.fetch_add(1, Ordering::Relaxed);
@@ -1847,7 +1876,7 @@ pub fn recommended_worker_count() -> usize {
     worker_count_for_cpus(machine, allowed_cpus())
 }
 
-pub fn usable_cpus() -> usize {
+pub(crate) fn usable_cpus() -> usize {
     let machine = std::thread::available_parallelism().map_or(1, usize::from);
     cpus(machine, allowed_cpus())
 }
@@ -2153,8 +2182,7 @@ mod tests {
         std::thread::scope(|scope| {
             let helper = scope.spawn(|| {
                 let registered = progressed(|| {
-                    pool.shared.awaited.load(Ordering::SeqCst)
-                        == ticket.generation
+                    pool.shared.awaited.load(Ordering::SeqCst) == ticket.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
                 release.open();
@@ -2217,11 +2245,11 @@ mod tests {
         std::thread::scope(|scope| {
             let helper = scope.spawn(|| {
                 let registered = progressed(|| {
-                    pool.shared.awaited.load(Ordering::SeqCst)
-                        == queued.generation
+                    pool.shared.awaited.load(Ordering::SeqCst) == queued.generation
                         && pool.shared.counters.join_sleeps.load(Ordering::Acquire) > sleeps_before
                 });
-                pool.stop_for_contained_panic();
+                // SAFETY: The admitted capture owns failure settlement for this acquisition pool.
+                unsafe { pool.stop_for_contained_panic() };
                 let woke = progressed(|| joined.load(Ordering::Acquire));
                 if !woke {
                     rescue_join(&pool, queued.slot, || joined.load(Ordering::Acquire));
@@ -2343,7 +2371,9 @@ mod tests {
                     .recv_timeout(collector_test_support::TEST_HANG_GUARD)
                     .unwrap();
                 let stop = || {
-                    pool.shutdown().unwrap();
+                    // SAFETY: This is the pool's owner. No submitted work is still borrowing its
+                    // storage at shutdown.
+                    unsafe { pool.shutdown() }.unwrap();
                     stopped.fetch_add(1, Ordering::Release);
                 };
                 let first = scope.spawn(stop);
@@ -2433,8 +2463,7 @@ mod tests {
                         .is_ok_and(|thread| thread == caller)
                 } else {
                     progressed(|| {
-                        pool_ref.shared.awaited.load(Ordering::SeqCst)
-                            == awaited.generation
+                        pool_ref.shared.awaited.load(Ordering::SeqCst) == awaited.generation
                     })
                 };
                 release_ref.open();
@@ -2793,7 +2822,9 @@ mod tests {
                 .unwrap();
             drop(pool.finish(first).unwrap());
             assert_eq!(dropped.load(Ordering::Relaxed), 1);
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
         }
         assert_eq!(dropped.load(Ordering::Relaxed), 3);
     }
@@ -2891,7 +2922,9 @@ mod tests {
         let pool = unsafe { Pool::start(0, 1, |_: &mut u8| ()) }.unwrap();
         let mut job = Some(7);
         let ticket = unsafe { pool.submit(&mut job) }.unwrap();
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
         let profile = completion.profile;
@@ -2963,7 +2996,9 @@ mod tests {
             // SAFETY: Test owns this local acquisition pool and drops it before test exit.
             let pool = unsafe { Pool::start(workers, 3, |request: &mut u8| *request) }.unwrap();
             pool.reserve_worker_slots(2).unwrap();
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
             let mut request = Some(7);
             assert_eq!(
                 unsafe { pool.submit_with_priority(&mut request, 0, true, true) },
@@ -3003,9 +3038,12 @@ mod tests {
         // SAFETY: Test owns this local acquisition pool and drops it before test exit.
         let pool = unsafe { Pool::start(1, 1, |request: &mut u8| *request + 1) }.unwrap();
         let (idle_tx, idle) = mpsc::channel();
-        pool.set_work_wait_hook(move || {
-            let _ = idle_tx.send(());
-        });
+        // SAFETY: The test owns the pool and the hook sends a nonblocking notification.
+        unsafe {
+            pool.set_work_wait_hook(move || {
+                let _ = idle_tx.send(());
+            })
+        };
         let parked = pool.park(&mut Some(3), false).unwrap();
         assert_eq!(unsafe { pool.submit(&mut Some(4)) }, Err(SubmitError::Full));
         while idle.try_recv().is_ok() {}
@@ -3126,8 +3164,12 @@ mod tests {
             assert_eq!(calibration.accepted, 3);
             assert_eq!(calibration.completed, 3);
             assert_eq!(calibration.uncollected, 0);
-            pool.shutdown().unwrap();
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
         }
     }
 
@@ -3153,7 +3195,9 @@ mod tests {
         assert_eq!(rejected, Some(9));
         assert_eq!(pool.finish(first).unwrap().report, Ok(2));
         assert_eq!(pool.finish(third).unwrap().report, Ok(4));
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert_eq!(
             unsafe { pool.submit(&mut rejected) },
             Err(SubmitError::Stopped)
@@ -3249,7 +3293,9 @@ mod tests {
             unsafe { Pool::start(0, 1, |_: &mut Arc<Vec<u8>>| panic!("canceled job ran")) }
                 .unwrap();
         let ticket = submit(&pool, &mut Some(Arc::clone(&owner)));
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert!(Arc::get_mut(&mut owner).is_none());
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
@@ -3327,7 +3373,9 @@ mod tests {
         let active_after_panic = pool.calibration().active;
         gate.wait();
         let completed = pool.finish(running).unwrap();
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert_eq!(failed.request, 20);
         assert_eq!(failed.report, Err(Failure::Panicked));
         assert_eq!(canceled.request, 3);
@@ -3380,7 +3428,9 @@ mod tests {
         let active_after_panic = pool.calibration().active;
         successful_release.wait();
         let successful = pool.finish(first).unwrap();
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         assert_eq!((first_started, second_started), (1, 2));
         assert_eq!(failed.request, 2);
         assert_eq!(failed.report, Err(Failure::Panicked));
@@ -3422,7 +3472,9 @@ mod tests {
             thread.join().unwrap();
         }
         drop(threads);
-        pool.shutdown().unwrap();
+        // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+        // shutdown.
+        unsafe { pool.shutdown() }.unwrap();
         let calibration = pool.calibration();
         assert_eq!(calibration.panicked, 1);
         assert_eq!(calibration.worker_executed, 1);
@@ -3484,7 +3536,9 @@ mod tests {
         let stop = std::thread::spawn(move || {
             shutdown_pool.shared.stop();
             stopped_tx.send(()).unwrap();
-            shutdown_pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { shutdown_pool.shutdown() }.unwrap();
         });
         stopped_rx.recv().unwrap();
         let active_before_release = pool.calibration().active;
@@ -3536,10 +3590,13 @@ mod tests {
         let (slept_tx, slept) = mpsc::channel();
         {
             let release = Arc::clone(&release.0);
-            pool.set_join_wait_hook(move |ticket| {
-                let _ = slept_tx.send(ticket);
-                release.store(true, Ordering::Release);
-            });
+            // SAFETY: This fixture owns the pool and the callback releases the join barrier.
+            unsafe {
+                pool.set_join_wait_hook(move |ticket| {
+                    let _ = slept_tx.send(ticket);
+                    release.store(true, Ordering::Release);
+                })
+            };
         }
         let joined = AtomicBool::new(false);
         let (report, woke) = std::thread::scope(|scope| {
@@ -3690,7 +3747,9 @@ mod tests {
                     (calibration.caller_executed, calibration.worker_executed),
                     (0, jobs as u64)
                 );
-                pool.shutdown().unwrap();
+                // SAFETY: This is the pool's owner. No submitted work is still borrowing its
+                // storage at shutdown.
+                unsafe { pool.shutdown() }.unwrap();
             }
         }
     }
@@ -3851,7 +3910,9 @@ pub unsafe fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static
     );
     drop(threads);
     drop(state);
-    pool.shutdown().unwrap();
+    // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
+    // shutdown.
+    unsafe { pool.shutdown() }.unwrap();
 }
 
 /// # Safety
@@ -3973,7 +4034,9 @@ pub unsafe fn dispatch_and_release_bench<J, R, const JOB: usize>() {
             {
                 summarize(label, samples);
             }
-            pool.shutdown().unwrap();
+            // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage
+            // at shutdown.
+            unsafe { pool.shutdown() }.unwrap();
         }
         stop.store(true, Ordering::Relaxed);
         for spinner in spinners {

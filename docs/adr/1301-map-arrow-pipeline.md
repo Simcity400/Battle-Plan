@@ -4,4 +4,4 @@ Battle plans, raid and trade arrows and map symbols share the authored effect an
 
 Shadow constants update the light matrix, common lighting and time while preserving inherited camera terms. Late passes preserve the authored depth descriptor and adjust the stencil reference and masks. Shadow input binds only to the pixel stage. Per-draw payload validation distinguishes initialized constants from unused allocation padding so unread padding cannot become an apparent shader input.
 
-[Arrow pipeline](../../crates/viewer-world/src/map/arrow_shader.rs)
+[Arrow pipeline](../../crates/viewer-aircraft/src/arrow_shader.rs)

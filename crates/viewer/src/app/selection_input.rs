@@ -11,11 +11,9 @@ use viewer_counters::map::{box_selection, selection_sounds};
 use viewer_foundation::{map::counter_hovers::unit_hits::Kind, unit_handle::Unit};
 use super::unit_pick;
 use viewer_playback::{cursors::MapCursor, layers::units::PickDivision};
-use viewer_world::map::{
-    model_pick::{Figures, Shape},
-    models::{ModelLibrary, ModelPass},
-    unit_history::{History, LandFigure},
-};
+use viewer_unit_models::model_pick::{Figures, Shape};
+use viewer_models::{ModelLibrary, ModelPass};
+use viewer_unit_history::unit_history::{History, LandFigure};
 
 #[derive(Debug, Default)]
 pub(crate) struct Theatres(BTreeMap<Unit, Result<u64, &'static str>>);
@@ -309,7 +307,7 @@ fn kind_of(unit: Unit) -> Kind {
 
 impl super::Viewer {
     pub(super) fn model_at(&mut self, document: &Document, point: [f32; 2], click: bool) -> Result<Option<Picked>, &'static str> {
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         let Some(scene) = self.scene.as_ref() else { return Ok(None) };
         let strategic = matches!(self.shown_mode(), MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy));
         let Some(view) = self.last_view.as_ref() else { return Ok(None) };
@@ -347,7 +345,7 @@ impl super::Viewer {
         ctx: &egui::Context,
         order: usize,
     ) {
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         let units = Arc::clone(self.unit_selection.units());
         let settled = unit_pick::click(&picked.candidates, &picked.divisions, ours, &|id| units.contains(&Unit::Division(id)), picked.unordered);
         let click = match settled {
@@ -412,7 +410,7 @@ impl super::Viewer {
         order: usize,
     ) {
         use box_selection::{Member, Mode};
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         let (shift, ctrl) = (modifiers.shift, modifiers.ctrl);
         let mode = match self.shown_mode() {
             MapMode::Stock(Stock::StrategicAir) => Mode::StrategicAir,

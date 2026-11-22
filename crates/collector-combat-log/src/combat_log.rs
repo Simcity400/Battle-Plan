@@ -283,7 +283,10 @@ impl Captured {
         self.signal = signal;
     }
 
-    pub fn capture(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or exclusive fixture control)
+    /// while the history-events lane stays live and teardown is excluded.
+    pub unsafe fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -581,7 +584,8 @@ mod tests {
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
-            captured.capture(&memory, 0, 0x1000, hour, false);
+            // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+            unsafe { captured.capture(&memory, 0, 0x1000, hour, false) };
             let [log, state, lend_lease, ..] = captured.outcomes();
             assert_eq!(state, Outcome::Rows { len: 1 }, "{hour}");
             let skipped = lend_lease
@@ -623,7 +627,8 @@ mod tests {
             bytes: &bytes,
         };
         let mut captured = Captured::with_capacities(&Capacities::default());
-        captured.capture(&memory, 0, 0x1000, 5, false);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(&memory, 0, 0x1000, 5, false) };
         let [
             _,
             TableView::Complete(TableRows::CombatLogState(rows)),
@@ -644,7 +649,8 @@ mod tests {
             base: 0x10_0000,
             bytes: &bytes,
         };
-        captured.capture(&memory, 0, 0x1000, 5, false);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(&memory, 0, 0x1000, 5, false) };
         assert!(matches!(
             captured.tables()[1],
             TableView::Unavailable { .. }
@@ -705,7 +711,8 @@ mod tests {
         let mut memo = native::VariantMemo::default();
         for (hour, force_full) in [(5, false), (6, false), (7, true), (8, false)] {
             captured.set_signal(SIGNAL);
-            captured.capture(&memory, 0, 0x1000, hour, force_full);
+            // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+            unsafe { captured.capture(&memory, 0, 0x1000, hour, force_full) };
             original_visited.clear();
             let outcome = native::walk(
                 &memory,
@@ -747,7 +754,8 @@ mod tests {
             bytes,
         };
         captured.set_signal(signal);
-        captured.capture(&memory, 0, 0x1000, hour, force_full);
+        // SAFETY: Test holds `TEST_LOCK` as the sole combat-log capture caller.
+        unsafe { captured.capture(&memory, 0, 0x1000, hour, force_full) };
         let Outcome::Rows { len } = captured.rows.outcome else {
             panic!("complete read at {hour}: {:?}", captured.rows.outcome);
         };

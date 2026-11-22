@@ -172,7 +172,10 @@ pub struct MissionReuse<'a> {
 }
 
 impl<'a> MissionReuse<'a> {
-    pub fn begin(store: &'a mut MissionStore, changes: &'a dyn Changes) -> Self {
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// while mission watch storage remains live.
+    pub unsafe fn begin(store: &'a mut MissionStore, changes: &'a dyn Changes) -> Self {
         let quiet = store.begin(changes.quiet());
         Self {
             store,
@@ -181,12 +184,18 @@ impl<'a> MissionReuse<'a> {
         }
     }
 
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so recording global `mission_changes` sizing demand does not corrupt a live session.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn finish(self, complete: bool) {
+    pub unsafe fn finish(self, complete: bool) {
         self.store.finish(complete);
     }
 
-    pub fn finish_with_order(
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so recording global `mission_changes` sizing demand does not corrupt a live session.
+    pub unsafe fn finish_with_order(
         self,
         complete: bool,
         memory: &impl engine_native::Memory,

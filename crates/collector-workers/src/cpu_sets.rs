@@ -3,9 +3,7 @@ use std::sync::{
     OnceLock,
     atomic::{AtomicU64, Ordering},
 };
-use windows_sys::Win32::{
-    System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets},
-};
+use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadSelectedCpuSets};
 
 const GROUP_PROCESSORS: usize = 64;
 
@@ -105,7 +103,7 @@ pub fn prepare() {
     let _ = cores();
 }
 
-pub fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
+pub(crate) fn away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     let processor = processor?;
     away_sets(cores(), Some(processor))
 }

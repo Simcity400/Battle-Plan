@@ -165,7 +165,7 @@ fn display_content_pressure_is_retryable_without_changing_source_evidence() {
 
 #[test]
 fn building_bank_survives_dependency_binding_changes_and_replacement() {
-    use viewer_world::map::map_buildings::{CityTerrain, MapBuildingAssets};
+    use viewer_buildings::map_buildings::{CityTerrain, MapBuildingAssets};
     content_reader_core::test_game::enter();
     let stack = fixture("building_bank_immutable_binding");
     stack.write(
@@ -701,8 +701,8 @@ impl Original<'_> {
     fn intel_map_from_visibility(&self, fog: Option<&BTreeMap<u32, u8>>) -> io::Result<IntelMap> {
         Ok(fog_oracle::intel(&self.map, fog))
     }
-    pub fn nuclear_impacts(&self) -> io::Result<viewer_world::map::strike_effects::Impacts> {
-        viewer_world::map::strike_effects::Impacts::read(self.frame, |province| {
+    pub fn nuclear_impacts(&self) -> io::Result<viewer_models::strike_effects::Impacts> {
+        viewer_models::strike_effects::Impacts::read(self.frame, |province| {
             self.impact_place(province)
         })
     }
@@ -720,8 +720,8 @@ impl Original<'_> {
     pub fn map_text(
         &self,
         vision: &perspective::Vision,
-    ) -> viewer_world::map::animated_map_text::events::Prepared {
-        use viewer_world::map::animated_map_text::events::{Context, Prepared};
+    ) -> viewer_map_text::animated_map_text::events::Prepared {
+        use viewer_map_text::animated_map_text::events::{Context, Prepared};
         let view = vision.ours();
         match viewer_foundation::table_access::rows::<replay_data::rows::tables::MapEvents>(
             self.frame,
@@ -2133,7 +2133,7 @@ fn snow_interior_matches_frozen_scalar_with_mixed_provinces_and_permanent_snow()
 
 #[test]
 fn territory_labels_and_shared_rail_graph_release_the_borrowed_host() {
-    use viewer_world::map::railways::RailNetwork;
+    use viewer_rail::railways::RailNetwork;
     let stack = fixture("landscape_closed_products");
     let content = content(&stack);
     let mut frame = frame(1501);
@@ -2724,7 +2724,7 @@ fn snow_boundary_deltas_keep_refresh_only_changes_and_recover_after_refusal() {
         true,
     )
     .unwrap();
-    let mut previous: Option<Arc<map_snow::SnowMud>> = None;
+    let mut previous: Option<Arc<map_display_data::SnowMud>> = None;
     for step in 0..5 {
         if step != 0 {
             let mut next = row.clone();

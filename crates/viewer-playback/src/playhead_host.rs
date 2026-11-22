@@ -731,7 +731,7 @@ pub struct MapSide {
     branch: Option<replay_data::BranchId>,
     resets_taken: u64,
     resets_shown: u64,
-    mode: Option<viewer_world::map::map_mode::MapMode>,
+    mode: Option<viewer_map_modes::map_mode::MapMode>,
     mode_settled: Vec<bool>,
     view_shown: View,
     handed_viewer: Option<(viewer_foundation::map::perspective::Choice, u32)>,
@@ -2195,7 +2195,7 @@ impl MapSide {
         self.branch = Some(branch);
     }
 
-    pub fn mode_on_screen(&self) -> Option<&viewer_world::map::map_mode::MapMode> {
+    pub fn mode_on_screen(&self) -> Option<&viewer_map_modes::map_mode::MapMode> {
         self.mode.as_ref()
     }
 }

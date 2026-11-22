@@ -609,8 +609,9 @@ mod tests {
     }
     #[test]
     fn land_event_buffers_grow_past_the_former_cap_in_the_drain() {
-        let _guard = test_support::own();
-        test_support::reset_with_words(0);
+        let mut owned = test_support::own();
+        // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 0) };
         let mut captured = Captured::with_capacities(&Capacities::default());
         // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
         unsafe {
@@ -658,8 +659,9 @@ mod tests {
     }
     #[test]
     fn refresh_full_read_keeps_actual_land_drain_epoch_and_events() {
-        let _guard = test_support::own();
-        test_support::reset();
+        let mut owned = test_support::own();
+        // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
+        unsafe { test_support::reset(&mut owned) };
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut decoder = replay_frame::frame::FrameDecoder::new();
@@ -709,8 +711,9 @@ mod tests {
     }
     #[test]
     fn actual_land_drain_load_and_gap_invalidate_but_next_hour_recovers() {
-        let _guard = test_support::own();
-        test_support::reset();
+        let mut owned = test_support::own();
+        // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
+        unsafe { test_support::reset(&mut owned) };
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
         unsafe {
@@ -747,8 +750,9 @@ mod tests {
     }
     #[test]
     fn unpublished_actual_land_drain_cannot_be_covered_by_the_next_frame() {
-        let _guard = test_support::own();
-        test_support::reset();
+        let mut owned = test_support::own();
+        // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
+        unsafe { test_support::reset(&mut owned) };
         let mut captured = Captured::with_capacities(&Capacities { words: 1024 });
         let mut encoder = replay_frame::frame::FrameEncoder::new();
         let mut decoder = replay_frame::frame::FrameDecoder::new();
@@ -846,8 +850,9 @@ mod tests {
     }
     #[test]
     fn terminal_losses_past_the_log_are_kept_and_only_failed_storage_counts_a_gap() {
-        let _guard = test_support::own();
-        test_support::reset_with_words(8);
+        let mut owned = test_support::own();
+        // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
+        unsafe { test_support::reset_with_words(&mut owned, 8) };
         let mut c = Captured::with_capacities(&Capacities { words: 32 });
         // SAFETY: test holds `test_support::own()` as the sole land-event consumer.
         unsafe {

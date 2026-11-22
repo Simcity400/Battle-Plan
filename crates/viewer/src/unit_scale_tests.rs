@@ -10,13 +10,14 @@ use std::{
 };
 use viewer_foundation::engagement_history::LAND;
 use viewer_foundation::engagement_history::combats;
-use {
-    crate::document::Document, crate::document::Hour, crate::document::InitialHour,
-    crate::engaged_index::EngagedIndex, viewer_foundation::map::camera::MapSize,
-    viewer_foundation::map::camera::Placement, viewer_foundation::map::perspective,
-    viewer_foundation::map::tables::core, viewer_foundation::map::visibility::Relations,
-    viewer_world::map::political,
+use crate::{document::{Document, Hour, InitialHour}, engaged_index::EngagedIndex};
+use viewer_foundation::map::{
+    camera::{MapSize, Placement},
+    perspective,
+    tables::core,
+    visibility::Relations,
 };
+use viewer_map_modes::political;
 
 fn lap<T>(name: &str, camera: &str, hour: i32, work: impl FnOnce() -> io::Result<T>) {
     let start = Instant::now();

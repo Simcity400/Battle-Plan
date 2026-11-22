@@ -35,7 +35,7 @@ use viewer_foundation::{
     },
     tooltip_text::Tooltip,
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const LIMIT: Duration = Duration::from_secs(120);
 const VIEWPORT: [u32; 2] = [2048, 1152];
@@ -274,7 +274,7 @@ impl Line {
                     };
                 }
                 for hit in &overlay.hits.occupation {
-                    if let viewer_world::map::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
+                    if let viewer_map_icons::occupation_icons::Hover::Modifier { state, token } = &hit.hover {
                         targets.occupation.insert((*state, token.clone()));
                     }
                 }

@@ -12,4 +12,4 @@ Authored `0x11` text colour runs are parsed before uppercasing using the same st
 
 Names blend in HDR before grading. Country labels test complete glyph bounds and their wrapped copy against each admitted view, with the wrapped copy winning a tie. The country layer's own distance leaves alpha to the layer fade. The fade integrates with display time and takes one second. A standalone frame uses the settled value. A changed hover can reset the fade when the user has not asked for all names. A battle-plan label inherits its arrow's admission and ordering, draws once with no independent glyph cull, and keeps that pass's cull-none raster state.
 
-[Name placement](../../crates/viewer-world/src/map/names.rs) · [Name pass](../../crates/viewer-world/src/map/name_pass.rs) · [Name shader](../../crates/viewer-world/src/map/name_shader.rs)
+[Name placement](../../crates/viewer-map-text/src/names.rs) · [Name pass](../../crates/viewer-map-text/src/name_pass.rs) · [Name shader](../../crates/viewer-map-text/src/name_shader.rs)

@@ -310,8 +310,9 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
 fn hourly_losses_worker_growth_captures_every_combat_without_coverage_loss() {
     let _globals = super::test_globals();
     use crate::land_events::test_support;
-    let _guard = test_support::own();
-    test_support::reset();
+    let mut owned = test_support::own();
+    // SAFETY: Test holds `test_support::own()` with no live native land-event hooks.
+    unsafe { test_support::reset(&mut owned) };
     let mut events = crate::extended::land_events::Captured::with_capacities(
         &crate::extended::land_events::Capacities { words: 0 },
     );

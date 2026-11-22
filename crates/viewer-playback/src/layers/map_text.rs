@@ -30,10 +30,8 @@ use viewer_foundation::map::{
     presentation::Continuity,
     visibility::FogContent,
 };
-use viewer_world::map::{
-    animated_map_text::events::{self, Prepared},
-    strike_effects::Impacts,
-};
+use viewer_map_text::animated_map_text::events::{self, Prepared};
+use viewer_models::strike_effects::Impacts;
 
 pub const TABLES: [TableId; 12] = [
     TableId::MapEvents,

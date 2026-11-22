@@ -68,7 +68,7 @@ pub(super) fn snow_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::snow::for_document(document)
 }
 
-fn snow_against(layer: &Snow, today: &map_snow::SnowMud, compared: &mut Compared) {
+fn snow_against(layer: &Snow, today: &map_display_data::SnowMud, compared: &mut Compared) {
     let texels: Vec<u8> = layer.texels().iter().flatten().copied().collect();
     let pairs: [(&str, Vec<u8>, Vec<u8>); 2] = [("texels", today.texels.to_vec(), texels), ("unknown", today.unknown.to_vec(), layer.unknown())];
     for (name, theirs, ours) in pairs {
@@ -387,9 +387,9 @@ pub(super) fn radar_make(document: &Document) -> Box<dyn Layer> {
     crate::layers::radar::for_document(document)
 }
 
-fn radar_field(layer: &Radar, document: &Document, ours: u32) -> io::Result<viewer_world::map::radar_symbols::Field> {
+fn radar_field(layer: &Radar, document: &Document, ours: u32) -> io::Result<viewer_aircraft::radar_symbols::Field> {
     let hour = document.hour()?;
-    let mut field = viewer_world::map::radar_symbols::Field::default();
+    let mut field = viewer_aircraft::radar_symbols::Field::default();
     match layer.groups(ours) {
         Ok(groups) => field.groups(groups, ours, hour.heights(), &document.content.radar_centers),
         Err(why) => *field.refused.entry(why).or_default() += 1,
@@ -397,7 +397,7 @@ fn radar_field(layer: &Radar, document: &Document, ours: u32) -> io::Result<view
     Ok(field)
 }
 
-fn radar_against(ours: &viewer_world::map::radar_symbols::Field, theirs: &viewer_world::map::radar_symbols::Field, compared: &mut Compared) {
+fn radar_against(ours: &viewer_aircraft::radar_symbols::Field, theirs: &viewer_aircraft::radar_symbols::Field, compared: &mut Compared) {
     compared.entries = theirs.symbols.len().max(ours.symbols.len()) as u64 + 1;
     if ours.symbols.len() != theirs.symbols.len() {
         note(compared, format!("symbols: {} against {}", ours.symbols.len(), theirs.symbols.len()));
@@ -416,7 +416,7 @@ pub(super) fn radar_today(layer: &dyn Layer, document: &Document) -> io::Result<
     let layer = self::layer::<Radar>(layer);
     let ours = document.vision(&viewer_foundation::map::perspective::Choice::default())?.ours();
     let hour = document.hour()?;
-    let today = viewer_world::map::radar_symbols::Field::read(document.frame()?, ours, hour.heights(), &document.content.radar_centers);
+    let today = viewer_aircraft::radar_symbols::Field::read(document.frame()?, ours, hour.heights(), &document.content.radar_centers);
     let mut compared = Compared::default();
     let viewer = layer.ours().unwrap_or(u32::MAX);
     radar_against(&radar_field(layer, document, viewer)?, &today, &mut compared);

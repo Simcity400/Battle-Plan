@@ -33,7 +33,7 @@ fn shown(cursor: OrderCursor) -> MapCursor {
 
 impl super::Viewer {
     pub(super) fn ground_cursor(&mut self, document: &Document, point: [f32; 2], shift: bool) -> MapCursor {
-        use viewer_world::map::map_mode::{MapMode, Stock};
+        use viewer_map_modes::map_mode::{MapMode, Stock};
         if matches!(self.shown_mode(), MapMode::Stock(Stock::StrategicAir | Stock::StrategicNavy)) {
             return MapCursor::Normal;
         }

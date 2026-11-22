@@ -32,11 +32,8 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_foundation::map::{perspective, tables};
-use viewer_world::map::{
-    border_pass::{ClassPlan, land_class},
-    demilitarized::{Zone, ZonePlan},
-    map_mode::MapMode,
-};
+use viewer_borders::{border_pass::{ClassPlan, land_class}, demilitarized::{Zone, ZonePlan}};
+use viewer_map_modes::map_mode::MapMode;
 
 mod intel_icons;
 mod p6;
@@ -1097,7 +1094,7 @@ fn units_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    use viewer_world::map::unit_history::Kind;
+    use viewer_unit_history::unit_history::Kind;
     let layer = units(layer);
     let mut compared = Compared::default();
     if !layer.drawn() {
@@ -1154,7 +1151,7 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
         compared.entries += 1;
         match figure.map(|figure| &figure.placed) {
             Some(Some(Ok((ours, _)))) => {
-                let ours = viewer_world::map::unit_history::Target { mesh: target.mesh, ..*ours };
+                let ours = viewer_unit_history::unit_history::Target { mesh: target.mesh, ..*ours };
                 if ours != *target {
                     note(&mut compared, format!("stack of {}: today {target:?}, the layer {ours:?}", target.identity));
                 }
@@ -1175,8 +1172,8 @@ fn units_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     }
     compared.notes = json!({
         "stacks": report.stacks, "land_targets": today.len(), "placed_not_selected": extra, "today_selection_omissions": omitted,
-        "withheld_status": withheld(Withheld::Status), "withheld_unanchored": withheld(Withheld::Unplaced(viewer_world::map::unit_models::Unplaced::Unanchored)),
-        "withheld_exercise": withheld(Withheld::Unplaced(viewer_world::map::unit_models::Unplaced::Exercise)),
+        "withheld_status": withheld(Withheld::Status), "withheld_unanchored": withheld(Withheld::Unplaced(viewer_unit_models::unit_models::Unplaced::Unanchored)),
+        "withheld_exercise": withheld(Withheld::Unplaced(viewer_unit_models::unit_models::Unplaced::Exercise)),
         "today_unanchored": report.unanchored, "today_errors": report.selection_errors, "today_moving": report.moving, "today_transports": report.transports,
         "admitted": layer.admitted(), "outside_compared": outside, "deferred": layer.deferred(), "front": layer.front(256.0), "units_cutoff": layer.cutoff(),
         "left_out": {"ships": field.targets.len() - today.len(), "raid_units": "P9", "convoys": "trade routes"},

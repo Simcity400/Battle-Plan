@@ -628,14 +628,15 @@ pub fn test_lock() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 pub(crate) fn observe_for_test(enabled: bool) {
     crate::world_lifetime::observe_for_test(enabled);
+    ENABLED.store(false, Ordering::SeqCst);
     BASE.store(0, Ordering::Relaxed);
     bind_callers(0).unwrap();
-    ENABLED.store(enabled, Ordering::SeqCst);
-    CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
     if enabled {
-        // SAFETY: In-crate tests hold `test_lock()` with hooks quiescent before enabling.
+        // SAFETY: In-crate tests hold `test_lock()` with `ENABLED` false before enabling.
         unsafe { reset_log_for_test(4096) };
     }
+    CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
+    ENABLED.store(enabled, Ordering::SeqCst);
     PENDING.set(NOTHING_PENDING);
 }
 

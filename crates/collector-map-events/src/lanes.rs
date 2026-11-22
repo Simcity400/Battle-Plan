@@ -574,7 +574,10 @@ fn spilled_in<'a>(
         .iter()
         .filter(move |&&(address, _)| address == generation)
         .filter_map(move |&(_, sequence)| {
-            while spill.next_if(|spilled| spilled.sequence < sequence).is_some() {}
+            while spill
+                .next_if(|spilled| spilled.sequence < sequence)
+                .is_some()
+            {}
             spill.next_if(|spilled| spilled.sequence == sequence)
         })
 }
@@ -596,9 +599,7 @@ impl Assembled {
         self.spilled
             .iter()
             .enumerate()
-            .filter(|&(index, &(address, _))| {
-                index == 0 || self.spilled[index - 1].0 != address
-            })
+            .filter(|&(index, &(address, _))| index == 0 || self.spilled[index - 1].0 != address)
             .map(|(_, &(address, _))| address)
     }
 
@@ -658,7 +659,10 @@ impl Assembled {
                 .map(|&(_, sequence)| sequence)
                 .peekable();
             spill.retain(|spilled| {
-                while written.next_if(|&sequence| sequence < spilled.sequence).is_some() {}
+                while written
+                    .next_if(|&sequence| sequence < spilled.sequence)
+                    .is_some()
+                {}
                 written.next_if_eq(&spilled.sequence).is_none()
             });
         }

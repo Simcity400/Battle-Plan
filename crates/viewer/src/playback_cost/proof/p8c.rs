@@ -4,7 +4,7 @@ use crate::layers::{aircraft::Aircraft, rebuilt::Built, ships::Ships};
 use serde_json::{Value, json};
 use std::{io, sync::Arc, time::Duration};
 use viewer_foundation::map::perspective::Choice;
-use viewer_world::map::unit_models::naval_differ;
+use viewer_unit_models::unit_models::naval_differ;
 
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -58,7 +58,7 @@ fn note(compared: &mut Compared, what: String) {
 }
 
 pub(super) fn ships_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
-    use viewer_world::map::unit_history::NavalSources;
+    use viewer_unit_history::unit_history::NavalSources;
     use viewer_foundation::unit_class::CounterClass;
     let layer = ships(layer);
     let mut compared = Compared::default();

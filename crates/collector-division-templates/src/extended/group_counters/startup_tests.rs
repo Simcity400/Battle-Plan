@@ -133,7 +133,8 @@ fn enabled_unsized_startup_sizes_all_hq_receivers_and_spools_known_continuous_co
             crate::template_changes::boundary(false);
         }
         capture.prepare_hour(hour == 0);
-        capture.capture(&world, 0, 0);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { capture.capture(&world, 0, 0) };
         assert_eq!(capture.outcomes(), [Outcome::Rows { len: count }]);
         let mut input = FrameInput {
             branch: 1,

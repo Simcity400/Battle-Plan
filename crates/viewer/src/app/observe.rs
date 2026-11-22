@@ -3,7 +3,7 @@ use content_reader_core::map::ProvinceKind;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::perspective::Country;
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 pub(crate) fn ctrl_click_target(
     frame: &DecodedFrame,

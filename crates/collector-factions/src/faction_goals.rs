@@ -270,7 +270,10 @@ impl Store {
         }
     }
 
-    pub fn finish(&mut self, complete: bool, changes: &impl Changes, output: &mut Captured) {
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `faction_goal_changes` sizing demand updates belong to this pass.
+    pub unsafe fn finish(&mut self, complete: bool, changes: &impl Changes, output: &mut Captured) {
         self.unpublished |= self.changed;
         // SAFETY: Admitted faction-goal capture records measured owner demand.
         unsafe {
@@ -544,7 +547,8 @@ mod tests {
         for owner in 0..owners {
             store.visit(memory, 0, FIRST + owner * STRIDE, owner as u64 + 1, changes);
         }
-        store.finish(true, changes, output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, changes, output) };
     }
     #[test]
     fn faction_goal_store_carries_owners_without_native_reads_or_allocations() {
@@ -629,7 +633,8 @@ mod tests {
         acquire(&mut store, &mut output, &memory, &changes, 2);
         store.begin(&changes, false);
         store.visit(&memory, 0, FIRST, 1, &changes);
-        store.finish(false, &changes, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(false, &changes, &mut output) };
         assert!(output.failure.is_some());
         acquire(&mut store, &mut output, &memory, &changes, 2);
         assert_eq!(output.failure, None);
@@ -895,7 +900,8 @@ mod tests {
         store.held[0].data.goals[0].progress_raw = 789;
         store.begin(&changes, false);
         store.changed = true;
-        store.finish(false, &changes, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(false, &changes, &mut output) };
         let selected = Selected {
             bytes: &bytes,
             goal,
@@ -935,7 +941,8 @@ mod tests {
         store.begin(&changes, true);
         store.visit(&memory, 0, FIRST, 1, &changes);
         drop(changes.0.notify(unrelated));
-        store.finish(true, &changes, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &changes, &mut output) };
         assert_eq!(output.failure, None);
         let headers = output
             .headers
@@ -965,7 +972,8 @@ mod tests {
         assert_eq!(memory.calls.get(), calls);
         assert_eq!(store.carried, 1, "a quiet family carries the owner");
         drop(changes.0.notify(unrelated));
-        store.finish(true, &changes, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &changes, &mut output) };
         assert_eq!(
             output.failure,
             Some("faction goals changed in the game while they were read")
@@ -1006,7 +1014,8 @@ mod tests {
         let mut output = Captured::default();
         store.begin(&interrupting, true);
         store.visit(&memory, 0, FIRST, 1, &interrupting);
-        store.finish(true, &interrupting, &mut output);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &interrupting, &mut output) };
         assert!(interrupting.fired.load(SeqCst));
         assert!(output.entries.is_none());
         assert_eq!(

@@ -9,7 +9,7 @@ use viewer_foundation::map::layers::Omissions;
 use viewer_foundation::map::presentation::Continuity;
 use viewer_foundation::profile_writer::profile_print;
 use viewer_foundation::profile_writer::profiling;
-use viewer_world::map::scene_content::MapAssets;
+use viewer_world::scene_content::MapAssets;
 
 use viewer_foundation::map::gpu_contract::{
     device_requirements, map_device_descriptor, read_texture, select_adapter,
@@ -19,29 +19,31 @@ use std::{fs::File, io, io::BufWriter, path::Path, sync::Arc};
 
 use eframe::wgpu;
 
-use {
-    map_display_data::buildings::Buildings as PreparedBuildings,
-    viewer_foundation::map::gpu_contract::OUTPUT_FORMAT,
-    viewer_foundation::map::gpu_contract::invalid,
-    viewer_foundation::map::ribbon_content::OrderAssets,
-    viewer_foundation::map::ribbon_content::OrderField, viewer_foundation::map::textures::IntelMap,
-    viewer_world::map::border_pass::BorderAssets, viewer_world::map::border_pass::StraitVertex,
-    viewer_world::map::borders::BorderMeshes, viewer_world::map::demilitarized::Zone,
-    viewer_world::map::map_buildings::MapBuildingAssets, viewer_world::map::mapframe::FrameAssets,
-    viewer_world::map::political::PoliticalLayers, viewer_world::map::railways::Bridges,
-    viewer_world::map::railways::RailAssets, viewer_world::map::railways::RailMesh,
-    viewer_world::map::rivers::RiverAssets, viewer_world::map::rivers::RiverMesh,
-    viewer_world::map::scene::Request, viewer_world::map::scene::Scene,
-    viewer_world::map::sprawl::Sprawl, viewer_world::map::trees::TreeAssets,
-    viewer_world::map::trees::TreeField, viewer_world::map::trees::TreeGeometry,
-    viewer_world::map::unit_models::UnitModelAssets, viewer_world::map::weather::SnowMud,
+use map_display_data::buildings::Buildings as PreparedBuildings;
+use viewer_foundation::map::{
+    gpu_contract::{OUTPUT_FORMAT, invalid},
+    ribbon_content::{OrderAssets, OrderField},
+    textures::IntelMap,
 };
+use viewer_borders::{
+    border_pass::BorderAssets,
+    strait_shader::StraitVertex,
+    borders::BorderMeshes,
+    demilitarized::Zone,
+};
+use viewer_buildings::{map_buildings::MapBuildingAssets, sprawl::Sprawl};
+use viewer_world::{mapframe::FrameAssets, scene::{Request, Scene}};
+use viewer_map_modes::political::PoliticalLayers;
+use viewer_rail::railways::{Bridges, RailAssets, RailMesh};
+use viewer_terrain::{rivers::{RiverAssets, RiverMesh}, trees::{TreeAssets, TreeField, TreeGeometry}};
+use viewer_unit_models::unit_models::UnitModelAssets;
+use map_display_data::SnowMud;
 
 pub struct MapLayers<'a> {
     pub content: &'a crate::document::Content,
     pub graphics: dashboard_core::protocol::MapGraphics,
     pub at: (replay_data::BranchId, i32),
-    pub map_text: &'a viewer_world::map::animated_map_text::events::Prepared,
+    pub map_text: &'a viewer_map_text::animated_map_text::events::Prepared,
     pub omitted: Omissions,
     pub political: &'a PoliticalLayers,
     pub border_assets: &'a BorderAssets,
@@ -54,24 +56,24 @@ pub struct MapLayers<'a> {
     pub intel_map: &'a IntelMap,
     pub visibility: viewer_foundation::map::mode_visibility::Visibility,
     pub frame_assets: &'a FrameAssets,
-    pub nuclear_impacts: &'a viewer_world::map::strike_effects::Impacts,
+    pub nuclear_impacts: &'a viewer_models::strike_effects::Impacts,
     pub sprawl: &'a Sprawl,
     pub map_buildings: &'a MapBuildingAssets,
     pub map_building_field: &'a PreparedBuildings,
     pub building_cameras: &'a [Camera],
     pub rail_assets: &'a RailAssets,
     pub rail_mesh: &'a RailMesh,
-    pub aircraft: &'a Arc<viewer_world::map::aircraft::AircraftAssets>,
-    pub aircraft_plan: &'a viewer_world::map::aircraft::AircraftPlan,
-    pub trains: &'a Arc<viewer_world::map::trains::TrainAssets>,
-    pub train_plan: &'a viewer_world::map::trains::TrainPlan,
+    pub aircraft: &'a Arc<viewer_aircraft::aircraft::AircraftAssets>,
+    pub aircraft_plan: &'a viewer_aircraft::aircraft::AircraftPlan,
+    pub trains: &'a Arc<viewer_rail::trains::TrainAssets>,
+    pub train_plan: &'a viewer_rail::trains::TrainPlan,
     pub bridges: &'a Bridges,
     pub unit_models: &'a UnitModelAssets,
-    pub unit_model_field: &'a viewer_world::map::unit_history::Field,
+    pub unit_model_field: &'a viewer_unit_history::unit_history::Field,
     pub order_assets: &'a OrderAssets,
     pub order_field: &'a OrderField,
-    pub weather_assets: Arc<viewer_world::map::weather_effects::Assets>,
-    pub weather_field: viewer_world::map::weather_effects::Field,
+    pub weather_assets: Arc<viewer_weather_effects::weather_effects::Assets>,
+    pub weather_field: map_display_data::WeatherField,
     pub tree_assets: &'a TreeAssets,
     pub tree_geometry: &'a TreeGeometry,
     pub tree_field: &'a TreeField,
@@ -472,7 +474,7 @@ pub fn dump_png(
             grading: scene.grading(),
         };
         let request = Request {
-            overlay: viewer_world::map::scene::Overlay {
+            overlay: viewer_world::scene::Overlay {
                 sprites: request.overlay.interface.then_some(overlay.shown()),
                 ..request.overlay
             },
@@ -498,7 +500,7 @@ fn dump_frame(
         device,
         queue,
         Request {
-            overlay: viewer_world::map::scene::Overlay {
+            overlay: viewer_world::scene::Overlay {
                 sprites: request.overlay.interface.then_some(sprites),
                 ..request.overlay
             },

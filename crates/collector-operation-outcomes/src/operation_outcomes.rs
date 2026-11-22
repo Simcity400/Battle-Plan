@@ -171,6 +171,13 @@ impl Lane {
         self.grow_bytes_for(0)
     }
     fn grow_bytes_for(&self, floor: usize) -> Result<(), &'static str> {
+        self.grow_bytes_for_with(floor, || {})
+    }
+    fn grow_bytes_for_with(
+        &self,
+        floor: usize,
+        before_publish: impl FnOnce(),
+    ) -> Result<(), &'static str> {
         let required = self.required_bytes.load(Ordering::Relaxed).max(floor);
         if required > self.ring().bytes.len() {
             let capacity = required.checked_next_power_of_two().ok_or_else(|| {
@@ -178,11 +185,15 @@ impl Lane {
                 "operation completion description capacity overflow"
             })?;
             let fresh = boxed(ByteRing::try_new(capacity)?)?;
+            before_publish();
             let pointer = &*fresh as *const ByteRing as usize;
             let mut retained = self
                 .byte_rings
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if capacity <= self.ring().bytes.len() {
+                return Ok(());
+            }
             engine_allocation::reserve(&mut retained, 1)
                 .map_err(|_| "operation completion description allocation failed")?;
             retained.push(fresh);
@@ -440,79 +451,123 @@ pub unsafe fn resize(entries: usize) {
     presize(entries, 0);
 }
 pub(crate) fn presize(entries: usize, bytes: usize) {
+    presize_with(entries, bytes, || {});
+}
+fn presize_with(entries: usize, bytes: usize, mut before_publish: impl FnMut()) {
     #[cfg(any(test, feature = "test-support"))]
     let _exclusive = tests::exclusive();
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
-    let sources = [log(), offered()];
-    let generations = || sources.into_iter().flatten();
-    let entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
-    for log in generations() {
-        for lane in &log.lanes {
-            let _ = lane.grow_bytes_for(bytes);
+    loop {
+        let sources = [log(), offered()];
+        let generations = || sources.into_iter().flatten();
+        let target_entries = entries.max(generations().map(|log| log.entries).max().unwrap_or(1));
+        for log in generations() {
+            for lane in &log.lanes {
+                let _ = lane.grow_bytes_for(bytes);
+            }
         }
-    }
-    let lanes = thread_slots().max(generations().map(|log| log.lanes.len()).max().unwrap_or(0));
-    let required = |index: usize| {
-        generations()
-            .filter_map(|log| log.lanes.get(index))
-            .map(|lane| {
-                (
-                    lane.required_entries
-                        .load(Ordering::Relaxed)
-                        .max(lane.records.len()),
-                    lane.ring().bytes.len(),
-                )
-            })
-            .fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)))
-    };
-    let shared = (
-        generations()
-            .map(|log| log.shared.required_entries().max(log.shared.len()))
-            .max()
-            .unwrap_or(0),
-        generations()
-            .map(|log| log.shared.stride())
-            .max()
-            .unwrap_or(0)
-            .max(SHARED_DESCRIPTION_DEMAND.load(Ordering::Relaxed)),
-    );
-    if generations().any(|log| {
-        log.entries >= entries
-            && log.lanes.len() >= lanes
-            && log.shared.len() >= shared.0
-            && log.shared.stride() >= shared.1
-            && log
-                .lanes
-                .iter()
-                .enumerate()
-                .all(|(index, lane)| lane.records.len() >= required(index).0)
-    }) {
+        let lanes =
+            thread_slots().max(generations().map(|log| log.lanes.len()).max().unwrap_or(0));
+        let required = |index: usize| {
+            generations()
+                .filter_map(|log| log.lanes.get(index))
+                .map(|lane| {
+                    (
+                        lane.required_entries
+                            .load(Ordering::Relaxed)
+                            .max(lane.records.len()),
+                        lane.ring().bytes.len(),
+                    )
+                })
+                .fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)))
+        };
+        let shared = (
+            generations()
+                .map(|log| log.shared.required_entries().max(log.shared.len()))
+                .max()
+                .unwrap_or(0),
+            generations()
+                .map(|log| log.shared.stride())
+                .max()
+                .unwrap_or(0)
+                .max(SHARED_DESCRIPTION_DEMAND.load(Ordering::Relaxed)),
+        );
+        if generations().any(|log| {
+            log.entries >= target_entries
+                && log.lanes.len() >= lanes
+                && log.shared.len() >= shared.0
+                && log.shared.stride() >= shared.1
+                && log
+                    .lanes
+                    .iter()
+                    .enumerate()
+                    .all(|(index, lane)| lane.records.len() >= required(index).0)
+        }) {
+            return;
+        }
+        let fresh = (|| {
+            let required = engine_allocation::collect_vec((0..lanes).map(required))
+                .map_err(|_| "operation completion description allocation failed")?;
+            boxed(Log::with_shared(
+                target_entries,
+                bytes,
+                lanes,
+                &required,
+                shared,
+            )?)
+        })();
+        let Ok(fresh) = fresh else {
+            failed();
+            return;
+        };
+        before_publish();
+        let pointer = &*fresh as *const Log as usize;
+        let mut retained = LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = [log(), offered()];
+        let current_generations = || current.into_iter().flatten();
+        let satisfied_by_current = current_generations().any(|existing| {
+            existing.entries >= target_entries
+                && existing.lanes.len() >= lanes
+                && existing.shared.len() >= shared.0
+                && existing.shared.stride() >= shared.1
+                && existing.lanes.iter().enumerate().all(|(index, lane)| {
+                    lane.records.len() >= required(index).0
+                        && lane.ring().bytes.len() >= bytes
+                })
+        });
+        if satisfied_by_current {
+            return;
+        }
+        let dominates_current = current_generations().all(|existing| {
+            fresh.entries >= existing.entries
+                && fresh.lanes.len() >= existing.lanes.len()
+                && fresh.shared.len() >= existing.shared.len()
+                && fresh.shared.stride() >= existing.shared.stride()
+                && existing.lanes.iter().enumerate().all(|(index, lane)| {
+                    fresh.lanes[index].records.len() >= lane.records.len()
+                        && fresh.lanes[index].ring().bytes.len() >= lane.ring().bytes.len()
+                })
+        });
+        if !dominates_current {
+            drop(retained);
+            drop(fresh);
+            continue;
+        }
+        if engine_allocation::reserve(&mut retained, 1).is_err() {
+            failed();
+            return;
+        }
+        retained.push(fresh);
+        if current[0].is_none() {
+            LOG.store(pointer, Ordering::Release);
+        } else {
+            OFFERED.store(pointer, Ordering::Release);
+        }
         return;
-    }
-    let fresh = (|| {
-        let required = engine_allocation::collect_vec((0..lanes).map(required))
-            .map_err(|_| "operation completion description allocation failed")?;
-        boxed(Log::with_shared(entries, bytes, lanes, &required, shared)?)
-    })();
-    let Ok(fresh) = fresh else {
-        failed();
-        return;
-    };
-    let pointer = &*fresh as *const Log as usize;
-    let mut retained = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if engine_allocation::reserve(&mut retained, 1).is_err() {
-        failed();
-        return;
-    }
-    retained.push(fresh);
-    if sources[0].is_none() {
-        LOG.store(pointer, Ordering::Release);
-    } else {
-        OFFERED.store(pointer, Ordering::Release);
     }
 }
 pub(crate) fn reset_admitted() {
@@ -954,10 +1009,12 @@ impl Handoff {
             || self.epoch != EPOCH.load(Ordering::Acquire)
         {
             let refused = SPILL_REFUSED_EPOCH.load(Ordering::Acquire);
-            let since = log.assembled_epoch.load(Ordering::Acquire).max(log.born_epoch);
+            let since = log
+                .assembled_epoch
+                .load(Ordering::Acquire)
+                .max(log.born_epoch);
             return Err(
-                if refused > since && refused <= EPOCH.load(Ordering::Acquire)
-                {
+                if refused > since && refused <= EPOCH.load(Ordering::Acquire) {
                     SPILL_REFUSED
                 } else {
                     "operation completions were not followed in the game without a break"
@@ -1172,7 +1229,11 @@ pub mod tests {
         active: usize,
         _turn: Exclusive,
     }
-    pub fn serial() -> Serial {
+    /// # Safety
+    /// Caller runs in an isolated test/fixture process without live native operation-completion
+    /// hooks enabled or active; `Serial` serializes fixture access and restores `ACTIVE` and
+    /// `REQUIRED_LANES` on drop.
+    pub unsafe fn serial() -> Serial {
         let turn = exclusive();
         RUNTIME_ENABLED.store(true, Ordering::Relaxed);
         UNWOUND.set(false);
@@ -1312,7 +1373,10 @@ pub mod tests {
         assert!(drain(log).is_err());
         assert_eq!(drain(log).unwrap().0.len(), 0);
     }
-    pub fn complete(log: &Log, fixture: &Fixture, result: usize) {
+    /// # Safety
+    /// Caller must be the sole writer to `log.lanes[0]` (no concurrent lane-0 callback or
+    /// `complete` call on `log`).
+    pub unsafe fn complete(log: &Log, fixture: &Fixture, result: usize) {
         observe_return(
             log,
             Target::Lane(&log.lanes[0]),
@@ -1341,7 +1405,8 @@ pub mod tests {
 
     #[test]
     fn unavailable_completion_hook_does_not_block_installation_or_detach() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let mut hooks = Hooks { entry: None };
         ENABLED.store(false, Ordering::Release);
         assert!(hooks.set_enabled(true).unwrap());
@@ -1355,12 +1420,14 @@ pub mod tests {
         use crate::extended::operation_outcomes::{Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let fixture = Fixture::new(b"retained");
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` and is the sole consumer of `log`.
         let handoff =
@@ -1405,20 +1472,23 @@ pub mod tests {
                 .load(Ordering::Acquire)
                 > bytes_before
         );
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         assert_eq!(drain(&log).unwrap().1, b"retained");
     }
 
     #[test]
     fn operation_completion_player_and_ai_are_owned_before_same_update_deletion() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(2, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         for (owner, description) in [(1, b"player".as_slice()), (2, b"AI".as_slice())] {
             let fixture = Fixture::new(description);
             fixture.identify(owner, owner);
-            complete(&log, &fixture, 0xfeed_0001);
+            // SAFETY: Test is the sole writer to lane 0 of this log.
+            unsafe { complete(&log, &fixture, 0xfeed_0001) };
             fixture.delete();
         }
         let (events, bytes) = drain(&log).unwrap();
@@ -1435,17 +1505,21 @@ pub mod tests {
     }
     #[test]
     fn operation_completion_auto_repeat_has_distinct_instances_and_invalidation_emits_none() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let fixture = Fixture::new(&[0xff, 0, b'x']);
         fixture.identify(42, 700);
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         fixture.identify(42, 701);
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         fixture.delete();
-        complete(&log, &fixture, 0x1234_0000);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 0x1234_0000) };
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 2);
         assert_ne!(events[0].id, events[1].id);
@@ -1454,14 +1528,17 @@ pub mod tests {
     }
     #[test]
     fn operation_completion_past_the_lane_spills_whole_and_retains_exact_growth() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(1, 2);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let first = Fixture::new(b"ok");
-        complete(&log, &first, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &first, 1) };
         let long = Fixture::new(&vec![0xfd; 40_000]);
-        complete(&log, &long, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &long, 1) };
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 2);
         assert_eq!(log.lanes[0].required_bytes.load(Ordering::Relaxed), 40_002);
         let (events, bytes) = drain(&log).unwrap();
@@ -1478,30 +1555,38 @@ pub mod tests {
         let grown = new_log(2, 40_000);
         // SAFETY: Test holds `serial()` and exclusively owns `grown`.
         unsafe { prime(&grown) };
-        complete(&grown, &long, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&grown, &long, 1) };
         assert_eq!(drain(&grown).unwrap().1, vec![0xfd; 40_000]);
     }
     #[test]
     fn operation_completion_a_burst_past_the_lane_keeps_every_attempt_and_sizes_the_next() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(1, 16);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let fixture = Fixture::new(b"burst");
         for _ in 0..5_000 {
-            complete(&log, &fixture, 1);
+            // SAFETY: Test is the sole writer to lane 0 of this log.
+            unsafe { complete(&log, &fixture, 1) };
         }
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 5_000);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 5_000);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert_eq!(bytes, b"burst".repeat(5_000));
         assert_eq!(
             log.lanes[0].consumed_attempts.load(Ordering::Acquire),
             5_000
         );
         assert!(log.shared.is_drained());
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         assert_eq!(drain(&log).unwrap().0.len(), 1);
     }
     #[test]
@@ -1509,7 +1594,8 @@ pub mod tests {
         use crate::extended::operation_outcomes::{Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(2, 4);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -1550,7 +1636,8 @@ pub mod tests {
                 let description = vec![owner as u8; owner as usize];
                 let fixture = Fixture::new(&description);
                 fixture.identify(owner, owner);
-                complete(&log, &fixture, 1);
+                // SAFETY: Test is the sole writer to lane 0 of this log.
+                unsafe { complete(&log, &fixture, 1) };
                 expected.push((owner, 0, description));
             }
             // SAFETY: test holds `serial()` and assembles intervals in order.
@@ -1568,23 +1655,28 @@ pub mod tests {
         }
         assert_eq!(log.consumed.load(Ordering::Acquire), 9);
         assert!(log.shared.is_drained());
-        complete(&log, &Fixture::new(b"after"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"after"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"after");
     }
     #[test]
     fn operation_completion_resize_keeps_keys_monotonic_and_abandons_pending_hour_explicitly() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         spill_refused();
         let old = new_log(2, 16);
         // SAFETY: Test holds `serial()` and exclusively owns `old`.
         unsafe { prime(&old) };
         let fixture = Fixture::new(b"outcome");
-        complete(&old, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&old, &fixture, 1) };
         let first = drain(&old).unwrap().0[0].sequence;
-        complete(&old, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&old, &fixture, 1) };
         invalidate();
         let fresh = new_log(4, 32);
-        complete(&fresh, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&fresh, &fixture, 1) };
         assert_eq!(
             drain(&fresh),
             Err("operation completions were not followed in the game without a break")
@@ -1593,13 +1685,15 @@ pub mod tests {
             drain(&old),
             Err("operation completions were not followed in the game without a break")
         );
-        complete(&fresh, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&fresh, &fixture, 1) };
         let second = drain(&fresh).unwrap().0[0].sequence;
         assert!(second > first);
     }
     #[test]
     fn operation_completion_every_country_keeps_native_values_without_status_gate() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(40, 16);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -1607,7 +1701,8 @@ pub mod tests {
         for owner in 1..=40 {
             fixture.identify(owner, owner * 7);
             fixture.bytes.borrow_mut()[INSTANCE + operation::DETECTED] = (owner % 2) as u8;
-            complete(&log, &fixture, 1);
+            // SAFETY: Test is the sole writer to lane 0 of this log.
+            unsafe { complete(&log, &fixture, 1) };
         }
         fixture.delete();
         let (events, bytes) = drain(&log).unwrap();
@@ -1623,7 +1718,8 @@ pub mod tests {
     }
     #[test]
     fn operation_completion_live_description_floor_prepares_the_first_burst() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(5000, 0);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -1635,7 +1731,8 @@ pub mod tests {
         collector_test_support::with_allocations_denied(|| {
             for owner in 1..=5000 {
                 fixture.identify(owner, owner);
-                complete(&log, &fixture, 1);
+                // SAFETY: Test is the sole writer to lane 0 of this log.
+                unsafe { complete(&log, &fixture, 1) };
             }
         });
         let (events, bytes) = drain(&log).unwrap();
@@ -1649,14 +1746,16 @@ pub mod tests {
         for lane in &log.lanes {
             lane.grow_bytes_for(10003).unwrap();
         }
-        complete(&log, &later, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &later, 1) };
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events[0].description_error, 0);
         assert_eq!(bytes.len(), 10003);
     }
     #[test]
     fn operation_completion_worker_handoff_grows_original_lane_count_before_sealing() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let mut cursors = Vec::new();
         for count in [5000, 12000] {
             let log = Log::new(1, 0, count, &[]).unwrap();
@@ -1682,18 +1781,21 @@ pub mod tests {
     }
     #[test]
     fn operation_completion_refused_native_form_withholds_interval() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(1, 16);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let fixture = Fixture::new(b"invalid");
         fixture.bytes.borrow_mut()[INSTANCE + operation::DETECTED] = 2;
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         assert!(drain(&log).is_err());
     }
     #[test]
     fn operation_completion_off_switch_installs_no_hook_or_sentinel_read() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         struct NoRead;
         impl Memory for NoRead {
             fn copy(&self, _: usize, _: &mut [u8]) -> bool {
@@ -1714,12 +1816,14 @@ pub mod tests {
         use crate::extended::operation_outcomes::{Capacities, Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let fixture = Fixture::new(b"outcome");
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let old =
@@ -1741,7 +1845,8 @@ pub mod tests {
         assert!(
             matches!(&tables[TableId::OperationCompletions.index()], TableInput::Sampled(TableView::Complete(TableRows::OperationCompletions(rows))) if rows.len() == 1)
         );
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         assert_eq!(drain(&log).unwrap().0.len(), 1);
         assert_eq!(old.pending(), 0);
         assert_eq!(old.description_capacity(&cursors).unwrap(), 0);
@@ -1769,13 +1874,15 @@ pub mod tests {
             matches!(&tables[TableId::OperationCompletions.index()], TableInput::Sampled(TableView::Unavailable { reason }) if reason == "operation completion stale handoff")
         );
         assert_eq!(idle.drained_pending(), 0);
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         assert_eq!(drain(&log).unwrap().0.len(), 1);
     }
 
     #[test]
     fn operation_completion_long_description_wraps_exactly_without_hour_loss() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = Log::new(4, 65_536, 1, &[]).unwrap();
         log.registered.store(1, Ordering::Relaxed);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
@@ -1785,7 +1892,8 @@ pub mod tests {
             .collect();
         let fixture = Fixture::new(&description);
         for _ in 0..3 {
-            complete(&log, &fixture, 1);
+            // SAFETY: Test is the sole writer to lane 0 of this log.
+            unsafe { complete(&log, &fixture, 1) };
             let (events, bytes) = drain(&log).unwrap();
             assert_eq!(events[0].description_error, 0);
             assert_eq!(events[0].description_required, 40_000);
@@ -1795,14 +1903,16 @@ pub mod tests {
 
     #[test]
     fn operation_completion_native_demand_above_old_budget_grows_and_records_exact_bytes() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let description = vec![0xff; (1 << 20) + 1];
         let fixture = Fixture::new(&description);
         fixture.identify(5_000, 91);
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         let epoch = EPOCH.load(Ordering::Acquire);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events[0].description_error, 0);
@@ -1813,7 +1923,8 @@ pub mod tests {
             description.len()
         );
         log.lanes[0].grow_bytes().unwrap();
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events[0].description_error, 0);
         assert_eq!(bytes, description);
@@ -1822,19 +1933,23 @@ pub mod tests {
 
     #[test]
     fn operation_completion_byte_growth_preserves_pending_records_and_epoch() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 4);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
-        complete(&log, &Fixture::new(b"before"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"before"), 1) };
         let long = Fixture::new(&vec![0xfc; 40_000]);
         let epoch = EPOCH.load(Ordering::Acquire);
-        complete(&log, &long, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &long, 1) };
         let old_ring = log.lanes[0].byte_ring.load(Ordering::Acquire);
         log.lanes[0].grow_bytes().unwrap();
         assert_ne!(log.lanes[0].byte_ring.load(Ordering::Acquire), old_ring);
         assert_eq!(log.lanes[0].ring().bytes.len(), 65_536);
-        complete(&log, &long, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &long, 1) };
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(
             events
@@ -1848,27 +1963,32 @@ pub mod tests {
         assert_eq!(events[1].description_len, 40_000);
         assert_eq!(events[1].description_required, 40_000);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-        complete(&log, &long, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &long, 1) };
         assert_eq!(drain(&log).unwrap().1, vec![0xfc; 40_000]);
     }
 
     #[test]
     fn operation_completion_byte_demand_drain_excludes_later_unsealed_callback() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 4);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
-        complete(&log, &Fixture::new(b"sealed"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"sealed"), 1) };
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let sealed =
             unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
                 .unwrap();
-        complete(&log, &Fixture::new(&[0xfb; 10]), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(&[0xfb; 10]), 1) };
         // SAFETY: test holds `serial()` and drains `sealed` as the sole consumer.
         unsafe { sealed.drain(&cursors, &mut [Event::default()], &mut [0; 6]) }.unwrap();
         assert_eq!(log.lanes[0].consumed_byte_demand.load(Ordering::Acquire), 6);
-        complete(&log, &Fixture::new(&[0xfc; 9]), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(&[0xfc; 9]), 1) };
         assert_eq!(log.lanes[0].required_bytes.load(Ordering::Relaxed), 19);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(
@@ -1883,14 +2003,17 @@ pub mod tests {
 
     #[test]
     fn operation_completion_wrapped_inline_bytes_and_second_part_read_failure_are_exact() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = Log::new(4, 64, 1, &[]).unwrap();
         log.registered.store(1, Ordering::Relaxed);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
-        complete(&log, &Fixture::new(&[0xfa; 60]), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(&[0xfa; 60]), 1) };
         assert_eq!(drain(&log).unwrap().1.len(), 60);
-        complete(&log, &Fixture::new(b"inline-wrap"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"inline-wrap"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"inline-wrap");
         struct FailTail(Fixture);
         impl Memory for FailTail {
@@ -1911,7 +2034,8 @@ pub mod tests {
 
     #[test]
     fn operation_completion_failed_payload_demand_does_not_accumulate_after_empty_publication() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 16);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -1938,14 +2062,16 @@ pub mod tests {
             lane.grow_bytes().unwrap();
             assert_eq!(lane.byte_ring.load(Ordering::Acquire), ring);
         }
-        complete(&log, &Fixture::new(b"recorded"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"recorded"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"recorded");
         assert_eq!(lane.consumed_byte_demand.load(Ordering::Acquire), 8);
     }
 
     #[test]
     fn operation_completion_callback_incomplete_retains_its_unwind_claim() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let active = ACTIVE.load(Ordering::SeqCst);
         let epoch = EPOCH.load(Ordering::Acquire);
         let mut outer = Call::enter();
@@ -1963,7 +2089,8 @@ pub mod tests {
 
     #[test]
     fn operation_completion_growth_within_installed_capacity_keeps_pending_events() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         unsafe {
             release();
         }
@@ -1973,7 +2100,8 @@ pub mod tests {
         old.registered.store(1, Ordering::Relaxed);
         // SAFETY: Test holds `serial()` and exclusively owns `old`.
         unsafe { prime(old) };
-        complete(old, &Fixture::new(description), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(old, &Fixture::new(description), 1) };
         let pointer = LOG.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
         // SAFETY: test holds `serial()` with no concurrent log sizing.
@@ -1988,17 +2116,20 @@ pub mod tests {
 
     #[test]
     fn operation_completion_resumed_attachment_continues_finalized_sequence() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(2, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let saved = EVENT_SEQUENCE.load(Ordering::Relaxed).saturating_add(17);
         restore_sequence(saved).unwrap();
-        complete(&log, &Fixture::new(b"after reattach"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"after reattach"), 1) };
         let events = drain(&log).unwrap().0;
         assert_eq!(events[0].sequence, saved + 1);
         restore_sequence(saved - 1).unwrap();
-        complete(&log, &Fixture::new(b"other campaign"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"other campaign"), 1) };
         assert_eq!(drain(&log).unwrap().0[0].sequence, saved + 2);
     }
 
@@ -2010,7 +2141,8 @@ pub mod tests {
 
     #[test]
     fn operation_completion_writers_beyond_the_lane_count_lose_nothing_in_one_generation() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(8, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -2043,7 +2175,8 @@ pub mod tests {
 
     #[test]
     fn operation_completion_shared_slot_short_spills_whole_and_sizes_the_next_slot() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(2, 4);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -2084,20 +2217,23 @@ pub mod tests {
         drop(held);
         assert_eq!(drain(&log), Err(SPILL_REFUSED));
         assert!(log.shared.is_drained());
-        complete(&log, &Fixture::new(b"after"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"after"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"after");
     }
 
     #[test]
     fn operation_completion_spilled_on_the_hook_thread_never_waits_for_the_consumer() {
         use std::sync::mpsc;
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(1, 8);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let held = Fixture::new(b"held");
         for _ in 0..3 {
-            complete(&log, &held, 1);
+            // SAFETY: Test is the sole writer to lane 0 of this log.
+            unsafe { complete(&log, &held, 1) };
         }
         assert_eq!((log.shared.len(), log.shared.pending()), (1, 2));
         let (holding, consumer_holds) = mpsc::channel();
@@ -2117,7 +2253,8 @@ pub mod tests {
             let hook = scope.spawn(move || {
                 let burst = Fixture::new(b"burst");
                 for _ in 0..4 {
-                    complete(log, &burst, 1);
+                    // SAFETY: Test is the sole writer to lane 0 of this log.
+                    unsafe { complete(log, &burst, 1) };
                 }
             });
             let finished = hook.join();
@@ -2126,7 +2263,11 @@ pub mod tests {
         });
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 7);
-        assert!(events.windows(2).all(|pair| pair[0].sequence < pair[1].sequence));
+        assert!(
+            events
+                .windows(2)
+                .all(|pair| pair[0].sequence < pair[1].sequence)
+        );
         assert_eq!(bytes, [b"held".repeat(3), b"burst".repeat(4)].concat());
         assert_eq!(log.shared.rejected(), 0);
         assert!(log.shared.is_drained());
@@ -2134,7 +2275,8 @@ pub mod tests {
 
     #[test]
     fn operation_completion_lane_growth_seals_the_generation_without_losing_its_interval() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         unsafe {
             release();
         }
@@ -2143,7 +2285,8 @@ pub mod tests {
         old.registered.store(1, Ordering::Relaxed);
         // SAFETY: Test holds `serial()` and exclusively owns `old`.
         unsafe { prime(old) };
-        complete(old, &Fixture::new(b"before growth"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(old, &Fixture::new(b"before growth"), 1) };
         let epoch = EPOCH.load(Ordering::Acquire);
         REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
         presize(8, 64);
@@ -2173,7 +2316,8 @@ pub mod tests {
         use crate::extended::operation_outcomes::{Captured, Ledger};
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::{frame::TableInput, frame::TableView};
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
@@ -2210,14 +2354,16 @@ pub mod tests {
             });
             TableId::ALL.len()
         ];
-        complete(&log, &Fixture::new(b"first"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"first"), 1) };
         shared(b"first shared");
         // SAFETY: test holds `serial()` and assembles intervals in order.
         let first = unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
         assert_eq!(rows(&tables), [b"first".to_vec(), b"first shared".to_vec()]);
         // SAFETY: test holds `serial()` and admits publications in assembly order.
         unsafe { first.admitted() };
-        complete(&log, &Fixture::new(b"second"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"second"), 1) };
         shared(b"second shared");
         // SAFETY: test holds `serial()` and assembles intervals in order.
         let second = unsafe { ledger.assemble_owned(&sealed(), &mut tables) }.unwrap();
@@ -2271,19 +2417,23 @@ pub mod tests {
                 .unwrap()
                 .is_empty()
         );
-        complete(&log, &Fixture::new(b"third"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"third"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"third");
     }
 
     #[test]
     fn operation_completion_lost_queue_assembles_again_from_the_written_interval() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(4, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
-        complete(&log, &Fixture::new(b"written"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"written"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"written");
-        complete(&log, &Fixture::new(b"lost"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"lost"), 1) };
         observe_return(
             &log,
             Target::Shared,
@@ -2308,7 +2458,8 @@ pub mod tests {
         );
         queued.admitted(&first);
         queued.admitted(&first);
-        complete(&log, &Fixture::new(b"later"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"later"), 1) };
         let mut second = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         let later =
@@ -2330,14 +2481,16 @@ pub mod tests {
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 3);
         assert_eq!(bytes, b"lostlost sharedlater");
-        complete(&log, &Fixture::new(b"before"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"before"), 1) };
         let mut cursors = vec![LaneCursor::default()];
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
             .admitted(&cursors);
         invalidate();
-        complete(&log, &Fixture::new(b"after"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"after"), 1) };
         // SAFETY: test holds `serial()` as the sole consumer of `log`.
         unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
             .unwrap()
@@ -2347,32 +2500,37 @@ pub mod tests {
             drain(&log),
             Err("operation completions were not followed in the game without a break")
         );
-        complete(&log, &Fixture::new(b"recovered"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &Fixture::new(b"recovered"), 1) };
         assert_eq!(drain(&log).unwrap().1, b"recovered");
     }
 
     #[test]
     fn operation_completion_queued_backlog_raises_entry_demand_past_one_interval() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         let log = new_log(2, 32);
         // SAFETY: Test holds `serial()` and exclusively owns `log`.
         unsafe { prime(&log) };
         let fixture = Fixture::new(b"held");
         for _ in 0..2 {
-            complete(&log, &fixture, 1);
+            // SAFETY: Test is the sole writer to lane 0 of this log.
+            unsafe { complete(&log, &fixture, 1) };
             let mut cursors = vec![LaneCursor::default()];
             // SAFETY: test holds `serial()` as the sole consumer of `log`.
             unsafe { handoff_buffer(&log, engine_native::walk::Buffer::Growing(&mut cursors)) }
                 .unwrap()
                 .admitted(&cursors);
         }
-        complete(&log, &fixture, 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(&log, &fixture, 1) };
         assert_eq!(log.lanes[0].required_entries.load(Ordering::Relaxed), 3);
     }
 
     #[test]
     fn operation_completion_lost_queue_of_a_replaced_generation_reports_the_loss() {
-        let _serial = serial();
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
         unsafe {
             release();
         }
@@ -2381,7 +2539,8 @@ pub mod tests {
         old.registered.store(1, Ordering::Relaxed);
         // SAFETY: Test holds `serial()` and exclusively owns `old`.
         unsafe { prime(old) };
-        complete(old, &Fixture::new(b"held by the old generation"), 1);
+        // SAFETY: Test is the sole writer to lane 0 of this log.
+        unsafe { complete(old, &Fixture::new(b"held by the old generation"), 1) };
         REQUIRED_LANES.fetch_max(old.lanes.len() + 1, Ordering::Relaxed);
         presize(8, 64);
         let sealed = seal_offered(old);
@@ -2400,5 +2559,37 @@ pub mod tests {
         unsafe {
             release();
         }
+    }
+
+    #[test]
+    fn concurrent_smaller_byte_ring_growth_does_not_replace_larger_ring() {
+        let log = new_log(4, 16);
+        let lane = &log.lanes[0];
+        let initial = lane.ring().bytes.len();
+        lane.grow_bytes_for_with(initial * 2, || {
+            lane.grow_bytes_for(initial * 16).unwrap();
+        })
+        .unwrap();
+        assert_eq!(lane.ring().bytes.len(), initial * 16);
+    }
+
+    #[test]
+    fn concurrent_smaller_presize_does_not_replace_larger_offer() {
+        // SAFETY: Unit test runs with no live native hooks enabled.
+        let _serial = unsafe { serial() };
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
+        presize(8, 64);
+        let mut raced = false;
+        presize_with(32, 64, || {
+            if !raced {
+                raced = true;
+                presize(256, 64);
+            }
+        });
+        assert!(raced);
+        assert_eq!(offered().unwrap().entries, 256);
+        // SAFETY: Unit test holds `serial()` with no live native hooks or workers.
+        unsafe { release() };
     }
 }

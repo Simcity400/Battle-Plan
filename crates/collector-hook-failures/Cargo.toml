@@ -15,28 +15,10 @@ test-support = []
 
 [dependencies]
 collector-hooks.workspace = true
-collector-naval-management.workspace = true
-collector-observers.workspace = true
-collector-output.workspace = true
-collector-politics.workspace = true
 collector-primitives.workspace = true
 collector-status.workspace = true
-engine-air-history.workspace = true
 engine-allocation.workspace = true
-engine-characters.workspace = true
-engine-decisions.workspace = true
-engine-events.workspace = true
 engine-executable.workspace = true
-engine-fuel.workspace = true
-engine-intelligence.workspace = true
-engine-land-inputs.workspace = true
-engine-map-air.workspace = true
-engine-mutations.workspace = true
-engine-native.workspace = true
-engine-naval-history.workspace = true
-engine-occupation.workspace = true
-engine-peace.workspace = true
-engine-production.workspace = true
 engine-sites.workspace = true
 replay-data.workspace = true
 replay-frame = { workspace = true, features = ["capture"] }
@@ -67,5 +49,4 @@ engine-executable = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-crossbeam-utils = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

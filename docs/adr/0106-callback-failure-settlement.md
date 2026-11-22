@@ -12,4 +12,4 @@ An initial capture, continuity gap, world change, campaign change or recovery op
 
 The first consistent fixed-layout check is retained for the attachment and applied during conversion. Its buffer is prepared before hooks and used by capture only. A changed modifier header includes either pointer or count, with distinct states for the first read and a refused header. Observe save-allocation counters passively from the same values the save header would emit. The attachment’s retained-layout report and job values use out-of-line frames so the hourly calling stack does not carry them.
 
-[Failure and ownership settlement](../../crates/collector/src/sampling.rs) · [Division input lineage](0106-division-capture-lineage.md)
+[Failure and ownership settlement](../../crates/collector-capture/src/sampling.rs) · [Division input lineage](0106-division-capture-lineage.md)

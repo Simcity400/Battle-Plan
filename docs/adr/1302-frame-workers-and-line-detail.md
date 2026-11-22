@@ -4,4 +4,4 @@ A frame lane runs one job with the same inputs and code the frame would use in p
 
 When zoomed out, fine border and river strips have multiple triangles per pixel. Simplify their paths by bounded deviation while keeping endpoints and authored anchors, then rebuild the strips so they retain their width and colours. Apply the vertical bound independently because a submerged segment fails depth testing. Select the coarse level only where its projected deviation remains below the screen-pixel tolerance. The map camera's height and vertical field of view bound that projection. A free eye can approach a line independently of its height, so it keeps the fine level. A single index buffer stores fine indices before coarse indices for both selections.
 
-[Frame lanes](../../crates/viewer-world/src/map/lane.rs) · [Line detail](../../crates/viewer-world/src/map/line_lod.rs) · [Camera threshold fixtures](../../crates/viewer-world/src/map/line_lod/tests.rs)
+[Frame lanes](../../crates/viewer-scene-base/src/lane.rs) · [Line detail](../../crates/viewer-scene-base/src/line_lod.rs) · [Camera threshold fixtures](../../crates/viewer-scene-base/src/line_lod/tests.rs)

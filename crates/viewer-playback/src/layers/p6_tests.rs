@@ -519,12 +519,12 @@ impl super::trains::Yard for Asked {
         300.0
     }
 
-    fn plan(&self, _rows: &super::trains::PlanRows<'_>, ours: u32, _curve: &mut dyn FnMut(&[u32]) -> io::Result<viewer_world::map::trains::Curve>, _cache: &mut viewer_world::map::trains::PlanCache) -> io::Result<viewer_world::map::trains::TrainPlan> {
+    fn plan(&self, _rows: &super::trains::PlanRows<'_>, ours: u32, _curve: &mut dyn FnMut(&[u32]) -> io::Result<viewer_rail::trains::Curve>, _cache: &mut viewer_rail::trains::PlanCache) -> io::Result<viewer_rail::trains::TrainPlan> {
         self.0.lock().unwrap().push(ours);
-        Ok(viewer_world::map::trains::TrainPlan::default())
+        Ok(viewer_rail::trains::TrainPlan::default())
     }
 
-    fn curve(&self, _path: &[u32], _network: &viewer_world::map::railways::RailNetwork) -> viewer_world::map::trains::Curve {
+    fn curve(&self, _path: &[u32], _network: &viewer_rail::railways::RailNetwork) -> viewer_rail::trains::Curve {
         None
     }
 }
