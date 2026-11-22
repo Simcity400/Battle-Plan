@@ -85,6 +85,7 @@ impl std::fmt::Debug for Defines {
     }
 }
 
+#[derive(Clone)]
 struct CachedDefines {
     defines: Defines,
     scripts: Vec<(ScriptPath, [u8; 32])>,
@@ -116,26 +117,63 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
         layers.recorded_or_self()?
     };
     let paths = script_paths(&target)?;
-    let mut current = Vec::with_capacity(paths.len());
-    let mut digests = Vec::with_capacity(paths.len());
-    for path in paths {
-        let bytes = path.read(&target)?;
-        digests.push((path.clone(), bytes.digest()));
-        current.push((path, bytes));
-    }
     let cache = target.derived::<UnscopedDefines>();
-    let mut guard = cache.0.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(cached) = guard.as_ref()
-        && cached.scripts == digests
-    {
-        return Ok(cached.defines.clone());
-    }
-    let mut defines = Defines::new()?;
-    for (path, bytes) in current {
-        defines.load(&path.text(), &bytes)?;
-    }
-    defines.sealed = true;
-    *guard = Some(CachedDefines {
+    let cached = cache
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let same_paths = cached.as_ref().is_some_and(|cached| {
+        cached.scripts.len() == paths.len()
+            && cached
+                .scripts
+                .iter()
+                .zip(&paths)
+                .all(|((cached_path, _), path)| cached_path == path)
+    });
+    let (defines, digests) = if let Some(cached) = cached.filter(|_| same_paths) {
+        let mut verified = Vec::with_capacity(paths.len());
+        let mut changed_at = None;
+        for (index, path) in paths.iter().enumerate() {
+            let bytes = path.read(&target)?;
+            let digest = bytes.digest();
+            if digest != cached.scripts[index].1 {
+                changed_at = Some((index, bytes, digest));
+                break;
+            }
+            verified.push((path.clone(), bytes, digest));
+        }
+        let Some((index, changed_bytes, changed_digest)) = changed_at else {
+            return Ok(cached.defines);
+        };
+        let mut defines = Defines::new()?;
+        let mut digests = Vec::with_capacity(paths.len());
+        for (path, bytes, digest) in verified {
+            defines.load(&path.text(), &bytes)?;
+            digests.push((path, digest));
+        }
+        let changed_path = &paths[index];
+        defines.load(&changed_path.text(), &changed_bytes)?;
+        digests.push((changed_path.clone(), changed_digest));
+        for path in &paths[index + 1..] {
+            let bytes = path.read(&target)?;
+            defines.load(&path.text(), &bytes)?;
+            digests.push((path.clone(), bytes.digest()));
+        }
+        defines.sealed = true;
+        (defines, digests)
+    } else {
+        let mut defines = Defines::new()?;
+        let mut digests = Vec::with_capacity(paths.len());
+        for path in paths {
+            let bytes = path.read(&target)?;
+            defines.load(&path.text(), &bytes)?;
+            digests.push((path, bytes.digest()));
+        }
+        defines.sealed = true;
+        (defines, digests)
+    };
+    *cache.0.lock().unwrap_or_else(|error| error.into_inner()) = Some(CachedDefines {
         defines: defines.clone(),
         scripts: digests,
     });

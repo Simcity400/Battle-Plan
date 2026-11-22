@@ -1339,14 +1339,27 @@ fn link_kind(_path: &Path) -> io::Result<Listed> {
 }
 
 #[cfg(windows)]
+fn check_find_error(dir: &Path, error: io::Error, done: u32) -> io::Result<()> {
+    if error.raw_os_error() == Some(done as i32) {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        error.kind(),
+        format!("short-name enumeration {}: {error}", dir.display()),
+    ))
+}
+
+#[cfg(windows)]
 fn collect_folder_short_names(
     root: &Path,
     files: &BTreeMap<LayerPath, Member>,
-) -> BTreeMap<(String, String), String> {
+) -> io::Result<BTreeMap<(String, String), String>> {
     use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows_sys::Win32::{
-        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+        Foundation::{
+            ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
+        },
         Storage::FileSystem::{FindClose, FindFirstFileW, FindNextFileW, WIN32_FIND_DATAW},
     };
     struct FindHandle(HANDLE);
@@ -1372,19 +1385,20 @@ fn collect_folder_short_names(
     }
     let mut short_names = BTreeMap::new();
     for dir in dirs {
-        let mut pattern = root.to_path_buf();
+        let mut dir_path = root.to_path_buf();
         if !dir.is_empty() {
             for part in dir.split('/') {
-                pattern.push(part);
+                dir_path.push(part);
             }
         }
-        pattern.push("*");
+        let pattern = dir_path.join("*");
         let wide: Vec<u16> = pattern.as_os_str().encode_wide().chain([0]).collect();
         // SAFETY: WIN32_FIND_DATAW is plain data that accepts all-zero initialization.
         let mut data: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
         // SAFETY: wide is NUL-terminated and data is a valid mutable pointer.
         let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
         if handle == INVALID_HANDLE_VALUE {
+            check_find_error(&dir_path, io::Error::last_os_error(), ERROR_FILE_NOT_FOUND)?;
             continue;
         }
         let _guard = FindHandle(handle);
@@ -1412,11 +1426,12 @@ fn collect_folder_short_names(
             }
             // SAFETY: handle is open and valid until _guard drops.
             if unsafe { FindNextFileW(handle, &mut data) } == 0 {
+                check_find_error(&dir_path, io::Error::last_os_error(), ERROR_NO_MORE_FILES)?;
                 break;
             }
         }
     }
-    short_names
+    Ok(short_names)
 }
 
 fn walk_folder(
@@ -1685,14 +1700,15 @@ impl ResolvedLayer {
             }
         }
         if let LayerSource::Folder(root) = &self.source {
+            let verifies = self.verifies();
             let lookup = std::sync::Arc::make_mut(&mut self.lookup);
             lookup.folders = folded;
             #[cfg(windows)]
-            {
-                lookup.short_names = collect_folder_short_names(root, &self.files);
+            if verifies {
+                lookup.short_names = collect_folder_short_names(root, &self.files)?;
             }
             #[cfg(not(windows))]
-            let _ = root;
+            let _ = (root, verifies);
         }
         Ok(())
     }
@@ -2489,8 +2505,15 @@ impl ResolvedLayers {
                 .entry((parser, schema, parameters.to_vec())).or_default(),
         );
         let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
-        let (product, built, from_holder) = match kept.as_ref() {
-            Some(product) => (Arc::clone(product), false, true),
+        let (product, built, from_holder, first_credit) = match kept.as_ref() {
+            Some(product) => {
+                let product = Arc::clone(product);
+                let first_credit = self
+                    .read_trace
+                    .as_ref()
+                    .is_some_and(|trace| trace.credit_once(&product));
+                (product, false, true, first_credit)
+            }
             None => {
                 let (product, built) = self.product_entry_with_retry(
                     graph::Key {
@@ -2506,17 +2529,17 @@ impl ResolvedLayers {
                 if cache_errors || product.successful() {
                     *kept = Some(Arc::clone(&product));
                 }
-                (product, built, false)
+                let first_credit = self
+                    .read_trace
+                    .as_ref()
+                    .is_some_and(|trace| trace.credit_once(&product));
+                (product, built, false, first_credit)
             }
         };
         drop(kept);
         if let Some(parent) = self.read_trace.as_ref().and_then(|trace| trace.product.as_ref()) {
             self.generation.depends(parent, &product)?;
         }
-        let first_credit = self
-            .read_trace
-            .as_ref()
-            .is_some_and(|trace| trace.credit_once(&product));
         if from_holder && !first_credit {
             product.diagnostics.credit_to(self);
         } else {
@@ -3161,6 +3184,10 @@ impl ResolvedLayers {
         let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(product) = kept.as_ref() {
             let product = Arc::clone(product);
+            let first_credit = self
+                .read_trace
+                .as_ref()
+                .is_some_and(|trace| trace.credit_once(&product));
             drop(kept);
             if let Some(parent) = self
                 .read_trace
@@ -3169,11 +3196,7 @@ impl ResolvedLayers {
             {
                 self.generation.depends(parent, &product)?;
             }
-            if self
-                .read_trace
-                .as_ref()
-                .is_some_and(|trace| trace.credit_once(&product))
-            {
+            if first_credit {
                 let reader = self.recorded_or_self()?;
                 reader.credit_product(&product, false, None);
             } else {
@@ -3239,10 +3262,10 @@ impl ResolvedLayers {
         if product.successful() {
             *kept = Some(Arc::clone(&product));
         }
-        drop(kept);
         if let Some(trace) = &self.read_trace {
             trace.credit_once(&product);
         }
+        drop(kept);
         reader.credit_product(&product, built, None);
         product.value()
     }

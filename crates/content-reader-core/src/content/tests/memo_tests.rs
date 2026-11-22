@@ -685,3 +685,151 @@ fn unscoped_visual_defines_rebuild_when_an_unverified_script_changes() {
     }));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn concurrent_calls_on_same_traced_reader_never_duplicate_reads() {
+    let root = std::env::temp_dir().join(format!(
+        "concurrent-traced-credit-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = root.join("base");
+    fs::create_dir_all(base.join("common/defines")).unwrap();
+    fs::write(
+        base.join("common/defines/00_base.lua"),
+        b"NDefines = { Synthetic = { Value = 1 } }",
+    )
+    .unwrap();
+    let _generation = Generation::enter();
+    let source = ResolvedLayers::from_folders(&[(&base, &[])]).unwrap();
+    for round in 0..4 {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&log);
+        let traced = source
+            .with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)))
+            .with_read_purpose(format!("round-{round}"));
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let traced = &traced;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    assert_eq!(
+                        crate::defines::read(traced)
+                            .unwrap()
+                            .number("Synthetic", "Value")
+                            .unwrap(),
+                        1.0
+                    );
+                });
+            }
+        });
+        let define_reads = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|read| read.path == b"common/defines/00_base.lua")
+            .count();
+        assert_eq!(define_reads, 1, "round {round}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unscoped_defines_match_scoped_error_and_trace_order() {
+    let root = std::env::temp_dir().join(format!(
+        "defines-error-order-{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let base = root.join("base");
+    let visual = root.join("visual");
+    fs::create_dir_all(base.join("common/defines")).unwrap();
+    fs::create_dir_all(visual.join("common/defines")).unwrap();
+    let base_first = base.join("common/defines/00_first.lua");
+    let base_second = base.join("common/defines/01_second.lua");
+    fs::write(&base_first, b"NDefines = { NGraphics = { X = 1 } }").unwrap();
+    fs::write(&base_second, b"NDefines.NGraphics.X = 2").unwrap();
+    let visual_first = visual.join("common/defines/00_first.lua");
+    let visual_second = visual.join("common/defines/01_second.lua");
+    fs::write(&visual_first, b"NDefines = { NGraphics = { X = 10 } }").unwrap();
+    fs::write(&visual_second, b"NDefines.NGraphics.X = 20").unwrap();
+    let build_stack = || {
+        let mut layers = ResolvedLayers::from_folders(&[(&base, &[]), (&visual, &[])]).unwrap();
+        layers.layers[1].overlay = Some(Overlay {
+            name: "Visual".into(),
+            verified: false,
+        });
+        layers.layers[1].role = LayerRole::Visual;
+        layers.defines_visible = true;
+        layers.finish().unwrap();
+        layers
+    };
+    let read_traced = |layers: &ResolvedLayers| {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = Arc::clone(&log);
+        let traced = layers.with_read_trace(Arc::new(move |read| kept.lock().unwrap().push(read)));
+        let err = crate::defines::read(&traced).unwrap_err().to_string();
+        let paths: Vec<LayerPath> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|read| read.path.clone())
+            .collect();
+        (err, paths)
+    };
+    let warm_log = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept_warm = Arc::clone(&warm_log);
+    let warm_traced = build_stack()
+        .with_read_trace(Arc::new(move |read| kept_warm.lock().unwrap().push(read)));
+    assert_eq!(
+        crate::defines::read(&warm_traced)
+            .unwrap()
+            .number("NGraphics", "X")
+            .unwrap(),
+        20.0
+    );
+    let cold_unscoped = build_stack();
+    let (scoped_err, scoped_paths) = {
+        let _generation = Generation::enter();
+        let scoped = build_stack();
+        fs::write(&visual_first, b"NDefines = {").unwrap();
+        fs::remove_file(&visual_second).unwrap();
+        fs::remove_file(&base_second).unwrap();
+        read_traced(&scoped)
+    };
+    let (cold_err, cold_paths) = read_traced(&cold_unscoped);
+    warm_log.lock().unwrap().clear();
+    let warm_err = crate::defines::read(&warm_traced).unwrap_err().to_string();
+    let warm_paths: Vec<LayerPath> = warm_log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|read| read.path.clone())
+        .collect();
+    assert_eq!(cold_err, scoped_err);
+    assert_eq!(warm_err, scoped_err);
+    assert!(scoped_err.contains("common/defines/00_first.lua"), "{scoped_err}");
+    assert_eq!(scoped_paths, vec![b"common/defines/00_first.lua".to_vec()]);
+    assert_eq!(cold_paths, scoped_paths);
+    assert_eq!(warm_paths, scoped_paths);
+    fs::write(&visual_second, b"NDefines.NGraphics.X = 20").unwrap();
+    fs::write(&base_second, b"NDefines.NGraphics.X = 2").unwrap();
+    let (present_cold_err, present_cold_paths) = read_traced(&cold_unscoped);
+    warm_log.lock().unwrap().clear();
+    let present_warm_err = crate::defines::read(&warm_traced).unwrap_err().to_string();
+    let present_warm_paths: Vec<LayerPath> = warm_log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|read| read.path.clone())
+        .collect();
+    assert_eq!(present_cold_err, scoped_err);
+    assert_eq!(present_warm_err, scoped_err);
+    assert_eq!(present_cold_paths, scoped_paths);
+    assert_eq!(present_warm_paths, scoped_paths);
+    fs::remove_dir_all(root).unwrap();
+}

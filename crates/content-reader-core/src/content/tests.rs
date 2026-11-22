@@ -2730,6 +2730,58 @@ fn windows_folder_aliases_verify_the_opened_file_including_memoized_hits() {
     fs::remove_dir_all(&root).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn short_name_enumeration_propagates_unexpected_win32_errors() {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES,
+    };
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_content_reader_short_enum_err_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let missing = root.join("missing");
+    check_find_error(
+        &missing,
+        io::Error::from_raw_os_error(ERROR_FILE_NOT_FOUND as i32),
+        ERROR_FILE_NOT_FOUND,
+    )
+    .unwrap();
+    check_find_error(
+        &missing,
+        io::Error::from_raw_os_error(ERROR_NO_MORE_FILES as i32),
+        ERROR_NO_MORE_FILES,
+    )
+    .unwrap();
+    let denied = check_find_error(
+        &missing,
+        io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32),
+        ERROR_NO_MORE_FILES,
+    )
+    .unwrap_err();
+    assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+    assert!(
+        denied.to_string().contains(&missing.display().to_string()),
+        "{denied}"
+    );
+    let mut files = BTreeMap::new();
+    files.insert(
+        b"sub/file.gfx".to_vec(),
+        Member {
+            archive_entry: None,
+            size: 0,
+            stamp: None,
+        },
+    );
+    let error = collect_folder_short_names(&missing, &files).unwrap_err();
+    assert!(
+        error.to_string().contains(&missing.display().to_string()),
+        "{error}"
+    );
+}
+
 #[test]
 fn gui_and_gfx_files_are_enumerated_by_their_bytes() {
     crate::test_game::enter();
