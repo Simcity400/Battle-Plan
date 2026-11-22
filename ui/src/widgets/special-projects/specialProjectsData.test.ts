@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, runningValues, runtimeProject, shownCard, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 import { dayLabel } from '../../charts/draw.ts';
@@ -20,13 +20,13 @@ test('project effects render again when their game text changes, never only beca
 
 const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spaces', unavailable: null, warnings: [],
   identities: [{firstHour:100,lastHour:199,slot:5,countryId:10},{firstHour:220,lastHour:300,slot:5,countryId:10}],
-  available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], partial: [],
+  available: [{firstHour:100,lastHour:199},{firstHour:220,lastHour:300}], partial: [], unresolved: [],
   iterationTexts:{2:'Mod iterations: 2',3:'Mod iterations: 3'},
   people:[{assigned:true,id:77,name:'Mod scientist',portrait:null,missing:'Portrait not recorded.'}],
   presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,scientistAsOf:null}],
   projects:[{id:'episode',owner:9,local:3,start:{hour:100,exact:false},runs:[
-    {firstHour:100,lastHour:147,presentation:0,progress:17,state:'running',cancellation:null,completion:null,iterations:2},
-    {firstHour:148,lastHour:199,presentation:0,progress:100,state:'completed',cancellation:null,completion:{hour:140,exact:true},iterations:3},
+    {firstHour:100,lastHour:147,presentation:0,progress:17,state:'running',cancellation:null,completion:null,iterations:2,iterationsRead:140},
+    {firstHour:148,lastHour:199,presentation:0,progress:100,state:'completed',cancellation:null,completion:{hour:140,exact:true},iterations:3,iterationsRead:null},
   ]}],
 });
 
@@ -314,7 +314,7 @@ function projects(): SpecialProjectsReply {
   data.iterationTexts = { 0: 'Mod iterations: 0', 1: 'Mod iterations: 1', 2: 'Mod iterations: 2', 3: 'Mod iterations: 3' };
   data.presentations.push(...['Alpha early', 'Beta running', 'Gamma running', 'Delta cancelled'].map(name => ({ ...data.presentations[0], name })));
   const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: SpecialProjectRun['state'], extra: Partial<SpecialProjectRun> = {}): SpecialProjectRun =>
-    ({ firstHour, lastHour, presentation, progress, state, completion: null, cancellation: null, iterations: 0, ...extra });
+    ({ firstHour, lastHour, presentation, progress, state, completion: null, cancellation: null, iterations: 0, iterationsRead: null, ...extra });
   data.projects = [
     { id: 'done', owner: 9, local: 1, start: { hour: 100, exact: false }, runs: [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed', { completion: { hour: 160, exact: true } })] },
     { id: 'early', owner: 9, local: 2, start: { hour: 100, exact: false }, runs: [run(100, 199, 1, 100, 'completed', { completion: { hour: 100, exact: false } })] },
@@ -378,6 +378,9 @@ test('Current renders again only when a section, order, name, scientist, state o
   const bounded = projects();
   bounded.projects[0].runs[1] = { ...bounded.projects[0].runs[1], completion: { hour: 160, exact: false } };
   assert.notEqual(currentKey(bounded, 170), currentKey(data, 170), 'an exact completion date replaces its bound');
+  const refined = projects();
+  refined.projects[0].runs[1] = { ...refined.projects[0].runs[1], completion: { hour: 155, exact: true } };
+  assert.notEqual(historyKey(refined, 170), historyKey(data, 170), 'History renders again when a completion date moves');
 });
 
 test('History names an interval read only in part or not at all, never as no projects, though a later read is complete or only part was read', () => {
@@ -385,10 +388,15 @@ test('History names an interval read only in part or not at all, never as no pro
   assert.equal(historyUnrecorded([later], 140, 160), 'Projects were read only in part over this time.');
   assert.equal(historyUnrecorded([later], 100, 140), 'Projects were not recorded over this time.');
   assert.equal(historyUnrecorded([later], 220, 230), null, 'complete reads over the whole interval prove no projects');
-  assert.equal(historyUnrecorded([later], 140, 230), 'No special projects in the hours recorded; projects were read only in part for some of this time.',
-    'one complete read does not prove no projects over hours never read whole');
-  assert.equal(historyUnrecorded([{ ...later, partial: [] }], 140, 230), 'No special projects in the hours recorded; projects were not recorded for some of this time.');
+  const mixed = 'No projects in complete reads. Other hours are unknown.';
+  assert.equal(historyUnrecorded([later], 140, 230), mixed, 'one complete read does not prove no projects over hours never read whole');
+  assert.equal(historyUnrecorded([{ ...later, partial: [] }], 140, 230), mixed);
   assert.equal(historyUnrecorded([later], 140, 230, () => [{ firstHour: 220, lastHour: 300 }]), null, 'hours outside the membership are no gap');
+  assert.equal(historyUnrecorded([later], 140, 230, () => [{ firstHour: 140, lastHour: 160 }]), 'Projects were read only in part over this time.',
+    'a complete read outside the membership proves nothing for the member hours');
+  const unknownHolder = { ...later, identities: [{ firstHour: 100, lastHour: 100, slot: 5, countryId: 10 }, { firstHour: 102, lastHour: 102, slot: 5, countryId: 10 }],
+    available: [{ firstHour: 100, lastHour: 100 }, { firstHour: 102, lastHour: 102 }], partial: [], unresolved: [{ firstHour: 101, lastHour: 101 }] };
+  assert.equal(historyUnrecorded([validateSpecialProjectsReply(unknownHolder)], 100, 102), mixed, 'an hour whose holder is unknown is not an hour without projects');
   const empty = { ...later, available: [{ firstHour: 100, lastHour: 150 }], partial: [] };
   assert.notEqual(historyKey(empty, 150, undefined, 100), historyKey(empty, 160, undefined, 100), 'with no projects, a change in coverage renders');
   assert.equal(historyKey(empty, 160, undefined, 100), historyKey(empty, 170, undefined, 100));
@@ -418,6 +426,19 @@ test('History following the head keeps bars past the shown hour for the chart to
   assert.notEqual(historyKey(data, 119), historyKey(data, 120), 'a project starting renders');
   assert.deepEqual(projectHistory(data, 160, undefined, -Infinity, true).lanes.find(lane => lane.id === 'done')!.spans.map(span => [span.lastHour, span.positive, span.endLabel]),
     [[159, true, '✓']]);
+});
+
+test('an ended project shows its count as of the read it comes from unless that read listed the completion', () => {
+  const data = fixture();
+  const done = data.projects[0].runs[1];
+  assert.equal(endedCount(done), '3 iterations', 'the read that listed the completion holds the final count');
+  const older = { ...done, iterationsRead: 140 };
+  assert.equal(endedCount(older), `3 iterations as of ${dayLabel(140)}`);
+  assert.equal(endedCount(data.projects[0].runs[0]), '2 iterations', 'a running count is the current one');
+  const card = { project: data.projects[0], run: older, info: data.presentations[0] };
+  const tip = projectTooltip(data, card);
+  assert.equal(tip.rows.find(row => row.label === 'Iterations')?.value, `3 iterations as of ${dayLabel(140)}`);
+  assert.equal(tip.description, undefined, "the game's count text is not shown as final");
 });
 
 test('the iteration mark names its count only, and its tooltip says what the count is', () => {

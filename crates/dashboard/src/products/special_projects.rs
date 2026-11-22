@@ -125,6 +125,8 @@ pub struct SpecialProjectRun {
     pub cancellation: Option<ProjectDate>,
     #[doc = " The history's choices, its completion marker apart; none where the history was not recorded."]
     pub iterations: Option<i32>,
+    #[doc = " The history read the count comes from; null where that read lists the completion, so the count is final, or where there is no count."]
+    pub iterations_read: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -147,6 +149,8 @@ pub struct SpecialProjectsReply {
     pub tag: String,
     #[doc = " The tag's holders over the branch."]
     pub identities: Vec<CountryIdentityRun>,
+    #[doc = " The hours the tag's holder is unknown: whether it had projects is unknown."]
+    pub unresolved: Vec<HourSpan>,
     #[doc = " The hours the holders' projects were recorded."]
     pub available: Vec<HourSpan>,
     #[doc = " The hours the holders' projects were read only in part: no list is shown for them."]
@@ -664,11 +668,22 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
     Ok(())
 }
 
-fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Holding {
+    identities: Vec<CountryIdentityRun>,
+    unresolved: Vec<(i32, i32)>,
+}
+
+fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Holding) {
     let mut pieces = Vec::new();
     let mut identities: Vec<CountryIdentityRun> = Vec::new();
+    let mut unknown: Vec<(i32, i32)> =
+        query.holders.unknown.iter().map(|&(first, last, _)| (first.max(query.timeline.first), last.min(through))).filter(|(first, last)| first <= last).collect();
     for run in query.holders.within(country, query.timeline.first, through) {
-        let Holder::Found { slot, id } = run.holder else { continue };
+        let Holder::Found { slot, id } = run.holder else {
+            unknown.push((run.first, run.last));
+            continue;
+        };
         match identities.last_mut() {
             Some(held) if (held.slot, held.country_id) == (slot, id) && held.last_hour.checked_add(1) == Some(run.first) => held.last_hour = run.last,
             _ => identities.push(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
@@ -677,7 +692,15 @@ fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Ve
             pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id });
         }
     }
-    (pieces, identities)
+    unknown.sort_unstable();
+    let mut unresolved: Vec<(i32, i32)> = Vec::new();
+    for (first, last) in unknown {
+        match unresolved.last_mut() {
+            Some(held) if held.1.saturating_add(1) >= first => held.1 = held.1.max(last),
+            _ => unresolved.push((first, last)),
+        }
+    }
+    (pieces, Holding { identities, unresolved })
 }
 
 fn links_of<'l>(query: &Query<'_>, held: &'l mut HashMap<u32, RunLinks>, run: u32) -> io::Result<&'l RunLinks> {
@@ -759,7 +782,7 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
 }
 
 fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
-    let (pieces, identities) = pieces(&query, &params.country, through);
+    let (pieces, holding) = pieces(&query, &params.country, through);
     let mut fold = Fold::new(query.timeline.first);
     let mut observed: Vec<(i32, i32)> = Vec::new();
     let mut partial: Vec<(i32, i32)> = Vec::new();
@@ -771,7 +794,7 @@ fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &Pro
         fold_piece(&mut fold, piece, &read, &mut observed, &mut partial, cancelled)?;
     }
     let tag = query.holders.name(&params.country, through);
-    present(&query, params, content, &fold, Observation { observed, partial }, identities, &tag, cancelled, &mut None)
+    present(&query, params, content, &fold, Observation { observed, partial }, holding, &tag, cancelled, &mut None)
 }
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
@@ -800,7 +823,7 @@ fn spans(spans: Vec<(i32, i32)>) -> Vec<HourSpan> {
     spans.into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }).collect()
 }
 
-fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observation: Observation, identities: Vec<CountryIdentityRun>, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
+fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observation: Observation, holding: Holding, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
     let Observation { observed, partial } = observation;
     let mut naming = Naming::new(content);
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
@@ -860,7 +883,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
                 specialization_name: name.specialization_name.clone(), icon: name.icon.clone(), icon_missing: name.icon_missing.clone(),
                 scientist: people.id(person), scientist_as_of: look.as_of });
             match runs.last_mut() {
-                Some(held) if held.last_hour.checked_add(1) == Some(run.first_hour) && fold::same(held, &run) => held.last_hour = run.last_hour,
+                Some(held) if held.last_hour.checked_add(1) == Some(run.first_hour) && fold::same(held, &run) => fold::merge(held, &run),
                 _ => runs.push(run),
             }
         }
@@ -874,6 +897,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     if !projects.is_empty() {
         warnings.push("Project icons and portraits are visual assets outside content hash coverage.".into());
     }
+    let Holding { identities, unresolved } = holding;
     let unavailable = if identities.is_empty() {
         Some("No country held this tag in the recording.".into())
     } else if content.definitions.projects.is_empty() {
@@ -885,6 +909,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         branch_id: params.branch_id.clone(),
         tag: tag.to_owned(),
         identities,
+        unresolved: spans(unresolved),
         available: spans(observed),
         partial: spans(partial),
         projects,
@@ -957,6 +982,7 @@ pub struct ProjectCompletion {
     pub observed_hour: i32,
     pub owner: u32,
     pub project: u32,
+    pub ordinal: u32,
     pub name: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
@@ -1014,7 +1040,7 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
             let (owner, project) = ((key >> 32) as u32, key as u32);
             let tag = names.tag_at(run_links, owner, hour).map(str::to_owned);
             let row = rows.iter().find(|row| (row.owner, row.local_id) == (owner, project));
-            let mut completion = ProjectCompletion { tag: tag.clone(), date: hour, observed_hour: hour, owner, project, name: None, icon: None, icon_missing: Some("The project was not read.".into()) };
+            let mut completion = ProjectCompletion { tag: tag.clone(), date: hour, observed_hour: hour, owner, project, ordinal: 0, name: None, icon: None, icon_missing: Some("The project was not read.".into()) };
             match (row, tag) {
                 (Some(row), Some(tag)) => {
                     let slot = run_links.slot_at(owner, hour);
@@ -1035,8 +1061,8 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
     }
     let mut events: Vec<ProjectCompletion> = found
         .into_iter()
-        .filter_map(|((key, date), (_, observed))| shown.get(&(key >> 32, observed)).map(|completion| ProjectCompletion { date, ..completion.clone() }))
+        .filter_map(|((key, date), (_, observed))| shown.get(&(key >> 32, observed)).map(|completion| ProjectCompletion { date, ordinal: key as u32, ..completion.clone() }))
         .collect();
-    events.sort_by(|a, b| (a.date, a.owner, a.project).cmp(&(b.date, b.owner, b.project)));
+    events.sort_by(|a, b| (a.date, a.owner, a.project, a.ordinal).cmp(&(b.date, b.owner, b.project, b.ordinal)));
     Ok(Completions { events, unrecorded, warnings: naming.warnings() })
 }

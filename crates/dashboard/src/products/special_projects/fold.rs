@@ -135,10 +135,20 @@ impl Fold {
             if restarted {
                 self.open.remove(&key);
             }
-            let held = self.open.get(&key).map(|index| (*index, self.since[index]));
+            let mut held = self.open.get(&key).map(|index| (*index, self.since[index]));
             let since = held.map_or(observed.read, |(_, since)| since);
-            let history = observed.history.filter(|&(read, _)| read >= since);
+            let mut history = observed.history.filter(|&(read, _)| read >= since);
+            if done
+                && let Some((index, _)) = held
+                && let Some(known) = self.episodes[index].runs.last().and_then(|run| run.completion.as_ref())
+                && history.and_then(|(_, entries)| completion_date(entries, first, self.campaign_start)).is_some_and(|marker| marker.hour > known.hour)
+            {
+                self.open.remove(&key);
+                held = None;
+                history = observed.history.filter(|&(read, _)| read >= observed.read);
+            }
             let iterations = history.map(|(_, entries)| entries.iter().filter(|entry| !entry.completion).count() as i32);
+            let iterations_read = history.and_then(|(read, entries)| (!(done && entries.iter().any(|entry| entry.completion))).then_some(read));
             if held.and_then(|(index, _)| self.last_iterations.get(&index)).zip(iterations).is_some_and(|(&old, new)| old > new) {
                 self.open.remove(&key);
             }
@@ -175,15 +185,20 @@ impl Fold {
                 *self.warnings.entry(format!("Project {} is in a state the replay does not know ({:#x})", row.local, row.offset)).or_default() += 1;
             }
             let presentation = self.look(look);
-            let run = SpecialProjectRun { first_hour: first, last_hour: last, presentation, progress: progress(row), state, completion, cancellation, iterations };
+            let run = SpecialProjectRun { first_hour: first, last_hour: last, presentation, progress: progress(row), state, completion, cancellation, iterations, iterations_read };
             let runs = &mut self.episodes[index].runs;
             match runs.last_mut() {
-                Some(held) if held.last_hour.checked_add(1) == Some(first) && same(held, &run) => held.last_hour = last,
+                Some(held) if held.last_hour.checked_add(1) == Some(first) && same(held, &run) => merge(held, &run),
                 _ => runs.push(run),
             }
         }
         self.open = next;
     }
+}
+
+pub fn merge(held: &mut SpecialProjectRun, next: &SpecialProjectRun) {
+    held.last_hour = next.last_hour;
+    held.iterations_read = next.iterations_read;
 }
 
 pub fn same(a: &SpecialProjectRun, b: &SpecialProjectRun) -> bool {

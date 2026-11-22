@@ -35,7 +35,7 @@ import { perfLog } from '../../shell/perf';
 import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
-import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationCount, iterationMark, iterationTooltip,
+import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
   observedAt, projectCountries, projectCountryHour, projectDate, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
@@ -72,7 +72,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
     g[section].map(card => JSON.stringify([section, card.project.id, card.run.presentation])));
   useRecordedRows('special-projects', perfLog && exactRead ? { hour: at, rows: () => rows(groups),
     exact: async () => rows(currentProjects(validateSpecialProjectsReply(await exactRead(at)), at)) } : undefined);
-  if (!running.length && !completed.length && !earlier.length) return <WidgetState kind="empty" message="No special projects yet." />;
+  if (!running.length && !completed.length && !earlier.length) return <WidgetState kind="empty" message="No current projects." />;
   return <div className="special-project-list" ref={list}>
     <div className="special-project-rows">
       {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
@@ -114,7 +114,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
         return <tr key={card.project.id}><th scope="row">{card.info.name}</th><td>{card.run.state}</td>
           <td>{scientistName(reply, card.info)}</td>
           <td aria-labelledby={active ? `${valueId}-${card.project.id}-progress` : undefined}>{active ? null : `${card.run.progress}%`}</td>
-          <td aria-labelledby={active ? `${valueId}-${card.project.id}-iterations` : undefined}>{active ? null : iterationCount(card.run.iterations)}</td>
+          <td aria-labelledby={active ? `${valueId}-${card.project.id}-iterations` : undefined}>{active ? null : endedCount(card.run)}</td>
         </tr>;
       })}</tbody></table>
   </div>;

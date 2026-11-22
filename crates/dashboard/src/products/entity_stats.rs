@@ -5,7 +5,7 @@ use super::{
     politics_content::{PoliticsContent, politics_content},
 };
 use crate::{Source, catalogue};
-use content_reader_core::{combat_tactics::Tactic, equipment::StatGroup, parser::c_string};
+use content_reader_core::{combat_tactics::Tactic, equipment::StatGroup};
 use content_reader_localisation::localisation::{Argument, Localisation};
 use dashboard_text::subunit_requirements::Content as SubUnitSheets;
 use replay_data::rows::TableId;
@@ -233,10 +233,9 @@ impl AtHour for EntityStatsAt {
                 EntityKind::Equipment => {
                     let database = &technologies()?.equipment;
                     let at = database.get(token).ok_or_else(|| format!("Equipment {token} is not in the recorded content"))?;
-                    if let Some((field, from)) = database.unreproduced_stat_field(at) {
-                        return Err(format!("Equipment {token}'s {field} (set by {}) is not reproduced, so its stats are withheld", String::from_utf8_lossy(c_string(from))));
-                    }
-                    sheet.equipment(stat_metadata()?, &database.equipment[at].stats);
+                    let equipment = &database.equipment[at];
+                    let stats = content_reader_core::equipment::StatComponents::base(&equipment.stats).finish_for(equipment)?;
+                    sheet.equipment(stat_metadata()?, &stats);
                 }
                 EntityKind::Module => {
                     let stats = technologies()?.equipment.module_stats(token).ok_or_else(|| format!("Module {token} is not in the recorded content"))?;

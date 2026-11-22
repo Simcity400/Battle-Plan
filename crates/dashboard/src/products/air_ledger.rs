@@ -845,13 +845,26 @@ pub(crate) fn openings(source: &Source, query: &Query<'_>, params: &MilitaryAirP
 }
 
 #[derive(Default)]
-struct Observed(HashMap<(u32, &'static str), Arc<Mutex<Option<Arc<Vec<(i32, i32)>>>>>>);
+struct Observed(HashMap<(u32, &'static str), Arc<Mutex<Option<Arc<RunReads>>>>>);
+
+#[derive(Default)]
+struct RunReads {
+    read: Vec<(i32, i32)>,
+    in_part: Vec<(i32, i32)>,
+}
+
+fn join(spans: &mut Vec<(i32, i32)>, first: i32, last: i32) {
+    match spans.last_mut() {
+        Some(held) if held.1.checked_add(1) == Some(first) => held.1 = last,
+        _ => spans.push((first, last)),
+    }
+}
 
 pub(crate) fn forget(source: &Source) {
     *source.state::<Observed>().lock().unwrap_or_else(PoisonError::into_inner) = Observed::default();
 }
 
-fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: u32) -> io::Result<Arc<Vec<(i32, i32)>>> {
+fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: u32) -> io::Result<Arc<RunReads>> {
     let slot = Arc::clone(source.state::<Observed>().lock().unwrap_or_else(PoisonError::into_inner).0.entry((run, family.log())).or_default());
     let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(found) = held.as_ref() {
@@ -862,19 +875,17 @@ fn observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, run: 
     let directory = recording.run(run)?;
     let first = directory.first_hour;
     let last = first.saturating_add(i32::try_from(directory.ordinals).unwrap_or(i32::MAX)).saturating_sub(1);
-    let made: Vec<(i32, i32)> = if last < first {
-        Vec::new()
-    } else {
-        let mut made: Vec<(i32, i32)> = Vec::new();
+    let mut made = RunReads::default();
+    if first <= last {
         for span in spans(first, last, &read::statuses(recording, run, log.table, first, last)?, &read::statuses(recording, run, TableId::CountryLinks, first, last)?) {
-            match made.last_mut() {
-                Some(held) if span.held.read() && held.1.checked_add(1) == Some(span.first) => held.1 = span.last,
-                _ if span.held.read() => made.push((span.first, span.last)),
-                _ => {}
+            if span.held.read() {
+                join(&mut made.read, span.first, span.last);
+            }
+            if span.held == Held::InPart {
+                join(&mut made.in_part, span.first, span.last);
             }
         }
-        made
-    };
+    }
     let made = Arc::new(made);
     *held = Some(Arc::clone(&made));
     Ok(made)
@@ -901,14 +912,15 @@ pub(crate) fn kept_observed(source: &Source) -> Vec<(u32, &'static str, Vec<(i32
     let index = source.state::<Observed>();
     let index = index.lock().unwrap_or_else(PoisonError::into_inner);
     let mut kept: Vec<(u32, &'static str, Vec<(i32, i32)>)> =
-        index.0.iter().filter_map(|(&(run, log), slot)| Some((run, log, slot.lock().unwrap_or_else(PoisonError::into_inner).as_deref()?.clone()))).collect();
+        index.0.iter().filter_map(|(&(run, log), slot)| Some((run, log, slot.lock().unwrap_or_else(PoisonError::into_inner).as_deref()?.read.clone()))).collect();
     kept.sort_unstable();
     kept
 }
 
 fn first_observed(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (first, last): (i32, i32)) -> io::Result<Option<i32>> {
     for stretch in query.timeline.within(first, last) {
-        let spans = observed(source, query, family, stretch.run)?;
+        let reads = observed(source, query, family, stretch.run)?;
+        let spans = &reads.read;
         let at = spans.partition_point(|&(_, end)| end < stretch.first);
         if let Some(&(start, _)) = spans.get(at).filter(|&&(start, _)| start <= stretch.last) {
             return Ok(Some(start.max(stretch.first)));
@@ -924,7 +936,8 @@ fn observed_since(source: &Source, query: &Query<'_>, family: MilitaryAirFamily,
         if stretch.last.checked_add(1) != Some(since) {
             break;
         }
-        let spans = observed(source, query, family, stretch.run)?;
+        let reads = observed(source, query, family, stretch.run)?;
+        let spans = &reads.read;
         let held = spans.partition_point(|&(_, end)| end < stretch.last);
         let Some(&(start, _)) = spans.get(held).filter(|&&(start, _)| start <= stretch.last) else { return Ok(since) };
         since = start.max(stretch.first);
@@ -954,16 +967,17 @@ fn latest_incomplete(query: &Query<'_>, (from, to): (i32, i32)) -> io::Result<Op
     Ok(latest)
 }
 
-fn latest_in_part(query: &Query<'_>, family: MilitaryAirFamily, (from, to): (i32, i32)) -> io::Result<Option<i32>> {
-    let log = dashboard_declare::log(family.log()).ok_or_else(|| dashboard_core::invalid(format!("No declared log {}", family.log())))?;
-    let recording = query.replay.recording();
-    let mut latest = None;
-    for stretch in query.timeline.within(from, to) {
+fn latest_in_part(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, (from, to): (i32, i32)) -> io::Result<Option<i32>> {
+    let stretches: Vec<_> = query.timeline.within(from, to).collect();
+    for stretch in stretches.iter().rev() {
         let (first, last) = (stretch.first.max(from), stretch.last.min(to));
-        let held = spans(first, last, &read::statuses(recording, stretch.run, log.table, first, last)?, &read::statuses(recording, stretch.run, TableId::CountryLinks, first, last)?);
-        latest = latest.max(held.iter().filter(|span| span.held == Held::InPart).map(|span| span.last).max());
+        let reads = observed(source, query, family, stretch.run)?;
+        let at = reads.in_part.partition_point(|&(start, _)| start <= last);
+        if let Some(&(_, end)) = at.checked_sub(1).map(|at| &reads.in_part[at]).filter(|&&(_, end)| end >= first) {
+            return Ok(Some(end.min(last)));
+        }
     }
-    Ok(latest)
+    Ok(None)
 }
 
 fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fold: &mut Fold, first: i32, counted: Option<i32>) -> io::Result<()> {
@@ -977,7 +991,7 @@ fn reach_back(source: &Source, query: &Query<'_>, family: MilitaryAirFamily, fol
     }
     fold.observed[0].first_hour = since;
     let unknown = if family == MilitaryAirFamily::Bombing { latest_incomplete(query, (since, first - 1))? } else { None };
-    if let Some(read) = unknown.max(latest_in_part(query, family, (since, first - 1))?) {
+    if let Some(read) = unknown.max(latest_in_part(source, query, family, (since, first - 1))?) {
         fold.incomplete.insert(0, HourSpan { first_hour: read, last_hour: read });
         if fold.incomplete.get(1).is_some_and(|next| next.first_hour == read + 1) {
             let next = fold.incomplete.remove(1);

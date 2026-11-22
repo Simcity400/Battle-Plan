@@ -40,7 +40,7 @@ const daily = (from: number, start: number, perDay: number): SpecialProjectRun[]
   for (let day = 0; from + day * 24 < HOURS; day++) {
     const progress = Math.min(100, start + Math.floor(day * perDay));
     runs.push({ firstHour: from + day * 24, lastHour: Math.min(HOURS - 1, from + day * 24 + 23), presentation: 0, progress, state: 'running',
-      completion: null, cancellation: null, iterations: Math.floor(progress / 25) });
+      completion: null, cancellation: null, iterations: Math.floor(progress / 25), iterationsRead: null });
   }
   return runs;
 };
@@ -49,7 +49,7 @@ const merge = (runs: SpecialProjectRun[]) => runs.reduce<SpecialProjectRun[]>((o
   if (last && last.progress === run.progress && last.iterations === run.iterations) last.lastHour = run.lastHour; else out.push({ ...run });
   return out;
 }, []);
-export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identities, available: [{ firstHour: 0, lastHour: HOURS - 1 }], partial: [],
+export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identities, available: [{ firstHour: 0, lastHour: HOURS - 1 }], partial: [], unresolved: [],
   presentations: [{ name: 'Rocket engines', specialization: null, specializationName: null, icon: null, iconMissing: 'none', scientist: 0, scientistAsOf: null }],
   people: [{ assigned: false, id: null, name: null, portrait: null, missing: 'No scientist assigned.' }],
   iterationTexts: { 0: '0', 1: '1', 2: '2', 3: '3', 4: '4' }, unavailable: null, warnings: [],

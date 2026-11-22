@@ -24,11 +24,12 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
   if (!object(input) || typeof input.branchId !== 'string' || typeof input.tag !== 'string' || !nullableString(input.unavailable)
     || !Array.isArray(input.identities) || !validCountryIdentityRuns(input.identities as CountryIdentityRun[])
     || !Array.isArray(input.available) || !input.available.every(span) || !Array.isArray(input.partial) || !input.partial.every(span)
+    || !Array.isArray(input.unresolved) || !input.unresolved.every(span)
     || !object(input.iterationTexts) || !Object.entries(input.iterationTexts).every(([count, text]) => /^-?(0|[1-9][0-9]*)$/.test(count) && integer(Number(count)) && nullableString(text))
     || !Array.isArray(input.projects) || !Array.isArray(input.presentations) || !Array.isArray(input.people)
     || !Array.isArray(input.warnings) || !input.warnings.every(item => typeof item === 'string')) return bad();
   const ordered = (values: readonly { firstHour: number; lastHour: number }[]) => values.every((value, i) => !i || values[i - 1].lastHour < value.firstHour);
-  if (!ordered(input.available as HourSpan[]) || !spansCovered(input.available as HourSpan[], input.identities as CountryIdentityRun[])
+  if (!ordered(input.available as HourSpan[]) || !spansCovered(input.available as HourSpan[], input.identities as CountryIdentityRun[]) || !ordered(input.unresolved as HourSpan[])
     || !ordered(input.partial as HourSpan[]) || !spansCovered(input.partial as HourSpan[], input.identities as CountryIdentityRun[])
     || (input.partial as HourSpan[]).some(span => runAt(input.available as HourSpan[], span.firstHour) !== null || runAt(input.available as HourSpan[], span.lastHour) !== null)) return bad();
   for (const person of input.people) if (!object(person) || !(person.id === null || integer(person.id) && person.id >= 0)
@@ -43,7 +44,8 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     ids.add(project.id);
     for (const run of project.runs) if (!span(run) || !object(run) || !integer(run.presentation) || run.presentation < 0 || run.presentation >= input.presentations.length
       || !integer(run.progress) || run.progress < -100 || run.progress > 100 || !STATES.includes(run.state as string)
-      || !(run.completion === null || date(run.completion)) || !(run.iterations === null || integer(run.iterations)) || !(run.cancellation === null || date(run.cancellation))) return bad();
+      || !(run.completion === null || date(run.completion)) || !(run.iterations === null || integer(run.iterations)) || !(run.cancellation === null || date(run.cancellation))
+      || !(run.iterationsRead === null || integer(run.iterationsRead) && run.iterations !== null && run.iterationsRead <= (run.lastHour as number))) return bad();
     if (!ordered(project.runs as { firstHour: number; lastHour: number }[])) return bad();
     if (!spansCovered(project.runs as SpecialProjectRun[], input.available as HourSpan[])) return bad();
     for (const raw of project.runs) {
@@ -67,23 +69,21 @@ export const unobservedReason = (data: SpecialProjectsReply, hour: number) =>
 export function historyUnrecorded(data: readonly SpecialProjectsReply[], first: number, last: number,
   membership?: (reply: SpecialProjectsReply) => readonly HourSpan[] | undefined): string | null {
   const meets = (spans: readonly HourSpan[], from: number, to: number) => spans.some(span => span.firstHour <= to && from <= span.lastHour);
-  if (!data.some(reply => meets(reply.available, first, last))) {
-    return data.some(reply => meets(reply.partial, first, last)) ? 'Projects were read only in part over this time.' : 'Projects were not recorded over this time.';
-  }
-  let gap = false, inPart = false;
+  let seen = false, gap = false, inPart = false;
   for (const reply of data) {
     const held = membership?.(reply);
-    const runs = (held ? clipToSpans(reply.identities, held) : reply.identities).flatMap(run => {
+    const within = (spans: readonly HourSpan[]) => (held ? clipToSpans(spans, held) : spans).flatMap(run => {
       const firstHour = Math.max(run.firstHour, first), lastHour = Math.min(run.lastHour, last);
       return firstHour <= lastHour ? [{ firstHour, lastHour }] : [];
     });
-    for (const hole of withoutHours(runs, reply.available)) {
+    seen ||= within(reply.available).length > 0;
+    for (const hole of [...withoutHours(within(reply.identities), reply.available), ...within(reply.unresolved)]) {
       gap = true;
       inPart ||= meets(reply.partial, hole.firstHour, hole.lastHour);
     }
   }
-  if (!gap) return null;
-  return `No special projects in the hours recorded; projects were ${inPart ? 'read only in part' : 'not recorded'} for some of this time.`;
+  if (!seen) return inPart ? 'Projects were read only in part over this time.' : 'Projects were not recorded over this time.';
+  return gap ? 'No projects in complete reads. Other hours are unknown.' : null;
 }
 
 export function projectCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, first: number, last: number) {
@@ -135,6 +135,11 @@ export const scientistName = (data: SpecialProjectsReply, info: ProjectPresentat
 };
 export const iterationCount = (iterations: number | null) =>
   iterations === null ? 'Iterations unknown' : `${usNumber.format(iterations)} ${iterations === 1 ? 'iteration' : 'iterations'}`;
+export const iterationsAsOf = (run: SpecialProjectRun) => run.state === 'running' || run.state === 'paused' ? null : run.iterationsRead;
+export const endedCount = (run: SpecialProjectRun) => {
+  const read = iterationsAsOf(run);
+  return `${iterationCount(run.iterations)}${read === null ? '' : ` as of ${dayLabel(read)}`}`;
+};
 export const iterationMark = (iterations: number | null) => iterations === null ? '—' : `×${usNumber.format(iterations)}`;
 export interface ProjectCard { project: ProjectEpisode; run: SpecialProjectRun; info: ProjectPresentation }
 
@@ -294,7 +299,7 @@ export function historyKey(data: SpecialProjectsReply, hour: number, membership?
   const parts: string[] = [];
   for (const project of data.projects) {
     const latest = shownRuns(project, hour, membership).at(-1);
-    if (latest) parts.push(`${project.id}\u0001${latest.presentation}\u0001${latest.completion ? 'c' : latest.cancellation ? 'x' : ''}`);
+    if (latest) parts.push(`${project.id}\u0001${latest.presentation}\u0001${latest.completion ? `c${latest.completion.hour}${latest.completion.exact ? '' : '~'}` : latest.cancellation ? 'x' : ''}`);
   }
   return parts.length ? parts.join('\u0002') : `\u0003${historyUnrecorded([data], from, hour, () => membership) ?? ''}`;
 }
@@ -313,7 +318,9 @@ export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard): T
   rows.push(run.completion ? { label: 'Completed', value: projectDate(run.completion) } : { label: 'Progress', value: `${run.progress}%` });
   if (run.state === 'paused' || run.state === 'unknown') rows.push({ label: 'State', value: run.state === 'paused' ? 'Paused' : 'Unknown' });
   if (run.cancellation) rows.push({ label: 'Cancelled', value: projectDate(run.cancellation) });
-  const text = run.iterations === null ? null : data.iterationTexts[run.iterations] ?? null;
+  const asOf = iterationsAsOf(run);
+  if (asOf !== null) rows.push({ label: 'Iterations', value: endedCount(run) });
+  const text = run.iterations === null || asOf !== null ? null : data.iterationTexts[run.iterations] ?? null;
   return { title: info.name, subtitle: contentTitle(info.specializationName, info.specialization, 'Type name unavailable'), icon: info.icon ?? undefined, rows,
     ...(text ? { description: text } : {}) };
 }

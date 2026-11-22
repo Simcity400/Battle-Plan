@@ -6,7 +6,7 @@ import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products.ts';
 import WidgetState from '../../components/WidgetState';
-import { validateResearchBreakdown, validateResearchSlots, withBreakdown } from './researchData';
+import { completedBy, validateResearchBreakdown, validateResearchSlots, withBreakdown } from './researchData';
 import { slotNumbers } from './researchSlots';
 import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar';
 import { Icon } from '../../components/Icons';
@@ -82,7 +82,7 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
   return <div className="research-description">
     <div className="research-when">
       {entry.outcome === 'completed' && entry.endedByHour !== null
-        ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>Completed</small>{date(entry.endedByHour)}</span>
+        ? <span data-tooltip={formatDateTime(entry.endedByHour)}><small>{completedBy(entry) ? 'Completed by' : 'Completed'}</small>{date(entry.endedByHour)}</span>
         : <span data-tooltip={journey.startKnown ? formatDateTime(journey.firstHour) : 'Start date unknown.'}>
           <small>{journey.startKnown ? 'Started' : 'Started by'}</small>{date(journey.firstHour)}</span>}
       {active && <span data-tooltip={formatDateTime(hour)}><small>As of</small>{date(hour)}</span>}

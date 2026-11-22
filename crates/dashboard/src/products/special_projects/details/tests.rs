@@ -328,7 +328,11 @@ fn an_iteration_is_the_listing_projects_choice_rendered_with_that_projects_defin
             vec![choice(0, OWN_CHOICE)]
         };
         set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(history));
-        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 78, literal: b"replacement".to_vec() }]));
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 41, literal: b"mod_reward".to_vec() },
+            LexicalTokenRow { token: 42, literal: b"mod_option".to_vec() },
+            LexicalTokenRow { token: 78, literal: b"replacement".to_vec() },
+        ]));
         let read = if hour == UNPROVEN { hour - 1 } else { hour };
         let mut slices: Vec<SliceReadRow> =
             [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: read })).collect();
@@ -382,7 +386,11 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
         let stamp = |table: TableId, sample_hour| SliceReadRow { table: table.index() as u32, owner: 9001, sample_hour };
         let read = hour >= CHOICE;
         set(&mut frame, TableId::Projects, TableRows::Projects(if read { vec![ProjectRow { owner: 9001, local_id: 3, definition_id: 77, ..Default::default() }] } else { Vec::new() }));
-        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 77, literal: b"project".to_vec() }]));
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![
+            LexicalTokenRow { token: 41, literal: b"mod_reward".to_vec() },
+            LexicalTokenRow { token: 42, literal: b"mod_option".to_vec() },
+            LexicalTokenRow { token: 77, literal: b"project".to_vec() },
+        ]));
         let choice = ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: CHOICE, ..Default::default() };
         *frame.tables[TableId::ProjectHistory.index()] = match hour {
             IN_PART => TableView::Truncated { rows: TableRows::ProjectHistory(vec![choice.clone()]), missing: 1 },
@@ -405,4 +413,79 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
     let in_part = iteration(IN_PART).unwrap();
     assert!(in_part["unavailable"].as_str().unwrap().starts_with("Project choice history is unavailable"), "a listing read in part proves no choice: {in_part}");
     assert!(refusal(iteration(COMPLETE)).contains("content"), "the complete listing proves the choice and goes on to the content");
+}
+
+#[test]
+fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predecessors_project_values() {
+    use replay_data::rows::{ProjectVariable, ProjectVariableStore};
+    engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    const REPLACED: i32 = 35;
+    const BEFORE: i32 = 30;
+    const OWN: i32 = 38;
+    const LISTED: i32 = 40;
+    let root = std::env::temp_dir().join(format!("special-project-iteration-{}", uuid::Uuid::new_v4()));
+    for (path, text) in [
+        ("common/defines/test.lua", "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30},NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}},NSupply={MAX_RAILWAY_LEVEL=5}}"),
+        ("common/special_projects/specialization/test.txt", "mod_science={}"),
+        ("common/special_projects/prototype_rewards/test.txt", "mod_reward={option={token=mod_option iteration_output={country_effects={add_political_power=1 custom_effect_tooltip=PROJECT_VARIABLE}}}}"),
+        ("common/special_projects/projects/test.txt", "project={specialization=mod_science generic_prototype_rewards={mod_reward}} replacement={specialization=mod_science generic_prototype_rewards={mod_reward}}"),
+        ("localisation/test_l_english.yml", "\u{feff}l_english:\n PROJECT_VARIABLE:0 \"Variable [?FROM.mod_value|2]\"\n POLITICS_ADD_POLITICAL_POWER:0 \"PP$VAL|0$\"\n SPECIAL_PROJECT_REWARDS_HEADER_TEXT:0 \"Outputs\"\n"),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        for table in effect_tables() {
+            if table.key_bits() != 0 && matches!(frame.tables[table.index()].held(), TableView::Unavailable { .. }) {
+                set(&mut frame, table, TableRows::empty(table));
+            }
+        }
+        let replaced = hour >= REPLACED;
+        let variables = ProjectVariableStore { seed: 1, entries: vec![ProjectVariable { name: b"mod_value".to_vec(), value_raw: if replaced { 200_000 } else { 100_000 } }] };
+        let runtime = Recorded::Value(ProjectRuntime { variables: Some(variables.into()), ..Default::default() });
+        set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: 9001, local_id: 3, definition_id: if replaced { 78 } else { 77 }, runtime, ..Default::default() }]));
+        let choice = |ordinal, date| ProjectHistoryRow { owner: 9001, project: 3, ordinal, prototype_reward_handle: 41, option_handle: 42, date, ..Default::default() };
+        let history = if replaced { [(0, BEFORE), (1, OWN)].into_iter().filter(|&(_, date)| date <= hour).map(|(ordinal, date)| choice(ordinal, date)).collect() } else { vec![choice(0, 24)] };
+        set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(history));
+        let spelled: Vec<LexicalTokenRow> = if hour == LISTED {
+            [(41, "mod_reward"), (42, "mod_option"), (78, "replacement")].map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).into()
+        } else {
+            Vec::new()
+        };
+        set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled));
+        let mut slices: Vec<SliceReadRow> =
+            [TableId::Projects, TableId::ProjectHistory].into_iter().flat_map(|table| [11, 9001].map(|owner| SliceReadRow { table: table.index() as u32, owner, sample_hour: hour })).collect();
+        slices.sort_by_key(|row| (row.table, row.owner));
+        set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+        frame
+    };
+    for (path, text) in [("hoi4.exe", "test"), ("user/settings.txt", "language=l_english force_pow2_textures=no"), ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#)] {
+        std::fs::create_dir_all(root.join("user")).unwrap();
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    let (options, identity) = crate::test_fixtures::content_identity(&root);
+    let mut input = records(1, (FIRST..=LAST).map(frame).collect());
+    let replay::spool::Record::SessionStart(session) = &mut input[0] else { unreachable!() };
+    session.identity = identity.clone();
+    let path = root.join("synthetic.battleplan");
+    crate::test_fixtures::write_with_facts(&path, &options, &identity, input);
+    let replay = Replay::open(std::fs::read(&path).unwrap()).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-project-iteration-rendered".into(), revision: "1".into() }, path, Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let load = LoadContext { content: Some(options) };
+    let iteration = |ordinal: u32, hour: i32| {
+        let request = json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour, "read": LISTED });
+        let text = (entry::<SpecialProjectIterationAt>().registered.load)(&source, "lease", request, &load, &AtomicBool::new(false)).unwrap();
+        let mut reply: Value = serde_json::from_str(&text).unwrap();
+        reply["data"].take()
+    };
+    let own = iteration(1, OWN);
+    assert_eq!(own["unavailable"], Value::Null, "{own}");
+    assert!(own["sections"].to_string().contains("Variable 2"), "a choice made by the project the listing names shows its own values: {own}");
+    let before = iteration(0, BEFORE);
+    assert_eq!(before["unavailable"], Value::Null, "the listing read spells the choice and its project, though no other read does: {before}");
+    assert!(!before["sections"].to_string().contains("Variable 1"), "the predecessor's value is never shown as the replacement's: {before}");
+    assert!(before["refusals"].as_object().unwrap().keys().any(|why| why.contains("not proven to be this one")), "{before}");
+    std::fs::remove_dir_all(&root).ok();
 }

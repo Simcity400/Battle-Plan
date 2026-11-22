@@ -1,5 +1,5 @@
 import { runAt } from '../../charts/series.ts';
-import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
+import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
@@ -41,6 +41,8 @@ export function withBreakdown(slots: readonly ResearchSlotHistory[], breakdown: 
     return { ...slot, states, progress };
   });
 }
+
+export const completedBy = (entry: ResearchEntry) => entry.endedByHour !== null && entry.endedByHour > entry.lastObservedHour + 1;
 
 export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number) {
   let low = 0, high = slot.entries.length;

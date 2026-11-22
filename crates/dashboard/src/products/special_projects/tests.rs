@@ -55,6 +55,8 @@ fn a_completion_read_before_its_history_marker_counts_the_same_choices_in_one_ep
         assert!(episode.runs.iter().all(|run| run.iterations == Some(count)), "the choices are counted, never less one for a marker not read: {:?}", episode.runs);
         let done = &episode.runs[1];
         assert_eq!(fold.looks[done.presentation as usize].person, scientist, "the completed project keeps its scientist");
+        let reads: Vec<_> = episode.runs.iter().map(|run| run.iterations_read).collect();
+        assert_eq!(reads, [Some(1_000), Some(1_001), None], "a count is final only once its read lists the completion");
     }
 }
 
@@ -329,4 +331,40 @@ fn a_read_of_projects_or_choices_in_part_ends_no_project_and_counts_no_iteration
         assert_eq!(observed, [(FIRST, PROJECTS_IN_PART - 1), (PROJECTS_IN_PART + 1, LAST)]);
         assert_eq!(partial, [(PROJECTS_IN_PART, PROJECTS_IN_PART)], "the hour read in part is named apart from an unrecorded one");
     }
+}
+
+#[test]
+fn a_completion_marker_after_the_known_completion_is_a_new_episode_and_an_earlier_one_dates_it() {
+    let mut fold = Fold::new(START);
+    observe(&mut fold, 1_100, 1_110, &[(done(1), Some(entries(3, None)), Person::Unassigned)]);
+    observe(&mut fold, 1_111, 1_120, &[(done(1), Some(entries(3, Some(1_099))), Person::Unassigned)]);
+    observe(&mut fold, 1_125, 1_130, &[(done(1), Some(entries(3, Some(1_120))), Person::Unassigned)]);
+    let completions: Vec<Vec<_>> = fold.episodes.iter().map(|episode| episode.runs.iter().map(|run| (run.first_hour, run.completion.clone(), run.iterations_read)).collect()).collect();
+    let date = |hour, exact| Some(ProjectDate { hour, exact });
+    assert_eq!(
+        completions,
+        [vec![(1_100, date(1_100, false), Some(1_100)), (1_111, date(1_099, true), None)], vec![(1_125, date(1_120, true), None)]],
+        "a marker before the bound dates that completion; one after it is another completion, never the first one moved"
+    );
+}
+
+#[test]
+fn hours_whose_holder_is_unknown_are_named_apart_from_hours_no_one_held() {
+    use crate::test_fixtures::{CAMPAIGN, records, source};
+    use replay_frame::frame::TableView;
+    const UNKNOWN: i32 = 25;
+    let frame = |hour: i32| {
+        let mut frame = source(1, hour, None);
+        if hour == UNKNOWN {
+            *frame.tables[TableId::Countries.index()] = TableView::Unavailable { reason: "Synthetic identity refusal".into() };
+        }
+        frame
+    };
+    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, (20..=30).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "special-projects-unknown-holder".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let query = crate::answer::query(&source, 1).unwrap();
+    let country: Country = serde_json::from_value(serde_json::json!("GER")).unwrap();
+    let (_, holding) = pieces(&query, &country, 30);
+    assert_eq!(holding.unresolved, [(UNKNOWN, UNKNOWN)]);
+    assert!(holding.identities.iter().all(|run| run.last_hour < UNKNOWN || run.first_hour > UNKNOWN));
 }

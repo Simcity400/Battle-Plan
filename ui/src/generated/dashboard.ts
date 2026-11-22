@@ -3365,7 +3365,11 @@ progress: number, state: ProjectState, completion: ProjectDate | null, cancellat
 /**
  * The history's choices, its completion marker apart; none where the history was not recorded.
  */
-iterations: number | null, };
+iterations: number | null,
+/**
+ * The history read the count comes from; null where that read lists the completion, so the count is final, or where there is no count.
+ */
+iterationsRead: number | null, };
 export type ProjectEpisode = { id: string,
 /**
  * The project's raw owner id and its id within it, as the project detail products key it.
@@ -3376,6 +3380,10 @@ export type SpecialProjectsReply = { branchId: string, tag: string,
  * The tag's holders over the branch.
  */
 identities: Array<CountryIdentityRun>,
+/**
+ * The hours the tag's holder is unknown: whether it had projects is unknown.
+ */
+unresolved: Array<HourSpan>,
 /**
  * The hours the holders' projects were recorded.
  */

@@ -4,7 +4,7 @@ import type { ResearchHistory } from '../research/types';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { slotValues, slotNumbers, slotsStructure } from '../research/researchSlots.ts';
 import { activeSlots, isOpenedResearch, openedResearch, researchAfter } from './activeResearchData.ts';
-import { researchAt } from '../research/researchData.ts';
+import { completedBy, researchAt } from '../research/researchData.ts';
 import { panelStructure, panelViews } from '../../draw/panels/views.ts';
 import type { ResearchEntry, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsAt } from '../research/types';
@@ -104,6 +104,9 @@ test('an opened research keeps its own assignment: completed only once seen comp
   const completed = (result: ReturnType<typeof researchAfter>) => result.kind === 'completed' ? result.hour : result.message;
   assert.equal(completed(after({ first: day(30) }, day(62))), 'Left its slot; what became of it is not recorded at this hour.', 'a completion is not shown before it was observed');
   assert.equal(completed(after({ first: day(30) }, day(70))), day(60));
+  const bounded = after({ first: day(30) }, day(70));
+  assert.ok(bounded.kind === 'completed' && completedBy({ ...bounded.entry, lastObservedHour: day(50) }), 'a research last seen well before it left its slot completed by then, not on that day');
+  assert.ok(bounded.kind === 'completed' && !completedBy({ ...bounded.entry, lastObservedHour: day(60) - 1 }), 'seen the hour before it left, it completed then');
   assert.equal(completed(after({ first: day(0) }, day(90))), day(20), 'the earlier level keeps its own date, not the latest one of its token');
   assert.equal(completed(after({ first: day(70) }, day(90))), 'This research is not recorded in its slot at this hour.');
   assert.equal(completed(after({ first: day(30), index: 5 }, day(90))), 'This research is not recorded in its slot at this hour.', 'another definition of the token is not this research');

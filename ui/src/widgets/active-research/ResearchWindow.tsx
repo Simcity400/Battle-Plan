@@ -9,7 +9,7 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { PanelFeed } from '../../dashboard/panelFeed';
 import ResearchExplanation from '../research/ResearchExplanation';
 import { TechnologyEffects } from '../research/TechnologyWindow';
-import { researchAt } from '../research/researchData';
+import { completedBy, researchAt } from '../research/researchData';
 import { slotNumbers } from '../research/researchSlots';
 import type { ResearchData, ResearchSlotsAt } from '../research/types';
 import type { ActiveSlot, OpenedResearch } from './activeResearchData';
@@ -44,7 +44,7 @@ export default function ResearchWindow({ runtime, widget, track, tag, data, repl
         <ProgressMeter value={numbers.fraction} state="live" label={`${shown.name} progress`} />
         <span className="dossier-progress-side" data-paint="days">{numbers.days}</span>
       </div>}
-      {finished && <div className="dossier-progress is-done"><strong className="dossier-progress-value">Completed {researchDate(finished.hour)}</strong></div>}
+      {finished && <div className="dossier-progress is-done"><strong className="dossier-progress-value">Completed {completedBy(finished.entry) ? 'by ' : ''}{researchDate(finished.hour)}</strong></div>}
       {after?.kind === 'gone' && <p className="dossier-missing">{after.message}</p>}
       <div className="dossier-body">
       <TechnologyEffects runtime={runtime} widget={widget} tag={tag} token={opened.token} databaseIndex={opened.databaseIndex} active={active} />

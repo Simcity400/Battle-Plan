@@ -548,6 +548,7 @@ pub struct World<'a> {
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
     appearance: Index<Linked<BTreeMap<u32, u128>>>,
     template_names: Option<TemplateNames<'a>>,
+    withheld_project: Option<(u32, u32, String)>,
 }
 
 pub struct ContentFacts<'a> {
@@ -1498,7 +1499,17 @@ impl<'a> World<'a> {
             leader_roles: content.leader_roles.into(),
             appearance: OnceLock::new(),
             template_names: None,
+            withheld_project: None,
         }
+    }
+
+    pub fn withholding_project(mut self, withheld: Option<(u32, u32, String)>) -> Self {
+        self.withheld_project = withheld;
+        self
+    }
+
+    pub(crate) fn withheld_project(&self, owner: u32, id: u32) -> Option<&str> {
+        self.withheld_project.as_ref().filter(|held| (held.0, held.1) == (owner, id)).map(|held| held.2.as_str())
     }
 
     #[cfg(test)]

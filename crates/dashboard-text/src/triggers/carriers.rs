@@ -12,6 +12,9 @@ const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["country", "ordina
 
 impl<'a> World<'a> {
     pub(crate) fn project(&self, owner: u32, id: u32) -> Result<Cow<'a, ProjectRow>, Failure> {
+        if let Some(why) = self.withheld_project(owner, id) {
+            return Err(super::refusal::refused(why.to_owned()));
+        }
         table::<tables::Projects>(self.tables(), tables::Projects::ID.full_mask())?
             .get((u128::from(owner) << 32) | u128::from(id))
             .map_err(|why| super::refusal::input_error(tables::Projects::ID, why))?

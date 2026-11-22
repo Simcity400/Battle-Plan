@@ -19,9 +19,9 @@ import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { REWARDS_PANEL, detailTexts, effectsRead, effectsStructure, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
-import { episodeBound, joinDue, projectDate, runtimeProject, scientistName } from './specialProjectsData';
+import { episodeBound, iterationsAsOf, joinDue, projectDate, runtimeProject, scientistName } from './specialProjectsData';
 import type { ProjectCard, RuntimeMatch } from './specialProjectsData';
-import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectsReply } from '../../generated/dashboard';
+import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, SpecialProjectRun, SpecialProjectsReply } from '../../generated/dashboard';
 
 const STATES = { running: 'In progress', paused: 'Paused', unknown: 'State unknown', completed: 'Completed', cancelled: 'Cancelled' } as const;
 const STATE_TONES = { running: '', paused: ' is-paused', unknown: ' is-quiet', completed: ' is-done', cancelled: ' is-quiet' } as const;
@@ -89,7 +89,7 @@ function Runtime({ runtime, widget, tag, active, reply, card, hour, through }: A
   return <div className="dossier-body" ref={ref}>
     {error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : !data || !match ? <WidgetState kind="loading" label="Loading project rewards…" />
       : typeof match === 'string' ? <p className="dossier-missing">{match}</p>
-        : <DetailValues.Provider value={values}><Rewards runtime={runtime} widget={widget} tag={tag} active={active} hour={data.hour} match={match} done={card.run.state === 'completed'} /></DetailValues.Provider>}
+        : <DetailValues.Provider value={values}><Rewards runtime={runtime} widget={widget} tag={tag} active={active} hour={data.hour} match={match} run={card.run} /></DetailValues.Provider>}
   </div>;
 }
 
@@ -103,8 +103,9 @@ function Output({ value, state, onOpen }: { value: ProjectEffects | null | undef
   </>;
 }
 
-function Rewards({ runtime, widget, tag, active, hour, match, done }: Asked & { hour: number; match: RuntimeMatch; done: boolean }) {
+function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { hour: number; match: RuntimeMatch; run: SpecialProjectRun }) {
   const { project } = match;
+  const done = run.state === 'completed';
   const box = useRef<HTMLDivElement>(null);
   const effects = useHeadProduct<SpecialProjectEffects>(runtime, widget, 'special-project-effects', { country: countryFromKey(tag), owner: project.owner, project: project.id },
     { active, validate: validateProjectEffects, structure: effectsStructure });
@@ -125,7 +126,7 @@ function Rewards({ runtime, widget, tag, active, hour, match, done }: Asked & { 
           <h5><Name label={option.label} /></h5><Output value={typeof options === 'string' ? null : options[index]} state={typeof options === 'string' ? options : null} onOpen={setOpened} /></div>)}</div>
       </>}
     </section>}
-    <Iterations runtime={runtime} widget={widget} tag={tag} active={active} project={project} choices={match.choices} onOpen={setOpened} />
+    <Iterations runtime={runtime} widget={widget} tag={tag} active={active} project={project} choices={match.choices} run={run} onOpen={setOpened} />
     <section className="dossier-section">
       <h4>Project output</h4>
       <Output value={effects.data?.output} state={state} onOpen={setOpened} />
@@ -140,10 +141,14 @@ function Rewards({ runtime, widget, tag, active, hour, match, done }: Asked & { 
   </div>;
 }
 
-function Iterations({ runtime, widget, tag, active, project, choices, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; onOpen: (link: EntityLink) => void }) {
+function Iterations({ runtime, widget, tag, active, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: SpecialProjectRun;
+  onOpen: (link: EntityLink) => void }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const ended = run.state !== 'running' && run.state !== 'paused';
+  const final = Array.isArray(choices) && iterationsAsOf(run) === null && run.iterations === choices.length;
+  const asOf = ended && !final && project.historyReadHour !== null ? ` as of ${dayLabel(project.historyReadHour)}` : '';
   return <section className="dossier-section">
-    <h4>Iterations{Array.isArray(choices) && choices.length > 0 && <span className="project-window-count">{choices.length}</span>}</h4>
+    <h4>Iterations{Array.isArray(choices) && choices.length > 0 && <span className="project-window-count">{choices.length}{asOf}</span>}</h4>
     {choices === null ? <p className="dossier-missing">Iterations not recorded.</p> : typeof choices === 'string' ? <p className="dossier-missing">{choices}</p>
       : choices.length === 0 ? <p className="dossier-note">No iterations yet.</p>
       : <ol className="project-window-timeline">{choices.map(choice => <li key={choice.ordinal}>
