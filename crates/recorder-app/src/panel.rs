@@ -15,7 +15,7 @@ pub const ASK_STOP_EVENT: &str = "recorder-ask-stop";
 const WIDTH: f64 = 360.0;
 const MARGIN: f64 = 12.0;
 const REOPEN_GUARD: Duration = Duration::from_millis(400);
-const REPLAY_IDENTIFIER: &str = "local.hoi4.replay";
+const REPLAY_IDENTIFIER: &str = "local.battleplan.replay";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {

@@ -13,8 +13,8 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
-const RELEASES: Option<&str> = option_env!("BATTLE_PLAN_RELEASES");
-const VERSION: &str = match option_env!("BATTLE_PLAN_VERSION") {
+const RELEASES: Option<&str> = option_env!("BATTLEPLAN_RELEASES");
+const VERSION: &str = match option_env!("BATTLEPLAN_VERSION") {
     Some(version) if !version.is_empty() => version,
     _ => env!("CARGO_PKG_VERSION"),
 };
@@ -54,7 +54,7 @@ impl Role {
     fn installer_arguments(self) -> &'static str {
         match self {
             Self::Dashboard => "/P /UPDATE /R",
-            Self::Recorder => "/P /UPDATE /HOI4RECORDER",
+            Self::Recorder => "/P /UPDATE /BATTLEPLANRECORDER",
         }
     }
 }
@@ -199,7 +199,7 @@ fn feed(channel: Channel) -> Result<String, String> {
     ))
 }
 
-const SETUP_GUARD: &str = "Local\\HOI4Replay.Setup";
+const SETUP_GUARD: &str = "Local\\BattlePlan.Setup";
 
 pub fn setup_running() -> bool {
     use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::OpenMutexW};

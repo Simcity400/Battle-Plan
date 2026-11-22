@@ -310,7 +310,7 @@ impl Laps {
 
 fn gpu_wait(device: &wgpu::Device) -> f64 {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    if !ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
+    if !ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_GPU_WAIT").or_else(|| std::env::var_os("HOI4_VIEWER_GPU_WAIT")).is_some()) {
         return 0.0;
     }
     let start = Instant::now();
@@ -1145,7 +1145,7 @@ impl Viewer {
         let capture = options.window_dump.then(|| Capture {
             path: options.out.clone().unwrap_or_default(),
             remaining: if profiling() {
-                if std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
+                if std::env::var("BATTLEPLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).is_ok_and(|mode| mode == "seek_end") {
                     1921
                 } else {
                     profiling_sweep().end
@@ -1753,7 +1753,7 @@ impl Viewer {
             return;
         }
         if let Some(mut document) = self.document.take() {
-            let result = self.map(ui, frame, &mut document);
+            let result = self.map(ui, frame, &mut document, Some(target.id.as_str()));
             self.after_frame_with_visual_mods(&document, result.as_ref().err());
             if let Err(error) = result {
                 self.refuse_capture(&error, ui.ctx());
@@ -3636,11 +3636,12 @@ impl Viewer {
         ui: &mut egui::Ui,
         frame: &eframe::Frame,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let state = frame
             .wgpu_render_state()
             .ok_or("WGPU renderer is unavailable")?;
-        self.map_with_state(ui, state, document)
+        self.map_with_state(ui, state, document, view_id)
     }
 
     pub(crate) fn window_frame(
@@ -3653,7 +3654,7 @@ impl Viewer {
             .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 let result = match state {
-                    Some(state) => self.map_with_state(ui, state, document),
+                    Some(state) => self.map_with_state(ui, state, document, None),
                     None => Err("WGPU renderer is unavailable".to_owned()),
                 };
                 self.after_frame_with_visual_mods(document, result.as_ref().err());
@@ -3674,10 +3675,11 @@ impl Viewer {
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let tables = document.content.tables;
         let result = engine_executable::executable_tables::scope(tables, || {
-            self.draw_map(ui, state, document)
+            self.draw_map(ui, state, document, view_id)
         });
         if !self.drew_frame {
             self.silence_unshown();
@@ -3690,6 +3692,7 @@ impl Viewer {
         ui: &mut egui::Ui,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view_id: Option<&str>,
     ) -> Result<(), String> {
         let _other_cost = replay_frame::cpu::scope("frame.refresh", Some("other"));
         let whole = self.options.window_dump || self.capture.as_ref().is_some_and(|capture| !capture.paced);
@@ -4514,10 +4517,23 @@ impl Viewer {
                 ui.ctx().request_repaint();
             }
         }
+        let pending_camera = crate::suite_input::take_camera(view_id).filter(|command| !command.is_cancelled());
+        if let Some(command) = &pending_camera {
+            self.zoom.reset();
+            self.orbit.reset();
+            self.camera_manual = crate::suite_input::apply_camera(camera, command.target, pixels, &floor);
+            ui.ctx().request_repaint();
+        }
         let shift = viewer_foundation::map::province_admission::seam_shift(*camera, pixels);
         if shift != 0.0 {
             camera.center[0] += shift;
             self.zoom.shift([shift, 0.0]);
+        }
+        if let Some(command) = pending_camera {
+            command.finish(Ok(crate::suite_input::ResolvedCamera {
+                center: camera.center,
+                height: camera.height,
+            }));
         }
         self.camera = Some(camera.placement());
         let (camera, overlay_camera) = match pinned.filter(|_| !placed_walk) {
@@ -5927,7 +5943,7 @@ impl Viewer {
         let playback_stamp =
             profiling().then(|| self.profile_playback.stamp(self.playhead, self.playing));
         let silent = self.capture.is_some()
-            && (self.campaign_tab || std::env::var_os("BATTLE_PLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some());
+            && (self.campaign_tab || std::env::var_os("BATTLEPLAN_VIEWER_AUDIO_LOG").or_else(|| std::env::var_os("HOI4_VIEWER_AUDIO_LOG")).is_some());
         if silent {
             viewer_audio::System::silent();
         }
@@ -6187,7 +6203,7 @@ impl Viewer {
         if self.load_complete(document.icons.lazy.busy(), overlay_fresh) {
             if document.content.finish_loading()
                 && let Some(source) = &self.source
-                && std::env::var_os("BATTLE_PLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")).is_some()
+                && std::env::var_os("BATTLEPLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")).is_some()
                 && let Ok(options) = self.config.resolve_options()
             {
                 crate::perf_log::source_admission_probe(source, &options);
@@ -6622,7 +6638,7 @@ impl Viewer {
         }
         let drawn = if let Some(mut document) = self.document.take() {
             if profiling() && self.capture.is_some() {
-                let mode = std::env::var("BATTLE_PLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
+                let mode = std::env::var("BATTLEPLAN_VIEWER_PROFILE").or_else(|_| std::env::var("HOI4_VIEWER_PROFILE")).unwrap_or_default();
                 let sweep_frames = profiling_sweep();
                 let middle = sweep_frames.start + sweep_frames.len() as u32 / 2;
                 let mut sought = false;
@@ -6770,7 +6786,7 @@ pub(crate) fn date(hour: i32) -> String {
 
 fn check_overlay() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_CHECK_OVERLAY").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_OVERLAY")).is_some())
 }
 
 pub(crate) mod overlay_checks {
@@ -6795,7 +6811,7 @@ pub(crate) mod overlay_checks {
 
 fn check_anchor() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ANCHOR").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ANCHOR")).is_some())
+    *ENABLED.get_or_init(|| std::env::var_os("BATTLEPLAN_VIEWER_CHECK_ANCHOR").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ANCHOR")).is_some())
 }
 
 fn placed_anchor(target: Playhead, moving: bool, speed: f64, age: Duration, last: i32) -> Playhead {
@@ -7437,8 +7453,7 @@ pub(crate) mod tests {
 
     #[test]
     fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use {
             viewer_foundation::map::counter_hovers::task_force::Control,
             viewer_foundation::map::counter_hovers::task_force::Hover,

@@ -812,6 +812,9 @@ impl Options {
                 _ => return Err(invalid(USAGE)),
             }
         }
+        if options.replay.as_deref().is_some_and(|path| !replay::recording_files::is_recording(path)) {
+            return Err(invalid("Choose a BattlePlan recording."));
+        }
         match walk {
             Some(place) => {
                 options.walk = Some(
@@ -849,7 +852,7 @@ impl Options {
             && (!profiling || options.headless_dump || options.compare.is_some())
         {
             return Err(invalid(
-                "--profile-pointer requires an interactive window with BATTLE_PLAN_VIEWER_PROFILE",
+                "--profile-pointer requires an interactive window with BATTLEPLAN_VIEWER_PROFILE",
             ));
         }
         if options.province_hover.is_some() && !options.headless_dump {
@@ -1114,7 +1117,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if !options.headless_dump && !options.window_dump {
         return Err(invalid(
-            "The battle-plan app (replay-desktop.exe) shows maps itself. The viewer runs --dump, --window-dump, --compare, --mod-corpus and --mod-corpus-diff; see --help.",
+            "BattlePlan (replay-desktop.exe) shows maps itself. The viewer runs --dump, --window-dump, --compare, --mod-corpus and --mod-corpus-diff; see --help.",
         )
         .into());
     }
@@ -2269,6 +2272,18 @@ mod tests {
 
     fn parse(args: &[&str]) -> io::Result<Options> {
         Options::parse(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn replay_arguments_require_a_battleplan_extension() {
+        assert!(parse(&["campaign.BATTLEPLAN"]).is_ok());
+        for args in [
+            &["campaign.replay"][..],
+            &["--dump", "campaign.replay", "--hour", "1", "--out", "frame.png"],
+            &["--window-dump", "campaign.replay", "--out", "frame.png"],
+        ] {
+            assert_eq!(parse(args).err().unwrap().to_string(), "Choose a BattlePlan recording.");
+        }
     }
 
     #[test]

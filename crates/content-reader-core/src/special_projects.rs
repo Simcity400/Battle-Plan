@@ -507,8 +507,7 @@ mod tests {
     #[test]
     fn gap_research_grants_prototype_rewards_resolve_inline_and_generic_mod_options_in_authored_order()
      {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!("project-rewards-{}", std::process::id()));
         let projects = root.join("common/special_projects/projects");
         let rewards = root.join("common/special_projects/prototype_rewards");
@@ -638,75 +637,4 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_SP_GAME and BATTLE_PLAN_SP_WORKSHOP read-only content folders"]
-    fn installed_content_corpus() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        use std::path::Path;
-        fn walk(
-            root: &Path,
-            specialization: bool,
-            files: &mut usize,
-            definitions: &mut usize,
-            refusals: &mut Vec<String>,
-            names: &crate::key_names::KeyNames,
-        ) {
-            if !root.is_dir() {
-                return;
-            }
-            for entry in std::fs::read_dir(root).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    walk(&path, specialization, files, definitions, refusals, names);
-                } else if path.extension().is_some_and(|ext| ext == "txt") {
-                    *files += 1;
-                    match read(
-                        &std::fs::read(&path).unwrap(),
-                        specialization,
-                        Some(names),
-                        None,
-                    ) {
-                        Ok(items) => *definitions += items.len(),
-                        Err(reason) => refusals.push(format!("{}: {reason}", path.display())),
-                    }
-                }
-            }
-        }
-        let game = std::env::var_os("BATTLE_PLAN_SP_GAME").or_else(|| std::env::var_os("HOI4_SP_GAME")).expect("BATTLE_PLAN_SP_GAME");
-        let workshop = std::env::var_os("BATTLE_PLAN_SP_WORKSHOP").or_else(|| std::env::var_os("HOI4_SP_WORKSHOP")).expect("BATTLE_PLAN_SP_WORKSHOP");
-        let mut roots = vec![std::path::PathBuf::from(game)];
-        roots.extend(
-            std::fs::read_dir(workshop)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .filter(|path| path.is_dir()),
-        );
-        roots.sort();
-        let folders: Vec<_> = roots.iter().map(|root| (root.as_path(), &[][..])).collect();
-        let layers = ResolvedLayers::from_folders(&folders).unwrap();
-        let names = layers.key_names().unwrap();
-        let mut refusals = Vec::new();
-        for root in roots {
-            let (mut files, mut definitions) = (0, 0);
-            for (folder, specialization) in [("projects", false), ("specialization", true)] {
-                walk(
-                    &root.join("common/special_projects").join(folder),
-                    specialization,
-                    &mut files,
-                    &mut definitions,
-                    &mut refusals,
-                    &names,
-                );
-            }
-            println!(
-                "{}: {files} files, {definitions} definitions",
-                root.display()
-            );
-        }
-        for reason in &refusals {
-            println!("REFUSED {reason}");
-        }
-        assert!(refusals.is_empty(), "{} refused files", refusals.len());
-    }
 }

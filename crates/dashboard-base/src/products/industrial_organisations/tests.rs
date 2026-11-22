@@ -177,7 +177,7 @@ impl Content {
     }
     fn with_visible(visible: &str, available: &str) -> Self {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+            .expect("modifier name tests require BATTLEPLAN_GAME_DIR with the supported installation");
         let modifier = engine_executable::modifier_keys::fixed_name(KEY).unwrap();
         let root = std::env::temp_dir().join(format!("mio_policy_quote_{}", uuid::Uuid::new_v4()));
         let write = |path: &str, text: &str| {

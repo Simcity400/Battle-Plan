@@ -195,8 +195,6 @@ mod tests {
 
     #[test]
     fn sharp_turn_preserves_inserted_corner_controls_and_uv_continuity() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let strip = build(
             &[
                 [-10.0, 0.0, 0.0],

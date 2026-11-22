@@ -31,7 +31,7 @@ function cdp(endpoint: string, method: string, params: Record<string, unknown> =
 type ReplyFormat = { FORMAT_FILE: string; formatOf(text: string): { lines: string[]; digest: string } };
 
 async function recordedReplies(path: string, response: ServerResponse): Promise<void> {
-  const file = (process.env.BATTLE_PLAN_RECORDED_REPLIES ?? process.env.HOI4_RECORDED_REPLIES) || null;
+  const file = (process.env.BATTLEPLAN_RECORDED_REPLIES ?? process.env.HOI4_RECORDED_REPLIES) || null;
   if (path === '/format') {
     const { FORMAT_FILE, formatOf } = await import(new URL('./e2e/replies.mjs', import.meta.url).href) as ReplyFormat;
     const tree = formatOf(await readFile(fileURLToPath(new URL(`../${FORMAT_FILE}`, import.meta.url)), 'utf8'));
@@ -41,8 +41,8 @@ async function recordedReplies(path: string, response: ServerResponse): Promise<
   }
   if (!file || !existsSync(file)) {
     response.statusCode = 404;
-    response.end(file ? `BATTLE_PLAN_RECORDED_REPLIES names ${file}, which does not exist`
-      : 'No recorded replies: set BATTLE_PLAN_RECORDED_REPLIES to a file the acceptance sweep recorded (`--record-replies`) from the 13-year recording of the current format');
+    response.end(file ? `BATTLEPLAN_RECORDED_REPLIES names ${file}, which does not exist`
+      : 'No recorded replies: set BATTLEPLAN_RECORDED_REPLIES to a file the acceptance sweep recorded (`--record-replies`) from the 13-year recording of the current format');
     return;
   }
   response.setHeader('Content-Type', 'application/gzip');
@@ -60,10 +60,10 @@ export interface NativePage {
 }
 
 export async function withNativePage(name: string, fixture: string, run: (page: NativePage) => Promise<void>): Promise<void> {
-  const edge = (process.env.BATTLE_PLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
+  const edge = (process.env.BATTLEPLAN_CANVAS_BROWSER ?? process.env.HOI4_CANVAS_BROWSER) ?? [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
     .filter((directory): directory is string => Boolean(directory))
     .map(directory => resolve(directory, 'Microsoft/Edge/Application/msedge.exe')).find(existsSync);
-  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLE_PLAN_CANVAS_BROWSER to its executable');
+  assert.ok(edge && existsSync(edge), 'Headless Edge is required; set BATTLEPLAN_CANVAS_BROWSER to its executable');
   const profile = await mkdtemp(resolve(tmpdir(), `${name}-`));
   const route = `/${name}-page`;
   const vite = await createServer({ configFile: false, root: fileURLToPath(new URL('../', import.meta.url)),

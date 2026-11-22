@@ -822,7 +822,7 @@ mod tests {
     fn acquisition_cost() {
         use super::scale_support::{descriptors, resource_arena};
         use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let countries = std::env::var("BATTLE_PLAN_RESOURCE_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_RESOURCE_COST_COUNTRIES"))
+        let countries = std::env::var("BATTLEPLAN_RESOURCE_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_RESOURCE_COST_COUNTRIES"))
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(5_000_usize);

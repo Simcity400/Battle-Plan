@@ -500,7 +500,7 @@ mod tests {
     }
 
     fn isolated(name: &str, run: impl FnOnce()) {
-        const CHILD: &str = "BATTLE_PLAN_PROJECT_RUNTIME_TEST";
+        const CHILD: &str = "BATTLEPLAN_PROJECT_RUNTIME_TEST";
         if std::env::var(CHILD).ok().as_deref() == Some(name) {
             run();
             return;

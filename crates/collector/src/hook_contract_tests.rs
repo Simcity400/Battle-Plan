@@ -555,7 +555,7 @@ fn omitted_or_wrong_family_native_site_is_a_registration_failure() {
 }
 
 pub(crate) fn isolated(test: &str) -> bool {
-    const CHILD: &str = "BATTLE_PLAN_CONTAINMENT_REVIEW_TEST";
+    const CHILD: &str = "BATTLEPLAN_CONTAINMENT_REVIEW_TEST";
     if std::env::var_os(CHILD).is_some() {
         return true;
     }

@@ -78,7 +78,7 @@ class FakeBoat:
         if command == "new":
             source = args[args.index("--from") + 1]
             if source in self.missing:
-                return types.SimpleNamespace(returncode=1, stdout="", stderr="no such snapshot"), []
+                return types.SimpleNamespace(returncode=1, stdout="", stderr=f'No saved snapshot "{source}".'), []
             kind = args[args.index("--type") + 1]
             if kind in self.too_small:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr=""), [{"code": "deploy_failed", "error": f"This sandbox uses 87.3 GB of disk, which does not fit any available '{kind}' machine (largest budget: 76.0 GB).", "event": "error"}]
@@ -295,6 +295,7 @@ class Parse(unittest.TestCase):
         mode, cargo, outdir, _ = bt.parse(["build", "--out", "x", "--release", "-p", "viewer"])
         self.assertEqual((mode, cargo, outdir), ("build", ["build", "--release", "-p", "viewer"], Path("x")))
         self.assertEqual(bt.parse(["snapshot"]), ("snapshot", [], None, None))
+        self.assertEqual(bt.parse(["snapshot", "--from", "seed"]), ("snapshot", ["seed"], None, None))
         with self.assertRaises(bt.Failure):
             bt.parse(["snapshot", "--workspace"])
         self.assertEqual(bt.parse(["ui"]), ("ui", [], None, None))
@@ -340,7 +341,7 @@ class TestPrograms(unittest.TestCase):
         deps = f"/home/user/hoi4/target/{bt.TARGET}/debug"
         viewer, other = "path+file:///home/user/hoi4/src/crates/viewer#0.1.0", "path+file:///home/user/hoi4/src/crates/viewer-core#0.2.0-rc.1"
         events = [
-            {"reason": "build-script-executed", "package_id": viewer, "env": [["BATTLE_PLAN_STAMP", "abc"]], "out_dir": "/x"},
+            {"reason": "build-script-executed", "package_id": viewer, "env": [["BATTLEPLAN_STAMP", "abc"]], "out_dir": "/x"},
             artifact(other, "viewer_core", ["lib"], False, None),
             artifact(viewer, "viewer", ["lib"], True, f"{deps}/deps/viewer-1a.exe"),
             artifact(viewer, "viewer", ["bin"], True, f"{deps}/deps/viewer-2b.exe"),
@@ -358,7 +359,7 @@ class TestPrograms(unittest.TestCase):
         files, tests, binaries = remote_function("test_programs")(events, packages, {"viewer/viewer"}, False)
         self.assertEqual([(test["package"]["name"], test["target"], test["kind"], test["executable"]) for test in tests], [("viewer", "viewer", ["lib"], "viewer-1a.exe"), ("viewer", "viewer", ["bin"], "viewer-2b.exe"), ("viewer", "dump_stack", ["test"], "dump_stack-3c.exe"), ("viewer-core", "viewer_core", ["lib"], "viewer_core-4d.exe")])
         self.assertEqual(tests[0]["package"]["manifest"], "crates/viewer/Cargo.toml")
-        self.assertEqual((tests[0]["package"]["env"], tests[3]["package"]["env"], tests[3]["package"]["license"]), ([["BATTLE_PLAN_STAMP", "abc"]], [], "MIT"))
+        self.assertEqual((tests[0]["package"]["env"], tests[3]["package"]["env"], tests[3]["package"]["license"]), ([["BATTLEPLAN_STAMP", "abc"]], [], "MIT"))
         self.assertEqual(binaries, [{"package": "viewer", "name": "viewer", "executable": "viewer.exe", "path": f"{deps}/viewer.exe"}])
         self.assertEqual(files, [f"{deps}/deps/viewer-1a.exe", f"{deps}/deps/viewer-2b.exe", f"{deps}/deps/dump_stack-3c.exe", f"{deps}/deps/viewer_core-4d.exe", f"{deps}/viewer.exe"])
 
@@ -371,14 +372,14 @@ def program(name="replay", kind=("lib",), target="replay", executable="replay-1a
 class TestEnvironment(unittest.TestCase):
     def test_a_program_gets_what_cargo_test_sets_with_this_machines_paths(self):
         worktree, folder = Path("C:/w"), Path("C:/w/.cargo-target/boat-test")
-        base = {"Path": "C:/bin", "BATTLE_PLAN_CAPTURES": "D:/c", "CARGO_PKG_NAME": "stale"}
+        base = {"Path": "C:/bin", "BATTLEPLAN_CAPTURES": "D:/c", "CARGO_PKG_NAME": "stale"}
         binaries = [{"package": "viewer", "name": "viewer", "executable": "viewer.exe"}, {"package": "other", "name": "x", "executable": "x.exe"}]
-        unit = bt.test_environment(base, worktree, folder, program("viewer", env=[("BATTLE_PLAN_STAMP", "abc")], version="0.4.1-rc.2+build.5"), binaries)
-        keys = ("CARGO_MANIFEST_DIR", "CARGO_MANIFEST_PATH", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PKG_VERSION_MAJOR", "CARGO_PKG_VERSION_MINOR", "CARGO_PKG_VERSION_PATCH", "CARGO_PKG_VERSION_PRE", "CARGO_PKG_AUTHORS", "CARGO_PKG_DESCRIPTION", "CARGO_PKG_RUST_VERSION", "BATTLE_PLAN_STAMP", "BATTLE_PLAN_CAPTURES", "Path")
+        unit = bt.test_environment(base, worktree, folder, program("viewer", env=[("BATTLEPLAN_STAMP", "abc")], version="0.4.1-rc.2+build.5"), binaries)
+        keys = ("CARGO_MANIFEST_DIR", "CARGO_MANIFEST_PATH", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PKG_VERSION_MAJOR", "CARGO_PKG_VERSION_MINOR", "CARGO_PKG_VERSION_PATCH", "CARGO_PKG_VERSION_PRE", "CARGO_PKG_AUTHORS", "CARGO_PKG_DESCRIPTION", "CARGO_PKG_RUST_VERSION", "BATTLEPLAN_STAMP", "BATTLEPLAN_CAPTURES", "Path")
         self.assertEqual({key: unit[key] for key in keys}, {
             "CARGO_MANIFEST_DIR": str(worktree / "crates/viewer"), "CARGO_MANIFEST_PATH": str(worktree / "crates/viewer/Cargo.toml"), "CARGO_PKG_NAME": "viewer", "CARGO_PKG_VERSION": "0.4.1-rc.2+build.5",
             "CARGO_PKG_VERSION_MAJOR": "0", "CARGO_PKG_VERSION_MINOR": "4", "CARGO_PKG_VERSION_PATCH": "1", "CARGO_PKG_VERSION_PRE": "rc.2", "CARGO_PKG_AUTHORS": "a:b", "CARGO_PKG_DESCRIPTION": "",
-            "CARGO_PKG_RUST_VERSION": "1.80", "BATTLE_PLAN_STAMP": "abc", "BATTLE_PLAN_CAPTURES": "D:/c", "Path": str(folder) + os.pathsep + "C:/bin"})
+            "CARGO_PKG_RUST_VERSION": "1.80", "BATTLEPLAN_STAMP": "abc", "BATTLEPLAN_CAPTURES": "D:/c", "Path": str(folder) + os.pathsep + "C:/bin"})
         self.assertNotIn("PATH", unit)
         self.assertFalse({"CARGO_BIN_EXE_viewer", "CARGO_TARGET_TMPDIR"} & unit.keys())
         integration = bt.test_environment(base, worktree, folder, program("viewer", ("test",), "dump_stack"), binaries)
@@ -1115,14 +1116,19 @@ class Run(Harness):
         entry = self.state.entry("a")
         self.assertEqual((list(entry["tree_tests_dev"]), entry["tree_build_release"]), (["app"], {"app": "x"}))
 
-    def test_an_image_is_saved_only_after_every_step_compiled_and_from_the_base_until_it_exists(self):
-        self.saved.update(SNAPSHOT=bt.SNAPSHOT, BASE_SNAPSHOT=bt.BASE_SNAPSHOT)
-        bt.SNAPSHOT, bt.BASE_SNAPSHOT = "image", "base"
+    def test_an_image_is_saved_after_the_build_steps_from_the_selected_source(self):
+        self.saved.update(SNAPSHOT=bt.SNAPSHOT)
+        bt.SNAPSHOT = "image"
         fake = self.use(FakeBoat([]))
         fake.missing = {"image"}
-        self.assertEqual(bt.main(["snapshot"]), 0)
+        self.assertEqual(bt.main(["snapshot"]), bt.UNAVAILABLE)
+        self.assertEqual([call[2] for call in fake.calls if call[0] == "new"], ["image"])
+        fake = self.use(FakeBoat([]))
+        with mock.patch.dict(os.environ, {"BOAT_MACHINE_TYPE": ""}):
+            self.assertEqual(bt.main(["snapshot", "--from", "seed"]), 0)
         news = [call for call in fake.calls if call[0] == "new"]
-        self.assertEqual([call[call.index("--from") + 1] for call in news], ["image", "base"])
+        self.assertEqual(len(news), 1)
+        self.assertEqual(news[0][:7], ("new", "--from", "seed", "--type", "default", "--name", "battleplan-image-image"))
         steps = [call for call in fake.remote_calls if len(call) > 2 and call[1] in {"clear", "ui", "check", "test", "build", "provenance", "prune"}]
         self.assertEqual([call[1] for call in steps], ["clear", "ui", "check", "provenance", "prune"])
         self.assertEqual([call[3:4] == ("--sync",) for call in steps], [False, True, False, False, False])

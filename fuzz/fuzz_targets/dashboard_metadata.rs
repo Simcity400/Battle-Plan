@@ -5,9 +5,9 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use dashboard::{Source, SourceKey};
+use dashboard_base::{Source, SourceKey};
 use libfuzzer_sys::fuzz_target;
-use replay::container::Replay;
+use replay::campaign::Replay;
 
 fn read(replay: Replay) {
     let source = Source::from_replay(
@@ -28,7 +28,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(replay) = Replay::open(data.to_vec()) {
         read(replay);
     }
-    if let Ok(replay) = battle-plan_fuzz::raw_recording(data) {
+    if let Ok(replay) = battleplan_fuzz::raw_recording(data) {
         read(replay);
     }
 });

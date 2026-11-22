@@ -338,8 +338,7 @@ mod tests {
 
     #[test]
     fn a_string_takes_writes_as_its_bytes_lie() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut string = CxxString::default();
         string.assign(b"abcdef").unwrap();
         string.write(0, 0x41).unwrap();

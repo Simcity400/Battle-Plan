@@ -46,9 +46,9 @@ def sha256(path):
 
 
 def run(viewer, arguments, captures, seed=None):
-    environment = dict(os.environ, BATTLE_PLAN_CAPTURES=str(captures))
+    environment = dict(os.environ, BATTLEPLAN_CAPTURES=str(captures))
     if seed:
-        environment["BATTLE_PLAN_PLAYBACK_SEED_CACHE"] = str(seed)
+        environment["BATTLEPLAN_PLAYBACK_SEED_CACHE"] = str(seed)
     return subprocess.run([str(viewer), *arguments], env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                           text=True, errors="replace")
 

@@ -33,6 +33,7 @@ pub fn render_images(
     let arena = shader_pipeline::gpu::Arena::new(device);
     arena.reset();
     pass.upload(device, queue, &arena, batch, [16, 16], 1.);
+    queue.submit(pass.bake_buffers());
     let first_count = pass.native.cache.created;
     let bake_count = pass.bake_stream.cache.created;
     let bake_views: Vec<_> = pass.bakes.iter().map(|b| b.view.clone()).collect();
@@ -42,6 +43,7 @@ pub fn render_images(
     arena.flush(queue);
     pass.upload(device, queue, &arena, batch, [16, 16], 1.);
     arena.flush(queue);
+    queue.submit(pass.bake_buffers());
     assert_eq!(pass.uploads.as_ref().unwrap().frame(), retained_frame);
     assert_eq!(
         first_count, pass.native.cache.created,
@@ -82,10 +84,11 @@ pub fn render_images(
         arena.vertices(&[0xff; 4096]).unwrap();
         pass.upload(device, queue, &arena, frame_batch, [16, 16], 1.0);
         arena.flush(queue);
+        queue.submit(pass.bake_buffers());
         assert!(pass.retained_valid);
         assert_eq!(
             pass.uploads.as_ref().unwrap().frame(),
-            private_frame + u64::from(index < 3),
+            private_frame + u64::from(matches!(index, 1 | 2)),
             "an upload that retains everything leaves the private arena alone"
         );
         assert!(pass.retained.as_ref().unwrap().matches(
@@ -97,6 +100,7 @@ pub fn render_images(
         reference_arena.reset();
         reference.upload_changed(device, queue, &reference_arena, frame_batch, [16, 16], 1.0, None);
         reference_arena.flush(queue);
+        queue.submit(reference.bake_buffers());
         let actual = crate::map::test_support::gpu::render_with(device, queue, |render| {
             pass.draw_runs(render, [16, 16])
         });

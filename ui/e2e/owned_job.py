@@ -99,8 +99,8 @@ def main():
     token = str(uuid.uuid4())
     stop = pathlib.Path(tempfile.gettempdir()) / ('hoi4-owned-job-' + token)
     guard = pathlib.Path(__file__).with_name('process-guard.cjs')
-    os.environ['BATTLE_PLAN_OWNED_JOB'] = token
-    os.environ['BATTLE_PLAN_JOB_STOP_FILE'] = str(stop)
+    os.environ['BATTLEPLAN_OWNED_JOB'] = token
+    os.environ['BATTLEPLAN_JOB_STOP_FILE'] = str(stop)
     os.environ['NODE_OPTIONS'] = (os.environ.get('NODE_OPTIONS', '') + f' --require "{guard.as_posix()}"').strip()
     startup = Startup(); startup.cb = c.sizeof(startup); startup.flags = 0x101; startup.show = 0
     streams = [sys.stdin, sys.stdout, sys.stderr]

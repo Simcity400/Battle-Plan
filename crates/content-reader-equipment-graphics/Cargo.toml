@@ -17,7 +17,7 @@ content-reader-core.workspace = true
 content-reader-states.workspace = true
 replay-spool.workspace = true
 [dev-dependencies]
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
 [features]
 test-support = ["content-reader-core/test-support"]

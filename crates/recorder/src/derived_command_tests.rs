@@ -11,31 +11,34 @@ use std::fs;
 
 #[test]
 fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
-    let root = crate::test_support::allocation_test_directory("derived-verdict");
-    let game = root.join("game");
-    let user = root.join("user");
+    const CHILD: &str = "BATTLEPLAN_DERIVED_TEST_ROOT";
+    let Some(root) = std::env::var_os(CHILD).map(std::path::PathBuf::from) else {
+        let sandbox = synthetic_game::Installation::new("derived-cache").build();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "derived_command_tests::derived_command_fails_on_wrong_current_witness_and_incomplete_comparison",
+                "--nocapture",
+            ])
+            .env(CHILD, &sandbox.cache_dir)
+            .env("LOCALAPPDATA", &sandbox.cache_dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    content_reader_core::test_game::enter();
+    let installation = synthetic_game::Installation::new("derived-verdict").build();
+    let game = installation.game_dir.clone();
+    let user = installation.user_dir.clone();
     for directory in ["common/defines", "common/terrain", "map", "dlc"] {
         fs::create_dir_all(game.join(directory)).unwrap();
     }
-    fs::create_dir_all(&user).unwrap();
-    let installation = std::path::PathBuf::from(
-        std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for executable metadata"),
-    );
-    for path in [
-        "hoi4.exe",
-        "documentation/dynamic_variables_documentation.md",
-    ] {
-        let destination = game.join(path);
-        fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        fs::copy(installation.join(path), destination).unwrap();
-    }
-    fs::write(user.join("settings.txt"), "language=\"english\"").unwrap();
-    fs::write(
-        user.join("dlc_load.json"),
-        r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
-    )
-    .unwrap();
     fs::write(
         game.join("common/defines/test.lua"),
         r#"NDefines={
@@ -87,7 +90,7 @@ fn derived_command_fails_on_wrong_current_witness_and_incomplete_comparison() {
     let gathered = content_reader_core::gather(&content_reader_core::GatherOptions {
         game_dir: game.clone(),
         user_dir: user.clone(),
-        cache_dir: root.join("cache"),
+        cache_dir: installation.cache_dir.clone(),
         dlc_order: Some(Vec::new()),
     })
     .unwrap();

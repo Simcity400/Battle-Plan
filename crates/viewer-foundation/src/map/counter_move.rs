@@ -1268,7 +1268,7 @@ pub struct MovementHistory {
     render: RenderDelta,
     delta: f32,
     frames: u64,
-    in_view: Vec<u64>,
+    in_view: super::province_schedule::ProvinceSet,
     units: BTreeMap<Unit, Moving>,
     placed: BTreeMap<Unit, Placements>,
     largest_glide: f32,
@@ -1479,13 +1479,9 @@ impl MovementHistory {
     pub fn begin_frame(&mut self, frame: MovementFrame, in_view: impl IntoIterator<Item = u32>) {
         let previous = self.frame.replace(frame);
         self.frames += 1;
-        self.in_view.fill(0);
+        self.in_view.clear();
         for province in in_view {
-            let word = province as usize / 64;
-            if word >= self.in_view.len() {
-                self.in_view.resize(word + 1, 0);
-            }
-            self.in_view[word] |= 1 << (province % 64);
+            self.in_view.insert(province);
         }
         self.largest_glide = 0.0;
         let frame_time = previous.map_or(0.0, |previous| (frame.time - previous.time).max(0.0));
@@ -1515,12 +1511,7 @@ impl MovementHistory {
         let (day, fastest) = (game_day(frame.hour), clock >= 4);
         state.offer(input, day, fastest);
         state.hour = frame.hour;
-        if state.advanced != self.frames
-            && self
-                .in_view
-                .get(state.current.province as usize / 64)
-                .is_some_and(|word| word >> (state.current.province % 64) & 1 != 0)
-        {
+        if state.advanced != self.frames && self.in_view.contains(state.current.province) {
             state.advance(frame, day, fastest, self.delta);
             state.advanced = self.frames;
         }
@@ -1681,7 +1672,7 @@ pub struct AtHead {
 fn judging() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))
+        std::env::var_os("BATTLEPLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))
             .and_then(|value| value.to_str().map(|value| value.trim().to_owned()))
             .is_some_and(|value| !value.is_empty() && value != "0")
     })

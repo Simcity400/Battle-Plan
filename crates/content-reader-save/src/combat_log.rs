@@ -437,38 +437,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn real_save_combat_logs() {
-        let path = std::env::var("BATTLE_PLAN_COMBAT_LOG_SAVE").or_else(|_| std::env::var("HOI4_COMBAT_LOG_SAVE")).expect("BATTLE_PLAN_COMBAT_LOG_SAVE");
-        let save = crate::parse(&std::fs::read(path).unwrap()).unwrap();
-        for country in &save.combat_log.countries {
-            let months: usize = country
-                .groups
-                .iter()
-                .map(|group| group.losses.len() + group.recovered.len() + group.enemy.len())
-                .sum();
-            let amounts: usize = country
-                .groups
-                .iter()
-                .flat_map(|group| {
-                    group
-                        .losses
-                        .iter()
-                        .chain(&group.recovered)
-                        .chain(&group.enemy)
-                })
-                .map(|month| month.pool.equipment.len())
-                .sum();
-            println!(
-                "{}: {} group logs, {months} equipment month entries, {amounts} variant amounts",
-                String::from_utf8_lossy(&country.tag),
-                country.groups.len()
-            );
-        }
-        println!("{} shared battle records", save.combat_log.battles.len());
-    }
-
-    #[test]
     fn refuses_incomplete_entries() {
         assert!(parse_text(br#"combat_log={ tag="GER" log={ equipment={} } }"#).is_err());
         assert!(

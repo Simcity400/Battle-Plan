@@ -14,6 +14,7 @@ name = "executable-tables-check"
 path = "src/bin/executable-tables-check.rs"
 
 [features]
+test-support = []
 
 [dependencies]
 engine-reference-values.workspace = true
@@ -26,6 +27,7 @@ sha2.workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+engine-executable = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 
 [lints]

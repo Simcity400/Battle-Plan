@@ -208,7 +208,7 @@ mod tests {
     use super::*;
     #[test]
     fn both_upgrade_loaders_retain_a_leading_byte_order_mark_in_the_first_identity() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         for groups in [false, true] {
             let read = parse(b"\xef\xbb\xbfsynthetic={}", &KeyNames::default(), groups);
             assert_eq!(
@@ -219,7 +219,7 @@ mod tests {
     }
     #[test]
     fn numeric_upgrade_bonus_merges_and_unknown_fields_do_not_become_modifiers() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let read = parse(
             b"synthetic={bonus=0.25 upgrade_cost=3 unsupported_modifier={foo=9}}",
             &KeyNames::default(),
@@ -235,7 +235,7 @@ mod tests {
     }
     #[test]
     fn inline_upgrade_ai_weights_are_not_treated_as_nested_upgrade_definitions() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let read=parse(b"synthetic_group={upgrade_type=faction_member_upgrade_manpower upgrades={synthetic={bonus=0.125 ai_will_do={factor=2 modifier={factor=3 always=yes}}}}}",&KeyNames::default(),true);
         assert!(read.unsettled.is_none());
         let fields = read.items[0].value.items().unwrap();
@@ -252,8 +252,7 @@ mod tests {
     }
     #[test]
     fn faction_upgrade_authored_names_follow_mod_replace_path_and_inline_definitions() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = crate::test_support::Stack::new("faction-names");
         stack.write(
             &stack.base(),

@@ -147,38 +147,10 @@ mod tests {
     use super::*;
 
     fn image(code: &[u8]) -> PeImage {
-        let mut bytes = vec![0; 0x600];
-        bytes[..2].copy_from_slice(b"MZ");
-        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
-        let p16 = |bytes: &mut [u8], at: usize, value: u16| {
-            bytes[at..at + 2].copy_from_slice(&value.to_le_bytes())
-        };
-        let p32 = |bytes: &mut [u8], at: usize, value: u32| {
-            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes())
-        };
-        p32(&mut bytes, 0x3c, 0x80);
-        p16(&mut bytes, 0x84, 0x8664);
-        p16(&mut bytes, 0x86, 1);
-        p16(&mut bytes, 0x94, 0xf0);
-        p16(&mut bytes, 0x98, 0x20b);
-        bytes[0xb0..0xb8].copy_from_slice(&super::super::pe::PREFERRED_IMAGE_BASE.to_le_bytes());
-        p32(&mut bytes, 0xb8, 0x1000);
-        p32(&mut bytes, 0xbc, 0x200);
-        p32(&mut bytes, 0xd0, 0x2000);
-        p32(&mut bytes, 0xd4, 0x200);
-        p32(&mut bytes, 0x104, 5);
-        p32(&mut bytes, 0x120, 0x1300);
-        p32(&mut bytes, 0x124, 12);
-        p32(&mut bytes, 0x190, 0x400);
-        p32(&mut bytes, 0x194, 0x1000);
-        p32(&mut bytes, 0x198, 0x400);
-        p32(&mut bytes, 0x19c, 0x200);
-        p32(&mut bytes, 0x1ac, 0x6000_0020);
-        p32(&mut bytes, 0x500, 0x1000);
-        p32(&mut bytes, 0x504, 0x1000 + code.len() as u32);
-        p32(&mut bytes, 0x508, 0x1320);
-        bytes[0x200..0x200 + code.len()].copy_from_slice(code);
-        PeImage::parse(bytes).unwrap()
+        use crate::executable_tables::synthetic_image::{Code, SyntheticImage, TEXT};
+        SyntheticImage::new()
+            .function(Code::at(TEXT).raw(code))
+            .image()
     }
 
     fn pairs(count: u32) -> Vec<(u32, u32)> {
@@ -213,9 +185,7 @@ mod tests {
         assert!(!table.letters.contains_key(&0x107));
     }
 
-    // quarantine: #147 the reader and the test disagree
     #[test]
-    #[ignore = "quarantined under #147"]
     fn short_broken_ambiguous_or_misshapen_runs_are_withheld() {
         let short = stores(&pairs(MIN_PAIRS as u32 - 1), 4);
         let mut twice = stores(&pairs(20), 20);

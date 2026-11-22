@@ -5215,7 +5215,7 @@ mod tests {
         use replay_data::scope::{self, CaptureMode};
         use replay_frame::frame::FrameDecoder;
         crate::spooling::keep_every_table();
-        const CHILD: &str = "BATTLE_PLAN_MAP_DISPATCH_EQUIVALENCE";
+        const CHILD: &str = "BATTLEPLAN_MAP_DISPATCH_EQUIVALENCE";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "spooling::tests::a_map_session_holds_full_s_tables_for_every_table_map_records", "--nocapture"])
@@ -5230,8 +5230,8 @@ mod tests {
             );
             return;
         }
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("capture tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        synthetic_game::Executable::fixed_layout(engine_fixed_layout::fixed_layout::TOKEN_IDS)
+            .enter();
         let exclusive_roles = [
             Role::World,
             Role::Presentation,
@@ -5478,7 +5478,7 @@ mod tests {
     fn spool_validation_detail_survives_ordinary_failure_and_detach() {
         const TEST: &str =
             "spooling::tests::spool_validation_detail_survives_ordinary_failure_and_detach";
-        const CHILD: &str = "BATTLE_PLAN_SPOOL_VALIDATION_DETAIL_TEST";
+        const CHILD: &str = "BATTLEPLAN_SPOOL_VALIDATION_DETAIL_TEST";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
@@ -8027,8 +8027,8 @@ mod tests {
 
     #[test]
     fn fixed_layout_refusal_survives_daily_carry_and_independent_keyframes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("modifier-name tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+        synthetic_game::Executable::fixed_layout(engine_fixed_layout::fixed_layout::TOKEN_IDS)
+            .enter();
         use replay_frame::frame::FrameDecoder;
         let (mut campaign, _) = campaign();
         let branch = campaign.observe(None, 0, Some(1)).unwrap();
@@ -8054,7 +8054,7 @@ mod tests {
             let decoded = decoder.apply(&frame).unwrap();
             for &table in replay_derive::fixed_layout::POWER_BALANCE.tables {
                 assert!(
-                    matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.contains("power_balance_daily"))
+                    matches!(&*decoded.tables[table.index()], TableView::Unavailable { reason } if reason.contains(&format!("synthetic_modifier_{key}")))
                 );
                 if force_keyframe {
                     let alone = FrameDecoder::new().apply(&frame).unwrap();

@@ -34,15 +34,15 @@ fn lap<T>(name: &str, camera: &str, hour: i32, work: impl FnOnce() -> io::Result
 }
 
 #[test]
-#[ignore = "requires BATTLE_PLAN_UNIT_REPLAY, BATTLE_PLAN_UNIT_GAME, BATTLE_PLAN_UNIT_USER and BATTLE_PLAN_UNIT_CACHE"]
+#[ignore = "requires BATTLEPLAN_UNIT_REPLAY, BATTLEPLAN_UNIT_GAME, BATTLEPLAN_UNIT_USER and BATTLEPLAN_UNIT_CACHE"]
 fn unit_scale_replay_layers() {
     let path = |name| PathBuf::from(std::env::var_os(name).expect(name));
     let document = Document::load(
-        &path("BATTLE_PLAN_UNIT_REPLAY"),
+        &path("BATTLEPLAN_UNIT_REPLAY"),
         &content_reader_core::ResolveOptions {
-            game_dir: path("BATTLE_PLAN_UNIT_GAME"),
-            user_dir: path("BATTLE_PLAN_UNIT_USER"),
-            cache_dir: path("BATTLE_PLAN_UNIT_CACHE"),
+            game_dir: path("BATTLEPLAN_UNIT_GAME"),
+            user_dir: path("BATTLEPLAN_UNIT_USER"),
+            cache_dir: path("BATTLEPLAN_UNIT_CACHE"),
         },
         false,
         &InitialHour {

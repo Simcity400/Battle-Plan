@@ -1176,8 +1176,7 @@ fn restricted_estimate(frame: &DecodedFrame, map: &MovementContent) -> Result<(i
 }
 
 fn sub_unit_database() -> std::sync::Arc<content_reader_core::unit_leader::SubUnits> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation");
+    crate::map::test_support::enter_fixed_modifier_tables();
     let mut units = content_reader_core::unit_leader::SubUnits::default();
     units.read(
         b"sub_units={ light_armor={type=armor} marine={special_forces=yes type=infantry} infantry={type=infantry} }",
@@ -2123,7 +2122,6 @@ fn noncore_supply_uses_only_the_selected_ground_or_air_define() {
 
 #[test]
 fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
     let cache = EtaCache::default();
     let map = content(two_leg_map());
     let mut scenarios = Vec::new();

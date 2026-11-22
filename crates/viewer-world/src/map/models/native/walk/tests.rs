@@ -23,7 +23,7 @@ fn append(library: &mut ModelLibrary) {
 
 #[test]
 fn installed_routes_match_direct_mutation_and_demand_order_across_512_frames() {
-    engine_executable::executable_tables::initialize_for_tests().unwrap();
+    content_reader_core::test_game::enter();
     let mut library = ModelLibrary::default();
     for _ in 0..7 {
         append(&mut library);

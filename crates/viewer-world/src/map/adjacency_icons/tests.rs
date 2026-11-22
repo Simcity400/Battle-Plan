@@ -177,8 +177,7 @@ fn a_free_eye_shows_each_icon_by_its_own_distance() {
 
 #[test]
 fn an_icon_s_quads_stand_at_its_anchor() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let resources = gui::fixture();
     let windows = gui::windows(
         br#"guiTypes = {

@@ -49,7 +49,7 @@ static STARTUP: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
 
 
 pub fn first_complete() {
-    let Some(path) = std::env::var_os("BATTLE_PLAN_FIRST_FRAME_FILE").or_else(|| std::env::var_os("HOI4_FIRST_FRAME_FILE")) else { return; };
+    let Some(path) = std::env::var_os("BATTLEPLAN_FIRST_FRAME_FILE").or_else(|| std::env::var_os("HOI4_FIRST_FRAME_FILE")) else { return; };
     let event = serde_json::json!({"stage": "complete first hour", "at": epoch_ms()});
     if let Ok(bytes) = serde_json::to_vec(&event) {
         let _ = std::fs::write(path, bytes);
@@ -57,7 +57,7 @@ pub fn first_complete() {
 }
 
 pub fn source_admission_probe(source: &dashboard_base::Source, options: &content_reader_core::ResolveOptions) {
-    let Some(path) = std::env::var_os("BATTLE_PLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")) else { return; };
+    let Some(path) = std::env::var_os("BATTLEPLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")) else { return; };
     let measure = || -> std::io::Result<serde_json::Value> {
         let content = source.content(options)?;
         let before = content.layers.content_counts().generation_validations;
@@ -115,7 +115,7 @@ fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
     *REQUESTED.get_or_init(|| {
         let requested =
-            std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty());
+            std::env::var_os("BATTLEPLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty());
         if requested {
             account();
         }
@@ -271,7 +271,7 @@ fn open() -> Option<Log> {
     let prefix = PREFIX
         .get()
         .cloned()
-        .or_else(|| std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")))
+        .or_else(|| std::env::var_os("BATTLEPLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")))
         .filter(|path| !path.is_empty())?;
     let pid = std::process::id();
     let map = MAPS.fetch_add(1, Ordering::Relaxed);

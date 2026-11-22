@@ -1964,8 +1964,7 @@ mod tests {
 
     #[test]
     fn building_damage_event_uses_state_entry_and_repair_stops_it() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let rig = building_rig();
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -1995,8 +1994,7 @@ mod tests {
 
     #[test]
     fn newly_created_damaged_building_does_not_use_the_global_elapsed_clock() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let rig = building_rig();
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -2029,8 +2027,7 @@ mod tests {
 
     #[test]
     fn a_stage_crossed_during_playback_plays_its_intro_then_its_state() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let rig = stage_rig(true);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -2052,8 +2049,7 @@ mod tests {
 
     #[test]
     fn a_fresh_entity_mid_stage_shows_the_state_from_its_own_entry() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let rig = stage_rig(true);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];
@@ -2066,8 +2062,7 @@ mod tests {
 
     #[test]
     fn a_stage_whose_intro_the_entity_lacks_keeps_the_current_state() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let rig = stage_rig(false);
         let mut player = Player::new(&rig);
         let mut palette = [PaletteJoint::from_transform(&Transform::IDENTITY)];

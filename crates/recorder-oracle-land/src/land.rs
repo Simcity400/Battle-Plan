@@ -902,14 +902,14 @@ mod tests {
         assert!(read(unequal.as_bytes()).is_err());
     }
     #[test]
-    #[ignore = "requires BATTLE_PLAN_LAND_SAVE and BATTLE_PLAN_LAND_EXPECTATIONS"]
+    #[ignore = "requires BATTLEPLAN_LAND_SAVE and BATTLEPLAN_LAND_EXPECTATIONS"]
     fn installed_save_divisions_and_history_match_expectations() {
         let path = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_LAND_SAVE").or_else(|| std::env::var_os("HOI4_LAND_SAVE")).expect("set BATTLE_PLAN_LAND_SAVE to a text save"),
+            std::env::var_os("BATTLEPLAN_LAND_SAVE").or_else(|| std::env::var_os("HOI4_LAND_SAVE")).expect("set BATTLEPLAN_LAND_SAVE to a text save"),
         );
         let expectations_path = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_LAND_EXPECTATIONS").or_else(|| std::env::var_os("HOI4_LAND_EXPECTATIONS"))
-                .expect("set BATTLE_PLAN_LAND_EXPECTATIONS to the expected-value JSON file"),
+            std::env::var_os("BATTLEPLAN_LAND_EXPECTATIONS").or_else(|| std::env::var_os("HOI4_LAND_EXPECTATIONS"))
+                .expect("set BATTLEPLAN_LAND_EXPECTATIONS to the expected-value JSON file"),
         );
         let expected: serde_json::Value = serde_json::from_slice(
             &std::fs::read(expectations_path).expect("read land expectations"),

@@ -3063,8 +3063,7 @@ fn convoy_clamp_is_per_row_and_preserves_order() {
 
 #[test]
 fn convoy_variants_follow_the_variant_category() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let equipment = "equipments = {
             Convoy = { is_archetype = yes type = convoy }
             convoy_1 = { archetype = convoy }

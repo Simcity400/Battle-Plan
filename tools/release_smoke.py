@@ -12,7 +12,7 @@ the recorder, the collector and the shader compiler's two DLLs, beside each othe
 combined THIRD-PARTY-NOTICES.txt and no LICENSES folder. Then the installed replay-desktop.exe draws one
 frame of the recording's map through its own window (`--window-dump`), with LOCALAPPDATA and APPDATA in
 <out>, so no user data or saved preference is read or written. The recording and folders default to
-BATTLE_PLAN_RELEASE_SMOKE_RECORDING, BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or their older HOI4_ names.
+BATTLEPLAN_RELEASE_SMOKE_RECORDING, BATTLEPLAN_GAME_DIR and BATTLEPLAN_USER_DIR, or their older HOI4_ names.
 """
 import argparse
 import json
@@ -155,7 +155,7 @@ def draw(app, recording, out, hour, game_dir, user_dir):
 
 
 def setting(name):
-    return os.environ.get(f"BATTLE_PLAN_{name}") or os.environ.get(f"HOI4_{name}") or None
+    return os.environ.get(f"BATTLEPLAN_{name}") or os.environ.get(f"HOI4_{name}") or None
 
 
 def arguments(argv=None):
@@ -201,7 +201,7 @@ def drawn_map(installed, recording, out, hour=None, game_dir=None, user_dir=None
 
 def smoke(args):
     if not args.layout_only and (not args.recording or not args.recording.is_file()):
-        fail("Name the recording to draw: --recording or BATTLE_PLAN_RELEASE_SMOKE_RECORDING, or --layout-only.")
+        fail("Name the recording to draw: --recording or BATTLEPLAN_RELEASE_SMOKE_RECORDING, or --layout-only.")
     if args.out.exists():
         fail(f"{args.out} exists; the smoke writes to a new folder.")
     args.out.mkdir(parents=True)

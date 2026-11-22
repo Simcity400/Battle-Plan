@@ -7,6 +7,10 @@ pub mod numeric;
 pub mod pe;
 pub mod recorded;
 pub mod registries;
+#[cfg(any(test, feature = "test-support"))]
+pub mod synthetic;
+#[cfg(test)]
+mod synthetic_image;
 pub mod variables;
 
 pub use pe::PeImage;
@@ -436,10 +440,10 @@ pub fn folding() -> io::Result<&'static folding::FoldingTable> {
 }
 
 pub fn initialize_for_tests() -> io::Result<Tables> {
-    let game_dir = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).ok_or_else(|| {
+    let game_dir = std::env::var_os("BATTLEPLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation",
+            "BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation",
         )
     })?;
     TEST_INITIALIZATION

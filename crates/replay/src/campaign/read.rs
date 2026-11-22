@@ -9,11 +9,6 @@ use crate::{
 };
 use std::{io, sync::Arc};
 
-pub struct Parallel<'a> {
-    pub workers: usize,
-    pub on_worker: &'a (dyn Fn() + Sync),
-}
-
 impl Replay {
     fn ordinal(&self, block: &BlockIndex, hour: Hour) -> io::Result<u32> {
         self.recording.run(block.run)?.ordinal(hour).ok_or_else(|| invalid_static("a block's hour lies outside its run"))

@@ -1,5 +1,5 @@
 [package]
-name = "battle-plan-fuzz"
+name = "battleplan-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -10,12 +10,12 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-crc32fast = "1"
-zstd = "0.13"
-replay = { path = "../crates/replay" }
+tempfile = "3"
+replay = { path = "../crates/replay", features = ["test-support"] }
+replay-columnar = { path = "../crates/replay-columnar" }
 replay-data = { path = "../crates/replay-data" }
 replay-frame = { path = "../crates/replay-frame" }
-dashboard = { path = "../crates/dashboard" }
+dashboard-base = { path = "../crates/dashboard-base" }
 
 [workspace]
 members = ["."]

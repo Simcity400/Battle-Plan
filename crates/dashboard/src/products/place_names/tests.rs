@@ -35,7 +35,7 @@ fn named(source: &Source, load: &LoadContext, places: &[(u32, i32)], states: &[(
 
 #[test]
 fn places_are_named_by_rename_victory_point_then_state_and_a_place_not_read_is_a_reason() {
-    engine_executable::executable_tables::initialize_for_tests().expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    engine_executable::executable_tables::initialize_for_tests().expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (_cat, folder) = crate::catalogue::tests::folder_catalogue(&[
         ("hoi4.exe", "test"),
         ("user/settings.txt", "language=l_english force_pow2_textures=no"),

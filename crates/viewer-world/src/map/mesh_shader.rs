@@ -603,8 +603,7 @@ pub(crate) mod tests {
         Geometry,
     ) {
         use shader_pipeline::{Compiled, Shader, library::Effect};
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let input = |location, semantic: &str, components| VertexInput {
             kind: ScalarKind::Float,
             location,

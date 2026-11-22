@@ -35,8 +35,7 @@ pub fn kind(name: &str, target: TargetType) -> Kind {
 }
 
 pub fn assets() -> RaidAssets {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter_viewer();
     let mut assets = unnamed_assets();
     set_counts(&mut assets);
     assets

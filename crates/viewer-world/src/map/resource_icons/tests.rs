@@ -322,8 +322,7 @@ fn placed(text: bool, rows: usize, flag: Option<u32>) -> PreparedResourceIcons {
 
 #[test]
 fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
     let context = Context {
@@ -354,8 +353,7 @@ fn the_window_lists_its_rows_and_keeps_row_windows_the_rows_leave() {
 
 #[test]
 fn an_icon_s_quads_stand_at_its_anchor() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let resources = gui::fixture();
     let windows = gui::windows(GUI);
     let context = Context {

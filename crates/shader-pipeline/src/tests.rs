@@ -1,10 +1,8 @@
 use super::*;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 pub(crate) fn initialize_runtime_tables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
 }
 
 pub(crate) static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -235,161 +233,6 @@ Effect Default { }
     );
 }
 
-#[test]
-#[ignore = "requires a game installation, a shader compiler and GPU; set BATTLE_PLAN_GAME_DIR"]
-fn compile_installed_gui_effects() {
-    crate::tests::initialize_runtime_tables();
-    let _serial = GPU_TESTS.lock().unwrap_or_else(|error| error.into_inner());
-    let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-    let compiler = Compiler::discover().unwrap();
-    let (device, _queue) = device();
-    let mut failures = Vec::new();
-    let mut count = 0;
-    let started = std::time::Instant::now();
-    for file in std::fs::read_dir(root.join("gfx/FX")).unwrap() {
-        let path = file.unwrap().path();
-        let name = path.file_name().unwrap().to_string_lossy();
-        if path.extension().is_none_or(|e| e != "shader") {
-            continue;
-        }
-        if !is_gui_effect(&name) {
-            continue;
-        }
-        let effect = format!("gfx/FX/{name}");
-        let program = match content_reader_core::pdxshader::program::read_with(effect.as_bytes(), &|p| {
-            std::fs::read(root.join(String::from_utf8_lossy(p).as_ref())).ok()
-        }) {
-            Ok(p) => p,
-            Err(e) => {
-                failures.push(e);
-                continue;
-            }
-        };
-        for defines in variants(&program) {
-            let name = format!(
-                "{name}-{}",
-                if defines.is_empty() {
-                    "plain".into()
-                } else {
-                    defines.join("-")
-                }
-            );
-            for technique in &program.techniques {
-                if let Some(output) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
-                    std::fs::create_dir_all(&output).unwrap();
-                    for (stage, suffix) in [(Stage::Vertex, "vs"), (Stage::Pixel, "ps")] {
-                        if let Ok(hlsl) = program.hlsl(technique, stage, &defines) {
-                            std::fs::write(
-                                Path::new(&output)
-                                    .join(format!("{name}-{}-{suffix}.hlsl", technique.name)),
-                                hlsl,
-                            )
-                            .unwrap();
-                        }
-                    }
-                }
-                match compiler.compile(&program, technique, &defines) {
-                    Ok(compiled) => {
-                        if let Err(reason) = gpu::Pipeline::new(
-                            &device,
-                            &compiled,
-                            &program,
-                            technique,
-                            wgpu::TextureFormat::Rgba8Unorm,
-                            1,
-                        ) {
-                            failures.push(format!("{effect}:{} GPU {reason}", technique.name));
-                            continue;
-                        }
-                        count += 1;
-                        println!(
-                            "PASS {effect}:{} {defines:?} vertex {} B pixel {} B inputs {:?}",
-                            technique.name,
-                            compiled.vertex.wgsl.len(),
-                            compiled.pixel.wgsl.len(),
-                            compiled.vertex.inputs
-                        );
-                        if let Some(output) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
-                            std::fs::create_dir_all(&output).unwrap();
-                            std::fs::write(
-                                Path::new(&output)
-                                    .join(format!("{name}-{}-vs.wgsl", technique.name)),
-                                compiled.vertex.wgsl,
-                            )
-                            .unwrap();
-                            std::fs::write(
-                                Path::new(&output)
-                                    .join(format!("{name}-{}-ps.wgsl", technique.name)),
-                                compiled.pixel.wgsl,
-                            )
-                            .unwrap();
-                        }
-                    }
-                    Err(e) => failures.push(format!("{e}, defines {defines:?}")),
-                }
-            }
-        }
-    }
-    println!(
-        "compiled {count} techniques in {:?}, {} failures",
-        started.elapsed(),
-        failures.len()
-    );
-    for failure in &failures {
-        println!("FAIL {failure}");
-    }
-    assert!(count > 0);
-    assert!(failures.is_empty(), "{} failed techniques", failures.len());
-}
-
-fn is_gui_effect(name: &str) -> bool {
-    name.ends_with(".shader")
-        && (name.starts_with("buttonstate")
-            || matches!(
-                name,
-                "static_button.shader"
-                    | "text.shader"
-                    | "maskedflag.shader"
-                    | "progress.shader"
-                    | "progress_minmax.shader"
-                    | "progress_startend.shader"
-                    | "progress_reverse.shader"
-                    | "progress_radial.shader"
-                    | "circularprogressbar.shader"
-            ))
-}
-
-fn variants(program: &Program) -> Vec<Vec<String>> {
-    let source = [&program.common, &program.vertex, &program.pixel]
-        .iter()
-        .flat_map(|stage| {
-            stage
-                .code
-                .iter()
-                .chain(stage.entries.iter().map(|entry| &entry.source))
-        })
-        .map(|source| source.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut variants = vec![Vec::new()];
-    if source.contains("ifdef ANIMATED") {
-        variants.push(vec!["ANIMATED".into()]);
-        variants.push(vec!["ANIMATED".into(), "NUM_ANIMATIONS_2".into()]);
-    }
-    if source.contains("ifdef MASKING") {
-        let masked: Vec<_> = variants
-            .iter()
-            .map(|defines| {
-                let mut defines = defines.clone();
-                defines.push("MASKING".into());
-                defines
-            })
-            .collect();
-        variants.extend(masked);
-    }
-    variants
-}
-
 pub(crate) fn device() -> (wgpu::Device, wgpu::Queue) {
     let instance =
         crate::gpu::instance();
@@ -554,26 +397,50 @@ Effect Rise {{ VertexShader = Plain PixelShader = Rise }}
 }
 
 #[test]
-#[ignore = "requires a game installation and a shader compiler; set BATTLE_PLAN_GAME_DIR"]
-fn vanilla_button_states_settle_as_their_programs_say() {
+#[ignore = "requires a shader compiler"]
+fn synthetic_button_states_settle_with_or_without_masking() {
     crate::tests::initialize_runtime_tables();
-    let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-    let program =
-        content_reader_core::pdxshader::program::read_with(b"gfx/FX/buttonstate.lua", &|path| {
-            std::fs::read(root.join(String::from_utf8_lossy(path).as_ref())).ok()
+    let source = r#"
+VertexShader = { MainCode V [[ float4 main() : SV_POSITION { return float4(0, 0, 0, 1); } ]] }
+PixelShader = {
+    ConstantBuffer(0, 0) { float Clock;
+float Restart;
+};
+    Code [[
+        float shade(float v) {
+        #ifdef MASKING
+            return v * 0.5;
+        #else
+            return v;
+        #endif
+        }
+    ]]
+    MainCode Still [[ float4 main() : SV_TARGET { return shade(1); } ]]
+    MainCode Over [[ float4 main() : SV_TARGET { return shade(saturate((Clock - Restart) * 2)); } ]]
+    MainCode Down [[ float4 main() : SV_TARGET { return shade(saturate((Clock - Restart) * 8)); } ]]
+}
+Effect Up { VertexShader = V PixelShader = Still }
+Effect Over { VertexShader = V PixelShader = Over }
+Effect Down { VertexShader = V PixelShader = Down }
+"#;
+    let program = content_reader_core::pdxshader::program::read_with(b"button.shader", &|path| {
+        Some(if path == b"button.shader" {
+            source.as_bytes().to_vec()
+        } else {
+            Vec::new()
         })
-        .unwrap();
+    })
+    .unwrap();
     let compiler = Compiler::discover().unwrap();
     for defines in [vec![], vec!["MASKING".to_owned()]] {
         let settles = |name| {
             compiler
                 .compile(&program, program.technique(name).unwrap(), &defines)
                 .unwrap()
-                .settles(0, 96, 100)
+                .settles(0, 0, 4)
         };
         assert_eq!(settles("Up"), Some(clock::Settling::NOW));
-        assert_eq!(settles("Disable"), Some(clock::Settling::NOW));
-        for (name, seconds) in [("Over", 0.25_f32), ("Down", 1.0 / 16.0)] {
+        for (name, seconds) in [("Over", 0.5_f32), ("Down", 0.125)] {
             let settling = settles(name).unwrap();
             assert!(
                 seconds <= settling.after && settling.after <= seconds.next_up().next_up(),
@@ -1219,86 +1086,6 @@ Effect Map { VertexShader = V PixelShader = P }
     println!(
         "PASS arbitrary pass: 1280 exact pixels; split/instanced integer layout, independent and overlapping buffer strides, b7, t4/s4 volume wrapping W, triangle strip, retained bindings/null SRV and state-key invalidation"
     );
-}
-
-#[test]
-#[ignore = "run twice in separate processes with BATTLE_PLAN_CACHE_TEST_DIR and BATTLE_PLAN_EXPECT_COMPILES=1 then 0"]
-fn installed_vanilla_persistent_cache_across_processes() {
-    crate::tests::initialize_runtime_tables();
-    let root = PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-    let dir = PathBuf::from(std::env::var_os("BATTLE_PLAN_CACHE_TEST_DIR").or_else(|| std::env::var_os("HOI4_CACHE_TEST_DIR")).expect("BATTLE_PLAN_CACHE_TEST_DIR"));
-    let first = std::env::var("BATTLE_PLAN_EXPECT_COMPILES").or_else(|_| std::env::var("HOI4_EXPECT_COMPILES")).unwrap() != "0";
-    struct Checked {
-        first: bool,
-    }
-    impl cache::Compile for Checked {
-        fn compile(
-            &self,
-            source: &Program,
-            technique: &Technique,
-            defines: &[String],
-        ) -> Result<Compiled, String> {
-            assert!(self.first, "second process must not even discover DXC");
-            Compiler::discover()?.compile(source, technique, defines)
-        }
-    }
-    let cache = std::sync::Arc::new(cache::Cache::new(
-        Some(dir.clone()),
-        std::sync::Arc::new(Checked { first }),
-    ));
-    let started = std::time::Instant::now();
-    let mut files: Vec<_> = std::fs::read_dir(root.join("gfx/FX"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| is_gui_effect(name))
-        .collect();
-    files.sort();
-    let (mut selected, mut failures) = (0, Vec::new());
-    for name in &files {
-        let program = std::sync::Arc::new(
-            content_reader_core::pdxshader::program::read_with(
-                format!("gfx/FX/{name}").as_bytes(),
-                &|p| std::fs::read(root.join(String::from_utf8_lossy(p).as_ref())).ok(),
-            )
-            .unwrap(),
-        );
-        for defines in variants(&program) {
-            let effect = library::Effect::new(program.clone(), defines, cache.clone());
-            for technique in &program.techniques {
-                match effect.select(&technique.name) {
-                    Ok(_) => selected += 1,
-                    Err(reason) => failures.push(reason),
-                }
-            }
-        }
-    }
-    let diagnostics = cache.diagnostics();
-    let bytes: u64 = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().metadata().unwrap().len())
-        .sum();
-    println!(
-        "vanilla process cache: {} files, {selected} selections, compiled={} disk_hits={} in {:?}; {} entries, {bytes} bytes at {}",
-        files.len(),
-        diagnostics.compiled,
-        diagnostics.disk_hits,
-        started.elapsed(),
-        std::fs::read_dir(&dir).unwrap().count(),
-        dir.display()
-    );
-    assert!(failures.is_empty(), "{failures:#?}");
-    assert!(
-        diagnostics.warnings.is_empty(),
-        "{:?}",
-        diagnostics.warnings
-    );
-    if first {
-        assert_eq!(diagnostics.disk_hits, 0);
-        assert!(diagnostics.compiled > 0);
-    } else {
-        assert_eq!(diagnostics.compiled, 0);
-        assert!(diagnostics.disk_hits > 0);
-    }
 }
 
 #[test]

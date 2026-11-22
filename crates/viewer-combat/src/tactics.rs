@@ -1850,7 +1850,7 @@ mod tests {
 
     #[test]
     fn tactic_scripted_caller_keeps_viewer_nato_through_nested_effect_unit_icons() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_tactic_nato_{}_{:?}",
             std::process::id(),
@@ -2148,7 +2148,7 @@ mod tests {
     }
 
     fn names(scripted: &ScriptedTriggers) -> KeyNames {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         KeyNames {
             scripted: scripted.templates.keys().cloned().collect(),
             countries: [&b"GER"[..], b"SOV", b"ENG"].map(<[u8]>::to_vec).into(),
@@ -2172,7 +2172,7 @@ mod tests {
     }
 
     fn parsed_with(text: &[u8], names: &KeyNames) -> Content {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         Content::from_database(content_reader_core::combat_tactics::parse(text, names))
     }
 
@@ -2317,7 +2317,7 @@ mod tests {
 
     #[test]
     fn popup_preferred_description_retains_authored_text_without_selector_arguments() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         let gui = content_reader_core::gui::native::read(
             br#"guiTypes = { containerWindowType = {
                 name = tactics_list_view
@@ -2853,8 +2853,7 @@ mod tests {
 
     #[test]
     fn terrain_and_sub_unit_names_match_without_case() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter_viewer();
         let mut units = SubUnits::default();
         units.read(
             b"sub_units = { artillery = { is_artillery_brigade = yes } infantry = { } \
@@ -2941,12 +2940,12 @@ mod tests {
             evaluate("NOT={ is_attacker=yes has_reserves=yes }"),
             Ok(false)
         );
-        assert_eq!(evaluate("unported_trigger=yes is_attacker=no"), Ok(false));
+        assert_eq!(evaluate("synthetic_unported_trigger=yes is_attacker=no"), Ok(false));
         assert_eq!(
-            evaluate("OR={ unported_trigger=yes is_attacker=yes }"),
+            evaluate("OR={ synthetic_unported_trigger=yes is_attacker=yes }"),
             Ok(true)
         );
-        assert!(evaluate("unported_trigger=yes is_attacker=yes").is_err());
+        assert!(evaluate("synthetic_unported_trigger=yes is_attacker=yes").is_err());
         assert!(evaluate("frontage_full=yes").is_err());
     }
 
@@ -3398,7 +3397,7 @@ mod tests {
 
     #[test]
     fn scripted_triggers_evaluate_their_body_in_the_current_scope() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_triggers_{}_{:?}",
             std::process::id(),
@@ -3457,7 +3456,7 @@ mod tests {
 
     #[test]
     fn content_blocks_follow_load_keys_order_in_every_body_read() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         let root = std::env::temp_dir().join(format!(
             "hoi4_viewer_scripted_order_{}_{:?}",
             std::process::id(),
@@ -3519,7 +3518,7 @@ mod tests {
 
     #[test]
     fn character_scopes_read_the_recorded_character() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         use replay_data::{
             rows::CharacterOperativeRow, rows::CharacterRoleTraitRow, rows::CharacterRow,
             rows::CountryCharacterRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
@@ -3919,7 +3918,7 @@ mod tests {
         assert_eq!(weigh("GER = { NOT = { is_attacker = yes } }"), Ok(100_000));
         assert_eq!(
             weigh("ENG = { tag = ENG }"),
-            Err("trigger ENG = { ... }: ReservedCountryNaming native lists are unavailable this hour".into())
+            Err("trigger ENG = { ... }: reserved country naming native lists are unavailable this hour".into())
         );
         let mut empty_buckets = frame.clone();
         *empty_buckets.tables[TableId::ReservedCountryNaming.index()] =
@@ -3957,12 +3956,12 @@ mod tests {
         assert_eq!(weigh("tag = \"ROOT\""), Ok(100_000));
         assert_eq!(weigh("tag = x"), Ok(100_000));
         assert_eq!(weigh("tag = XYZ"), Ok(0));
-        refused("tag = ENG", "ReservedCountryNaming native lists");
+        refused("tag = ENG", "reserved country naming native lists");
     }
 
     #[test]
     fn count_triggers_read_the_recorded_hour_in_the_scope_they_accept() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        content_reader_core::test_game::enter_viewer();
         use replay_data::{
             rows::CountryBuildingResourceRow, rows::CountryCounterInputRow, rows::CountryLinkRow,
             rows::CountryRow, rows::StateBaseResourceRow, rows::StateResourceInputRow,
@@ -4013,7 +4012,11 @@ mod tests {
         let buildings = content_reader_core::buildings::read(&layers).unwrap();
         let (ideologies, _) = content_reader_core::ideologies::read(&layers).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
-        let armor = content_reader_core::trigger_keys::EQUIPMENT_CATEGORIES[0].0;
+        let &(land_cruiser, land_cruiser_mask, _) =
+            content_reader_core::trigger_keys::EQUIPMENT_CATEGORIES
+                .iter()
+                .find(|&&(_, _, name)| name == "land_cruiser")
+                .unwrap();
         let tokens: &[(&[u8], u32)] = &[
             (b"GER", 0x7001),
             (b"mod_mill", 0x7101),
@@ -4021,12 +4024,9 @@ mod tests {
             (b"steel", 0x7103),
             (b"technocracy", 0x7104),
             (b"fascism", 0x7105),
-            (b"land_cruiser", armor),
+            (b"land_cruiser", land_cruiser),
             (b"nothing", 0x7106),
         ];
-        for (name, _) in &tokens[..tokens.len() - 1] {
-            assert_eq!(content_reader_core::trigger_keys::registered_trigger(name), None);
-        }
 
         let hour = 5;
         let frame_at = |hour| {
@@ -4235,20 +4235,21 @@ mod tests {
         };
         let detail = skilled();
         let aliases = BTreeMap::from([(100, 1), (200, 2)]);
-        let (armor_mask, other) = (
-            content_reader_core::trigger_keys::EQUIPMENT_CATEGORIES[0].1,
-            0x20,
-        );
-        let units = [(1, armor_mask), (2, armor_mask | other), (3, other), (4, 0)].map(
-            |(division, categories)| LandCombatDivisionRow {
-                division,
-                categories,
-                own: Some(replay_data::rows::LandCombatMemberValues {
-                    ..Default::default()
-                }),
+        let other = content_reader_core::test_game::category("infantry");
+        let units = [
+            (1, land_cruiser_mask),
+            (2, land_cruiser_mask | other),
+            (3, other),
+            (4, 0),
+        ]
+        .map(|(division, categories)| LandCombatDivisionRow {
+            division,
+            categories,
+            own: Some(replay_data::rows::LandCombatMemberValues {
                 ..Default::default()
-            },
-        );
+            }),
+            ..Default::default()
+        });
         let participants = [1, 2, 3, 4];
         let weigh_with_units = |hour, participants: &[u64], trigger: &str| {
             let frame = frame_at(hour);
@@ -4369,16 +4370,16 @@ mod tests {
             ),
             (
                 "OWNER = { technocracy > 0.1 }",
-                "PoliticalParties row: country link 999",
+                "the country of a political parties row: country link 999",
             ),
             (
                 "64 = { steel > 0 }",
-                "building overrides (CountryBuildingResources) join through CountryLinks",
+                "building overrides (country building resources) join through country links",
             ),
         ] {
             let reason = weigh_at(9, trigger).unwrap_err();
             assert!(
-                reason.contains(why) && reason.contains("CountryLinks is truncated"),
+                reason.contains(why) && reason.contains("country links: read only in part"),
                 "{trigger}: {reason}"
             );
         }

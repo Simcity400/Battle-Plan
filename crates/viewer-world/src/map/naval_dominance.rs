@@ -989,8 +989,7 @@ mod tests {
 
     #[test]
     fn mod_terrain_and_control_ratio_supply_the_minimum() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let terrain = content_reader_core::terrain::parse_definitions(b"categories={ ocean={minimum_seazone_dominance=9} crystal_sea={minimum_seazone_dominance=17} }").unwrap();
         let defines = Defines::new().unwrap();
         defines

@@ -1667,7 +1667,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "battle-plan-recorder-admission-{name}-{}-{}",
+            "battleplan-recorder-admission-{name}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

@@ -827,18 +827,47 @@ pub fn effective_gui_scale(authored: f32, frame: [u32; 2]) -> f32 {
 mod tests {
     use super::*;
 
+    fn enter_settings_tables() {
+        use engine_executable::executable_tables::{self, Tables};
+        static TABLES: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
+        let tables = TABLES.get_or_init(|| {
+            content_reader_core::test_game::executable()
+                .words([
+                    "adapter",
+                    "borderless",
+                    "camera_tilt",
+                    "counter_color_mode",
+                    "draw_map_full_res",
+                    "draw_trees",
+                    "force_pow2_textures",
+                    "graphics",
+                    "gui_scale",
+                    "hide_daynight_cycle",
+                    "hints",
+                    "language",
+                    "maprenderingoptions",
+                    "min_gui",
+                    "show_allied_plans",
+                    "template_counter",
+                    "texture_quality",
+                ])
+                .build()
+        });
+        executable_tables::enter(Some(*tables));
+    }
+
     #[cfg(windows)]
     #[test]
     fn cached_language_tracks_edits_absence_and_transient_read_failures() {
+        use content_reader_core::test_support::rewrite_preserving_modified_time;
         use std::os::windows::fs::OpenOptionsExt;
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let root = std::env::temp_dir().join(format!("language-input-{}-{:?}", std::process::id(), std::thread::current().id()));
         fs::create_dir_all(&root).unwrap();
         let file = root.join("settings.txt");
         let english = b"language=\"l_english\"";
         let spanish = b"language=\"l_spanish\"";
         fs::write(&file, english).unwrap();
-        let modified = fs::metadata(&file).unwrap().modified().unwrap();
         let scope = content_reader_core::content::Generation::enter();
         let layers = content_reader_core::ResolvedLayers::default();
         let exclusive = fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&file).unwrap();
@@ -847,8 +876,7 @@ mod tests {
         let original = SettingsKeys::read(english).language();
         assert_eq!(language_in(&layers, &root).unwrap(), original);
         assert_eq!(language_in(&layers, &root).unwrap(), original);
-        fs::write(&file, spanish).unwrap();
-        fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+        rewrite_preserving_modified_time(&file, spanish);
         assert!(layers.validate_generation().is_err());
         assert!(language_in(&layers, &root).is_err());
         drop(layers);
@@ -879,7 +907,7 @@ mod tests {
 
     #[test]
     fn map_options_read_as_the_game_reads_them_and_default_to_its_constructor() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let read = |text: &str| MapOptions::read(&SettingsKeys::read(text.as_bytes()));
         assert_eq!(read(""), (MapOptions::DEFAULT, Vec::new()));
         let (stored, unread) = read(
@@ -915,7 +943,7 @@ TEMPLATE_counter=0"), (false, false));
 
     #[test]
     fn unreadable_map_option_lines_keep_the_games_value_and_are_named() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let read = |text: &str| MapOptions::read(&SettingsKeys::read(text.as_bytes()));
         let (options, unread) = read(
             "hide_daynight_cycle=yes
@@ -946,7 +974,7 @@ template_counter=-");
 
     #[test]
     fn language_is_the_stored_request() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let language = |text: &str| SettingsKeys::read(text.as_bytes()).language();
         assert_eq!(language(r#"language="l_english""#).as_deref(), Some("l_english"));
         assert_eq!(language("language=l_braz_por").as_deref(), Some("l_braz_por"));
@@ -958,7 +986,7 @@ template_counter=-");
 
     #[test]
     fn an_absent_settings_file_reads_as_the_constructed_settings() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let folder = std::env::temp_dir().join(format!("absent-settings-{}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let keys = read_keys(&folder).unwrap();
@@ -996,7 +1024,7 @@ template_counter=-");
     };
 
     fn display(settings: &str, pdx: Option<&str>) -> io::Result<Display> {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let pdx = pdx.map(|text| parser::parse(text.as_bytes())).transpose()?;
         Display::read(
             &SettingsKeys::read(settings.as_bytes()),
@@ -1017,7 +1045,7 @@ template_counter=-");
 
     #[test]
     fn settings_keys_follow_the_lexers_tokens() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        enter_settings_tables();
         let pow2 = |text: &str| SettingsKeys::read(text.as_bytes()).force_pow2_textures();
         assert!(!pow2(""));
         assert!(pow2("force_pow2_textures=yes"));

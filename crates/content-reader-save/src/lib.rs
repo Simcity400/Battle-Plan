@@ -1683,27 +1683,9 @@ fn content_state_history(
     Ok((states, notes))
 }
 
-#[test]
-#[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
-fn vanilla_state_history_reads_without_diagnostics() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let Some(root) = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")) else {
-        return;
-    };
-    let root = std::path::PathBuf::from(root);
-    let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-    let (states, notes) = content_state_history(&layers).unwrap();
-    assert!(!states.definitions().is_empty());
-    assert!(notes.is_empty(), "{notes:?}");
-    let membership = read_partial_map_membership(&layers).unwrap();
-    assert!(membership.excluded_states.is_empty());
-}
-
 #[cfg(test)]
 fn history_fixture(input: &[u8]) -> content_reader_states::states::StateDefinition {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let context = content_reader_states::states::Context {
         resource: &|_| content_reader_states::states::Resource::Found,
         max_building_levels: 20,

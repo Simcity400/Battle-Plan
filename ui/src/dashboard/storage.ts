@@ -4,8 +4,8 @@ import type { Breakpoint, CountryGroup, CountrySelection, DashboardTemplate, Gri
 import { widgetDefinition } from './definitions.ts';
 import type { PageId } from './pages.ts';
 
-const STORAGE_KEY = 'hoi4-replay.workspace-template.v1';
-const LIBRARY_KEY = 'hoi4-replay.workspace-layouts.v1';
+const STORAGE_KEY = 'battleplan.workspace-template.v1';
+const LIBRARY_KEY = 'battleplan.workspace-layouts.v1';
 export const MAX_LAYOUTS = 32;
 export interface LayoutLibrary {
   version: 1;

@@ -44,8 +44,7 @@ fn serial(
 
 #[test]
 fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let stack = Stack::new("parallel_focus_precedence");
     for (layer, path, title) in [
         (
@@ -134,8 +133,7 @@ fn ordered_parallel_focus_files_keep_layer_path_and_database_precedence() -> io:
 
 #[test]
 fn parallel_focus_files_isolate_variables_and_share_complete_mod_names() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let stack = Stack::new("parallel_focus_variables");
     stack.write(
         &stack.addon(),
@@ -190,8 +188,7 @@ fn parallel_focus_files_isolate_variables_and_share_complete_mod_names() -> io::
 #[test]
 fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix() -> io::Result<()>
 {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let stack = Stack::new("parallel_focus_diagnostics");
     for (file, text) in [
         ("a", "shared_focus=9 id=RECOVERED text=RECOVERED_TITLE }"),
@@ -278,8 +275,7 @@ fn parallel_focus_files_preserve_diagnostic_kind_message_count_order_and_prefix(
 
 #[test]
 fn a_refused_file_leaves_what_it_could_redefine_unknown() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let stack = Stack::new("focus_refused_override");
     for (file, text) in [
         (
@@ -329,8 +325,7 @@ fn a_refused_file_leaves_what_it_could_redefine_unknown() -> io::Result<()> {
 
 #[test]
 fn a_verified_focus_read_error_never_reaches_later_files() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     for failed in 0..5 {
         let stack = Stack::new("parallel_focus_read_error");
         for index in 0..5 {
@@ -380,8 +375,7 @@ fn a_verified_focus_read_error_never_reaches_later_files() -> io::Result<()> {
 
 #[test]
 fn focus_wave_parsers_overlap_and_merge_after_reverse_completion() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let paths = (0..4)
         .map(|index| {
             (
@@ -442,8 +436,7 @@ fn focus_wave_parsers_overlap_and_merge_after_reverse_completion() -> io::Result
 
 #[test]
 fn focus_folders_load_whatever_case_their_layer_spells() -> io::Result<()> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let stack = Stack::new("focus_folder_case");
     stack.write(
         &stack.addon(),

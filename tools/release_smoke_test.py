@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import release_smoke as rs
 
-FIVE = ["battle-plan-recorder.exe", "collector.dll", "dxcompiler.dll", "dxil.dll", "replay-desktop.exe"]
+FIVE = ["battleplan-recorder.exe", "collector.dll", "dxcompiler.dll", "dxil.dll", "replay-desktop.exe"]
 NOTICES = ["LICENSE", "THIRD-PARTY-NOTICES.txt"]
 
 
@@ -70,7 +70,7 @@ class ReleaseSmoke(unittest.TestCase):
         self.assertEqual(rs.layout_problems(installed, FIVE, NOTICES), ["the old LICENSES folder is installed"])
 
     def test_an_old_viewer_or_compiler_executable_or_a_missing_or_moved_dll_is_named(self):
-        installed = self.tree("replay-desktop.exe", "battle-plan-recorder.exe", "collector.dll", "viewer.exe",
+        installed = self.tree("replay-desktop.exe", "battleplan-recorder.exe", "collector.dll", "viewer.exe",
                               "shader-tools/dxc/dxc.exe", "shader-tools/dxc/dxcompiler.dll", "shader-tools/dxc/dxil.dll")
         self.assertEqual(rs.layout_problems(installed, FIVE, []), [
             "dxcompiler.dll is not in the install folder",

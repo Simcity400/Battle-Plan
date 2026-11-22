@@ -76,12 +76,12 @@ before running, then remove them after all owned game/recorder work has stopped.
 .PARAMETER LockOwner
 Exact owner-file token from the caller's held game lock.
 .PARAMETER WorkerSampler
-Collector profiling configuration forwarded as BATTLE_PLAN_WORKER_SAMPLER to recorder candidates.
+Collector profiling configuration forwarded as BATTLEPLAN_WORKER_SAMPLER to recorder candidates.
 Requires a frozen collector built with its worker_sampler feature.
 .PARAMETER CaptureRoot
-User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
+User-selected output root; defaults to LOCALAPPDATA/BattlePlan/captures.
 .EXAMPLE
-powershell -File tools/bench.ps1 -Plan ./plan.json -GameExe "$(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })/hoi4.exe" -UserDirectory ./profile -Out "$env:LOCALAPPDATA/HOI4Replay/captures/bench/run01" -MetricsTool ./metrics.exe -LockOwner $ownerToken
+powershell -File tools/bench.ps1 -Plan ./plan.json -GameExe "$(if (Test-Path Env:BATTLEPLAN_GAME_DIR) { $env:BATTLEPLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })/hoi4.exe" -UserDirectory ./profile -Out "$env:LOCALAPPDATA/BattlePlan/captures/bench/run01" -MetricsTool ./metrics.exe -LockOwner $ownerToken
 #>
 [CmdletBinding()]
 param(
@@ -96,9 +96,9 @@ param(
     [string]$InputShimDir = '',
     [string]$MenuPatch = '',
     [int[]]$MenuPatchOrigin = @(1150, 440),
-    [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
+    [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'BattlePlan\captures'),
     [string]$WorkerSampler = '',
-    [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
+    [string]$GameLock = (Join-Path $env:TEMP 'claude\hoi4_game.lock'),
     [string]$LockOwner,
     [int]$AttachTimeoutSeconds = 300,
     [switch]$Foreground,
@@ -220,8 +220,8 @@ function Connect-Game {
     }
     $script:game = $games[0]
     if ($script:game.Path -ine $GameExe) { throw "Running game is not the pinned executable: $($script:game.Path)" }
-    if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY })) { $script:game.ProcessorAffinity = [IntPtr][Convert]::ToInt64($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }), 16); Log "game affinity $($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }))" }
-    if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY })) { $script:game.PriorityClass = [Diagnostics.ProcessPriorityClass]$(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }); Log "game priority $($(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }))" }
+    if ($(if (Test-Path Env:BATTLEPLAN_BENCH_AFFINITY) { $env:BATTLEPLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY })) { $script:game.ProcessorAffinity = [IntPtr][Convert]::ToInt64($(if (Test-Path Env:BATTLEPLAN_BENCH_AFFINITY) { $env:BATTLEPLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }), 16); Log "game affinity $($(if (Test-Path Env:BATTLEPLAN_BENCH_AFFINITY) { $env:BATTLEPLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }))" }
+    if ($(if (Test-Path Env:BATTLEPLAN_BENCH_PRIORITY) { $env:BATTLEPLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY })) { $script:game.PriorityClass = [Diagnostics.ProcessPriorityClass]$(if (Test-Path Env:BATTLEPLAN_BENCH_PRIORITY) { $env:BATTLEPLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }); Log "game priority $($(if (Test-Path Env:BATTLEPLAN_BENCH_PRIORITY) { $env:BATTLEPLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }))" }
     $limit = [DateTime]::UtcNow.AddSeconds(300); $r = New-Object Hoi4ProbeInput+Rect
     do {
         $script:game.Refresh(); if ($script:game.HasExited) { throw 'The game exited during startup.' }
@@ -514,9 +514,9 @@ function Start-Candidate($candidate, [string]$runDir) {
     if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { throw 'A collector is already loaded; detach it first.' }
     $recording = Join-Path $runDir 'recording'
     $null = New-Item -ItemType Directory -Force -Path $recording
-    $previousSampler = $(if (Test-Path Env:BATTLE_PLAN_WORKER_SAMPLER) { $env:BATTLE_PLAN_WORKER_SAMPLER } else { $env:HOI4_WORKER_SAMPLER })
+    $previousSampler = $(if (Test-Path Env:BATTLEPLAN_WORKER_SAMPLER) { $env:BATTLEPLAN_WORKER_SAMPLER } else { $env:HOI4_WORKER_SAMPLER })
     try {
-        if ($WorkerSampler) { $env:BATTLE_PLAN_WORKER_SAMPLER = $WorkerSampler }
+        if ($WorkerSampler) { $env:BATTLEPLAN_WORKER_SAMPLER = $WorkerSampler }
         $arguments = @('record', '--once', '--out', ('"' + $recording + '"'), '--user-dir', ('"' + $userPath + '"'))
         if ($candidate.PSObject.Properties['capture_mode']) { $arguments += @('--capture-mode', [string]$candidate.capture_mode) }
         if ($candidate.PSObject.Properties['recorder_args']) { $arguments += @($candidate.recorder_args | ForEach-Object { [string]$_ }) }
@@ -524,12 +524,12 @@ function Start-Candidate($candidate, [string]$runDir) {
             -WorkingDirectory $frozen -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput (Join-Path $runDir 'recorder.stdout.log') -RedirectStandardError (Join-Path $runDir 'recorder.stderr.log')
     } finally {
-        $env:BATTLE_PLAN_WORKER_SAMPLER = $previousSampler
+        $env:BATTLEPLAN_WORKER_SAMPLER = $previousSampler
     }
     $null = $process.Handle
     [void]$script:recorders.Add($process)
-    if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY })) { try { $process.ProcessorAffinity = [IntPtr][Convert]::ToInt64($(if (Test-Path Env:BATTLE_PLAN_BENCH_AFFINITY) { $env:BATTLE_PLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }), 16) } catch { Log "recorder affinity not set: $($_.Exception.Message)" } }
-    if ($(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY })) { try { $process.PriorityClass = [Diagnostics.ProcessPriorityClass]$(if (Test-Path Env:BATTLE_PLAN_BENCH_PRIORITY) { $env:BATTLE_PLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }) } catch { Log "recorder priority not set: $($_.Exception.Message)" } }
+    if ($(if (Test-Path Env:BATTLEPLAN_BENCH_AFFINITY) { $env:BATTLEPLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY })) { try { $process.ProcessorAffinity = [IntPtr][Convert]::ToInt64($(if (Test-Path Env:BATTLEPLAN_BENCH_AFFINITY) { $env:BATTLEPLAN_BENCH_AFFINITY } else { $env:HOI4_BENCH_AFFINITY }), 16) } catch { Log "recorder affinity not set: $($_.Exception.Message)" } }
+    if ($(if (Test-Path Env:BATTLEPLAN_BENCH_PRIORITY) { $env:BATTLEPLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY })) { try { $process.PriorityClass = [Diagnostics.ProcessPriorityClass]$(if (Test-Path Env:BATTLEPLAN_BENCH_PRIORITY) { $env:BATTLEPLAN_BENCH_PRIORITY } else { $env:HOI4_BENCH_PRIORITY }) } catch { Log "recorder priority not set: $($_.Exception.Message)" } }
     $attached = [pscustomobject]@{ process = $process; recording = $recording; status = $null; active = $null; frozen = $frozen; diagnostic = $diagnostic }
     $script:lastDiagnostic = $diagnostic
     try {
@@ -711,7 +711,7 @@ function Stop-Ladder($ladder, [string]$runDir) {
 }
 function Get-ExactMetrics($attached, [string]$runDir, [int]$firstHour, [int]$lastHour) {
     if (-not $MetricsTool -or -not (Test-Path -LiteralPath $MetricsTool -PathType Leaf)) { throw 'The required exact-metrics reader is missing.' }
-    $replays = @(Get-ChildItem -LiteralPath $attached.recording -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.battleplan', '.hoi4replay' })
+    $replays = @(Get-ChildItem -LiteralPath $attached.recording -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.battleplan' })
     if ($replays.Count -ne 1) { throw "Expected one finalized replay for exact metrics, found $($replays.Count)." }
     $expectedFrames = [int64]$lastHour - [int64]$firstHour
     if ($expectedFrames -le 0) { throw 'The measurement contains no completed game hours.' }

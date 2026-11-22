@@ -129,6 +129,36 @@ impl<T> Paged<T> {
                     .zip(other.0.iter().flat_map(|root| &root.pages))
                     .all(|(a, b)| a.ptr_eq(b) || a.iter().zip(b.iter()).all(|(a, b)| same(a, b))))
     }
+    pub fn changed_pages_by(
+        &self,
+        previous: &Self,
+        same: impl FnMut(&T, &T) -> bool,
+    ) -> Vec<usize> {
+        self.changed_page_indices_by(previous, same).collect()
+    }
+    pub fn changed_page_indices_by<'a>(
+        &'a self,
+        previous: &'a Self,
+        mut same: impl FnMut(&T, &T) -> bool + 'a,
+    ) -> impl Iterator<Item = usize> + 'a {
+        let pages: &[Retained<Vec<T>>] = if self.ptr_eq(previous) {
+            &[]
+        } else {
+            self.0.as_deref().map_or(&[], |root| root.pages.as_slice())
+        };
+        pages.iter().enumerate().filter_map(move |(index, page)| {
+            (!previous
+                .0
+                .as_ref()
+                .and_then(|old| old.pages.get(index))
+                .is_some_and(|old| {
+                    page.ptr_eq(old)
+                        || (page.len() == old.len()
+                            && page.iter().zip(old.iter()).all(|(a, b)| same(a, b)))
+                }))
+            .then_some(index)
+        })
+    }
 }
 impl<T: Clone> Paged<T> {
     pub fn try_as_slice(&self) -> io::Result<&[T]> {
@@ -208,22 +238,7 @@ impl<T: Clone + PartialEq> Paged<T> {
         &'a self,
         previous: &'a Self,
     ) -> impl Iterator<Item = usize> + 'a {
-        self.0
-            .iter()
-            .filter(move |_| !self.ptr_eq(previous))
-            .flat_map(move |root| {
-                root.pages
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(index, page)| {
-                        (!previous
-                            .0
-                            .as_ref()
-                            .and_then(|old| old.pages.get(index))
-                            .is_some_and(|old| page.ptr_eq(old) || **page == **old))
-                        .then_some(index)
-                    })
-            })
+        self.changed_page_indices_by(previous, PartialEq::eq)
     }
 }
 impl<T> From<Vec<T>> for Paged<T> {

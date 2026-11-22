@@ -90,7 +90,7 @@ fn roles(fixture: &mut Fixture) -> &mut Vec<AdvisorRoleRow> {
 #[test]
 fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::AvailableAdvisors.index()] =
         TableView::Complete(TableRows::AvailableAdvisors(vec![
@@ -178,7 +178,7 @@ fn available_order_precedes_retired_and_multi_names_do_not_need_the_cache() {
 #[test]
 fn retired_fallback_folds_the_token_and_keeps_record_order() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let TableView::Complete(TableRows::AvailableAdvisors(rows)) =
         &mut *fixture.frame.tables[TableId::AvailableAdvisors.index()]
@@ -222,7 +222,7 @@ fn retired_fallback_folds_the_token_and_keeps_record_order() {
 #[test]
 fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let later = AdvisorRoleRow {
         ordinal: 4,
@@ -269,7 +269,7 @@ fn cached_numbers_use_definition_ids_and_order_not_authored_modifiers() {
 #[test]
 fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     roles(&mut fixture)[0].modifier_cache = Recorded::Value(Some(AdvisorModifierCache::default()));
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
@@ -295,7 +295,7 @@ fn known_empty_numeric_cache_still_refuses_the_unrecorded_tooltip_keys() {
 #[test]
 fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     roles(&mut fixture)[0].idea = b"SYN_BONUS_ADVISOR".to_vec();
     *fixture.frame.tables[TableId::AdvisorTokens.index()] =
@@ -367,7 +367,7 @@ fn advisor_research_and_recorded_trait_targets_surround_the_stored_numbers() {
 #[test]
 fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     for (cache, reason) in [
         (
@@ -408,7 +408,7 @@ fn unavailable_or_absent_cache_and_rosters_are_named_not_empty_blocks() {
 #[test]
 fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     fixture.catalogue.localisation = std::sync::Arc::new(
         fixture
@@ -468,7 +468,7 @@ fn format99_advisor_ideas_render_recorded_tooltips_in_slot_order() {
 #[test]
 fn a_pool_read_earlier_in_the_day_still_names_its_advisor() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     let read_at = fixture.frame.hour - 23;
     *fixture.frame.tables[TableId::SliceReads.index()] =

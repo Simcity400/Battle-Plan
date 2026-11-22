@@ -1,7 +1,7 @@
 {
   "main": "replay-desktop.exe",
   "cargo": ["recorder-app", "collector"],
-  "built": ["battle-plan-recorder.exe", "collector.dll"],
+  "built": ["battleplan-recorder.exe", "collector.dll"],
   "compiler": ["dxcompiler.dll", "dxil.dll"],
   "repository": ["LICENSE"],
   "notices": {

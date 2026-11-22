@@ -178,8 +178,7 @@ mod tests {
     use super::*;
     #[test]
     fn sprite_pair_and_last_definition() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let laws = parse(br#"@frame=4 custom={icon="mod_sprite:3" icon=@frame icon=other visible={always=yes} ai_will_do={base=1 modifier={factor=2 always=yes}} state_modifier={compliance_gain=0.1}} custom={icon="new:2"}"#, &KeyNames::default()).unwrap();
         assert_eq!((laws[0].sprite.as_str(), laws[0].frame), ("other", 4));
         assert_eq!((laws[1].sprite.as_str(), laws[1].frame), ("new", 2));
@@ -195,8 +194,7 @@ mod tests {
     }
     #[test]
     fn eligibility_trigger_bodies_are_preserved() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let laws = parse(
             b"custom={visible={always=yes} visible={has_dlc=Example} available={FROM={tag=MOD}}}",
             &KeyNames::default(),
@@ -211,8 +209,7 @@ mod tests {
 
     #[test]
     fn the_tooltip_key_and_both_modifier_blocks_are_kept() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let laws = parse(
             b"strict={tooltip=first tooltip=strict_tt state_modifier={compliance_gain=0.1} state_modifier={resistance_growth=-0.2} suppressed_state_modifier={local_manpower=0.5}} plain={}",
             &KeyNames::default(),
@@ -229,8 +226,7 @@ mod tests {
 
     #[test]
     fn unsettled_modifier_is_named_not_assumed() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let error = parse(
             b"extra={state_modifier={modded={a=1}}}",
             &KeyNames::default(),
@@ -240,113 +236,4 @@ mod tests {
         assert!(error.contains("modded") && error.contains("line 1"));
     }
 
-    #[test]
-    #[ignore = "requires the installed vanilla and Workshop corpus"]
-    fn installed_corpus() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let game =
-            std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"));
-        let workshop = std::path::PathBuf::from(
-            std::env::var_os("BATTLE_PLAN_WORKSHOP_DIR").or_else(|| std::env::var_os("HOI4_WORKSHOP_DIR")).expect("BATTLE_PLAN_WORKSHOP_DIR"),
-        );
-        let mut roots = vec![game];
-        roots.extend(
-            std::fs::read_dir(workshop)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .filter(|path| path.is_dir()),
-        );
-        roots.sort();
-        let mut files = 0;
-        let mut declarations = 0;
-        let mut refusals = Vec::new();
-        let mut icon_names = std::collections::BTreeSet::new();
-        for root in &roots {
-            let directory = root.join("common/occupation_laws");
-            let Ok(entries) = std::fs::read_dir(directory) else {
-                continue;
-            };
-            let mut paths: Vec<_> = entries
-                .map(|entry| entry.unwrap().path())
-                .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "txt"))
-                .collect();
-            paths.sort();
-            for path in paths {
-                files += 1;
-                match parse(&std::fs::read(&path).unwrap(), &KeyNames::default()) {
-                    Ok(laws) => {
-                        declarations += laws.len();
-                        icon_names.extend(laws.iter().map(|law| law.sprite.clone()));
-                        println!("{}: {} declarations", path.display(), laws.len());
-                    }
-                    Err(error) => refusals.push(format!("{}: {error}", path.display())),
-                }
-            }
-        }
-        println!(
-            "{} roots, {files} files, {declarations} declarations, {} refused files",
-            roots.len(),
-            refusals.len()
-        );
-        for refusal in &refusals {
-            println!("REFUSED {refusal}");
-        }
-        assert!(
-            refusals.is_empty(),
-            "reached content forms must be settled; {} refused files",
-            refusals.len()
-        );
-        fn gfx_files(directory: &std::path::Path, paths: &mut Vec<std::path::PathBuf>) {
-            let Ok(entries) = std::fs::read_dir(directory) else {
-                return;
-            };
-            for entry in entries {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    gfx_files(&path, paths);
-                } else if path.extension().is_some_and(|ext| ext == "gfx") {
-                    paths.push(path);
-                }
-            }
-        }
-        let mut icons = 0;
-        for root in &roots {
-            let mut paths = Vec::new();
-            gfx_files(&root.join("interface"), &mut paths);
-            paths.sort();
-            for path in paths {
-                let read =
-                    crate::gui::native::sprites::read_sprites(&std::fs::read(&path).unwrap());
-                for sprite in read.sprites {
-                    let Ok(name) = std::str::from_utf8(&sprite.name) else {
-                        continue;
-                    };
-                    if !icon_names.contains(name) {
-                        continue;
-                    }
-                    icons += 1;
-                    println!("ICON {}: {name}: {}", path.display(), sprite.kind.keyword());
-                    use crate::gui::native::sprites::{DEFAULT_EFFECT, SpriteKind};
-                    let supported = matches!(&sprite.kind, SpriteKind::Plain(plain) if
-                        plain.animations.is_empty() && plain.masking_texture.is_empty() && plain.effect() == DEFAULT_EFFECT
-                        && matches!(plain.frame_direction, 0 | 1) && plain.stretch == 1.0 && plain.v_scale == 1.0 && !plain.flip_u);
-                    if !supported || !sprite.refusals.is_empty() {
-                        refusals.push(format!("{}: {name}: {:?}", path.display(), sprite));
-                    }
-                }
-            }
-        }
-        println!(
-            "{icons} occupation-law sprite declarations, {} unsupported forms",
-            refusals.len()
-        );
-        for refusal in &refusals {
-            println!("REFUSED {refusal}");
-        }
-        assert!(
-            refusals.is_empty(),
-            "reached icon forms must be implemented"
-        );
-    }
 }

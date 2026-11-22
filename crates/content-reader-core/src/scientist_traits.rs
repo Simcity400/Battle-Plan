@@ -213,8 +213,7 @@ mod tests {
 
     #[test]
     fn scientist_traits_read_names_modifiers_variables_and_skips() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             br#"@v = 0.2 trait = { name = First NAME = final icon = art
           specialization = { land air } available = { always = yes }
@@ -231,8 +230,7 @@ mod tests {
 
     #[test]
     fn scientist_trait_repeated_tokens_keep_first_and_skip_their_variables() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"trait = { name = first } TRAIT = { @n = wrong name = second } other = { name = @n }",
             &KeyNames::default(),
@@ -255,8 +253,7 @@ mod tests {
 
     #[test]
     fn scientist_trait_uncertain_modifier_consumption_is_named() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut names = KeyNames::default();
         names.effects.modifiers_gap = Some("synthetic registry suffix".into());
         let file = parse(b"known = { name = known } uncertain = { modifier = { unknown = { name = x } } } tail = { name = tail }",
@@ -268,8 +265,7 @@ mod tests {
 
     #[test]
     fn scientist_trait_name_does_not_depend_on_unheld_modifier_text() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let file = parse(
             b"trait = { name = valid modifier = { research_speed_factor = \xfe } }",
             &KeyNames::default(),
@@ -287,8 +283,7 @@ mod tests {
 
     #[test]
     fn scientist_traits_load_the_winning_files_and_first_registered_tokens() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root =
             std::env::temp_dir().join(format!("content-reader-scientist-traits-{}", std::process::id()));
         let base = root.join("base");

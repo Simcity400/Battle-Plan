@@ -1,8 +1,6 @@
 name: Release candidate
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       channel:
@@ -24,7 +22,7 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: stable or preview; nightly candidates are built for each commit of main
+        description: The candidate's channel
         type: string
         required: true
       commit:
@@ -84,7 +82,7 @@ jobs:
         with:
           cache-targets: false
           shared-key: candidate
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Name the version
         id: version
@@ -107,14 +105,14 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:FEED) { $env:BATTLE_PLAN_RELEASES = $env:FEED }
-          $env:BATTLE_PLAN_VERSION = $env:VERSION
+          if ($env:FEED) { $env:BATTLEPLAN_RELEASES = $env:FEED }
+          $env:BATTLEPLAN_VERSION = $env:VERSION
           $userHome = $env:USERPROFILE
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $userHome '.cargo' }
           $rustupHome = if ($env:RUSTUP_HOME) { $env:RUSTUP_HOME } else { Join-Path $userHome '.rustup' }
           $maps = @(
             "$userHome=/home", "$cargoHome=/cargo", "$rustupHome=/rustup",
-            "$env:GITHUB_WORKSPACE=/battle-plan", "$(Join-Path $env:GITHUB_WORKSPACE '.cargo-target')=/target")
+            "$env:GITHUB_WORKSPACE=/battleplan", "$(Join-Path $env:GITHUB_WORKSPACE '.cargo-target')=/target")
           $flags = @($maps | ForEach-Object { "--remap-path-prefix=$_" }) + '-Clink-arg=/PDBALTPATH:%_PDB%'
           $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1F
           npm run build:desktop -- -- --profile $env:PROFILE
@@ -132,8 +130,8 @@ jobs:
             exit 1
           fi
           rm -rf dist && mkdir dist
-          cp "${built[0]}" "dist/battle-plan-${VERSION}-x64-setup.exe"
-          python tools/release.py candidate --installer "dist/battle-plan-${VERSION}-x64-setup.exe" --channel "$CHANNEL" \
+          cp "${built[0]}" "dist/battleplan-${VERSION}-x64-setup.exe"
+          python tools/release.py candidate --installer "dist/battleplan-${VERSION}-x64-setup.exe" --channel "$CHANNEL" \
             --version "$VERSION" --commit "$(git rev-parse HEAD)" --output dist/candidate.json
           name="candidate-${CHANNEL}-$(git rev-parse HEAD)"
           if [[ "$CHANNEL" == stable ]]; then name="${name}-${VERSION}"; fi
@@ -145,7 +143,7 @@ jobs:
         run: python tools/leak-gate.py dist ui/dist
 
       - name: Smoke the installed layout
-        run: python tools/release_smoke.py --installer dist/battle-plan-*-x64-setup.exe --out "$RUNNER_TEMP/release-smoke" --layout-only
+        run: python tools/release_smoke.py --installer dist/battleplan-*-x64-setup.exe --out "$RUNNER_TEMP/release-smoke" --layout-only
 
       - name: Keep the candidate
         uses: actions/upload-artifact@v7

@@ -1089,9 +1089,9 @@ mod tests {
                 None => std::env::remove_var("LOCALAPPDATA"),
             }
         }
-        std::fs::remove_file(root.join("HOI4Replay").join("map-settings.json")).unwrap();
-        std::fs::remove_file(root.join("HOI4Replay").join("map-settings.lock")).unwrap();
-        std::fs::remove_dir(root.join("HOI4Replay")).unwrap();
+        std::fs::remove_file(root.join("BattlePlan").join("map-settings.json")).unwrap();
+        std::fs::remove_file(root.join("BattlePlan").join("map-settings.lock")).unwrap();
+        std::fs::remove_dir(root.join("BattlePlan")).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 

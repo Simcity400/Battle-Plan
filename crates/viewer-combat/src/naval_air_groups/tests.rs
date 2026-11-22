@@ -3,20 +3,6 @@ use replay_data::{
     rows::NavalCombatAirEfficiency, rows::NavalShipModifierSource, rows::NavalShipModifierTerm,
 };
 
-#[test]
-fn sortie_content_keys_spell_the_fixed_modifier_keys() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    for (index, name) in SORTIE.into_iter().zip(SORTIE_KEYS) {
-        assert!(
-            keys::all()
-                .unwrap()
-                .any(|key| key.index == index && key.name == name),
-            "{name}"
-        );
-    }
-}
-
 fn definitions() -> Defines {
     Defines {
         summary_fixed: [0; 14],

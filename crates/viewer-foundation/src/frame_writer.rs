@@ -88,7 +88,7 @@ impl Recorder {
                 let mut out = match open(path) {
                     Ok(out) => out,
                     Err(error) => {
-                        eprintln!("BATTLE_PLAN_VIEWER_FRAMES: {error}");
+                        eprintln!("BATTLEPLAN_VIEWER_FRAMES: {error}");
                         return;
                     }
                 };
@@ -161,7 +161,7 @@ static RECORDER: OnceLock<Option<Recorder>> = OnceLock::new();
 pub fn initialize(started: Instant) {
     RECORDER.get_or_init(|| {
         Recorder::start(
-            std::env::var_os("BATTLE_PLAN_VIEWER_FRAMES").or_else(|| std::env::var_os("HOI4_VIEWER_FRAMES")),
+            std::env::var_os("BATTLEPLAN_VIEWER_FRAMES").or_else(|| std::env::var_os("HOI4_VIEWER_FRAMES")),
             started,
             QUEUED_FRAMES,
             |path| File::create(path).map(BufWriter::new),

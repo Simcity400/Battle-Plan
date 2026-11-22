@@ -26,8 +26,7 @@ use {
 
 #[test]
 fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    viewer_foundation::map::test_support::enter_fixed_modifier_tables();
     let root = std::env::temp_dir().join(format!(
         "hoi4_combat_inline_sprite_{}_{:?}",
         std::process::id(),
@@ -90,9 +89,14 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         std::fs::write(file, bytes).unwrap();
     }
     let overlay = root.join("mod");
+    let mut null_tactic = vec![0_u8; 128 + 6 * 4 * 4];
+    null_tactic[..4].copy_from_slice(b"DDS ");
+    for (offset, value) in [(4, 124_u32), (12, 4), (16, 6), (28, 1), (76, 32), (88, 32)] {
+        null_tactic[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
     for (path, bytes) in [
         ("gfx/leaders/fixture.tga", tga(14, 20)),
-        ("gfx/interface/landcombat/tactics/.dds", tga(6, 4)),
+        ("gfx/interface/landcombat/tactics/.dds", null_tactic),
     ] {
         let file = overlay.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();

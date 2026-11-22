@@ -288,7 +288,7 @@ const CONSTANT: [&str; 3] = [
 
 fn with_texts(check: impl FnOnce(&dyn Fn(&DecodedFrame, &[Key]) -> Vec<Option<u64>>)) {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = super::tests::catalogue(
         "defined_text = { name = GetModText text = { localization_key = GER } }",
         "",

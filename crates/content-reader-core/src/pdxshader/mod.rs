@@ -908,8 +908,7 @@ Effect = Below
 
     #[test]
     fn an_effect_keeps_its_full_facts() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         let read = files(&[
             ("gfx/FX/fixture.shader", DECLARATIONS),
             (
@@ -963,8 +962,7 @@ Effect = Below
 
     #[test]
     fn includes_and_stages_order_the_rows() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         let read = files(&[
             (
                 "gfx/FX/mod.shader",
@@ -996,8 +994,7 @@ Effect = Below
 
     #[test]
     fn members_end_at_the_end_of_the_text() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         for tail in [&b""[..], b"\xff"] {
             let text = [b"VertexStruct VS { float2 a : TEXCOORD0 ".as_slice(), tail].concat();
             let file = read_file(&text).unwrap();
@@ -1014,8 +1011,7 @@ Effect = Below
 
     #[test]
     fn declaration_names_keep_their_line_feeds() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        crate::test_game::enter();
         let text = "PixelShader = { Samplers = { \"Map\nTexture\" = { Index = 1 } } }\n\
                     BlendState \"multi\nline\" { BlendEnable = yes }\n\
                     DepthStencilState \"a\0b\" { }\n\

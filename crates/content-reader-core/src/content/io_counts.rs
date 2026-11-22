@@ -84,7 +84,7 @@ static READS: OnceLock<Option<Mutex<BTreeMap<Key, (u64, u64)>>>> = OnceLock::new
 fn reads() -> Option<&'static Mutex<BTreeMap<Key, (u64, u64)>>> {
     READS
         .get_or_init(|| {
-            std::env::var_os("BATTLE_PLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE"))
+            std::env::var_os("BATTLEPLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE"))
                 .is_some()
                 .then(Mutex::default)
         })

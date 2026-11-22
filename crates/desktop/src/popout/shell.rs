@@ -27,7 +27,7 @@ type Callback = Arc<dyn Fn(Event) + Send + Sync>;
 
 const NEXT_MONITOR: u32 = WM_APP + 1;
 const RETIRE: u32 = WM_APP + 2;
-const CLASS: &str = "HOI4ReplayPopOutMap";
+const CLASS: &str = "BattlePlanPopOutMap";
 const APP_ICON: u16 = 32512;
 
 pub struct Shell {

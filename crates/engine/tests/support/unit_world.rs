@@ -377,7 +377,7 @@ impl World {
 }
 
 pub fn time(mut work: impl FnMut()) -> (f64, f64) {
-    if std::env::var_os("BATTLE_PLAN_UNIT_VALIDATE").or_else(|| std::env::var_os("HOI4_UNIT_VALIDATE")).is_some() {
+    if std::env::var_os("BATTLEPLAN_UNIT_VALIDATE").or_else(|| std::env::var_os("HOI4_UNIT_VALIDATE")).is_some() {
         work();
         return (0.0, 0.0);
     }
@@ -395,10 +395,10 @@ pub fn time(mut work: impl FnMut()) -> (f64, f64) {
 }
 
 pub fn shapes() -> Vec<Shape> {
-    match std::env::var("BATTLE_PLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() {
+    match std::env::var("BATTLEPLAN_UNIT_SHAPE").or_else(|_| std::env::var("HOI4_UNIT_SHAPE")).as_deref() {
         Ok("design") => vec![Shape::DESIGN],
         Ok("stress") => vec![Shape::STRESS],
         Err(_) => vec![Shape::DESIGN, Shape::STRESS],
-        Ok(value) => panic!("unknown BATTLE_PLAN_UNIT_SHAPE: {value}"),
+        Ok(value) => panic!("unknown BATTLEPLAN_UNIT_SHAPE: {value}"),
     }
 }

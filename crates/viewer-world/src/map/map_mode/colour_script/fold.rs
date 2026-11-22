@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn scripted_sparse_targets_share_quiet_roots_and_remap_only_changed_memberships() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::map::test_game::enter();
         let mut modes = MapModes::default();
         scripted_map_modes::parse_into(
             &"synthetic.txt".into(),
@@ -553,6 +553,7 @@ mod tests {
                 true,
                 &mut Vec::new(),
             );
+            assert!(expected.borders[&TargetId::Country(1000)].style.is_some());
             assert_eq!(
                 map_display_data::landscape::apply_layer(&program, None),
                 expected
@@ -580,7 +581,7 @@ mod tests {
     }
     #[test]
     fn split_controller_refusal_recovery_keeps_pending_membership_and_callbacks() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::map::test_game::enter();
         let mut modes = MapModes::default();
         scripted_map_modes::parse_into(
             &"synthetic.txt".into(),
@@ -659,6 +660,9 @@ mod tests {
                 true,
                 &mut Vec::new(),
             );
+            if !actual.refused {
+                assert!(expected.borders.values().any(|border| border.style.is_some()));
+            }
             assert_eq!(
                 map_display_data::landscape::apply_layer(&actual, None),
                 expected,

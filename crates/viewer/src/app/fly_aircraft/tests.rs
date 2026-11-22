@@ -2,8 +2,7 @@ use super::*;
 use std::{collections::BTreeMap, time::Duration};
 
 fn assets(name: &str) -> Arc<AircraftAssets> {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let root =
         std::env::temp_dir().join(format!("viewer-fly-aircraft-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

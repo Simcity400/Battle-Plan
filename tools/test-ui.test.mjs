@@ -52,30 +52,30 @@ test('group execution isolates full-sweep flags and restores the invoking enviro
 import assert from 'node:assert/strict';
 import test from 'node:test';
 test('child receives isolated native sweep flags', () => {
-  assert.equal((process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLE_PLAN_EXPECT_TAB_ONLY ?? process.env.HOI4_EXPECT_TAB_ONLY));
-  assert.equal((process.env.BATTLE_PLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL), (process.env.BATTLE_PLAN_EXPECT_TAB_FULL ?? process.env.HOI4_EXPECT_TAB_FULL));
+  assert.equal((process.env.BATTLEPLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLEPLAN_EXPECT_TAB_ONLY ?? process.env.HOI4_EXPECT_TAB_ONLY));
+  assert.equal((process.env.BATTLEPLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL), (process.env.BATTLEPLAN_EXPECT_TAB_FULL ?? process.env.HOI4_EXPECT_TAB_FULL));
 });
 `);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
-const original = [(process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLE_PLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL)];
+const original = [(process.env.BATTLEPLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLEPLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL)];
 const results = [], restored = [];
 const output = { write() {} };
 for (const tabFull of [false, true, false]) {
   if (tabFull) {
-    process.env.BATTLE_PLAN_EXPECT_TAB_ONLY = '1';
-    process.env.BATTLE_PLAN_EXPECT_TAB_FULL = '1';
+    process.env.BATTLEPLAN_EXPECT_TAB_ONLY = '1';
+    process.env.BATTLEPLAN_EXPECT_TAB_FULL = '1';
   } else {
-    delete process.env.BATTLE_PLAN_EXPECT_TAB_ONLY;
-    delete process.env.BATTLE_PLAN_EXPECT_TAB_FULL;
+    delete process.env.BATTLEPLAN_EXPECT_TAB_ONLY;
+    delete process.env.BATTLEPLAN_EXPECT_TAB_FULL;
   }
   results.push(await executeGroup({ files: ['flags.test.mjs'], concurrency: 1, tabFull }, ${JSON.stringify(root)}, output));
-  restored.push([(process.env.BATTLE_PLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLE_PLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL)]);
+  restored.push([(process.env.BATTLEPLAN_VIRTUAL_TAB_ONLY ?? process.env.HOI4_VIRTUAL_TAB_ONLY), (process.env.BATTLEPLAN_VIRTUAL_TAB_FULL ?? process.env.HOI4_VIRTUAL_TAB_FULL)]);
 }
 console.log(JSON.stringify({ results, original, restored }));
 `);
-    const env = { ...process.env, BATTLE_PLAN_VIRTUAL_TAB_ONLY: 'inherited-only', BATTLE_PLAN_VIRTUAL_TAB_FULL: 'inherited-full' };
+    const env = { ...process.env, BATTLEPLAN_VIRTUAL_TAB_ONLY: 'inherited-only', BATTLEPLAN_VIRTUAL_TAB_FULL: 'inherited-full' };
     delete env.NODE_TEST_CONTEXT;
     const { stdout } = await promisify(execFile)(process.execPath, [resolve(root, 'driver.mjs')], { env, timeout: driverTimeoutMs, windowsHide: true });
     const result = JSON.parse(stdout);

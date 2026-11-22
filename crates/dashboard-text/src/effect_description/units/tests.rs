@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 fn fixture() -> Fixture {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for unit name fixtures");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for unit name fixtures");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -235,7 +235,7 @@ fn bonus_names() -> content_reader_core::key_names::KeyNames {
 #[test]
 fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -274,7 +274,7 @@ fn unit_bonus_preserves_rosters_stat_and_terrain_order_and_nato_frame() {
 #[test]
 fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_header() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let names = bonus_names();
     let out = render(
@@ -297,7 +297,7 @@ fn unit_bonus_battalion_mult_keeps_authored_stats_flags_and_adjacent_category_he
 #[test]
 fn unit_bonus_refused_adjuster_keeps_known_stats_and_later_selectors() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -404,7 +404,7 @@ fn unit_fixture() -> Fixture {
 #[test]
 fn unit_carrier_empty_and_organization_table() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = unit_fixture();
     for object in [
         C(1),
@@ -469,7 +469,7 @@ fn unit_carrier_empty_and_organization_table() {
 #[test]
 fn unit_carrier_shared_name_and_recording_gap_table() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unit_fixture();
     for (body, expected) in [
         (
@@ -621,7 +621,7 @@ fn unit_carrier_shared_name_and_recording_gap_table() {
 #[test]
 fn unit_carrier_graph_links_keep_operand_scope() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = unit_fixture();
     let mut scopes = EventScopes::new(vec![
         EventScope {
@@ -646,7 +646,7 @@ fn unit_carrier_graph_links_keep_operand_scope() {
 #[test]
 fn unit_carrier_format98_naming_table() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let names = content_reader_division_names::division_names::parse(
         br#"SYN_G={prefix="P " ordered={12={"%s/%d %s"}}
             unordered={a={"Literal %d"}} fallback_name="Fallback %d"}
@@ -798,7 +798,7 @@ fn unit_carrier_format98_naming_table() {
 #[test]
 fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::catalogue::tests::{folder_catalogue, layers_catalogue};
     let (_, base) = folder_catalogue(&[
         (
@@ -863,7 +863,7 @@ fn unit_carrier_name_groups_use_recorded_layers_and_one_cache() {
 #[test]
 fn unit_carrier_naming_has_no_country_or_division_cap() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = unit_fixture();
     let countries = crate::effect_description::tests::synthetic_countries(24);
     *fixture.frame.tables[TableId::CountryLinks.index()] =
@@ -919,7 +919,7 @@ fn unit_carrier_naming_has_no_country_or_division_cap() {
 #[test]
 fn units_output_branches() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = fixture();
     let equipment = equipment();
     let mut sub_units = content_reader_core::unit_leader::SubUnits::default();
@@ -1191,7 +1191,7 @@ fn units_output_branches() {
 #[test]
 fn navy_unknown_target_uses_reserved_country_name() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -1226,7 +1226,7 @@ fn navy_unknown_target_uses_reserved_country_name() {
 #[test]
 fn units_admission_and_named_refusals() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = fixture();
     if let TableView::Complete(TableRows::Provinces(rows)) =
         &mut *fixture.frame.tables[TableId::Provinces.index()]
@@ -1482,7 +1482,7 @@ fn units_admission_and_named_refusals() {
 #[test]
 fn units_have_no_country_count_cap() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = equipment_fixture();
     fixture.set_countries(crate::effect_description::tests::synthetic_countries(24));
     let out = render(
@@ -1744,7 +1744,7 @@ fn equipment_fixture() -> Fixture {
 #[test]
 fn units_equipment_branches() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = equipment_fixture();
     let equipment = equipment();
     let names = content_reader_core::key_names::KeyNames::default();
@@ -2053,7 +2053,7 @@ fn units_equipment_branches() {
 #[test]
 fn units_equipment_named_refusals() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = equipment_fixture();
     let equipment = equipment();
     let content = Content {
@@ -2176,7 +2176,7 @@ fn units_equipment_named_refusals() {
 #[test]
 fn units_recorded_variant_no_tech_probe() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = equipment();
     let content = Content {
         equipment: Some(&equipment),
@@ -2285,7 +2285,7 @@ fn units_recorded_variant_no_tech_probe() {
 #[test]
 fn units_recorded_variant_pool_order_and_equality() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let equipment = equipment();
     let content = Content {
         equipment: Some(&equipment),
@@ -2406,7 +2406,7 @@ fn units_recorded_variant_pool_order_and_equality() {
 #[test]
 fn units_equipment_role_branches() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let cases = [
         ("capital_ship", "ship_designer_capital_ship"),
         ("submarine", "ship_designer_submarine"),

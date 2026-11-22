@@ -731,7 +731,7 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
     result
 }
 #[unsafe(no_mangle)]
-pub static BATTLE_PLAN_OPERATION_OUTCOME_CALLBACKS: [NativeFunction; 1] = [completion];
+pub static BATTLEPLAN_OPERATION_OUTCOME_CALLBACKS: [NativeFunction; 1] = [completion];
 
 #[derive(Clone, Copy, Default)]
 pub struct LaneCursor {

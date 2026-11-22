@@ -463,7 +463,7 @@ mod tests {
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     fn acquisition_cost() {
         use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
-        let countries = std::env::var("BATTLE_PLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
+        let countries = std::env::var("BATTLEPLAN_INTEL_COST_COUNTRIES").or_else(|_| std::env::var("HOI4_INTEL_COST_COUNTRIES"))
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(5_000_u32);

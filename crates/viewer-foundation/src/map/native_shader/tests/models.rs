@@ -5,26 +5,190 @@ use content_reader_core::ResolvedLayers;
 use content_reader_image::dds;
 use std::sync::Arc;
 
-pub(super) fn installed() -> (Arc<ResolvedLayers>, library::Library) {
-    let mut roots = vec![PathBuf::from(
-        std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).expect("BATTLE_PLAN_GAME_DIR"),
-    )];
-    if let Some(overlays) = std::env::var_os("BATTLE_PLAN_SHADER_CONTENT_OVERLAY").or_else(|| std::env::var_os("HOI4_SHADER_CONTENT_OVERLAY")) {
-        roots.extend(std::env::split_paths(&overlays));
-    }
-    let folders: Vec<_> = roots.iter().map(|root| (root.as_path(), &[][..])).collect();
-    let layers = Arc::new(ResolvedLayers::from_folders(&folders).unwrap());
-    let map = content_reader_core::terrain::read_default_map(&layers).unwrap();
-    let size = content_reader_image::bmp::rgb_dimensions(
-        &layers.read(&map.file("provinces").unwrap()).unwrap(),
-    )
-    .unwrap();
-    let library = library::Library::new(layers.clone()).with_globals(library::globals(
-        size,
-        content_reader_image::native::Decode::default(),
-    ));
-    (layers, library)
+pub(super) fn effects() -> (synthetic_game::Built, library::Library) {
+    let install = synthetic_game::Installation::new("native-gui-shaders")
+        .file("gfx/FX/defines_hlsl_dx11.fxh", "")
+        .file("gfx/FX/buttonstate.shader", BUTTON)
+        .file("gfx/FX/circularprogressbar.shader", CIRCULAR)
+        .file("gfx/FX/text.shader", TEXT)
+        .file("gfx/FX/progress.shader", PROGRESS)
+        .file("gfx/FX/maskedflag.shader", FLAG)
+        .build();
+    let layers = Arc::new(ResolvedLayers::from_folders(&[(&install.game_dir, &[])]).unwrap());
+    (install, library::Library::new(layers))
 }
+
+const BUTTON: &str = r#"
+VertexStruct In {
+    float3 at : POSITION;
+    float2 uv : TEXCOORD0;
+};
+VertexStruct Out {
+    float4 at : SV_POSITION;
+    float2 uv : TEXCOORD0;
+};
+ConstantBuffer(0, 0) {
+    float4x4 world;
+    float4 tint;
+    float4 offset;
+};
+ConstantBuffer(1, 1) {
+    float4 records[10];
+};
+VertexShader = { MainCode V [[ Out main(In v) {
+    Out o; o.at = mul(world, float4(v.at, 1)); o.uv = v.uv + offset.xy; return o;
+} ]] }
+PixelShader = {
+    Samplers = {
+        Base = { Index = 0 }
+        Mask = { Index = 1 }
+        Frame = { Index = 2 }
+        NextMask = { Index = 3 }
+        NextFrame = { Index = 4 }
+        Clip = { Index = 5 }
+    }
+    MainCode P [[ float4 main(Out v) : SV_TARGET {
+        float4 c = Base_Texture.Sample(Base_Sampler, v.uv);
+#ifdef ANIMATED
+        c = lerp(c, Frame_Texture.Sample(Frame_Sampler, v.uv),
+                 Mask_Texture.Sample(Mask_Sampler, v.uv).r * records[3].z * 0.25);
+#ifdef NUM_ANIMATIONS_2
+        c = lerp(c, NextFrame_Texture.Sample(NextFrame_Sampler, v.uv),
+                 NextMask_Texture.Sample(NextMask_Sampler, v.uv).r * records[8].z * 0.25);
+#endif
+#endif
+#ifdef MASKING
+        c.a *= Clip_Texture.Sample(Clip_Sampler, v.uv).r;
+#endif
+#ifdef DOWN_STATE
+        c.r *= 0.5;
+#endif
+#ifdef OVER_STATE
+        c.g *= 0.5;
+#endif
+#ifdef DISABLED_STATE
+        c.b *= 0.5;
+#endif
+        return c * tint;
+    } ]]
+}
+Effect Up { VertexShader = V PixelShader = P }
+Effect Down { VertexShader = V PixelShader = P Defines = { DOWN_STATE } }
+Effect Over { VertexShader = V PixelShader = P Defines = { OVER_STATE } }
+Effect Disable { VertexShader = V PixelShader = P Defines = { DISABLED_STATE } }
+"#;
+
+const CIRCULAR: &str = r#"
+VertexStruct In {
+    float2 at : POSITION;
+    float2 uv : TEXCOORD0;
+    float2 slot : TEXCOORD1;
+};
+VertexStruct Out {
+    float4 at : SV_POSITION;
+    float2 uv : TEXCOORD0;
+    float slot : TEXCOORD1;
+};
+VertexShader = {
+    ConstantBuffer(0, 0) {
+        float4x4 world;
+    };
+    MainCode V [[ Out main(In v) {
+        Out o; o.at = mul(world, float4(v.at, 0, 1)); o.uv = v.uv * 0.5 + 0.5;
+        o.slot = v.slot.x; return o;
+    } ]]
+}
+PixelShader = {
+    Samplers = { A = { Index = 0 } B = { Index = 1 } }
+    MainCode P [[ float4 main(Out v) : SV_TARGET {
+        return lerp(A_Texture.Sample(A_Sampler, v.uv), B_Texture.Sample(B_Sampler, v.uv), v.slot);
+    } ]]
+}
+Effect CircularProgressBar { VertexShader = V PixelShader = P }
+"#;
+
+const TEXT: &str = r#"
+VertexStruct In {
+    float3 at : POSITION;
+    float2 uv : TEXCOORD0;
+    float4 color : COLOR0;
+};
+VertexStruct Out {
+    float4 at : SV_POSITION;
+    float2 uv : TEXCOORD0;
+    float4 color : TEXCOORD1;
+};
+VertexShader = {
+    ConstantBuffer(0, 0) {
+        float4x4 world;
+        float4 tint;
+    };
+    MainCode V [[ Out main(In v) {
+        Out o; o.at = mul(world, float4(v.at, 1)); o.uv = v.uv; o.color = v.color * tint; return o;
+    } ]]
+}
+PixelShader = {
+    Samplers = { Page = { Index = 0 } }
+    MainCode P [[ float4 main(Out v) : SV_TARGET { return Page_Texture.Sample(Page_Sampler, v.uv) * v.color; } ]]
+}
+Effect Text { VertexShader = V PixelShader = P }
+"#;
+
+const PROGRESS: &str = r#"
+VertexStruct In {
+    float3 at : POSITION;
+    float2 uv : TEXCOORD0;
+};
+VertexStruct Out {
+    float4 at : SV_POSITION;
+    float2 uv : TEXCOORD0;
+};
+ConstantBuffer(0, 0) {
+    float4x4 world;
+    float4 a;
+    float4 b;
+    float amount;
+};
+VertexShader = { MainCode V [[ Out main(In v) {
+    Out o; o.at = mul(world, float4(v.at, 1)); o.uv = v.uv; return o;
+} ]] }
+PixelShader = {
+    Samplers = { First = { Index = 0 } Second = { Index = 1 } }
+    MainCode P [[ float4 main(Out v) : SV_TARGET {
+        return v.uv.x < amount ? a + First_Texture.Sample(First_Sampler, v.uv)
+                               : b + Second_Texture.Sample(Second_Sampler, v.uv);
+    } ]]
+}
+Effect Up { VertexShader = V PixelShader = P }
+"#;
+
+const FLAG: &str = r#"
+VertexStruct In {
+    float3 at : POSITION;
+    float2 uv : TEXCOORD0;
+};
+VertexStruct Out {
+    float4 at : SV_POSITION;
+    float2 uv : TEXCOORD0;
+};
+VertexShader = {
+    ConstantBuffer(0, 0) {
+        float4x4 world;
+        float4 bounds;
+    };
+    MainCode V [[ Out main(In v) {
+        Out o; o.at = mul(world, float4(v.at, 1)); o.uv = bounds.xy + v.uv * bounds.zw; return o;
+    } ]]
+}
+PixelShader = {
+    Samplers = { Flag = { Index = 0 } Mask = { Index = 1 } }
+    MainCode P [[ float4 main(Out v) : SV_TARGET {
+        return Flag_Texture.Sample(Flag_Sampler, v.uv) * Mask_Texture.Sample(Mask_Sampler, v.uv);
+    } ]]
+}
+Effect Up { VertexShader = V PixelShader = P }
+"#;
+
 
 pub(super) struct Sheets;
 impl gui::Sheets for Sheets {
@@ -71,7 +235,7 @@ pub(super) fn geometry() -> gui::Geometry {
 
 pub(super) fn part(kind: gui::PartKind, asset: Arc<library::Effect>, technique: &str) -> gui::Part {
     gui::Part {
-        path: "installed GUI submission fixture".into(),
+        path: "synthetic GUI submission fixture".into(),
         child: None,
         kind,
         clip: None,
@@ -274,12 +438,11 @@ impl Family {
 }
 
 #[test]
-#[ignore = "requires installed GUI effects, compiler and GPU; set BATTLE_PLAN_GAME_DIR"]
-fn compare_installed_native_models() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (layers, mut library) = installed();
-    if let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
+#[ignore = "requires the shader compiler and GPU"]
+fn synthetic_gui_parts_match_the_direct_shader_submissions() {
+    content_reader_core::test_game::enter();
+    let (_install, mut library) = effects();
+    if let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
         std::fs::create_dir_all(report).unwrap();
     }
     let (_serial, device, queue) = device();
@@ -294,14 +457,21 @@ fn compare_installed_native_models() {
     let mut rows = Vec::new();
     let mut failures = 0;
     let mut compared = 0;
-    for file in layers.directory_files("gfx/FX", ".shader").unwrap() {
-        let text = file.text();
-        let name = text.rsplit('/').next().unwrap();
-        if !is_gui_effect(name) {
-            continue;
-        }
+    for name in [
+        "buttonstate.shader",
+        "progress.shader",
+        "text.shader",
+        "maskedflag.shader",
+        "circularprogressbar.shader",
+    ] {
         let family = Family::for_file(name);
+        let file = format!("gfx/FX/{name}");
         let base = library.load(file.as_bytes(), &[]).unwrap();
+        assert!(
+            !base.source.techniques.is_empty(),
+            "{file} declares no techniques: {:?}",
+            base.source.warnings
+        );
         for defines in variants(&base.source) {
             let animated = defines.iter().any(|d| d == "ANIMATED");
             let masked = defines.iter().any(|d| d == "MASKING");
@@ -583,6 +753,11 @@ fn compare_installed_native_models() {
                     .unwrap();
                     arena.flush(&queue);
                     let expected = render_with(&device, &queue, |pass| oracle.draw(pass));
+                    assert!(
+                        expected.iter().any(|&value| value != 0),
+                        "{file}:{} {defines:?} scenario={scenario}: the reference drew nothing",
+                        technique.name
+                    );
                     let different = actual
                         .chunks_exact(4)
                         .zip(expected.chunks_exact(4))
@@ -603,7 +778,7 @@ fn compare_installed_native_models() {
                     eprintln!("{row}");
                     rows.push(row);
                     if different != 0
-                        && let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
+                        && let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
                     {
                         let prefix =
                             format!("{name}-{}-{}-{scenario}", technique.name, defines.join("-"));
@@ -626,7 +801,7 @@ fn compare_installed_native_models() {
         println!("{row}");
     }
     println!("SUBMISSION COMPARISON: {compared} renders, {failures} with differing pixels");
-    if let Some(report) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
+    if let Some(report) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT")) {
         std::fs::write(
             Path::new(&report).join("submission-comparison.txt"),
             rows.join("\n"),

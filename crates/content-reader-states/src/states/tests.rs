@@ -5,8 +5,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use crate::DiagnosticKind;
     struct Folder(std::path::PathBuf);
     impl Drop for Folder {
@@ -81,8 +80,7 @@ fn loader_warnings_are_only_nonpositive_and_duplicate_id_skips() {
 
 #[test]
 fn state_reading_note_keeps_misread_kind() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = KeyNames::default();
     let context = Context {
         resource: &|_| Resource::Null,
@@ -101,8 +99,7 @@ fn state_reading_note_keeps_misread_kind() {
 
 #[test]
 fn state_field_recovery_causes_keep_offline_notes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let input = b"@bad nope orphan=yes state={id=1 impassable=yes impassable=maybe provinces={1 100} resources={unknown=2} history={victory_points={1} buildings=4}}";
     let parsed = attributed(input);
     let state = &parsed.states[0].0;
@@ -167,8 +164,7 @@ fn attributed(input: &[u8]) -> ParsedStates {
 
 #[test]
 fn states_deferred_readers_affect_their_template_and_every_later_template() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let parsed = attributed(b"state = { id = 1 provinces = { 1 } } state = { id = 2 state_startup_effect = { free_operative = { operative = authored } } } state = { id = 3 }");
     assert_eq!(parsed.states.len(), 3);
     assert!(parsed.states[0].1.is_empty());
@@ -191,8 +187,7 @@ fn states_deferred_readers_affect_their_template_and_every_later_template() {
 
 #[test]
 fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let parsed = attributed(b"state = { id = 1 impassable = maybe } state = { id = 2 }");
     assert!(parsed.states[0].1[0].contains("not yes or no"));
     assert!(parsed.states[1].1.is_empty());
@@ -200,8 +195,7 @@ fn states_settled_diagnostics_inside_one_template_affect_only_that_state() {
 
 #[test]
 fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let parsed = attributed(b"state = { id = 1 state_startup_effect = { free_operative = { operative = first } free_operative = { operative = second } } } state = { id = 2 history = { free_operative = { operative = third } } } state = { id = 3 }");
     assert_eq!(parsed.states[0].1.len(), 1, "{:?}", parsed.states[0].1);
     assert!(parsed.states[0].1[0].contains("count: 2"));
@@ -224,8 +218,7 @@ fn states_repeated_deferred_diagnostics_keep_each_templates_count() {
 
 #[test]
 fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let parsed = attributed(b"state = { id = 1 } orphan tail state = { id = 2 }");
     assert_eq!(parsed.states.len(), 2);
     for (_, notes) in parsed.states {
@@ -239,8 +232,7 @@ fn states_unattributable_diagnostics_affect_every_template_in_the_file() {
 
 #[test]
 fn states_variable_definition_diagnostics_affect_every_template() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     for input in [
         b"@a bad state = { id = 1 } state = { id = 2 }".as_slice(),
         b"@a = 1 @a = 2 state = { id = 1 } state = { id = 2 }".as_slice(),
@@ -288,8 +280,7 @@ fn states_variable_definition_diagnostics_affect_every_template() {
 
 #[test]
 fn states_file_diagnostics_without_kept_templates_remain_notes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let parsed = attributed(b"@a bad orphan = yes");
     assert!(parsed.states.is_empty());
     assert_eq!(parsed.diagnostics.len(), 1);
@@ -341,8 +332,7 @@ fn resource_definitions_read_their_own_fields() {
 
 #[test]
 fn resources_resolve_by_token() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut resources = Resources::default();
     read_resources(
         b"resources = { 1st = { } Steel = { } }",
@@ -446,8 +436,7 @@ state = {
 
 #[test]
 fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (mut states, misreads) = parse(ORIGINAL_STATE).unwrap();
     assert!(misreads.is_empty(), "{misreads:?}");
     let state = states.remove(0);
@@ -482,8 +471,7 @@ fn a_state_keeps_its_provinces_points_buildings_and_repeated_category() {
 
 #[test]
 fn an_impassable_state_without_history_buildings_still_parses() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let state = parse(
         br#"state = { id = 1022 name = "STATE_1022" impassable = yes
                  resources = { } history = { owner = INS } provinces = { 1230 } }"#,
@@ -501,8 +489,7 @@ fn an_impassable_state_without_history_buildings_still_parses() {
 
 #[test]
 fn every_state_and_every_provinces_block_is_read_in_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, _) = parse(
         br#"state = { id = 1 name = "A" provinces = { 3 1 } PROVINCES = { 2 1 } }
                 STATE = { id = 2 name = "B" provinces = { 9 } }"#,
@@ -515,8 +502,7 @@ fn every_state_and_every_provinces_block_is_read_in_order() {
 
 #[test]
 fn names_read_in_keyword_order_through_the_files_variables() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(
         br#"@n = "STATE_KEY"
                 @p = 5
@@ -546,8 +532,7 @@ fn names_read_in_keyword_order_through_the_files_variables() {
 
 #[test]
 fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(b"@a = 1 @a = 2 state = { id = 1 name = A }").unwrap();
     assert_eq!(states[0].name_key.as_deref(), Ok("A"));
     assert!(misreads[0].contains("variable `@a` is already taken"));
@@ -562,8 +547,7 @@ fn names_follow_the_games_reading_when_the_text_leaves_the_tree() {
 
 #[test]
 fn a_dated_conditional_in_history_reads_without_diagnostics() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(
         br#"state = {
                 id = 31
@@ -597,8 +581,7 @@ fn a_dated_conditional_in_history_reads_without_diagnostics() {
 
 #[test]
 fn conditional_history_bodies_preserve_following_fields_and_next_state() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(
         br#"state = {
             id = 7 name = "SYNTHETIC_FIRST"
@@ -650,8 +633,7 @@ fn conditional_history_bodies_preserve_following_fields_and_next_state() {
 
 #[test]
 fn a_templates_own_readers_consume_what_the_game_consumes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(
         br#"state = {
                 color = { 1 2 3 }
@@ -684,8 +666,7 @@ fn a_templates_own_readers_consume_what_the_game_consumes() {
 
 #[test]
 fn history_commands_keep_what_the_game_keeps() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(
         br#"state = { id = 1 name = N history = {
                 5 = { owner = X } -1 = { } 0 = { }
@@ -727,8 +708,7 @@ fn history_commands_keep_what_the_game_keeps() {
 
 #[test]
 fn reported_keys_skip_their_blocks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, misreads) = parse(
         b"wrapper = { state = { id = 5 name = X } } state = { id = 6 name = Y
                 resources = { bogus = { name = Z provinces = { 7 } } steel = 2 }
@@ -755,8 +735,7 @@ fn reported_keys_skip_their_blocks() {
 
 #[test]
 fn an_unsettled_state_is_not_published() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let error = parse(
             b"state = { id = 1 name = A }
               state = { id = 2 name = B state_startup_effect = { free_operative = { x @y = 1 } } provinces = { 3 } }
@@ -786,8 +765,7 @@ fn an_unsettled_state_is_not_published() {
 
 #[test]
 fn only_positive_signed_ids_enter_the_state_database() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, notes) = parse(
         br#"
             state = { id = x name = bad provinces = { 1 } }
@@ -816,8 +794,7 @@ fn only_positive_signed_ids_enter_the_state_database() {
 
 #[test]
 fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, _) = parse(
         b"@n = \"cut\0\xfe\"
             state = { id = 1 name = \"line\nfeed\" }
@@ -843,8 +820,7 @@ fn state_names_keep_c_string_prefixes_and_line_feed_replacement() {
 
 #[test]
 fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (states, notes) = parse(b"state = { id = 1 name = N
             state_category = \"\xfe\" STATE_CATEGORY = \"Town\0suffix\" \"state_category\" = ignored
             IMPASSABLE = yes impassable = maybe \"impassable\" = no
@@ -867,8 +843,7 @@ fn state_fields_keep_keyword_dispatch_and_failed_boolean_values() {
 #[cfg(feature = "test-support")]
 #[test]
 fn the_loader_reads_resources_and_the_building_cap_from_content() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use std::fs;
     let root = std::env::temp_dir().join(format!(
         "hoi4_content_reader_states_{}_{:?}",

@@ -926,8 +926,7 @@ pub(crate) mod tests {
 
     #[test]
     fn native_labels_draw_at_their_anchors_in_depth_order_across_both_pools() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1019,8 +1018,7 @@ pub(crate) mod tests {
 
     #[test]
     fn labels_that_stood_still_are_kept_and_an_off_screen_dirty_capital_lays_out_its_window_alone() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1096,8 +1094,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_label_s_name_stands_on_its_own_anchor_and_its_dot_on_the_label_s() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(
             br#"guiTypes = {
@@ -1162,8 +1159,7 @@ pub(crate) mod tests {
 
     #[test]
     fn dump_icons_past_the_initial_pool_all_draw() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use viewer_foundation::map::icon_windows::DumpFrames;
         let resources = gui::fixture();
         let windows = gui::windows(
@@ -1217,8 +1213,7 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_label_templates_are_named_and_counted_per_family() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let resources = gui::fixture();
         let windows = gui::windows(b"");
         let context = native_resources::Context {

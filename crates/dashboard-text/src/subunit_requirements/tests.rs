@@ -100,7 +100,7 @@ fn row(representative: (u32, u8), subunits: &[(u32, u8, i32)]) -> DivisionTempla
 #[test]
 fn an_archetype_lists_the_subunits_needing_it_in_database_order() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content =
         content_with(b"sub_units = { militia = { type = infantry need = { rifles_1 = 5 } } }");
     let keys = |key: &str| -> Vec<String> {
@@ -120,7 +120,7 @@ fn an_archetype_lists_the_subunits_needing_it_in_database_order() {
 #[test]
 fn a_need_naming_no_equipment_is_dropped() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content_with(
         b"sub_units = { police = { type = infantry need = { motorbikes = 20 rifles_1 = 5 } } }",
     );
@@ -137,7 +137,7 @@ fn a_need_naming_no_equipment_is_dropped() {
 #[test]
 fn equipment_types_resolve_their_token_under_the_lexers_fold() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let authored = content();
     let names = names();
     let variant = |equipment_token| VariantDefinitionRow {
@@ -178,7 +178,7 @@ fn an_authored_need_past_five_decimals_truncates_like_the_engine() {
 #[test]
 fn duplicate_archetypes_copy_model_inputs_and_remap_the_parent_chain() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = from_documents(&[br#"
         equipment_modules = { turret = { add_equipment_type = artillery } }
         equipments = {
@@ -235,7 +235,7 @@ fn duplicate_archetypes_copy_model_inputs_and_remap_the_parent_chain() {
 #[test]
 fn enabled_module_slots_follow_copied_slots_and_effective_category() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = from_documents(&[br#"
         equipments = {
             tanks = { is_archetype = yes type = armor
@@ -272,7 +272,7 @@ fn enabled_module_slots_follow_copied_slots_and_effective_category() {
 #[test]
 fn requirement_aliases_overwrite_in_source_order_after_archetype_resolution() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content_with(
         b"sub_units = { aliases = { need = { rifles = 1 tanks = 9 rifles_1 = 2 rifles = 3 } } }",
     );
@@ -290,7 +290,7 @@ fn requirement_aliases_overwrite_in_source_order_after_archetype_resolution() {
 #[test]
 fn local_clones_group_apart_and_take_their_recorded_requirements() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let local = sources(&[((7, 1), vec![(5, 200_000)])]);
     let template = content
@@ -327,7 +327,7 @@ fn local_clones_group_apart_and_take_their_recorded_requirements() {
 #[test]
 fn sub_unit_and_requirement_tokens_resolve_under_the_lexers_fold() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let content = content();
     let rows: &'static [LexicalTokenRow] = Box::leak(Box::new([
         LexicalTokenRow {
@@ -718,7 +718,7 @@ fn sub_unit_fields_dispatch_by_keyword() {
 #[test]
 fn content_reads_every_sub_unit_database_directory_in_order() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_subunit_directories_{}_{:?}",
         std::process::id(),

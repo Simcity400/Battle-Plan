@@ -199,7 +199,7 @@ struct Owner<'a> {
 }
 impl<'a> Owner<'a> {
     fn claim(process_start: u64, shared: &'a AtomicPtr<Shared>) -> Result<Self, &'static str> {
-        let name = format!("Local\\HOI4Replay.Collector.{}.{process_start}", unsafe {
+        let name = format!("Local\\BattlePlan.Collector.{}.{process_start}", unsafe {
             GetCurrentProcessId()
         });
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
@@ -3266,7 +3266,7 @@ mod detach_policy_tests {
 
     #[test]
     fn terminal_equipment_restore_reaches_unload_with_persistent_allocator_refusal() {
-        const CHILD: &str = "BATTLE_PLAN_TERMINAL_EQUIPMENT_RESTORE";
+        const CHILD: &str = "BATTLEPLAN_TERMINAL_EQUIPMENT_RESTORE";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "runtime::detach_policy_tests::terminal_equipment_restore_reaches_unload_with_persistent_allocator_refusal", "--nocapture"])

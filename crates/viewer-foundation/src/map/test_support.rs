@@ -646,6 +646,23 @@ pub mod image;
 pub mod localisation;
 pub mod unit_types;
 
+pub fn enter_fixed_modifier_tables() {
+    use engine_executable::{build::FIXED_MODIFIER_GAP, executable_tables as tables};
+
+    static TABLES: std::sync::OnceLock<tables::Tables> = std::sync::OnceLock::new();
+    let tables = TABLES.get_or_init(|| {
+        let defaults = content_reader_core::test_game::tables();
+        let first = defaults.keywords.as_ref().unwrap().modifier_names.len();
+        content_reader_core::test_game::executable()
+            .modifiers(
+                (first..FIXED_MODIFIER_GAP as usize).map(|index| format!("fixture_modifier_{index}")),
+            )
+            .pinned()
+            .build()
+    });
+    tables::enter(Some(tables));
+}
+
 pub fn equipment_from_documents(documents: &[&[u8]]) -> content_reader_core::equipment::Database {
     let paths: Vec<String> = (0..documents.len())
         .map(|index| format!("common/units/equipment/{index:03}.txt"))

@@ -901,7 +901,7 @@ mod tests {
     #[test]
     #[ignore = "synthetic acquisition cost; release, affinity 0xF"]
     fn acquisition_cost() {
-        let countries = std::env::var("BATTLE_PLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
+        let countries = std::env::var("BATTLEPLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1500);

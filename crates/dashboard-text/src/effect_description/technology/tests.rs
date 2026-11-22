@@ -219,7 +219,7 @@ fn fixture() -> (Fixture, Folder) {
 #[test]
 fn technology_description_cases() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -369,7 +369,7 @@ fn technology_description_cases() {
 #[test]
 fn add_project_progress_ratio() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -504,7 +504,7 @@ fn render_raid(fixture: &Fixture) -> Description {
 #[test]
 fn raid_reduce_project_progress_ratio() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = raid_fixture();
     let output = render_raid(&fixture);
     assert_eq!(output.text, "Delay Project BBB 0.03/120 days");
@@ -514,7 +514,7 @@ fn raid_reduce_project_progress_ratio() {
 #[test]
 fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::RaidFacilities(rows)) =
         &mut *fixture.frame.tables[TableId::RaidFacilities.index()]
@@ -529,7 +529,7 @@ fn raid_stops_at_first_enemy_facility_even_when_its_program_is_idle() {
 #[test]
 fn raid_skips_friendly_facilities() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = raid_fixture();
     if let TableView::Complete(TableRows::WarRelations(rows)) =
         &mut *fixture.frame.tables[TableId::WarRelations.index()]
@@ -544,7 +544,7 @@ fn raid_skips_friendly_facilities() {
 #[test]
 fn technology_catalogue_is_cached_once_per_stack() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, folder) = fixture();
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let content = scripted.effects().unwrap();
@@ -566,7 +566,7 @@ fn technology_catalogue_is_cached_once_per_stack() {
 #[test]
 fn bound_technology_effect_keeps_body_order_and_fresh_completion_scope() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -740,7 +740,7 @@ fn technology_names_link_to_their_technology_only_when_asked() {
 #[test]
 fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -760,7 +760,7 @@ fn bound_technology_effect_combines_limits_and_accepts_unresearched_status() {
 #[test]
 fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_tag() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -793,7 +793,7 @@ fn bound_technology_module_gate_uses_caller_country_and_names_use_reserved_zero_
 #[test]
 fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refuses() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(Vec::new()));
@@ -834,7 +834,7 @@ fn bound_technology_effect_missing_identity_is_empty_but_missing_recording_refus
 #[test]
 fn faction_power_projection_expands_with_recorded_membership() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::Factions.index()] =
         TableView::Complete(TableRows::Factions(vec![FactionRow {
@@ -866,7 +866,7 @@ fn faction_power_projection_expands_with_recorded_membership() {
 #[test]
 fn bound_technology_modifier_recording_failure_preserves_other_fragments() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (mut fixture, _folder) = fixture();
     *fixture.frame.tables[TableId::ModifierDefinitions.index()] = TableView::Unavailable {
         reason: "synthetic fault".into(),
@@ -907,7 +907,7 @@ fn bound_technology_modifier_recording_failure_preserves_other_fragments() {
 #[test]
 fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue
@@ -944,7 +944,7 @@ fn bound_technology_unavailable_building_content_preserves_later_unlocks() {
 #[test]
 fn bound_technology_repeated_building_and_tactic_compare_final_definition_pointer() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = fixture();
     let content = fixture
         .catalogue

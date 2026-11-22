@@ -1520,8 +1520,7 @@ mod tests {
 
     #[test]
     fn state_history_uses_kept_state_sources_and_diagnostics_from_the_same_read() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use std::{
             fs,
             time::{SystemTime, UNIX_EPOCH},
@@ -1642,8 +1641,7 @@ mod tests {
 
     #[test]
     fn raid_reader_notes_reach_the_corpus_once_with_their_producer_kinds() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         use std::{
             fs,
             time::{SystemTime, UNIX_EPOCH},
@@ -1812,8 +1810,7 @@ mod tests {
 
     #[test]
     fn raid_tooltip_kinds_follow_their_fields() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut raid = RaidType {
             name: "odd".into(),
             ..Default::default()

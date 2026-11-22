@@ -1604,8 +1604,7 @@ fn dictionary_missing_entry_is_explicit_and_literal_bytes_are_preserved() {
 
 #[test]
 fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let row = replay_data::rows::BuildingRow {
         location: 7,
@@ -1690,8 +1689,7 @@ fn missing_dictionary_preserves_scope_checks_without_inventing_named_rows() {
 
 #[test]
 fn nul_token_mapping_limits_keep_independent_scope_count_and_numeric_checks() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let saved = saved_pack(b"countries={GER={production={general_lines={building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}}}}} states={} provinces={7={buildings={factory={level=1 healthy_levels=1 partial_health=0}}}}");
     let names = BTreeMap::from([
         (11, b"factory\0tail".as_slice()),
@@ -2045,8 +2043,7 @@ fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_base
 
 #[test]
 fn resolved_base_resources_compare_repeated_initial_blocks_and_native_ordinals() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut content = saved::BaseResources::default();
     content.add_state_history(&history_fixture(b"state={id=949 resources={steel=0 oil=-2147483648.9} history={resources={steel=999 aluminium=888}} resources={} resources={aluminium=10.000}}"))
         .unwrap();
@@ -2179,6 +2176,104 @@ fn resolved_construction_names_retain_exact_numeric_and_queue_checks() {
             &mut Report::default(),
         )
         .is_err()
+    );
+}
+
+#[test]
+fn mixed_construction_queue_preserves_ordinals_and_names_unsupported_railway_gun_repairs() {
+    let saved = saved_pack(
+        br#"countries={GER={production={general_lines={
+            building={id={id=4 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3}}
+            railway_gun={id={id=1 type=76} priority=1 amount=0 cost=0 created_date="1944.8.26.17" railway_gun={id=1 type=74}}
+            railway_gun={id={id=2 type=76} priority=2 amount=0 cost=0 created_date="1944.8.27.1" railway_gun={id=0 type=0}}
+            rail_way={id={id=2 type=4713} cost=2 priority=-1 amount=1 created_date=1936.1.1.12 base=-1 target=2 current_province=-1 remaining_hours=-0.00001 rail_way={7 4 7}}
+            building={id={id=5 type=59} cost=1 priority=0 amount=1 created_date=1936.1.1.12 building={template=factory location=3} to_repair=2}
+        }}}} states={} provinces={}"#,
+    );
+    let germany = CountryRow {
+        id: 12,
+        canonical_slot: 3,
+        tag: b"GER".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(12, &germany)]);
+    let names = BTreeMap::from([(91, b"factory".as_slice())]);
+    let created_hour = content_reader_save::GameDate::parse(b"1936.1.1.12")
+        .unwrap()
+        .engine_hour()
+        .unwrap();
+    let buildings = vec![
+        replay_data::rows::BuildingConstructionRow {
+            id: (4_u64 << 32) | 59,
+            country: 12,
+            queue_ordinal: 0,
+            cost: 100_000,
+            amount: 1,
+            created_hour,
+            building_type: 91,
+            target_flags: 2,
+            target_state: 3,
+            ..Default::default()
+        },
+        replay_data::rows::BuildingConstructionRow {
+            id: (5_u64 << 32) | 59,
+            country: 12,
+            queue_ordinal: 4,
+            cost: 100_000,
+            amount: 1,
+            created_hour,
+            building_type: 91,
+            target_flags: 2,
+            target_state: 3,
+            repair_levels: 2,
+            ..Default::default()
+        },
+    ];
+    let rails = vec![replay_data::rows::RailwayConstructionRow {
+        id: (2_u64 << 32) | 4713,
+        country: 12,
+        queue_ordinal: 3,
+        cost: 200_000,
+        priority: -1,
+        amount: 1,
+        created_hour,
+        base_level: -1,
+        target_level: 2,
+        current_segment: -1,
+        remaining_cost: -1,
+        route: vec![7, 4, 7],
+        ..Default::default()
+    }];
+    let mut report = Report::default();
+    building_construction(&buildings, &saved, &links, &names, &mut report).unwrap();
+    railway_construction(&rails, &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["BuildingConstruction"], 2);
+    assert_eq!(report.compared_tables["RailwayConstruction"], 1);
+    let subjects = report
+        .limitations
+        .iter()
+        .find(|(reason, _)| reason.contains("railway_gun"))
+        .map(|(_, subjects)| subjects)
+        .expect("named limitation for unsupported railway_gun repair rows");
+    assert_eq!(subjects.len(), 2, "{subjects:?}");
+    assert!(subjects[0].contains("GER.general_lines[1].railway_gun"), "{subjects:?}");
+    assert!(subjects[0].contains(&format!("id={}", (1_u64 << 32) | 76)), "{subjects:?}");
+    assert!(subjects[0].contains(&format!("target={}", (1_u64 << 32) | 74)), "{subjects:?}");
+    assert!(subjects[1].contains("GER.general_lines[2].railway_gun"), "{subjects:?}");
+    assert!(subjects[1].contains(&format!("id={}", (2_u64 << 32) | 76)), "{subjects:?}");
+    assert!(subjects[1].contains("target=0"), "{subjects:?}");
+
+    let mut rail_only = Report::default();
+    railway_construction(&rails, &saved, &links, &mut rail_only).unwrap();
+    assert!(rail_only.differences.is_empty(), "{:?}", rail_only.differences);
+    assert!(
+        rail_only
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("railway_gun")),
+        "{:?}",
+        rail_only.limitations
     );
 }
 

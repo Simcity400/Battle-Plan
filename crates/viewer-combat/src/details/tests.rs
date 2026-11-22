@@ -87,8 +87,7 @@ fn naval_disengage_uses_the_matched_sides_retreat_state() {
 
 #[test]
 fn combat_raster_initiative_border_rasterises_before_display_stretch() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use viewer_foundation::map::{
         native_gui::{self, lifecycle::Tick},
         test_support::gui::{fixture, windows},
@@ -157,8 +156,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
 
 #[test]
 fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use viewer_foundation::map::{
         native_gui::{Resources, lifecycle::Tick},
         test_support::gui::{fixture, windows},
@@ -540,8 +538,7 @@ fn committed_names_carry_the_owner_flag_on_the_side_the_native_entry_writes() {
 
 #[test]
 fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut localisation = Localisation::default();
     localisation.language = "english".into();
     let names = content_reader_division_names::division_names::parse(
@@ -672,8 +669,7 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
 
 #[test]
 fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let names = content_reader_division_names::division_names::parse(
         br#"INF = { ordered = { 1 = { "First" } } unordered = { loose = { "Loose" } } }"#,
         &content_reader_core::key_names::KeyNames::default(),

@@ -5,8 +5,7 @@ use crate::{
 
 #[test]
 fn effect_equipment_bonus_uses_native_fixed_stat_registry() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    crate::test_game::enter();
     let result = read(
         b"body = { add_equipment_bonus = { bonus = { arbitrary_equipment = { not_a_stat = { @hidden = 9 } soft_attack = { @seen = 3 instant = yes } } } } final = @seen hidden = @hidden",
         &KeyNames::default(),
@@ -19,8 +18,7 @@ fn effect_equipment_bonus_uses_native_fixed_stat_registry() {
 
 #[test]
 fn effect_modifier_uses_recorded_registry_for_quoted_names() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    crate::test_game::enter();
     let mut names = KeyNames::default();
     names
         .effects
@@ -38,8 +36,7 @@ fn effect_modifier_uses_recorded_registry_for_quoted_names() {
 
 #[test]
 fn effect_modifier_builtin_needs_no_recorded_stack_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    crate::test_game::enter();
     let result = read(
         b"body = { add_state_modifier = { modifier = { \"ARMY_ATTACK_FACTOR\" = { @seen = 3 name = marker } } } final = @seen",
         &KeyNames::default(),
@@ -51,8 +48,7 @@ fn effect_modifier_builtin_needs_no_recorded_stack_name() {
 
 #[test]
 fn effect_modifier_unknown_registry_suffix_is_named() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    crate::test_game::enter();
     let mut names = KeyNames::default();
     names.effects.modifiers_gap =
         Some("common/modifier_definitions/mod.txt:3 unread suffix".into());
@@ -69,8 +65,7 @@ fn effect_modifier_unknown_registry_suffix_is_named() {
 
 #[test]
 fn effect_popularities_rejects_invalid_keys_and_accepts_exact_var_prefix() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    crate::test_game::enter();
     let result = read(
         b"body = { set_popularities = { invalid_ideology = { @hidden = 9 } VAR:x = { @bad_case = 7 } var: = { @seen = 3 root = 10 } } final = @seen hidden = @hidden bad_case = @bad_case",
         &KeyNames::default(),
@@ -86,8 +81,7 @@ fn effect_popularities_rejects_invalid_keys_and_accepts_exact_var_prefix() {
 
 #[test]
 fn effect_popularities_resolves_country_and_alias_before_rejecting() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation");
+    crate::test_game::enter();
     let names = KeyNames {
         countries: [b"ABC".to_vec()].into(),
         aliases: [b"def".to_vec()].into(),

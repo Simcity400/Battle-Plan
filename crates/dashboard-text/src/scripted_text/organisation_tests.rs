@@ -6,7 +6,7 @@ use replay_data::{
 #[test]
 fn organisation_name_uses_event_read_override_owner_scope_and_exact_missing_key() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder) = tests::catalogue(
         "",
         " GER_mod_override:0 \"Owner [From.GetTag]\"\n mod_token:0 \"Token\"\n",

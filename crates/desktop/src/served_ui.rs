@@ -8,7 +8,7 @@ use tauri::{
     utils::assets::{AssetKey, AssetsIter, CspHash},
 };
 
-pub const VARIABLE: &str = "BATTLE_PLAN_UI_DIST";
+pub const VARIABLE: &str = "BATTLEPLAN_UI_DIST";
 
 struct Bundle(PathBuf);
 

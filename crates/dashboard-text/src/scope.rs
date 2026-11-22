@@ -1861,7 +1861,7 @@ pub mod tests {
     #[test]
     fn a_tag_alias_scope_is_refused_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let aliases = content_reader_core::tag_aliases::parse(
             &[("a.txt", b"SPA = { }")],
             &content_reader_core::key_names::KeyNames::default(),

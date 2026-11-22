@@ -58,11 +58,11 @@ Run from the repository root in an x64 MSVC developer environment. Keep
 all DLLs, objects, logs, metadata and debugger dumps outside Git.
 
 ```powershell
-$proofOutput = Join-Path $env:TEMP 'battle-plan-land-foreign-proof'
+$proofOutput = Join-Path $env:TEMP 'battleplan-land-foreign-proof'
 New-Item -ItemType Directory -Force -Path $proofOutput | Out-Null
 cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp "/Fo:$proofOutput/probe.obj" "/Fe:$proofOutput/tap_foreign_probe.dll" /link "/IMPLIB:$proofOutput/tap_foreign_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Native probe build failed' }
-$env:BATTLE_PLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
+$env:BATTLEPLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
 $landProofFilters = @(
     'equipment_destruction::tests::foreign_unwind::production_land_detour_foreign_unwind',
     'land_events::foreign_unwind::production_verdict_indirect_foreign_unwind',

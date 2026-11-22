@@ -250,7 +250,7 @@ mod tests {
             from_url, png_bytes, shield_flag_program, shield_programs,
         };
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let gfx = "spriteTypes = {
             maskedShieldType = { name = GFX_fixture_shield textureFile1 = gfx/overlay.png textureFile2 = gfx/mask.png effectFile = gfx/FX/shield_flag.lua }
             maskedShieldType = { name = GFX_additive_shield textureFile1 = gfx/overlay.png textureFile2 = gfx/mask.png effectFile = gfx/FX/additive_flag.lua }
@@ -359,8 +359,8 @@ mod tests {
     #[ignore = "requires DXC and a GPU; reads the installation"]
     fn the_installed_flag_program_maps_its_coordinate_through_the_rectangle_alone() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-        let game = std::path::PathBuf::from(std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+        let game = std::path::PathBuf::from(std::env::var_os("BATTLEPLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap());
         let layers = ResolvedLayers::from_folders(&[(game.as_path(), &[][..])]).unwrap();
         let sprites = content_reader_gfx::gfx::read(&layers).unwrap();
         let SpriteKind::MaskedShield { shield, .. } =
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn shields_refuse_other_kinds_and_missing_fields_by_name_and_draw_without_an_overlay() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let (catalogue, folder) = super::super::tests::folder_catalogue(&[(
             "interface/shield.gfx",
             "spriteTypes = {

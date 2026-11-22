@@ -229,8 +229,7 @@ mod tests {
 
     #[test]
     fn native_dispatch_variables_recovery_and_integer_scans() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let resources = parse(
             br#"
             @frame = "0x10"
@@ -263,8 +262,7 @@ mod tests {
 
     #[test]
     fn resources_keep_their_icon_frames_and_refuse_unusable_ones() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let resources = parse(
             b"resources = { oil = { icon_frame = 1 cic = 0.125 } mod_ore = { icon_frame = 9 } \
               broken = { icon_frame = 0 } scripted = { icon_frame = @frame } bare = { } }",
@@ -294,8 +292,7 @@ mod tests {
 
     #[test]
     fn a_file_that_stops_short_leaves_every_later_declaration_unnumbered() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (kept, _, stop) = parse_file(
             b"resources = { oil = { icon_frame = 2 } oil = { icon_frame = 5 modifier = { x = 1 } } steel = { icon_frame = 3 } }",
         );

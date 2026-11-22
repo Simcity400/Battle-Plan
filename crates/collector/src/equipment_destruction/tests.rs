@@ -2624,7 +2624,7 @@ fn fake_intel_queue_entry_and_direct_free_record_no_witness_or_loss() {
 
 #[test]
 fn withheld_site_install_refusal_withholds_both_tables() {
-    const CHILD: &str = "BATTLE_PLAN_DESTRUCTION_INSTALL_TEST";
+    const CHILD: &str = "BATTLEPLAN_DESTRUCTION_INSTALL_TEST";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

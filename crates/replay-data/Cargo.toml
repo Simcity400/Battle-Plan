@@ -59,6 +59,7 @@ serde_json.workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 test-unify = { workspace = true }

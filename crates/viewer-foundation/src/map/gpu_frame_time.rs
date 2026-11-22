@@ -18,7 +18,7 @@ static REQUESTED: OnceLock<bool> = OnceLock::new();
 
 pub fn requested() -> bool {
     *REQUESTED
-        .get_or_init(|| std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty()))
+        .get_or_init(|| std::env::var_os("BATTLEPLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty()))
 }
 
 pub fn request() {

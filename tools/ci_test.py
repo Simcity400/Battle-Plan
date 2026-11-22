@@ -1,7 +1,6 @@
 """Tests for tools/ci.py: python tools/ci_test.py"""
 
 import importlib.util
-import os
 from pathlib import Path
 import re
 import sys
@@ -14,18 +13,14 @@ ci = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci)
 
 PIPELINE = """
+tiers = ["check", "main"]
 [pipeline]
 implementation = ["tools/ci.py"]
 [group.all]
 setup = ["python"]
-[tier.check]
-budget = 60
-[tier.main]
-budget = 900
 [toolchain.python]
-version = ["python"]
+files = []
 [toolchain.rust]
-version = ["rustc"]
 files = ["Cargo.lock"]
 [[job]]
 name = "scan"
@@ -64,18 +59,15 @@ group = "all"
 tier = "check"
 kind = "crates"
 toolchain = "rust"
-workspace = true
 shared = ["tools/clippy-wrapper.py"]
-keyed = ["tools/boat.py"]
-command = ["boat", "clippy", "{packages}"]
+command = ["cargo", "clippy", "{packages}"]
+local = ["boat", "clippy", "{packages}"]
 [[job]]
 name = "test"
 group = "all"
 tier = "check"
 kind = "crates"
 toolchain = "rust"
-limit = 3
-heavy = true
 command = ["boat", "test", "{packages}"]
 """
 
@@ -84,31 +76,18 @@ def crates(**deps):
     return {name: ci.Crate(name, f"crates/{name}", frozenset(uses)) for name, uses in deps.items()}
 
 
-def context(changed, tree=None, passes=None, workspace=None, base="b1"):
-    tree = tree or {"src/a.rs": ("blob-a", True), "src/b.rs": ("blob-b", True), "README.md": ("blob-r", True),
-                    "tools/scan.py": ("blob-s", True), "Cargo.lock": ("blob-l", True),
-                    "crates/core/src/lib.rs": ("c1", True), "crates/mid/src/lib.rs": ("m1", True),
-                    "crates/top/src/lib.rs": ("t1", True), "crates/other/src/lib.rs": ("o1", True)}
-    passes = {} if passes is None else passes
+def context(changed, tree=None, workspace=None):
+    tree = tree or {"src/a.rs", "src/b.rs", "README.md", "tools/scan.py", "Cargo.lock", "crates/core/src/lib.rs",
+                    "crates/mid/src/lib.rs", "crates/top/src/lib.rs", "crates/other/src/lib.rs"}
     workspace = workspace or crates(core=[], mid=["core"], top=["mid"], other=[])
     pipeline = ci.load_pipeline(PIPELINE)
     definitions = {job.name: job.definition for job in pipeline.jobs}
-    return ci.Context(tree, set(changed), base, "head", {"python": "py", "rust": "rs"}, workspace,
-                      passes.get, pipeline, definitions=definitions)
+    return ci.Context(set(tree), set(changed), workspace, pipeline, definitions)
 
 
 def decide(name, ctx, tier="check"):
     job = next(job for job in ctx.pipeline.jobs if job.name == name)
     return ci.decide(job, ctx, tier)
-
-
-def passing(ctx, *names):
-    """The pass store after each named job ran and passed on `ctx`."""
-    passes = {}
-    for name in names:
-        for key in decide(name, ctx).keys.values():
-            passes[key] = {"sha": "abc1234567"}
-    return passes
 
 
 class Globs(unittest.TestCase):
@@ -125,50 +104,10 @@ class Globs(unittest.TestCase):
         self.assertTrue(ci.matcher(["Cargo.toml", "Cargo.lock"])("Cargo.toml"))
 
 
-class Reuse(unittest.TestCase):
+class Gates(unittest.TestCase):
     def test_a_job_whose_inputs_did_not_change_is_skipped_not_passed(self):
-        decision = decide("scan", context(["docs/x.md"]))
-        self.assertEqual(decision.state, "skipped")
-
-    def test_a_recorded_pass_is_reused_and_names_its_commit(self):
-        ctx = context(["src/a.rs"])
-        self.assertEqual(decide("scan", ctx).state, "run")
-        again = decide("scan", context(["src/a.rs"], passes=passing(ctx, "scan")))
-        self.assertEqual(again.state, "reused")
-        self.assertIn("abc1234567", again.detail)
-
-    def test_any_input_change_invalidates_the_pass(self):
-        ctx = context(["src/a.rs"])
-        tree = dict(ctx.tree, **{"src/b.rs": ("blob-b2", True)})
-        self.assertEqual(decide("scan", context(["src/a.rs"], tree=tree, passes=passing(ctx, "scan"))).state, "run")
-
-    def test_a_pass_recorded_while_a_file_was_untracked_does_not_count_once_it_is_tracked(self):
-        untracked = context(["src/new.rs"], tree={"src/new.rs": ("blob-n", False)})
-        tracked = context(["src/new.rs"], tree={"src/new.rs": ("blob-n", True)}, passes=passing(untracked, "scan"))
-        self.assertEqual(decide("scan", tracked).state, "run")
-
-    def test_a_fixture_named_by_the_environment_keys_the_job(self):
-        import tempfile
-        pipeline = PIPELINE.replace('command = ["slow"]', 'command = ["slow"]\nenvironment = ["CI_TEST_FIXTURE"]')
-        with tempfile.TemporaryDirectory() as folder:
-            fixture = Path(folder, "replies.json")
-            fixture.write_text("one", encoding="utf-8")
-            os.environ["CI_TEST_FIXTURE"] = str(fixture)
-            try:
-                ctx = context(["src/a.rs"])
-                ctx.pipeline = ci.load_pipeline(pipeline)
-                ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
-                job = next(job for job in ctx.pipeline.jobs if job.name == "slow")
-                first = ci.decide(job, ctx, "main").keys
-                fixture.write_text("two", encoding="utf-8")
-                self.assertNotEqual(ci.decide(job, ctx, "main").keys, first)
-            finally:
-                del os.environ["CI_TEST_FIXTURE"]
-
-    def test_a_ratchet_reruns_when_the_base_moves(self):
-        ctx = context(["src/a.rs"], base="b1")
-        self.assertEqual(decide("ratchet", context(["src/a.rs"], base="b2", passes=passing(ctx, "ratchet"))).state, "run")
-        self.assertEqual(decide("ratchet", context(["src/a.rs"], base="b1", passes=passing(ctx, "ratchet"))).state, "reused")
+        self.assertEqual(decide("scan", context(["docs/x.md"])).state, "skipped")
+        self.assertEqual(decide("scan", context(["src/a.rs"])).state, "run")
 
     def test_a_later_tier_runs_the_jobs_of_the_earlier_ones(self):
         self.assertEqual(decide("scan", context(["src/a.rs"]), tier="main").state, "run")
@@ -178,21 +117,8 @@ class Reuse(unittest.TestCase):
         self.assertEqual(decide("slow", context(["docs/x"])).state, "skipped")
         self.assertEqual(decide("slow", context(["src/a.rs"]), tier="main").state, "run")
 
-    def test_a_missing_toolchain_is_not_run_rather_than_passed(self):
-        ctx = context(["src/a.rs"])
-        ctx.missing = {"python": "python is not available"}
-        self.assertEqual(decide("scan", ctx).state, "not run")
-
-    def test_a_missing_toolchain_does_not_block_a_job_nothing_selected(self):
-        ctx = context(["docs/x.md"])
-        ctx.missing = {"python": "python is not available"}
-        self.assertEqual(decide("scan", ctx).state, "skipped")
-
-    def test_a_changed_toolchain_definition_runs_its_jobs(self):
-        ctx = context(["docs/x.md"])
-        changed = ci.load_pipeline(PIPELINE.replace('[toolchain.python]\nversion = ["python"]', '[toolchain.python]\nversion = ["python3"]'))
-        job = next(job for job in changed.jobs if job.name == "scan")
-        self.assertEqual(ci.decide(job, ctx, "check").state, "run")
+    def test_a_changed_toolchain_file_runs_its_jobs(self):
+        self.assertEqual(decide("clippy", context(["Cargo.lock"])).arguments, ["--workspace"])
 
     def test_a_job_whose_definition_changed_runs(self):
         ctx = context(["docs/x.md"])
@@ -201,13 +127,15 @@ class Reuse(unittest.TestCase):
         ctx.definitions = None
         self.assertEqual(decide("scan", ctx).state, "run")
 
+    def test_a_changed_group_redefines_its_jobs(self):
+        changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nsetup = ["python"]', '[group.all]\nsetup = ["python", "node"]'))
+        job = next(job for job in changed.jobs if job.name == "scan")
+        self.assertEqual(ci.decide(job, context(["docs/x.md"]), "check").state, "run")
+
 
 class PerFile(unittest.TestCase):
-    def test_only_changed_files_without_a_pass_run(self):
-        ctx = context(["src/a.rs", "src/b.rs", "docs/x.md"])
-        self.assertEqual(decide("per-file", ctx).arguments, ["src/a.rs", "src/b.rs"])
-        passes = {key: {"sha": "abc"} for path, key in decide("per-file", ctx).keys.items() if path == "src/a.rs"}
-        self.assertEqual(decide("per-file", context(["src/a.rs", "src/b.rs"], passes=passes)).arguments, ["src/b.rs"])
+    def test_only_changed_files_run(self):
+        self.assertEqual(decide("per-file", context(["src/a.rs", "src/b.rs", "docs/x.md"])).arguments, ["src/a.rs", "src/b.rs"])
 
     def test_a_changed_shared_input_rescans_every_file(self):
         decision = decide("per-file", context(["tools/scan.py"]))
@@ -226,6 +154,7 @@ class PerFile(unittest.TestCase):
         self.assertEqual([file for command in commands for file in command[1:]], files)
 
 
+
 class Crates(unittest.TestCase):
     def test_a_changed_crate_selects_itself_and_its_direct_dependents_only(self):
         decision = decide("clippy", context(["crates/core/src/lib.rs"]))
@@ -236,22 +165,12 @@ class Crates(unittest.TestCase):
         self.assertEqual(decide("clippy", context(["docs/x.md"])).state, "skipped")
 
     def test_a_widening_file_runs_the_workspace(self):
-        pipeline = PIPELINE.replace('limit = 3\nheavy = true\n', 'limit = 3\nheavy = true\nwiden = [".config/nextest.toml"]\n')
+        pipeline = PIPELINE.replace('command = ["boat", "test", "{packages}"]\n', 'command = ["boat", "test", "{packages}"]\nwiden = [".config/nextest.toml"]\n')
         ctx = context([".config/nextest.toml"])
         ctx.pipeline = ci.load_pipeline(pipeline)
         ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
-        ctx.hosted = True
         job = next(job for job in ctx.pipeline.jobs if job.name == "test")
-        self.assertEqual(ci.decide(job, ctx, "check").state, "run")
-
-    def test_a_changed_group_redefines_its_jobs(self):
-        changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nsetup = ["python"]', '[group.all]\nsetup = ["python", "node"]'))
-        ctx = context(["docs/x.md"])
-        job = next(job for job in changed.jobs if job.name == "scan")
-        self.assertEqual(ci.decide(job, ctx, "check").state, "run")
-
-    def test_the_upstream_names_its_github_repository(self):
-        self.assertIsNone(ci.upstream_repository("no-such-remote-for-this-test/main"))
+        self.assertEqual(ci.decide(job, ctx, "check").arguments, ["--workspace"])
 
     def test_a_changed_crate_job_definition_checks_the_workspace(self):
         ctx = context(["docs/x.md"])
@@ -265,61 +184,17 @@ class Crates(unittest.TestCase):
         ctx.changed = {"crates/core/src/lib.rs"}
         self.assertEqual(decide("clippy", ctx).state, "not run")
 
-    def test_a_changed_runner_invalidates_crate_passes_without_selecting_crates(self):
+    def test_a_job_without_dependents_takes_the_changed_crates_only(self):
+        pipeline = ci.load_pipeline(PIPELINE.replace('local = ["boat", "clippy", "{packages}"]\n', 'local = ["boat", "clippy", "{packages}"]\ndependents = false\n'))
         ctx = context(["crates/core/src/lib.rs"])
-        passes = passing(ctx, "clippy")
-        tree = dict(ctx.tree, **{"tools/boat.py": ("boat2", True)})
-        self.assertEqual(decide("clippy", context(["crates/core/src/lib.rs"], tree=tree, passes=passes)).state, "run")
-        self.assertEqual(decide("clippy", context(["tools/boat.py"], tree=tree)).state, "skipped")
+        ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
+        job = next(job for job in pipeline.jobs if job.name == "clippy")
+        self.assertEqual(ci.decide(job, ctx, "check").arguments, ["-p", "core"])
+        ctx.everything = True
+        self.assertEqual(ci.decide(job, ctx, "main").arguments, ["--workspace"])
 
-    def test_a_crate_key_follows_its_transitive_dependencies(self):
-        ctx = context(["crates/top/src/lib.rs"])
-        passes = passing(ctx, "clippy")
-        tree = dict(ctx.tree, **{"crates/core/src/lib.rs": ("c2", True)})
-        self.assertEqual(decide("clippy", context(["crates/top/src/lib.rs"], tree=tree, passes=passes)).state, "run")
-        tree = dict(ctx.tree, **{"crates/other/src/lib.rs": ("o2", True)})
-        self.assertEqual(decide("clippy", context(["crates/top/src/lib.rs"], tree=tree, passes=passes)).state, "reused")
-
-    def test_a_partial_pass_runs_only_the_rest(self):
-        ctx = context(["crates/core/src/lib.rs"])
-        passes = {key: {"sha": "abc"} for name, key in decide("clippy", ctx).keys.items() if name == "core"}
-        decision = decide("clippy", context(["crates/core/src/lib.rs"], passes=passes))
-        self.assertEqual(decision.arguments, ["-p", "mid"])
-        self.assertIn("1 reused", decision.detail)
-
-    def test_more_crates_than_a_jobs_limit_are_left_to_a_later_tier(self):
-        workspace = crates(core=[], a=["core"], b=["core"], c=["core"])
-        tree = {f"crates/{name}/src/lib.rs": (name, True) for name in workspace}
-        ctx = context(["crates/core/src/lib.rs"], tree=tree, workspace=workspace)
-        self.assertEqual(decide("test", ctx).state, "deferred")
-        self.assertEqual(decide("clippy", ctx).arguments, ["-p", "a", "-p", "b", "-p", "c", "-p", "core"])
-
-    def test_a_workspace_wide_change_checks_the_workspace_and_leaves_tests_to_a_later_tier(self):
-        ctx = context(["Cargo.lock"])
-        self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"])
-        self.assertEqual(decide("test", ctx).state, "deferred")
-
-    def test_heavy_local_work_is_skipped_while_the_game_runs(self):
-        ctx = context(["crates/core/src/lib.rs"])
-        ctx.game = True
-        self.assertEqual(decide("test", ctx).state, "held")
-        self.assertEqual(decide("clippy", ctx).state, "run")
-
-    def test_a_broken_toolchain_overrides_a_recorded_pass(self):
-        ctx = context(["src/a.rs"])
-        ctx.passed = passing(ctx, "scan").get
-        ctx.missing = {"python": "stale"}
-        self.assertEqual(decide("scan", ctx).state, "not run")
-
-    def test_paused_heavy_local_work_is_reported_as_not_run_and_never_passes(self):
-        ctx = context(["crates/core/src/lib.rs"])
-        ctx.pipeline.heavy_local = False
-        decision = decide("test", ctx)
-        self.assertEqual(decision.state, "paused")
-        outcome = ci.Outcome("test", decision.state, decision.detail)
-        self.assertEqual(ci.verdict([outcome]), "pending")
-        self.assertIn("not run (heavy local work paused): test", ci.describe([outcome], 1))
-        self.assertEqual(decide("test", context(["docs/x.md"], workspace=None)).state, "skipped")
+    def test_a_changed_runner_script_selects_no_crates(self):
+        self.assertEqual(decide("clippy", context(["tools/boat.py"])).state, "skipped")
 
     def test_a_nested_crate_folder_owns_its_files(self):
         workspace = {"outer": ci.Crate("outer", "crates/outer", frozenset()),
@@ -352,136 +227,27 @@ class Crates(unittest.TestCase):
             self.assertEqual(found["core"].folder, "crates/core")
 
 
-class Installed(unittest.TestCase):
-    def write(self, folder, name, packages, **fields):
-        path = Path(folder, name)
-        path.write_text(ci.json.dumps(dict(fields, packages=packages)), encoding="utf-8")
-        return path
-
-    def install(self, folder, packages):
-        for path, version in packages.items():
-            Path(folder, path).mkdir(parents=True, exist_ok=True)
-            Path(folder, path, "package.json").write_text(ci.json.dumps({"version": version}), encoding="utf-8")
-
-    def test_an_installation_that_lags_its_lockfile_is_named(self):
-        import shutil
-        import tempfile
-        with tempfile.TemporaryDirectory() as root:
-            folder = Path(root, "node_modules")
-            folder.mkdir()
-            self.install(root, {"node_modules/typescript": "7.0.2"})
-            manifest = self.write(folder, "package.json", {})
-            lock = self.write(folder, "lock.json", {"": {}, "node_modules/typescript": {"version": "7.0.2"}})
-            stale = lambda lock, installed: ci.npm_stale(manifest, lock, installed)
-            same = self.write(folder, "same.json", {"node_modules/typescript": {"version": "7.0.2"}})
-            old = self.write(folder, "old.json", {"node_modules/typescript": {"version": "6.0.0"}})
-            self.assertIsNone(stale(lock, same))
-            self.assertIn("typescript 6.0.0 is installed, 7.0.2 is locked", stale(lock, old))
-            extra = self.write(folder, "extra.json", {"node_modules/typescript": {"version": "7.0.2"},
-                                                      "node_modules/@msgpack/msgpack": {"version": "3.1.2"}})
-            self.assertIn("@msgpack/msgpack is installed but not locked", stale(lock, extra))
-            optional = self.write(folder, "optional.json", {"": {}, "node_modules/typescript": {"version": "7.0.2"},
-                                                            "node_modules/@ts/win": {"version": "7.0.2", "optional": True}})
-            wrong = self.write(folder, "wrong.json", {"node_modules/typescript": {"version": "7.0.2"},
-                                                      "node_modules/@ts/win": {"version": "7.0.1"}})
-            self.assertIsNone(stale(optional, same))
-            self.install(root, {"node_modules/@ts/win": "7.0.2"})
-            self.assertIn("@ts/win 7.0.1 is installed", stale(optional, wrong))
-            forked = self.write(folder, "forked.json", {"": {}, "node_modules/typescript": {"version": "7.0.2", "integrity": "sha512-fork"}})
-            self.assertIn("other contents", stale(forked, same))
-            bumped = self.write(folder, "bumped.json", {}, devDependencies={"typescript": "7.0.3"})
-            self.assertIn("devDependencies differ", ci.npm_stale(bumped, lock, same))
-            shutil.rmtree(Path(root, "node_modules", "@ts"))
-            self.install(root, {"node_modules/tinyglobby": "0.2.17"})
-            self.assertIn("tinyglobby is on disk but not locked", stale(lock, same))
-            shutil.rmtree(Path(root, "node_modules", "tinyglobby"))
-            self.install(root, {"node_modules/typescript": "6.9.9"})
-            self.assertIn("typescript is not installed at 7.0.2 on disk", stale(lock, same))
-
-
-class Waking(unittest.TestCase):
-    def test_boat_arguments_are_what_follows_the_boat_script(self):
-        command = ["py", "tools/check-clippy.py", "--against", "b", "--", "py", "tools/boat.py", "clippy", "--all-targets", "-p", "a"]
-        self.assertEqual(ci.boat_arguments(command), ["clippy", "--all-targets", "-p", "a"])
-        self.assertIsNone(ci.boat_arguments(["cargo", "clippy"]))
-
-
-@unittest.skipUnless(os.name == "nt", "job objects are Windows'")
-class Spawning(unittest.TestCase):
-    def test_a_command_starts_below_normal_and_may_raise_its_own_thread(self):
-        import subprocess
-        child = (
-            "import ctypes\n"
-            "k = ctypes.WinDLL('kernel32')\n"
-            "k.GetCurrentThread.restype = k.GetCurrentProcess.restype = ctypes.c_void_p\n"
-            "k.SetThreadPriority.argtypes = [ctypes.c_void_p, ctypes.c_int]\n"
-            "k.GetThreadPriority.argtypes = k.GetPriorityClass.argtypes = [ctypes.c_void_p]\n"
-            "assert k.SetThreadPriority(k.GetCurrentThread(), 2)\n"
-            "print(hex(k.GetPriorityClass(k.GetCurrentProcess())), k.GetThreadPriority(k.GetCurrentThread()))\n"
-        )
-        process, job = ci.spawn([sys.executable, "-c", child], stdout=subprocess.PIPE, text=True)
-        try:
-            output, _ = process.communicate(timeout=60)
-        finally:
-            ci.close(job)
-        self.assertEqual(process.returncode, 0)
-        self.assertEqual(output.split(), [hex(ci.BELOW_NORMAL), "2"])
-
-
-class Superseding(unittest.TestCase):
-    def test_a_newer_run_on_the_branch_supersedes_an_older_one(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as folder:
-            store = ci.Store(Path(folder))
-            older = ci.Active(store, "check", "run-1")
-            self.assertFalse(older.superseded())
-            newer = ci.Active(store, "check", "run-2")
-            self.assertTrue(older.superseded())
-            self.assertFalse(newer.superseded())
-            self.assertTrue(older.superseded())
-            self.assertFalse(ci.Active(store, "main", "run-3").superseded())
-            self.assertFalse(newer.superseded())
-
-    def test_cancelling_ends_local_commands_and_lets_boat_finish(self):
-        runner = ci.Runner(Path("."), {})
-        ended = []
-        original = ci.end
-        ci.end = lambda process, job: ended.append(process)
-        try:
-            runner.live = {1: ("local", None, False), 2: ("boat", None, True)}
-            runner.cancel()
-        finally:
-            ci.end = original
-        self.assertEqual(ended, ["local"])
-        self.assertEqual(list(runner.live), [2])
-        self.assertTrue(runner.cancelled)
-
 
 class Verdict(unittest.TestCase):
     def outcomes(self, *states):
         return [ci.Outcome(f"job{index}", state) for index, state in enumerate(states)]
 
-    def test_a_job_that_could_not_run_is_never_a_success(self):
-        self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "reused")), "error")
-        self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "fail")), "failure")
-        self.assertEqual(ci.verdict(self.outcomes("pass", "reused", "skipped", "later")), "success")
-        for state in ("held", "paused", "deferred"):
-            self.assertEqual(ci.verdict(self.outcomes("pass", state)), "pending", state)
+    def test_a_not_run_rule_names_its_crates_and_its_panic(self):
+        for rule in ('{ crates = ["a"] }', "{ panic = 'x' }", '{ crates = [], panic = \'x\' }'):
+            with self.assertRaises(SystemExit, msg=rule):
+                ci.load_pipeline(PIPELINE.replace('command = ["boat", "test", "{packages}"]\n',
+                                                  'command = ["boat", "test", "{packages}"]\nreport = "r.xml"\nnot-run = { "why" = ' + rule + ' }\n'))
 
-    def test_the_status_names_failed_unrun_and_deferred_jobs_within_githubs_limit(self):
-        outcomes = [ci.Outcome("rust-clippy", "fail"), ci.Outcome("ui-tests", "not run"), ci.Outcome("browser", "later"),
-                    ci.Outcome("comments", "pass"), ci.Outcome("citations", "reused"), ci.Outcome("suppressions", "skipped", ci.UNCHANGED),
-                    ci.Outcome("rust-test", "held", "the game lock exists")]
-        text = ci.describe(outcomes, 41.2)
-        self.assertEqual(text, "failed: rust-clippy; not run: ui-tests; held for the game: rust-test; later tier: browser; 2 ran, 1 reused, 1 unchanged; 41s")
-        long = [ci.Outcome("x" * 40 + str(index), "fail") for index in range(10)]
-        self.assertLessEqual(len(ci.describe(long, 1)), ci.STATUS_LIMIT)
+    def test_a_job_that_could_not_run_is_never_a_success(self):
+        self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "skipped")), "error")
+        self.assertEqual(ci.verdict(self.outcomes("pass", "not run", "fail")), "failure")
+        self.assertEqual(ci.verdict(self.outcomes("pass", "skipped", "later", "ci only")), "success")
 
     def test_a_failure_a_rule_names_is_not_run_and_every_other_failure_still_fails(self):
-        fixture = ("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
-                   "error: \"BATTLE_PLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
-        unset = "effect grammar tests require BATTLE_PLAN_GAME_DIR with the supported installation"
-        metadata = "BATTLE_PLAN_GAME_DIR must name the supported installation for executable metadata"
+        fixture = ("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests: Custom { kind: NotFound, "
+                   "error: \"BATTLEPLAN_GAME_DIR is unset; executable metadata tests require an explicit supported installation\" }")
+        unset = "effect grammar tests require BATTLEPLAN_GAME_DIR with the supported installation"
+        metadata = "BATTLEPLAN_GAME_DIR must name the supported installation for executable metadata"
         other_error = unset + ": Custom { kind: InvalidData, error: \"table digest mismatch\" }"
 
         def panic(thread, message):
@@ -489,38 +255,40 @@ class Verdict(unittest.TestCase):
 
         def case(name, stderr, kind="test failure with exit code 101"):
             return f'<testcase name="{name}"><failure type="{kind}"/><system-err>{escape(stderr)}</system-err></testcase>'
-        report = "<testsuites><testsuite name=\"viewer-raids\"><testcase name=\"passes\"/><testcase name=\"ignored\"><skipped/></testcase>" + "".join([
+        report = "<testsuites><testsuite name=\"dashboard-base\"><testcase name=\"passes\"/><testcase name=\"ignored\"><skipped/></testcase>" + "".join([
             case("a::fixture", panic("a::fixture", fixture)),
             case("a::unset", panic("a::unset", unset)),
             case("a::metadata", panic("a::metadata", metadata)),
             case("a::other_error", panic("a::other_error", other_error)),
             case("a::leaks", panic("a::leaks", fixture), kind="test failure with exit code 101 (leaked handles)"),
             case("a::caught_then_returns_err", panic("a::caught_then_returns_err", fixture) + "Error: \"checksum mismatch\"\n"),
-            case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLE_PLAN_GAME_DIR")')),
+            case("a::asserts_on_the_name", panic("a::asserts_on_the_name", 'assertion failed: parsed.contains_key("BATTLEPLAN_GAME_DIR")')),
             case("a::caught_then_asserts", panic("a::caught_then_asserts", fixture) + panic("a::caught_then_asserts", "assertion failed: x")),
             case("a::worker", panic("worker", fixture)),
             case("a::times_out", panic("a::times_out", fixture), kind="test timeout"),
-        ]) + "</testsuite></testsuites>"
+        ]) + "</testsuite><testsuite name=\"viewer-raids\">" + case("a::fixture", panic("a::fixture", fixture)) + "</testsuite></testsuites>"
         rules = list(next(job for job in ci.load_pipeline(ci.PIPELINE.read_text(encoding="utf-8")).jobs
                           if job.name == "rust-test").not_run)
         passed, failures, held = ci.sorted_failures(report, rules)
         self.assertEqual(passed, 1)
-        self.assertEqual([test for test, _ in failures], [f"viewer-raids a::{name}" for name in
+        self.assertEqual([test for test, _ in failures], [f"dashboard-base a::{name}" for name in
                                                           ("other_error", "leaks", "caught_then_returns_err",
-                                                           "asserts_on_the_name", "caught_then_asserts", "worker", "times_out")])
-        self.assertEqual(held, {"needs the game install": {"viewer-raids": 3}})
+                                                           "asserts_on_the_name", "caught_then_asserts", "worker", "times_out")]
+                         + ["viewer-raids a::fixture"])
+        reason = "needs the game install until the dashboard rework (#169)"
+        self.assertEqual(held, {reason: {"dashboard-base": 3}})
         self.assertIn("table digest mismatch", failures[0][1])
-        self.assertEqual(ci.held_detail(held), "3 not run here: needs the game install")
+        self.assertEqual(ci.held_detail(held), f"3 not run here: {reason}")
         lines = ci.failure_report((passed, failures, held))
-        self.assertIn("not run here: needs the game install: 3 tests, in viewer-raids (3)", lines)
-        self.assertEqual(sum(line.startswith("--- FAIL ") for line in lines), 7)
+        self.assertIn(f"not run here: {reason}: 3 tests, in dashboard-base (3)", lines)
+        self.assertEqual(sum(line.startswith("--- FAIL ") for line in lines), 8)
         self.assertIsNone(ci.sorted_failures("not a report", rules))
-        summary = "        Summary [ 12.000s] {} tests run: 1 passed, 10 failed, 1 skipped\n"
-        self.assertTrue(ci.finished_every_test(summary.format(11), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test(summary.format(12), (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test("  Cancelling due to interrupt: 1 test still running\n" + summary.format(11),
+        summary = "        Summary [ 12.000s] {} tests run: 1 passed, 11 failed, 1 skipped\n"
+        self.assertTrue(ci.finished_every_test(summary.format(12), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test(summary.format(13), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test("  Cancelling due to interrupt: 1 test still running\n" + summary.format(12),
                                                 (passed, failures, held)))
-        self.assertFalse(ci.finished_every_test(summary.format("11/12"), (passed, failures, held)))
+        self.assertFalse(ci.finished_every_test(summary.format("12/13"), (passed, failures, held)))
         self.assertFalse(ci.finished_every_test("error: test run cancelled\n", (passed, failures, held)))
 
 
@@ -545,12 +313,11 @@ class ReviewOfFourteen(unittest.TestCase):
         self.assertEqual(decide("clippy", context(["tools/boat.py"])).state, "skipped")
 
     def test_an_unreadable_crate_graph_never_skips_a_widened_job(self):
-        pipeline = PIPELINE.replace('limit = 3\nheavy = true\n', 'limit = 3\nheavy = true\nwiden = [".config/nextest.toml"]\n')
+        pipeline = PIPELINE.replace('command = ["boat", "test", "{packages}"]\n', 'command = ["boat", "test", "{packages}"]\nwiden = [".config/nextest.toml"]\n')
         ctx = context([".config/nextest.toml"])
         ctx.pipeline = ci.load_pipeline(pipeline)
         ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
         ctx.crates = None
-        ctx.hosted = True
         job = next(job for job in ctx.pipeline.jobs if job.name == "test")
         self.assertEqual(ci.decide(job, ctx, "check").state, "not run")
 
@@ -559,24 +326,6 @@ class ReviewOfFourteen(unittest.TestCase):
         parent = ci.git("rev-parse", "HEAD^1").strip()
         self.assertEqual(ci.ratchet_base(empty_tree), parent)
         self.assertEqual(ci.ratchet_base(parent), parent)
-
-    def test_the_tool_tests_key_names_their_python_dependencies(self):
-        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
-        job = next(job for job in pipeline.jobs if job.name == "tool-tests")
-        command = ci.expand(pipeline.toolchains[job.toolchain].version, {"python": sys.executable})
-        said = ci.subprocess.run(command, capture_output=True, text=True).stdout
-        required = [line.split("==")[0].lower() for line in (ROOT / "tools" / "python-requirements.txt").read_text(encoding="utf-8").splitlines()
-                    if line and not line.startswith("-r")]
-        for package in ("tree-sitter", "tree-sitter-language-pack", *required):
-            self.assertIn(package, said)
-
-    def test_the_pipeline_implementation_keys_every_job(self):
-        pipeline = ci.load_pipeline(PIPELINE)
-        tree = {"tools/ci.py": ("one", True), "src/a.rs": ("a", True)}
-        before, _ = ci.toolchain_digests(pipeline, tree, {"python": sys.executable}, {})
-        after, _ = ci.toolchain_digests(pipeline, dict(tree, **{"tools/ci.py": ("two", True)}), {"python": sys.executable}, {})
-        self.assertNotEqual(before["python"], after["python"])
-        self.assertNotEqual(before["rust"], after["rust"])
 
     def test_a_rolled_back_tip_ratchets_against_the_shared_history(self):
         original = ci.git
@@ -588,22 +337,6 @@ class ReviewOfFourteen(unittest.TestCase):
             ci.git = original
         parent = ci.git("rev-parse", "HEAD^1").strip()
         self.assertEqual(ci.ratchet_base(parent), parent)
-
-    def test_only_a_github_remote_url_names_a_repository(self):
-        original = ci.git
-        urls = {"good": "https://github.com/acme/widget.git", "ssh": "git@github.com:acme/widget.git",
-                "mirror": "https://git.corp.example/mirrors/github.com/acme/widget.git"}
-        ci.git = lambda *args, check=True, data=None: urls.get(args[-1], "") if args[:2] == ("remote", "get-url") else original(*args, check=check, data=data)
-        try:
-            self.assertEqual(ci.upstream_repository("good/main"), "acme/widget")
-            self.assertEqual(ci.upstream_repository("ssh/main"), "acme/widget")
-            self.assertIsNone(ci.upstream_repository("mirror/main"))
-        finally:
-            ci.git = original
-
-    def test_an_upstream_ref_names_its_remote(self):
-        self.assertEqual(ci.upstream_remote("refs/remotes/bp/main"), "bp")
-        self.assertEqual(ci.upstream_remote("bp/main"), "bp")
 
     def test_every_group_runs_on_a_fixed_github_hosted_label(self):
         pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
@@ -617,6 +350,158 @@ class ReviewOfFourteen(unittest.TestCase):
         self.assertNotIn("matrix.os", workflow)
 
 
+class Sharding(unittest.TestCase):
+    WORKSPACE = crates(hub=[], mid=["hub"], app=["mid", "hub"], tool=["hub"], leaf=[], other=["leaf"])
+    WEIGHTS = {"hub": 50, "mid": 20, "app": 40, "tool": 10, "leaf": 30, "other": 5}
+
+    def sharded(self, changed, tier="check", shards=2):
+        pipeline = PIPELINE.replace('command = ["boat", "test", "{packages}"]\n', f'command = ["boat", "test", "{{packages}}"]\nshards = {shards}\n')
+        tree = {f"crates/{name}/src/lib.rs" for name in self.WORKSPACE}
+        ctx = context(changed, tree=tree, workspace=self.WORKSPACE)
+        ctx.pipeline = ci.load_pipeline(pipeline)
+        ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
+        ctx.everything = tier != "check"
+        sizes = {f"crates/{name}/src/lib.rs": weight for name, weight in self.WEIGHTS.items()}
+        return ctx, [ci.decide(job, ctx, tier) for job in ctx.pipeline.jobs], sizes
+
+    def test_every_crate_runs_once_and_a_dependent_joins_the_runner_building_its_dependencies(self):
+        weights = ci.crate_weights(self.WORKSPACE, {f"crates/{n}/src/lib.rs": w for n, w in self.WEIGHTS.items()})
+        split = ci.shard_crates(self.WORKSPACE, sorted(self.WORKSPACE), weights, 2)
+        self.assertEqual(sorted(name for shard in split for name in shard), sorted(self.WORKSPACE))
+        self.assertEqual(split, ci.shard_crates(self.WORKSPACE, list(reversed(sorted(self.WORKSPACE))), weights, 2))
+        clusters = crates(hub=[], app=["hub"], leaf=[], other=["leaf"])
+        weights = {"hub": 50, "app": 10, "leaf": 50, "other": 10}
+        self.assertEqual(sorted(ci.shard_crates(clusters, sorted(clusters), weights, 2)), [["app", "hub"], ["leaf", "other"]])
+
+    def test_the_workspace_takes_every_runner_and_one_crate_takes_one(self):
+        weights = ci.crate_weights(self.WORKSPACE, {f"crates/{n}/src/lib.rs": w for n, w in self.WEIGHTS.items()})
+        self.assertEqual(ci.shard_count(self.WORKSPACE, sorted(self.WORKSPACE), weights, 4), 4)
+        self.assertEqual(ci.shard_count(self.WORKSPACE, ["other"], weights, 4), 1)
+
+    def test_changes_and_each_runner_split_a_job_alike(self):
+        ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
+        legs = ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes)
+        tests = [leg for leg in legs if leg["jobs"] == "test"]
+        self.assertEqual([leg["shard"].rsplit("/", 1)[0] for leg in tests], ["1/2", "2/2"])
+        self.assertEqual([leg["name"] for leg in tests], ["test 1/2", "test 2/2"])
+        self.assertTrue(all(leg["needs_python"] for leg in legs))
+        self.assertIn("clippy", next(leg for leg in legs if leg["shard"] == "")["jobs"].split())
+        taken = []
+        for leg in tests:
+            cut, refused = ci.take_shard([d for d in decisions if d.job.name == "test"], leg["shard"], ctx.crates, sizes)
+            self.assertEqual(refused, [])
+            taken += cut[0].arguments[1::2]
+        self.assertEqual(sorted(taken), ["app", "hub", "mid", "tool"])
+
+    def test_a_runner_that_would_split_otherwise_fails_its_leg(self):
+        ctx, decisions, sizes = self.sharded(["crates/hub/src/lib.rs"])
+        mine = [d for d in decisions if d.job.name == "test"]
+        legs = [leg for leg in ci.matrix_legs(ctx.pipeline, decisions, ctx.crates, sizes) if leg["jobs"] == "test"]
+        digest = legs[0]["shard"].rsplit("/", 1)[1]
+        for shard in (f"3/3/{digest}", f"1/1/{digest}", "1/2/000000000000", "1/2", "x"):
+            _, refused = ci.take_shard(mine, shard, ctx.crates, sizes)
+            self.assertEqual([o.state for o in refused], ["fail"], shard)
+        moved = dict(sizes, **{"crates/tool/src/lib.rs": 500})
+        _, refused = ci.take_shard(mine, legs[0]["shard"], ctx.crates, moved)
+        self.assertEqual([o.state for o in refused], ["fail"])
+
+    def test_main_tests_the_workspace_and_names_what_lies_beyond_a_pull_requests_scope(self):
+        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"], tier="main")
+        decision = next(d for d in decisions if d.job.name == "test")
+        self.assertEqual(decision.arguments, ["--workspace"])
+        self.assertEqual(decision.beyond, ["app", "hub", "mid", "tool"])
+        self.assertIn("4 beyond a pull request's scope", decision.detail)
+        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"])
+        self.assertEqual(next(d for d in decisions if d.job.name == "test").arguments, ["-p", "leaf", "-p", "other"])
+        _, decisions, _ = self.sharded(["docs/x.md"], tier="main")
+        decision = next(d for d in decisions if d.job.name == "test")
+        self.assertEqual((decision.state, decision.arguments), ("run", ["--workspace"]))
+        self.assertEqual(len(decision.beyond), len(self.WORKSPACE))
+        self.assertEqual(next(d for d in decisions if d.job.name == "scan").state, "run")
+
+    def test_a_failure_beyond_a_pull_requests_scope_says_so(self):
+        lines = ci.failure_report((3, [("app t::one", "boom"), ("leaf::bin/x t::two", "bang")], {}), {"app"})
+        self.assertIn("--- FAIL app t::one (beyond a pull request's scope)", lines)
+        self.assertIn("--- FAIL leaf::bin/x t::two", lines)
+        self.assertTrue(any(line.startswith("1 of the failures") for line in lines))
+
+    def test_only_a_crates_job_shards_and_only_a_sharded_job_warms(self):
+        with self.assertRaises(SystemExit):
+            ci.load_pipeline(PIPELINE.replace('command = ["scan"]\n', 'command = ["scan"]\nshards = 2\n'))
+        with self.assertRaises(SystemExit):
+            ci.load_pipeline(PIPELINE.replace('kind = "crates"\ntoolchain = "rust"\ncommand = ["boat"', 'kind = "crates"\ntoolchain = "rust"\nwarm = ["cargo"]\ncommand = ["boat"'))
+
+
+class RestoredTarget(unittest.TestCase):
+    TRACKED = ["crates/a/src/lib.rs", "crates/a/src/x.rs", "crates/b/src/lib.rs", "Cargo.lock"]
+
+    def test_a_changed_path_and_every_folder_above_it_are_newer(self):
+        self.assertEqual(ci.newer_paths([("M", "crates/a/src/x.rs"), ("M", "Cargo.lock")], self.TRACKED),
+                         {"crates", "crates/a", "crates/a/src", "crates/a/src/x.rs", "Cargo.lock"})
+
+    def test_a_file_added_or_removed_makes_its_whole_crate_newer(self):
+        for status in ("A", "D"):
+            newer = ci.newer_paths([(status, "crates/a/src/native.rs")], self.TRACKED)
+            self.assertLessEqual({"crates/a/src/lib.rs", "crates/a/src/x.rs", "crates/a/src/native.rs"}, newer, status)
+            self.assertNotIn("crates/b/src/lib.rs", newer, status)
+
+    def test_pruning_keeps_the_units_the_build_used_and_no_executables(self):
+        import tempfile
+        used, unused = "0123456789abcdef", "fedcba9876543210"
+        messages = "\n".join([
+            ci.json.dumps({"reason": "compiler-artifact", "filenames": [f"D:\\t\\debug\\deps\\liba-{used}.rlib"]}),
+            ci.json.dumps({"reason": "build-script-executed", "out_dir": "D:\\t\\debug\\build\\a-1111222233334444\\out"}),
+            "not json"])
+        live = ci.live_units(messages)
+        self.assertEqual(live, {used, "1111222233334444"})
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder)
+            for path in (f"deps/liba-{used}.rlib", f"deps/liba-{unused}.rlib", f"deps/a-{used}.exe", f".fingerprint/a-{unused}/lib-a",
+                         f".fingerprint/a-{used}/lib-a", "build/a-1111222233334444/out/x", "a.exe", "deps/kept.txt"):
+                Path(profile, path).parent.mkdir(parents=True, exist_ok=True)
+                Path(profile, path).write_text("x", encoding="utf-8")
+            ci.prune(profile, live)
+            left = sorted(path.relative_to(profile).as_posix() for path in profile.rglob("*") if path.is_file())
+        self.assertEqual(left, sorted(["build/a-1111222233334444/out/x", f".fingerprint/a-{used}/lib-a", "deps/kept.txt", f"deps/liba-{used}.rlib"]))
+
+    def test_only_a_build_that_succeeded_names_the_commit(self):
+        import tempfile
+        original = ci.PIPELINE
+        with tempfile.TemporaryDirectory() as folder:
+            def run(code):
+                pipeline = Path(folder, "ci.toml")
+                pipeline.write_text(PIPELINE.replace('command = ["boat", "test", "{packages}"]\n',
+                                                     'command = ["boat", "test", "{packages}"]\nshards = 2\nwarm = '
+                                                     + ci.json.dumps([sys.executable, "-c", f"import sys; sys.exit({code})"]) + "\n"), encoding="utf-8")
+                ci.PIPELINE = pipeline
+                output = Path(folder, f"output-{code}")
+                ci.warm("test", Path(folder, "target"), github_output=output)
+                return Path(folder, "target", ci.BUILT_FROM), output.read_text(encoding="utf-8")
+            try:
+                Path(folder, "target", "debug").mkdir(parents=True)
+                named, output = run(1)
+                self.assertFalse(named.exists())
+                self.assertEqual(output, "save=false\n")
+                named, output = run(0)
+                self.assertEqual(named.read_text(encoding="utf-8").strip(), ci.git("rev-parse", "HEAD").strip())
+                self.assertEqual(output, "save=true\n")
+            finally:
+                ci.PIPELINE = original
+
+
+
+class Local(unittest.TestCase):
+    def test_the_local_run_uses_a_jobs_local_command_and_ci_runs_the_other(self):
+        job = next(job for job in ci.load_pipeline(PIPELINE).jobs if job.name == "clippy")
+        self.assertEqual(job.local[0], "boat")
+        self.assertEqual(job.command[0], "cargo")
+
+    def test_every_test_job_is_left_to_ci(self):
+        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
+        runs_here = [job.name for job in pipeline.jobs if not job.ci_only and not (job.kind == "crates" and not job.local)]
+        self.assertFalse([name for name in runs_here if re.search(r"(^|-)tests?$", name)], runs_here)
+
+
 class Pipeline(unittest.TestCase):
     def test_the_pipeline_loads_and_runs_every_repo_check(self):
         pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
@@ -624,6 +509,19 @@ class Pipeline(unittest.TestCase):
         scripts = sorted(path.name for path in (ROOT / "tools").glob("check-*.py"))
         self.assertTrue(scripts)
         self.assertEqual([script for script in scripts if f"tools/{script}" not in commands], [])
+
+    def test_the_cache_workflow_warms_every_sharded_job_and_restores_what_ci_restores(self):
+        import yaml
+        pipeline = ci.load_pipeline((ROOT / "tools" / "ci.toml").read_text(encoding="utf-8"))
+        cache = yaml.safe_load((ROOT / ".github" / "workflows" / "rust-cache.yml").read_text(encoding="utf-8"))
+        ci_workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        warm = cache["jobs"]["warm"]
+        self.assertEqual(sorted(warm["strategy"]["matrix"]["job"]), sorted(job.name for job in pipeline.jobs if job.warm))
+        self.assertEqual(sorted(job.name for job in pipeline.jobs if job.warm), sorted(job.name for job in pipeline.jobs if job.shards))
+        paths = [step["with"]["path"] for step in warm["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
+        paths += [step["with"]["path"] for step in ci_workflow["jobs"]["run"]["steps"] if str(step.get("uses", "")).startswith("actions/cache/")]
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(len(set(paths)), 1)
 
     def test_an_unknown_tier_is_refused(self):
         with self.assertRaises(SystemExit):

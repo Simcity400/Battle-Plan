@@ -28,6 +28,7 @@ engine-governance-tests = { workspace = true, features = ["test-support"] }
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
+engine-executable = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 
 [lints]

@@ -650,7 +650,7 @@ fn viewing_country_is_the_raw_signed_reference() {
 #[test]
 #[ignore]
 fn combat_log_scale() {
-    let shape = std::env::var("BATTLE_PLAN_COMBAT_LOG_SCALE").or_else(|_| std::env::var("HOI4_COMBAT_LOG_SCALE")).unwrap_or_else(|_| "human".into());
+    let shape = std::env::var("BATTLEPLAN_COMBAT_LOG_SCALE").or_else(|_| std::env::var("HOI4_COMBAT_LOG_SCALE")).unwrap_or_else(|_| "human".into());
     let (every, groups, variants) = match shape.as_str() {
         "observer" => (3, 5, 10),
         _ => (4999, 60, 20),

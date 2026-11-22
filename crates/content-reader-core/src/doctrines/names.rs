@@ -263,8 +263,7 @@ mod tests {
     use super::*;
     #[test]
     fn doctrine_names_merge_by_token_and_preserve_omitted_fields() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut db = Database::default();
         for (kind, definitions) in [
             (0, "grand={name=grand_name} GRAND={icon=unused}"),
@@ -286,8 +285,7 @@ mod tests {
 
     #[test]
     fn catalogue_specific_readers_keep_names_after_nested_fields() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut db = Database::default();
         for (kind, definitions) in [
             (
@@ -318,7 +316,7 @@ mod tests {
 
     #[test]
     fn doctrine_rewards_keep_mod_unit_stats_modifiers_effects_and_costs() {
-        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        crate::test_game::enter();
         let mut units = crate::unit_leader::SubUnits::default();
         units.read(
             b"sub_units={mod_unit={}} sub_unit_categories={mod_category}",
@@ -347,8 +345,7 @@ mod tests {
 
     #[test]
     fn tactic_sources_keep_pointer_occurrences_append_lists_and_bound_tracks() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut db = Database::default();
         let names = KeyNames::default();
         append(&mut db, br#"a={name={localization_key=TRACK arg={localization_key=INNER n=VALUE}}} b={} A={name=LAST}"#,
@@ -399,8 +396,7 @@ mod tests {
 
     #[test]
     fn retained_track_name_preserves_nested_binding_and_base_name_string_read() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let mut db = Database::default();
         append(
             &mut db,

@@ -274,8 +274,7 @@ mod tests {
     use super::*;
     #[test]
     fn layered_repeated_technology_declarations_keep_every_index_and_first_name_lookup() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = crate::test_support::Stack::new("technology_occurrences");
         stack.write(
             &stack.base(),
@@ -364,8 +363,7 @@ mod tests {
 
     #[test]
     fn technology_description_names_use_parent_and_layout_flag() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let (read, _, _) = read_templates(b"@title=mod_parent technology_categories={mod_category} technologies={mod_tech={parent=@title force_use_small_tech_layout=yes enable_equipments={mod_equipment}}}", &units::Registry::default(), &KeyNames::default());
         assert!(read.unsettled.is_none(), "{read:?}");
         let mut catalog = Catalog::default();
@@ -389,8 +387,7 @@ mod tests {
 
     #[test]
     fn small_layout_takes_exact_booleans_and_keeps_the_preceding_value() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         for (assignments, expected) in [
             (
                 "force_use_small_tech_layout=yes force_use_small_tech_layout=invalid",
@@ -416,8 +413,7 @@ mod tests {
 
     #[test]
     fn technology_effect_projection_retains_read_order_and_shared_completion_limit() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let registry = units::Registry {
             units: BTreeSet::from([b"mod_unit".to_vec()]),
             ..Default::default()
@@ -453,8 +449,7 @@ mod tests {
 
     #[test]
     fn technology_completion_projection_keeps_limit_when_body_guard_rejects_tail() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let names = KeyNames::default();
         let registry = units::Registry::default();
         let (read, _, _) = read_templates(

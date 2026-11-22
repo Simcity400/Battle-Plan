@@ -43,6 +43,7 @@ pollster.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+synthetic-game.workspace = true
 replay-derive = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true
 content-reader-core = { workspace = true, features = ["test-support"] }

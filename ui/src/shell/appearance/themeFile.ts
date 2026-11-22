@@ -2,7 +2,7 @@ import { normalizeColor } from './color.ts';
 import { colorsMode, completeColors, themeRoles } from './themes.ts';
 import type { ThemeColors, ThemeDefinition, ThemeMode } from './themes.ts';
 
-export const THEME_FILE_FORMAT = 'battle-plan-theme';
+export const THEME_FILE_FORMAT = 'battleplan-theme';
 export const MAX_THEME_NAME = 48;
 export const MAX_THEME_FILE_BYTES = 512 * 1024;
 

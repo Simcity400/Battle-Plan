@@ -8,7 +8,7 @@ use replay_frame::frame::TableView;
 #[test]
 fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -90,7 +90,7 @@ fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() 
 #[test]
 fn same_faction_nonleader_preview_reads_only_subject_operands() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     *fixture.frame.tables[TableId::FactionMembers.index()] =
         TableView::Complete(TableRows::FactionMembers(vec![
@@ -130,7 +130,7 @@ fn same_faction_nonleader_preview_reads_only_subject_operands() {
 #[test]
 fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -210,7 +210,7 @@ fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
 #[test]
 fn create_wargoal_refuses_without_complete_inventory_tables() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -278,7 +278,7 @@ fn create_wargoal_refuses_without_complete_inventory_tables() {
 #[test]
 fn purchase_contract_uses_seller_roster_and_quantity_pool() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -560,7 +560,7 @@ fn purchase_contract_uses_seller_roster_and_quantity_pool() {
 #[test]
 fn civil_war_heading_and_selected_party_follow_separate_operands() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -718,7 +718,7 @@ fn civil_war_heading_and_selected_party_follow_separate_operands() {
 #[test]
 fn faction_influence_environment_keeps_links() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let count = 24;
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
@@ -831,7 +831,7 @@ fn faction_influence_environment_keeps_links() {
 #[test]
 fn diplomacy_output_branches() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -2211,7 +2211,7 @@ fn diplomacy_output_branches() {
 #[test]
 fn diplomacy_ordered_subjects() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let countries = synthetic_countries(24);
     let mut localisation = "\u{feff}l_english:\n EFFECT_ADD_TO_FACTION:0 \"Join $COUNTRY$\"\n EFFECT_GIVE_GUARANTEE:0 \"Guarantee $COUNTRY$\"\n"

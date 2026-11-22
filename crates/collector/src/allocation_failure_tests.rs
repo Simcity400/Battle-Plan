@@ -40,8 +40,6 @@ pub(crate) fn before_spool_publication() {
     }
 }
 fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     let run = std::env::temp_dir().join(format!(
         "hoi4-collector-allocation-{}-{}",
@@ -57,10 +55,10 @@ fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
             "--nocapture",
             "--test-threads=1",
         ])
-        .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST", mode)
-        .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_RUN", &run)
-        .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_PHASE", phase)
-        .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_ORDINAL", ordinal.to_string())
+        .env("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST", mode)
+        .env("BATTLEPLAN_COLLECTOR_ALLOCATION_RUN", &run)
+        .env("BATTLEPLAN_COLLECTOR_ALLOCATION_PHASE", phase)
+        .env("BATTLEPLAN_COLLECTOR_ALLOCATION_ORDINAL", ordinal.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -652,11 +650,10 @@ fn a_campaign_set_aside_with_a_pending_gap_commits_under_its_own_name() {
 #[test]
 #[ignore = "launched only by allocation-failure parent tests"]
 fn allocation_safety_child() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let mode = std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap();
-    let phase = Phase::parse(&std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_PHASE").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_PHASE")).unwrap()).unwrap();
-    let ordinal = std::env::var("BATTLE_PLAN_COLLECTOR_ALLOCATION_ORDINAL").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_ORDINAL"))
+    synthetic_game::Executable::fixed_layout(engine_fixed_layout::fixed_layout::TOKEN_IDS).enter();
+    let mode = std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap();
+    let phase = Phase::parse(&std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_PHASE").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_PHASE")).unwrap()).unwrap();
+    let ordinal = std::env::var("BATTLEPLAN_COLLECTOR_ALLOCATION_ORDINAL").or_else(|_| std::env::var("HOI4_COLLECTOR_ALLOCATION_ORDINAL"))
         .unwrap()
         .parse::<usize>()
         .unwrap();
@@ -1128,8 +1125,8 @@ struct Exercise {
 }
 
 fn case_root(phase: Phase, ordinal: usize, checked: bool) -> PathBuf {
-    PathBuf::from(std::env::var_os("BATTLE_PLAN_COLLECTOR_ALLOCATION_RUN").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_RUN")).unwrap())
-        .join(std::env::var_os("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap())
+    PathBuf::from(std::env::var_os("BATTLEPLAN_COLLECTOR_ALLOCATION_RUN").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_RUN")).unwrap())
+        .join(std::env::var_os("BATTLEPLAN_COLLECTOR_ALLOCATION_TEST").or_else(|| std::env::var_os("HOI4_COLLECTOR_ALLOCATION_TEST")).unwrap())
         .join(format!(
             "{}-{phase:?}-{ordinal}-{checked}",
             std::process::id()

@@ -9,8 +9,8 @@ import { MAX_THEME_NAME } from './themeFile.ts';
 import { DEFAULT_TYPOGRAPHY, parseTypography } from './typography.ts';
 import type { FontFamilies, TypographySettings } from './typography.ts';
 
-export const APPEARANCE_KEY = 'hoi4-replay.appearance.v2';
-const LEGACY_KEY = 'hoi4-replay.appearance.v1';
+export const APPEARANCE_KEY = 'battleplan.appearance.v2';
+const LEGACY_KEY = 'battleplan.appearance.v1';
 export const MAX_CUSTOM_THEMES = 48;
 
 export type ColorScheme = 'system' | ThemeMode;

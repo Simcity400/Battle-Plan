@@ -49,14 +49,14 @@ Run from the repository root in an x64 MSVC developer environment. Keep
 every artifact and log outside Git.
 
 ```powershell
-$proofOutput = Join-Path $env:TEMP 'battle-plan-naval-foreign-proof'
+$proofOutput = Join-Path $env:TEMP 'battleplan-naval-foreign-proof'
 New-Item -ItemType Directory -Force -Path $proofOutput | Out-Null
 cl.exe /nologo /LD /O2 /EHa /W4 /WX tools/tap-foreign-unwind/probe.cpp "/Fo:$proofOutput/probe.obj" "/Fe:$proofOutput/tap_foreign_probe.dll" /link "/IMPLIB:$proofOutput/tap_foreign_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Shared native probe build failed' }
 cl.exe /nologo /LD /O2 /EHa /W4 /WX crates/collector/tests/naval_unwind_probe.cpp "/Fo:$proofOutput/naval.obj" "/Fe:$proofOutput/naval_unwind_probe.dll" /link "/IMPLIB:$proofOutput/naval_unwind_probe.lib"
 if ($LASTEXITCODE -ne 0) { throw 'Existing Naval C++ probe build failed' }
-$env:BATTLE_PLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
-$env:BATTLE_PLAN_NAVAL_UNWIND_PROBE = "$proofOutput/naval_unwind_probe.dll"
+$env:BATTLEPLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
+$env:BATTLEPLAN_NAVAL_UNWIND_PROBE = "$proofOutput/naval_unwind_probe.dll"
 $navalProofFilters = @(
     'naval_result_sources::tests::native_foreign_unwind_probe',
     'naval_result_sources::tests::foreign_unwind::naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks'

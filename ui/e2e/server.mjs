@@ -1,4 +1,4 @@
-import { mkdir, copyFile, symlink, utimes, rm, cp, lstat } from 'node:fs/promises';
+import { mkdir, copyFile, utimes, rm, cp, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'vite';
@@ -27,30 +27,31 @@ export async function startUI(ui, config, output) {
   try {
     await mkdir(path.dirname(binary), { recursive: true }); await copyFile(config.bridge, binary);
     for (const name of ['dxcompiler.dll', 'dxil.dll']) await copyFile(path.join(path.dirname(config.bridge), name), path.join(path.dirname(binary), name));
-    for (const name of ['crates/dashboard-core/src/map_settings.rs', 'crates/dashboard/src/reply_cache.rs']) {
-      const marker = path.join(root, name);
-      await mkdir(path.dirname(marker), { recursive: true }); await copyFile(path.join(ui.root, name), marker);
-      if (execFileSync('git', ['status', '--porcelain', '--', name], { cwd: ui.root, encoding: 'utf8' }).trim()) continue;
+    const name = 'crates/dashboard-core/src/map_settings.rs';
+    const marker = path.join(root, name);
+    await mkdir(path.dirname(marker), { recursive: true }); await copyFile(path.join(ui.root, name), marker);
+    if (!execFileSync('git', ['status', '--porcelain', '--', name], { cwd: ui.root, encoding: 'utf8' }).trim()) {
       const changed = new Date(Number(execFileSync('git', ['log', '-1', '--format=%ct', '--', name], { cwd: ui.root, encoding: 'utf8' })) * 1000);
       await utimes(marker, changed, changed);
     }
     const seed = config.nativeSeed ?? prior.LOCALAPPDATA;
     if (seed) {
-      const relative = 'HOI4Replay/viewer/content-hashes-v2.bin', destination = path.join(root, 'localappdata', relative);
+      const relative = 'BattlePlan/viewer/content-hashes-v2.bin', destination = path.join(root, 'localappdata', relative);
       await mkdir(path.dirname(destination), { recursive: true });
       await copyFile(path.join(seed, relative), destination).catch(error => { if (error.code !== 'ENOENT') throw error; });
-      await cp(path.join(seed, 'HOI4Replay/viewer/history'), path.join(root, 'localappdata/HOI4Replay/viewer/history'), {
+      await cp(path.join(seed, 'BattlePlan/viewer/history'), path.join(root, 'localappdata/BattlePlan/viewer/history'), {
         recursive: true, filter: async input => {
           if ((await lstat(input)).isSymbolicLink()) throw Error(`Linked native history input refused: ${input}`);
           return true;
         },
       }).catch(error => { if (error.code !== 'ENOENT') throw error; });
     }
-    const preparedSeed = await copyPreparedSeed(config.preparedSeed, path.join(root, 'localappdata/HOI4Replay/prepared'));
+    const preparedSeed = await copyPreparedSeed(config.preparedSeed, path.join(root, 'localappdata/BattlePlan/prepared'));
     const nativeInputs = { historySeed: seed ?? null, preparedSeed };
     await writeJSON(path.join(output, 'native-inputs.json'), nativeInputs);
     process.env.APPDATA = path.join(root, 'appdata'); process.env.LOCALAPPDATA = path.join(root, 'localappdata');
     server = await createServer({ configFile: false, root: path.join(ui.root, 'ui'), mode: 'parity', cacheDir: path.join(root, 'vite'),
+      optimizeDeps: { noDiscovery: true, include: ['react-dom/client', 'react-grid-layout'] },
       plugins: [react(), browserBridge(root, path.dirname(config.recording), config.gameDir, config.userDir)], clearScreen: false, logLevel: 'warn',
       server: { host: '127.0.0.1', port: 0, strictPort: true, fs: { allow: [ui.root, repository] } } });
     await server.listen();

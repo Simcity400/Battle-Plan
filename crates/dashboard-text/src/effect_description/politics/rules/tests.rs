@@ -10,7 +10,7 @@ fn fresh() -> EventScopes {
 #[test]
 fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (fixture, _folder) = super::super::tests::fixture();
     let content = fixture
         .catalogue
@@ -33,7 +33,7 @@ fn rules_use_registry_order_last_authored_value_and_fulfilled_field() {
 #[test]
 fn relation_uses_last_rule_and_explicit_target_before_trigger() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(relation("add_relation_rule_override={target=BBB trigger=SYN_TRIGGER usage_desc=SYN_DESC can_send_volunteers=yes can_create_factions=no}").unwrap(), "Relation Alpha->Beta:[no]Factions");
 }
 
@@ -147,7 +147,7 @@ fn render(body: &str, graph: EventScopes, template: Option<&Template>) -> Result
 #[test]
 fn empty_invalid_and_scope_targets_leave_template_precedence() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     for target in ["\"\"", "SYN_MISSING", "ROOT", "event_target:SYN_TARGET"] {
         assert_eq!(relation(&format!("add_relation_rule_override={{target={target} trigger=SYN_TRIGGER can_send_volunteers=yes}}")).unwrap(), "Relation Alpha->Other\n:[yes]Volunteers");
     }
@@ -156,7 +156,7 @@ fn empty_invalid_and_scope_targets_leave_template_precedence() {
 #[test]
 fn target_capital_continent_uses_perspective_localisation() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
@@ -177,7 +177,7 @@ fn target_capital_continent_uses_perspective_localisation() {
 #[test]
 fn named_target_from_flag_uses_scope_name_and_marked_country() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut scope = EventScope::of(EventObject::Country(1));
     scope.from = Link::Scope(1);
     let graph = EventScopes::new(vec![scope, EventScope::of(EventObject::Country(2))]);
@@ -190,7 +190,7 @@ fn named_target_from_flag_uses_scope_name_and_marked_country() {
 #[test]
 fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         target(
             "custom_trigger_tooltip={tooltip=SYN_TIP always=no}",
@@ -220,7 +220,7 @@ fn mode_two_suppresses_status_but_not_resets_it_and_derives_negative_key() {
 #[test]
 fn target_context_and_or_keep_three_space_indentation() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(target("BBB={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   Tip BBB\n   Other\n");
     assert_eq!(target("OR={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=no}}", fresh()).unwrap(), "Any:\n   Tip AAA\n   Other\n");
     assert_eq!(target("BBB={AND={custom_trigger_tooltip={tooltip=SYN_TIP always=yes} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}} custom_trigger_tooltip={tooltip=SYN_OTHER_TIP always=yes}}", fresh()).unwrap(), "\u{11}YBeta\u{11}!:\n   All:\n      Tip BBB\n      Other\n   Other\n");
@@ -229,7 +229,7 @@ fn target_context_and_or_keep_three_space_indentation() {
 #[test]
 fn unported_target_trigger_fields_are_named() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     assert_eq!(
         target("has_country_flag={flag=SYN_SIGNAL days=2}", fresh()).unwrap_err(),
         "has_country_flag field days description is unavailable"

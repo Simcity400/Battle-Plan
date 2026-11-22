@@ -2,7 +2,7 @@
 pub fn every() -> Option<u64> {
     static EVERY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
     *EVERY.get_or_init(|| {
-        let value = std::env::var_os("BATTLE_PLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))?;
+        let value = std::env::var_os("BATTLEPLAN_VIEWER_CHECK_ACTORS").or_else(|| std::env::var_os("HOI4_VIEWER_CHECK_ACTORS"))?;
         let value = value.to_str()?;
         if value.is_empty() || value == "0" {
             return None;

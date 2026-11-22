@@ -120,7 +120,7 @@ fn fixture(
 #[test]
 fn nested_balance_effects_keep_the_viewer_nato_preference() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={add_unit_bonus={syn_unit={}}}}}",
     ));
@@ -153,7 +153,7 @@ fn nested_balance_effects_keep_the_viewer_nato_preference() {
 #[test]
 fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={custom_effect_tooltip=LOOP}}}",
     ));
@@ -213,7 +213,7 @@ fn balance_effect_sessions_keep_nesting_active_history_and_large_stack() {
 #[test]
 fn custom_only_balance_effects_do_not_require_world_or_environment() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, mut frame) = fixture(None);
     *frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
         reason: "synthetic province gap".into(),
@@ -242,7 +242,7 @@ fn custom_only_balance_effects_do_not_require_world_or_environment() {
 #[test]
 fn balance_context_headers_use_the_viewing_country() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, mut frame) = fixture(Some(
         "balance={range={id=active on_activate={SOV={custom_effect_tooltip=NEXT}}}}",
     ));
@@ -298,7 +298,7 @@ fn description(
 #[test]
 fn activation_uses_the_shared_numeric_and_conditional_descriptions() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, frame) = fixture(Some(
         "balance={range={id=active on_activate={add_political_power=2 if={limit={always=no} army_experience=9} else={army_experience=3}}}}",
     ));
@@ -317,7 +317,7 @@ fn activation_uses_the_shared_numeric_and_conditional_descriptions() {
 #[test]
 fn active_range_mod_description() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, frame) = fixture(None);
     assert_eq!(
         description(&catalogue, &frame, "GetActiveRangeModDesc").unwrap(),
@@ -328,7 +328,7 @@ fn active_range_mod_description() {
 #[test]
 fn active_range_modifier_feature_gate() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, mut frame) = fixture(None);
     for (mask, eligibility, shown) in [
         (0b1010, 1, true),
@@ -364,7 +364,7 @@ fn active_range_modifier_feature_gate() {
 #[test]
 fn active_range_rule_description() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, frame) = fixture(None);
     assert_eq!(
         description(&catalogue, &frame, "GetActiveRangeRuleDesc").unwrap(),
@@ -375,7 +375,7 @@ fn active_range_rule_description() {
 #[test]
 fn active_range_effect_refusals_are_named_and_counted() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, frame) = fixture(Some(
         r#"balance={range={id=active
             on_activate={unported=1 hidden_effect={other=2}
@@ -408,7 +408,7 @@ fn active_range_effect_refusals_are_named_and_counted() {
 #[test]
 fn active_range_missing_feature_mask_and_null_balance() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let (catalogue, _folder, mut frame) = fixture(None);
     if let TableView::Complete(TableRows::ModifierDefinitions(rows)) =
         &mut *frame.tables[TableId::ModifierDefinitions.index()]

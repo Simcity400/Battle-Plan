@@ -21,7 +21,7 @@ impl Config {
             PathBuf::from(
                 std::env::var_os("APPDATA").ok_or_else(|| invalid("APPDATA is not set"))?,
             )
-            .join("battle-plan")
+            .join("BattlePlan")
             .join("content.json"),
         )
     }
@@ -70,7 +70,7 @@ impl Config {
         Ok(PathBuf::from(
             std::env::var_os("LOCALAPPDATA").ok_or_else(|| invalid("LOCALAPPDATA is not set"))?,
         )
-        .join("HOI4Replay")
+        .join("BattlePlan")
         .join("viewer"))
     }
 }
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn a_folder_save_keeps_the_other_preferences() {
         let folder = folder();
-        let path = folder.join("battle-plan").join("content.json");
+        let path = folder.join("BattlePlan").join("content.json");
         assert_eq!(Config::load_from(&path).unwrap(), Config::default());
         for round in 0..2 {
             Config {
@@ -183,7 +183,7 @@ mod tests {
     fn the_preferences_live_in_the_hosts_folder() {
         let path = Config::path().unwrap();
         assert_eq!(path.file_name().unwrap(), "content.json");
-        assert_eq!(path.parent().unwrap().file_name().unwrap(), "battle-plan");
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "BattlePlan");
         assert_ne!(
             path.parent(),
             std::env::current_exe().unwrap().parent(),

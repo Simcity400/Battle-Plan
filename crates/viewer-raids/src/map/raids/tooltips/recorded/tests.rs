@@ -131,8 +131,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
 
 #[test]
 fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use super::super::super::test_support::put;
     for narrative in [None, Some("narrative"), Some("")] {
         for country_override in [true, false] {
@@ -318,8 +317,7 @@ fn scripted_content_with_files(
 
 #[test]
 fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use super::super::super::test_support::put;
     let (scripted, root) = scripted_content_with_files(&[
         ("common/units/test.txt", "sub_units={syn_unit={}}"),
@@ -435,8 +433,7 @@ fn triggers(text: &str) -> content_reader_core::triggers::Triggers {
 }
 #[test]
 fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     with_context(|context| {
         let scope = Scopes::of(Scope::Country(2));
         let text = context.trigger_text(
@@ -455,14 +452,18 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
    never
 "
         );
-        let text=context.trigger_text(&triggers("custom_trigger_tooltip={tooltip=custom always=no} hidden_trigger={always=no} unsupported=yes"),scope,"test");
+        let text = context.trigger_text(
+            &triggers("custom_trigger_tooltip={tooltip=custom always=no} hidden_trigger={always=no} synthetic_unported_trigger=yes"),
+            scope,
+            "test",
+        );
         assert_eq!(text.len(), 2);
         assert_eq!(
             text[0].1.as_deref(),
             Ok("-custom text
 ")
         );
-        assert!(text[1].1.as_ref().unwrap_err().contains("unsupported"));
+        assert!(text[1].1.as_ref().unwrap_err().contains("synthetic_unported_trigger"));
         let terminated = context.trigger_text(
             &triggers("custom_trigger_tooltip={tooltip=custom_lf always=no} custom_trigger_tooltip={tooltip=custom_blank always=yes}"),
             scope,
@@ -572,8 +573,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
 
 #[test]
 fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     with_context(|context| {
         let scopes = Scopes {
             root: Scope::Country(2),
@@ -600,7 +600,7 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
                 .1
                 .as_ref()
                 .unwrap_err()
-                .contains("ReservedCountryNaming has no singleton row")
+                .contains("reserved country naming has no singleton row")
         );
         let text = context.trigger_text(
             &triggers("NOT={custom_trigger_tooltip={tooltip=scoped always=yes}}"),
@@ -613,8 +613,7 @@ fn custom_tooltip_uses_shared_scope_expansion_and_native_negative_key() {
 
 #[test]
 fn custom_tooltip_chains_follow_the_raid_scopes_links() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     with_context(|context| {
         let raid = Scopes {
             from: Some(Scope::Country(1)),
@@ -703,9 +702,10 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
         }],
     );
     let world = World::new(&frame, assets.trigger_content.facts()).unwrap();
-    let loc: Localisation = [("owner cache $literal$".into(), "must not localise".into())]
+    let mut loc: Localisation = [("owner cache $literal$".into(), "must not localise".into())]
         .into_iter()
         .collect();
+    loc.language = "english".into();
     let context = Context {
         assets: &assets,
         world: &world,
@@ -770,7 +770,7 @@ fn phase_progress_uses_preparation_override_and_refuses_missing_flying_inputs() 
 fn hover_build_cost() {
     use super::super::super::test_support::put;
     use replay_data::{rows::CountryLinkRow, rows::CountryRow};
-    let countries: u32 = std::env::var("BATTLE_PLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
+    let countries: u32 = std::env::var("BATTLEPLAN_RAID_SCORE_COUNTRIES").or_else(|_| std::env::var("HOI4_RAID_SCORE_COUNTRIES"))
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1500);
@@ -915,7 +915,7 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
         assert_eq!(
             reason,
             if owner == 0 || state == 0 {
-                "ReservedCountryNaming.original_tag_reference not recorded"
+                "original tag reference of reserved country naming not recorded"
             } else {
                 "raid target state's owner 999 is unresolved"
             },

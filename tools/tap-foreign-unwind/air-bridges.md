@@ -50,15 +50,15 @@ caller; native caller allow-list acceptance remains a separate live check.
 ## Run
 
 Set
-`BATTLE_PLAN_TAP_UNWIND_PROBE` to the absolute path of that separately built DLL. Use the
+`BATTLEPLAN_TAP_UNWIND_PROBE` to the absolute path of that separately built DLL. Use the
 same x64 MSVC `/EHa` build and chosen scratch directory as the shared guide.
 
 From the repository root, run these focused diagnostics; do not replace them
 with the virtual-unwind tests:
 
 ```powershell
-$proofOutput = Join-Path $env:TEMP 'battle-plan-tap-foreign-probe'
-$env:BATTLE_PLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
+$proofOutput = Join-Path $env:TEMP 'battleplan-tap-foreign-probe'
+$env:BATTLEPLAN_TAP_UNWIND_PROBE = "$proofOutput/tap_foreign_probe.dll"
 cargo test -p collector --lib --features tap-foreign-probe foreign_unwind_retains_stranded_observation_and_restores_call -- --ignored --nocapture --test-threads=1
 ```
 

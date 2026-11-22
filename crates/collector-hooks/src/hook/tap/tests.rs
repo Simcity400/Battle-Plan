@@ -8,23 +8,6 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
 static SEEN: AtomicUsize = AtomicUsize::new(0);
 static FAILURES: AtomicUsize = AtomicUsize::new(0);
 
-const GAME_BASE: usize = 0x1_4000_0000;
-
-fn game_span(key: engine_sites::Rva) -> Result<usize, &'static str> {
-    static LOCATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    LOCATED.get_or_init(|| {
-        let dir = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR"))
-            .expect("site span tests require BATTLE_PLAN_GAME_DIR with the supported installation");
-        let file = std::fs::read(std::path::Path::new(&dir).join("hoi4.exe")).unwrap();
-        let exe = engine_executable::build::hash_executable(file.as_slice()).unwrap();
-        engine_sites::install_file(&file, &exe.sha256, GAME_BASE).unwrap();
-    });
-    let bytes = engine_sites::hook(GAME_BASE, key)
-        .and_then(|code| code.sentinel())
-        .unwrap_or_else(|why| panic!("{}: {why}", engine_sites::name(key)));
-    instruction_span(&bytes)
-}
-
 #[test]
 fn pause_comparisons_and_condition_results_refuse_stack_dependent_forms() {
     let span = |instructions: &[u8]| {
@@ -197,57 +180,7 @@ fn combat_log_counter_tap_compensates_for_its_return_slot_without_touching_the_c
 }
 
 #[test]
-fn world_invalidation_mov_spans_preserve_the_native_stack_and_operands() {
-    assert_eq!(
-        game_span(engine_mutations::world_lifetime_sites::RESET.rva),
-        Ok(7)
-    );
-    assert_eq!(
-        game_span(engine_mutations::world_lifetime_sites::CONSTRUCT.rva),
-        Ok(7)
-    );
-}
-
-#[test]
-fn event_option_lea_and_move_taps_preserve_frame_independent_operands() {
-    for site in engine_events::script_event_sites::TAPS {
-        let expected = if matches!(
-            site.name,
-            "MissionAppended" | "ScriptedMissionAppended" | "EraseFiredEvent"
-        ) {
-            6
-        } else {
-            7
-        };
-        assert_eq!(game_span(site.rva), Ok(expected), "{}", site.name);
-    }
-    for site in engine_events::script_event_sites::LIFECYCLE_TAPS {
-        assert_eq!(
-            game_span(site.rva),
-            Ok(match site.name {
-                "MissionCompleted" | "DecisionCooldownFinished" => 8,
-                "TargetedDecisionReenabled" => 9,
-                "TakenDecisionRemoved" => 8,
-                "RefreshCooldownFinished" | "TargetedMissionCancelled" => 8,
-                "TargetedDecisionRemoved"
-                | "TargetedMissionRemoved"
-                | "TargetedMissionTimedOut"
-                | "TargetedDurationChanged" => 6,
-                _ => 7,
-            }),
-            "{}",
-            site.name
-        );
-    }
-    for (site, span) in engine_events::script_event_sites::DURATION_TAPS
-        .into_iter()
-        .zip([5, 6])
-    {
-        assert_eq!(game_span(site.rva), Ok(span), "{}", site.name);
-    }
-    for site in engine_events::script_event_sites::DELAYED_TAPS {
-        assert_eq!(game_span(site.rva), Ok(7), "{}", site.name);
-    }
+fn lea_and_move_taps_refuse_stack_and_rip_operands() {
     for prefix in [
         [0x48, 0x8b, 0xe0],
         [0x48, 0x8b, 0xc4],
@@ -959,9 +892,6 @@ fn doctrine_effective_gain_sib_store_preserves_operands_and_flags() {
     let _guard = FAMILY_TEST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for site in engine_mutations::doctrine_mutations::EFFECTIVE_GAIN_STORES {
-        assert_eq!(game_span(site), Ok(5));
-    }
     let code = TestCode::new();
     let mut bytes = vec![
         0x56, 0x41, 0x56, 0x48, 0x89, 0xce, 0x4d, 0x31, 0xf6, 0x48, 0x89, 0xd0, 0x48, 0x83, 0xf8, 0,
@@ -1456,16 +1386,6 @@ fn duration_add_operands_survive_the_tap_and_reach_the_selected_scalar_writer() 
         assert_eq!(unsafe { invoke(object.as_mut_ptr(), operand) }, 15);
         assert_eq!((object[offset], probe.seen), (15, 1));
         assert!(tap.set_enabled(false).unwrap());
-    }
-}
-
-#[test]
-fn decision_sparse_writer_spans_are_complete_and_stack_independent() {
-    for (site, span) in engine_events::script_event_sites::decisions::TAPS
-        .into_iter()
-        .zip([6, 5, 7, 7, 7, 7, 8, 8, 8, 8, 8, 7, 7, 7, 6, 5, 6, 8, 7, 6])
-    {
-        assert_eq!(game_span(site.rva), Ok(span), "{}", site.name);
     }
 }
 

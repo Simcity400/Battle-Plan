@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn every_runtime_family_contains_failures_and_restores_safely() {
-        const CHILD: &str = "BATTLE_PLAN_HOOK_CONTAINMENT_TEST";
+        const CHILD: &str = "BATTLEPLAN_HOOK_CONTAINMENT_TEST";
         const TEST: &str =
             "hook_failures::tests::every_runtime_family_contains_failures_and_restores_safely";
         if std::env::var_os(CHILD).is_none() {

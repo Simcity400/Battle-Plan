@@ -56,6 +56,8 @@ dashboard-core.workspace = true
 dashboard-text.workspace = true
 
 [dev-dependencies]
+content-reader-core = { workspace = true, features = ["test-support"] }
+synthetic-game.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 viewer-playback = { workspace = true, features = ["test-support"] }
 engine-heap.workspace = true

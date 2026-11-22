@@ -8,7 +8,7 @@ use replay_frame::frame::TableView;
 #[test]
 fn state_category_description_uses_cached_validity_and_operand_spelling() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -100,7 +100,7 @@ fn state_category_description_uses_cached_validity_and_operand_spelling() {
 #[test]
 fn state_content_descriptions_use_cached_names() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -503,7 +503,7 @@ fn state_content_descriptions_use_cached_names() {
 #[test]
 fn state_content_province_display_uses_fallbacks() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -636,7 +636,7 @@ fn state_content_province_display_uses_fallbacks() {
 #[test]
 fn state_effect_zero_keeps_target() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let fixture = Fixture::new();
     for (body, expected) in [
         ("add_state_claim=0", "Claim \n"),
@@ -654,7 +654,7 @@ fn state_effect_zero_keeps_target() {
 #[test]
 fn reserved_country_names_describe_omitted_country_operands() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -734,7 +734,7 @@ fn reserved_country_names_describe_omitted_country_operands() {
 #[test]
 fn country_effect_state_links_use_recorded_owner() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     fixture.catalogue.localisation = fixture
         .catalogue
@@ -796,7 +796,7 @@ fn country_effect_state_links_use_recorded_owner() {
 #[test]
 fn states_branches() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     if let TableView::Complete(TableRows::CountryAppearance(rows)) =
         &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
@@ -1579,7 +1579,7 @@ fn states_branches() {
 #[test]
 fn state_tables_refuse_gaps_and_name_a_late_country() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let mut fixture = Fixture::new();
     for (table, rows, body) in [
         (

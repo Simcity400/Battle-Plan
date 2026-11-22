@@ -1,21 +1,19 @@
-import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 export const repository = fileURLToPath(new URL('../..', import.meta.url));
 const underCaptures = (...parts) => {
-  if (!(process.env.BATTLE_PLAN_CAPTURES ?? process.env.HOI4_CAPTURES)) throw new Error('Set BATTLE_PLAN_CAPTURES to the folder holding the parity fixtures');
-  return [(process.env.BATTLE_PLAN_CAPTURES ?? process.env.HOI4_CAPTURES), ...parts].join('/');
+  if (!(process.env.BATTLEPLAN_CAPTURES ?? process.env.HOI4_CAPTURES)) throw new Error('Set BATTLEPLAN_CAPTURES to the folder holding the parity fixtures');
+  return [(process.env.BATTLEPLAN_CAPTURES ?? process.env.HOI4_CAPTURES), ...parts].join('/');
 };
 export const fixture = {
   get recording() {
-    const current = underCaptures('widgetsyear/library/GER 1943-10-24 to 1944-10-24.battleplan');
-    return existsSync(current) ? current : underCaptures('widgetsyear/library/GER 1943-10-24 to 1944-10-24.hoi4replay');
+    return underCaptures('widgetsyear/library/GER 1943-10-24 to 1944-10-24.battleplan');
   },
-  get bridge() { return (process.env.BATTLE_PLAN_PARITY_BRIDGE ?? process.env.HOI4_PARITY_BRIDGE) || underCaptures('bridge-release/dashboard-bridge.exe'); },
-  get cache() { return (process.env.BATTLE_PLAN_PARITY_CACHE ?? process.env.HOI4_PARITY_CACHE) || underCaptures('parity-baselines'); },
-  gameDir: (process.env.BATTLE_PLAN_GAME_DIR ?? process.env.HOI4_GAME_DIR) || '', userDir: (process.env.BATTLE_PLAN_USER_DIR ?? process.env.HOI4_USER_DIR) || '',
-  nativeSeed: (process.env.BATTLE_PLAN_PARITY_NATIVE_SEED ?? process.env.HOI4_PARITY_NATIVE_SEED) || process.env.LOCALAPPDATA,
-  preparedSeed: (process.env.BATTLE_PLAN_PARITY_PREPARED_SEED ?? process.env.HOI4_PARITY_PREPARED_SEED) || null,
-  matrix: (process.env.BATTLE_PLAN_PARITY_MATRIX ?? process.env.HOI4_PARITY_MATRIX) || null,
+  get bridge() { return (process.env.BATTLEPLAN_PARITY_BRIDGE ?? process.env.HOI4_PARITY_BRIDGE) || underCaptures('bridge-release/dashboard-bridge.exe'); },
+  get cache() { return (process.env.BATTLEPLAN_PARITY_CACHE ?? process.env.HOI4_PARITY_CACHE) || underCaptures('parity-baselines'); },
+  gameDir: (process.env.BATTLEPLAN_GAME_DIR ?? process.env.HOI4_GAME_DIR) || '', userDir: (process.env.BATTLEPLAN_USER_DIR ?? process.env.HOI4_USER_DIR) || '',
+  nativeSeed: (process.env.BATTLEPLAN_PARITY_NATIVE_SEED ?? process.env.HOI4_PARITY_NATIVE_SEED) || process.env.LOCALAPPDATA,
+  preparedSeed: (process.env.BATTLEPLAN_PARITY_PREPARED_SEED ?? process.env.HOI4_PARITY_PREPARED_SEED) || null,
+  matrix: (process.env.BATTLEPLAN_PARITY_MATRIX ?? process.env.HOI4_PARITY_MATRIX) || null,
   hour: 60836486,
 };
 
@@ -29,7 +27,7 @@ export const edgeLaunchOptions = {
 };
 
 export async function launchOwnedBrowser(chromium) {
-  if (!(process.env.BATTLE_PLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Owned Job required for Edge');
+  if (!(process.env.BATTLEPLAN_OWNED_JOB ?? process.env.HOI4_OWNED_JOB)) throw Error('Owned Job required for Edge');
   const prior = new Set(process.listeners('exit'));
   const browser = await chromium.launch(edgeLaunchOptions);
   const added = process.listeners('exit').filter(listener => !prior.has(listener));
@@ -48,7 +46,7 @@ export async function deterministicPage(page) {
     throw new Error('The parity fixture requires DPR 1; use the installed Edge fixture');
   }
   await page.addInitScript(() => {
-    localStorage.setItem('hoi4-replay.appearance.v2', JSON.stringify({
+    localStorage.setItem('battleplan.appearance.v2', JSON.stringify({
       version: 2, scheme: 'dark', themes: { dark: 'carbon', light: 'carbon' }, custom: [],
       contrast: 100, glass: 100, radius: 8, motion: 'reduced', headerFlag: 'native',
       fonts: { interface: 'Inter Variable', display: 'Inter Variable', tables: 'Cascadia Code Variable', diagnostics: 'Cascadia Code Variable' },

@@ -33,9 +33,8 @@ content-reader-wargoals.workspace = true
 content-reader-weather.workspace = true
 
 [dev-dependencies]
-engine-executable.workspace = true
 content-reader-division-names = { workspace = true, features = ["layer-fixtures"] }
-content-reader-core = { workspace = true, features = ["layer-fixtures"] }
+content-reader-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 
 [features]
 test-support = [

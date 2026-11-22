@@ -611,41 +611,97 @@ fn invalid(message: impl Into<String>) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::executable_tables::synthetic_image::{Code, RDATA, SyntheticImage, TEXT};
+
+    const CONSTANT: u32 = TEXT;
+    const WORD: u32 = TEXT + 0x20;
+    const PLAIN: u32 = TEXT + 0x40;
+    const CALLER: u32 = TEXT + 0x60;
+    const TARGET: u32 = TEXT + 0x80;
+    const CALLEE: u32 = TEXT + 0xa0;
+    const LEAF: u32 = TEXT + 0x300;
+    const STOPPED_LEAF: u32 = TEXT + 0x320;
+    const VTABLE: u32 = RDATA + 0x100;
+    const TOKEN_WORD: u32 = RDATA + 0x200;
+
+    fn image() -> PeImage {
+        let mut image = SyntheticImage::new();
+        image
+            .function(
+                Code::at(CONSTANT)
+                    .raw(&[0xc7, 0x02, 0x2a, 0, 0, 0])
+                    .raw(&[0x48, 0x89, 0xd0])
+                    .ret(),
+            )
+            .function(
+                Code::at(WORD)
+                    .rip(&[0x8b, 0x05], TOKEN_WORD)
+                    .raw(&[0x89, 0x02])
+                    .raw(&[0x48, 0x89, 0xd0])
+                    .ret(),
+            )
+            .function(Code::at(PLAIN).ret())
+            .function(
+                Code::at(CALLER)
+                    .raw(&[0x8b, 0x41, 0x40])
+                    .raw(&[0x48, 0x8d, 0x49, 0x10])
+                    .call(CALLEE)
+                    .raw(&[0x8b, 0x41, 0x60])
+                    .raw(&[0x48, 0x89, 0xc8])
+                    .call(TARGET)
+                    .ret(),
+            )
+            .function(Code::at(TARGET).ret())
+            .function(Code::at(CALLEE).raw(&[0x8b, 0x41, 0x08]).ret())
+            .pointer(VTABLE, CONSTANT)
+            .pointer(VTABLE + 8, WORD)
+            .pointer(VTABLE + 16, PLAIN)
+            .put(VTABLE + 24, &0_u64.to_le_bytes());
+        image
+            .code(Code::at(LEAF).rip(&[0xe9], TARGET).ret())
+            .code(Code::at(STOPPED_LEAF).ret().call(TARGET));
+        image.image()
+    }
+
     #[test]
-    fn installed_command_catalog_retains_distinct_vtables_and_owned_targets() {
-        let tables = super::super::initialize_for_tests().unwrap();
-        let kinds = &tables.commands.as_ref().unwrap().kinds;
-        assert!(!kinds.is_empty());
-        assert!(kinds.windows(2).all(|pair| pair[0].vtable < pair[1].vtable));
-        assert!(
-            kinds
-                .iter()
-                .any(|kind| matches!(kind.target, super::Target::Unknown))
-        );
-        assert!(
-            kinds
-                .iter()
-                .any(|kind| matches!(kind.target, super::Target::Country(_)))
-        );
-        assert!(
-            kinds
-                .iter()
-                .any(|kind| matches!(kind.target, super::Target::Group(_)))
-        );
-        assert!(
-            kinds
-                .iter()
-                .any(|kind| matches!(kind.target, super::Target::Unit(_)))
-        );
-        assert!(
-            kinds
-                .iter()
-                .any(|kind| matches!(kind.target, super::Target::Units(_)))
-        );
-        assert!(
-            kinds
-                .iter()
-                .any(|kind| matches!(kind.target, super::Target::Wings(_)))
-        );
+    fn a_type_reader_stores_a_constant_or_a_word_and_returns_its_output() {
+        let image = image();
+        assert!(matches!(token(&image, CONSTANT), Some(Token::Constant(0x2a))));
+        assert!(matches!(token(&image, WORD), Some(Token::Word(TOKEN_WORD))));
+        assert!(token(&image, PLAIN).is_none());
+        assert!(token(&image, CALLER).is_none());
+    }
+
+    #[test]
+    fn a_vtable_holds_its_code_pointers_up_to_the_first_other_value() {
+        let image = image();
+        assert_eq!(slots(&image, VTABLE).unwrap(), [CONSTANT, WORD, PLAIN]);
+        assert_eq!(slot(&image, VTABLE, 1).unwrap(), WORD);
+        assert!(slot(&image, VTABLE, 3).is_err());
+    }
+
+    #[test]
+    fn a_check_is_reached_by_a_whole_function_or_a_leaf_before_it_returns() {
+        let image = image();
+        assert!(reaches(&image, CALLER, TARGET));
+        assert!(!reaches(&image, CALLEE, TARGET));
+        assert!(reaches(&image, LEAF, TARGET));
+        assert!(!reaches(&image, STOPPED_LEAF, TARGET));
+    }
+
+    #[test]
+    fn operand_offsets_follow_the_receiver_into_one_call_and_forget_it_after() {
+        let image = image();
+        assert_eq!(operand_offsets(&image, CALLER), [0x10, 0x18, 0x40]);
+    }
+
+    #[test]
+    fn a_role_takes_exactly_one_slot() {
+        assert_eq!(unique_slot(&[0; 4], "type", |index| Ok(index == 2)).unwrap(), 2);
+        let ambiguous = unique_slot(&[0; 4], "type", |index| Ok(index > 1)).unwrap_err();
+        assert!(ambiguous.to_string().contains("type slot is ambiguous"));
+        let missing = unique_slot(&[0; 4], "permission", |_| Ok(false)).unwrap_err();
+        assert!(missing.to_string().contains("permission slot missing"));
     }
 }

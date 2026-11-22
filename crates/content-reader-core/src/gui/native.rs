@@ -1897,8 +1897,7 @@ mod registry_tests {
 
     #[test]
     fn the_last_registering_file_wins_without_hiding_other_templates() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let guis = Guis::new(vec![
             (
                 "first.gui".into(),

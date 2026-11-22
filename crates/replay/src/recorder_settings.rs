@@ -10,7 +10,7 @@ use std::{
 
 pub const STARTED_WITH_REPLAY: &str = "--with-replay";
 
-pub const RECORDER_INSTANCE: &str = "Local\\HOI4Replay.Recorder";
+pub const RECORDER_INSTANCE: &str = "Local\\BattlePlan.Recorder";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,7 +142,7 @@ fn local_data() -> PathBuf {
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("HOI4Replay")
+        .join("BattlePlan")
 }
 
 pub fn directory() -> PathBuf {
@@ -319,7 +319,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "battle-plan-recorder-settings-{name}-{}-{}",
+            "battleplan-recorder-settings-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

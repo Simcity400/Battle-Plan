@@ -950,7 +950,7 @@ fn a_bad_mission_read_refuses_dependents_and_preserves_independent_map_witnesses
 #[ignore = "timing bench"]
 fn naval_mission_bench() {
     for countries in [1_500, 5_000] {
-        if std::env::var("BATTLE_PLAN_NAVAL_COUNTRIES").or_else(|_| std::env::var("HOI4_NAVAL_COUNTRIES"))
+        if std::env::var("BATTLEPLAN_NAVAL_COUNTRIES").or_else(|_| std::env::var("HOI4_NAVAL_COUNTRIES"))
             .ok()
             .is_some_and(|selected| selected != countries.to_string())
         {

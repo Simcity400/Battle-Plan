@@ -26,7 +26,7 @@ impl Drop for Machine {
 impl Machine {
     pub fn new(name: &str) -> Self {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let root = std::env::temp_dir().join(format!(
             "hoi4_visual_mods_{name}_{}",
             std::process::id()

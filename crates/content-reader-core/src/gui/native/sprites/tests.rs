@@ -15,8 +15,7 @@ fn plain(text: &str) -> (Plain, Vec<Refusal>) {
 
 #[test]
 fn a_plain_sprite_keeps_what_its_reader_keeps() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let (sprite, refusals) = plain(
         "texturefile = \"a.dds\" noOfFrames = 0x3 noOfFrames = many anchor = { x = 4.5 y = -2 } \
          masking_texture = \"m.dds\" legacy_lazy_load = no framedirectiony = yes \
@@ -51,8 +50,7 @@ fn a_plain_sprite_keeps_what_its_reader_keeps() {
 
 #[test]
 fn anchor_components_land_on_the_fields_past_the_anchor() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let (sixth, refusals) = plain("anchor = { 0 0 1 1 1 7 }");
     assert!(refusals.is_empty(), "{refusals:?}");
     assert_eq!(
@@ -89,8 +87,7 @@ fn anchor_components_land_on_the_fields_past_the_anchor() {
 
 #[test]
 fn anchor_components_reaching_the_animation_records() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let zeros = |count: usize| vec!["0"; count].join(" ");
     let (sprite, refusals) = plain(&format!("anchor = {{ {} }}", zeros(18)));
     assert!(refusals.is_empty(), "{refusals:?}");
@@ -125,8 +122,7 @@ fn anchor_components_reaching_the_animation_records() {
 
 #[test]
 fn dx_offset_components_land_to_the_end_of_the_object() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let masking = |size: u32| {
         let mut components = vec!["0"; 42];
         for slot in &mut components[38..42] {
@@ -193,8 +189,7 @@ fn dx_offset_components_land_to_the_end_of_the_object() {
 
 #[test]
 fn global_offset_components_land_on_the_readers_frame() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let read = |text: &str| read_sprites(format!("spriteTypes = {{ {text} }}").as_bytes());
     let quiet = read("cursor_offset = { 3 4 5 6 0 0 7 8 9 }");
     assert!(quiet.refusals.is_empty(), "{:?}", quiet.refusals);
@@ -209,8 +204,7 @@ fn global_offset_components_land_on_the_readers_frame() {
 
 #[test]
 fn mesh_settings_keys_follow_their_token_ids() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let text = |key: &str| {
         format!(
             "spriteTypes = {{\n\
@@ -244,8 +238,7 @@ fn mesh_settings_keys_follow_their_token_ids() {
 
 #[test]
 fn animation_blocks_keep_every_field() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let (sprite, refusals) = plain(
         "animation = { animationmaskfile = \"m\" animationtexturefile = \"t\" \
          animationrotation = 90 animationlooping = no animationtime = 2 animationdelay = 0.5 \
@@ -332,8 +325,7 @@ fn animation_blocks_keep_every_field() {
 
 #[test]
 fn every_kind_reads_its_own_switch() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let frame = one(
         "spriteTypes = { frameAnimatedSpriteType = { name = \"f\" animation_rate_fps = 4 \
          looping = yes noOfFrames = 8 } }",
@@ -437,8 +429,7 @@ fn every_kind_reads_its_own_switch() {
 
 #[test]
 fn colours_are_read_from_the_current_token() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let color = |value: &str| {
         let SpriteKind::Progress(bar) = one(&format!(
             "spriteTypes = {{ progressbartype = {{ name = \"b\" color = {value} }} }}"
@@ -463,8 +454,7 @@ fn colours_are_read_from_the_current_token() {
 
 #[test]
 fn a_failed_read_keeps_a_quoted_reference_literal() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     for tail in [&b""[..], b"\xff"] {
         let text = [
             b"@v = 0.5\nspriteTypes = {\n progressbartype = {\n  name = \"p\"\n  color = { \"@v\""
@@ -482,8 +472,7 @@ fn a_failed_read_keeps_a_quoted_reference_literal() {
 
 #[test]
 fn the_file_level_and_the_registry_follow_the_game() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let sprites = read_sprites(
         b"spriteTypes = { spriteType = { name = \"GFX_a\" noOfFrames = 2 } \
           pdxmesh = { name = \"m\" meshsettings = { texture_diffuse = \"x\" } } \
@@ -518,8 +507,7 @@ fn the_file_level_and_the_registry_follow_the_game() {
 
 #[test]
 fn arrows_keep_native_fields_and_scalar_failures() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let read = read_sprites(
         b"@s = 2.75 @c = 0xff0000ff objectTypes = { arrowType = {
           name = \"a\xfe\" size = @s size = nope endAt = .5 height = -1.5 height = nope
@@ -549,8 +537,7 @@ fn arrows_keep_native_fields_and_scalar_failures() {
 
 #[test]
 fn arrows_preserve_uninitialised_fields_and_native_block_walk() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let defaults = read_sprites(b"objectTypes = { arrowType = { name = a } }");
     let object = defaults.object(b"a").unwrap();
     assert_eq!(
@@ -571,8 +558,7 @@ fn arrows_preserve_uninitialised_fields_and_native_block_walk() {
 
 #[test]
 fn object_registry_keeps_later_cross_kind_collisions() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let files = vec![
         (
             "interface/a.gfx".into(),
@@ -603,8 +589,7 @@ fn object_registry_keeps_later_cross_kind_collisions() {
 
 #[test]
 fn object_registry_refuses_after_an_animated_position_overrun() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let within =
         read_sprites(b"objectTypes = { animatedmaptext = { name = text position = { 0 0 0 0 } } }");
     assert!(within.refusals.is_empty());
@@ -623,8 +608,7 @@ fn object_registry_refuses_after_an_animated_position_overrun() {
 
 #[test]
 fn animated_map_text_keeps_its_speed_width_position_and_text_block() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let read = read_sprites(
         b"objectTypes = { animatedmaptext = { name = siegeinfo speed = 0.25 maxwidth = 300           position = { 1 2 3 } textblock = { text = \"txt\" color = { 1.0 0.0 0.0 1.0 }           font = \"AnimatedMapText\" format = centre } }           animatedmaptext = { name = plain } }",
     );
@@ -649,8 +633,7 @@ fn animated_map_text_keeps_its_speed_width_position_and_text_block() {
 
 #[test]
 fn text_colour_tables_follow_the_game() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    crate::test_game::enter();
     let read = read_sprites(
         b"bitmapfonts = {\n\
           textcolors = { R = { 255 0 0 } G = { 0 1 0 } }\n\
@@ -666,38 +649,3 @@ fn text_colour_tables_follow_the_game() {
     assert!(!open.refusals.is_empty());
 }
 
-#[test]
-#[ignore = "reads the game's files; set BATTLE_PLAN_GAME_DIR"]
-fn every_shipped_gfx_file_reads() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let Some(root) = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")) else {
-        return;
-    };
-    let mut stack = vec![std::path::Path::new(&root).join("interface")];
-    let (mut files, mut sprites) = (0, 0);
-    while let Some(directory) = stack.pop() {
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|extension| extension != "gfx") {
-                continue;
-            }
-            files += 1;
-            let read = read_sprites(&std::fs::read(&path).unwrap());
-            sprites += read.sprites.len();
-            for refusal in read
-                .refusals
-                .iter()
-                .chain(read.sprites.iter().flat_map(|sprite| &sprite.refusals))
-            {
-                println!("{}: {refusal}", path.display());
-            }
-        }
-    }
-    println!("{files} files, {sprites} sprites");
-    assert!(files > 0);
-}

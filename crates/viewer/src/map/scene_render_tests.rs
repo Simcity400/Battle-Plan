@@ -146,7 +146,7 @@ fn render(
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::Result<()> {
     let fixture = Fixture::load("scene-immediate-multiframe")?;
     let sprites = sprites::Sprites::new();
@@ -195,7 +195,7 @@ fn scene_immediate_multiframe_bytes_state_and_pixels_are_deterministic() -> io::
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn scene_immediate_later_fatal_refusals_and_recovery() -> io::Result<()> {
     let fixture = Fixture::load("scene-immediate-failures")?;
     let sprites = sprites::Sprites::new();
@@ -289,7 +289,7 @@ fn scene_immediate_later_fatal_refusals_and_recovery() -> io::Result<()> {
 }
 
 #[test]
-#[ignore = "verified replay/content and GPU; requires BATTLE_PLAN_SCENE_FAILURE_INPUT"]
+#[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn scene_province_frame_cut_spends_once_and_restores_an_unwalked_frame() -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     use viewer_foundation::map::province_schedule::Shared;

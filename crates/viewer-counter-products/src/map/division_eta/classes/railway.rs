@@ -324,8 +324,7 @@ mod tests {
 
     #[test]
     fn railway_bonus_is_directed_and_applies_supply_after_land_scale() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -446,8 +445,7 @@ mod tests {
 
     #[test]
     fn actual_progress_is_demanded_only_for_the_same_first_edge() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);
@@ -473,8 +471,7 @@ mod tests {
 
     #[test]
     fn zero_speed_stops_before_progress_or_later_land_operands() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let mut content = content(1);
@@ -495,8 +492,7 @@ mod tests {
 
     #[test]
     fn earlier_edge_division_overflow_is_not_hidden_by_later_zero_speed() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame();
         put(
             &mut frame,
@@ -571,8 +567,7 @@ mod tests {
 
     #[test]
     fn land_common_refusals_never_become_an_army_fallback() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let mut frame = frame();
         rails(&mut frame);
         let content = content(1);

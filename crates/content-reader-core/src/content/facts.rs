@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn a_packs_equipment_facts_are_what_the_equipment_database_gives() {
-        let tables = engine_executable::executable_tables::initialize_for_tests().expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
+        let tables = crate::test_game::enter();
         let executable = engine_executable::executable_tables::scope(Some(tables), engine_executable::executable_tables::recorded_facts).unwrap();
         let fixture = Fixture::new("database", tables.identity().sha256);
         let bytes = fixture.write(Ok(executable.clone()));

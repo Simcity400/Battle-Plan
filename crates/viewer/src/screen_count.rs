@@ -280,7 +280,7 @@ pub(crate) mod readout {
 
     pub(crate) fn on() -> bool {
         static ON: std::sync::LazyLock<bool> =
-            std::sync::LazyLock::new(|| std::env::var_os("BATTLE_PLAN_VIEWER_SHOW_PICTURES").or_else(|| std::env::var_os("HOI4_VIEWER_SHOW_PICTURES")).is_some());
+            std::sync::LazyLock::new(|| std::env::var_os("BATTLEPLAN_VIEWER_SHOW_PICTURES").or_else(|| std::env::var_os("HOI4_VIEWER_SHOW_PICTURES")).is_some());
         *ON
     }
 

@@ -273,7 +273,7 @@ test('the first appearance format migrates presets to the default and keeps cust
   assert.equal(custom.custom[0].variants.dark!.accent, '#ff8800');
   assert.equal(migrateLegacy({ mode: 'sepia', colors: {} }), null);
 
-  const storage = memoryStorage({ 'hoi4-replay.appearance.v1': JSON.stringify({ id: 'atlas', mode: 'dark', colors: {} }) });
+  const storage = memoryStorage({ 'battleplan.appearance.v1': JSON.stringify({ id: 'atlas', mode: 'dark', colors: {} }) });
   assert.deepEqual(loadAppearance(storage), { settings: DEFAULT_APPEARANCE, warning: null });
 });
 

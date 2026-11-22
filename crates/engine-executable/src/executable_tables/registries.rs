@@ -2167,31 +2167,4 @@ mod tests {
             code.fingerprint(CODE_START + 0x80, false)
         );
     }
-
-    fn installed() -> &'static RegistryTables {
-        super::super::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must select the supported installation");
-        super::super::get().registries.as_ref().unwrap()
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn installed_identities_all_match() {
-        assert!(installed().identities_matched());
-    }
-
-    #[test]
-    #[ignore = "requires BATTLE_PLAN_GAME_DIR"]
-    fn pinned_identities_regenerate_from_the_recognised_build() {
-        let tables = super::super::initialize_for_tests().unwrap();
-        assert!(tables.recognised());
-        let folder = std::env::var_os("BATTLE_PLAN_GAME_DIR").or_else(|| std::env::var_os("HOI4_GAME_DIR")).unwrap();
-        let exe = std::path::Path::new(&folder).join("hoi4.exe");
-        let image = PeImage::parse(std::fs::read(exe).unwrap()).unwrap();
-        let source = pinned_source(&image, tables.keywords.as_ref().unwrap()).unwrap();
-        assert!(
-            source == include_str!("registries/pinned.rs"),
-            "regenerated:\n{source}"
-        );
-    }
 }

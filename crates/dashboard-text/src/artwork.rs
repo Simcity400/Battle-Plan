@@ -39,7 +39,7 @@ pub fn local_folder() -> io::Result<PathBuf> {
         std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| io::Error::other("LOCALAPPDATA is not set"))?,
     )
-    .join("HOI4Replay")
+    .join("BattlePlan")
     .join("artwork"))
 }
 

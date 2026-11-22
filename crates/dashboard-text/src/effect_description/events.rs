@@ -665,7 +665,7 @@ mod politics_days {
     #[test]
     fn remove_days_uses_caller_title_scope_and_negates_each_branch_without_instance_reads() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let mut fixture = Fixture::new();
         let (catalogue, _folder) = folder_catalogue(&[
             (

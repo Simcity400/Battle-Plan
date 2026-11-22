@@ -582,8 +582,7 @@ fn doctrine_weight_and_hq_maximum_are_not_flat_sums() {
 
 #[test]
 fn equipment_fields_are_read_as_their_readers_read_them() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use std::fs;
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_convoy_{}_{:?}",
@@ -626,8 +625,7 @@ fn bound_of(text: &str) -> ConvoyBound {
 
 #[test]
 fn equipment_fields_follow_their_value_readers() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (bound, misreads) = bound_of(
         "equipments = { convoy_1 = { TYPE = convoy lg_attack = 0.25
             upgrades = { a b } resources = { steel = 1 } default_modules = { s = empty }
@@ -658,8 +656,7 @@ fn equipment_fields_follow_their_value_readers() {
 
 #[test]
 fn a_long_archetype_chain_links_in_load_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let mut text = String::from("equipments = { base = { is_archetype = yes lg_attack = 7 }");
     for link in 1..=40 {
         text.push_str(&format!(
@@ -697,8 +694,7 @@ fn a_long_archetype_chain_links_in_load_order() {
 
 #[test]
 fn a_link_cycle_is_refused_by_name() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (bound, _) = bound_of(
         "equipments = { a = { type = convoy lg_attack = 0.25 } b = { parent = a }
           A = { parent = b } }",

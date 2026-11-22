@@ -227,8 +227,7 @@ mod tests {
 
     #[test]
     fn faction_template_names_merge_and_replace_the_whole_bound_tree() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let db = catalog(
             br#"@label = first f = { name = @label } F = { icon = art }
             g = { name = { localization_key = old arg = token:17 } name = final }
@@ -251,8 +250,7 @@ mod tests {
 
     #[test]
     fn faction_bound_names_keep_arguments_and_preorder_nodes() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let db = catalog(
             br#"f = { name = { localization_key = ROOT
             arg = { localization_key = CHILD nested = token:17 }
@@ -298,8 +296,7 @@ mod tests {
 
     #[test]
     fn faction_template_inline_goals_follow_the_nested_readers() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let db = catalog(br#"f = { visible = { always = yes } available = { always = yes }
             default_rules = { rule_a rule_b } color = { 1 0 0 } manifest = goal
             goals = { goal inline = { name = { localization_key = GOAL a = B }
@@ -323,8 +320,7 @@ mod tests {
 
     #[test]
     fn faction_templates_use_winning_files_and_merge_later_tokens() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let root = std::env::temp_dir().join(format!(
             "content-reader-faction-templates-{}",
             std::process::id()
@@ -356,8 +352,7 @@ mod tests {
 
     #[test]
     fn faction_templates_refuse_unknown_suffixes_until_an_explicit_field_replaces_them() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let stack = Stack::new("faction_template_coverage");
         let base = stack.base();
         stack.write(

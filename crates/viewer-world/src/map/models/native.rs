@@ -578,7 +578,7 @@ fn note_culled(
     frame: u64,
 ) {
     static LIST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*LIST.get_or_init(|| std::env::var_os("BATTLE_PLAN_CULL_LIST").or_else(|| std::env::var_os("HOI4_CULL_LIST")).is_some()) {
+    if !*LIST.get_or_init(|| std::env::var_os("BATTLEPLAN_CULL_LIST").or_else(|| std::env::var_os("HOI4_CULL_LIST")).is_some()) {
         return;
     }
     let Some(cull) = cull else {
@@ -644,7 +644,7 @@ fn note_part(
     order: Option<mesh_shader::Order>,
 ) {
     static LIST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*LIST.get_or_init(|| std::env::var_os("BATTLE_PLAN_ORDER_LIST").or_else(|| std::env::var_os("HOI4_ORDER_LIST")).is_some()) {
+    if !*LIST.get_or_init(|| std::env::var_os("BATTLEPLAN_ORDER_LIST").or_else(|| std::env::var_os("HOI4_ORDER_LIST")).is_some()) {
         return;
     }
     let technique = &selection.effect.source.techniques[selection.index].name;
@@ -3092,8 +3092,7 @@ mod tests {
             Buffer, Compiled, ScalarKind, Shader, TextureKind, VertexInput, gpu,
         };
         use viewer_foundation::map::gpu_contract::{buffer, read_texture};
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        content_reader_core::test_game::enter();
         let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
         let program = content_reader_core::pdxshader::program::read_with(b"slices.shader", &|path| {
             Some(if path == b"slices.shader" {

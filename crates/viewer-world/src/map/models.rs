@@ -2409,7 +2409,7 @@ impl ModelPass {
     pub fn animate(&mut self, time: f32, rectangle: Option<[f32; 4]>, offsets: &[f32]) {
         self.fall_back();
         static PROFILE: OnceLock<bool> = OnceLock::new();
-        let profile = *PROFILE.get_or_init(|| std::env::var_os("BATTLE_PLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some());
+        let profile = *PROFILE.get_or_init(|| std::env::var_os("BATTLEPLAN_ANIMATION_PROFILE").or_else(|| std::env::var_os("HOI4_ANIMATION_PROFILE")).is_some());
         let started = profile.then(Instant::now);
         self.events.clear();
         if time <= 0.0

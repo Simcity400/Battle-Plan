@@ -133,8 +133,7 @@ mod tests {
 
     #[test]
     fn a_default_map_without_adjacencies_names_no_authored_file() {
-        engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        crate::test_game::enter();
         let map = |extra: &str| {
             let text = format!(
                 "definitions = d.csv provinces = p.bmp terrain = t.bmp rivers = r.bmp

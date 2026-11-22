@@ -91,11 +91,11 @@ pub struct SharedState {
     focused_viewport: Option<ViewportId>,
     resized_viewport: Option<ViewportId>,
 
-    /// HOI4 Replay patch: [`NativeOptions::paint_owner`].
+    /// BattlePlan patch: [`NativeOptions::paint_owner`].
     paint_owner: Option<Arc<dyn crate::PaintOwner>>,
 }
 
-// HOI4 Replay patch: retain the published paint call when no owner is set.
+// BattlePlan patch: retain the published paint call when no owner is set.
 #[expect(clippy::too_many_arguments)]
 fn paint_viewport(
     paint_owner: Option<&dyn crate::PaintOwner>,
@@ -399,7 +399,7 @@ impl<'app> WgpuWinitApp<'app> {
             painter,
             focused_viewport: Some(ViewportId::ROOT),
             resized_viewport: None,
-            paint_owner: self.native_options.paint_owner.clone(), // HOI4 Replay patch
+            paint_owner: self.native_options.paint_owner.clone(), // BattlePlan patch
         }));
 
         {
@@ -804,7 +804,7 @@ impl WgpuWinitRunning<'_> {
             viewports,
             painter,
             viewport_from_window,
-            paint_owner, // HOI4 Replay patch
+            paint_owner, // BattlePlan patch
             ..
         } = &mut *shared_mut;
 
@@ -849,7 +849,7 @@ impl WgpuWinitRunning<'_> {
                     true
                 }
             });
-            // HOI4 Replay patch: through the paint owner, if any.
+            // BattlePlan patch: through the paint owner, if any.
             let vsync_secs = paint_viewport(
                 paint_owner.as_deref(),
                 painter,
@@ -1253,7 +1253,7 @@ fn render_immediate_viewport(
         viewports,
         painter,
         viewport_from_window,
-        paint_owner, // HOI4 Replay patch
+        paint_owner, // BattlePlan patch
         ..
     } = &mut *shared_mut;
 
@@ -1280,7 +1280,7 @@ fn render_immediate_viewport(
     }
 
     let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
-    // HOI4 Replay patch: through the paint owner, if any.
+    // BattlePlan patch: through the paint owner, if any.
     paint_viewport(
         paint_owner.as_deref(),
         painter,

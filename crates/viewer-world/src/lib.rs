@@ -97,6 +97,8 @@ pub mod map {
     pub mod terrain;
     mod terrain_coast;
     pub mod terrain_shader;
+    #[cfg(test)]
+    mod test_game;
     pub mod trade_routes;
     pub mod trains;
     pub mod tree_caster;

@@ -231,6 +231,7 @@ game-model = { path = "crates/game-model" }
 engine-allocation = { path = "crates/engine-allocation" }
 engine-heap = { path = "crates/engine-heap" }
 engine-executable = { path = "crates/engine-executable" }
+synthetic-game = { path = "crates/synthetic-game" }
 engine-reference-values = { path = "crates/engine-reference-values" }
 content-reader = { path = "crates/content-reader" }
 content-reader-raids = { path = "crates/content-reader-raids" }
@@ -326,6 +327,15 @@ lto = "off"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+[profile.ci]
+inherits = "dev"
+
+[profile.ci.package."*"]
+opt-level = 1
+
+[profile.ci.package.collector]
+opt-level = 0
 
 [profile.release-lto]
 inherits = "release"

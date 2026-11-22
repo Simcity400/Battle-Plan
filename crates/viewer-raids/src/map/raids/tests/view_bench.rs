@@ -1057,8 +1057,7 @@ fn append_target(frame: &mut DecodedFrame, province: u32) {
 
 #[test]
 fn a_cycle_evaluates_a_batch_per_hour_from_a_rolling_cursor() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (mut assets, mut frame) = churn_world_keeping(5);
     assets.batch = Ok(2);
     let mut cycle = cycle::Cycle::new(frame.branch, 0);
@@ -1114,8 +1113,7 @@ fn a_cycle_evaluates_a_batch_per_hour_from_a_rolling_cursor() {
 
 #[test]
 fn a_kept_row_shows_its_last_evaluation_until_evaluated_again() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(10);
     let mut cycle = cycle::Cycle::new(frame.branch, 0);
@@ -1140,8 +1138,7 @@ fn a_kept_row_shows_its_last_evaluation_until_evaluated_again() {
 
 #[test]
 fn a_changed_or_lost_row_starts_the_cycle_again() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(10);
     let mut cycle = cycle::Cycle::new(frame.branch, 0);
@@ -1189,8 +1186,7 @@ fn a_changed_or_lost_row_starts_the_cycle_again() {
 
 #[test]
 fn stopped_and_full_army_searches_answer_alike() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (assets, mut frame) = churn_world();
     let mut rng = Rng(0x0bad_5eed_1234_5678);
     for hour in 0..6 {
@@ -1230,8 +1226,7 @@ fn stopped_and_full_army_searches_answer_alike() {
 
 #[test]
 fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     for seed in [0x9e37_79b9_7f4a_7c15, 0x2545_f491_4f6c_dd1d] {
         let (mut assets, mut frame) = churn_world();
         assets.batch = Ok(7);
@@ -1287,8 +1282,7 @@ fn a_complete_cycle_equals_a_full_evaluation_under_random_changes() {
 
 #[test]
 fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(7);
     let mut rng = Rng(0xd1b5_4a32_d192_ed03);
@@ -1336,8 +1330,7 @@ fn a_cycle_carried_across_skipped_hours_equals_a_full_evaluation() {
 
 #[test]
 fn a_complete_cycle_equals_the_full_evaluation_from_row_zero() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let (mut assets, mut frame) = churn_world();
     assets.batch = Ok(5);
     let mut cycle = cycle::Cycle::new(frame.branch, 0);
@@ -1472,8 +1465,7 @@ fn split_run(
 
 #[test]
 fn a_batch_split_across_threads_equals_the_batch_in_order() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     let pool = viewer_foundation::builder_pool::builder_workers().unwrap();
     let (mut again, mut prefetched) = (0, 0);
     let ahead = reach::RAN_AHEAD.load(std::sync::atomic::Ordering::Relaxed);

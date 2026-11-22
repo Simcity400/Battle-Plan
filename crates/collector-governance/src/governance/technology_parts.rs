@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn required_technology_part_allocation_denial_is_terminal() {
         const NAME: &str = "required_technology_part_allocation_denial_is_terminal";
-        const ENV: &str = "BATTLE_PLAN_COLD_TECHNOLOGY_TEST";
+        const ENV: &str = "BATTLEPLAN_COLD_TECHNOLOGY_TEST";
         if std::env::var(ENV).ok().as_deref() != Some(NAME) {
             assert!(
                 std::process::Command::new(std::env::current_exe().unwrap())

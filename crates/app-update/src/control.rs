@@ -34,7 +34,7 @@ fn pipe_name(role: Role) -> io::Result<Vec<u16>> {
     if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(format!(r"\\.\pipe\HOI4Replay.{session}.{}", role.pipe())
+    Ok(format!(r"\\.\pipe\BattlePlan.{session}.{}", role.pipe())
         .encode_utf16()
         .chain(Some(0))
         .collect())

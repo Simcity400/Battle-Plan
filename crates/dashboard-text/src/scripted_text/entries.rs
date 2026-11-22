@@ -953,7 +953,7 @@ pub(super) fn entry_scopes(scopes: &ExpansionScopes, at: usize, bare: bool) -> S
 #[test]
 fn entry_invocations_keep_the_original_bounds_of_unresolved_links() {
     engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
     let scopes = ExpansionScopes::new(&EventScopes::new(vec![EventScope {
         prev: Link::Scope(1),
         ..EventScope::of(EventObject::Country(0))

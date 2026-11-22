@@ -81,7 +81,7 @@ fn equal(label: &str, actual: &[u8], expected: &[u8]) {
         .filter(|(a, b)| a != b)
         .count();
     if different != 0
-        && let Some(dir) = std::env::var_os("BATTLE_PLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
+        && let Some(dir) = std::env::var_os("BATTLEPLAN_SHADER_REPORT").or_else(|| std::env::var_os("HOI4_SHADER_REPORT"))
     {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(Path::new(&dir).join(format!("{label}-actual.rgba")), actual).unwrap();
@@ -176,11 +176,10 @@ fn text_inputs(
 }
 
 #[test]
-#[ignore = "requires installed effects, DXC and GPU"]
+#[ignore = "requires the shader compiler and GPU"]
 fn compiled_parts_fan_animation_and_text_bake() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    let (_, mut library) = models::installed();
+    content_reader_core::test_game::enter();
+    let (_install, mut library) = models::effects();
     let circular = library
         .load(b"gfx/FX/circularprogressbar.shader", &[])
         .unwrap();

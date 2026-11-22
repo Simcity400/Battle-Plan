@@ -345,7 +345,7 @@ fn frame_ui(
                     _ => Ok(()),
                 }
             } else {
-                viewer.map_with_state(ui, state, document)
+                viewer.map_with_state(ui, state, document, None)
             };
         },
     );
@@ -1290,7 +1290,7 @@ pub(crate) fn measure(
             "host_bytes": {"mirrors": host.mirrors.iter().map(|(_, bytes)| bytes).sum::<usize>(), "layers": host.layers, "pending_steps": host.pending, "states": host.states, "playhead": host.playhead, "total": host.total()},
             "mirrors": readers.into_iter().map(|(table, columns, keyed, layers)| json!({"table": format!("{table:?}"), "columns": columns, "keyed": keyed, "layers": layers, "bytes": host.mirrors.iter().find(|(held, _)| *held == table).map(|(_, bytes)| *bytes)})).collect::<Vec<_>>(),
             "piece_checks": {"tables": crate::playhead_host::piece::counted().0, "differing": crate::playhead_host::piece::counted().1, "on": crate::playhead_host::piece::on()},
-            "scope": "The playhead's counters since it opened (steps built, table steps stalled at a part not fetched and the steps holding any, seeks, joins, and the landings: consumers the ring parked for holding more steps than the lanes' cells, each landed with every table whole, which the map answers by composing every layer), the piece boundaries crossed as a step with the tables they carried over, the tables reset in them because no change set carries a log over a session's handover, and the rows and cells the crossings named; the judge of those crossings (BATTLE_PLAN_VIEWER_CHECK_PIECE) compares every table's mirror after one with the mirror a rebuild of the new piece's lane makes; its held bytes now and at their peaks, and what the map's side holds at the end. Per frame, the steps' build time is layers.step_ms and frames.jsonl's layers.step_ms.",
+            "scope": "The playhead's counters since it opened (steps built, table steps stalled at a part not fetched and the steps holding any, seeks, joins, and the landings: consumers the ring parked for holding more steps than the lanes' cells, each landed with every table whole, which the map answers by composing every layer), the piece boundaries crossed as a step with the tables they carried over, the tables reset in them because no change set carries a log over a session's handover, and the rows and cells the crossings named; the judge of those crossings (BATTLEPLAN_VIEWER_CHECK_PIECE) compares every table's mirror after one with the mirror a rebuild of the new piece's lane makes; its held bytes now and at their peaks, and what the map's side holds at the end. Per frame, the steps' build time is layers.step_ms and frames.jsonl's layers.step_ms.",
         });
     }
     {

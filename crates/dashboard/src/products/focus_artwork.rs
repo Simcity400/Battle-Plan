@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn static_icon_only_product_skips_scoped_titles() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::from_url;
         let mut frame = focus_scale_frame(100, 24, 12, &["static"]);
         for table in [TableId::States, TableId::Provinces] {
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn every_projection_names_a_focus_missing_from_recorded_content() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         let frame = focus_scale_frame(100, 4, 2, &["static"]);
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
         let (source, context, _folders) = icon_product_source(replay);
@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn each_focus_database_answers_its_own_art_and_names() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         for refused in [false, true] {
             let (catalogue, folder) =
                 crate::catalogue::tests::folder_catalogue(&database_files(refused));
@@ -825,7 +825,7 @@ mod tests {
     fn focus_history_text_keeps_each_database_apart() {
         use crate::products::{CountryParams, national_focus::NationalFocus};
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         for refused in [false, true] {
             let (catalogue, folder) =
                 crate::catalogue::tests::folder_catalogue(&database_files(refused));
@@ -891,7 +891,7 @@ mod tests {
     #[test]
     fn conditional_icon_only_product_uses_dated_operands_and_preserves_refusals() {
         engine_executable::executable_tables::initialize_for_tests()
-            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+            .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::catalogue::texture_tests::from_url;
         use replay_data::rows::PoliticalPartyRow;
         let mut frames: Vec<_> = (100..103)
