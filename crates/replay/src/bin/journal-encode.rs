@@ -40,7 +40,7 @@ fn main() -> io::Result<()> {
             settings.level = level.parse().map_err(|_| usage())?;
         } else if let Some(given) = option.strip_prefix("--pace=") {
             let (rate, from) = given.split_once(',').ok_or_else(usage)?;
-            pace = Some(encode_report::pace(rate.parse().map_err(|_| usage())?, from.parse().map_err(|_| usage())?)?);
+            pace = Some((rate.parse().map_err(|_| usage())?, from.parse().map_err(|_| usage())?));
         } else if let Some(given) = option.strip_prefix("--hours=") {
             limit = given.parse().map_err(|_| usage())?;
         } else if let Some(path) = option.strip_prefix("--times=") {
@@ -62,6 +62,7 @@ fn main() -> io::Result<()> {
             return Err(usage());
         }
     }
+    let pace = pace.map(|(rate, from)| encode_report::pace(rate, from, limit)).transpose()?;
     let facts = journal_facts(Path::new(directory), capture, facts)?;
     eprintln!("{}", json!({ "facts": facts.as_ref().map(|(path, pack)| json!({ "file": path, "pack_bytes": pack.len() })) }));
     let facts = facts.map(|(_, pack)| pack);
@@ -117,6 +118,7 @@ fn main() -> io::Result<()> {
     loop {
         let stop = || memory || stop_after.is_some() || taken.get() >= limit;
         let progress = writer.advance(&mut source, &mut host, &stop)?;
+        host.pacing()?;
         if std::mem::take(&mut host.committed) {
             if memory {
                 eprintln!("{}", serde_json::Value::Object(encode_report::revision_line(&writer, host.revisions, host.hours + first_hours, started)));
