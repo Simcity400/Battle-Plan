@@ -1,8 +1,4 @@
 
-pub const TRANSPORT_AIR_NORMALIZATION: [u32; 16] = [
-    2, 0xb, 0xd, 0xf, 0x10, 0x6f, 0x70, 0x72, 0x74, 0x75, 0x76, 0x104, 0x105, 0x106, 0x10d, 0x25a,
-];
-
 macro_rules! keys {
     ($($(#[$doc:meta])* $constant:ident = $index:literal;)+) => {
         $($(#[$doc])* pub const $constant: u32 = $index;)+

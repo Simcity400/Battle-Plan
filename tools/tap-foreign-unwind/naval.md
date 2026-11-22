@@ -62,7 +62,7 @@ $navalProofFilters = @(
     'naval_result_sources::tests::foreign_unwind::naval_original_cpp_seh_preserves_cleanup_storage_and_restores_hooks'
 )
 foreach ($proofFilter in $navalProofFilters) {
-    cargo test -p collector --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
+    cargo test -p collector-naval-results --features tap-foreign-probe $proofFilter -- --exact --ignored --nocapture --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw "Naval foreign proof failed: $proofFilter" }
 }
 ```

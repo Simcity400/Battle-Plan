@@ -14,9 +14,11 @@ impl Gate {
     fn wait(&self) {
         let (open, timeout) = self
             .changed
-            .wait_timeout_while(self.open.lock().unwrap(), crate::TEST_HANG_GUARD, |open| {
-                !*open
-            })
+            .wait_timeout_while(
+                self.open.lock().unwrap(),
+                collector_test_support::TEST_HANG_GUARD,
+                |open| !*open,
+            )
             .unwrap();
         assert!(
             *open && !timeout.timed_out(),
@@ -79,7 +81,7 @@ fn deferred_stitch_failure(naval_panics: bool) {
             &mut batch,
             acquisition::Job::Naval(acquisition::NavalRequest {
                 countries: engine_allocation::shared(Cache::try_with_capacity(0).unwrap()).unwrap(),
-                context: extended::naval_history::NavalCopyContext {
+                context: collector_naval_history::extended::naval_history::NavalCopyContext {
                     base: 0,
                     game_state: 0,
                     hour: 1,
@@ -90,12 +92,16 @@ fn deferred_stitch_failure(naval_panics: bool) {
         )
     };
     assert_eq!(
-        running.recv_timeout(crate::TEST_HANG_GUARD).unwrap(),
+        running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap(),
         "naval"
     );
     let blocker = unsafe { submit_acquisition(&shared, &mut batch, peer(0)) };
     assert_eq!(
-        running.recv_timeout(crate::TEST_HANG_GUARD).unwrap(),
+        running
+            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+            .unwrap(),
         "peer"
     );
     let lower = unsafe { submit_acquisition(&shared, &mut batch, peer(1)) };
@@ -177,7 +183,7 @@ fn deferred_stitch_failure(naval_panics: bool) {
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.caller_executed, 0);
     assert_eq!(
-        calibration.roles[acquisition::Role::OrdersStitch as usize]
+        calibration.roles[collector_workers::roles::Role::OrdersStitch as usize]
             .counters
             .panicked,
         1

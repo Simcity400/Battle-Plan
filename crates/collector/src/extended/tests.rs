@@ -1,3 +1,4 @@
+use collector_extended_support::outcomes::failed_capture;
 use super::*;
 use engine_native::carmy;
 
@@ -527,8 +528,8 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     };
     for failure in [
         None,
-        Some(crate::acquisition::Failure::Panicked),
-        Some(crate::acquisition::Failure::Stopped),
+        Some(collector_workers::acquisition::Failure::Panicked),
+        Some(collector_workers::acquisition::Failure::Stopped),
     ] {
         captured.drop_and_reset();
         captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&inputs)));
@@ -937,10 +938,9 @@ fn ordinary_terminal_failures_forget_the_counter_censuses() {
         (Some("ordinary worker admission failed"), None, None),
     ] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let units = engine_allocation::shared(
-            UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }),
-        )
-        .unwrap();
+        let units =
+            engine_allocation::shared(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }))
+                .unwrap();
         captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&units)));
         captured
             .naval_counters
@@ -995,10 +995,9 @@ fn ordinary_terminal_missing_marker_forgets_the_counter_censuses() {
     )
     .unwrap();
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let units = engine_allocation::shared(
-        UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }),
-    )
-    .unwrap();
+    let units =
+        engine_allocation::shared(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }))
+            .unwrap();
     captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&units)));
     captured
         .naval_counters
@@ -1072,10 +1071,9 @@ fn ordinary_terminal_results_cannot_retry_or_publish_partial_tables() {
         "acquisition worker stopped before completion",
     ] {
         let mut captured = Captured::with_capacities(&Capacities::default());
-        let units = engine_allocation::shared(
-            UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }),
-        )
-        .unwrap();
+        let units =
+            engine_allocation::shared(UnitInputs::fixture(Vec::new(), Outcome::Rows { len: 0 }))
+                .unwrap();
         captured.install_unit_inputs(Some(engine_allocation::SharedBox::clone(&units)));
         let before = captured.allocated_bytes();
         let mut parts = captured.take_ordinary_parts(
@@ -1239,8 +1237,8 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
     };
     for failure in [
         None,
-        Some(crate::acquisition::Failure::Panicked),
-        Some(crate::acquisition::Failure::Stopped),
+        Some(collector_workers::acquisition::Failure::Panicked),
+        Some(collector_workers::acquisition::Failure::Stopped),
     ] {
         let mut captured = Captured::with_capacities(&capacity);
         captured.prepare_hour(hour, force_full);
@@ -1264,8 +1262,10 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
             None,
             None,
         );
-        let _technologies = captured
-            .restore_governance_request(governance, Err(crate::acquisition::Failure::Panicked));
+        let _technologies = captured.restore_governance_request(
+            governance,
+            Err(collector_workers::acquisition::Failure::Panicked),
+        );
         let report = match failure {
             None => Ok(crate::acquisition_jobs::ResearchReport { ticks: [5, 6, 7] }),
             Some(failure) => Err(failure),
@@ -1291,8 +1291,10 @@ fn research_handoff_maps_failures_scatters_ticks_and_survives_a_governance_failu
             }
             Some(failure) => {
                 let expected = match failure {
-                    crate::acquisition::Failure::Panicked => "research acquisition panicked",
-                    crate::acquisition::Failure::Stopped => {
+                    collector_workers::acquisition::Failure::Panicked => {
+                        "research acquisition panicked"
+                    }
+                    collector_workers::acquisition::Failure::Stopped => {
                         "research acquisition stopped before reading"
                     }
                 };
@@ -1354,8 +1356,8 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
         );
     }
     for failure in [
-        crate::acquisition::Failure::Panicked,
-        crate::acquisition::Failure::Stopped,
+        collector_workers::acquisition::Failure::Panicked,
+        collector_workers::acquisition::Failure::Stopped,
     ] {
         let bytes = captured.allocated_bytes();
         let request = captured.take_variants_request(11, 0x1000, slot, false);
@@ -1380,8 +1382,10 @@ fn variant_handoff_skips_off_slot_without_reads_and_never_retries_a_failed_worke
             );
         }
         let expected = match failure {
-            crate::acquisition::Failure::Panicked => "variant acquisition panicked",
-            crate::acquisition::Failure::Stopped => "variant acquisition stopped before reading",
+            collector_workers::acquisition::Failure::Panicked => "variant acquisition panicked",
+            collector_workers::acquisition::Failure::Stopped => {
+                "variant acquisition stopped before reading"
+            }
         };
         for table in production::TABLES[3..7]
             .iter()
@@ -1406,8 +1410,8 @@ fn variant_handoff_preserves_a_finished_change_capture_after_a_later_failure() {
         .position(|&table| table == TableId::VariantChanges)
         .unwrap();
     for failure in [
-        crate::acquisition::Failure::Panicked,
-        crate::acquisition::Failure::Stopped,
+        collector_workers::acquisition::Failure::Panicked,
+        collector_workers::acquisition::Failure::Stopped,
     ] {
         let mut captured = Captured::with_capacities(&Capacities::default());
         let mut request = captured.take_variants_request(11, 0x1000, 1, false);
@@ -1449,8 +1453,8 @@ fn governance_handoff_restores_owned_storage_and_never_retries_terminal_results(
     capacity.governance.raise_for_countries(1);
     for failure in [
         None,
-        Some(crate::acquisition::Failure::Panicked),
-        Some(crate::acquisition::Failure::Stopped),
+        Some(collector_workers::acquisition::Failure::Panicked),
+        Some(collector_workers::acquisition::Failure::Stopped),
     ] {
         let mut captured = Captured::with_capacities(&capacity);
         captured.governance_report = Some(governance::CaptureReport::default());
@@ -1621,8 +1625,8 @@ fn intel_residual_handoff_preserves_terminal_results_without_repeating_live_read
     capacity.intel.raise_for_countries(1);
     for failure in [
         None,
-        Some(crate::acquisition::Failure::Panicked),
-        Some(crate::acquisition::Failure::Stopped),
+        Some(collector_workers::acquisition::Failure::Panicked),
+        Some(collector_workers::acquisition::Failure::Stopped),
     ] {
         let mut captured = Captured::with_capacities(&capacity);
         captured.intel.capitulation_raw_mode = true;
@@ -1742,7 +1746,7 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
             );
             let mut request = request;
             let report = if stop == Some(index) {
-                Err(crate::acquisition::Failure::Stopped)
+                Err(collector_workers::acquisition::Failure::Stopped)
             } else {
                 request.captured.capture_owned(&Faulty, request.context);
                 Ok(ship_models::CaptureReport {
@@ -1762,8 +1766,10 @@ fn ship_model_parts_restore_part_zero_first_sum_ticks_and_match_the_unsplit_walk
     }
     let mut captured = walked(3);
     let request = captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
-    let _census =
-        captured.restore_ship_models_request(request, Err(crate::acquisition::Failure::Panicked));
+    let _census = captured.restore_ship_models_request(
+        request,
+        Err(collector_workers::acquisition::Failure::Panicked),
+    );
     assert!(
         captured
             .take_ship_model_parts(&countries, 11)
@@ -1792,8 +1798,10 @@ fn ship_models_late_terminal_handoff_is_unavailable_until_new_sources() {
     let request = captured.take_ship_models_request(&countries, 11, 0x1000, ShipCensus::vacant());
     let family_bytes = request.captured.allocated_bytes();
     assert_eq!(captured.ship_models.allocated_bytes(), 0);
-    let census =
-        captured.restore_ship_models_request(request, Err(crate::acquisition::Failure::Panicked));
+    let census = captured.restore_ship_models_request(
+        request,
+        Err(collector_workers::acquisition::Failure::Panicked),
+    );
     assert!(matches!(census.ships.outcome, Outcome::Unavailable { .. }));
     assert_eq!(captured.ship_models.allocated_bytes(), family_bytes);
     assert_eq!(
@@ -1854,7 +1862,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             false
         }
     }
-    use crate::acquisition::Failure::{Panicked, Stopped};
+    use collector_workers::acquisition::Failure::{Panicked, Stopped};
     let mut capacity = Capacities::default();
     capacity.supply_trains.raise_for_countries(1);
     let mut captured = Captured::with_capacities(&capacity);
@@ -1917,7 +1925,7 @@ fn hourly_family_handoffs_restore_independently_and_consume_terminal_reports_onc
             bytes
         );
         let census = engine_allocation::shared(
-            crate::division_census::UnitInputs::empty_rows(),
+            collector_divisions::division_census::UnitInputs::empty_rows(),
         )
         .unwrap();
         let province_order = captured.take_province_unit_order_request(
@@ -2885,61 +2893,62 @@ fn the_daily_production_tables_follow_slow_and_their_own_job_through_assembly() 
             .chain(captured.production_modifiers.outcomes())
             .collect()
     };
-    let hour_of = |captured: &mut Captured, slow: Job, mio: Job, daily: Job, hour: i32, full: bool| {
-        match slow {
-            Job::Missing => captured.fail_missing_slow(hour, full),
-            done => {
-                let request = captured.take_slow_request(
-                    &countries,
-                    11,
-                    0x1000,
-                    hour,
-                    full,
-                    SlowStores::default(),
-                );
-                let _ = captured.restore_slow_request(request, done == Job::Completed);
+    let hour_of =
+        |captured: &mut Captured, slow: Job, mio: Job, daily: Job, hour: i32, full: bool| {
+            match slow {
+                Job::Missing => captured.fail_missing_slow(hour, full),
+                done => {
+                    let request = captured.take_slow_request(
+                        &countries,
+                        11,
+                        0x1000,
+                        hour,
+                        full,
+                        SlowStores::default(),
+                    );
+                    let _ = captured.restore_slow_request(request, done == Job::Completed);
+                }
             }
-        }
-        let mio_request = (mio != Job::Missing).then(|| {
-            let mut request =
-                captured.take_industrial_organisations_request(&countries, 11, 0x1000, hour, full);
-            let ticks = request.captured.capture(&NoRead, 11, 0x1000, hour, full);
-            (request, ticks)
-        });
-        if daily != Job::Missing {
-            let mut request =
-                captured.take_production_daily_request(&countries, 11, 0x1000, hour, full);
-            request.packs.capture(&NoRead, 11, 0x1000, hour, full);
-            if let Some((mio_request, ticks)) = mio_request {
+            let mio_request = (mio != Job::Missing).then(|| {
+                let mut request = captured
+                    .take_industrial_organisations_request(&countries, 11, 0x1000, hour, full);
+                let ticks = request.captured.capture(&NoRead, 11, 0x1000, hour, full);
+                (request, ticks)
+            });
+            if daily != Job::Missing {
+                let mut request =
+                    captured.take_production_daily_request(&countries, 11, 0x1000, hour, full);
+                request.packs.capture(&NoRead, 11, 0x1000, hour, full);
+                if let Some((mio_request, ticks)) = mio_request {
+                    captured.restore_industrial_organisations_request(
+                        mio_request,
+                        mio == Job::Completed,
+                        ticks,
+                        &mut request.packs,
+                    );
+                }
+                captured.restore_production_daily_request(request, daily == Job::Completed);
+            } else if let Some((mio_request, ticks)) = mio_request {
+                let mut packs = captured.production_daily_spare.take().unwrap();
                 captured.restore_industrial_organisations_request(
                     mio_request,
                     mio == Job::Completed,
                     ticks,
-                    &mut request.packs,
+                    &mut packs,
                 );
+                std::mem::swap(
+                    &mut captured.industrial_organisations,
+                    &mut packs.industrial_organisations,
+                );
+                captured.production_daily_spare = Some(packs);
             }
-            captured.restore_production_daily_request(request, daily == Job::Completed);
-        } else if let Some((mio_request, ticks)) = mio_request {
-            let mut packs = captured.production_daily_spare.take().unwrap();
-            captured.restore_industrial_organisations_request(
-                mio_request,
-                mio == Job::Completed,
-                ticks,
-                &mut packs,
-            );
-            std::mem::swap(
-                &mut captured.industrial_organisations,
-                &mut packs.industrial_organisations,
-            );
-            captured.production_daily_spare = Some(packs);
-        }
-        let mut ticks = [0; TABLE_COUNT];
-        captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
-        let first = outcomes(captured);
-        captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
-        assert_eq!(outcomes(captured), first, "a second assembly changed them");
-        first
-    };
+            let mut ticks = [0; TABLE_COUNT];
+            captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
+            let first = outcomes(captured);
+            captured.assemble_production_daily(&NoRead, 11, 0x1000, hour, full, &mut ticks, false);
+            assert_eq!(outcomes(captured), first, "a second assembly changed them");
+            first
+        };
     let refused = |reason: &'static str| {
         vec![Outcome::Unavailable { reason }; industrial_organisations::N + production_modifiers::N]
     };
@@ -3348,25 +3357,25 @@ pub(crate) fn mode_gated_walks() -> Vec<(&'static str, Vec<TableId>)> {
         ("peace bids", peace_bids::TABLES.to_vec()),
         ("logistics", logistics::TABLES.to_vec()),
         ("country factories", country_factories::TABLES.to_vec()),
-        ("state building inputs", state_building_inputs::TABLES.to_vec()),
         ("hired advisors", hired_advisors::TABLES.to_vec()),
         (
             "doctrines",
             collector_slow_tables::doctrines::TABLES.to_vec(),
         ),
         ("occupation", vec![TableId::StateResistance]),
-        ("faction goals", crate::faction_goals::TABLES.to_vec()),
+        (
+            "faction goals",
+            collector_factions::faction_goals::TABLES.to_vec(),
+        ),
         (
             "faction companions",
-            crate::faction_companions::TABLES.to_vec(),
+            collector_factions::faction_companions::TABLES.to_vec(),
         ),
         ("operation outcomes", operation_outcomes::TABLES.to_vec()),
     ]
 }
 
-// quarantine: #146 not updated for the format 142 capture additions
 #[test]
-#[ignore = "quarantined under #146"]
 fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
     use replay_data::scope::{self, CaptureMode};
     for (name, tables) in mode_gated_walks() {
@@ -3388,6 +3397,7 @@ fn map_leaves_out_every_gated_walk_and_full_runs_them_all() {
     }
     assert!(scope::records(CaptureMode::Map, TableId::DivisionMovement));
     assert!(scope::records(CaptureMode::Map, TableId::Politics));
+    assert!(scope::records(CaptureMode::Map, TableId::StateBuildingInputs));
 }
 
 #[test]
@@ -3433,7 +3443,8 @@ fn map_assembly_refuses_the_packs_it_leaves_out_and_keeps_the_rest() {
 
 #[test]
 fn only_force_full_governance_and_recorded_projects_promote_the_long_join_tail() {
-    use crate::acquisition_jobs::{Job, Role};
+    use crate::acquisition_jobs::Job;
+    use collector_workers::roles::Role;
     let countries = engine_allocation::shared(
         engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
@@ -3556,13 +3567,16 @@ fn independent_variant_family_survives_every_final_input_return_order_without_al
 
 #[test]
 fn variant_lanes_are_claimed_behind_the_division_status_chain() {
-    use crate::acquisition_jobs::{Batch, Job, Pool, Report, Role};
+    use crate::acquisition_jobs::{Batch, Job, Pool, Report};
+    use collector_workers::roles::Role;
     let pool = Pool::with_test_runner(2, |job| match job {
         Job::Variants(_) => Report::Variants([0; production::N]),
         _ => panic!("only Variants was submitted"),
     });
     let mut captured = Captured::with_capacities(&Capacities::default());
-    let mut request = Some(Job::Variants(captured.take_variants_request(0, 0x1000, 1, true)));
+    let mut request = Some(Job::Variants(
+        captured.take_variants_request(0, 0x1000, 1, true),
+    ));
     let mut batch = Batch::new(&pool);
     let ticket = unsafe { batch.submit(&mut request) }.unwrap();
     let completed = batch.finish(ticket).unwrap();

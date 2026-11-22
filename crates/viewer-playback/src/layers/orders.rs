@@ -80,13 +80,14 @@ pub fn differ_labels(today: &Placements, layer: &Placements) -> Option<String> {
 }
 
 fn differ_name(today: &WorldName, layer: &WorldName) -> Option<(String, String, String)> {
-    let WorldName { key: _, strategic_provinces, text, pages, corners, uvs, aabb, wrapped, font_size, spaces, alpha } = today;
+    let WorldName { key: _, strategic_provinces, text, pages, corners, uvs, colors, aabb, wrapped, font_size, spaces, alpha } = today;
     whole("strategic_provinces", &strategic_provinces.is_some(), &layer.strategic_provinces.is_some())
         .or_else(|| each("strategic_provinces", strategic_provinces.as_deref().unwrap_or_default(), layer.strategic_provinces.as_deref().unwrap_or_default()))
         .or_else(|| whole("text", text, &layer.text))
         .or_else(|| each("pages", pages, &layer.pages))
         .or_else(|| each("corners", corners, &layer.corners))
         .or_else(|| each("uvs", uvs, &layer.uvs))
+        .or_else(|| each("colors", colors, &layer.colors))
         .or_else(|| each("aabb", aabb, &layer.aabb))
         .or_else(|| whole("wrapped", wrapped, &layer.wrapped))
         .or_else(|| whole("font_size", font_size, &layer.font_size))

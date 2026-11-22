@@ -10,4 +10,4 @@ The loader prepares observer capacity before hook publication and the first boun
 
 In the worker parity test, the synthetic world stays owned until the batch drains, so the submitted request's borrowed source is valid through its completion.
 
-[Split template walk](../../crates/collector/src/extended/division_templates/split.rs) · [Parity tests](../../crates/collector/src/extended/division_templates/tests.rs)
+[Split template walk](../../crates/collector-division-templates/src/extended/division_templates/split.rs) · [Parity tests](../../crates/collector-division-templates/src/extended/division_templates/tests.rs)

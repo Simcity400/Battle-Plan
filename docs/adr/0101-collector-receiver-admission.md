@@ -8,4 +8,4 @@ Role writes share the advisor hook publication. If any required role site is wit
 
 The air-base slot optimization needs no hook. Registration and removal writers update the sparse country vector and the dense list in the same call. The dense list must authenticate each listed container's identity, span, link entry and vector slot, in slot order. A refusal keeps the full scan available and records its reason. A base read still includes its pools, wings, capacity and fuel. Production selects the dense path by feature, while tests can choose either path. Statistics publish off the game thread after acquisition.
 
-[Advisor notifications](../../crates/collector/src/advisor_changes.rs) · [Air-base branch selection](../../crates/collector/src/air_base_changes.rs)
+[Advisor notifications](../../crates/collector-characters/src/advisor_changes.rs) · [Air-base branch selection](../../crates/collector-air/src/air_base_changes.rs)

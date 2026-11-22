@@ -573,8 +573,7 @@ fn equipment_icons_follow_the_production_rows_rule() {
 
 #[test]
 fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
-    engine_executable::executable_tables::initialize_for_tests()
-        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    content_reader_core::test_game::enter();
     use crate::products::equipment_icon::{Icon, IconContent, IconHour};
     use content_reader_core::{ResolvedLayers, technology};
     use content_reader_equipment_graphics::equipment_graphics;
@@ -587,6 +586,11 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
     let _ = std::fs::remove_dir_all(&root);
     let (vanilla, modded) = (root.join("game"), root.join("mod"));
     for (folder, path, text) in [
+        (
+            &vanilla,
+            "common/terrain/fixture.txt",
+            "categories = { fixture = {} }",
+        ),
         (
             &vanilla,
             "common/units/equipment/infantry.txt",
@@ -605,7 +609,7 @@ fn equipment_icons_resolve_a_mods_types_technologies_and_sprites() {
         (
             &modded,
             "common/technologies/lasers.txt",
-            "technologies = { Laser_Tech = { enable_equipments = { LASER_RIFLE_1 } } Gauss_Tech = { enable_equipments = { if = { limit = { has_dlc = \"X\" } gauss_rifle_1 rifles_1 } } } }",
+            "technologies = { Laser_Tech = { enable_equipments = { LASER_RIFLE_1 } } Gauss_Tech = { enable_equipments = { limit = { has_dlc = \"X\" } gauss_rifle_1 } enable_equipments = { limit = { has_dlc = \"X\" } rifles_1 } } }",
         ),
         (
             &modded,
@@ -2100,4 +2104,148 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
         ),
         Err("sprite GFX_refused is refused: refused".to_owned())
     );
+}
+
+#[test]
+fn unverified_technology_parse_withholds_equipment_icon_fallback_and_warns() {
+    content_reader_core::test_game::enter();
+    use crate::products::equipment_icon::{Icon, IconContent, IconHour};
+    use content_reader_core::{ResolvedLayers, technology};
+    use content_reader_equipment_graphics::equipment_graphics;
+    use replay_data::rows::VariantDefinitionRow;
+
+    let root = std::env::temp_dir().join(format!(
+        "hoi4_dashboard_unverified_icons_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    for (path, text) in [
+        ("common/terrain/fixture.txt", "categories = { fixture = {} }"),
+        (
+            "common/units/equipment/infantry.txt",
+            "equipments = { rifles = { is_archetype = yes type = infantry } rifles_1 = { archetype = rifles } lost_rifle = { archetype = rifles } }",
+        ),
+        (
+            "common/technologies/broken.txt",
+            "technologies = { broken = { on_research_complete = no { ignored = 1 } } consumed = { on_research_complete = no limit = {} enable_equipments = { lost_rifle } } }",
+        ),
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+    let content = IconContent::from_parts(
+        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
+        technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
+        equipment_graphics::Content::from_texts(
+            &[],
+            &equipment_graphics::Names {
+                countries: Default::default(),
+                continents: Default::default(),
+            },
+        )
+        .unwrap(),
+        Default::default(),
+        [
+            "GFX_rifles_1_medium".to_owned(),
+            "GFX_consumed_medium".to_owned(),
+        ]
+        .into(),
+        Default::default(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let hour = IconHour::read(&frame, &content).unwrap();
+    let row = VariantDefinitionRow::default();
+    assert_eq!(
+        chosen(&content, &hour, &row, "rifles_1"),
+        Ok(Some(Icon::Sprite("GFX_rifles_1_medium".into())))
+    );
+    let withheld = chosen(&content, &hour, &row, "lost_rifle").unwrap_err();
+    assert!(
+        withheld.contains("common/technologies/broken.txt")
+            && withheld.contains("on_research_complete"),
+        "{withheld}"
+    );
+    let warnings = content.warnings();
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("common/technologies/broken.txt")
+                && warning.contains("on_research_complete")),
+        "{warnings:?}"
+    );
+    let prep = content.preparation_warnings();
+    assert!(
+        prep.iter().any(|(kind, warning)| *kind
+            == content_reader_core::DiagnosticKind::Unsettled
+            && warning.contains("common/technologies/broken.txt")),
+        "{prep:?}"
+    );
+    let authored = content.authored_icons().unwrap();
+    let lost = authored
+        .iter()
+        .find(|entry| entry.token == "lost_rifle")
+        .unwrap();
+    assert!(
+        lost.refusals
+            .iter()
+            .any(|reason| reason.contains("common/technologies/broken.txt")),
+        "{:?}",
+        lost.refusals
+    );
+
+    let unreadable_root = std::env::temp_dir().join(format!(
+        "hoi4_dashboard_unreadable_tech_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&unreadable_root);
+    for (path, text) in [
+        ("common/terrain/fixture.txt", "categories = { fixture = {} }"),
+        (
+            "common/units/equipment/infantry.txt",
+            "equipments = { rifles = { is_archetype = yes type = infantry } rifles_1 = { archetype = rifles } solo_rifle = { archetype = rifles } }",
+        ),
+        (
+            "common/technologies/ok.txt",
+            "technologies = { solo = { enable_equipments = { solo_rifle } } }",
+        ),
+        (
+            "common/technologies/gone.txt",
+            "technologies = { gone = { enable_equipments = { rifles_1 } } }",
+        ),
+    ] {
+        let file = unreadable_root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    }
+    let layers = ResolvedLayers::from_folders(&[(&unreadable_root, &[][..])]).unwrap();
+    std::fs::remove_file(unreadable_root.join("common/technologies/gone.txt")).unwrap();
+    let content = IconContent::from_parts(
+        content_reader_core::equipment::Database::load_complete(&layers).unwrap(),
+        technology::read_enablers(&layers, |_| Err("no limit is decided here".to_owned())).unwrap(),
+        equipment_graphics::Content::from_texts(
+            &[],
+            &equipment_graphics::Names {
+                countries: Default::default(),
+                continents: Default::default(),
+            },
+        )
+        .unwrap(),
+        Default::default(),
+        ["GFX_rifles_1_medium".to_owned()].into(),
+        Default::default(),
+    );
+    let _ = std::fs::remove_dir_all(&unreadable_root);
+    let hour = IconHour::read(&frame, &content).unwrap();
+    assert_eq!(
+        chosen(&content, &hour, &row, "rifles_1"),
+        Ok(Some(Icon::Sprite("GFX_rifles_1_medium".into())))
+    );
+    let withheld = chosen(&content, &hour, &row, "solo_rifle").unwrap_err();
+    assert!(withheld.contains("common/technologies/gone.txt"), "{withheld}");
 }

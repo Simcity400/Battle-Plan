@@ -127,7 +127,7 @@ impl native_flags::FlagSource for WindowFlags<'_> {
             )
         })?;
         self.countries
-            .tags
+            .tags_map()
             .iter()
             .find(|(_, own)| own.as_str() == tag)
             .map(|(&slot, _)| Some(slot))
@@ -146,7 +146,7 @@ impl native_flags::FlagSource for WindowFlags<'_> {
     fn atlas_len(&self, _: bool) -> Result<i32, String> {
         let len = self
             .countries
-            .tags
+            .tags_map()
             .keys()
             .next_back()
             .map_or(0, |&slot| slot + 1);
@@ -156,7 +156,7 @@ impl native_flags::FlagSource for WindowFlags<'_> {
     fn atlas_record(&self, small: bool, index: i32) -> Result<native_flags::FlagRecord, String> {
         let atlas = if small { self.small } else { self.large };
         let slot = u32::try_from(index).map_err(|_| format!("flag record {index}"))?;
-        if !self.countries.tags.contains_key(&slot) {
+        if !self.countries.tags_map().contains_key(&slot) {
             return Err(format!(
                 "country slot {slot}'s tag is not recorded, so its flag record is unknown"
             ));
@@ -561,7 +561,7 @@ pub(super) fn navy_calls(
     }
     let mut update = writes.update();
     update.selectable = Some((
-        state.countries.side(flotilla.owner) == Allegiance::Ours,
+        state.countries.is_ours(flotilla.owner),
         Arc::clone(&flotilla.members),
     ));
     update.owner = Some(flotilla.owner);

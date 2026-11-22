@@ -82,7 +82,7 @@ fn bake_permutations_preserve_event_light_and_audio_admission_and_random_streams
             sound
         );
     }
-    let lights = Lights::load(&layers).unwrap();
+    let lights = Lights::load(&layers, &mut Vec::new()).unwrap();
     let camera = Camera {
         center: [-100.; 2],
         height: 300.,

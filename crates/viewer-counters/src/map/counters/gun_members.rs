@@ -306,7 +306,7 @@ pub struct TodayGuns {
 impl HourTables {
     pub fn gun_members(&self, ground: GunGround<'_>) -> TodayGuns {
         let land = self.land();
-        let owner = |raw: u32| self.links.get(&raw).copied();
+        let owner = |raw: u32| self.links().get(&raw).copied();
         let joins = TodayGunJoins { land: &land, owner: &owner };
         let guns = land
             .guns

@@ -1,4 +1,3 @@
-
 use replay_data::{witness::TerminalWitness, witness::WITNESS_BYTES};
 use std::{
     cell::{Cell, UnsafeCell},
@@ -1519,5 +1518,22 @@ mod tests {
         observe_counted(None);
         assert_eq!(allocation_count(), 2);
         assert_eq!(OBSERVED.load(Ordering::Relaxed), 2);
+    }
+}
+
+pub fn fail(phase: Phase, code: Code) {
+    record_failure(phase, code);
+}
+
+pub fn install_hooks() {
+    engine_allocation::set_hooks(Some(should_fail), Some(failure_hook));
+    engine_allocation::set_stop_hook(Some(failed));
+}
+fn failure_hook() {
+    fail(phase(), Code::Reserve);
+}
+pub fn native_error(error: &io::Error) {
+    if engine_allocation::is_allocation_error(error) {
+        fail(phase(), Code::Native);
     }
 }

@@ -47,6 +47,48 @@ UNCHANGED = "no input changed since the base"
 BUILT_FROM = "ci-built-from"
 SETTLED = 946684800
 TEST_COST = 4
+UNIFIED = "cfg(all())"
+UNIFY = "test-unify"
+SHADER_COMPILER = ("dxcompiler.dll", "dxil.dll")
+
+
+def nextest_deps_dir(command, root=ROOT, env=None):
+    """The folder where `cargo nextest` places compiled test binaries (`<target>/<profile>/deps`)."""
+    profile = "debug"
+    for index, part in enumerate(command):
+        if part == "--cargo-profile" and index + 1 < len(command):
+            profile = command[index + 1]
+            break
+        if part.startswith("--cargo-profile="):
+            profile = part.split("=", 1)[1]
+            break
+    target_env = (os.environ if env is None else env).get("CARGO_TARGET_DIR")
+    target = Path(target_env) if target_env else root / ".cargo-target"
+    return target / profile / "deps"
+
+
+def stage_shader_compiler(command, log, root=ROOT, env=None):
+    """Stages the pinned DXC DLLs beside `cargo nextest`'s test binaries via tools/install-shader-compiler.ps1."""
+    deps = nextest_deps_dir(command, root=root, env=env)
+    cache = deps.parent.parent / "shader-compiler"
+    deps.mkdir(parents=True, exist_ok=True)
+    if not all((cache / name).is_file() for name in SHADER_COMPILER):
+        installer = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                     str(root / "tools" / "install-shader-compiler.ps1"), "-Destination", str(cache)]
+        with open(log, "ab") as out:
+            out.write(f"$ {' '.join(installer)}\n".encode())
+            out.flush()
+            try:
+                code = subprocess.run(installer, cwd=root, stdout=out, stderr=subprocess.STDOUT,
+                                      stdin=subprocess.DEVNULL).returncode
+            except OSError as error:
+                out.write(f"could not start: {error}\n".encode())
+                return 127
+        if code != 0:
+            return code
+    for name in SHADER_COMPILER:
+        shutil.copy2(cache / name, deps / name)
+    return 0
 
 
 @dataclass(frozen=True)
@@ -150,7 +192,10 @@ class Crate:
 def crates_from_manifests(root):
     """Each workspace member's folder, relative to `root`, and the members it depends on through a
     path dependency of any kind or target, read from the manifests themselves so that planning
-    needs no Rust toolchain; None when the root manifest cannot be read."""
+    needs no Rust toolchain; None when the root manifest cannot be read. The dev-dependencies that
+    `tools/check-feature-unification.py` generates under `cfg(all())` are not edges, bar `test-unify`
+    which they alone reach: the rest only set features on crates the member's tests already build
+    through its own dependencies."""
     root = Path(root)
     key = lambda path: os.path.normcase(os.path.normpath(str(path)))
     try:
@@ -175,8 +220,11 @@ def crates_from_manifests(root):
     crates = {}
     for folder, (path, data) in members.items():
         sections = [data.get(kind, {}) for kind in ("dependencies", "dev-dependencies", "build-dependencies")]
-        for target in data.get("target", {}).values():
-            sections += [target.get(kind, {}) for kind in ("dependencies", "dev-dependencies", "build-dependencies")]
+        for platform, target in data.get("target", {}).items():
+            for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
+                table = target.get(kind, {})
+                pinned = (platform, kind) == (UNIFIED, "dev-dependencies")
+                sections.append({name: spec for name, spec in table.items() if name == UNIFY} if pinned else table)
         deps = set()
         for section in sections:
             for name, spec in section.items():
@@ -547,6 +595,10 @@ class Runner:
         else:
             if report:
                 report.unlink(missing_ok=True)
+            if not self.local and sys.platform == "win32" and job.name == "rust-test" and "shader-pipeline" in decision.crates:
+                stage_code = stage_shader_compiler(command, log)
+                if stage_code != 0:
+                    return Outcome(job.name, "fail", f"staging pinned shader compiler failed, exit {stage_code}", time.monotonic() - started, str(log))
             code = self.execute(expand(command, values), log, job.unset)
             if report and report.is_file() and code in (0, NEXTEST_TESTS_FAILED):
                 found = sorted_failures(report.read_text(encoding="utf-8", errors="replace"), job.not_run)

@@ -1,14 +1,9 @@
-
 use crate::{
     extended::{
-        air::{AirBasesJob, AirBasesMemo, AirBasesMemoContext, AirStatsJob, AirWingJob},
-        characters::{CharactersJob, PART_MASKS as CHARACTER_MASKS, PARTS as CHARACTER_PARTS},
         construction::ConstructionRestJob,
         economy::EconomyRestJob,
-        fog::{IntelJob, RadarJob},
         intel::{CapitulationJob, RelationsJob},
         lexical::LexicalJob,
-        naval_history::{NavalJob, SunkJob, SupremacyJob},
         production::ProductionRestJob,
         projects::ProjectsJob,
         session::SessionJob,
@@ -17,6 +12,14 @@ use crate::{
     map_capture::PlayersJob,
     sampling::{self, DivisionsJob, Shared},
 };
+use collector_air::extended::{
+    air::{AirBasesJob, AirBasesMemo, AirBasesMemoContext, AirStatsJob, AirWingJob},
+    fog::{IntelJob, RadarJob},
+};
+use collector_characters::extended::characters::{
+    CharactersJob, PART_MASKS as CHARACTER_MASKS, PARTS as CHARACTER_PARTS,
+};
+use collector_naval_history::extended::naval_history::{NavalJob, SunkJob, SupremacyJob};
 use replay_data::rows::TableId;
 
 use std::sync::{
@@ -29,8 +32,8 @@ pub use pools::*;
 
 pub const RELATIONS: [TableId; 2] = [TableId::RelationOpinions, TableId::RelationTuples];
 
-pub const CHARACTERS: [TableId; crate::extended::characters::N] =
-    crate::extended::characters::TABLES;
+pub const CHARACTERS: [TableId; collector_characters::extended::characters::N] =
+    collector_characters::extended::characters::TABLES;
 
 pub const PROJECTS: [TableId; 2] = crate::extended::projects::RAW;
 
@@ -178,8 +181,9 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 static WORKER_ID: AtomicU32 = AtomicU32::new(0);
 
-mod failure;
-pub(crate) use failure::{HookGuard as PanicHook, first as panic_failure};
+#[cfg(test)]
+use collector_workers::panic_failure::HookGuard as PanicHook;
+use collector_workers::panic_failure::{self as failure, first as panic_failure};
 
 pub(crate) fn owned_failed() -> bool {
     crate::allocation::failed() || panic_failure().is_some()
@@ -281,9 +285,8 @@ impl Retirement {
     fn take(&self, mut spare: Vec<RetiredPayload>, frames: usize) -> Vec<RetiredPayload> {
         let room = frames.saturating_mul(PAYLOADS_PER_FRAME);
         if spare.capacity() < room {
-            let _ = engine_allocation::advisory(|| {
-                engine_allocation::reserve_exact(&mut spare, room)
-            });
+            let _ =
+                engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut spare, room));
         }
         std::mem::replace(&mut *self.lock(), spare)
     }
@@ -891,7 +894,7 @@ pub fn start_worker() -> Result<(), &'static str> {
             .name("hoi4-decode".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(|| {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 #[cfg(feature = "worker_sampler")]
@@ -1024,18 +1027,58 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
             fail_family(frame, family, MISSING_PAYLOAD_REASON);
         }
     };
-    missing(job.relations_refresh, job.relations_payload.is_some(), Family::Relations);
+    missing(
+        job.relations_refresh,
+        job.relations_payload.is_some(),
+        Family::Relations,
+    );
     for (part, &refresh) in job.characters_refresh.iter().enumerate() {
-        missing(refresh, job.characters_payload[part].is_some(), Family::Characters(part));
+        missing(
+            refresh,
+            job.characters_payload[part].is_some(),
+            Family::Characters(part),
+        );
     }
-    missing(job.projects_refresh, job.projects_payload.is_some(), Family::Projects);
-    missing(job.lexical_refresh, job.lexical_payload.is_some(), Family::Lexical);
-    missing(job.divisions_refresh, job.divisions_payload.is_some(), Family::Divisions);
-    missing(job.air_stats_refresh, job.air_stats_payload.is_some(), Family::AirStats);
-    missing(job.air_wing_refresh, job.air_wing_payload.is_some(), Family::AirWing);
-    missing(job.naval_refresh, job.naval_payload.is_some(), Family::Naval);
-    missing(job.players_refresh, job.players_payload.is_some(), Family::Players);
-    missing(job.session_refresh, job.session_payload.is_some(), Family::Session);
+    missing(
+        job.projects_refresh,
+        job.projects_payload.is_some(),
+        Family::Projects,
+    );
+    missing(
+        job.lexical_refresh,
+        job.lexical_payload.is_some(),
+        Family::Lexical,
+    );
+    missing(
+        job.divisions_refresh,
+        job.divisions_payload.is_some(),
+        Family::Divisions,
+    );
+    missing(
+        job.air_stats_refresh,
+        job.air_stats_payload.is_some(),
+        Family::AirStats,
+    );
+    missing(
+        job.air_wing_refresh,
+        job.air_wing_payload.is_some(),
+        Family::AirWing,
+    );
+    missing(
+        job.naval_refresh,
+        job.naval_payload.is_some(),
+        Family::Naval,
+    );
+    missing(
+        job.players_refresh,
+        job.players_payload.is_some(),
+        Family::Players,
+    );
+    missing(
+        job.session_refresh,
+        job.session_payload.is_some(),
+        Family::Session,
+    );
     missing(
         job.production_rest_refresh,
         job.production_rest_payload.is_some(),
@@ -1051,12 +1094,32 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
         job.economy_rest_payload.is_some(),
         Family::EconomyRest,
     );
-    missing(job.air_bases_refresh, job.air_bases_payload.is_some(), Family::AirBases);
-    missing(job.supremacy_refresh, job.supremacy_payload.is_some(), Family::Supremacy);
+    missing(
+        job.air_bases_refresh,
+        job.air_bases_payload.is_some(),
+        Family::AirBases,
+    );
+    missing(
+        job.supremacy_refresh,
+        job.supremacy_payload.is_some(),
+        Family::Supremacy,
+    );
     missing(job.sunk_refresh, job.sunk_payload.is_some(), Family::Sunk);
-    missing(job.radar_refresh, job.radar_payload.is_some(), Family::Radar);
-    missing(job.intel_refresh, job.intel_payload.is_some(), Family::Intel);
-    missing(job.weather_refresh, job.weather_payload.is_some(), Family::Weather);
+    missing(
+        job.radar_refresh,
+        job.radar_payload.is_some(),
+        Family::Radar,
+    );
+    missing(
+        job.intel_refresh,
+        job.intel_payload.is_some(),
+        Family::Intel,
+    );
+    missing(
+        job.weather_refresh,
+        job.weather_payload.is_some(),
+        Family::Weather,
+    );
     missing(
         job.capitulation_refresh,
         job.capitulation_payload.is_some(),
@@ -1078,11 +1141,7 @@ fn decode_contained(
     refused
 }
 
-fn process_job(
-    shared: &Shared,
-    job: &mut DecodeJob,
-    air_bases_memo: &mut AirBasesMemo,
-) {
+fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBasesMemo) {
     failure::stage("missing payload verdicts", None);
     if !job.air_bases_refresh || job.air_bases_payload.is_none() {
         air_bases_memo.invalidate();
@@ -1159,10 +1218,11 @@ fn process_job(
         failure::stage("lexical", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Lexical, |frame| {
-            frame
-                .extended
-                .lexical_pilot()
-                .decode_lexical_payload(shared.base, payload, &mut decode_ticks);
+            frame.extended.lexical_pilot().decode_lexical_payload(
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
         });
         account_decode(shared, &LEXICAL, &decode_ticks);
     }
@@ -1183,7 +1243,7 @@ fn process_job(
         failure::stage("air_wing", None);
         let mut decode_ticks = [0; 2];
         decode_contained(shared, index, Family::AirWing, |frame| {
-            crate::extended::air::decode_air_payload(
+            collector_air::extended::air::decode_air_payload(
                 frame.extended.air_wing_pilot(),
                 payload,
                 &mut decode_ticks,
@@ -1202,7 +1262,7 @@ fn process_job(
         failure::stage("air_stats", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::AirStats, |frame| {
-            crate::extended::air::decode_air_stats_payload(
+            collector_air::extended::air::decode_air_stats_payload(
                 frame.extended.air_stats_pilot(),
                 shared.base,
                 payload,
@@ -1341,10 +1401,11 @@ fn process_job(
         failure::stage("sunk", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Sunk, |frame| {
-            frame
-                .extended
-                .sunk_pilot()
-                .decode_sunk_payload(shared.base, payload, &mut decode_ticks);
+            frame.extended.sunk_pilot().decode_sunk_payload(
+                shared.base,
+                payload,
+                &mut decode_ticks,
+            );
         });
         account_decode(shared, &SUNK, &decode_ticks);
     }
@@ -1430,9 +1491,11 @@ fn decode_presentation(shared: &Shared, index: usize) {
     let ticks = frame.extended.decode_division_presentation_inputs();
     account_decode(shared, &[TableId::DivisionMovement], &ticks[..1]);
     #[cfg(feature = "acquisition_profile")]
-    account_decode(shared, &[TableId::DivisionStatus], &[
-        (sampling::qpc().saturating_sub(started).max(0) as u64).saturating_sub(ticks[0])
-    ]);
+    account_decode(
+        shared,
+        &[TableId::DivisionStatus],
+        &[(sampling::qpc().saturating_sub(started).max(0) as u64).saturating_sub(ticks[0])],
+    );
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
     }
@@ -1453,17 +1516,17 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     }
     #[cfg(feature = "worker_sampler")]
     if worker.is_some() {
-        crate::worker_sampler::stop_before_thread_exit();
+        collector_workers::worker_sampler::stop_before_thread_exit();
     }
     if let Some(handle) = worker
         && let Err(payload) = handle.join()
     {
-        crate::equipment_destruction::lost_drain();
-        crate::naval_result_sources::lost_drain();
+        collector_equipment_destruction::equipment_destruction::lost_drain();
+        collector_naval_results::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
         crate::nuclear_strikes::lost_drain();
-        crate::land_events::fail();
+        collector_land_events::land_events::fail();
         error = Some(failure::joined(
             payload,
             "decode worker panicked; its in-flight frame may be incomplete",
@@ -1486,12 +1549,12 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
             drained(count);
         }
     })) {
-        crate::equipment_destruction::lost_drain();
-        crate::naval_result_sources::lost_drain();
+        collector_equipment_destruction::equipment_destruction::lost_drain();
+        collector_naval_results::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
         crate::nuclear_strikes::lost_drain();
-        crate::land_events::fail();
+        collector_land_events::land_events::fail();
         let reason = failure::joined(
             payload,
             "decode detach drain panicked; queued frames remain incomplete",

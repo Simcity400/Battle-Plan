@@ -28,9 +28,15 @@ pub struct AdjacencyIcons {
     pub areas: BTreeMap<u32, Arc<[u32]>>,
     pub cutoff: Result<f32, String>,
     pub refused: BTreeMap<String, usize>,
+    pub build: Option<String>,
 }
 
 impl AdjacencyIcons {
+    pub fn with_build(mut self, build: impl Into<String>) -> Self {
+        self.build = Some(build.into());
+        self
+    }
+
     pub fn new(rules: &[AdjacencyRule], defines: &Defines) -> Self {
         let cutoff = defines
             .number("NGraphics", "ADJACENCY_RULE_DISTANCE_CUTOFF")
@@ -83,6 +89,7 @@ impl AdjacencyIcons {
             areas,
             cutoff,
             refused,
+            build: None,
         }
     }
 }
@@ -120,6 +127,7 @@ pub struct Hit {
 pub struct PreparedAdjacencyIcons {
     placed: Vec<Placed>,
     pub report: BTreeMap<String, usize>,
+    build: Option<String>,
 }
 
 impl PreparedAdjacencyIcons {
@@ -136,6 +144,7 @@ impl AdjacencyIcons {
     pub fn prepare(&self, inputs: &Inputs<'_>) -> PreparedAdjacencyIcons {
         let mut out = PreparedAdjacencyIcons {
             report: self.refused.clone(),
+            build: self.build.clone(),
             ..Default::default()
         };
         if !inputs.visibility.adjacency_rules || self.icons.is_empty() {
@@ -236,7 +245,7 @@ impl PreparedAdjacencyIcons {
             .enumerate()
             .map(|(ordinal, placed)| (placed.province, ordinal))
             .collect();
-        view.present_recorded(
+        view.present_recorded_for_build(
             context,
             &Plan {
                 name: ADJACENCY_RULE_WINDOW,
@@ -244,6 +253,7 @@ impl PreparedAdjacencyIcons {
                 alignment: ALIGNMENT,
                 owners: &owners,
             },
+            self.build.as_deref(),
             Box::new(|_, _| Ok(())),
             |_, _, _, _| Ok(()),
             |_| (),

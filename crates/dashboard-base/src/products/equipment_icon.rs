@@ -304,7 +304,7 @@ pub fn inputs_stamped(layers: &content_reader_core::ResolvedLayers) -> io::Resul
         return Ok(false);
     }
     let default_map = content_reader_core::terrain::read_default_map(layers)?;
-    for name in ["definitions", "continent"] {
+    for name in ["definitions", "provinces", "continent"] {
         let Ok(path) = default_map.file(name) else {
             return Ok(false);
         };
@@ -323,9 +323,7 @@ impl IconContent {
         registry: &content_reader_core::gui::native::resources::Registry,
     ) -> io::Result<Self> {
         let default_map = content_reader_core::terrain::read_default_map(&layers)?;
-        let provinces = content_reader_core::map::parse_definitions(
-            &layers.read(&default_map.file("definitions")?)?,
-        )?;
+        let provinces = content_reader_core::map::load_definitions(&layers)?;
         let defines = content_reader_core::defines::read(&layers)?;
         let mut warnings = Vec::new();
         let names = equipment_graphics::Names::read(&layers, &default_map, &mut warnings)?;
@@ -376,9 +374,7 @@ impl IconContent {
     ) -> io::Result<Self> {
         let layers = &catalogue.content.layers;
         let default_map = content_reader_core::terrain::read_default_map(layers)?;
-        let provinces = content_reader_core::map::parse_definitions(
-            &layers.read(&default_map.file("definitions")?)?,
-        )?;
+        let provinces = content_reader_core::map::load_definitions(layers)?;
         let defines = content_reader_core::defines::read(layers)?;
         let mut warnings = Vec::new();
         let files = Arc::clone(&catalogue);
@@ -524,14 +520,19 @@ impl IconContent {
     pub fn warnings(&self) -> Vec<String> {
         let mut warnings = self.load_warnings.clone();
         let refused = &self.enablers.refused;
-        if refused.is_empty() {
-            return warnings;
+        if !refused.is_empty() {
+            warnings.push(format!(
+                "{} technologies enable equipment through a script, which is not supported; icons that would use them are unknown: {}",
+                refused.len(),
+                refused.join("; ")
+            ));
         }
-        warnings.push(format!(
-            "{} technologies enable equipment through a script, which is not supported; icons that would use them are unknown: {}",
-            refused.len(),
-            refused.join("; ")
-        ));
+        if !self.enablers.unverified.is_empty() {
+            warnings.push(format!(
+                "technology equipment enablers are withheld because native technology reading failed: {}",
+                self.enablers.unverified.join("; ")
+            ));
+        }
         warnings
     }
 
@@ -545,6 +546,14 @@ impl IconContent {
         warnings.extend(self.enablers.refused.iter().map(|definition| {
             (content_reader_core::DiagnosticKind::Unsupported,
                 format!("technology {definition} enables equipment through a script, which is not supported; icons that would use it are unknown"))
+        }));
+        warnings.extend(self.enablers.unverified.iter().map(|reason| {
+            (
+                content_reader_core::DiagnosticKind::Unsettled,
+                format!(
+                    "technology equipment enablers withheld because native technology reading failed: {reason}"
+                ),
+            )
         }));
         warnings.extend(self.pools.refusals().into_iter().map(|(subject, reason)| {
             (
@@ -582,13 +591,19 @@ impl IconContent {
                     let mut bases = vec![key.as_str()];
                     bases.extend(model.archetype);
                     for name in [Some(key.as_str()), model.archetype].into_iter().flatten() {
-                        if let Ok(Some(enabler)) = self.enablers.single(name) {
-                            bases.push(&enabler.id);
-                            match &enabler.parent {
-                                Ok(parent) => bases.extend(parent.as_deref()),
-                                Err(reason) => {
-                                    refusals.insert(reason.clone());
+                        match self.enablers.single(name) {
+                            Ok(Some(enabler)) => {
+                                bases.push(&enabler.id);
+                                match &enabler.parent {
+                                    Ok(parent) => bases.extend(parent.as_deref()),
+                                    Err(reason) => {
+                                        refusals.insert(reason.clone());
+                                    }
                                 }
+                            }
+                            Ok(None) => {}
+                            Err(reason) => {
+                                refusals.insert(reason);
                             }
                         }
                     }

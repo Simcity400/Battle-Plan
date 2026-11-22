@@ -49,7 +49,11 @@ impl Shape {
                 std::array::from_fn(|axis| max[axis].max(next.max[axis])),
             )
         });
-        Some(Self::Bounds { min: min.map(|v| v * scale), max: max.map(|v| v * scale) })
+        let (a, b) = (min.map(|v| v * scale), max.map(|v| v * scale));
+        Some(Self::Bounds {
+            min: std::array::from_fn(|axis| a[axis].min(b[axis])),
+            max: std::array::from_fn(|axis| a[axis].max(b[axis])),
+        })
     }
 
     pub fn reach(&self) -> Option<f32> {
@@ -72,8 +76,16 @@ impl Shape {
                     }),
                     None => (*min, *max),
                 };
-                let place = |corner: [f32; 3]| std::array::from_fn(|axis| corner[axis] * instance.scale + instance.position[axis]);
-                slab(place(min), place(max), origin, direction)
+                let place = |corner: [f32; 3]| -> [f32; 3] {
+                    std::array::from_fn(|axis| corner[axis] * instance.scale + instance.position[axis])
+                };
+                let (a, b) = (place(min), place(max));
+                slab(
+                    std::array::from_fn(|axis| a[axis].min(b[axis])),
+                    std::array::from_fn(|axis| a[axis].max(b[axis])),
+                    origin,
+                    direction,
+                )
             }
         }
     }
@@ -422,6 +434,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(Shape::bounds(&decoded, 2.0), Some(Shape::Bounds { min: [-2.0, 0.0, 0.0], max: [2.0, 4.0, 2.0] }));
+        let mirrored = Shape::bounds(&decoded, -2.0).unwrap();
+        assert_eq!(mirrored, Shape::Bounds { min: [-2.0, -4.0, -2.0], max: [2.0, 0.0, 0.0] });
+        assert!(mirrored.hit(at([10.0, 0.0, 10.0]), &[], [9.0, 5.0, 9.0], DOWN));
+        assert!(mirrored.hit(ModelInstance { position: [10.0, 0.0, 10.0], scale: -1.0, ..Default::default() }, &[], [11.0, 5.0, 11.0], DOWN));
         assert_eq!(Shape::bounds(&mesh::Mesh::default(), 1.0), None);
     }
 }

@@ -1453,6 +1453,7 @@ fn draw_land_action_fixture_with(
                 flotillas: Vec::new(),
                 positions: Vec::new(),
                 units: Vec::new(),
+                layout: counter_move::DrawnLayout::new(inputs.hour),
                 icons: Vec::new(),
                 source_kinds: Vec::new(),
                 groups: Vec::new(),
@@ -3635,7 +3636,11 @@ fn counter_parts_never_take_unknown_vision_sharing_as_no() {
         Vision::read(&frame, &links, &tags, &choice, Err("no fog content")).unwrap()
     };
     let missing = SharingUnknown::Relations("FactionMembers");
-    let countries = Countries::default();
+    let countries = countries([
+        (0, Allegiance::Ours),
+        (1, Allegiance::Other),
+        (2, Allegiance::Other),
+    ]);
     let templates = TemplateIcons {
         by_template: [(
             10,
@@ -5590,4 +5595,73 @@ fn the_dominance_sources_are_made_where_no_naval_mission_icon_draws() {
             assert_eq!((*tables.naval_dominance_sources()).as_ref().map(BTreeMap::len), Ok(0), "naval mission icons drawn: {naval_missions}");
         }
     });
+}
+
+#[test]
+fn unknown_relations_keep_distinct_foreign_owners_apart_in_land_and_naval_grouping() {
+    let countries = countries([(0, Allegiance::Ours)]);
+    let templates = TemplateIcons {
+        grouping: [(10, (b"infantry".to_vec(), -1, 0))].into(),
+        ..Default::default()
+    };
+    let foreign_a = land_unit(1, 1, 10, 10, false);
+    let foreign_a2 = land_unit(2, 1, 10, 10, false);
+    let foreign_b = land_unit(3, 2, 10, 10, false);
+    assert_eq!(
+        foreign_a2.can_join(&foreign_a, &templates, &countries, rules(true)),
+        Ok(true)
+    );
+    assert_eq!(
+        foreign_b.can_join(&foreign_a, &templates, &countries, rules(true)),
+        Ok(false)
+    );
+    assert_eq!(
+        foreign_b.can_join(&foreign_a, &templates, &countries, rules(false)),
+        Ok(false)
+    );
+
+    let vision = Vision::default();
+    let native = NativeInputs::default();
+    let context = naval_context(&vision, &native, BTreeMap::new());
+    let force = |id| replay_data::rows::TaskForceRow {
+        id,
+        mission: 1,
+        ..Default::default()
+    };
+    let (fa, fa2, fb) = (force(10), force(11), force(12));
+    fn unit(force: &replay_data::rows::TaskForceRow, slot: u32) -> NavalUnit<'_> {
+        NavalUnit {
+            force,
+            ordinal: 0,
+            slot,
+            logical: Some(slot),
+            flag_owner: slot,
+            sight: Sight::Full,
+            byte: 255,
+            ships: Some(1),
+            position: None,
+            strength: counter_status::FIXED,
+        }
+    }
+    assert!(naval_can_join(
+        &unit(&fa, 1),
+        &unit(&fa2, 1),
+        rules(true),
+        &countries,
+        &context
+    ));
+    assert!(!naval_can_join(
+        &unit(&fa, 1),
+        &unit(&fb, 2),
+        rules(true),
+        &countries,
+        &context
+    ));
+    assert!(!naval_can_join(
+        &unit(&fa, 1),
+        &unit(&fb, 2),
+        rules(false),
+        &countries,
+        &context
+    ));
 }

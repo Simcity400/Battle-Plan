@@ -1,4 +1,3 @@
-
 use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -9,7 +8,7 @@ use std::{
 pub(crate) type Job<'a> = dyn Fn() + Sync + 'a;
 
 pub(crate) fn pool_size() -> usize {
-    crate::acquisition::usable_cpus()
+    collector_workers::acquisition::usable_cpus()
         .saturating_sub(1)
         .min(crate::pack_conversion::MAX_HELPERS)
 }
@@ -110,7 +109,7 @@ impl SpoolHelper {
             .name("hoi4-spool-helper".into())
             .stack_size(crate::runtime::BACKGROUND_STACK_BYTES)
             .spawn(move || {
-                crate::private_heap::off_hold_path();
+                collector_workers::private_heap::off_hold_path();
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_exit = crate::thread_cpu::StopOnThreadExit;
                 let id = unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
@@ -190,7 +189,7 @@ impl Drop for SpoolHelper {
     fn drop(&mut self) {
         #[cfg(feature = "worker_sampler")]
         if self.thread.is_some() {
-            crate::worker_sampler::stop_before_thread_exit();
+            collector_workers::worker_sampler::stop_before_thread_exit();
         }
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();

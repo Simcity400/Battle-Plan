@@ -24,6 +24,8 @@ pub(crate) fn map_arrival(remaining: i64) -> Arrival {
     }
 }
 
+pub const ESTIMATED_SUFFIX: &str = " (estimated)";
+
 pub fn sentence(
     localisation: &content_reader_localisation::localisation::Localisation,
     arrival: &Arrival,
@@ -46,6 +48,19 @@ pub fn sentence(
     localisation
         .localise_with(key.as_bytes(), arguments)
         .map_err(|refusal| refusal.to_string())
+}
+
+pub fn estimated_sentence(
+    localisation: &content_reader_localisation::localisation::Localisation,
+    arrival: &Arrival,
+    ours: bool,
+) -> Result<String, String> {
+    let text = sentence(localisation, arrival, ours)?;
+    if text.is_empty() {
+        Ok(text)
+    } else {
+        Ok(format!("{text}{ESTIMATED_SUFFIX}"))
+    }
 }
 
 tooltip_keys! {
@@ -118,5 +133,18 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(sentence(&icon, &two, true), Ok("\u{13}time 1".into()));
+        assert_eq!(
+            estimated_sentence(&localisation, &one, true).as_deref(),
+            Ok("Arrives at its destination in \u{11}Y5\u{11}! \u{11}Yhour(s)\u{11}!. (estimated)")
+        );
+        assert_eq!(
+            estimated_sentence(&localisation, &two, false).as_deref(),
+            Ok("Next province in \u{11}Y1\u{11}! \u{11}Yday(s)\u{11}! and 5 h, . (estimated)")
+        );
+        let empty: content_reader_localisation::localisation::Localisation =
+            [("UNIT_MOVING_HOURS".to_owned(), String::new())]
+                .into_iter()
+                .collect();
+        assert_eq!(estimated_sentence(&empty, &one, true), Ok(String::new()));
     }
 }
