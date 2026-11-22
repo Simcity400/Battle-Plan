@@ -835,6 +835,9 @@ impl<'n> Reader<'n> {
             return;
         }
         if !self.advance() {
+            if !self.unknown_scopes.is_empty() && self.has_tokens_after_end() {
+                self.refuse_embedded_end(name.line);
+            }
             return;
         }
         if self.current().kind != Kind::Equals {
@@ -849,7 +852,7 @@ impl<'n> Reader<'n> {
                     line: token.line,
                     what: format!(
                         "definition {} ends block `{}` without `=` under unknown dispatch: a key reader consumes `}}` while a skip or list reader closes the block here",
-                        name.shown(),
+                        name.shown_reference(),
                         String::from_utf8_lossy(block),
                     ),
                 });
@@ -859,7 +862,7 @@ impl<'n> Reader<'n> {
                 name.line,
                 format!(
                     "definition {} has no `=`: the reader consumes {} and defines nothing",
-                    name.shown(),
+                    name.shown_reference(),
                     token.shown()
                 ),
             );
@@ -876,7 +879,7 @@ impl<'n> Reader<'n> {
                 line: peeked.line,
                 what: format!(
                     "definition {} has no value before `}}` in block `{}` under unknown dispatch: a key reader consumes `}}` as its value while a skip or list reader closes the block here",
-                    name.shown(),
+                    name.shown_reference(),
                     String::from_utf8_lossy(block),
                 ),
             });
@@ -892,21 +895,28 @@ impl<'n> Reader<'n> {
                     name.line,
                     format!(
                         "definition {} takes {}, which the variable reader leaves unread, so the next key read starts from it",
-                        name.shown(),
-                        token.shown()
+                        name.shown_reference(),
+                        token.shown_reference()
                     ),
                 );
                 resolved
             }
-            _ => {
+            peeked => {
                 self.advance();
+                if peeked.kind == Kind::End
+                    && !self.unknown_scopes.is_empty()
+                    && self.has_tokens_after_end()
+                {
+                    self.refuse_embedded_end(peeked.line);
+                    return;
+                }
                 let token = self.current();
                 if token.kind == Kind::Open {
                     self.variable_misread(
                         name.line,
                         format!(
                             "definition {} keeps only the `{{` of its block value; the block's contents are read as what follows",
-                            name.shown()
+                            name.shown_reference()
                         ),
                     );
                 }
@@ -927,7 +937,7 @@ impl<'n> Reader<'n> {
                 line: name.line,
                 what: format!(
                     "definition {} keeps `{{` inside block `{}` under unknown dispatch, so whether its closing brace ends the enclosing block is unknown",
-                    name.shown(),
+                    name.shown_reference(),
                     String::from_utf8_lossy(block),
                 ),
             });
@@ -942,6 +952,9 @@ impl<'n> Reader<'n> {
     pub fn key_operator_value(&mut self) -> Slots {
         loop {
             if !self.advance() {
+                if !self.unknown_scopes.is_empty() && self.has_tokens_after_end() {
+                    self.refuse_embedded_end(self.current.line);
+                }
                 return Slots::Ended;
             }
             if self.current().starts_with_at() {
@@ -951,19 +964,27 @@ impl<'n> Reader<'n> {
                     return Slots::Ended;
                 }
                 if !self.unknown_scopes.is_empty() {
-                    let peek = self.peek();
-                    let (closes, line) = (peek.kind == Kind::Close, peek.line);
-                    if closes && let Some((_, block)) = self.unknown_scopes.last() {
+                    let (peek_kind, line) = {
+                        let peek = self.peek();
+                        (peek.kind, peek.line)
+                    };
+                    if peek_kind == Kind::Close
+                        && let Some((_, block)) = self.unknown_scopes.last()
+                    {
                         self.unsettled = Some(Misread {
                             kind: crate::DiagnosticKind::Unsettled,
                             count: None,
                             line,
                             what: format!(
                                 "variable {} ends block `{}` under unknown dispatch: a key reader consumes `}}` as a key while a skip or list reader closes the block here",
-                                defined_name.shown(),
+                                defined_name.shown_reference(),
                                 String::from_utf8_lossy(block),
                             ),
                         });
+                        return Slots::Ended;
+                    }
+                    if peek_kind == Kind::End && self.has_tokens_after_end() {
+                        self.refuse_embedded_end(line);
                         return Slots::Ended;
                     }
                 }
@@ -971,9 +992,13 @@ impl<'n> Reader<'n> {
             }
             self.key = self.current();
             if !self.unknown_scopes.is_empty() {
-                let peek = self.peek();
-                let (closes, line) = (peek.kind == Kind::Close, peek.line);
-                if closes && let Some((_, block)) = self.unknown_scopes.last() {
+                let (peek_kind, line) = {
+                    let peek = self.peek();
+                    (peek.kind, peek.line)
+                };
+                if peek_kind == Kind::Close
+                    && let Some((_, block)) = self.unknown_scopes.last()
+                {
                     self.unsettled = Some(Misread {
                         kind: crate::DiagnosticKind::Unsettled,
                         count: None,
@@ -986,17 +1011,35 @@ impl<'n> Reader<'n> {
                     });
                     return Slots::Ended;
                 }
+                if peek_kind == Kind::End && self.has_tokens_after_end() {
+                    self.refuse_embedded_end(line);
+                    return Slots::Ended;
+                }
             }
             if !self.advance() || !self.current().operator() {
                 return Slots::NoOperator;
             }
             self.operator = self.current().as_operator();
-            let peeked = self.peek();
-            let value = if peeked.kind == Kind::Close {
-                Token::end(peeked.line)
+            let (peek_kind, peek_line) = {
+                let peek = self.peek();
+                (peek.kind, peek.line)
+            };
+            let value = if peek_kind == Kind::Close {
+                Token::end(peek_line)
             } else {
                 self.advance();
-                self.resolve(self.current())
+                let value = self.resolve(self.current());
+                if self.unsettled.is_some() {
+                    return Slots::Ended;
+                }
+                if !self.unknown_scopes.is_empty()
+                    && peek_kind == Kind::End
+                    && self.has_tokens_after_end()
+                {
+                    self.refuse_embedded_end(peek_line);
+                    return Slots::Ended;
+                }
+                value
             };
             self.value = value;
             return Slots::Fresh;
@@ -2222,7 +2265,7 @@ impl<'n> Reader<'n> {
                 let line = raw_token.line;
                 self.current = self.resolve(raw_token);
                 if self.unsettled.is_none() && self.has_tokens_after_end() {
-                    self.refuse_balanced_end(line);
+                    self.refuse_embedded_end(line);
                 }
                 return items;
             }
@@ -2281,7 +2324,7 @@ impl<'n> Reader<'n> {
                             return items;
                         }
                         if raw_value.kind == Kind::End && self.has_tokens_after_end() {
-                            self.refuse_balanced_end(raw_value.line);
+                            self.refuse_embedded_end(raw_value.line);
                             return items;
                         }
                         if raw_value.kind != value.kind
@@ -2325,7 +2368,7 @@ impl<'n> Reader<'n> {
             .any(|token| token.kind != Kind::End || !token.text.is_empty())
     }
 
-    fn refuse_balanced_end(&mut self, line: u32) {
+    fn refuse_embedded_end(&mut self, line: u32) {
         if self.unsettled.is_some() {
             return;
         }

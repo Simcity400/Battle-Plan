@@ -1010,4 +1010,15 @@ adjacency_rule = {
         assert_eq!(rules[0].name, "A");
         assert_eq!(rules[0].is_enemy.len(), 1);
     }
+
+    #[test]
+    fn embedded_end_marker_in_keyed_unknown_block_refuses_before_accepting_icon() {
+        engine_executable::executable_tables::enter(None);
+        let error = parse(
+            b"adjacency_rule = { name = A is_enemy = { opaque = { k = 1\xff } } @x = 7 icon = @x }",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("opaque"), "{error}");
+    }
 }

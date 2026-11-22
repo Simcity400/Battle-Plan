@@ -1438,3 +1438,21 @@ fn balanced_embedded_end_marker_refuses_instead_of_continuing_past_scan() {
     assert_eq!(opaque[0].value, Value::Scalar(b"one".to_vec()));
     assert_eq!(opaque[1].value, Value::Scalar(b"two".to_vec()));
 }
+
+#[test]
+fn eof_variable_copy_warning_keeps_retained_source_name() {
+    let read = read(
+        b"@source = 7 @copy = @source",
+        Mode::KeepMark,
+        Top::File(()),
+        None,
+        &mut |(), _| Shape::One,
+    );
+    assert!(
+        read.misreads
+            .iter()
+            .any(|note| note.what.contains("@source")),
+        "{:?}",
+        read.misreads
+    );
+}
