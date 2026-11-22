@@ -10,10 +10,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use viewer_foundation::map::{
-    perspective::{Choice, Resolution},
-    visibility::{AirDefines, NavalDefines},
-};
+use viewer_foundation::{perspective::{Choice, Resolution}, visibility::{AirDefines, NavalDefines}};
 
 pub(super) const READ: [TableId; 9] = [
     TableId::CountryLinks,
@@ -188,7 +185,7 @@ impl Global {
             let raw = if (country as i32) > 0 { country } else { observer };
             ((raw as i32) > 0).then_some(raw).and_then(|raw| global.links.get(&raw).copied())
         });
-        if let viewer_foundation::map::perspective::Country::Tag(chosen) = &choice.country
+        if let viewer_foundation::perspective::Country::Tag(chosen) = &choice.country
             && let Some(&(slot, id)) = unnamed.first()
             && !global.tags.values().any(|tag| tag.eq_ignore_ascii_case(chosen))
         {

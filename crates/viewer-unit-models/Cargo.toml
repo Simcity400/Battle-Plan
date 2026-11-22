@@ -13,6 +13,10 @@ doctest = false
 test-support = ["content-reader-core/test-support", "dashboard-text/test-support", "replay-data/test-support", "replay-frame/test-support"]
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
 content-reader-core.workspace = true
 content-reader-equipment-graphics.workspace = true
 content-reader-image.workspace = true
@@ -23,11 +27,14 @@ dashboard-text.workspace = true
 game-model.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
-viewer-foundation.workspace = true
 viewer-models.workspace = true
 viewer-unit-history.workspace = true
 
 [dev-dependencies]
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
+viewer-runtime = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
@@ -36,7 +43,6 @@ engine-heap.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 viewer-buildings.workspace = true
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-models = { workspace = true, features = ["test-support"] }
 viewer-scene-base.workspace = true
 viewer-unit-history = { workspace = true, features = ["test-support"] }
@@ -49,12 +55,10 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-num-traits = { workspace = true }

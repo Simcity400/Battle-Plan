@@ -18,10 +18,11 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::presentation::Continuity;
-use viewer_foundation::table_access::TokenNames;
+use viewer_runtime::presentation::Continuity;
+use dashboard_text::table_access::TokenNames;
 use viewer_models::{entity_animation::Random, KeyedInstance, ModelField, ModelInstance, ModelLibrary};
-use viewer_foundation::map::{province_map::HeightField, tables::{core, rows}};
+use viewer_gpu::province_map::HeightField;
+use viewer_foundation::tables::{core, rows};
 
 pub const SEED: u32 = 0x5452_4149;
 
@@ -587,8 +588,8 @@ impl TrainPlan {
                 Some(service)
             })
             .collect();
-        viewer_foundation::view_record::add("trains", "installs", 1);
-        viewer_foundation::view_record::add("trains", "dropped_at_install", (running - self.services.len()) as u64);
+        viewer_runtime::view_record::add("trains", "installs", 1);
+        viewer_runtime::view_record::add("trains", "dropped_at_install", (running - self.services.len()) as u64);
     }
 
     pub fn diagnostics(&self, assets: &TrainAssets) -> Vec<String> {
@@ -926,7 +927,7 @@ impl TrainPlan {
             let lifetime = self.routes[service.route].lifetime(&service.cars, assets);
             (f64::from(time) - service.departed) * speed <= f64::from(lifetime)
         });
-        if viewer_foundation::view_record::on() {
+        if viewer_runtime::view_record::on() {
             let delta = self.drawn_time.map_or(0.0, |was| (time - was).max(0.0));
             let allowed = speed as f32 * delta + 0.1;
             let mut drawn = Vec::with_capacity(self.services.len());
@@ -944,9 +945,9 @@ impl TrainPlan {
             }
             self.drawn = drawn;
             self.drawn_time = Some(time);
-            viewer_foundation::view_record::set("trains", "running", self.services.len() as u64);
-            viewer_foundation::view_record::add("trains", "jumps", jumps);
-            viewer_foundation::view_record::set("trains", "largest_move_past_own_speed_milli", (largest.max(0.0) * 1000.0) as u64);
+            viewer_runtime::view_record::set("trains", "running", self.services.len() as u64);
+            viewer_runtime::view_record::add("trains", "jumps", jumps);
+            viewer_runtime::view_record::set("trains", "largest_move_past_own_speed_milli", (largest.max(0.0) * 1000.0) as u64);
         }
         for service in &self.services {
             let route = &self.routes[service.route];
@@ -1514,7 +1515,7 @@ mod tests {
         rows::Recorded, rows::ReservedCountryNamingRow, rows::TableId, rows::TableRows,
     };
     use replay_frame::{frame::Metrics, frame::TableView};
-    use viewer_foundation::map::presentation::Continuity;
+    use viewer_runtime::presentation::Continuity;
 
     fn creator_frame(original_tag: Recorded<Option<Vec<u8>>>) -> DecodedFrame {
         let original_tag_reference = Recorded::Value(Some(

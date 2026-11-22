@@ -2,11 +2,8 @@ use super::radar_symbols::{Centers, Field, Symbol};
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use std::collections::BTreeMap;
-use viewer_foundation::map::{
-    air_range::{self, Sources},
-    air_registry_sources::AirRegistrySources,
-    province_map::HeightField,
-};
+use viewer_unit_reads::{air_range::{self, Sources}, air_registry_sources::AirRegistrySources};
+use viewer_gpu::province_map::HeightField;
 
 const GROUPS: usize = 128;
 type Sample = ([i32; 2], i64, bool);
@@ -292,7 +289,7 @@ impl Fields {
 fn carrier_base(
     roster: &mut [Option<&replay_data::rows::ShipModelRow>],
 ) -> Result<Option<u64>, String> {
-    use viewer_foundation::map::counter_order;
+    use viewer_unit_reads::counter_order;
     if roster
         .iter()
         .any(|model| model.is_none_or(|model| model.counter.is_none()))
@@ -481,7 +478,7 @@ mod tests {
     #[test]
     fn a_hover_uses_the_first_carrier_in_ship_roster_order_even_when_its_base_is_null() {
         use replay_data::{rows::ShipCounterInputs, rows::ShipModelRow};
-        use viewer_foundation::map::counter_order::{CARRIER_FLAG, MISSILE_CARRIER_FLAG};
+        use viewer_unit_reads::counter_order::{CARRIER_FLAG, MISSILE_CARRIER_FLAG};
         let model = |roster_ordinal,
                      formation_flags,
                      positive_equipment_flags,

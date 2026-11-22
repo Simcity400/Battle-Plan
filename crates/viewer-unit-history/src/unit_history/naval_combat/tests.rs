@@ -3,7 +3,8 @@ use super::*;
 use content_reader_core::{mesh::Animation, mesh::EntityState, mesh::Mesh, mesh::NavalHitMissEffect};
 use viewer_models::entity_animation::{Clip, Node};
 use crate::unit_history::{self, Kind};
-use viewer_foundation::{map::model_admission::Gates, unit_class::CounterClass};
+use viewer_unit_reads::model_admission::Gates;
+use viewer_runtime::unit_class::CounterClass;
 
 const COMBAT: u64 = 0x1234_5678_0000_002b;
 
@@ -1108,11 +1109,8 @@ fn retained_province_frames_preserve_sparse_high_ids() {
 
 fn check_retained_province_frames(stride: u32, last_id: u32) {
     use unit_history::{Target, test_support::GATES, test_support::target as unit_target};
-    use viewer_foundation::{
-        map::camera::{MapDefines, MapSize, Placement},
-        map::province_admission::Admission,
-        unit_handle::Unit,
-    };
+    use viewer_gpu::{camera::{MapDefines, MapSize, Placement}, province_admission::Admission};
+    use viewer_runtime::unit_handle::Unit;
     content_reader_core::test_game::enter();
     let ids: Vec<_> = (0..192u32)
         .map(|index| index * stride + 7)

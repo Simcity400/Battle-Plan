@@ -16,7 +16,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use viewer_scene_base::{particle_shader::{self, Instance, Packet}, shader_scene::Partial};
-use viewer_foundation::map::gpu_contract::{self, Targets};
+use viewer_gpu::gpu_contract::{self, Targets};
 
 pub struct Inputs<'a> {
     pub frame: &'a [u8],
@@ -166,14 +166,14 @@ impl EntitySimulations {
         entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[viewer_models::entity_animation::Event],
     ) -> io::Result<()> {
-        let reset_span = viewer_foundation::profiling::span("entity_reset");
+        let reset_span = viewer_runtime::profiling::span("entity_reset");
         for runtimes in self.0.values_mut() {
             for runtime in runtimes.values_mut() {
                 runtime.seen = None;
             }
         }
         drop(reset_span);
-        let register_span = viewer_foundation::profiling::span("entity_register");
+        let register_span = viewer_runtime::profiling::span("entity_register");
         let mut failure = None;
         'events: for (at, event) in events.iter().enumerate() {
             let Some(name) = &event.definition.particle else {
@@ -212,7 +212,7 @@ impl EntitySimulations {
             }
         }
         drop(register_span);
-        let advance_span = viewer_foundation::profiling::span("entity_advance");
+        let advance_span = viewer_runtime::profiling::span("entity_advance");
         {
             for (name, runtimes) in self.0.iter_mut() {
                 let Some((scale, emitters)) = entities.get(name) else {
@@ -248,8 +248,8 @@ impl EntitySimulations {
             }
         }
         drop(advance_span);
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             let [mut runtimes, mut particles, mut advanced, mut advanced_particles] = [0; 4];
             for held in self.0.values() {
                 runtimes += held.len() as u64;
@@ -276,7 +276,7 @@ impl EntitySimulations {
         if let Some(error) = failure {
             return Err(error);
         }
-        let _retire_span = viewer_foundation::profiling::span("entity_retire");
+        let _retire_span = viewer_runtime::profiling::span("entity_retire");
         let alive = |runtime: &EntityRuntime| {
             runtime.seen.is_some()
                 && (runtime.simulation.emitting || !runtime.simulation.particles.is_empty())
@@ -940,7 +940,7 @@ impl Renderer {
         inputs: Inputs<'_>,
         packets: &[DrawPacket],
     ) -> io::Result<()> {
-        let _profile = viewer_foundation::profiling::thread_span("weather_prepare_lower");
+        let _profile = viewer_runtime::profiling::thread_span("weather_prepare_lower");
         let mut planned_uploads = std::mem::take(&mut self.packing);
         planned_uploads.clear_view();
         let mut applied = Applied::default();
@@ -955,8 +955,8 @@ impl Renderer {
             .iter()
             .filter(|packet| packet.views.contains(view))
             .collect();
-        if viewer_foundation::view_record::on() {
-            use viewer_foundation::view_record::add;
+        if viewer_runtime::view_record::on() {
+            use viewer_runtime::view_record::add;
             let [mut empty, mut instances, mut trails] = [0; 3];
             for packet in &ordered {
                 empty += u64::from(packet.instances.is_empty());
@@ -1239,7 +1239,7 @@ impl Renderer {
         inputs.retained.inherit(&self.retained);
         planned_uploads.clear_view();
         self.packing = planned_uploads;
-        viewer_foundation::view_record::add("weather draw", "packets_drawn", drawn);
+        viewer_runtime::view_record::add("weather draw", "packets_drawn", drawn);
         Ok(())
     }
 }
@@ -1428,7 +1428,7 @@ mod tests {
     fn a_depth_sorted_runtime_submits_its_storage_after_one_pass_and_an_unsorted_one_as_held() {
         use viewer_models::{self as models, entity_animation};
         use content_reader_core::particles::Sort;
-        use viewer_foundation::map::camera::{Camera, MapDefines, MapSize, Pose};
+        use viewer_gpu::camera::{Camera, MapDefines, MapSize, Pose};
         let rig = entity_animation::pose_rig(1., false, true);
         let mut player = entity_animation::Player::new(&rig);
         let mut events = Vec::new();
@@ -1513,11 +1513,8 @@ mod tests {
             weather_packets,
         };
         use map_display_data::WeatherField as Field;
-        use viewer_foundation::map::{
-            camera::{Camera, MapDefines, MapSize, Pose},
-            presentation::Continuity,
-            province_admission::OPEN,
-        };
+        use viewer_gpu::{camera::{Camera, MapDefines, MapSize, Pose}, province_admission::OPEN};
+        use viewer_runtime::presentation::Continuity;
         let emitters = || {
             (0..3)
                 .map(|ordinal| {
@@ -1799,14 +1796,14 @@ mod tests {
 
     #[test]
     fn canonical_packets_use_seam_carriers_without_advancing_births() {
-        use viewer_foundation::map::camera::{Camera, MapDefines, MapSize};
+        use viewer_gpu::camera::{Camera, MapDefines, MapSize};
         let size = [1200, 800];
         let camera = Camera {
             center: [5., 400.],
             height: 600.,
             map: MapSize::TEST,
             defines: MapDefines::test(),
-            pose: viewer_foundation::map::camera::Pose::Map,
+            pose: viewer_gpu::camera::Pose::Map,
         };
         let anchor = [camera.map.x() - 5., 10., 400.];
         for local in [false, true] {

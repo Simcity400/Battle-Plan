@@ -16,7 +16,7 @@ use std::{
     },
 };
 use viewer_counters::map::counters::{AirBaseCount, BaseFacts, BaseValues, RadarCircle, RadarOutcome, RegistrationFacts, WingCensus, base_count, controlled_of, merge_count, radar_notes_of, site_kind, wing_base_of, wing_country};
-use viewer_foundation::map::perspective::{Choice, Vision};
+use viewer_foundation::perspective::{Choice, Vision};
 
 fn whole(mirror: Option<&Mirror>) -> Option<&Mirror> {
     mirror.filter(|mirror| mirror.status() == Some(Status::Complete))

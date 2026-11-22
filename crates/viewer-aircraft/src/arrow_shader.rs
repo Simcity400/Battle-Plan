@@ -6,7 +6,7 @@ use content_reader_core::{
 use content_reader_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::map::ribbon_content::{Mode, Vertex};
+use viewer_gpu::ribbon_content::{Mode, Vertex};
 
 pub fn shadow_constants(scene: &[u8], matrix: [[f32; 4]; 4]) -> Vec<u8> {
     let mut bytes = viewer_scene_base::tree_caster::constants(matrix);

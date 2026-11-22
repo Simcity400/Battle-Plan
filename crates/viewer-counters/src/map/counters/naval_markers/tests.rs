@@ -1,8 +1,8 @@
 use super::*;
 use replay_data::rows::NavalCombatShipRow;
 use replay_frame::{frame::Metrics, frame::TableView};
-use viewer_foundation::engaged::Ambiguity;
-use viewer_foundation::engagement_history::Provenance;
+use viewer_engagements::engaged::Ambiguity;
+use viewer_engagements::engagement_history::Provenance;
 
 #[test]
 fn the_convoy_addition_takes_the_counter_colour_mode() {
@@ -15,7 +15,7 @@ fn the_convoy_addition_takes_the_counter_colour_mode() {
         groups: BTreeMap::new(),
         ui_colors: UiColors {
             colors: BTreeMap::from([(3, Some([0.5, 0.25, 0.125, 1.0]))]),
-            inheritance: viewer_foundation::map::color_inheritance::Inheritance {
+            inheritance: viewer_foundation::color_inheritance::Inheritance {
                 inherited: BTreeMap::from([(4, 3)]),
                 ..Default::default()
             },

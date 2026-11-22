@@ -591,7 +591,7 @@ fn authored_color_runs_measure_only_drawable_glyphs() {
         coloured.glyphs.iter().map(|g| g.color).collect::<Vec<_>>(),
         vec![
             None,
-            Some(viewer_foundation::map::native_text::packed(lower_green)),
+            Some(viewer_native_gui::native_text::packed(lower_green)),
             None,
         ]
     );
@@ -606,7 +606,7 @@ fn authored_color_runs_measure_only_drawable_glyphs() {
         coloured_pair.glyphs.iter().map(|g| g.color).collect::<Vec<_>>(),
         vec![
             None,
-            Some(viewer_foundation::map::native_text::packed(upper_green)),
+            Some(viewer_native_gui::native_text::packed(upper_green)),
             None,
             None,
         ]

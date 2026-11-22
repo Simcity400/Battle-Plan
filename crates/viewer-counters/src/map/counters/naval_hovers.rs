@@ -1,12 +1,12 @@
 
 use super::*;
-use viewer_foundation::map::counter_hovers::gui_authored::Authored;
-use viewer_foundation::map::counter_hovers::task_force::{Control, Hover};
+use viewer_native_gui::counter_hovers::gui_authored::Authored;
+use viewer_native_gui::counter_hovers::task_force::{Control, Hover};
 #[cfg(test)]
-use viewer_foundation::map::gui_resources::contains;
+use viewer_runtime::geometry::contains;
 #[cfg(test)]
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::native_gui;
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::native_gui;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn presented(
@@ -20,7 +20,7 @@ pub(super) fn presented(
     unit_hit: usize,
     notes: &mut BTreeMap<String, usize>,
 ) -> Vec<Hover> {
-    let _observe_profile = viewer_foundation::profiling::span("dc_observe");
+    let _observe_profile = viewer_runtime::profiling::span("dc_observe");
     let mut out = Vec::new();
     let placed = native_gui::Layout {
         size: layout.size,
@@ -81,8 +81,8 @@ pub(super) fn presented(
 mod tests {
     use super::super::gui_windows::tests::at_sea_flotilla;
     use super::*;
-    use viewer_foundation::map::native_gui::lifecycle::Instance;
-    use viewer_foundation::map::test_support::{Fixture, VIEWPORT};
+    use viewer_native_gui::native_gui::lifecycle::Instance;
+    use viewer_native_gui::test_support::{Fixture, VIEWPORT};
 
     #[test]
     fn naval_inherited_controls_follow_visible_attachment_order_and_the_holder_clip() {

@@ -16,8 +16,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_foundation::map::{
-    memo::Keyed,
+use viewer_runtime::memo::Keyed;
+use viewer_foundation::{
     perspective::{Choice, VISION_TABLES, VisionKey, Vision as Seen, cached_vision},
     visibility::FogContent,
 };
@@ -66,7 +66,7 @@ impl Worker {
         let run = Run { source, branch, stepped, generation: Arc::clone(&generation), stop: Arc::clone(&stop), vision: Keyed::new(VISION_TABLES) };
         let living = Arc::clone(&alive);
         std::thread::Builder::new().name("map text".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             run.run(&received, &made);
             living.store(false, Ordering::Release);
         })?;

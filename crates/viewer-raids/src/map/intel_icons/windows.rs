@@ -1,15 +1,11 @@
 
 use super::*;
 use content_reader_core::{gui::native::Element, gui::native::Kind};
-use viewer_foundation::map::{
-    camera::Camera,
-    free_icons::{IconAnchor, IconFamily},
+use viewer_gpu::{camera::Camera, icon_tracks::{IconAnchor, IconFamily}};
+use viewer_native_gui::{
     gui_resources::{count_noted, count_refused},
     icon_windows,
-    native_gui::{
-        self, Hit, HitGeometry, SpriteSetter,
-        lifecycle::{Instance, Tick},
-    },
+    native_gui::{self, Hit, HitGeometry, SpriteSetter, lifecycle::{Instance, Tick}},
     native_resources::Context,
     native_windows::NativeWindows,
     sprites::{self, Batch},
@@ -56,7 +52,7 @@ pub fn prepare(
     let cutoff = defines.cutoff();
     out.report = icons.report.clone();
     let viewport =
-        viewer_foundation::map::gui_resources::viewport(inputs.viewport, inputs.ui_scale);
+        viewer_native_gui::gui_resources::viewport(inputs.viewport, inputs.ui_scale);
     let mut placed = Vec::with_capacity(icons.states.len());
     for (index, icon) in icons.states.iter().enumerate() {
         let world = match icon.anchor {
@@ -642,8 +638,8 @@ impl PreparedIntel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use viewer_foundation::map::native_gui::Resources as _;
-    use viewer_foundation::map::test_support::gui;
+    use viewer_native_gui::native_gui::Resources as _;
+    use viewer_native_gui::test_support::gui;
 
     #[test]
     fn operative_portrait_setter_uses_its_own_fallback_and_recovers_after_withheld() {

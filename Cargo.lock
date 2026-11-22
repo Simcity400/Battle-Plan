@@ -125,24 +125,18 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "app-update"
 version = "0.1.0"
 dependencies = [
- "adler2",
  "base64 0.22.1",
  "bitflags 1.3.2",
- "fdeflate",
- "flate2",
  "hashbrown 0.17.1",
  "lock_api",
  "log",
  "minisign-verify",
- "miniz_oxide 0.8.9",
- "miniz_oxide 0.9.1",
  "parking_lot",
  "reqwest",
  "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
- "simd-adler32",
  "smallvec",
  "tauri",
  "test-unify",
@@ -2290,7 +2284,6 @@ dependencies = [
 name = "collector-player-commands"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "collector-hooks",
  "collector-lifetime",
@@ -2571,7 +2564,6 @@ dependencies = [
 name = "collector-runtime"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "collector-advisors",
  "collector-air",
@@ -2800,7 +2792,6 @@ dependencies = [
 name = "collector-spool"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "collector-advisors",
  "collector-air",
@@ -3147,7 +3138,6 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 name = "content-reader"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-abilities",
  "content-reader-core",
@@ -3182,7 +3172,6 @@ dependencies = [
 name = "content-reader-abilities"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-abilities",
  "content-reader-core",
@@ -3197,7 +3186,6 @@ dependencies = [
 name = "content-reader-core"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
@@ -3224,7 +3212,6 @@ dependencies = [
 name = "content-reader-country-names"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -3244,7 +3231,6 @@ dependencies = [
 name = "content-reader-division-names"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-division-names",
@@ -3259,7 +3245,6 @@ dependencies = [
 name = "content-reader-equipment-graphics"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-equipment-graphics",
@@ -3279,7 +3264,6 @@ dependencies = [
 name = "content-reader-events"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-events",
@@ -3294,7 +3278,6 @@ dependencies = [
 name = "content-reader-focus"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-focus",
@@ -3310,7 +3293,6 @@ dependencies = [
 name = "content-reader-gfx"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-gfx",
@@ -3325,7 +3307,6 @@ dependencies = [
 name = "content-reader-image"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-image",
  "image",
@@ -3339,7 +3320,6 @@ dependencies = [
 name = "content-reader-localisation"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "blake3",
  "bytemuck",
  "content-reader-core",
@@ -3356,7 +3336,6 @@ dependencies = [
 name = "content-reader-naval-combat-defines"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-naval-combat-defines",
@@ -3372,7 +3351,6 @@ dependencies = [
 name = "content-reader-naval-path"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-naval-path",
@@ -3388,7 +3366,6 @@ dependencies = [
 name = "content-reader-province-area"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -3404,7 +3381,6 @@ dependencies = [
 name = "content-reader-raids"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -3424,7 +3400,6 @@ dependencies = [
 name = "content-reader-regions"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-regions",
@@ -3441,7 +3416,6 @@ dependencies = [
 name = "content-reader-save"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-states",
@@ -3457,7 +3431,6 @@ dependencies = [
 name = "content-reader-scripted-localisation"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-scripted-localisation",
@@ -3472,7 +3445,6 @@ dependencies = [
 name = "content-reader-settings"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-settings",
@@ -3491,7 +3463,6 @@ dependencies = [
 name = "content-reader-sound"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "engine-allocation",
@@ -3507,7 +3478,6 @@ dependencies = [
 name = "content-reader-state-categories"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-state-categories",
@@ -3522,7 +3492,6 @@ dependencies = [
 name = "content-reader-states"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-states",
@@ -3537,7 +3506,6 @@ dependencies = [
 name = "content-reader-unit-path"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-unit-path",
@@ -3553,7 +3521,6 @@ dependencies = [
 name = "content-reader-wargoals"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-wargoals",
@@ -3568,7 +3535,6 @@ dependencies = [
 name = "content-reader-weather"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-regions",
@@ -3585,7 +3551,6 @@ dependencies = [
 name = "content-witness"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "engine-allocation",
@@ -3949,7 +3914,6 @@ name = "dashboard"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "bitflags 2.13.1",
  "blake3",
  "content-reader-core",
  "content-reader-country-names",
@@ -4012,7 +3976,6 @@ dependencies = [
 name = "dashboard-air"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-equipment-graphics",
  "content-reader-localisation",
@@ -4062,7 +4025,6 @@ dependencies = [
 name = "dashboard-base"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "blake3",
  "content-reader-abilities",
  "content-reader-core",
@@ -4130,7 +4092,6 @@ dependencies = [
 name = "dashboard-core"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -4179,7 +4140,6 @@ dependencies = [
 name = "dashboard-economy"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-localisation",
  "dashboard-base",
  "dashboard-core",
@@ -4221,7 +4181,6 @@ dependencies = [
 name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -4252,7 +4211,6 @@ dependencies = [
 name = "dashboard-intelligence"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -4297,7 +4255,6 @@ dependencies = [
 name = "dashboard-land"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-division-names",
  "content-reader-localisation",
@@ -4346,7 +4303,6 @@ dependencies = [
 name = "dashboard-naval"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-division-names",
  "content-reader-localisation",
@@ -4392,7 +4348,6 @@ dependencies = [
 name = "dashboard-players"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "dashboard-base",
  "dashboard-core",
  "dashboard-follow",
@@ -4429,7 +4384,6 @@ dependencies = [
 name = "dashboard-politics"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "blake3",
  "content-reader-core",
  "content-reader-country-names",
@@ -4480,7 +4434,6 @@ dependencies = [
 name = "dashboard-production"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-gfx",
  "content-reader-localisation",
@@ -4528,7 +4481,6 @@ dependencies = [
 name = "dashboard-query"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -4558,7 +4510,6 @@ dependencies = [
 name = "dashboard-research"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-localisation",
  "dashboard-base",
@@ -4603,7 +4554,6 @@ name = "dashboard-text"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "bitflags 2.13.1",
  "blake3",
  "content-reader-abilities",
  "content-reader-core",
@@ -4664,7 +4614,6 @@ dependencies = [
 name = "dashboard-wars"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -4713,7 +4662,6 @@ dependencies = [
 name = "dashboard-world"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "blake3",
  "content-reader-core",
  "content-reader-country-names",
@@ -7173,7 +7121,6 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 name = "map-content"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-equipment-graphics",
@@ -7183,12 +7130,11 @@ dependencies = [
  "content-reader-regions",
  "content-reader-sound",
  "content-reader-states",
+ "content-reader-unit-path",
  "content-witness",
  "dashboard-text",
  "dpi",
- "engine-executable",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-content",
  "once_cell",
@@ -7197,12 +7143,13 @@ dependencies = [
  "replay",
  "replay-identity",
  "sha2",
- "shader-pipeline",
  "test-unify",
  "tracing",
  "uuid",
  "viewer-audio",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-runtime",
  "winapi-util",
  "windows 0.62.2",
  "windows-sys 0.52.0",
@@ -7225,7 +7172,6 @@ dependencies = [
 name = "map-products"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-equipment-graphics",
  "content-reader-image",
@@ -7239,7 +7185,6 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-executable",
- "engine-native",
  "indexmap 2.14.2",
  "map-content",
  "map-display-data",
@@ -7260,12 +7205,16 @@ dependencies = [
  "viewer-buildings",
  "viewer-counter-products",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-icons",
  "viewer-map-modes",
  "viewer-map-text",
  "viewer-models",
+ "viewer-native-gui",
  "viewer-rail",
+ "viewer-runtime",
  "viewer-scene-base",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-sys 0.52.0",
@@ -7276,7 +7225,6 @@ dependencies = [
 name = "map-snow"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
@@ -8326,7 +8274,6 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "playhead"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -8653,7 +8600,6 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -8747,7 +8693,6 @@ dependencies = [
 name = "recorder-derive"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -8779,7 +8724,6 @@ dependencies = [
 name = "recorder-derive-air"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -8803,7 +8747,6 @@ dependencies = [
 name = "recorder-derive-economy"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -8827,7 +8770,6 @@ dependencies = [
 name = "recorder-derive-equipment"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -8851,7 +8793,6 @@ dependencies = [
 name = "recorder-derive-framework"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -8872,7 +8813,6 @@ dependencies = [
 name = "recorder-derive-land"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -8892,7 +8832,6 @@ dependencies = [
 name = "recorder-derive-naval"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -8914,7 +8853,6 @@ dependencies = [
 name = "recorder-derive-politics"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-localisation",
  "content-reader-province-area",
@@ -8936,7 +8874,6 @@ dependencies = [
 name = "recorder-derive-world"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -8960,7 +8897,6 @@ dependencies = [
 name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -8984,7 +8920,6 @@ dependencies = [
 name = "recorder-metrics"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9010,7 +8945,6 @@ dependencies = [
 name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9034,7 +8968,6 @@ dependencies = [
 name = "recorder-oracle"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -9110,7 +9043,6 @@ dependencies = [
 name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -9137,7 +9069,6 @@ dependencies = [
 name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -9165,7 +9096,6 @@ dependencies = [
 name = "recorder-oracle-air-missions"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9189,7 +9119,6 @@ dependencies = [
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9214,7 +9143,6 @@ dependencies = [
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9238,7 +9166,6 @@ dependencies = [
 name = "recorder-oracle-combat-log"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9264,7 +9191,6 @@ dependencies = [
 name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -9292,7 +9218,6 @@ dependencies = [
 name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9316,7 +9241,6 @@ dependencies = [
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9340,7 +9264,6 @@ dependencies = [
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9364,7 +9287,6 @@ dependencies = [
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9391,7 +9313,6 @@ dependencies = [
 name = "recorder-oracle-equipment-destruction"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9416,7 +9337,6 @@ dependencies = [
 name = "recorder-oracle-event-feed"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9439,7 +9359,6 @@ dependencies = [
 name = "recorder-oracle-faction-theatres"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9462,7 +9381,6 @@ dependencies = [
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9487,7 +9405,6 @@ dependencies = [
 name = "recorder-oracle-fog"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9513,7 +9430,6 @@ dependencies = [
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9537,7 +9453,6 @@ dependencies = [
 name = "recorder-oracle-game-score"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9560,7 +9475,6 @@ dependencies = [
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9587,7 +9501,6 @@ dependencies = [
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9612,7 +9525,6 @@ dependencies = [
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9638,7 +9550,6 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9662,7 +9573,6 @@ dependencies = [
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9690,7 +9600,6 @@ dependencies = [
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9714,7 +9623,6 @@ dependencies = [
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9738,7 +9646,6 @@ dependencies = [
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9762,7 +9669,6 @@ dependencies = [
 name = "recorder-oracle-naval-missions"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9786,7 +9692,6 @@ dependencies = [
 name = "recorder-oracle-naval-result-sources"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9810,7 +9715,6 @@ dependencies = [
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9838,7 +9742,6 @@ dependencies = [
 name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -9864,7 +9767,6 @@ dependencies = [
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9888,7 +9790,6 @@ dependencies = [
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9914,7 +9815,6 @@ dependencies = [
 name = "recorder-oracle-power-ledger"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -9939,7 +9839,6 @@ dependencies = [
 name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -9968,7 +9867,6 @@ dependencies = [
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -9993,7 +9891,6 @@ dependencies = [
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -10017,7 +9914,6 @@ dependencies = [
 name = "recorder-oracle-relations"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -10041,7 +9937,6 @@ dependencies = [
 name = "recorder-oracle-rocket-output"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -10066,7 +9961,6 @@ dependencies = [
 name = "recorder-oracle-saved-event-targets"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10090,7 +9984,6 @@ dependencies = [
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -10114,7 +10007,6 @@ dependencies = [
 name = "recorder-oracle-session"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10137,7 +10029,6 @@ dependencies = [
 name = "recorder-oracle-stability"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10160,7 +10051,6 @@ dependencies = [
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -10184,7 +10074,6 @@ dependencies = [
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -10209,7 +10098,6 @@ dependencies = [
 name = "recorder-oracle-unit-combat-references"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10231,7 +10119,6 @@ dependencies = [
 name = "recorder-oracle-visibility"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10254,7 +10141,6 @@ dependencies = [
 name = "recorder-oracle-wars"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10277,7 +10163,6 @@ dependencies = [
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
@@ -10318,7 +10203,6 @@ dependencies = [
 name = "recorder-replay"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "blake3",
  "bytemuck",
  "content-reader-country-names",
@@ -10369,7 +10253,6 @@ dependencies = [
 name = "recorder-test-support"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -10392,7 +10275,6 @@ dependencies = [
 name = "recording-upgrade"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -10527,7 +10409,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "replay"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "blake3",
  "bytemuck",
  "content-reader-country-names",
@@ -10649,7 +10530,6 @@ dependencies = [
  "dashboard-wars",
  "engine-executable",
  "engine-heap",
- "engine-native",
  "gilrs",
  "map-content",
  "recorder-derive",
@@ -10666,11 +10546,11 @@ dependencies = [
  "tokio",
  "viewer",
  "viewer-buildings",
- "viewer-foundation",
  "viewer-map-icons",
  "viewer-map-modes",
  "viewer-playback",
  "viewer-rail",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-unit-history",
  "viewer-unit-models",
@@ -10709,7 +10589,6 @@ dependencies = [
 name = "replay-looks"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-country-names",
  "content-reader-localisation",
@@ -11358,7 +11237,6 @@ dependencies = [
 name = "shader-pipeline"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "engine-allocation",
@@ -12119,6 +11997,7 @@ dependencies = [
 name = "test-unify"
 version = "0.1.0"
 dependencies = [
+ "adler2",
  "aho-corasick",
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -12147,6 +12026,8 @@ dependencies = [
  "either",
  "equivalent",
  "erased-serde",
+ "fdeflate",
+ "flate2",
  "fnv",
  "foldhash 0.2.0",
  "form_urlencoded",
@@ -12172,6 +12053,8 @@ dependencies = [
  "libc",
  "litemap",
  "memchr",
+ "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
  "num-conv",
  "num-traits",
  "option-ext",
@@ -12197,6 +12080,7 @@ dependencies = [
  "serde_spanned 1.1.1",
  "serde_with",
  "sha2",
+ "simd-adler32",
  "siphasher",
  "smallvec",
  "syn 2.0.119",
@@ -12794,7 +12678,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "viewer"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-abilities",
  "content-reader-core",
@@ -12861,18 +12744,23 @@ dependencies = [
  "viewer-combat",
  "viewer-counter-products",
  "viewer-counters",
+ "viewer-engagements",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-icons",
  "viewer-map-modes",
  "viewer-map-text",
  "viewer-models",
+ "viewer-native-gui",
  "viewer-playback",
  "viewer-raids",
  "viewer-rail",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-terrain",
  "viewer-unit-history",
  "viewer-unit-models",
+ "viewer-unit-reads",
  "viewer-weather-effects",
  "viewer-world",
  "winapi-util",
@@ -12886,7 +12774,6 @@ dependencies = [
 name = "viewer-aircraft"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-equipment-graphics",
@@ -12895,11 +12782,11 @@ dependencies = [
  "content-reader-regions",
  "content-reader-states",
  "dashboard-core",
+ "dashboard-text",
  "dpi",
  "eframe",
  "engine-air-history",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "num-traits",
  "once_cell",
@@ -12915,10 +12802,13 @@ dependencies = [
  "uuid",
  "viewer-buildings",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-models",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-unit-history",
  "viewer-unit-models",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -12930,7 +12820,6 @@ dependencies = [
 name = "viewer-audio"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-sound",
@@ -12953,18 +12842,15 @@ dependencies = [
 name = "viewer-borders"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
- "dashboard-text",
  "dpi",
  "eframe",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "num-traits",
@@ -12979,8 +12865,10 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-modes",
  "viewer-scene-base",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -12992,16 +12880,15 @@ dependencies = [
 name = "viewer-buildings"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-province-area",
  "content-reader-states",
+ "content-reader-unit-path",
  "dashboard-text",
  "dpi",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "num-traits",
@@ -13017,7 +12904,9 @@ dependencies = [
  "uuid",
  "viewer-buildings",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-models",
+ "viewer-runtime",
  "viewer-scene-base",
  "winapi-util",
  "windows 0.62.2",
@@ -13030,7 +12919,6 @@ dependencies = [
 name = "viewer-combat"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-division-names",
@@ -13060,13 +12948,17 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "shader-pipeline",
  "test-unify",
  "tracing",
  "uuid",
  "viewer-combat",
  "viewer-counter-products",
+ "viewer-engagements",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-native-gui",
+ "viewer-runtime",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-sys 0.52.0",
@@ -13077,7 +12969,6 @@ dependencies = [
 name = "viewer-counter-products"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-abilities",
  "content-reader-core",
  "content-reader-country-names",
@@ -13109,13 +13000,16 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "shader-pipeline",
  "synthetic-game",
  "test-unify",
  "tracing",
  "uuid",
  "viewer-counter-products",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-native-gui",
+ "viewer-runtime",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13127,7 +13021,6 @@ dependencies = [
 name = "viewer-counters"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-abilities",
  "content-reader-core",
  "content-reader-country-names",
@@ -13163,9 +13056,45 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-counters",
+ "viewer-engagements",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-native-gui",
+ "viewer-runtime",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
+ "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "viewer-engagements"
+version = "0.1.0"
+dependencies = [
+ "content-reader-core",
+ "content-reader-province-area",
+ "content-reader-unit-path",
+ "dpi",
+ "engine-heap",
+ "indexmap 2.14.2",
+ "num-traits",
+ "once_cell",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "tracing",
+ "uuid",
+ "viewer-engagements",
+ "viewer-foundation",
+ "viewer-gpu",
+ "viewer-runtime",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
@@ -13174,25 +13103,57 @@ dependencies = [
 name = "viewer-foundation"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
- "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-gfx",
  "content-reader-image",
  "content-reader-localisation",
  "content-reader-province-area",
- "content-reader-raids",
  "content-reader-regions",
  "content-reader-save",
- "content-reader-settings",
  "content-reader-states",
  "content-reader-unit-path",
  "dashboard-core",
  "dashboard-text",
  "dpi",
- "eframe",
  "engine-executable",
+ "engine-heap",
+ "indexmap 2.14.2",
+ "num-traits",
+ "once_cell",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "shader-pipeline",
+ "test-unify",
+ "tracing",
+ "uuid",
+ "viewer-foundation",
+ "viewer-runtime",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "viewer-gpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "content-reader-core",
+ "content-reader-image",
+ "content-reader-province-area",
+ "content-reader-raids",
+ "content-reader-settings",
+ "content-reader-unit-path",
+ "dashboard-core",
+ "dpi",
+ "eframe",
  "engine-heap",
  "engine-native",
  "indexmap 2.14.2",
@@ -13202,40 +13163,34 @@ dependencies = [
  "num-traits",
  "once_cell",
  "pollster 1.0.1",
- "rayon",
  "recorder-derive",
  "replay",
  "replay-data",
- "replay-derive",
- "replay-frame",
  "replay-identity",
  "shader-pipeline",
- "synthetic-game",
  "test-unify",
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-runtime",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-sys 0.52.0",
  "windows-sys 0.59.0",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "viewer-map-icons"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-localisation",
  "content-reader-province-area",
- "dashboard-text",
  "dpi",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
@@ -13250,9 +13205,13 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-icons",
  "viewer-map-modes",
+ "viewer-native-gui",
+ "viewer-runtime",
  "viewer-scene-base",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13264,7 +13223,6 @@ dependencies = [
 name = "viewer-map-modes"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-localisation",
@@ -13276,7 +13234,6 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "num-traits",
@@ -13294,8 +13251,11 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-modes",
+ "viewer-runtime",
  "viewer-scene-base",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13307,7 +13267,6 @@ dependencies = [
 name = "viewer-map-text"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -13320,7 +13279,6 @@ dependencies = [
  "eframe",
  "engine-allocation",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "num-traits",
@@ -13336,10 +13294,14 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-modes",
  "viewer-map-text",
  "viewer-models",
+ "viewer-native-gui",
+ "viewer-runtime",
  "viewer-scene-base",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13351,16 +13313,15 @@ dependencies = [
 name = "viewer-models"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-province-area",
+ "content-reader-unit-path",
  "dashboard-text",
  "dpi",
  "eframe",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
@@ -13378,8 +13339,51 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-models",
+ "viewer-runtime",
  "viewer-scene-base",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "viewer-native-gui"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "content-reader-core",
+ "content-reader-gfx",
+ "content-reader-image",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-settings",
+ "dpi",
+ "eframe",
+ "engine-heap",
+ "indexmap 2.14.2",
+ "job-priority",
+ "num-traits",
+ "once_cell",
+ "pollster 1.0.1",
+ "recorder-derive",
+ "replay",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "shader-pipeline",
+ "synthetic-game",
+ "test-unify",
+ "tracing",
+ "uuid",
+ "viewer-foundation",
+ "viewer-gpu",
+ "viewer-native-gui",
+ "viewer-runtime",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13391,7 +13395,6 @@ dependencies = [
 name = "viewer-playback"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
@@ -13414,7 +13417,6 @@ dependencies = [
  "eframe",
  "engine-executable",
  "engine-heap",
- "engine-native",
  "foldhash 0.2.0",
  "indexmap 2.14.2",
  "job-priority",
@@ -13430,6 +13432,7 @@ dependencies = [
  "replay",
  "replay-columnar",
  "replay-data",
+ "replay-derive",
  "replay-frame",
  "replay-identity",
  "serde_json",
@@ -13445,18 +13448,23 @@ dependencies = [
  "viewer-combat",
  "viewer-counter-products",
  "viewer-counters",
+ "viewer-engagements",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-icons",
  "viewer-map-modes",
  "viewer-map-text",
  "viewer-models",
+ "viewer-native-gui",
  "viewer-playback",
  "viewer-raids",
  "viewer-rail",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-terrain",
  "viewer-unit-history",
  "viewer-unit-models",
+ "viewer-unit-reads",
  "viewer-weather-effects",
  "viewer-world",
  "winapi-util",
@@ -13470,7 +13478,6 @@ dependencies = [
 name = "viewer-raids"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-equipment-graphics",
@@ -13499,12 +13506,15 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "shader-pipeline",
  "test-unify",
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-native-gui",
  "viewer-raids",
+ "viewer-runtime",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-sys 0.52.0",
@@ -13515,18 +13525,17 @@ dependencies = [
 name = "viewer-rail"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-country-names",
  "content-reader-image",
  "content-reader-province-area",
+ "content-reader-unit-path",
  "dashboard-text",
  "dpi",
  "eframe",
  "engine-allocation",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "num-traits",
@@ -13541,8 +13550,10 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-models",
  "viewer-rail",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-terrain",
  "winapi-util",
@@ -13553,21 +13564,57 @@ dependencies = [
 ]
 
 [[package]]
+name = "viewer-runtime"
+version = "0.1.0"
+dependencies = [
+ "content-reader-core",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-settings",
+ "dashboard-core",
+ "dashboard-text",
+ "dpi",
+ "eframe",
+ "engine-heap",
+ "engine-native",
+ "indexmap 2.14.2",
+ "job-priority",
+ "map-display-data",
+ "num-traits",
+ "once_cell",
+ "rayon",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "shader-pipeline",
+ "test-unify",
+ "tracing",
+ "uuid",
+ "viewer-runtime",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "viewer-scene-base"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-province-area",
  "content-reader-regions",
- "dashboard-text",
  "dpi",
  "eframe",
  "engine-executable",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
@@ -13585,7 +13632,11 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-native-gui",
+ "viewer-runtime",
  "viewer-scene-base",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13597,16 +13648,14 @@ dependencies = [
 name = "viewer-terrain"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-province-area",
- "dashboard-text",
+ "content-reader-unit-path",
  "dpi",
  "eframe",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
@@ -13620,6 +13669,8 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-foundation",
+ "viewer-gpu",
+ "viewer-runtime",
  "viewer-scene-base",
  "winapi-util",
  "windows 0.62.2",
@@ -13632,14 +13683,11 @@ dependencies = [
 name = "viewer-unit-history"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-province-area",
- "dashboard-text",
  "dpi",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "num-traits",
  "once_cell",
@@ -13650,11 +13698,13 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-buildings",
- "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-modes",
  "viewer-models",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-unit-history",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13666,7 +13716,6 @@ dependencies = [
 name = "viewer-unit-models"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-equipment-graphics",
@@ -13678,7 +13727,6 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-heap",
- "engine-native",
  "game-model",
  "indexmap 2.14.2",
  "num-traits",
@@ -13693,10 +13741,51 @@ dependencies = [
  "uuid",
  "viewer-buildings",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-models",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-unit-history",
  "viewer-unit-models",
+ "viewer-unit-reads",
+ "winapi-util",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "viewer-unit-reads"
+version = "0.1.0"
+dependencies = [
+ "content-reader-core",
+ "content-reader-country-names",
+ "content-reader-localisation",
+ "content-reader-province-area",
+ "content-reader-states",
+ "content-reader-unit-path",
+ "dashboard-text",
+ "dpi",
+ "engine-executable",
+ "engine-heap",
+ "engine-native",
+ "indexmap 2.14.2",
+ "num-traits",
+ "once_cell",
+ "recorder-derive",
+ "replay",
+ "replay-data",
+ "replay-derive",
+ "replay-frame",
+ "replay-identity",
+ "test-unify",
+ "tracing",
+ "uuid",
+ "viewer-foundation",
+ "viewer-gpu",
+ "viewer-runtime",
+ "viewer-unit-reads",
  "winapi-util",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -13708,18 +13797,15 @@ dependencies = [
 name = "viewer-weather-effects"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-weather",
- "dashboard-text",
  "dpi",
  "eframe",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "job-priority",
  "map-display-data",
@@ -13735,10 +13821,12 @@ dependencies = [
  "tracing",
  "uuid",
  "viewer-buildings",
- "viewer-foundation",
+ "viewer-gpu",
  "viewer-models",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-unit-history",
+ "viewer-unit-reads",
  "viewer-weather-effects",
  "winapi-util",
  "windows 0.62.2",
@@ -13751,7 +13839,6 @@ dependencies = [
 name = "viewer-world"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.13.1",
  "bytemuck",
  "content-reader-core",
  "content-reader-image",
@@ -13763,7 +13850,6 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-heap",
- "engine-native",
  "indexmap 2.14.2",
  "map-display-data",
  "map-snow",
@@ -13784,14 +13870,18 @@ dependencies = [
  "viewer-borders",
  "viewer-buildings",
  "viewer-foundation",
+ "viewer-gpu",
  "viewer-map-modes",
  "viewer-map-text",
  "viewer-models",
+ "viewer-native-gui",
  "viewer-rail",
+ "viewer-runtime",
  "viewer-scene-base",
  "viewer-terrain",
  "viewer-unit-history",
  "viewer-unit-models",
+ "viewer-unit-reads",
  "viewer-weather-effects",
  "viewer-world",
  "winapi-util",

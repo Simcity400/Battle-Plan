@@ -59,7 +59,7 @@ recorder-oracle-support = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-1 = { workspace = true }
+unify-bitflags = { workspace = true }
 unify-bytemuck = { workspace = true }
 unify-hashbrown = { workspace = true }
 unify-log = { workspace = true }

@@ -10,4 +10,4 @@ The free camera tests distance along its forward axis against the far plane, inc
 
 Redraw accounting attributes work to the measured frame. Worker builds are excluded because they can complete during an unrelated frame.
 
-[Simulation rate](../../crates/viewer-foundation/src/map/simulation_rate.rs) · [Publication check](../../crates/viewer-foundation/src/map/publication_check.rs) · [Province schedule](../../crates/viewer-foundation/src/map/province_schedule.rs) · [Province picking tests](../../crates/viewer-foundation/src/map/province_pick/tests.rs) · [Redraw accounting](../../crates/viewer-foundation/src/map/redraws.rs)
+[Simulation rate](../../crates/viewer-runtime/src/simulation_rate.rs) · [Publication check](../../crates/viewer-runtime/src/publication_check.rs) · [Province schedule](../../crates/viewer-gpu/src/province_schedule.rs) · [Province picking tests](../../crates/viewer-gpu/src/province_pick/tests.rs) · [Redraw accounting](../../crates/viewer-runtime/src/redraws.rs)

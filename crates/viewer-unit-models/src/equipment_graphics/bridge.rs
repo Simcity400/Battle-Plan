@@ -3,7 +3,7 @@ use replay_frame::frame::kept;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use viewer_foundation::table_access::TokenNames;
+use dashboard_text::table_access::TokenNames;
 
 use replay_data::{
     rows::AvailableEquipmentVariantRow, rows::CountryLinkRow, rows::TableSchema,
@@ -15,7 +15,7 @@ use content_reader_equipment_graphics::equipment_graphics::Candidate;
 use super::legacy;
 use crate::model_selection::{Content, EquipmentModel, SubUnit, model_facts};
 use content_reader_equipment_graphics::equipment_graphics::countries::ModelCountry;
-use viewer_foundation::map::tables::rows;
+use viewer_foundation::tables::rows;
 
 pub struct Prepared<'a> {
     variants: Variants<'a>,

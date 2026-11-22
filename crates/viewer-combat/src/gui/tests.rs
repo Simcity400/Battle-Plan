@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::Arc;
-use viewer_foundation::map::test_support::gui::{Fixture, fixture, fixture_with, windows};
+use viewer_native_gui::test_support::gui::{Fixture, fixture, fixture_with, windows};
 
 thread_local! {
     static ARRIVED: std::cell::Cell<(Option<native_gui::Texture>, u64)> = const { std::cell::Cell::new((None, 0)) };

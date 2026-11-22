@@ -568,7 +568,7 @@ impl PassRosters {
             .name("air roster history".into())
             .spawn_carried(move || {
                 let _exit = Exit(Arc::clone(&shared));
-                viewer_foundation::worker_priority::lowest_priority();
+                viewer_runtime::worker_priority::lowest_priority();
                 loop {
                     {
                         let (demand, signal) = &*shared.demand;

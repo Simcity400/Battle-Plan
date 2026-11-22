@@ -15,10 +15,8 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::{
-    allegiance::{Allegiance, ongoing},
-    label_reads::{label_name, overrides_ladder, unreadable},
-};
+use viewer_foundation::allegiance::{Allegiance, ongoing};
+use viewer_runtime::label_reads::{label_name, overrides_ladder, unreadable};
 
 #[derive(Clone, Copy)]
 struct Columns {
@@ -215,7 +213,7 @@ impl Labels {
 
     fn make_notes(&mut self) {
         let unreadable: Vec<u32> = self.unreadable.iter().copied().collect();
-        let mut out = viewer_foundation::map::tables::Limitations::default();
+        let mut out = viewer_foundation::tables::Limitations::default();
         map_products::note_unreadable_names(&mut out, &unreadable);
         viewer_map_icons::labels::note_withheld(&mut out, self.withheld.iter().map(|(&state, &why)| (state, why)));
         self.notes = out.into_lines();

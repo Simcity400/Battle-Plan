@@ -10,9 +10,13 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["content-reader-core/test-support", "content-reader-regions/test-support", "replay-data/test-support", "replay-frame/test-support"]
+test-support = ["content-reader-core/test-support", "content-reader-regions/test-support", "replay-data/test-support", "replay-frame/test-support", "viewer-foundation/test-support"]
 
 [dependencies]
+viewer-foundation.workspace = true
+viewer-gpu.workspace = true
+viewer-runtime.workspace = true
+viewer-unit-reads.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 content-reader-core.workspace = true
 content-reader-localisation.workspace = true
@@ -25,10 +29,12 @@ replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
 shader-pipeline.workspace = true
-viewer-foundation.workspace = true
 viewer-scene-base.workspace = true
 
 [dev-dependencies]
+replay-derive = { workspace = true, features = ["test-support"] }
+viewer-foundation = { workspace = true, features = ["test-support"] }
+viewer-gpu = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
@@ -39,7 +45,6 @@ product-codec.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
-viewer-foundation = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -50,12 +55,10 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-num-traits = { workspace = true }
@@ -68,3 +71,4 @@ unify-windows-core = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
+viewer-unit-reads = { workspace = true, features = ["test-support"] }

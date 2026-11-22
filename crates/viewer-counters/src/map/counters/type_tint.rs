@@ -5,12 +5,9 @@ use std::{
     io,
     sync::Arc,
 };
-use viewer_foundation::map::{
-    allegiance::Allegiance,
-    directed_wars::Owner,
-    memo::Keyed,
-    visibility::{self, Families},
-};
+use viewer_foundation::{allegiance::Allegiance, visibility::{self, Families}};
+use replay_derive::directed_wars::Owner;
+use viewer_runtime::memo::Keyed;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {

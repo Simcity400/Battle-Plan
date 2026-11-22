@@ -13,22 +13,15 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::map::native_gui::container_frame;
-use viewer_foundation::table_access::Available;
+use viewer_native_gui::native_gui::container_frame;
+use dashboard_text::table_access::Available;
 use viewer_foundation::tooltip_text::TextIcons;
 use viewer_foundation::tooltip_text::localise;
 use viewer_foundation::tooltip_text::state_name;
 use viewer_foundation::tooltip_text::wing_short_name;
-use {
-    super::content::Content as StaticContent,
-    viewer_foundation::{
-        map::{
-            perspective::{SharingUnknown, Vision},
-            tables::rows,
-        },
-        table_access::TokenNames,
-    },
-};
+use super::content::Content as StaticContent;
+use viewer_foundation::{perspective::{SharingUnknown, Vision}, tables::rows};
+use dashboard_text::table_access::TokenNames;
 
 struct AirGroup<'a> {
     side: u8,

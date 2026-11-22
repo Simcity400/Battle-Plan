@@ -6,7 +6,7 @@ use super::{
     gui_resources,
 };
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::map::native_gui::{self, lifecycle, pointer::Input};
+use viewer_native_gui::native_gui::{self, lifecycle, pointer::Input};
 
 pub const PICKER_WINDOW: &str = "MapmodesInterface_Ingame";
 pub const ALL_MODES_WINDOW: &str = "WindowWithAllMapModes_Standalone";
@@ -147,7 +147,7 @@ impl Placed {
     }
 
     pub fn contains(&self, at: [f32; 2]) -> bool {
-        viewer_foundation::map::gui_resources::contains(self.rect, at)
+        viewer_runtime::geometry::contains(self.rect, at)
             && self.alpha.as_ref().is_none_or(|alpha| {
                 let (hit, origin) = alpha.as_ref();
                 hit.contains([at[0] - origin[0], at[1] - origin[1]])
@@ -184,7 +184,7 @@ impl PickerDrawn {
 pub struct Picker {
     built: Option<(
         [i32; 2],
-        viewer_foundation::map::native_windows::NativeWindows,
+        viewer_native_gui::native_windows::NativeWindows,
     )>,
     root: Option<Retained>,
     list: Option<Retained>,
@@ -371,7 +371,7 @@ impl Picker {
             input.filter(|at| {
                 !above
                     .iter()
-                    .any(|&rect| viewer_foundation::map::gui_resources::contains(rect, at))
+                    .any(|&rect| viewer_runtime::geometry::contains(rect, at))
             })
         });
         let values = &self.values;
@@ -766,7 +766,7 @@ fn draw_list(
     name: &str,
     state: &State<'_>,
     assigning: Option<usize>,
-    windows: &viewer_foundation::map::native_windows::NativeWindows,
+    windows: &viewer_native_gui::native_windows::NativeWindows,
     resources: &gui_resources::GuiResources<'_>,
     viewport: [i32; 2],
     tick: lifecycle::Tick,
@@ -850,7 +850,7 @@ fn draw_slots(
     kept: &mut Option<Retained>,
     state: &State<'_>,
     assigning: usize,
-    windows: &viewer_foundation::map::native_windows::NativeWindows,
+    windows: &viewer_native_gui::native_windows::NativeWindows,
     resources: &gui_resources::GuiResources<'_>,
     viewport: [i32; 2],
     tick: lifecycle::Tick,
@@ -976,7 +976,7 @@ fn draw_window(
     root: &content_reader_core::gui::native::Element,
     values: &Values,
     groups: Vec<Group<'_>>,
-    windows: &viewer_foundation::map::native_windows::NativeWindows,
+    windows: &viewer_native_gui::native_windows::NativeWindows,
     resources: &gui_resources::GuiResources<'_>,
     viewport: [i32; 2],
     tick: lifecycle::Tick,
@@ -1098,7 +1098,7 @@ mod tests {
     #[test]
     fn the_find_view_button_opens_the_find_view_by_click_and_shortcut() {
         content_reader_core::test_game::enter();
-        let windows = viewer_foundation::map::native_windows::NativeWindows::read(
+        let windows = viewer_native_gui::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy }               containerWindowType = { name = naval_combat_mapicon }               containerWindowType = { name = MapmodesInterface_Ingame                 buttonType = { name = open_find_view_button shortcut = \"ctrl+f\" } } }",
             [1280, 720],
         )
@@ -1134,7 +1134,7 @@ mod tests {
     #[test]
     fn a_mode_list_grows_upward_a_slot_per_scripted_mode() {
         content_reader_core::test_game::enter();
-        let windows = viewer_foundation::map::test_support::gui::windows(
+        let windows = viewer_native_gui::test_support::gui::windows(
             br#"guiTypes = { containerWindowType = {
                 name = "List" position = { x = -255 y = -322 } size = { width = 180 height = 296 }
                 Orientation = lower_RIGHT
@@ -1160,7 +1160,7 @@ mod tests {
     #[test]
     fn buttons_show_their_modes_frame_whatever_the_slot() {
         content_reader_core::test_game::enter();
-        let windows = viewer_foundation::map::native_windows::NativeWindows::read(
+        let windows = viewer_native_gui::native_windows::NativeWindows::read(
             b"guiTypes = { containerWindowType = { name = unit_counter_navy } \
               containerWindowType = { name = naval_combat_mapicon } \
               containerWindowType = { name = MapmodesInterface_Ingame } }",

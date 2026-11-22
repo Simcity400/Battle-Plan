@@ -10,9 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 #[cfg(test)]
-use viewer_foundation::map::color_inheritance::{Inheritance, inheritance, slot_of};
+use viewer_foundation::color_inheritance::{Inheritance, inheritance, slot_of};
 #[cfg(any(test, feature = "test-support"))]
-use viewer_foundation::map::color_inheritance::active_subject;
+use viewer_foundation::color_inheritance::active_subject;
 
 use content_reader_core::{map::MapData, map::ProvinceKind};
 use content_reader_regions::regions::StrategicRegion;
@@ -22,7 +22,7 @@ use replay_data::{rows::ProvinceRow, rows::tables};
 use replay_frame::frame::DecodedFrame;
 
 use viewer_scene_base::gradient::NO_REGION;
-use viewer_foundation::map::tables::{Available, core, rows};
+use viewer_foundation::tables::{Available, core, rows};
 #[cfg(doc)]
 use viewer_scene_base::gradient;
 

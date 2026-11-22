@@ -19,12 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 use viewer_counter_products::map::orders;
-use viewer_foundation::map::{
-    memo::{TableKey, project},
-    name_draw::{Placements, WorldName},
-    perspective::{Choice, Vision},
-    ribbon_content::OrderField,
-};
+use viewer_runtime::{memo::{TableKey, project}, name_draw::{Placements, WorldName}};
+use viewer_foundation::perspective::{Choice, Vision};
+use viewer_gpu::ribbon_content::OrderField;
 
 const WHOLE: Duration = Duration::from_secs(60);
 
@@ -149,7 +146,7 @@ impl Shared {
 fn plan_notes(own: Result<usize, String>) -> Vec<String> {
     match own {
         Ok(drawn) => {
-            let mut out = viewer_foundation::map::tables::Limitations::default();
+            let mut out = viewer_foundation::tables::Limitations::default();
             out.note_battle_plan(drawn);
             out.into_lines()
         }
@@ -239,8 +236,8 @@ fn work(shared: &Shared, plans: &dyn Plans, reader: &views::Reader, maker: timel
         });
         let micros = started.elapsed().as_micros() as u64;
         timeline::mark(maker, Mark::BuildEnded);
-        viewer_foundation::view_record::add("arrows", "builds", 1);
-        viewer_foundation::view_record::add("arrows", "build_us", micros);
+        viewer_runtime::view_record::add("arrows", "builds", 1);
+        viewer_runtime::view_record::add("arrows", "build_us", micros);
         let missed: Vec<TableId> = read.into_iter().filter(|table| !declared.contains(table)).collect();
         if !missed.is_empty() {
             learned.extend(missed);
@@ -320,7 +317,7 @@ impl Orders {
         *self.rows.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&reader));
         let (shared, plans, maker) = (Arc::clone(&self.shared), Arc::clone(&self.plans), self.maker);
         let worker = std::thread::Builder::new().name("battle plan".into()).spawn(move || {
-            viewer_foundation::worker_priority::enter(viewer_foundation::worker_priority::Class::Kept);
+            viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Kept);
             work(&shared, &*plans, &reader, maker);
         });
         match worker {
@@ -407,10 +404,10 @@ impl Orders {
                 timeline::mark(self.maker, Mark::Joined);
                 return Ok(());
             }
-            if viewer_foundation::view_record::on() {
+            if viewer_runtime::view_record::on() {
                 let rows = self.rows.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
                 let held = rows.and_then(|rows| rows.newest()).is_some_and(|(frame, _)| frame.hour >= hour);
-                viewer_foundation::view_record::add("arrows", if held { "waits_for_the_build" } else { "waits_for_the_rows" }, 1);
+                viewer_runtime::view_record::add("arrows", if held { "waits_for_the_build" } else { "waits_for_the_rows" }, 1);
             }
             waited = true;
             self.shared.wait(until);
@@ -439,14 +436,14 @@ impl Orders {
     }
 
     fn mark_join(&self, began: Instant, waited: bool, joined: bool) {
-        if !viewer_foundation::view_record::on() {
+        if !viewer_runtime::view_record::on() {
             return;
         }
-        viewer_foundation::view_record::add("arrows", "joins", 1);
-        viewer_foundation::view_record::add("arrows", "join_us", began.elapsed().as_micros() as u64);
-        viewer_foundation::view_record::add("arrows", if waited { "joins_that_waited" } else { "joins_without_a_wait" }, 1);
+        viewer_runtime::view_record::add("arrows", "joins", 1);
+        viewer_runtime::view_record::add("arrows", "join_us", began.elapsed().as_micros() as u64);
+        viewer_runtime::view_record::add("arrows", if waited { "joins_that_waited" } else { "joins_without_a_wait" }, 1);
         if !joined {
-            viewer_foundation::view_record::add("arrows", "joins_out_of_budget", 1);
+            viewer_runtime::view_record::add("arrows", "joins_out_of_budget", 1);
         }
     }
 
@@ -461,9 +458,9 @@ impl Orders {
                 && self.made.as_ref().is_none_or(|ours| ours.stamp < made.stamp)
             {
                 if made.plan.is_ok() && self.made.as_ref().is_none_or(|ours| made.hour != ours.hour) {
-                    viewer_foundation::view_record::add("arrows", "installs", 1);
+                    viewer_runtime::view_record::add("arrows", "installs", 1);
                     if self.made.as_ref().is_some_and(|ours| made.hour > ours.hour + 1) {
-                        viewer_foundation::view_record::add("arrows", "steps_over_an_hour", 1);
+                        viewer_runtime::view_record::add("arrows", "steps_over_an_hour", 1);
                     }
                 }
                 self.made = Some(made.clone());

@@ -5,13 +5,13 @@ mod province_colors;
 pub use province_colors::ProvinceColors;
 
 use std::sync::MutexGuard;
-use viewer_foundation::map::camera::MapSize;
-use viewer_foundation::map::gradient_math::DIVISOR;
-use viewer_foundation::map::gradient_math::FieldDefines;
-use viewer_foundation::map::textures::gradient_size;
-use viewer_foundation::profiling::span;
+use viewer_gpu::camera::MapSize;
+use viewer_gpu::gradient_math::DIVISOR;
+use viewer_gpu::gradient_math::FieldDefines;
+use viewer_gpu::textures::gradient_size;
+use viewer_runtime::profiling::span;
 
-use viewer_foundation::map::gpu_contract::{compute_limits, unsupported};
+use viewer_gpu::gpu_contract::{compute_limits, unsupported};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -26,7 +26,7 @@ use map_display_data::landscape::{Draw, ModeLayer, Source, Style};
 use super::map_mode::POLITICAL;
 use map_display_data::landscape::Regions;
 use viewer_scene_base::gradient::{self, GRID_CELL, Layer};
-use viewer_foundation::map::province_map::ProvinceMap;
+use viewer_gpu::province_map::ProvinceMap;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

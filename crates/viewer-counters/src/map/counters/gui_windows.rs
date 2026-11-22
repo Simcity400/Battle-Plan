@@ -1,18 +1,15 @@
 
 use super::*;
-use viewer_foundation::map::gui_resources::GuiAssets;
-use viewer_foundation::map::gui_resources::GuiFlags;
-use viewer_foundation::map::gui_resources::HitMode;
-use viewer_foundation::map::gui_resources::observer_hit_rectangle;
-use viewer_foundation::map::gui_resources::{HitRectangle, refused_cause};
-use viewer_foundation::map::native_resources::GuiResources;
-use viewer_foundation::unit_handle::Unit;
+use viewer_native_gui::gui_resources::GuiAssets;
+use viewer_native_gui::gui_resources::GuiFlags;
+use viewer_native_gui::gui_resources::HitMode;
+use viewer_native_gui::gui_resources::observer_hit_rectangle;
+use viewer_native_gui::gui_resources::{HitRectangle, refused_cause};
+use viewer_native_gui::native_resources::GuiResources;
+use viewer_runtime::unit_handle::Unit;
 
-use viewer_foundation::map::native_flags;
-use viewer_foundation::map::native_gui::{
-    self, Layout, Texture,
-    lifecycle::{Call, Instance},
-};
+use viewer_native_gui::native_flags;
+use viewer_native_gui::native_gui::{self, Layout, Texture, lifecycle::{Call, Instance}};
 
 pub(super) fn window_assets(
     windows: &NativeWindows,
@@ -370,7 +367,7 @@ pub(super) struct Update {
     pub naval_convoy: Option<u64>,
     pub selectable: Option<(bool, Arc<[u64]>)>,
     pub owner: Option<u32>,
-    pub port_tooltip: Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
+    pub port_tooltip: Option<viewer_native_gui::counter_hovers::task_force_port::Metadata>,
     pub calls: Vec<(String, Call)>,
     pub wrote: Vec<&'static str>,
     pub unknown: Vec<(&'static str, String)>,
@@ -423,7 +420,7 @@ pub(super) fn apply(
     calls: &[(String, Call)],
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
-    let _profile = viewer_foundation::profiling::span("dc_nu_calls");
+    let _profile = viewer_runtime::profiling::span("dc_nu_calls");
     if calls.is_empty() {
         return Ok(());
     }
@@ -434,7 +431,7 @@ pub(super) fn apply(
         }),
         resources,
     )?;
-    let _controls_profile = viewer_foundation::profiling::span("dc_nu_controls");
+    let _controls_profile = viewer_runtime::profiling::span("dc_nu_controls");
     for (path, call) in calls {
         let Call::Control(written) = call else {
             continue;
@@ -1063,7 +1060,7 @@ fn mission_item(
     writes.hide_and_flag(Icon, "bar_org");
     let item_text = |total: Option<usize>, capital: bool| {
         let item = flotilla.item?;
-        viewer_foundation::map::naval_count_approx::format_recorded_count(
+        viewer_unit_reads::naval_count_approx::format_recorded_count(
             total.map(|total| total as i32),
             item.first,
             item.byte,

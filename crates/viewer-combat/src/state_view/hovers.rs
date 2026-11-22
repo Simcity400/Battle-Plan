@@ -6,7 +6,7 @@ use content_reader_core::gui::native;
 use content_reader_localisation::localisation::Argument;
 use replay_data::rows::{Recorded, tables};
 use replay_frame::frame::DecodedFrame;
-use viewer_foundation::map::perspective::{SharingUnknown, Vision};
+use viewer_foundation::perspective::{SharingUnknown, Vision};
 
 const POPULATION: &str = "state view population hover: its manpower breakdown lists the sources of the state's recruitable population and growth modifiers for its owner, which are not recorded";
 

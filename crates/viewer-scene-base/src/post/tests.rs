@@ -1,6 +1,6 @@
 use super::*;
 use content_reader_core::map::ProvinceKind;
-use viewer_foundation::map::camera::MapDefines;
+use viewer_gpu::camera::MapDefines;
 
 const BERLIN_DAY: i32 = 60832933;
 
@@ -10,7 +10,7 @@ fn camera(center: [f32; 2], height: f32) -> Camera {
         height,
         map: MapSize::TEST,
         defines: MapDefines::test(),
-        pose: viewer_foundation::map::camera::Pose::Map,
+        pose: viewer_gpu::camera::Pose::Map,
     }
 }
 

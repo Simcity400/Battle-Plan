@@ -8,4 +8,4 @@ The icon queue takes generated buckets in declaration order, followed by explici
 
 The visibility test resolves a positive owner override or the recorded controller at the proper scope. An unresolved owner might be an alias for the viewing country. For foreign buildings requiring detection, read the winning raid-target status. A complete census with no matching status differs from a census without a complete answer.
 
-[Building facts and regression fixtures](../../crates/viewer-foundation/src/map/building_facts.rs)
+[Building facts and regression fixtures](../../crates/viewer-foundation/src/building_facts.rs)

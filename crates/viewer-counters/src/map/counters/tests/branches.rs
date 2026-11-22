@@ -2,7 +2,7 @@
 use super::*;
 
 fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTables {
-    let moves = viewer_foundation::map::movement_reads::test_support::unnamed_assets();
+    let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();
     hour_tables(
         frame,
         inputs.map,
@@ -113,7 +113,7 @@ fn transcript(branched: bool) -> Vec<String> {
                         .draw_branched(
                             &inputs,
                             time,
-                            viewer_foundation::profiling::FrameOwners::new(),
+                            viewer_runtime::profiling::FrameOwners::new(),
                             &mut windows,
                             &mut pings,
                             &mut bases,

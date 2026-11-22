@@ -3,34 +3,28 @@ mod draw_parts;
 
 use super::*;
 use std::collections::{HashMap, HashSet};
-use viewer_foundation::combat_selection::Hit;
-use viewer_foundation::combat_selection::Selection;
-use viewer_foundation::map::camera::MapIconProjection;
-use viewer_foundation::map::gui_resources::GuiAssets;
-use viewer_foundation::map::gui_resources::count_noted;
-use viewer_foundation::map::gui_resources::count_refused;
-use viewer_foundation::map::gui_resources::hit_rectangle;
-use viewer_foundation::map::gui_resources::noted_cause;
-use viewer_foundation::map::gui_resources::refused_cause;
-use viewer_foundation::map::gui_resources::viewport as gui_resources_viewport;
-use viewer_foundation::map::icon_windows::Retry;
-use viewer_foundation::map::icon_windows::visible_layout_kept;
-use viewer_foundation::map::icon_windows::{
-    POOL_EXHAUSTED, admission, frame, point, rectangle_inside,
-};
-use viewer_foundation::map::sprites::hovered_layer;
+use viewer_engagements::combat_selection::Hit;
+use viewer_engagements::combat_selection::Selection;
+use viewer_gpu::camera::MapIconProjection;
+use viewer_native_gui::gui_resources::GuiAssets;
+use viewer_native_gui::gui_resources::count_noted;
+use viewer_native_gui::gui_resources::count_refused;
+use viewer_native_gui::gui_resources::hit_rectangle;
+use viewer_native_gui::gui_resources::noted_cause;
+use viewer_native_gui::gui_resources::refused_cause;
+use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
+use viewer_native_gui::icon_windows::Retry;
+use viewer_native_gui::icon_windows::visible_layout_kept;
+use viewer_native_gui::icon_windows::{POOL_EXHAUSTED, admission, frame, point, rectangle_inside};
+use viewer_native_gui::sprites::hovered_layer;
 
-use viewer_foundation::{
-    icon_frames::Kept,
-    map::province_schedule::{Schedule, Update},
-};
+use viewer_engagements::icon_frames::Kept;
+use viewer_gpu::province_schedule::{Schedule, Update};
 
-use viewer_foundation::map::native_gui::{
-    self, Layout,
-    lifecycle::{
-        Admission, Held, Instance, MapIconPool, Pool, Registration, Rewrote, SlotId, Tick, Unknown,
-        Visible, Withheld,
-    },
+use viewer_native_gui::native_gui::{
+    self,
+    Layout,
+    lifecycle::{Admission, Held, Instance, MapIconPool, Pool, Registration, Rewrote, SlotId, Tick, Unknown, Visible, Withheld},
 };
 
 struct BaseControls<'a> {
@@ -59,7 +53,7 @@ pub(super) fn update_naval(
     strategic: bool,
     resources: &dyn native_gui::Resources,
 ) -> Result<(), String> {
-    let _profile = viewer_foundation::profiling::span("dc_nu_base_setters");
+    let _profile = viewer_runtime::profiling::span("dc_nu_base_setters");
     let c = base_controls(root)?;
     for (button, shown) in [(c.background, !strategic), (c.strategic, strategic)] {
         instance.set_frame(
@@ -302,7 +296,7 @@ struct Item {
     naval_convoy: Option<u64>,
     selectable: Option<(bool, Arc<[u64]>)>,
     owner: Option<u32>,
-    port_tooltip: Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
+    port_tooltip: Option<viewer_native_gui::counter_hovers::task_force_port::Metadata>,
     tiny: bool,
     unknown: Unknowns,
 }
@@ -562,13 +556,13 @@ struct UpdateLaps(Option<std::time::Instant>);
 
 impl UpdateLaps {
     fn new() -> Self {
-        Self(viewer_foundation::profile_writer::profiling().then(std::time::Instant::now))
+        Self(viewer_runtime::profile_writer::profiling().then(std::time::Instant::now))
     }
 
     fn lap(&mut self, name: &'static str) {
         if let Some(last) = self.0 {
             let now = std::time::Instant::now();
-            viewer_foundation::profiling::record_lap(name, now.duration_since(last));
+            viewer_runtime::profiling::record_lap(name, now.duration_since(last));
             self.0 = Some(now);
         }
     }
@@ -588,7 +582,7 @@ pub(super) fn present(
     combats: &mut Batch,
     report: &mut CounterReport,
 ) -> io::Result<()> {
-    let update_profile = viewer_foundation::profiling::span("dc_naval_update");
+    let update_profile = viewer_runtime::profiling::span("dc_naval_update");
     let mut update_laps = UpdateLaps::new();
     let native = inputs.windows;
     let viewport = gui_resources_viewport(inputs.viewport, inputs.ui_scale);
@@ -603,7 +597,7 @@ pub(super) fn present(
         return Ok(());
     }
     windows.stamp = resources_stamp(inputs, plan.countries.as_deref());
-    viewer_foundation::map::redraws::note(
+    viewer_runtime::redraws::note(
         if windows.settled { "naval.settled" } else { "naval.active" },
         1,
     );
@@ -817,7 +811,7 @@ pub(super) fn present(
     let held = pointer.and_then(|pointer| {
         let (flotilla, _) = placed_at_sea.iter().find(|(flotilla, _)| {
             flotilla.members.iter().any(|&id| {
-                viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce.unit(id)
+                viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce.unit(id)
                     == pointer.unit
             })
         })?;
@@ -855,7 +849,7 @@ pub(super) fn present(
     windows.pointed = pointed_source;
     update_laps.lap("dc_nu_bookkeeping");
     drop(update_profile);
-    let tick_profile = viewer_foundation::profiling::span("dc_naval_tick");
+    let tick_profile = viewer_runtime::profiling::span("dc_naval_tick");
     tick(
         windows,
         native,
@@ -865,7 +859,7 @@ pub(super) fn present(
         report,
     );
     drop(tick_profile);
-    let markers_profile = viewer_foundation::profiling::span("dc_naval_markers");
+    let markers_profile = viewer_runtime::profiling::span("dc_naval_markers");
     if let Some(missions) = &missions {
         naval_missions::draw(
             inputs,
@@ -891,7 +885,7 @@ pub(super) fn present(
         draw_results(inputs, plan, windows, result, &resources, combats, report)?;
     }
     drop(markers_profile);
-    let ports_profile = viewer_foundation::profiling::span("dc_ports");
+    let ports_profile = viewer_runtime::profiling::span("dc_ports");
     if let Some(base) = native.naval_base() {
         draw_ports(
             inputs,
@@ -907,7 +901,7 @@ pub(super) fn present(
         )?;
     }
     drop(ports_profile);
-    let _at_sea_profile = viewer_foundation::profiling::span("dc_naval_at_sea");
+    let _at_sea_profile = viewer_runtime::profiling::span("dc_naval_at_sea");
     for (flotilla, plate) in placed_at_sea {
         let Some(counter) = windows.counters.get(&flotilla.source) else {
             continue;
@@ -951,7 +945,7 @@ pub(super) fn present(
         let place = [0, 1].map(|axis| plate.column.grid[axis].wrapping_add(local[axis]));
         let composed =
             if let Some(view) = carrier_wings.get_mut(&CarrierKey::AtSea(flotilla.source)) {
-                let drawn = viewer_foundation::map::icon_windows::Drawn {
+                let drawn = viewer_native_gui::icon_windows::Drawn {
                     owner: 0,
                     origin: plate.column.screen,
                     layout: layout.clone(),
@@ -1037,8 +1031,8 @@ pub(super) fn present(
                     .filter(|region| !region.disabled)
                     .and_then(|region| {
                         match region.hit.as_ref().map(|hit| hit.form) {
-                            Some(viewer_foundation::map::native_gui::Hit::Through) => None,
-                            Some(viewer_foundation::map::native_gui::Hit::Alpha) => {
+                            Some(viewer_native_gui::native_gui::Hit::Through) => None,
+                            Some(viewer_native_gui::native_gui::Hit::Alpha) => {
                                 *report.navy_counter_gaps.entry("count_bg tests its sprite's alpha (transparencecheck), which a counter plate's hit does not; its pointer state is not drawn".into()).or_default() += 1;
                                 None
                             }
@@ -1052,7 +1046,7 @@ pub(super) fn present(
                     });
                 report
                     .unit_hits
-                    .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                    .push(viewer_native_gui::counter_hovers::unit_hits::Hit {
                         ours: matches!(&flotilla.side, Ok(Allegiance::Ours)),
                         port: false,
                         plate: count_bg,
@@ -1066,7 +1060,7 @@ pub(super) fn present(
                             layout.size[0] as f32 * plate.column.holder.scale,
                             layout.size[1] as f32 * plate.column.holder.scale,
                         ],
-                        kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                        kind: viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
                         members: Arc::clone(&flotilla.members),
                         layer: hovered_layer(
                             plate.column.priority,
@@ -1132,7 +1126,7 @@ pub(super) fn tick(
     }
     windows.clock += tick.dt;
     if !tick_due(windows, missions.is_some()) {
-        viewer_foundation::map::redraws::note("naval.tick_not_due", 1);
+        viewer_runtime::redraws::note("naval.tick_not_due", 1);
         settle_after(windows, native, missions.is_some(), Vec::new(), report);
         return;
     }
@@ -1934,7 +1928,7 @@ fn kept_frame(
     mut update: gui_windows::Update,
     report: &mut CounterReport,
 ) -> gui_windows::Update {
-    use viewer_foundation::icon_frames::NAVAL_NO_HISTORY;
+    use viewer_engagements::icon_frames::NAVAL_NO_HISTORY;
     if framed {
         return update;
     }
@@ -2098,7 +2092,7 @@ fn settle_counters(windows: &mut Windows, forces: &Forces) {
 }
 
 fn reach_items(windows: &mut Windows, icon: IconSlot, held: &[Held]) -> Result<(), String> {
-    let _profile = viewer_foundation::profiling::span("dc_nu_held");
+    let _profile = viewer_runtime::profiling::span("dc_nu_held");
     let Some((native, _)) = windows.built.clone() else {
         return Ok(());
     };
@@ -2206,7 +2200,7 @@ fn read_grids(
     name: &str,
     resources: &dyn native_gui::Resources,
 ) -> (Option<Layout>, Option<String>) {
-    let _profile = viewer_foundation::profiling::span("dc_nu_grid_layout");
+    let _profile = viewer_runtime::profiling::span("dc_nu_grid_layout");
     match instance.layout(window, resources, None) {
         Ok(laid) => (laid, None),
         Err(refusals) => (
@@ -2326,7 +2320,7 @@ fn append(
     key: ItemKey,
     template: &native::Element,
 ) -> Result<bool, String> {
-    let _profile = viewer_foundation::profiling::span("dc_nu_grid_append");
+    let _profile = viewer_runtime::profiling::span("dc_nu_grid_append");
     let held = windows
         .grids
         .entry((key.icon, grid.path.clone()))
@@ -2375,7 +2369,7 @@ fn finalize(
     laid: Option<&Layout>,
     viewport: [i32; 2],
 ) -> Result<(), String> {
-    let _profile = viewer_foundation::profiling::span("dc_nu_grid_finalize");
+    let _profile = viewer_runtime::profiling::span("dc_nu_grid_finalize");
     let Some((native, _)) = windows.built.clone() else {
         return Ok(());
     };
@@ -2433,7 +2427,7 @@ fn base_frame(
     }
     let result = (|| -> Result<(), String> {
         let mut erased: Vec<(SlotId, Vec<Held>)> = Vec::new();
-        let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
+        let maps_profile = viewer_runtime::profiling::span("dc_nu_base_maps");
         let mut provinces: BTreeSet<u32> = pool.live().map(|(owner, ..)| *owner).collect();
         if let Some(pass) = &plan.bases {
             provinces.extend(pass.bases.iter().map(|(province, _)| *province));
@@ -2493,7 +2487,7 @@ fn base_frame(
         };
         let flags = gui_windows::window_flags(inputs, plan.countries.as_deref());
         let resources = gui_windows::gui_assets(inputs, flags.as_ref());
-        let maps_profile = viewer_foundation::profiling::span("dc_nu_base_maps");
+        let maps_profile = viewer_runtime::profiling::span("dc_nu_base_maps");
         adopt_countries(windows.base_written.values_mut(), plan.countries.as_ref());
         let glyphs: HashMap<_, _> = bases
             .glyphs
@@ -2502,7 +2496,7 @@ fn base_frame(
             .collect();
         drop(maps_profile);
         let strategic = inputs.visibility.priorities
-            == viewer_foundation::map::mode_visibility::PriorityTable::StrategicNavy;
+            == viewer_foundation::mode_visibility::PriorityTable::StrategicNavy;
         for (province, slot) in pass.updated {
             let glyph = glyphs.get(&province).copied();
             if strategic
@@ -2630,7 +2624,7 @@ fn update_base(
         && held.is_some_and(|written| written.same(province, glyph, scale.to_bits(), strategic, items, art, countries));
     let settled = match base_due(held, quiet, same) {
         BaseDue::Stands { overflow } => {
-            viewer_foundation::map::redraws::note("naval.bases_kept", 1);
+            viewer_runtime::redraws::note("naval.bases_kept", 1);
             if overflow > 0 {
                 *report.navy_counter_gaps.entry(naval::PORT_GRID_FULL.into()).or_default() += overflow;
             }
@@ -2640,7 +2634,7 @@ fn update_base(
     };
     windows.base_written.remove(&slot);
     let instance = pool.get(slot).ok_or("an updated icon has no window")?;
-    let update_profile = viewer_foundation::profiling::span("dc_nu_base_update");
+    let update_profile = viewer_runtime::profiling::span("dc_nu_base_update");
     match glyph {
         Some(glyph) => {
             if let Err(why) = update_naval(instance, window, glyph, scale, strategic, resources) {
@@ -2656,11 +2650,11 @@ fn update_base(
         }
     }
     drop(update_profile);
-    let items_profile = viewer_foundation::profiling::span("dc_nu_base_items");
+    let items_profile = viewer_runtime::profiling::span("dc_nu_base_items");
     let overflow = base_items(windows, instance, window, slot, items, resources, report)?;
     drop(items_profile);
     pool.rewrote(slot, Rewrote::Update);
-    viewer_foundation::map::redraws::note("naval.bases_written", 1);
+    viewer_runtime::redraws::note("naval.bases_written", 1);
     if !settled && items.is_ok() {
         windows.owed.insert(slot);
     }
@@ -3076,7 +3070,7 @@ struct PlacedItem {
     layout: Layout,
     selectable: Option<(bool, Arc<[u64]>)>,
     owner: Option<u32>,
-    port_tooltip: Option<viewer_foundation::map::counter_hovers::task_force_port::Metadata>,
+    port_tooltip: Option<viewer_native_gui::counter_hovers::task_force_port::Metadata>,
 }
 
 fn held_items(
@@ -3401,7 +3395,7 @@ pub(super) fn compose_mission_grids(
                     .insert(report.unit_hits.len());
                 report
                     .unit_hits
-                    .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                    .push(viewer_native_gui::counter_hovers::unit_hits::Hit {
                         ours,
                         port: true,
                         plate: None,
@@ -3411,7 +3405,7 @@ pub(super) fn compose_mission_grids(
                             (bounds[2] - bounds[0]).max(0.0),
                             (bounds[3] - bounds[1]).max(0.0),
                         ],
-                        kind: viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                        kind: viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
                         members,
                         layer: layer(priority.0, priority.1, 0),
                     });
@@ -3609,7 +3603,7 @@ fn draw_ports(
                 report.base_ordinal(),
             );
             let composed = if let Some(view) = carrier_wings.get_mut(&CarrierKey::Port(item_key)) {
-                let drawn = viewer_foundation::map::icon_windows::Drawn {
+                let drawn = viewer_native_gui::icon_windows::Drawn {
                     owner: 0,
                     origin,
                     layout: layout.clone(),
@@ -3682,7 +3676,7 @@ fn draw_ports(
                         }
                         report
                             .unit_hits
-                            .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                            .push(viewer_native_gui::counter_hovers::unit_hits::Hit {
                             ours,
                             port: true,
                             plate: None,
@@ -3693,7 +3687,7 @@ fn draw_ports(
                                 (bounds[3] - bounds[1]).max(0.0),
                             ],
                             kind:
-                                viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                                viewer_native_gui::counter_hovers::unit_hits::Kind::TaskForce,
                             members,
                             layer: layer(key.0, key.1, 0),
                         });

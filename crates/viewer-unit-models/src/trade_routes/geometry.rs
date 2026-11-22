@@ -6,7 +6,7 @@ use content_reader_core::{
     province_graph::heap_pop, province_graph::heap_push,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_foundation::map::{
+use viewer_gpu::{
     province_map::HeightField,
     ribbon_content::{ArrowType, ExecutionState, OrderDraw, OrderField, OrderVertex},
     ribbon_fixed::{self as fixed, Point, Smoothing},

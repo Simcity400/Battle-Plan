@@ -4,4 +4,4 @@ The host clock's seek counter distinguishes an intentional seek from playback th
 
 A forward step or skipped hour preserves runtime history on the same branch when the viewer continues, including when preparation finishes after the clock pauses. The resolved viewing country participates in history. A viewing-country change recreates unit entities in provinces owned by the new country and retains other unit histories. Initial loads, seeks, steps backward and branch switches recreate all unit entities. Crossing a recorded gap resets the presentation cycle for trains, raids and weather while preserving unit histories, because the game can continue running across a recording gap.
 
-[Presentation continuity](../../crates/viewer-foundation/src/map/presentation.rs)
+[Presentation continuity](../../crates/viewer-runtime/src/presentation.rs)

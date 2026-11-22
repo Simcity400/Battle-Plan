@@ -136,7 +136,7 @@ impl Playback {
     }
 
     fn note_source(&mut self, branch: BranchId, hour: Hour, indexed: bool) {
-        let profiling = viewer_foundation::profile_writer::profiling();
+        let profiling = viewer_runtime::profile_writer::profiling();
         #[cfg(not(any(test, feature = "test-support")))]
         if !profiling {
             return;
@@ -147,7 +147,7 @@ impl Playback {
         self.source_path = Some(indexed);
         if profiling {
             let thread = std::thread::current();
-            viewer_foundation::profile_writer::profile_print(source_path_line(
+            viewer_runtime::profile_writer::profile_print(source_path_line(
                 thread.name().unwrap_or("unnamed"),
                 branch,
                 hour,

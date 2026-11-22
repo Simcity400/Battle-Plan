@@ -25,7 +25,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_foundation::map::perspective::Choice;
+use viewer_foundation::perspective::Choice;
 use viewer_map_modes::map_mode::{MapMode, Stock};
 
 const LIMIT: Duration = Duration::from_secs(120);

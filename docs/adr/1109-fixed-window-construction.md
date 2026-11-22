@@ -6,4 +6,4 @@ Factories construct the entries of each kind in a fixed sequence, including entr
 
 The background is a distinct built object that can also be built again through its named child entry. Fixed windows draw through one viewport-based position object, inherit clipping and have no fade of their own. The multi-sprite factory builds a standard button from the type's sprite, font and position using its default geometry and frame. A constructed scrollbar stays hidden until the lifecycle writes its state. A text box bakes with a text-sprite type found under its own name, preserves text alignment, and keeps its authored text when the replay has no write for it.
 
-[Fixed-window construction and layout](../../crates/viewer-foundation/src/map/native_gui/fixed.rs)
+[Fixed-window construction and layout](../../crates/viewer-native-gui/src/native_gui/fixed.rs)

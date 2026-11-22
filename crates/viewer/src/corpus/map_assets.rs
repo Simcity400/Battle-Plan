@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
-use viewer_foundation::map::camera::MapSize;
+use viewer_gpu::camera::MapSize;
 use viewer_borders::border_pass::BorderAssets;
 use viewer_rail::railways::RailAssets;
 use viewer_terrain::rivers::RiverAssets;
