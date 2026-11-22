@@ -163,6 +163,7 @@ pub struct Preparation {
     countries: Map<u32, Result<ccountry::Country, &'static str>>,
     commanders: Map<usize, u64>,
     provinces: Map<usize, Option<(u32, usize)>>,
+    route_provinces: Map<u32, usize>,
     roster: Option<engine_native::cpdx_array::Array>,
     reads: NativeReads,
     local_province_refusal: bool,
@@ -174,6 +175,7 @@ impl Default for Preparation {
             countries: Map::default(),
             commanders: Map::default(),
             provinces: Map::default(),
+            route_provinces: Map::default(),
             roster: None,
             reads: NativeReads::default(),
             local_province_refusal: false,
@@ -200,6 +202,7 @@ impl Preparation {
             + table_bytes::<u32, Result<ccountry::Country, &'static str>>(self.countries.capacity())
             + table_bytes::<usize, u64>(self.commanders.capacity())
             + table_bytes::<usize, Option<(u32, usize)>>(self.provinces.capacity())
+            + table_bytes::<u32, usize>(self.route_provinces.capacity())
     }
     pub fn begin(&mut self, divisions: usize) -> bool {
         self.begin_part(divisions, true)
@@ -209,6 +212,7 @@ impl Preparation {
         self.countries.clear();
         self.commanders.clear();
         self.provinces.clear();
+        self.route_provinces.clear();
         self.roster = None;
         engine_allocation::advisory(|| {
             if self.memo.capacity() < divisions {
@@ -218,6 +222,7 @@ impl Preparation {
             engine_allocation::reserve_map(&mut self.countries, divisions)?;
             engine_allocation::reserve_map(&mut self.commanders, divisions)?;
             engine_allocation::reserve_map(&mut self.provinces, divisions)?;
+            engine_allocation::reserve_map(&mut self.route_provinces, divisions)?;
             self.reads.begin_part(divisions, read_dirty)
         })
         .is_ok()
@@ -280,11 +285,19 @@ impl Preparation {
                     (receiver, handle)
                 }),
         };
-        let province = engine_native::division_panel_operands::selected_province_in(
+        let province = engine_native::division_panel_operands::selected_province_cached(
             memory,
             &mut self.roster,
             state,
             seed,
+            |id, read| {
+                if let Some(&province) = self.route_provinces.get(&id) {
+                    return Ok(province);
+                }
+                let province = read()?;
+                self.route_provinces.insert(id, province);
+                Ok(province)
+            },
         );
         self.local_province_refusal |= province.is_err();
         if let Err(reason) = province {

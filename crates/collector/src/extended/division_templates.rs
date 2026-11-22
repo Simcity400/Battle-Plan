@@ -722,17 +722,15 @@ impl Captured {
             .outcomes()
             .iter()
             .all(|outcome| matches!(outcome, Outcome::Rows { .. }));
-        let clean = !force
+        let stable = !force
             && complete
             && rereads == 0
             && speed_refusals == 0
             && self.model_failures.rows == country_refusals
-            && !self.country_cache.changed
-            && !self.held.reordered()
             && matches!(tokens, (Some(_), Some(_)))
             && (changes.quiet(), changes.core_dependencies()) == tokens;
-        self.clean = clean.then(|| {
-            let roster = icon_rows.iter().fold(native::FNV_OFFSET, |hash, row| {
+        let roster = stable.then(|| {
+            icon_rows.iter().fold(native::FNV_OFFSET, |hash, row| {
                 native::hash_template(
                     hash,
                     row.template,
@@ -740,27 +738,30 @@ impl Captured {
                     row.owner,
                     row.settings.roster_ordinal,
                 )
+            })
+        });
+        if let Some(roster) = roster
+            && !changes.fresh_only()
+            && let (Some(q0), Some(q1)) = tokens
+            && let Some(countries) = self.country_cache.digest()
+        {
+            self.clean_tokens = Some((q0, q1));
+            self.clean_digest = Some(native::RosterDigest {
+                roster,
+                countries,
+                icon_count: self.icon_rows.outcome.len(),
+                country_count: self.country_rows.outcome.len(),
             });
-            if templates[1] == 0
-                && !changes.fresh_only()
-                && let (Some(q0), Some(q1)) = tokens
-                && let Some(countries) = self.country_cache.digest()
-            {
-                self.clean_tokens = Some((q0, q1));
-                self.clean_digest = Some(native::RosterDigest {
-                    roster,
-                    countries,
-                    icon_count: self.icon_rows.outcome.len(),
-                    country_count: self.country_rows.outcome.len(),
-                });
-                self.clean_context = Some((base, state));
-            }
+            self.clean_context = Some((base, state));
+        }
+        let clean = stable && !self.country_cache.changed && !self.held.reordered();
+        self.clean = clean.then(|| {
             [
                 base as u64,
                 state as u64,
                 self.icon_rows.outcome.len() as u64,
                 self.country_rows.outcome.len() as u64,
-                roster,
+                roster.unwrap(),
             ]
         });
         [
@@ -916,12 +917,21 @@ impl Captured {
             Witness::new([self.generation, base, state, icons, countries, roster])
         });
         let next_clean = if !failed
-            && let (Some(witness), Some(clean_tokens), Some(digest), Some((base, state))) = (
-                self.witness,
+            && let (Some(clean_tokens), Some(digest), Some((base, state))) = (
                 self.clean_tokens.take(),
                 self.clean_digest.take(),
                 self.clean_context.take(),
             ) {
+            let witness = self.witness.unwrap_or_else(|| {
+                Witness::new([
+                    self.generation,
+                    base as u64,
+                    state as u64,
+                    digest.icon_count as u64,
+                    digest.country_count as u64,
+                    digest.roster,
+                ])
+            });
             let snapshots = match self
                 .prev_clean
                 .take()

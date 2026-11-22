@@ -564,11 +564,9 @@ macro_rules! callback {
         ) -> usize {
             let timing = crate::hook_timing::enter(crate::hook_timing::Family::RaidChanges);
             let _occupation = matches!($site, 0 | 5).then(|| {
-                (
-                    crate::occupation_changes::changed(first),
-                    crate::occupation_changes::changed(
-                        first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
-                    ),
+                crate::occupation_changes::changed_pair(
+                    first,
+                    first.wrapping_add(engine_native::cstate::COUNTRY_MODIFIERS),
                 )
             });
             let target = target(MUTATIONS[$site].1, first, second, third);

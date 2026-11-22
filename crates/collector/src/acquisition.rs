@@ -1131,21 +1131,14 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.work_ready.notify_one();
     }
     pub(crate) fn hold_pace(&self) {
-        let keep_away = crate::frame_priority::physical_cores().is_some_and(|cores| cores >= 4);
         if self.shared.called_up.load(Ordering::Acquire)
             && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_ABOVE_NORMAL
-            && (keep_away || self.shared.away.load(Ordering::Acquire) == 0)
+            && self.shared.away.load(Ordering::Acquire) == 0
         {
             return;
         }
         let state = self.shared.lock();
-        let away_word = self.shared.away.load(Ordering::Acquire);
-        let clear_away = !keep_away && away_word != 0;
-        let away_target = if keep_away {
-            away_word.checked_sub(1)
-        } else {
-            None
-        };
+        let clear_away = self.shared.away.load(Ordering::Acquire) != 0;
         if let Ok(threads) = self.threads.try_lock() {
             for thread in threads.iter() {
                 let handle = thread.as_raw_handle();
@@ -1164,7 +1157,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             usize::MAX,
             THREAD_PRIORITY_ABOVE_NORMAL,
             true,
-            away_target,
+            None,
         );
     }
     pub(crate) fn beside_pace(&self, regulars: usize, game: Option<u32>) {
@@ -1779,9 +1772,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
         if hurry != hurried {
             hurried = hurry;
             priority = THREAD_PRIORITY_ABOVE_NORMAL;
-            if crate::frame_priority::physical_cores().is_none_or(|cores| cores < 4) {
-                away = crate::frame_priority::AwayFromGame::default();
-            }
+            away = crate::frame_priority::AwayFromGame::default();
         }
         let wanted = shared.priority.load(Ordering::Acquire);
         if wanted != priority {
@@ -1826,9 +1817,7 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
 
 pub(crate) fn recommended_worker_count() -> usize {
     let machine = std::thread::available_parallelism().map_or(1, usize::from);
-    let logical = worker_count_for_cpus(machine, allowed_cpus());
-    crate::frame_priority::physical_cores()
-        .map_or(logical, |cores| logical.min(cores.saturating_sub(1).max(1)))
+    worker_count_for_cpus(machine, allowed_cpus())
 }
 
 pub(crate) fn usable_cpus() -> usize {

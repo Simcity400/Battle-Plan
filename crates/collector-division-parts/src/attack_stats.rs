@@ -738,7 +738,7 @@ impl Captured {
                     .pointer
                     .checked_add(engine_native::unit_history::OFFICER);
                 let quiet = receiver.filter(|_| prepared.is_none_or(|p| !p.acquired[2])).and_then(
-                    |receiver| store.officer.quiet(seed, receiver, &observations.history, 2),
+                    |receiver| store.officer.quiet(seed, receiver, &observations.history),
                 );
                 let value = match quiet {
                     Some((at, _)) => store.officer.keep(
@@ -776,7 +776,7 @@ impl Captured {
             .then(|| {
                 store
                     .experience
-                    .quiet(seed, seed.pointer, &observations.experience, 0)
+                    .quiet(seed, seed.pointer, &observations.experience)
             })
             .flatten();
             let experience_certificate = (career_ready || experience_ready)
@@ -789,7 +789,7 @@ impl Captured {
             if career_ready {
                 let quiet = experience_certificate
                     .filter(|_| prepared.is_none_or(|p| !p.acquired[3]))
-                    .and_then(|_| store.career.quiet(seed, seed.pointer, &observations.history, 3));
+                    .and_then(|_| store.career.quiet(seed, seed.pointer, &observations.history));
                 let value = match quiet {
                     Some((at, _)) => store.career.keep(base, seed, at, false),
                     None => {
@@ -819,7 +819,7 @@ impl Captured {
                     .then(|| {
                         store
                             .progression
-                            .quiet(seed, seed.pointer, &observations.progression, 1)
+                            .quiet(seed, seed.pointer, &observations.progression)
                     })
                     .flatten();
                 let value = match quiet {

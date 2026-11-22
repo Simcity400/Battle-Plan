@@ -163,6 +163,7 @@ pub struct WatchRegistry {
     registered: AtomicUsize,
     purge: bool,
     marking: bool,
+    sequences: bool,
     epoch: AtomicU64,
     state: Hot,
     enabled: AtomicBool,
@@ -202,18 +203,22 @@ impl Default for WatchRegistry {
 
 impl WatchRegistry {
     pub const fn new() -> Self {
-        Self::with(true, false)
+        Self::with(true, false, true)
     }
 
     pub const fn retaining() -> Self {
-        Self::with(false, false)
+        Self::with(false, false, true)
     }
 
     pub const fn marking() -> Self {
-        Self::with(true, true)
+        Self::with(true, true, true)
     }
 
-    const fn with(purge: bool, marking: bool) -> Self {
+    pub const fn marks_only() -> Self {
+        Self::with(true, true, false)
+    }
+
+    const fn with(purge: bool, marking: bool, sequences: bool) -> Self {
         Self {
             table: AtomicPtr::new(ptr::null_mut()),
             offered: AtomicPtr::new(ptr::null_mut()),
@@ -224,6 +229,7 @@ impl WatchRegistry {
             registered: AtomicUsize::new(0),
             purge,
             marking,
+            sequences,
             epoch: AtomicU64::new(1),
             state: Hot(AtomicU64::new(0)),
             enabled: AtomicBool::new(false),
@@ -373,7 +379,9 @@ impl WatchRegistry {
             },
             None => (None, None),
         };
-        if let Some(sequence) = sequence {
+        if self.sequences
+            && let Some(sequence) = sequence
+        {
             self.increment(sequence);
         }
         if let Some((word, bit)) = mark {
@@ -397,7 +405,9 @@ impl WatchRegistry {
             },
             None => (None, None),
         };
-        if let Some(sequence) = sequence {
+        if self.sequences
+            && let Some(sequence) = sequence
+        {
             self.increment(sequence);
         }
         if let Some((word, bit)) = mark {
@@ -407,6 +417,34 @@ impl WatchRegistry {
             registry: self,
             mark,
             every: false,
+            counted,
+        }
+    }
+
+    #[inline]
+    pub fn notify_pair(&self, first: usize, second: usize) -> NotificationPair<'_> {
+        let counted = self.enter();
+        let mut marks = [None, None];
+        if let Some(table) = self.table() {
+            for (slot, receiver) in [first, second].into_iter().enumerate() {
+                if receiver == 0 || (slot == 1 && receiver == first) {
+                    continue;
+                }
+                if let Lookup::Watched(index, sequence) = table.find(receiver, false) {
+                    if self.sequences {
+                        self.increment(sequence);
+                    }
+                    let mark = table.mark_of(index);
+                    if let Some((word, bit)) = mark {
+                        mark_slot(word, bit);
+                    }
+                    marks[slot] = mark;
+                }
+            }
+        }
+        NotificationPair {
+            registry: self,
+            marks,
             counted,
         }
     }
@@ -891,6 +929,22 @@ pub struct Notification<'a> {
 impl Notification<'_> {
     pub fn has_mark(&self) -> bool {
         self.mark.is_some()
+    }
+}
+
+pub struct NotificationPair<'a> {
+    registry: &'a WatchRegistry,
+    marks: [Option<(&'a AtomicU64, u64)>; 2],
+    counted: bool,
+}
+
+impl Drop for NotificationPair<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        for mark in self.marks.into_iter().flatten() {
+            mark_slot(mark.0, mark.1);
+        }
+        self.registry.leave(self.counted);
     }
 }
 

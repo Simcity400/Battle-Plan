@@ -1,6 +1,6 @@
 use crate::{
     hook::Hook,
-    watch_registry::{Notification, WatchRegistry},
+    watch_registry::{Notification, NotificationPair, WatchRegistry},
 };
 use engine_native::{Memory, cstate};
 use engine_occupation::cresistance::changes::{Receiver, SITES};
@@ -72,6 +72,9 @@ pub fn sequence(receiver: usize) -> Option<(u64, u64)> {
 }
 pub fn changed(receiver: usize) -> Notification<'static> {
     WATCHES.notify(receiver)
+}
+pub fn changed_pair(first: usize, second: usize) -> NotificationPair<'static> {
+    WATCHES.notify_pair(first, second)
 }
 pub fn holder_changed(receiver: Option<usize>) -> Notification<'static> {
     match receiver.filter(|&receiver| receiver != 0) {

@@ -1,14 +1,5 @@
 use crate::army_stat_changes::Changes;
 use collector_observers::unit_history_changes;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-
-static QUIET: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static REFUSED: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-
-pub(crate) fn quiet(kind: usize) {
-    QUIET[kind].fetch_add(1, Relaxed);
-}
-
 
 #[derive(Default)]
 pub struct Taken {
@@ -86,17 +77,6 @@ impl HourObservations {
         self.history.take(|visit| unit_history_changes::take(visit));
         self.edits
             .take(|visit| unit_history_changes::take_edits(visit));
-        for (refused, taken) in REFUSED.iter().zip([
-            &self.armies,
-            &self.experience,
-            &self.progression,
-            &self.history,
-            &self.edits,
-        ]) {
-            if taken.epoch.is_none() {
-                refused.fetch_add(1, Relaxed);
-            }
-        }
     }
 
     pub fn is_taken(&self) -> bool {

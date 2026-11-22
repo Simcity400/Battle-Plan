@@ -95,6 +95,9 @@ struct Held {
     countries: Vec<HeldCountry>,
     keys: Vec<u32>,
     values: Vec<Option<i64>>,
+    template_token: Option<((u64, u64), (u64, u64), usize)>,
+    template_spans: Vec<(usize, usize, usize)>,
+    template_keys: Vec<u32>,
 }
 
 impl Held {
@@ -103,12 +106,17 @@ impl Held {
         self.countries.clear();
         self.keys.clear();
         self.values.clear();
+        self.template_token = None;
+        self.template_spans.clear();
+        self.template_keys.clear();
     }
 
     fn bytes(&self) -> usize {
         self.countries.capacity() * size_of::<HeldCountry>()
             + self.keys.capacity() * size_of::<u32>()
             + self.values.capacity() * size_of::<Option<i64>>()
+            + self.template_spans.capacity() * size_of::<(usize, usize, usize)>()
+            + self.template_keys.capacity() * size_of::<u32>()
     }
 }
 
@@ -168,44 +176,55 @@ impl Hostility {
         logical: Option<u32>,
     ) -> Result<bool, &'static str> {
         let mut countries = None;
-        self.attacking_with(memory, base, game, &mut countries, last, logical)
+        self.attacking_with(memory, base, game, &mut countries, &[], last, logical)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "reuses already-fetched movement provinces and country reader to avoid re-reading destination province memory"
+    )]
     fn attacking_with<'a, M: Memory>(
         &mut self,
         memory: &'a M,
         base: usize,
         game: usize,
         countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+        provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
         last: Result<u32, &'static str>,
         logical: Option<u32>,
     ) -> Result<bool, &'static str> {
         let last = last?;
-        let destination = match self.destinations.get(&last) {
-            Some(&destination) => destination,
-            None => {
-                let provinces = match self.provinces {
-                    Some(provinces) => provinces,
-                    None => *self
-                        .provinces
-                        .insert(engine_native::carmy::movement_province_array(memory, game)?),
-                };
-                let destination = match engine_native::carmy::movement_route_destination(
-                    memory, base, provinces, last,
-                )? {
-                    0 => None,
-                    province => Some(engine_native::carmy::movement_destination_controller(
-                        memory, province,
-                    )?),
-                };
-                if engine_allocation::advisory(|| {
-                    engine_allocation::reserve_map(&mut self.destinations, 1)
-                })
-                .is_ok()
-                {
-                    self.destinations.insert(last, destination);
+        let destination = if let Some(Ok(facts)) = memo(provinces, last)
+            && let Ok(controller) = facts.controller
+        {
+            Some(controller as i32)
+        } else {
+            match self.destinations.get(&last) {
+                Some(&destination) => destination,
+                None => {
+                    let provinces = match self.provinces {
+                        Some(provinces) => provinces,
+                        None => *self
+                            .provinces
+                            .insert(engine_native::carmy::movement_province_array(memory, game)?),
+                    };
+                    let destination = match engine_native::carmy::movement_route_destination(
+                        memory, base, provinces, last,
+                    )? {
+                        0 => None,
+                        province => Some(engine_native::carmy::movement_destination_controller(
+                            memory, province,
+                        )?),
+                    };
+                    if engine_allocation::advisory(|| {
+                        engine_allocation::reserve_map(&mut self.destinations, 1)
+                    })
+                    .is_ok()
+                    {
+                        self.destinations.insert(last, destination);
+                    }
+                    destination
                 }
-                destination
             }
         };
         let Some(controller) = destination else {
@@ -922,8 +941,32 @@ impl SpeedTerms {
         templates.sort_unstable();
         templates.dedup();
         reserve(&mut self.templates, templates.len())?;
+        let template_token = crate::template_changes::Changes::quiet(&crate::template_changes::Observer)
+            .zip(crate::template_changes::Changes::core_dependencies(
+                &crate::template_changes::Observer,
+            ))
+            .map(|(q, d)| (q, d, base));
+        if template_token.is_none() || self.held.template_token != template_token {
+            self.held.template_token = template_token;
+            self.held.template_spans.clear();
+            self.held.template_keys.clear();
+        }
+        let mut added_templates = false;
         for &template in templates.iter() {
             let start = self.keys.len();
+            if template_token.is_some()
+                && let Ok(at) = self
+                    .held
+                    .template_spans
+                    .binary_search_by_key(&template, |entry| entry.0)
+            {
+                let (_, h_start, h_len) = self.held.template_spans[at];
+                reserve(&mut self.keys, h_len)?;
+                self.keys
+                    .extend_from_slice(&self.held.template_keys[h_start..h_start + h_len]);
+                self.templates.push((template, Ok((start, h_len))));
+                continue;
+            }
             if engine_native::carmy::movement_speed_key_demands(
                 memory,
                 base,
@@ -933,9 +976,27 @@ impl SpeedTerms {
             .is_err()
             {
                 self.counts[2][2] += 1;
+            } else if template_token.is_some() {
+                let len = self.keys.len() - start;
+                if engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.held.template_spans, 1)?;
+                    engine_allocation::reserve(&mut self.held.template_keys, len)
+                })
+                .is_ok()
+                {
+                    let h_start = self.held.template_keys.len();
+                    self.held
+                        .template_keys
+                        .extend_from_slice(&self.keys[start..start + len]);
+                    self.held.template_spans.push((template, h_start, len));
+                    added_templates = true;
+                }
             }
             self.templates
                 .push((template, Ok((start, self.keys.len() - start))));
+        }
+        if added_templates {
+            self.held.template_spans.sort_unstable_by_key(|entry| entry.0);
         }
         Ok(())
     }
@@ -1009,9 +1070,15 @@ impl SpeedTerms {
             if mover.land == Ok(true) {
                 let last = route(&self.route, mover)
                     .and_then(|path| path.last().copied().unwrap_or(Err("division route empty")));
-                mover.attacking = self
-                    .hostility
-                    .attacking_with(memory, base, game, countries, last, mover.logical);
+                mover.attacking = self.hostility.attacking_with(
+                    memory,
+                    base,
+                    game,
+                    countries,
+                    &self.provinces,
+                    last,
+                    mover.logical,
+                );
             }
             if mover.land.is_err() {
                 for family in &mut self.counts[..4] {

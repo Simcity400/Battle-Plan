@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::spooling::table;
 use crate::{
     projection::{Projection, project_table},
     sampling::qpc,
@@ -10,6 +12,8 @@ use replay_data::{
     rows::Recorded, rows::TableId, rows::Witnessed, rows::tables,
 };
 use replay_frame::frame::TableInput;
+#[cfg(test)]
+use replay_frame::frame::TableView;
 use std::mem::size_of;
 #[cfg(test)]
 mod startup_tests;

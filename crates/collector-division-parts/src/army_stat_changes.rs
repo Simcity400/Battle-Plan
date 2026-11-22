@@ -170,7 +170,7 @@ impl Default for Watches {
 impl Watches {
     pub const fn new() -> Self {
         Self {
-            registry: WatchRegistry::marking(),
+            registry: WatchRegistry::marks_only(),
             experience: WatchRegistry::marking(),
             progression: WatchRegistry::marking(),
             calls: CallCounters::new(),

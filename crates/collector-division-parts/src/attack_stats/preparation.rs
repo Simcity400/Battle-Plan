@@ -36,6 +36,9 @@ pub struct PreparationPart {
     maxima: Vec<Option<Result<DivisionMaxima, &'static str>>>,
     maxima_pointers: Vec<usize>,
     maxima_reads: Vec<Result<DivisionMaxima, &'static str>>,
+    history_latest_rows: Vec<usize>,
+    history_latest_pointers: Vec<usize>,
+    history_latest_reads: Vec<Result<u32, &'static str>>,
 }
 impl Default for PreparationPart {
     fn default() -> Self {
@@ -50,6 +53,9 @@ impl Default for PreparationPart {
             maxima: Vec::new(),
             maxima_pointers: Vec::new(),
             maxima_reads: Vec::new(),
+            history_latest_rows: Vec::new(),
+            history_latest_pointers: Vec::new(),
+            history_latest_reads: Vec::new(),
         }
     }
 }
@@ -70,6 +76,10 @@ impl PreparationPart {
             + self.maxima_pointers.capacity() * std::mem::size_of::<usize>()
             + self.maxima_reads.capacity()
                 * std::mem::size_of::<Result<DivisionMaxima, &'static str>>()
+            + self.history_latest_rows.capacity() * std::mem::size_of::<usize>()
+            + self.history_latest_pointers.capacity() * std::mem::size_of::<usize>()
+            + self.history_latest_reads.capacity()
+                * std::mem::size_of::<Result<u32, &'static str>>()
     }
     pub fn get(&self, index: usize) -> Option<&PreparedDivision> {
         self.rows.get(index.checked_sub(self.range.start)?)
@@ -150,6 +160,9 @@ impl PreparationPart {
         self.supply.clear();
         self.supply_order.clear();
         self.maxima.clear();
+        self.history_latest_rows.clear();
+        self.history_latest_pointers.clear();
+        self.history_latest_reads.clear();
         self.source_ready = false;
         for order in &mut self.orders {
             order.clear();
@@ -170,6 +183,12 @@ impl PreparationPart {
                 engine_allocation::reserve(&mut self.supply, seeds.len())
             })
             .is_ok();
+        let history_latest_ready = engine_allocation::advisory(|| {
+            engine_allocation::reserve(&mut self.history_latest_rows, seeds.len())?;
+            engine_allocation::reserve(&mut self.history_latest_pointers, seeds.len())?;
+            engine_allocation::reserve(&mut self.history_latest_reads, seeds.len())
+        })
+        .is_ok();
         let read_dirty = self.range.start == 0;
         let source_reads = self.sources.begin_part(seeds.len(), read_dirty);
         let countries = source_reads
@@ -223,18 +242,6 @@ impl PreparationPart {
                     &mut self.orders[2],
                 )
             });
-            for (kind, quiet) in [
-                experience_quiet.is_some(),
-                progression_quiet.is_some(),
-                officer_quiet.is_some(),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                if quiet {
-                    crate::observations::quiet(kind);
-                }
-            }
             let experience_certificate = match experience_quiet {
                 Some((certificate, _)) => Some(certificate),
                 None => changes.experience_range_sequence(seed.pointer),
@@ -261,9 +268,6 @@ impl PreparationPart {
                         &mut self.orders[3],
                     )
                 });
-            if career_quiet.is_some() {
-                crate::observations::quiet(3);
-            }
             let career_certificate = match career_quiet {
                 Some((certificate, _)) => Some(certificate),
                 None => experience_certificate
@@ -322,6 +326,29 @@ impl PreparationPart {
                     || engine_native::unit_history::career_counter(memory, seed.pointer),
                 ),
             };
+            let history = observations
+                .and_then(|observations| {
+                    store.history.prefetch_quiet(
+                        index,
+                        seed,
+                        &observations.history,
+                        &mut self.orders[4],
+                    )
+                })
+                .or_else(|| {
+                    store
+                        .history
+                        .prefetch_certificates(index, seed, &mut self.orders[4])
+                });
+            let history = history.map(|(certs, latest)| {
+                if history_latest_ready
+                    && let Some(address) = latest
+                {
+                    self.history_latest_rows.push(self.rows.len());
+                    self.history_latest_pointers.push(address);
+                }
+                certs
+            });
             self.rows.push(PreparedDivision {
                 experience_certificate,
                 progression_certificate,
@@ -338,21 +365,29 @@ impl PreparationPart {
                     officer_acquired,
                     career_acquired,
                 ],
-                history: observations
-                    .and_then(|observations| {
-                        store.history.prefetch_quiet(
-                            index,
-                            seed,
-                            &observations.history,
-                            &mut self.orders[4],
-                        )
-                    })
-                    .or_else(|| {
-                        store
-                            .history
-                            .prefetch_certificates(index, seed, &mut self.orders[4])
-                    }),
+                history,
             });
+        }
+        if !self.history_latest_pointers.is_empty() {
+            self.history_latest_reads.resize(
+                self.history_latest_pointers.len(),
+                Err("unit history province vector invalid"),
+            );
+            engine_native::unit_history::province_counts(
+                memory,
+                &self.history_latest_pointers,
+                &mut self.history_latest_reads,
+            );
+            for ((&row, &address), &count) in self
+                .history_latest_rows
+                .iter()
+                .zip(&self.history_latest_pointers)
+                .zip(&self.history_latest_reads)
+            {
+                if let Some(history) = &mut self.rows[row].history {
+                    history.set_latest_provinces(address, count);
+                }
+            }
         }
         if self.source_ready && read_dirty {
             self.sources.capture_dirty(memory, base, &store.sources);

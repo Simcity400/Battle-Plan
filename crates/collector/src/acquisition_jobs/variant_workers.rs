@@ -111,11 +111,12 @@ impl Dispatch {
         base: usize,
         run: &mut dyn FnMut(),
     ) {
-        let executor = self.executor.upgrade().filter(|_| self.workers > 1);
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
         let fanout = self
             .calibration
             .as_ref()
-            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, self.workers));
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
         let tickets = engine_allocation::advisory(|| engine_allocation::vec(1).ok());
         if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
             let mut pending = Children {
@@ -158,11 +159,12 @@ impl Dispatch {
         wait: crate::hour_stages::Part,
         run: &mut dyn FnMut(),
     ) -> Option<Work> {
-        let executor = self.executor.upgrade().filter(|_| self.workers > 1);
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
         let fanout = self
             .calibration
             .as_ref()
-            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, self.workers));
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
         let tickets = engine_allocation::advisory(|| engine_allocation::vec(1).ok());
         if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
             let mut pending = Children {
@@ -205,7 +207,9 @@ impl Dispatch {
         Some(work)
     }
     pub(crate) fn lanes(&self) -> usize {
-        self.workers.max(1)
+        self.workers
+            .min(crate::capture_point::beside_readers())
+            .max(1)
     }
     #[cfg(test)]
     pub(crate) fn priority(&self) -> u8 {
@@ -348,7 +352,8 @@ impl Dispatch {
         memory: &impl engine_native::Memory,
         base: usize,
     ) -> Result<Vec<Work>, &'static str> {
-        let Some(executor) = self.executor.upgrade().filter(|_| self.workers > 1) else {
+        let lanes = self.lanes();
+        let Some(executor) = self.executor.upgrade().filter(|_| lanes > 1) else {
             let mut parts = parts;
             for part in &mut parts {
                 part.capture(memory, base);
@@ -356,7 +361,7 @@ impl Dispatch {
             return Ok(parts);
         };
         let calibration = self.calibration.as_deref().unwrap();
-        let Some(_fanout) = Fanout::enter(&calibration.cold_parents, self.workers) else {
+        let Some(_fanout) = Fanout::enter(&calibration.cold_parents, lanes) else {
             let mut parts = parts;
             for part in &mut parts {
                 part.capture(memory, base);

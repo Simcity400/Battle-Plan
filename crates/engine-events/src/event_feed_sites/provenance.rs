@@ -250,6 +250,45 @@ impl<'a, M: Memory> World<'a, M> {
         &self,
         country: usize,
     ) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
+        let expected = super::site(self.base, ccountry::VTABLE_RVA)? as u64;
+        if country == 0 {
+            return Err("event feed object identity mismatch");
+        }
+        if let (Some(id_addr), Some(target_addr)) = (
+            country.checked_add(ccountry::ID),
+            country.checked_add(ccountry::SURRENDER_TARGET),
+        ) {
+            let mut vtable_bytes = [0u8; 8];
+            let mut id_bytes = [0u8; 4];
+            let mut target_bytes = [0u8; 4];
+            let copied = self.memory.copy_scattered(
+                [country, id_addr, target_addr],
+                &mut [&mut vtable_bytes[..], &mut id_bytes[..], &mut target_bytes[..]],
+            );
+            if copied >= 1 && u64::from_le_bytes(vtable_bytes) != expected {
+                return Err("event feed object identity mismatch");
+            }
+            if copied == 3 {
+                let reference = u32::from_le_bytes(id_bytes);
+                let instance = u32::from_le_bytes(target_bytes);
+                let countries = self.countries()?;
+                if let Some(resolved) = countries.verify_canonical_pointer(country, reference) {
+                    return Ok((
+                        resolved,
+                        CountryIdentity {
+                            reference,
+                            id: resolved.id,
+                            instance,
+                        },
+                    ));
+                }
+                let (resolved, identity) = identity(self.memory, self.base, countries, reference)?;
+                if resolved.pointer != country {
+                    return Err("event feed country is not its canonical object");
+                }
+                return Ok((resolved, identity));
+            }
+        }
         verify_vtable(self.memory, self.base, country, ccountry::VTABLE_RVA)?;
         let reference = value(self.memory, country, ccountry::ID)?;
         let (resolved, identity) = identity(self.memory, self.base, self.countries()?, reference)?;

@@ -2680,41 +2680,44 @@ pub fn movement_province(
     })
 }
 
-const MOVEMENT_PROVINCE_ID_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: ID,
-    destination_offset: 0,
-    len: 4,
-}];
-const MOVEMENT_PROVINCE_ID_LAYOUT: RecordLayout<'static> =
-    RecordLayout::new(&MOVEMENT_PROVINCE_ID_FIELDS, 4).expect("valid record layout");
-const MOVEMENT_PROVINCE_FIELDS: [RecordField; 5] = [
+const MOVEMENT_PROVINCE_FIELDS: [RecordField; 7] = [
     RecordField {
-        source_offset: DEFINITION,
+        source_offset: 0,
         destination_offset: 0,
         len: 8,
     },
     RecordField {
-        source_offset: STATE,
+        source_offset: ID,
         destination_offset: 8,
-        len: 8,
-    },
-    RecordField {
-        source_offset: CONTROLLER,
-        destination_offset: 16,
         len: 4,
     },
     RecordField {
-        source_offset: CONTROLLER_AREA,
+        source_offset: DEFINITION,
+        destination_offset: 16,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STATE,
         destination_offset: 24,
         len: 8,
     },
     RecordField {
-        source_offset: STRATEGIC_REGION,
+        source_offset: CONTROLLER,
         destination_offset: 32,
+        len: 4,
+    },
+    RecordField {
+        source_offset: CONTROLLER_AREA,
+        destination_offset: 40,
+        len: 8,
+    },
+    RecordField {
+        source_offset: STRATEGIC_REGION,
+        destination_offset: 48,
         len: 8,
     },
 ];
-const MOVEMENT_PROVINCE_BYTES: usize = 40;
+const MOVEMENT_PROVINCE_BYTES: usize = 56;
 const MOVEMENT_PROVINCE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_PROVINCE_FIELDS, MOVEMENT_PROVINCE_BYTES)
         .expect("valid record layout");
@@ -2830,16 +2833,6 @@ pub fn movement_provinces(
                 Err(_) => Err("movement province entry unreadable"),
             }
         });
-        open.gather(memory, &POINTER_LAYOUT, &mut results, &alone, |_, pointer, word| {
-            (Some(word) == vtable).then_some(pointer).ok_or(MISMATCH)
-        });
-        open.gather(
-            memory,
-            &MOVEMENT_PROVINCE_ID_LAYOUT,
-            &mut results,
-            &alone,
-            |row, pointer, id| (id == u64::from(ids[row])).then_some(pointer).ok_or(MISMATCH),
-        );
         let mut payload = [0u8; BATCH_ROWS * MOVEMENT_PROVINCE_BYTES];
         let rows = &open.rows;
         gather_rows(
@@ -2857,15 +2850,21 @@ pub fn movement_provinces(
             }
             let record = &payload[slot * MOVEMENT_PROVINCE_BYTES..][..MOVEMENT_PROVINCE_BYTES];
             let word = |at: usize| u64::from_le_bytes(record[at..at + 8].try_into().unwrap());
+            let found_id = u32::from_le_bytes(record[8..12].try_into().unwrap());
+            if Some(word(0)) != vtable || found_id != ids[row] {
+                results[row] = Some(Err(MISMATCH));
+                continue;
+            }
+            let definition = word(16);
             results[row] = Some(Ok(MovementProvince {
-                state: Ok(word(8) as usize),
-                controller: Ok(u32::from_le_bytes(record[16..20].try_into().unwrap())),
-                controller_area: Ok(word(24) as usize),
-                strategic_region: Ok(word(32) as usize),
+                state: Ok(word(24) as usize),
+                controller: Ok(u32::from_le_bytes(record[32..36].try_into().unwrap())),
+                controller_area: Ok(word(40) as usize),
+                strategic_region: Ok(word(48) as usize),
                 terrain_flags: Err("movement province definition flags unreadable"),
             }));
-            if word(0) != 0 {
-                defined.push(row, word(0) as usize);
+            if definition != 0 {
+                defined.push(row, definition as usize);
             }
         }
         let (mut flags, mut unreadable) = ([0u8; BATCH_ROWS], [false; BATCH_ROWS]);

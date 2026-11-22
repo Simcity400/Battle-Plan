@@ -368,6 +368,9 @@ impl SpeedTerms {
         if result.is_ok() && holdable {
             next.epoch = observed.epoch;
             next.arrays = observed.arrays.unwrap_or_default();
+            next.template_token = self.held.template_token;
+            std::mem::swap(&mut next.template_spans, &mut self.held.template_spans);
+            std::mem::swap(&mut next.template_keys, &mut self.held.template_keys);
             std::mem::swap(&mut *self.held, next);
             next.clear();
         } else {

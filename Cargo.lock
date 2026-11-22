@@ -1894,6 +1894,7 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "foldhash 0.2.0",
  "replay-data",
  "replay-frame",
  "replay-identity",

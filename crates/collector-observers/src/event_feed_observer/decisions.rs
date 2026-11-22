@@ -48,16 +48,27 @@ fn access(
     });
 }
 fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'static str> {
-    if engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
-        .is_none_or(|vtable| engine_native::read::<u64>(memory, status) != Some(vtable as u64))
-    {
+    let expected = engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
+        .ok_or("decision writer owner status differs")? as u64;
+    let Some(country_addr) = status.checked_add(engine_decisions::cdecision_status::COUNTRY) else {
+        if engine_native::read::<u64>(memory, status) != Some(expected) {
+            return Err("decision writer owner status differs");
+        }
+        return Err("decision writer owner unreadable");
+    };
+    let mut vtable_bytes = [0u8; 8];
+    let mut country_bytes = [0u8; 8];
+    let copied = memory.copy_scattered(
+        [status, country_addr],
+        &mut [&mut vtable_bytes[..], &mut country_bytes[..]],
+    );
+    if copied == 0 || u64::from_le_bytes(vtable_bytes) != expected {
         return Err("decision writer owner status differs");
     }
-    status
-        .checked_add(engine_decisions::cdecision_status::COUNTRY)
-        .and_then(|p| engine_native::read::<u64>(memory, p))
-        .map(|p| p as usize)
-        .ok_or("decision writer owner unreadable")
+    if copied < 2 {
+        return Err("decision writer owner unreadable");
+    }
+    Ok(u64::from_le_bytes(country_bytes) as usize)
 }
 pub fn instance(status: usize, pointer: usize, container: u8, operation: Operation, flags: u8) {
     access(false, |store, world, memory, base, generation| {

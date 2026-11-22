@@ -777,6 +777,7 @@ impl Projection<'_> {
             return unavailable("collector allocation failed").into();
         }
         let mut aligned = aligned_eligible;
+        let mut first_unaligned = 0;
         if aligned {
             edits.clear();
         }
@@ -807,6 +808,7 @@ impl Projection<'_> {
                     }
                 } else {
                     aligned = false;
+                    first_unaligned = at;
                 }
             }
             next.keys.push(row_key);
@@ -829,7 +831,15 @@ impl Projection<'_> {
                     }
                     finalize_ledger_edits::<S, T>(edits, source, &convert)
                 } else {
-                    ledger_update::<S, T, C>(held, next, seen, edits, source, &convert)
+                    ledger_update::<S, T, C>(
+                        held,
+                        next,
+                        seen,
+                        edits,
+                        first_unaligned,
+                        source,
+                        &convert,
+                    )
                 };
                 match result {
                     Ok(None) => TableInput::ComparedEqual(token),
@@ -883,81 +893,66 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
     next: &Ledger<C>,
     seen: &mut Vec<bool>,
     edits: &mut Vec<(u128, Option<usize>)>,
+    first_unaligned: usize,
     source: &[T],
     convert: impl Fn(&T) -> S::Row,
 ) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
     const DUPLICATE: &str = "walker produced duplicate engine ids";
     const ALLOCATION: &str = "collector allocation failed";
-    let mut seen_active = false;
-    let mut held_sorted = false;
+    seen.clear();
+    let need = held.keys.len().saturating_sub(seen.capacity());
+    if need > 0 {
+        engine_allocation::reserve(seen, need).map_err(|_| ALLOCATION)?;
+    }
+    seen.resize(held.keys.len(), false);
+    seen[..first_unaligned].fill(true);
+    let held_sorted = held.keys.windows(2).all(|pair| pair[0] < pair[1]);
     let mut shift: isize = 0;
-    let mut index: Option<std::collections::HashMap<u128, usize>> = None;
-    let mut added = std::collections::HashSet::new();
-    edits.clear();
-    let mut matched = 0;
-    for (at, &key) in next.keys.iter().enumerate() {
-        let old = if !seen_active && held.keys.get(at) == Some(&key) {
-            matched += 1;
-            if next.fixed[at].is_some()
-                && next.fixed[at] == held.fixed[at]
-                && next.span(at) == held.span(at)
-            {
-                continue;
-            }
-            if edits.len() == edits.capacity() {
-                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
-            }
-            edits.push((key, Some(at)));
-            continue;
-        } else {
-            if !seen_active {
-                seen.clear();
-                let need = held.keys.len().saturating_sub(seen.capacity());
-                if need > 0 {
-                    engine_allocation::reserve(seen, need).map_err(|_| ALLOCATION)?;
-                }
-                seen.resize(held.keys.len(), false);
-                seen[..at].fill(true);
-                held_sorted = held.keys.windows(2).all(|pair| pair[0] < pair[1]);
-                seen_active = true;
-            }
-            let base = at as isize + shift;
-            let probed = usize::try_from(base)
-                .ok()
-                .filter(|&cand| held.keys.get(cand) == Some(&key))
-                .or_else(|| {
-                    for delta in [1_isize, -1, 2, -2, 3, -3, 4, -4] {
-                        if let Ok(cand) = usize::try_from(base + delta)
-                            && held.keys.get(cand) == Some(&key)
-                        {
-                            shift = cand as isize - at as isize;
-                            return Some(cand);
-                        }
+    let mut index: Option<std::collections::HashMap<u128, usize, foldhash::fast::FixedState>> =
+        None;
+    let mut added: std::collections::HashSet<u128, foldhash::fast::FixedState> =
+        std::collections::HashSet::default();
+    let mut matched = first_unaligned;
+    for (offset, &key) in next.keys[first_unaligned..].iter().enumerate() {
+        let at = first_unaligned + offset;
+        let base = at as isize + shift;
+        let probed = usize::try_from(base)
+            .ok()
+            .filter(|&cand| held.keys.get(cand) == Some(&key))
+            .or_else(|| {
+                for delta in [1_isize, -1, 2, -2, 3, -3, 4, -4] {
+                    if let Ok(cand) = usize::try_from(base + delta)
+                        && held.keys.get(cand) == Some(&key)
+                    {
+                        shift = cand as isize - at as isize;
+                        return Some(cand);
                     }
-                    None
-                });
-            if probed.is_some() {
-                probed
-            } else if held_sorted {
-                let found = held.keys.binary_search(&key).ok();
-                if let Some(cand) = found {
-                    shift = cand as isize - at as isize;
                 }
-                found
-            } else {
-                if index.is_none() {
-                    let mut held_at = std::collections::HashMap::new();
-                    engine_allocation::reserve_map(&mut held_at, held.keys.len())
-                        .map_err(|_| ALLOCATION)?;
-                    held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
-                    index = Some(held_at);
-                }
-                let found = index.as_ref().and_then(|index| index.get(&key).copied());
-                if let Some(cand) = found {
-                    shift = cand as isize - at as isize;
-                }
-                found
+                None
+            });
+        let old = if probed.is_some() {
+            probed
+        } else if held_sorted {
+            let found = held.keys.binary_search(&key).ok();
+            if let Some(cand) = found {
+                shift = cand as isize - at as isize;
             }
+            found
+        } else {
+            if index.is_none() {
+                let mut held_at = std::collections::HashMap::with_hasher(
+                    foldhash::fast::FixedState::default(),
+                );
+                engine_allocation::reserve_map(&mut held_at, held.keys.len())
+                    .map_err(|_| ALLOCATION)?;
+                held_at.extend(held.keys.iter().enumerate().map(|(at, &key)| (key, at)));
+                index = Some(held_at);
+            }
+            let found = index.as_ref().and_then(|index| index.get(&key).copied());
+            if let Some(cand) = found {
+                shift = cand as isize - at as isize;
+            }
+            found
         };
         match old {
             Some(old) => {
@@ -985,20 +980,11 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
         edits.push((key, Some(at)));
     }
     if matched < held.keys.len() {
-        if seen_active {
-            for (old, _) in seen.iter().enumerate().filter(|(_, was_seen)| !**was_seen) {
-                if edits.len() == edits.capacity() {
-                    engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
-                }
-                edits.push((held.keys[old], None));
+        for (old, _) in seen.iter().enumerate().filter(|(_, was_seen)| !**was_seen) {
+            if edits.len() == edits.capacity() {
+                engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
             }
-        } else {
-            for &key in &held.keys[matched..] {
-                if edits.len() == edits.capacity() {
-                    engine_allocation::reserve(edits, 1).map_err(|_| ALLOCATION)?;
-                }
-                edits.push((key, None));
-            }
+            edits.push((held.keys[old], None));
         }
     }
     finalize_ledger_edits::<S, T>(edits, source, convert)
