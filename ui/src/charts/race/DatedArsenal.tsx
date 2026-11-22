@@ -29,7 +29,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const offscreen = canvas.transferControlToOffscreen(), id = surfaceId(), clock = props.clock;
     const stopClock = drawClock(clock);
     let point: { x: number; y: number } | undefined;
-    let version = 0, ready = false, first = true, selected = -1, ticket = 0, chosen: string | undefined;
+    let version = 0, ready = false, first = true, restoring = false, selected = -1, ticket = 0, chosen: string | undefined;
     let resolve: ((p?: RaceInspection) => void) | undefined;
     const visible = (show: boolean) => {
       canvas.style.visibility = show ? '' : 'hidden';
@@ -39,8 +39,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const describe = (on: boolean) => { if (on) canvas.setAttribute('aria-describedby', owner + '-ranking'); else canvas.removeAttribute('aria-describedby'); };
     const silence = () => { resolve?.(); resolve = undefined; hideTooltip(owner);
       if (ranking.current) ranking.current.textContent = ''; if (description.current) description.current.textContent = ''; };
-    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; chosen = undefined; silence(); };
-    const hold = () => { describe(false); silence(); };
+    const clear = () => { held.drop(); visible(false); point = undefined; selected = -1; chosen = undefined; restoring = false; silence(); };
+    const hold = () => { describe(false); silence(); restoring = true; };
     const held = heldPicture(clock, region, () => latest.current.model.fixed === undefined, clear, hold);
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
@@ -85,9 +85,9 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       if (m.hour === null && m.waiting && held.stale && !ahead) return;
       if (m.hour === null || ahead || m.hour > Math.floor(latest.current.model.fixed ?? clockHour)) clear();
       else {
-        const restored = held.stale;
         held.present(m.holdsThrough); visible(true); describe(true);
-        if (restored && document.activeElement === canvas) {
+        if (restoring && document.activeElement !== canvas) restoring = false;
+        if (restoring) {
           const b = canvas.getBoundingClientRect();
           void act(chosen === undefined ? undefined : { key: chosen }, 'read', b.right, b.top + b.height / 2);
         }
@@ -100,6 +100,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const act = async (target: RaceTarget | undefined, action: string, x: number, y: number) => {
       const pic = await inspect(target), p = latest.current;
       if (!pic) return;
+      restoring = false;
       if (ranking.current) ranking.current.textContent = raceText(pic.items, p.name) || p.empty || '';
       if (extent.current) extent.current.style.height = `calc(${raceHeight(pic.items.length)}px - 100%)`;
       if (!pic.item) {

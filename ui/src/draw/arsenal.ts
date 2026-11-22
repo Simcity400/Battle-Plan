@@ -14,7 +14,7 @@ import { pictureHour } from './pictureDate.ts';
 import type { PictureInterval } from './pictureDate';
 
 export interface ArsenalFeed extends ArsenalSelection {
-  follow?: number; offset: number; fixed?: number; date?: PictureInterval; reply?: NuclearArsenalReply;
+  follow?: number; offset: number; fixed?: number; date?: PictureInterval; asked?: boolean; reply?: NuclearArsenalReply;
 }
 export interface ArsenalModel extends ArsenalFeed {
   widget?: string;

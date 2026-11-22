@@ -144,6 +144,11 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   now += 17; frame();
   assert.deepEqual([retainedClears.length, raceClears.length], [0, 0], 'the worker leaves an uncovered picture for its host to release');
   assert.deepEqual([raced(11)?.hour, raced(11)?.waiting], [null, false], 'an uncovered recorded race is presented without a picture and waits for nothing');
+  post({ type: 'race', id: 3, owner: 2, model: { view: 'nuclear-arsenal', offset: 0, date: { since: 0, through: 10 }, asked: true,
+    reply: { types: [], countries: [], missing: null, warnings: [] }, top: 10, tags: [], split: false, overlay: false, colours: new Map(), looks: new Map(),
+    scroll: 0, width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } as never } });
+  now += 17; frame();
+  assert.deepEqual([raced(11)?.owner, raced(11)?.hour, raced(11)?.waiting], [2, null, true], 'a recorded race whose host asks each followed hour waits for the reply of the paused hour');
   post({ type: 'detach', id: 3 }); post({ type: 'closeRace', id: 3 });
   post({ type: 'race', id: 6, owner: 1, canvas: { width: 500, height: 180, getContext: () => raceInk } as unknown as OffscreenCanvas,
     model: { view: 'nuclear-arsenal', offset: 0, follow: 99, top: 10, tags: [], split: false, overlay: false, colours: new Map(), looks: new Map(),
@@ -231,10 +236,41 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   assert.ok(layoutClears.length > 0 && projectNotice()?.owner === 4 && projectNotice()?.waiting === false && projectNotice()?.date === undefined,
     'a reply the view refuses releases the picture and erases it');
 
-  post({ type: 'options', rate: 1, measured: false, cap: 60, lane: 1 });
   const port = { onmessage: null as ((e: { data: unknown }) => void) | null, postMessage() {} };
   post({ type: 'port', port: port as unknown as MessagePort });
   const landed = (items: unknown[]) => port.onmessage!({ data: items });
+  const germany = (total: number) => ({ types: [{ ordinal: 0, token: 'nuke', name: 'Nuclear bomb' }],
+    countries: [{ tag: 'GER', countryId: 1, total, counts: [{ ordinal: 0, value: total, ready: total }] }], missing: null, warnings: [] });
+  const resume = (position: number, playing: boolean) => post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position, seek: 17, lastHour: 199,
+    playing, speed: 1, generation: 11, forwardSeek: true } });
+  const roster = (completed: number | undefined, hour: number, data: unknown) => landed([{ kind: 'panels', batch: { route: 31, clock: 0, seek: 17, completed,
+    panels: [{ id: 40, hour, stepped: true, panel: { data, refused: null } }] } }]);
+  const rosters = () => sent.flatMap(m => m.type === 'structure' || m.type === 'structureLead' ? m.updates.filter(u => u.id === 40).map(u => `${m.type} ${u.hour}`) : []);
+  post({ type: 'add', id: 40, branch: 'resume', product: 'nuclear-arsenal' });
+  post({ type: 'bind', branch: 'resume', route: 31, seek: 17 });
+  resume(24, false);
+  roster(undefined, 23, { types: [], countries: [], missing: null, warnings: [] });
+  now += 17; frame();
+  assert.deepEqual(rosters(), ['structure 23'], 'paused at 24:00, the reading of 23:00 is sent, and the page rejects it');
+  sent.length = 0;
+  resume(24, true);
+  roster(24, 30, germany(30));
+  now += 17; frame();
+  assert.deepEqual(rosters(), ['structure 23', 'structureLead 30'],
+    'on resume, the rejected reading goes out before any lead, so a later roster sent ahead is never followed by the older one');
+  sent.length = 0;
+  now += 6_000; frame();
+  assert.deepEqual(rosters(), [], 'once the roster sent ahead is due, it is not sent again');
+  resume(40, false);
+  now += 17; frame();
+  assert.deepEqual(rosters(), ['structure 30'], 'paused at 40:00, the reading of 30:00 is sent, and the page rejects it');
+  sent.length = 0;
+  resume(40, true);
+  roster(24, 40, { ...germany(40), countries: [{ ...germany(40).countries[0]!, tag: 'ENG' }] });
+  now += 17; frame();
+  assert.deepEqual(rosters(), ['structure 30', 'structureLead 40'], 'a roster sent ahead and due on the first playing frame is sent once');
+
+  post({ type: 'options', rate: 1, measured: false, cap: 60, lane: 1 });
   post({ type: 'add', id: 50, branch: 'arsenal', product: 'nuclear-arsenal' });
   post({ type: 'bind', branch: 'arsenal', route: 30, seek: 20 });
   post({ type: 'clock', anchor: { at: performance.timeOrigin + now, position: 24, seek: 20, lastHour: 199, playing: false, speed: 1, generation: 10, forwardSeek: true } });

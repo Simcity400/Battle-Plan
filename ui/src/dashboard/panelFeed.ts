@@ -12,5 +12,5 @@ export function panelFeed<T>(view: string, head: HeadProduct<T>, shape: (reply: 
   const at = shown.shownAt();
   return { view, follow: shown.workerFollow, offset, structure: shape(shown.data), exactRead: shown.exactRead,
     fixed: widget.time.mode === 'follow' ? undefined : shown.hour === null ? undefined : shown.hour - offset,
-    date: at === null ? undefined : { since: at, through: at }, reply: shown.workerFollow === undefined ? shown.data : undefined };
+    date: at === null ? undefined : { since: at, through: at }, asked: shown.workerFollow === undefined && widget.time.mode === 'follow', reply: shown.workerFollow === undefined ? shown.data : undefined };
 }
