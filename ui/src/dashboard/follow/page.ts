@@ -47,6 +47,7 @@ export interface FrameRequest {
   now: number;
   target: number;
   exact: boolean;
+  speed: number;
   installed: Ack[];
   refused: Refusal[];
   inspect: [widget: number, key: string][];
@@ -181,7 +182,7 @@ export class Page<B extends Bitmap = Bitmap> {
       this.sent.set(serial, this.publishes);
       const inspect: [number, string][] = [];
       for (const widget of this.widgets.values()) if (widget.lane === lane && widget.inspect !== null) inspect.push([widget.id, widget.inspect]);
-      this.post(lane, { type: 'frame', serial, now: this.T, target, exact, installed: this.acks[lane]!.splice(0), refused: this.refusals[lane]!.splice(0), inspect });
+      this.post(lane, { type: 'frame', serial, now: this.T, target, exact, speed: this.playing ? this.speed : 0, installed: this.acks[lane]!.splice(0), refused: this.refusals[lane]!.splice(0), inspect });
     }
     if (this.sent.size > 256) for (const key of [...this.sent.keys()].slice(0, 128)) this.sent.delete(key);
   }
@@ -338,6 +339,21 @@ export class Page<B extends Bitmap = Bitmap> {
     this.touched.add(widget);
     this.tell();
     this.request(true, false);
+  }
+
+  name(id: number, status: 'failed' | 'reading', reason?: string) {
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
+    this.clear(widget, status, reason);
+    this.tell();
+  }
+
+  lane(id: number) { return this.widgets.get(id)?.lane; }
+
+  mountRoute(id: number, route: number) {
+    const widget = this.widgets.get(id);
+    if (widget) { widget.route = route; this.route(route); }
   }
 
   command(route: number) { return ++this.route(route).command; }

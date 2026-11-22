@@ -12,13 +12,14 @@ export type Value = PanelValue | AnswerValue | SeedValue;
 export interface Sub { id: number; channel: Channel; product?: string; route: number | null; rank: number }
 
 export interface Surface { width: number; height: number; dpr: number }
-export interface Binding { generation: number; surfaces: readonly Surface[]; settings?: unknown }
+export interface Binding { generation: number; surfaces: readonly Surface[]; settings?: unknown; dated?: { h: number; c: number } }
 export interface Bitmapped { readonly width: number; readonly height: number }
 
 export interface Scene { widget: number; subs: readonly Sub[]; pictures: readonly Picture<Value>[]; model: unknown }
 
 export interface PaintInput extends Scene {
   hour: number;
+  speed: number;
   binding: Binding;
   inspect: string | null;
   now: number;
@@ -37,6 +38,10 @@ export interface LaneView {
   paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted;
 }
 
+export interface Painted {
+  hit?: string | null;
+}
+
 export interface Presented<B extends Bitmap> { lane: number; serial: number; resets: [number, number][]; entries: Entry<B>[] }
 
 export interface LaneHost<B extends Bitmap> {
@@ -48,6 +53,7 @@ export interface LaneHost<B extends Bitmap> {
   release(bytes: number): void;
   fail(reason: string): void;
   later(run: () => void): void;
+  hit?(widget: number, key: string | null): void;
   budget?: number;
   clock?: () => number;
   stretch?: (ms: number) => void;
@@ -157,6 +163,21 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (model !== undefined) held.model = model;
     held.sent = {};
     held.inflight = null;
+    this.wake();
+  }
+
+  touch(widget: number) {
+    const held = this.widgets.get(widget);
+    if (!held) return;
+    held.motion = true;
+    this.wake();
+  }
+
+  pointer(widget: number, surface: number, point: [number, number] | null) {
+    const held = this.widgets.get(widget);
+    if (!held) return;
+    held.state.set('pointer', point && { surface, point });
+    held.motion = true;
     this.wake();
   }
 
@@ -391,6 +412,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private select(widget: Widget, target: number): Selected | null {
     const pictures: Picture<Value>[] = [], components: { picture: Picture<Value>; window: Window }[] = [];
+    if (!widget.subs.length) {
+      const dated = widget.binding.dated;
+      return dated ? { pictures, window: [-Infinity, Infinity], h: dated.h, c: dated.c } : null;
+    }
     for (const id of widget.subs) {
       const sub = this.subs.get(id);
       if (!sub || sub.route !== null && this.failed.has(sub.route)) return null;
@@ -447,13 +472,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       let painted: Painted, mode: Entry['mode'] = 'picture', reason: string | undefined;
       try {
         painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: selected.pictures, model: widget.model,
-          hour: selected.window[0], binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
+          hour: selected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
         mode = painted.mode ?? 'picture'; reason = painted.reason;
       } catch (error) {
         painted = { surfaces: [], fields: {}, motion: false };
         mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
       }
       widget.motion = painted.motion;
+      if (painted.hit !== undefined) this.host.hit?.(widget.id, painted.hit);
       widget.cost = widget.cost * 0.8 + (this.time() - start) * 0.2;
       if (motion) this.stats.motion++;
       const parts: (B | typeof SAME | null)[] = [];
