@@ -1562,7 +1562,7 @@ pub fn same_quads(a: &[Quad], b: &[Quad]) -> bool {
         && a.iter().zip(b).all(|(a, b)| {
             a.texture == b.texture
                 && a.layer == b.layer
-                && a.rotation.to_bits() == b.rotation.to_bits()
+                && a.rotation.map(f32::to_bits) == b.rotation.map(f32::to_bits)
                 && bits(&a.rect) == bits(&b.rect)
                 && bits(&a.uv) == bits(&b.uv)
                 && bits(&a.color) == bits(&b.color)
@@ -1819,6 +1819,7 @@ impl Document {
                 allow_unverified,
                 initial,
                 replay,
+                tables,
                 resolved,
                 visual_mods,
                 texture_quality,
@@ -1834,6 +1835,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        tables: Option<engine_executable::executable_tables::Tables>,
         resolved: Arc<content_reader_core::content::ResolvedContent>,
         visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
         texture_quality: u8,
@@ -1950,6 +1952,7 @@ impl Document {
             visual_mods,
             texture_quality,
             replay,
+            tables,
             content,
             &product_loader,
             warnings,
@@ -1968,6 +1971,7 @@ impl Document {
         visual_mods: Option<&[content_reader_core::content::visual::Choice]>,
         texture_quality: u8,
         replay: Arc<Replay>,
+        tables: Option<engine_executable::executable_tables::Tables>,
         content: content_reader_core::content::ResolvedContent,
         product_loader: &map_products::loader::Loader,
         mut warnings: Vec<String>,
@@ -2038,7 +2042,9 @@ impl Document {
             let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
             let game_audio = dashboard_core::map_settings::game_audio(&settings);
             let game_dev_master = dashboard_core::map_settings::game_dev_master(&settings);
-            let cursors = crate::cursors::Cursors::load(|path| content.layers.read_uncovered(path));
+            let cursors = crate::cursors::Cursors::load_from_tables(tables, |path| {
+                content.layers.read_uncovered(path)
+            });
             let map_defines = crate::map_assets::graphics_define(
                 &content.layers,
                 "camera and map",
@@ -3127,7 +3133,7 @@ impl Document {
             let content = Content {
                 loading,
                 first_frame_reported: std::sync::atomic::AtomicBool::new(false),
-                tables: engine_executable::executable_tables::current(),
+                tables,
                 products,
                 radar_centers,
                 resource_icons,
@@ -5648,7 +5654,7 @@ mod tests {
             rect: [0.0; 4],
             uv: [0.0; 4],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: 0,
             shade: 0.0,
             exact: None,
@@ -5704,7 +5710,7 @@ mod tests {
             rect: [group as f32, 0.0, 1.0, 1.0],
             uv: [0.0, 0.0, 1.0, 1.0],
             color: [1.0; 4],
-            rotation: 0.0,
+            rotation: None,
             layer: group as u64,
             shade: 0.0,
             exact: None,
