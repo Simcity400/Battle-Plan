@@ -1200,7 +1200,7 @@ impl Captured {
         }
         match owners {
             Err(reason) => fail(self, reason),
-            Ok(census) => {
+            Ok((census, found_country)) => {
                 if census {
                     store.finish_scan();
                     self.project_selection.finish_census(store);
@@ -1232,6 +1232,10 @@ impl Captured {
                         self.acquisition_phases[4] = elapsed(started);
                     }
                     outcomes
+                } else if census && found_country && self.project_read.is_empty() {
+                    self.projects.rows.clear();
+                    self.history.rows.clear();
+                    (Outcome::Rows { len: 0 }, Outcome::Rows { len: 0 })
                 } else {
                     nproject_cproject::walk_with_history_selected(
                         memory,
@@ -1297,7 +1301,7 @@ impl Captured {
         base: usize,
         game_state: usize,
         store: &mut SliceFingerprints,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<(bool, bool), &'static str> {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let links = countries.arrays()[1];
         let bytes = (links.count as usize)
@@ -1325,9 +1329,13 @@ impl Captured {
         }
         self.project_owners.sort_unstable();
         let mut census = true;
+        let mut found_country = false;
         for slot in 1..countries.count() {
             let country = match countries.at(slot) {
-                Ok(Some(country)) => country,
+                Ok(Some(country)) => {
+                    found_country = true;
+                    country
+                }
                 Ok(None) => continue,
                 Err(_) => {
                     census = false;
@@ -1365,7 +1373,7 @@ impl Captured {
                 }
             }
         }
-        Ok(census)
+        Ok((census, found_country))
     }
 
     fn project_countries(&self) -> impl Iterator<Item = &[(u32, u32)]> {

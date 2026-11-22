@@ -85,6 +85,28 @@ impl Store {
         self.order.truncate(self.cursor);
     }
 
+    pub fn digest(&self) -> Option<u64> {
+        let mut hash = native::FNV_OFFSET;
+        for &id in &self.order {
+            let at = self
+                .entries
+                .binary_search_by_key(&id, |entry| entry.country)
+                .ok()?;
+            let entry = &self.entries[at];
+            if !entry.config_valid || (entry.occupation.is_some() && entry.garrison.is_none()) {
+                return None;
+            }
+            hash = native::hash_country(
+                hash,
+                entry.country,
+                entry.pointer,
+                entry.manager,
+                entry.occupation,
+            );
+        }
+        Some(hash)
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.entries.capacity() * size_of::<Entry>()
             + self.order.capacity() * size_of::<u32>()

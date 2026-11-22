@@ -2919,7 +2919,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                 "calls": shared.native_tick_calls.load(Ordering::Relaxed),
             },
             "acquisition_work": acquisition_work(shared),
-            "hour_stages": crate::hour_stages::status(),
+            "hour_stages": crate::hour_stages::status(&|ticks| shared.ns(ticks)),
             "collector_thread_cpu": crate::thread_cpu::status(
                 shared
                     .acquisition

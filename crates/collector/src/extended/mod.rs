@@ -152,6 +152,12 @@ macro_rules! spool_inputs {
     (naval_history, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
+    (plans, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (combat_details, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
     (war_overview, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
     };

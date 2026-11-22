@@ -749,15 +749,39 @@ impl Projection<'_> {
                 Err(_) => return unavailable("collector allocation failed").into(),
             },
         };
-        let next = &mut ledgers.next;
+        let aligned_eligible = matches!(
+            shared,
+            Some((token, previous))
+                if ledgers.held.stamp == Some(token.baseline())
+                    && previous.len() == ledgers.held.keys.len()
+        );
+        let Ledgers {
+            held,
+            next,
+            seen,
+            edits,
+        } = &mut *ledgers;
         next.clear();
+        let bytes_need = held.bytes.len();
         let reserved = engine_allocation::reserve(&mut next.keys, source.len())
             .and_then(|_| engine_allocation::reserve(&mut next.fixed, source.len()))
-            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()));
+            .and_then(|_| engine_allocation::reserve(&mut next.ends, source.len()))
+            .and_then(|_| {
+                if next.bytes.capacity() < bytes_need {
+                    engine_allocation::reserve(&mut next.bytes, bytes_need)
+                } else {
+                    Ok(())
+                }
+            });
         if reserved.is_err() {
             return unavailable("collector allocation failed").into();
         }
+        let mut aligned = aligned_eligible;
+        if aligned {
+            edits.clear();
+        }
         for (at, row) in source.iter().enumerate() {
+            let start = next.bytes.len();
             let mut writer = Record {
                 bytes: &mut next.bytes,
                 failed: false,
@@ -766,22 +790,48 @@ impl Projection<'_> {
             if writer.failed {
                 return unavailable("collector allocation failed").into();
             }
-            next.keys.push(key(row));
+            let end = next.bytes.len();
+            let row_key = key(row);
+            if aligned {
+                if held.keys.get(at) == Some(&row_key) {
+                    if !(fixed.is_some()
+                        && fixed == held.fixed[at]
+                        && &next.bytes[start..end] == held.span(at))
+                    {
+                        if edits.len() == edits.capacity()
+                            && engine_allocation::reserve(edits, 1).is_err()
+                        {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        edits.push((row_key, Some(at)));
+                    }
+                } else {
+                    aligned = false;
+                }
+            }
+            next.keys.push(row_key);
             next.fixed.push(fixed);
-            next.ends.push(next.bytes.len());
+            next.ends.push(end);
         }
         let input = match shared {
             Some((token, previous))
-                if ledgers.held.stamp == Some(token.baseline())
-                    && previous.len() == ledgers.held.keys.len() =>
+                if held.stamp == Some(token.baseline()) && previous.len() == held.keys.len() =>
             {
-                let Ledgers {
-                    held,
-                    next,
-                    seen,
-                    edits,
-                } = &mut *ledgers;
-                match ledger_update::<S, T, C>(held, next, seen, edits, source, &convert) {
+                let result = if aligned {
+                    if source.len() < held.keys.len() {
+                        let tail = held.keys.len() - source.len();
+                        if engine_allocation::reserve(edits, tail).is_err() {
+                            return unavailable("collector allocation failed").into();
+                        }
+                        for &removed in &held.keys[source.len()..] {
+                            edits.push((removed, None));
+                        }
+                    }
+                    finalize_ledger_edits::<S, T>(edits, source, &convert)
+                } else {
+                    ledger_update::<S, T, C>(held, next, seen, edits, source, &convert)
+                };
+                match result {
                     Ok(None) => TableInput::ComparedEqual(token),
                     Ok(Some(update)) => TableInput::SliceUpdate {
                         token,
@@ -951,6 +1001,15 @@ fn ledger_update<S: TableSchema, T, C: Copy + PartialEq>(
             }
         }
     }
+    finalize_ledger_edits::<S, T>(edits, source, convert)
+}
+
+fn finalize_ledger_edits<S: TableSchema, T>(
+    edits: &mut [(u128, Option<usize>)],
+    source: &[T],
+    convert: impl Fn(&T) -> S::Row,
+) -> Result<Option<replay_data::sliced::SliceUpdate>, &'static str> {
+    const ALLOCATION: &str = "collector allocation failed";
     if edits.is_empty() {
         return Ok(None);
     }

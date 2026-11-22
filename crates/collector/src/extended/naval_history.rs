@@ -4,7 +4,7 @@ use crate::{
     raw::RawLog,
     read_accounting,
     sampling::qpc,
-    spooling::{table, unavailable},
+    spooling::unavailable,
     table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
 use engine_allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
@@ -719,7 +719,11 @@ impl Captured {
         })
     }
 
-    fn rail_cooldowns_table(&self, outcome: Outcome) -> TableView {
+    fn rail_cooldowns_input(
+        &self,
+        projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
         let base = self.cooldowns.rows.as_ptr() as usize;
         let stride = size_of::<cprovince_railway_info::Row>();
         let captured = self
@@ -728,9 +732,9 @@ impl Captured {
             .get(..self.rail_buildings.outcome.len());
         let rail_hour = self.rail_hour;
         let rail_levels = self.rail_levels.first.get(..self.rail_levels.len);
-        table::<tables::RailCooldowns, _>(outcome, &self.cooldowns.rows, |r| {
+        let entry_of = |r: &cprovince_railway_info::Row| {
             let hint = (r as *const cprovince_railway_info::Row as usize - base) / stride;
-            let entry = captured.and_then(|captured| {
+            captured.and_then(|captured| {
                 if let Some(row) = captured.get(hint)
                     && row.province == r.province
                 {
@@ -740,8 +744,10 @@ impl Captured {
                     .binary_search_by_key(&r.province, |row| row.province)
                     .ok()
                     .and_then(|index| captured.get(index))
-            });
-            let building = entry.and_then(|row| row.building.ok()?).map(|state| {
+            })
+        };
+        let building_of = |entry: Option<&crailway_manager::fresh_inputs::RailwayBuildingRow>| {
+            entry.and_then(|row| row.building.ok()?).map(|state| {
                 rows::RailwayBuildingState {
                     building: state.building.map(|health| rows::RailwayBuildingHealth {
                         level: health.level,
@@ -749,30 +755,66 @@ impl Captured {
                         partial: health.partial,
                     }),
                 }
-            });
-            let selection = rail_hour.and_then(|_| {
-                let selected = entry?.selection?;
-                let levels = selected.levels.ok().and_then(|span| {
-                    let end = span.first.checked_add(span.len)?;
-                    rail_levels?
-                        .get(span.first..end)
-                        .map(|values| owned_vec(copy_vec(values)))
+            })
+        };
+        project_table::<tables::RailCooldowns, _>(
+            projection,
+            outcome,
+            &self.cooldowns.rows,
+            |r| u128::from(r.province),
+            |r, previous| {
+                if r.cooldown_ticks != previous.cooldown_ticks
+                    || previous.selection_hour != rows::Recorded::Value(rail_hour)
+                    || previous.building_bound != rows::Recorded::Value(Some(r.building_bound))
+                {
+                    return false;
+                }
+                let entry = entry_of(r);
+                if previous.building != rows::Recorded::Value(building_of(entry)) {
+                    return false;
+                }
+                let selected = rail_hour.and_then(|_| entry?.selection);
+                match (selected, &previous.selection) {
+                    (None, rows::Recorded::Value(None)) => true,
+                    (Some(selected), rows::Recorded::Value(Some(prev))) => {
+                        let levels = selected.levels.ok().and_then(|span| {
+                            let end = span.first.checked_add(span.len)?;
+                            rail_levels?.get(span.first..end)
+                        });
+                        prev.levels.as_deref() == levels
+                            && prev.pair_count == selected.pair_count.ok()
+                            && prev.building_level == selected.building_level.ok().flatten()
+                    }
+                    _ => false,
+                }
+            },
+            |r| {
+                let entry = entry_of(r);
+                let building = building_of(entry);
+                let selection = rail_hour.and_then(|_| {
+                    let selected = entry?.selection?;
+                    let levels = selected.levels.ok().and_then(|span| {
+                        let end = span.first.checked_add(span.len)?;
+                        rail_levels?
+                            .get(span.first..end)
+                            .map(|values| owned_vec(copy_vec(values)))
+                    });
+                    Some(rows::RailwaySelectionInputs {
+                        levels,
+                        pair_count: selected.pair_count.ok(),
+                        building_level: selected.building_level.ok().flatten(),
+                    })
                 });
-                Some(rows::RailwaySelectionInputs {
-                    levels,
-                    pair_count: selected.pair_count.ok(),
-                    building_level: selected.building_level.ok().flatten(),
-                })
-            });
-            rows::RailCooldownRow {
-                province: r.province,
-                cooldown_ticks: r.cooldown_ticks,
-                building: rows::Recorded::Value(building),
-                selection: rows::Recorded::Value(selection),
-                selection_hour: rows::Recorded::Value(rail_hour),
-                building_bound: rows::Recorded::Value(Some(r.building_bound)),
-            }
-        })
+                rows::RailCooldownRow {
+                    province: r.province,
+                    cooldown_ticks: r.cooldown_ticks,
+                    building: rows::Recorded::Value(building),
+                    selection: rows::Recorded::Value(selection),
+                    selection_hour: rows::Recorded::Value(rail_hour),
+                    building_bound: rows::Recorded::Value(Some(r.building_bound)),
+                }
+            },
+        )
     }
 
     pub fn set_order_sources(
@@ -1419,7 +1461,7 @@ impl Captured {
                 |r| RowCodec::key(&convoy(r)),
                 convoy,
             ),
-            self.rail_cooldowns_table(outcomes[2]).into(),
+            self.rail_cooldowns_input(projection.as_deref_mut(), outcomes[2]),
             scalar_table::<tables::RailEdges, _>(
                 projection.as_deref_mut(),
                 outcomes[3],
