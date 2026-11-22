@@ -188,4 +188,37 @@ test('a clocked panel keeps its eligible pixels while React measures a new struc
   now += 17; frame();
   assert.deepEqual([presented(7)?.readHour, presented(7)?.holdsThrough], [24, 47], 'a paused step past midnight presents the next day');
   assert.notEqual(days.at(-1), lastHourOfDay, 'the notice is repainted with the next day');
+
+  const completing = { branchId: '1', tag: 'GER', unavailable: null, warnings: [], iterationTexts: { 2: 'Iterations: 2', 3: 'Iterations: 3' },
+    identities: [{ firstHour: 100, lastHour: 199, slot: 5, countryId: 10 }], available: [{ firstHour: 100, lastHour: 199 }],
+    people: [{ assigned: true, id: 77, name: 'Scientist', portrait: null, missing: null }],
+    presentations: [{ name: 'Project', specialization: null, specializationName: null, icon: null, iconMissing: null, scientist: 0, scientistAsOf: null }],
+    projects: [{ id: 'episode', start: { hour: 100, exact: false }, runs: [
+      { firstHour: 100, lastHour: 147, presentation: 0, progress: 17, state: 'running', cancellation: null, completion: null, iterations: 2 },
+      { firstHour: 148, lastHour: 199, presentation: 0, progress: 100, state: 'completed', cancellation: null, completion: { hour: 148, exact: true }, iterations: 3 }] }] };
+  const layoutClears: number[][] = [];
+  const layout = { getContext: () => ({ fillText() {}, clearRect: (...args: number[]) => layoutClears.push(args), setTransform() {} }) } as unknown as OffscreenCanvas;
+  const project = (owner: number, hour: number, data: unknown = completing) => post({ type: 'surface', id: 7, owner, width: 100, height: 20, dpr: 1,
+    ...(owner === 1 && { canvas: layout }), model: { widget: 'projects', view: 'special-projects', offset: 0, date: { since: 100, through: 199 }, reply: data,
+      structure: currentKey(completing as never, hour), cells: [{ ...cell, key: 'episode' }] } });
+  const projectNotice = () => sent.filter(m => m.type === 'present').flatMap(m => m.surfaces).filter(s => s.id === 7).at(-1);
+  const stepTo = (position: number, seek: number, generation: number) => post({ type: 'clock',
+    anchor: { at: performance.timeOrigin + now, position, seek, lastHour: 199, playing: false, speed: 1, generation, forwardSeek: true } });
+  stepTo(147, 15, 8);
+  project(1, 147);
+  now += 17; frame();
+  assert.equal(projectNotice()?.readHour, 147, 'the project list is painted at 147:00');
+  layoutClears.length = 0;
+  stepTo(148, 16, 9);
+  now += 17; frame();
+  assert.deepEqual([layoutClears.length, projectNotice()?.readHour, projectNotice()?.date, projectNotice()?.waiting], [0, undefined, undefined, true],
+    'a paused step whose reply completes a project keeps the 147:00 pixels and waits for the new rows to be measured');
+  project(2, 148);
+  now += 17; frame();
+  assert.deepEqual([projectNotice()?.owner, projectNotice()?.readHour, projectNotice()?.waiting], [2, 148, false], 'the measured rows are painted at 148:00');
+  layoutClears.length = 0;
+  project(3, 148, { ...completing, projects: 'refused' });
+  now += 17; frame();
+  assert.ok(layoutClears.length > 0 && projectNotice()?.owner === 3 && projectNotice()?.waiting === false && projectNotice()?.date === undefined,
+    'a reply the view refuses releases the picture and erases it');
 });

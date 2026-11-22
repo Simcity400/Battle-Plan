@@ -21,7 +21,7 @@ const post = (message: FromWorker) => self.postMessage(message);
 const wall = () => performance.timeOrigin + performance.now();
 interface Panel {
   kind: 'panel'; id: number; owner: number; model: PanelModel; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D;
-  date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; waiting?: boolean; reply?: unknown; through?: number; nextText?: number;
+  date: PictureDate; program: PanelProgram; pointer: HeldPointer; shown?: boolean; waiting?: boolean; remeasure?: boolean; reply?: unknown; through?: number; nextText?: number;
 }
 interface Race {
   kind: 'race'; id: number; owner: number; model: Extract<ToWorker, { type: 'race' }>['model']; picture: InstanceType<(typeof raceViews)[keyof typeof raceViews]>; shown?: boolean; waiting?: boolean; through?: number;
@@ -224,24 +224,25 @@ function paint(s: Surface, head: number) {
   }
   s.date.set(date ? date.through - m.offset : null, fixed, date ? date.since - m.offset : null);
   if (!raw || !s.date.canPaintAt(head)) {
-    s.date.drawn = undefined; s.through = undefined; s.pointer.clear();
+    s.date.drawn = undefined; s.through = undefined; s.remeasure = false; s.pointer.clear();
     return false;
   }
   const through = Math.floor(m.fixed ?? Math.min(head, date!.through - m.offset));
   const same = s.date.drawn && raw === s.reply && !m.clocked && !entry?.hasFollowedCells && (!view?.nextChange || s.through === through);
   let changed = false;
   if (!same) {
-    let values;
+    let values: ReadonlyMap<string, string> | null | undefined, refused = !view;
     try { values = view?.values(raw, entry?.live ?? null, through + m.offset, m.structure); }
-    catch { values = null; }
+    catch { refused = true; }
     if (!values) {
       if (anchor.playing && m.fixed === undefined && s.date.presentableAt(head)) return false;
-      s.program.clear(); s.pointer.clear(); s.date.drawn = undefined; s.through = undefined; return false;
+      if (refused) s.program.clear();
+      s.pointer.clear(); s.date.drawn = undefined; s.through = undefined; s.remeasure = !refused; return false;
     }
     changed = s.program.write(m.cells, values);
     s.reply = raw;
   }
-  s.date.paint(); s.through = through;
+  s.remeasure = false; s.date.paint(); s.through = through;
   s.nextText = view?.nextChange ? view.nextChange(raw, through + m.offset) - m.offset : undefined;
   if (s.nextText !== undefined) scheduleChange(s, s.nextText);
   if (changed) s.pointer.present((x, y) => s.program.hit(x, y));
@@ -373,8 +374,8 @@ function holdsThrough(s: Panel | Race) {
   return entry?.hasFollowedCells || !s.date.drawn ? s.through : Math.min(s.date.drawn.through, next);
 }
 function waiting(s: Panel | Race, head: number) {
-  return s.through === undefined && !anchor.playing && s.model.follow !== undefined &&
-    !followed.covers(s.model.follow, Math.floor(s.model.fixed ?? head) + s.model.offset);
+  return s.through === undefined && (s.kind === 'panel' && !!s.remeasure || !anchor.playing && s.model.follow !== undefined &&
+    !followed.covers(s.model.follow, Math.floor(s.model.fixed ?? head) + s.model.offset));
 }
 function report(s: Surface, head: number, notices: Present[]) {
   const shown = s.through !== undefined, held = s.kind !== 'table' && waiting(s, head);
