@@ -1477,6 +1477,49 @@ fn a_held_layout_keeps_its_track_while_later_layouts_prepare() {
         assert_eq!(at.at, expected.at(later_head));
         assert_eq!(at.heading, None);
     }
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 130, fraction: 0.0 },
+            overlay_layout: Some(held_layout.clone()),
+            clock_speed: None,
+            ..movement_frame(1.0, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    assert_eq!(
+        history.track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0),
+        Err(TrackRefusal::ClockSpeedUnavailable)
+    );
+    assert_eq!(history.at_head(unit, &moving), None);
+    history.begin_frame(
+        MovementFrame {
+            head: Head { hour: 132, fraction: 0.0 },
+            overlay_layout: Some(held_layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(1.1, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    let recovered = history
+        .track(&held_layout, unit, &[at_hour(148, [58.0, 0.0, 0.0])], 0.0)
+        .expect("clock recovery restores held layout's saved track after placement eviction");
+    assert_eq!(recovered, held_track);
+    let next_head = Head { hour: 136, fraction: 0.0 };
+    history.begin_frame(
+        MovementFrame {
+            head: next_head,
+            overlay_layout: Some(held_layout.clone()),
+            clock_speed: Some(1),
+            ..movement_frame(1.2, 292 + KEPT_HOURS + 48, 2.0)
+        },
+        SEEN,
+    );
+    let recovered_figure = history
+        .at_head(unit, &moving)
+        .expect("recovered held layout keeps figure on counter track");
+    assert_eq!(recovered_figure.at, recovered.at(next_head));
+    assert_eq!(recovered_figure.at, held_track.at(next_head));
+    assert_eq!(recovered_figure.heading, None);
 }
 
 #[test]

@@ -1718,23 +1718,58 @@ impl MovementHistory {
             return refused(TrackRefusal::ContinuityReset);
         }
         let hour = layout.hour();
-        let keep_reference = self.judging_now();
-        let held = self.placed.entry(unit).or_default();
-        held.after_a_seek(hour);
-        for place in places {
-            held.note(*place);
-        }
-        held.keep(head.hour);
-        if crate::view_record::on() {
-            crate::view_record::add("places", "noted", places.len() as u64);
-            crate::view_record::add("places", "held", held.held.len() as u64);
-            crate::view_record::add("places", "movers", 1);
-        }
-        let (made, reference) = held.track_with_places(hour, width, keep_reference);
-        self.record_layout_track(layout, unit, made.clone(), reference);
-        let track = match made {
-            Ok(track) => track,
-            Err(why) => return refused(why),
+        let restored = self
+            .layouts
+            .get_mut(&layout.id())
+            .and_then(|held| held.tracks.get_mut(&unit))
+            .and_then(|handed| {
+                let Ok(track) = handed.saved_before_clock_loss.as_ref()? else {
+                    return None;
+                };
+                let track = track.clone();
+                handed.saved_before_clock_loss = None;
+                handed.outcome = Ok(track.clone());
+                Some(track)
+            });
+        let track = if let Some(track) = restored {
+            track
+        } else {
+            let keep_reference = self.judging_now();
+            let held = self.placed.entry(unit).or_default();
+            held.after_a_seek(hour);
+            for place in places {
+                held.note(*place);
+            }
+            held.keep(head.hour);
+            if crate::view_record::on() {
+                crate::view_record::add("places", "noted", places.len() as u64);
+                crate::view_record::add("places", "held", held.held.len() as u64);
+                crate::view_record::add("places", "movers", 1);
+            }
+            let (made, reference) = held.track_with_places(hour, width, keep_reference);
+            let kept = (made == Err(TrackRefusal::NoPriorPlacement))
+                .then(|| {
+                    self.layouts
+                        .get_mut(&layout.id())
+                        .and_then(|held| held.tracks.get_mut(&unit))
+                        .and_then(|handed| {
+                            let Ok(track) = &handed.outcome else {
+                                return None;
+                            };
+                            handed.saved_before_clock_loss = None;
+                            Some(track.clone())
+                        })
+                })
+                .flatten();
+            if let Some(track) = kept {
+                track
+            } else {
+                self.record_layout_track(layout, unit, made.clone(), reference);
+                match made {
+                    Ok(track) => track,
+                    Err(why) => return refused(why),
+                }
+            }
         };
         if crate::view_record::on()
             && let Some(state) = self.units.get_mut(&unit)
