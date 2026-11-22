@@ -55,13 +55,8 @@ impl CloseReceipt {
         }
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn pending() -> Self {
-        Self::default()
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
     pub fn pending_with_completion() -> (Self, impl Fn(Result<(), io::ErrorKind>)) {
-        let receipt = Self::pending();
+        let receipt = Self::default();
         let writer = receipt.clone();
         (receipt, move |result| writer.complete(result))
     }

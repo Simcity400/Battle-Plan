@@ -790,7 +790,8 @@ fn the_history_load_leaves_no_thread_it_started_running() {
     }
     let module =
         unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) };
-    let census = || collector_workers::module_threads::started_in(module).unwrap();
+    // SAFETY: this is the main executable of the test process, loaded for its lifetime.
+    let census = || unsafe { collector_workers::module_threads::started_in(module) }.unwrap();
     let (started, id) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let thread = std::thread::spawn(move || {

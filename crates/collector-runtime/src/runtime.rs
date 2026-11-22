@@ -5831,7 +5831,7 @@ mod tests {
         assert_eq!(taken_ahead["frames"]["ahead_taken"], 1);
         assert_eq!(taken_ahead["frames"]["ahead_ready"], built - 1);
         assert_eq!(taken_ahead["frames"]["grown"], hours as u64 - steady);
-        while let Some(index) = shared.frames.pop_decode() {
+        while let Some(index) = shared.frames.pop_decode_for_test() {
             unsafe { shared.recycle_frame(index) };
         }
         let caught_up = status(&shared);
@@ -5929,7 +5929,8 @@ mod tests {
     #[test]
     fn history_close_acknowledgement_waits_for_its_receipt() {
         let mut requests = HistoryReplies::default();
-        let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+        let (receipt, complete) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
         let mut acks = Vec::new();
         poll_history_reply(
             &mut requests,
@@ -5945,7 +5946,7 @@ mod tests {
             assert!(acks.is_empty());
             assert!(requests.pending.is_some());
         }
-        receipt.complete(Ok(()));
+        complete(Ok(()));
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert_eq!(acks, ["original ok"]);
         assert!(requests.pending.is_none());
@@ -5956,7 +5957,8 @@ mod tests {
     #[test]
     fn history_close_failure_acknowledges_refusal_not_success() {
         let mut requests = HistoryReplies::default();
-        let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+        let (receipt, complete) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
         let mut acks = Vec::new();
         poll_history_reply(
             &mut requests,
@@ -5967,7 +5969,7 @@ mod tests {
             }),
             &mut acks,
         );
-        receipt.complete(Err(io::ErrorKind::WriteZero));
+        complete(Err(io::ErrorKind::WriteZero));
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert_eq!(acks, ["failed refused its segment could not be closed"]);
         assert!(requests.pending.is_none());
@@ -5976,7 +5978,8 @@ mod tests {
     #[test]
     fn duplicate_history_tokens_do_not_restart_or_discard_a_pending_close() {
         let mut requests = HistoryReplies::default();
-        let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+        let (receipt, complete) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
         let mut acks = Vec::new();
         poll_history_reply(
             &mut requests,
@@ -5994,7 +5997,7 @@ mod tests {
             &mut acks,
         );
         assert!(acks.is_empty());
-        receipt.complete(Ok(()));
+        complete(Ok(()));
         poll_history_reply(
             &mut requests,
             Some("same close campaign 42"),
@@ -6016,7 +6019,8 @@ mod tests {
         for result in [Ok(()), Err(io::ErrorKind::WriteZero)] {
             for complete_before_retake in [false, true] {
                 let mut requests = HistoryReplies::default();
-                let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+                let (receipt, complete) =
+                    collector_spool::spool_writer::CloseReceipt::pending_with_completion();
                 let mut acks = Vec::new();
                 poll_history_reply(
                     &mut requests,
@@ -6028,7 +6032,7 @@ mod tests {
                     &mut acks,
                 );
                 if complete_before_retake {
-                    receipt.complete(result);
+                    complete(result);
                 }
                 poll_history_reply(
                     &mut requests,
@@ -6038,7 +6042,7 @@ mod tests {
                 );
                 assert_eq!(acks, ["new ok"]);
                 if !complete_before_retake {
-                    receipt.complete(result);
+                    complete(result);
                 }
                 poll_history_reply(&mut requests, None, None, &mut acks);
                 assert_eq!(acks, ["new ok"]);
@@ -6051,8 +6055,10 @@ mod tests {
     #[test]
     fn a_newer_history_close_keeps_its_own_receipt() {
         let mut requests = HistoryReplies::default();
-        let old = collector_spool::spool_writer::CloseReceipt::pending();
-        let new = collector_spool::spool_writer::CloseReceipt::pending();
+        let (old, complete_old) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
+        let (new, complete_new) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
         let mut acks = Vec::new();
         for (token, receipt) in [("old", &old), ("new", &new)] {
             poll_history_reply(
@@ -6065,10 +6071,10 @@ mod tests {
                 &mut acks,
             );
         }
-        old.complete(Ok(()));
+        complete_old(Ok(()));
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert!(acks.is_empty());
-        new.complete(Ok(()));
+        complete_new(Ok(()));
         poll_history_reply(&mut requests, None, None, &mut acks);
         assert_eq!(acks, ["new ok"]);
     }
@@ -6077,7 +6083,8 @@ mod tests {
     fn failed_history_acknowledgement_writes_retry_without_repeating_the_request() {
         for result in [Ok(()), Err(io::ErrorKind::WriteZero)] {
             let mut requests = HistoryReplies::default();
-            let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+            let (receipt, complete) =
+                collector_spool::spool_writer::CloseReceipt::pending_with_completion();
             let mut acks = Vec::new();
             poll_history_reply(
                 &mut requests,
@@ -6088,7 +6095,7 @@ mod tests {
                 }),
                 &mut acks,
             );
-            receipt.complete(result);
+            complete(result);
             let expected = if result.is_ok() {
                 "old ok"
             } else {
@@ -6115,7 +6122,8 @@ mod tests {
     #[test]
     fn newer_ready_history_reply_retries_instead_of_an_older_close() {
         let mut requests = HistoryReplies::default();
-        let receipt = collector_spool::spool_writer::CloseReceipt::pending();
+        let (receipt, complete) =
+            collector_spool::spool_writer::CloseReceipt::pending_with_completion();
         let mut acks = Vec::new();
         poll_history_reply(
             &mut requests,
@@ -6137,7 +6145,7 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        receipt.complete(Ok(()));
+        complete(Ok(()));
         poll_history_reply(&mut requests, Some("new retake campaign"), None, &mut acks);
         assert_eq!(acks, ["new ok"]);
         assert!(requests.pending.is_none());

@@ -517,6 +517,11 @@ impl FramePool {
         self.pop_from(&self.decode)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pop_decode_for_test(&self) -> Option<usize> {
+        self.pop_decode()
+    }
+
     #[cfg(test)]
     pub(crate) fn decode_len(&self) -> usize {
         self.decode.len.load(Ordering::Acquire)
