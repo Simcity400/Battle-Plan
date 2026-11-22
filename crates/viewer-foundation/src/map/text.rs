@@ -1248,7 +1248,7 @@ path=\"{art}\"
                 self.0.line_height() as i32
             }
         }
-        let own = [1.0, 1.0, 1.0, 1.0];
+        let own = [0.5, 0.5, 0.5, 0.5];
         let native_glyphs = NativeGlyphs(&font);
         let chars: Vec<char> = authored.chars().collect();
         let laid = super::super::native_text::lay_out(
@@ -1293,23 +1293,25 @@ path=\"{art}\"
                 _ => None,
             })
             .collect();
+        let packed_own = super::super::native_text::packed(own);
         let map_colors: Vec<[f32; 4]> = glyphs
             .iter()
-            .map(|g| g.color.unwrap_or(super::super::native_text::packed(own)))
+            .map(|g| g.color.unwrap_or(packed_own))
             .collect();
         assert_eq!(map_colors, screen_colors);
 
         let mut batch = super::super::sprites::Batch::default();
-        batch.text(&glyphs, [0.5, 0.5, 0.5, 0.5]);
+        batch.text(&glyphs, packed_own);
         let batch_colors: Vec<[f32; 4]> = batch.quads.iter().map(|q| q.color).collect();
+        assert_eq!(batch_colors, screen_colors);
         assert_eq!(
             batch_colors,
             vec![
-                [0.5, 0.5, 0.5, 0.5],
-                [expected_yellow[0], expected_yellow[1], expected_yellow[2], 0.5],
-                [expected_green[0], expected_green[1], expected_green[2], 0.5],
-                [expected_yellow[0], expected_yellow[1], expected_yellow[2], 0.5],
-                [0.5, 0.5, 0.5, 0.5],
+                packed_own,
+                expected_yellow,
+                expected_green,
+                expected_yellow,
+                packed_own,
             ]
         );
     }

@@ -1059,3 +1059,207 @@ fn authored_localized_name_color_runs_survive_glyph_emission() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn stock_signature_mapname_shader_renders_authored_color_run_pixels() {
+    use eframe::wgpu::util::DeviceExt;
+    use shader_pipeline::{Compiled, ScalarKind, Shader, VertexInput, gpu, library::Effect};
+    use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, read_texture};
+    content_reader_core::test_game::enter();
+    let (_serial, device, queue) = viewer_foundation::map::test_support::gpu::device();
+    let source = Arc::new(
+        content_reader_core::pdxshader::program::read_with(b"mapname.shader", &|path| {
+            Some(if path == b"mapname.shader" {
+                b"BlendState BlendState { BlendEnable = yes SourceBlend = src_alpha DestBlend = inv_src_alpha }\n\
+                  DepthStencilState DepthStencilState { DepthEnable = no DepthWriteMask = depth_write_zero StencilEnable = no }\n\
+                  Effect mapname { DepthStencilState = \"DepthStencilState\" }".to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap(),
+    );
+    let vertex = Shader {
+        wgsl: "struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };\n\
+               @vertex fn main(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>) -> Out {\n\
+                   var out: Out;\n\
+                   out.pos = vec4<f32>(p.x, p.z, 0.5, 1.0);\n\
+                   out.uv = uv;\n\
+                   return out;\n\
+               }"
+            .into(),
+        independent_draws: true,
+        buffers: Vec::new(),
+        textures: Vec::new(),
+        samplers: Vec::new(),
+        sampling_pairs: Vec::new(),
+        inputs: vec![
+            VertexInput {
+                kind: ScalarKind::Float,
+                location: 0,
+                semantic: "POSITION".into(),
+                components: 3,
+            },
+            VertexInput {
+                kind: ScalarKind::Float,
+                location: 1,
+                semantic: "TEXCOORD0".into(),
+                components: 2,
+            },
+        ],
+        clock: Default::default(),
+    };
+    let pixel = Shader {
+        wgsl: "@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {\n\
+                   return vec4<f32>(1.0, 1.0, 1.0, 1.0 + uv.x * 0.0);\n\
+               }"
+            .into(),
+        independent_draws: true,
+        buffers: Vec::new(),
+        textures: Vec::new(),
+        samplers: Vec::new(),
+        sampling_pairs: Vec::new(),
+        inputs: Vec::new(),
+        clock: Default::default(),
+    };
+    let effect = Effect::from_compiled(
+        source,
+        Vec::new(),
+        vec![Ok(Arc::new(Compiled { vertex, pixel }))],
+    );
+    let format = eframe::wgpu::TextureFormat::Rgba8Unorm;
+    let compiled = super::super::name_shader::Names::with_technique(
+        &device,
+        &effect,
+        1,
+        format,
+        DEPTH_FORMAT,
+        Some("mapname"),
+    )
+    .unwrap();
+    let green = [0.2, 0.8, 0.3, 1.0];
+    let quad = |x0: f32, x1: f32, color: [f32; 4]| {
+        let v = |x: f32, z: f32| NameVertex {
+            position: [x, 0.0, z],
+            uv: [0.5, 0.5],
+            color,
+        };
+        [
+            v(x0, -0.5),
+            v(x1, -0.5),
+            v(x1, 0.5),
+            v(x0, -0.5),
+            v(x1, 0.5),
+            v(x0, 0.5),
+        ]
+    };
+    let mut vertices = Vec::new();
+    vertices.extend(quad(-0.9, -0.4, [1.0, 1.0, 1.0, 1.0]));
+    vertices.extend(quad(-0.25, 0.25, green));
+    vertices.extend(quad(0.4, 0.9, [1.0, 1.0, 1.0, 1.0]));
+    let buffer = device.create_buffer_init(&eframe::wgpu::util::BufferInitDescriptor {
+        label: Some("stock mapname tint test"),
+        contents: bytemuck::cast_slice(&vertices),
+        usage: eframe::wgpu::BufferUsages::VERTEX,
+    });
+    let page_tex = device.create_texture(&eframe::wgpu::TextureDescriptor {
+        label: None,
+        size: eframe::wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: eframe::wgpu::TextureDimension::D2,
+        format: eframe::wgpu::TextureFormat::Rgba8Unorm,
+        usage: eframe::wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let page = gpu::TextureBinding::from(page_tex.create_view(&Default::default()));
+    let arena = gpu::Arena::new(&device);
+    let binding = compiled.bindings(&arena, &[], [1.0, 0.0], &page).unwrap();
+    let target_size = eframe::wgpu::Extent3d {
+        width: 64,
+        height: 16,
+        depth_or_array_layers: 1,
+    };
+    let color_tex = device.create_texture(&eframe::wgpu::TextureDescriptor {
+        label: None,
+        size: target_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: eframe::wgpu::TextureDimension::D2,
+        format,
+        usage: eframe::wgpu::TextureUsages::RENDER_ATTACHMENT | eframe::wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let depth_tex = device.create_texture(&eframe::wgpu::TextureDescriptor {
+        label: None,
+        size: target_size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: eframe::wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: eframe::wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let color_view = color_tex.create_view(&Default::default());
+    let depth_view = depth_tex.create_view(&Default::default());
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_render_pass(&eframe::wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(eframe::wgpu::RenderPassColorAttachment {
+                view: &color_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: eframe::wgpu::Operations {
+                    load: eframe::wgpu::LoadOp::Clear(eframe::wgpu::Color::BLACK),
+                    store: eframe::wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(eframe::wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_view,
+                depth_ops: Some(eframe::wgpu::Operations {
+                    load: eframe::wgpu::LoadOp::Clear(1.0),
+                    store: eframe::wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(eframe::wgpu::Operations {
+                    load: eframe::wgpu::LoadOp::Clear(0),
+                    store: eframe::wgpu::StoreOp::Store,
+                }),
+            }),
+            ..Default::default()
+        });
+        compiled.begin(&mut pass);
+        binding.bind_after(&mut pass, None);
+        pass.set_vertex_buffer(0, buffer.slice(..));
+        pass.draw(0..vertices.len() as u32, 0..1);
+    }
+    queue.submit([encoder.finish()]);
+    let raw = read_texture(&device, &queue, &color_tex, 4).unwrap();
+    let pixel_rgb = |x: usize, y: usize| -> [f32; 3] {
+        let at = (y * 64 + x) * 4;
+        [0, 1, 2].map(|c| f32::from(raw[at + c]) / 255.0)
+    };
+    let left = pixel_rgb(10, 8);
+    let mid = pixel_rgb(32, 8);
+    let right = pixel_rgb(54, 8);
+    assert!(
+        (left[0] - 1.0).abs() < 0.05 && (left[1] - 1.0).abs() < 0.05 && (left[2] - 1.0).abs() < 0.05,
+        "left base glyph should render white, got {left:?}"
+    );
+    assert!(
+        (mid[0] - green[0]).abs() < 0.05
+            && (mid[1] - green[1]).abs() < 0.05
+            && (mid[2] - green[2]).abs() < 0.05,
+        "middle colour-run glyph should render green {green:?}, got {mid:?}"
+    );
+    assert!(
+        (right[0] - 1.0).abs() < 0.05
+            && (right[1] - 1.0).abs() < 0.05
+            && (right[2] - 1.0).abs() < 0.05,
+        "right reset glyph should render white, got {right:?}"
+    );
+}

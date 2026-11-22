@@ -55,20 +55,34 @@ pub struct Lights {
     definitions: BTreeMap<String, Definition>,
 }
 impl Lights {
-    pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
+    pub fn load(layers: &ResolvedLayers, withheld: &mut Vec<String>) -> io::Result<Self> {
         let roster = layers.descriptor_roster()?;
         let mut definitions = BTreeMap::new();
         for v in roster.lights.values() {
+            let light_name = text(v, "name");
             let mut curves = BTreeMap::new();
+            let mut failed = false;
             for a in v
                 .iter()
                 .filter(|i| i.key.as_deref() == Some(b"animation"))
                 .filter_map(|i| i.value.items())
             {
-                curves.insert(text(a, "name").to_owned(), Curve::parse(a)?);
+                match Curve::parse(a) {
+                    Ok(curve) => {
+                        curves.insert(text(a, "name").to_owned(), curve);
+                    }
+                    Err(error) => {
+                        withheld.push(format!("entity light {light_name:?}: {error}"));
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            if failed {
+                continue;
             }
             definitions.insert(
-                text(v, "name").to_owned(),
+                light_name.to_owned(),
                 Definition {
                     color: ["r", "g", "b"].map(|k| Parameter::read(block(v, "color"), k, 1.0)),
                     position: ["x", "y", "z"]
@@ -200,5 +214,56 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(bad_domain.contains("dup"), "{bad_domain}");
+    }
+
+    #[test]
+    fn an_unsupported_light_curve_withholds_only_that_light() {
+        content_reader_core::test_game::enter();
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_entity_light_withheld_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("gfx/entities/test_lights.asset");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            b"light = {\n\
+                name = \"good_light\"\n\
+                color = { r = { 1 } g = { 0.5 } b = { 0.25 } }\n\
+                intensity = 2\n\
+                radius = 10\n\
+                falloff = 2\n\
+                position = { x = 0 y = 0 z = 0 }\n\
+              }\n\
+              light = {\n\
+                name = \"unused_bad_light\"\n\
+                color = { r = { 1 } g = { 1 } b = { 1 } }\n\
+                intensity = 1, bad_curve\n\
+                radius = 5\n\
+                falloff = 1\n\
+                position = { x = 0 y = 0 z = 0 }\n\
+                animation = {\n\
+                  name = \"bad_curve\"\n\
+                  start = 0 duration = 1 op = \"sub\"\n\
+                  curve = { 0 0 1 1 }\n\
+                }\n\
+              }\n",
+        )
+        .unwrap();
+        let layers =
+            ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let mut withheld = Vec::new();
+        let lights = Lights::load(&layers, &mut withheld).unwrap();
+        assert!(lights.definitions.contains_key("good_light"));
+        assert!(!lights.definitions.contains_key("unused_bad_light"));
+        assert_eq!(withheld.len(), 1, "{withheld:?}");
+        assert!(
+            withheld[0].contains("unused_bad_light") && withheld[0].contains("sub"),
+            "{:?}",
+            withheld[0]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

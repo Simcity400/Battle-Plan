@@ -628,7 +628,7 @@ fn best_run(
 
     let mut best_start = 0usize;
     let mut best_len = 0usize;
-    let mut best_distance = i128::MAX;
+    let mut best_distance = (u128::MAX, u128::MAX);
     let mut run_start = 0usize;
     let mut run_len = 0usize;
     for index in 0..=points.len() {
@@ -649,12 +649,12 @@ fn best_run(
                     let distance = points[run_start..run_start + run_len]
                         .iter()
                         .map(|p| {
-                            let dx = i128::from(p.0) - i128::from(point.0);
-                            let dy = i128::from(p.1) - i128::from(point.1);
-                            dx * dx + dy * dy
+                            let dx = u128::from(p.0.abs_diff(point.0));
+                            let dy = u128::from(p.1.abs_diff(point.1));
+                            add_u256(mul_u128(dx, dx), mul_u128(dy, dy))
                         })
                         .min()
-                        .unwrap_or(i128::MAX);
+                        .unwrap_or((u128::MAX, u128::MAX));
                     let mut candidate = run_len as f32;
                     if distance < best_distance {
                         candidate *= RUN_NEAR_BIAS;
@@ -689,6 +689,44 @@ fn best_run(
     ))
 }
 
+fn mul_u128(a: u128, b: u128) -> (u128, u128) {
+    let mask = u128::from(u64::MAX);
+    let (a_lo, a_hi) = (a & mask, a >> 64);
+    let (b_lo, b_hi) = (b & mask, b >> 64);
+    let ll = a_lo * b_lo;
+    let lh = a_lo * b_hi;
+    let hl = a_hi * b_lo;
+    let hh = a_hi * b_hi;
+    let (mid, carry0) = lh.overflowing_add(hl);
+    let (lo, carry1) = ll.overflowing_add(mid << 64);
+    let hi = hh + (mid >> 64) + (u128::from(carry0) << 64) + u128::from(carry1);
+    (hi, lo)
+}
+
+fn add_u256(a: (u128, u128), b: (u128, u128)) -> (u128, u128) {
+    let (lo, carry) = a.1.overflowing_add(b.1);
+    (a.0 + b.0 + u128::from(carry), lo)
+}
+
+fn sub_u256(a: (u128, u128), b: (u128, u128)) -> (u128, u128) {
+    let (lo, borrow) = a.1.overflowing_sub(b.1);
+    (a.0 - b.0 - u128::from(borrow), lo)
+}
+
+fn div_u256_by_u128(hi: u128, lo: u128, d: u128) -> (u128, u128) {
+    let mut q = 0u128;
+    let mut rem = hi;
+    for bit in (0..128).rev() {
+        let overflow = rem >> 127 != 0;
+        rem = (rem << 1) | ((lo >> bit) & 1);
+        if overflow || rem >= d {
+            rem = rem.wrapping_sub(d);
+            q |= 1u128 << bit;
+        }
+    }
+    (q, rem)
+}
+
 fn to_pixel(p: [f32; 2]) -> Option<(i64, i64)> {
     if !p[0].is_finite() || !p[1].is_finite() {
         return None;
@@ -703,8 +741,8 @@ fn bresenham(map: &ProvinceMap<'_>, a: (i64, i64), b: (i64, i64)) -> Option<Vec<
     if !map.is_well_formed() {
         return None;
     }
-    let dx = (i128::from(b.0) - i128::from(a.0)).abs();
-    let dy = (i128::from(b.1) - i128::from(a.1)).abs();
+    let dx = u128::from(a.0.abs_diff(b.0));
+    let dy = u128::from(a.1.abs_diff(b.1));
     let steep = dx < dy;
     let (mut a, mut b) = if steep {
         ((a.1, a.0), (b.1, b.0))
@@ -714,14 +752,17 @@ fn bresenham(map: &ProvinceMap<'_>, a: (i64, i64), b: (i64, i64)) -> Option<Vec<
     if a.0 > b.0 {
         std::mem::swap(&mut a, &mut b);
     }
-    let span = i128::from(b.0) - i128::from(a.0);
-    let minor_span = (i128::from(b.1) - i128::from(a.1)).abs();
+    let span = u128::from(a.0.abs_diff(b.0));
+    let minor_span = u128::from(a.1.abs_diff(b.1));
     let step: i128 = if a.1 < b.1 { 1 } else { -1 };
     let height = i128::from(map.height);
     let (k_lo, k_hi) = if steep {
-        let lo = (0 - i128::from(a.0)).max(0);
-        let hi = (height - 1 - i128::from(a.0)).min(span);
-        (lo, hi)
+        let lo = (0 - i128::from(a.0)).max(0) as u128;
+        let hi = height - 1 - i128::from(a.0);
+        if hi < 0 {
+            return None;
+        }
+        (lo, (hi as u128).min(span))
     } else if minor_span == 0 {
         let y = i128::from(a.1);
         if y < 0 || y >= height {
@@ -732,53 +773,60 @@ fn bresenham(map: &ProvinceMap<'_>, a: (i64, i64), b: (i64, i64)) -> Option<Vec<
         let (q_lo, q_hi) = if step > 0 {
             (
                 (0 - i128::from(a.1)).max(0),
-                (height - 1 - i128::from(a.1)).min(minor_span),
+                (height - 1 - i128::from(a.1)).min(minor_span as i128),
             )
         } else {
             (
                 (i128::from(a.1) - (height - 1)).max(0),
-                i128::from(a.1).min(minor_span),
+                i128::from(a.1).min(minor_span as i128),
             )
         };
         if q_lo > q_hi {
             return None;
         }
+        let q_lo = q_lo as u128;
+        let q_hi = q_hi as u128;
         let two_m = 2 * minor_span;
         let lo = if q_lo == 0 {
             0
         } else {
-            ((2 * q_lo - 1) * span + two_m - 1) / two_m
+            let num = add_u256(mul_u128(2 * q_lo - 1, span), (0, two_m - 1));
+            div_u256_by_u128(num.0, num.1, two_m).0
         };
-        let hi = (((2 * q_hi + 1) * span - 1) / two_m).min(span);
-        (lo.max(0), hi)
+        let num_hi = sub_u256(mul_u128(2 * q_hi + 1, span), (0, 1));
+        let hi = div_u256_by_u128(num_hi.0, num_hi.1, two_m).0.min(span);
+        (lo, hi)
     };
     if k_lo > k_hi {
         return None;
     }
     let count = k_hi - k_lo + 1;
-    let limit = i128::from(map.width) + height;
+    let limit = u128::from(map.width) + u128::from(map.height);
     if count > limit {
         return None;
     }
-    let q = if span == 0 {
-        0
+    let (q, mut error) = if span == 0 {
+        (0u128, 0i128)
     } else {
-        (2 * k_lo * minor_span + span) / (2 * span)
+        let num = add_u256(mul_u128(2 * k_lo, minor_span), (0, span));
+        let (q, rem) = div_u256_by_u128(num.0, num.1, 2 * span);
+        (q, (rem as i128 - span as i128) / 2)
     };
-    let mut minor = i128::from(a.1) + step * q;
-    let mut error = k_lo * minor_span - q * span;
+    let span_i = span as i128;
+    let minor_span_i = minor_span as i128;
+    let mut minor = i128::from(a.1) + step * (q as i128);
     let mut out = Vec::with_capacity(count as usize);
     for k in k_lo..=k_hi {
-        let major = i128::from(a.0) + k;
+        let major = i128::from(a.0) + k as i128;
         out.push(if steep {
             (minor as i64, major as i64)
         } else {
             (major as i64, minor as i64)
         });
-        error += minor_span;
-        if 2 * error >= span {
+        error += minor_span_i;
+        if 2 * error >= span_i {
             minor += step;
-            error -= span;
+            error -= span_i;
         }
     }
     Some(out)

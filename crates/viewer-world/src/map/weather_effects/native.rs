@@ -116,14 +116,16 @@ impl DrawPacket {
         );
         out.instances.reserve(sim.particles.len());
         for p in &sim.particles {
-            let t = p.age / p.life;
             let position = if e.local_space {
                 p.position
             } else {
                 std::array::from_fn(|i| p.position[i] + anchor[i] - sim.anchor[i])
             };
             let mut color = std::array::from_fn(|i| {
-                e.color[i].animate(p.color[i], t).clamp(0., 255.).trunc() as u8
+                e.color[i]
+                    .animate_particle(p.color[i], p.age, p.life, sim.age)
+                    .clamp(0., 255.)
+                    .trunc() as u8
             });
             color[3] = (f32::from(color[3]) * alpha).round() as u8;
             out.instances.push(Instance {
@@ -131,7 +133,7 @@ impl DrawPacket {
                     position[0],
                     position[1],
                     position[2],
-                    e.size.animate(p.size, t).max(0.),
+                    e.size.animate_particle(p.size, p.age, p.life, sim.age).max(0.),
                 ],
                 rotation: p.rotation,
                 tile: p.tile,
@@ -355,20 +357,27 @@ impl EntitySimulations {
                 packet.constants.time = sim.age;
                 packet.instances.reserve(sim.particles.len());
                 for particle in &sim.particles {
-                    let t = particle.age / particle.life;
                     let position = particle.position;
                     packet.instances.push(Instance {
                         position_size: [
                             position[0],
                             position[1],
                             position[2],
-                            emitter.size.animate(particle.size, t).max(0.),
+                            emitter
+                                .size
+                                .animate_particle(particle.size, particle.age, particle.life, sim.age)
+                                .max(0.),
                         ],
                         rotation: particle.rotation,
                         tile: particle.tile,
                         color: std::array::from_fn(|i| {
                             emitter.color[i]
-                                .animate(particle.color[i], t)
+                                .animate_particle(
+                                    particle.color[i],
+                                    particle.age,
+                                    particle.life,
+                                    sim.age,
+                                )
                                 .clamp(0., 255.)
                                 .trunc() as u8
                         }),
@@ -2044,5 +2053,6 @@ fn particle_pass(samples: u32, topology: wgpu::PrimitiveTopology) -> gpu::Pass {
         })],
         instanced: 0,
         stream: None,
+        vertex_color_tint: None,
     }
 }

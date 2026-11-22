@@ -268,7 +268,7 @@ fn native_curve_bake_smooths_knots_and_reads_sixty_four_intervals() {
 fn particle_life_curves_apply_operation_and_repeat_boundaries() {
     let mut add = Curve::new(&[[0.0, 2.0], [1.0, 2.0]], 0.0, 1.0, 0.0, 1.0);
     add.op = Op::Add;
-    add.spawn = false;
+    add.time = TimeMode::Life;
     let added = Parameter {
         base: 5.0,
         spread: 0.0,
@@ -278,7 +278,7 @@ fn particle_life_curves_apply_operation_and_repeat_boundaries() {
 
     let mut abs = Curve::new(&[[0.0, 3.0], [1.0, 3.0]], 0.0, 1.0, 0.0, 1.0);
     abs.op = Op::Abs;
-    abs.spawn = false;
+    abs.time = TimeMode::Life;
     let replaced = Parameter {
         base: 5.0,
         spread: 0.0,
@@ -288,13 +288,57 @@ fn particle_life_curves_apply_operation_and_repeat_boundaries() {
 
     let mut rep = Curve::new(&[[0.0, 0.0], [1.0, 1.0]], 1.0, 2.0, 0.0, 1.0);
     rep.repeat = true;
-    rep.spawn = false;
+    rep.time = TimeMode::Life;
     let repeating = Parameter {
         base: 10.0,
         spread: 0.0,
         curve: Some(rep),
     };
     assert!((repeating.animate(10.0, 3.5) - 0.0).abs() < 1e-5);
+}
+
+#[test]
+fn particle_life_abs_curve_evaluates_elapsed_seconds_and_malformed_curves_are_refused() {
+    let malformed = Curve::parse(
+        &parser::parse(b"name = broken op = mul curve = { 0 0 0.5 bad 1 0 }")
+            .unwrap()
+            .items,
+    );
+    assert!(malformed.is_err(), "malformed token must be refused");
+    let odd = Curve::parse(
+        &parser::parse(b"name = odd op = mul curve = { 0 0 1 }")
+            .unwrap()
+            .items,
+    );
+    assert!(odd.is_err(), "odd curve count must be refused");
+
+    let life_abs = Curve::parse(
+        &parser::parse(
+            b"name = abs_ramp start = 0 duration = 1 op = mul time = life_abs \
+              minValue = 0 maxValue = 1 curve = { 0 0  1 1 }",
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let mut emitter = activation_test_emitter();
+    emitter.size = Parameter {
+        base: 1.0,
+        spread: 0.0,
+        curve: Some(life_abs),
+    };
+    let mut sim = Simulation::cold(&emitter, 1, [0.0; 3], 0.0);
+    let mut particle = moving_particle([0.0; 3]);
+    particle.age = 0.5;
+    particle.life = 2.0;
+    particle.size = 1.0;
+    sim.particles.push(particle);
+    let packet = native::DrawPacket::weather(&emitter, &sim, [0.0; 3], 1.0);
+    let drawn_size = packet.instances[0].position_size[3];
+    assert!(
+        (drawn_size - 32.0 / 63.0).abs() < 1e-4,
+        "expected ~0.5079 for life_abs at age=0.5, got {drawn_size}"
+    );
 }
 
 #[test]

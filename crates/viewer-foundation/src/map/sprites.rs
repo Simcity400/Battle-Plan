@@ -533,9 +533,7 @@ impl Batch {
             texture: glyph.page,
             rect: glyph.rect,
             uv: glyph.uv,
-            color: glyph
-                .color
-                .map_or(color, |run| [run[0], run[1], run[2], run[3] * color[3]]),
+            color: glyph.color.unwrap_or(color),
             rotation: 0.0,
             layer: self.layer,
             shade: 0.0,

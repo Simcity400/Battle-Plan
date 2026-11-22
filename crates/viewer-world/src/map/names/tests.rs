@@ -556,6 +556,23 @@ fn wide_raster_segment_and_degenerate_candidates_stay_raster_bounded() {
         )
         .is_none()
     );
+
+    let mut tiny = Canvas::new(2, 2);
+    tiny.rect(1, 0, 0, 1, 1);
+    let tiny_map = tiny.map();
+    let extreme = (i64::MIN as f32, (1i64 << 62) as f32);
+    let diag = best_run(
+        &tiny_map,
+        &area,
+        &bridged,
+        [extreme.0, extreme.0],
+        [extreme.1, extreme.1],
+        None,
+    )
+    .expect("extreme i64 diagonal clips without overflowing");
+    assert_eq!(diag.0, 2);
+    assert_eq!(diag.1, [0.0, 0.0]);
+    assert_eq!(diag.2, [1.0, 1.0]);
 }
 
 #[test]

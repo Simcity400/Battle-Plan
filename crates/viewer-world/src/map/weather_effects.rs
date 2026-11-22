@@ -93,9 +93,22 @@ impl Parameter {
     fn animate(&self, value: f32, age: f32) -> f32 {
         self.curve.as_ref().map_or(value, |c| c.apply(value, age))
     }
+    fn animate_particle(&self, value: f32, age: f32, life: f32, system_age: f32) -> f32 {
+        let Some(curve) = &self.curve else {
+            return value;
+        };
+        let time = match curve.time {
+            TimeMode::Life => age / life,
+            TimeMode::LifeAbs => age,
+            TimeMode::System | TimeMode::Spawn => system_age,
+        };
+        curve.apply(value, time)
+    }
     fn at(&self, seed: &mut u64, time: f32) -> f32 {
         let base = match &self.curve {
-            Some(curve) if curve.spawn => curve.apply(self.base, time),
+            Some(curve) if matches!(curve.time, TimeMode::Spawn | TimeMode::System) => {
+                curve.apply(self.base, time)
+            }
             _ => self.base,
         };
         if self.spread != 0.0 {
@@ -104,6 +117,14 @@ impl Parameter {
             base
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TimeMode {
+    Spawn,
+    System,
+    Life,
+    LifeAbs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -119,7 +140,7 @@ pub(super) struct Curve {
     start: f32,
     duration: f32,
     pub(super) op: Op,
-    spawn: bool,
+    pub(super) time: TimeMode,
     pub(super) repeat: bool,
 }
 impl Curve {
@@ -140,22 +161,32 @@ impl Curve {
 
     pub(super) fn parse(items: &[Item]) -> io::Result<Self> {
         let name = text(items, "name");
-        let values = get(items, "curve")
-            .map(tokens)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|s| s.parse::<f32>().ok())
-            .collect::<Vec<_>>();
+        let raw_tokens = get(items, "curve").map(tokens).unwrap_or_default();
+        let mut values = Vec::with_capacity(raw_tokens.len());
+        for token in raw_tokens {
+            let parsed = token.parse::<f32>().map_err(|_| {
+                invalid(format!(
+                    "animation curve {name:?} has malformed curve value {token:?}"
+                ))
+            })?;
+            if !parsed.is_finite() {
+                return Err(invalid(format!(
+                    "animation curve {name:?} has non-finite curve value {token:?}"
+                )));
+            }
+            values.push(parsed);
+        }
+        if values.len() % 2 != 0 {
+            return Err(invalid(format!(
+                "animation curve {name:?} has an odd number of curve values ({})",
+                values.len()
+            )));
+        }
         let knots: Vec<[f32; 2]> = values.chunks_exact(2).map(|p| [p[0], p[1]]).collect();
         for pair in knots.windows(2) {
-            if !(pair[0][0].is_finite()
-                && pair[1][0].is_finite()
-                && pair[0][1].is_finite()
-                && pair[1][1].is_finite()
-                && pair[1][0] > pair[0][0])
-            {
+            if !(pair[1][0] > pair[0][0]) {
                 return Err(invalid(format!(
-                    "animation curve {name:?} has a non-increasing or non-finite knot domain"
+                    "animation curve {name:?} has a non-increasing knot domain"
                 )));
             }
         }
@@ -169,6 +200,17 @@ impl Curve {
                 )));
             }
         };
+        let time = match text(items, "time").to_ascii_lowercase().as_str() {
+            "" | "spawn" => TimeMode::Spawn,
+            "system" => TimeMode::System,
+            "life" => TimeMode::Life,
+            "life_abs" => TimeMode::LifeAbs,
+            other => {
+                return Err(invalid(format!(
+                    "animation curve {name:?} has unsupported time mode {other:?}"
+                )));
+            }
+        };
         let mut curve = Self::new(
             &knots,
             number(items, "start", 0.0),
@@ -177,7 +219,7 @@ impl Curve {
             number(items, "maxValue", 1.0),
         );
         curve.op = op;
-        curve.spawn = !matches!(text(items, "time"), "life" | "life_abs" | "system");
+        curve.time = time;
         curve.repeat = parser::read_bool_field(items, "repeat", false);
         Ok(curve)
     }
@@ -221,7 +263,7 @@ impl Curve {
             start,
             duration,
             op: Op::Mul,
-            spawn: true,
+            time: TimeMode::Spawn,
             repeat: false,
         }
     }
@@ -852,6 +894,8 @@ impl Assets {
         decode: Decode,
     ) -> io::Result<Arc<Self>> {
         let catalog = Catalog::read(layers)?;
+        let mut withheld = catalog.refused().to_vec();
+        let lights = super::entity_effects::Lights::load(layers, &mut withheld)?;
         let mut out = Self {
             effect: super::particle_shader::load(layers, map, decode)?,
             max_particles: 0,
@@ -862,8 +906,8 @@ impl Assets {
             systems: BTreeMap::new(),
             pages: Vec::new(),
             entities: BTreeMap::new(),
-            withheld: catalog.refused().to_vec(),
-            lights: super::entity_effects::Lights::load(layers)?,
+            withheld,
+            lights,
         };
         const POSITIONS: &str = "map/weatherpositions.txt";
         let (positions, skipped) = match layers.read_uncovered(POSITIONS) {
@@ -1411,9 +1455,9 @@ impl Simulation {
             emitter_basis(0.0, 0.0)
         };
         for ordinal in 0..births {
+            let life = e.life.sample(random(&mut self.seed), 0.0).max(0.01);
+            let mass = e.mass.base + (random(&mut self.seed) * 2.0 - 1.0) * e.mass.spread;
             let mut sample = |p: &Parameter| p.sample(random(&mut self.seed), 0.0);
-            let life = sample(&e.life).max(0.01);
-            let mass = sample(&e.mass);
             let r = sample(&e.radius);
             let sp = -sample(&e.sphere_pitch).to_radians();
             let sy = -sample(&e.sphere_yaw).to_radians();
@@ -1503,7 +1547,7 @@ impl Simulation {
                     p.position[j] += p.velocity[j] * step;
                 }
             } else {
-                let mass = e.mass.animate(p.mass, p.age / p.life);
+                let mass = e.mass.animate_particle(p.mass, p.age, p.life, self.age);
                 let placed = std::array::from_fn(|j| p.position[j] + offset[j]);
                 let mut force = [0.0; 3];
                 for applied in &self.applied {
