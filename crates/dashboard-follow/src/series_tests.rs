@@ -468,8 +468,8 @@ fn a_followed_supply_health_withholds_v1_and_admits_v2_across_step_and_backward_
                         }
                     }
                 }
-                if stats.last == target && last_answer.is_some() {
-                    return last_answer.unwrap();
+                if stats.last == target {
+                    return last_answer.unwrap_or_else(|| panic!("no answer emitted when reaching target hour {target} (seek={seek})"));
                 }
             }
         };

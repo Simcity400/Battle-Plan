@@ -343,8 +343,28 @@ impl<R: std::ops::Deref<Target = Recording>> Frames<R> {
         }
         self.stepped = self.built == Some((run, self.ordinal));
         self.ordinal += 1;
+        let ordinal = self.ordinal;
         let timed = self.timed;
-        self.slots.par_iter_mut().try_for_each(|slot| move_slot(slot, timed, |reader| reader.step(recording).map(drop)))?;
+        self.slots.par_iter_mut().try_for_each(|slot| {
+            if slot.reader.is_none()
+                && recording.predates(slot.id.index()).is_none()
+                && matches!(recording.table_coverage(slot.id.index(), run), TableCoverage::WithheldBefore { ordinal: valid, .. } if ordinal == valid)
+            {
+                slot.lost = None;
+                slot.view = None;
+                slot.update = None;
+                slot.reader = match TableReader::new(recording, run, slot.id, None) {
+                    Ok(reader) => Some(reader),
+                    Err(error) => {
+                        slot.lost = Some(lost(error)?);
+                        None
+                    }
+                };
+                move_slot(slot, timed, |reader| reader.go_to(recording, ordinal))
+            } else {
+                move_slot(slot, timed, |reader| reader.step(recording).map(drop))
+            }
+        })?;
         Ok(true)
     }
 

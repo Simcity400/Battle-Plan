@@ -866,13 +866,22 @@ impl Bin {
             };
             return;
         }
-        if fold.min < self.min {
-            (self.min, self.min_bucket) = (fold.min, bucket(fold.min_bucket));
+        let first_bucket = bucket(fold.first_bucket);
+        let last_bucket = bucket(fold.last_bucket);
+        let min_bucket = bucket(fold.min_bucket);
+        let max_bucket = bucket(fold.max_bucket);
+        if first_bucket < self.first_bucket {
+            (self.first, self.first_bucket) = (fold.first, first_bucket);
         }
-        if fold.max > self.max {
-            (self.max, self.max_bucket) = (fold.max, bucket(fold.max_bucket));
+        if fold.min < self.min || (fold.min == self.min && min_bucket < self.min_bucket) {
+            (self.min, self.min_bucket) = (fold.min, min_bucket);
         }
-        (self.last, self.last_bucket) = (fold.last, bucket(fold.last_bucket));
+        if fold.max > self.max || (fold.max == self.max && max_bucket < self.max_bucket) {
+            (self.max, self.max_bucket) = (fold.max, max_bucket);
+        }
+        if last_bucket >= self.last_bucket {
+            (self.last, self.last_bucket) = (fold.last, last_bucket);
+        }
         self.hours += fold.hours;
     }
 }
@@ -969,6 +978,10 @@ pub fn chart(
 
 pub const WALKED: u8 = u8::MAX;
 
+const fn ceil_multiple(hour: i64, size: i64) -> i64 {
+    (hour + size - 1).div_euclid(size) * size
+}
+
 #[allow(clippy::too_many_arguments, reason = "a lane query names its run, table, columns, keys and range")]
 pub fn chart_at(
     recording: &Recording,
@@ -986,7 +999,7 @@ pub fn chart_at(
     let bins = ((i64::from(to) - first_bin_hour) / bin_hours + 1) as usize;
     let (read_from, min_bucket_hour) = match valid_hour {
         Some(valid) if from < valid => {
-            let aligned = first_bin_hour + ((i64::from(valid) - first_bin_hour + bin_hours - 1) / bin_hours) * bin_hours;
+            let aligned = ceil_multiple(i64::from(valid), bin_hours);
             if aligned > i64::from(to) {
                 return Ok(Chart {
                     level,
@@ -1048,7 +1061,7 @@ pub fn chart_at(
         .filter_map(|(piece, _)| {
             let size = summary::bucket_hours(piece.directory.level);
             let floor = if min_bucket_hour > i64::MIN {
-                ((min_bucket_hour + size - 1) / size) * size
+                ceil_multiple(min_bucket_hour, size)
             } else {
                 i64::MIN
             };
@@ -1679,7 +1692,7 @@ fn top_with(
     }
     let (read_from, min_bucket_hour) = match valid_hour {
         Some(valid) if from < valid => {
-            let aligned = first_bin_hour + ((i64::from(valid) - first_bin_hour + bin_hours - 1) / bin_hours) * bin_hours;
+            let aligned = ceil_multiple(i64::from(valid), bin_hours);
             if aligned > i64::from(to) {
                 return Ok(vec![Vec::new(); bins]);
             }
@@ -1689,7 +1702,8 @@ fn top_with(
         None => (from, i64::MIN),
     };
     let (first, last) = (ordinal_of(recording, run, read_from)?, ordinal_of(recording, run, to)?);
-    let extents = pieces(recording, run, table.index(), first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1, level)?;
+    let blocks = first / UNIT_ORDINALS..last / UNIT_ORDINALS + 1;
+    let extents = pieces(recording, run, table.index(), blocks.clone(), level)?;
     let read = extents.par_iter().map(|extent| recording.stored_bytes(extent)).collect::<io::Result<Vec<_>>>()?;
     let decoded = read
         .par_iter()
@@ -1700,7 +1714,38 @@ fn top_with(
             Ok((piece, frame, column))
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let from_ranks = ranked && by == By::Last && !decoded.is_empty() && decoded.iter().all(|(piece, _, column)| usize::from(piece.rank(*column)) >= n);
+    let covered: Vec<(i64, i64)> = decoded
+        .iter()
+        .filter_map(|(piece, _, _)| {
+            let size = summary::bucket_hours(piece.directory.level);
+            let floor = if min_bucket_hour > i64::MIN {
+                ceil_multiple(min_bucket_hour, size)
+            } else {
+                i64::MIN
+            };
+            let lo = piece.directory.first_hour.max(floor);
+            let hi = piece.directory.first_hour + i64::from(piece.directory.hours);
+            (lo < hi).then_some((lo, hi))
+        })
+        .collect();
+    let ranges = uncovered(recording, run, blocks, &covered, first, last)?;
+    let walked: HashMap<u128, Row, foldhash::fast::RandomState> = if ranges.is_empty() {
+        HashMap::default()
+    } else {
+        let registry = crate::summaries::registry()?;
+        let Some((_, Shape::Values(columns))) = registry.iter().find(|(held, _)| *held == table.index()) else {
+            return Err(invalid("The table has no summarized columns"));
+        };
+        let column = *columns
+            .iter()
+            .find(|column| column.source.id() == source)
+            .ok_or_else(|| invalid("The summary holds no such column"))?;
+        let mut walk = Walk::new(Some(column.source), None, first_bin_hour, bin_hours, bins);
+        walk_ranges(recording, run, table, &inputs(column.source), &ranges, &mut walk)?;
+        walk.rows
+    };
+    let from_ranks =
+        ranges.is_empty() && ranked && by == By::Last && !decoded.is_empty() && decoded.iter().all(|(piece, _, column)| usize::from(piece.rank(*column)) >= n);
     let ranks = match from_ranks {
         true => decoded
             .par_iter()
@@ -1719,7 +1764,7 @@ fn top_with(
     };
     match from_ranks {
         true => grid.top_ranked(&decoded, &ranks, n),
-        false => grid.top_folded(&decoded, n, by),
+        false => grid.top_folded(&decoded, &walked, n, by),
     }
 }
 
@@ -1764,9 +1809,15 @@ impl Grid {
             .collect())
     }
 
-    fn top_folded(&self, pieces: &[(Piece<'_>, ColumnFrame)], n: usize, by: By) -> io::Result<Vec<Vec<(u128, Bin)>>> {
+    fn top_folded(
+        &self,
+        pieces: &[(Piece<'_>, ColumnFrame)],
+        walked: &HashMap<u128, Row, foldhash::fast::RandomState>,
+        n: usize,
+        by: By,
+    ) -> io::Result<Vec<Vec<(u128, Bin)>>> {
         use std::cmp::Ordering;
-        let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).collect();
+        let mut keys: Vec<u128> = pieces.iter().flat_map(|(piece, _)| piece.keys.iter().copied()).chain(walked.keys().copied()).collect();
         keys.sort_unstable();
         keys.dedup();
         let bins = self.bins;
@@ -1777,7 +1828,21 @@ impl Grid {
             .try_fold(empty, |(mut values, mut life, mut marks, mut best), &key| -> io::Result<_> {
                 values.fill(Bin::default());
                 marks.fill(0);
-                self.fold_key(pieces, key, &mut values, &mut life, None, Some(&mut marks))?;
+                self.fold_key(pieces, key, &mut values, &mut life, None, walked.is_empty().then_some(&mut marks))?;
+                if let Some(row) = walked.get(&key) {
+                    for (bin, value) in values.iter_mut().enumerate() {
+                        if let Some(fold) = row.fold(bin) {
+                            value.add(&fold);
+                        }
+                    }
+                }
+                if !walked.is_empty() {
+                    for (bin, value) in values.iter().enumerate() {
+                        if value.hours > 0 {
+                            marks[bin] = (i64::from(value.last_bucket) - i64::from(i32::MIN) + 1) as u64;
+                        }
+                    }
+                }
                 for (bin, held) in values.iter().enumerate() {
                     if held.hours == 0 {
                         continue;
