@@ -780,7 +780,11 @@ fn next_hours(members: &[(u64, u32, u32, &Timing)]) -> Result<Option<i32>, Strin
     Ok(minimum.filter(|&hours| hours > 0))
 }
 
-fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, String> {
+fn next_location(
+    loc: &Localisation,
+    hours: Option<i32>,
+    estimated: bool,
+) -> Result<String, String> {
     let Some(hours) = hours else {
         return Ok(String::new());
     };
@@ -800,6 +804,9 @@ fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, Strin
             ],
         )?
     };
+    if estimated && !text.is_empty() {
+        return Ok(format!("{text}{}\n\n", counter_eta::ESTIMATED_SUFFIX));
+    }
     Ok(format!("{text}\n\n"))
 }
 
@@ -1145,7 +1152,7 @@ fn build_divisions(
                         Ok((id, division.province, movement.path_total, timing))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                next_location(context.loc, next_hours(&members)?)
+                next_location(context.loc, next_hours(&members)?, true)
             })();
             append(&mut out, context, true, "next location", next);
         }
@@ -2194,7 +2201,7 @@ mod tests {
             "unit \u{11}HGuard\u{11}! (\u{11}YAlpha\u{11}!)"
         );
         assert!(named.body.starts_with(
-            "arrival 1d 5h (estimated)\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+            "arrival 1d 5h (estimated)\nnext 2h (estimated)\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
         ));
         assert_eq!(named.refused.len(), 1);
         assert_eq!(named.refused.values().copied().sum::<usize>(), 1);
@@ -2238,7 +2245,7 @@ mod tests {
         let detailed = tooltip(&frame, &[1, 2], false, false, &vision);
         assert_eq!(detailed.title, "1 Second Alpha\n1 First Alpha");
         assert!(detailed.body.starts_with(
-            "arrival 1d 5h (estimated)\nnext 2h\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
+            "arrival 1d 5h (estimated)\nnext 2h (estimated)\n\navg org 50%\nstr 50%\n4\u{13}unit_Foot_icon_small|1 "
         ));
         assert!(
             !detailed
@@ -2660,7 +2667,10 @@ mod tests {
         let vision = Vision::sharing(2, []).with_truncated_unit_intel([]);
         let detailed = tooltip(&frame, &[1], false, false, &vision);
         assert_eq!(detailed.title, "");
-        assert_eq!(detailed.body, "other arrival 1d 5h (estimated)\nnext 2h\n\n");
+        assert_eq!(
+            detailed.body,
+            "other arrival 1d 5h (estimated)\nnext 2h (estimated)\n\n"
+        );
         assert_eq!(
             detailed
                 .refused
@@ -2748,7 +2758,7 @@ mod tests {
                 assert!(visible.body.starts_with("other arrival 1d 5h (estimated)\n"));
                 assert!(
                     hidden.body.starts_with(
-                        "next 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
+                        "next 2h (estimated)\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
                     )
                 );
                 assert!(
@@ -3234,7 +3244,12 @@ mod tests {
                 );
                 assert_eq!(skipped, baseline, "class13={railway_gun} coarse={coarse}");
                 if !coarse {
-                    assert!(skipped.body.contains("next 2h\n\n"), "{}", skipped.body);
+                    let expected = if railway_gun {
+                        "next 2h\n\n"
+                    } else {
+                        "next 2h (estimated)\n\n"
+                    };
+                    assert!(skipped.body.contains(expected), "{}", skipped.body);
                 }
             }
             let repeated = build(&frame, &known, railway_gun, true, &[1, dangling, 2, 2], &[]);
@@ -3793,18 +3808,32 @@ mod tests {
                 ours,
             };
             let div_out = build_context(&ctx, &div_hover, false, |_, _| Ok(remaining));
+            let expected_div = format!("{estimated}next 2h (estimated)\n\n");
             assert!(
-                div_out.body.starts_with(estimated),
+                div_out.body.starts_with(&expected_div),
                 "ours={ours} remaining={remaining}: {:?}",
                 div_out.body
             );
+            if !ours {
+                let hidden_div = CounterHover {
+                    hidden: true,
+                    ..div_hover.clone()
+                };
+                let hidden_out = build_context(&ctx, &hidden_div, false, |_, _| Ok(remaining));
+                assert!(
+                    hidden_out.body.starts_with("next 2h (estimated)\n\n"),
+                    "hidden foreign division remaining={remaining}: {:?}",
+                    hidden_out.body
+                );
+            }
             let gun_hover = CounterHover {
                 railway_gun: true,
                 ..div_hover
             };
             let gun_out = build_context(&ctx, &gun_hover, false, |_, _| Ok(remaining));
+            let expected_gun = format!("{native}next 2h\n\n");
             assert!(
-                gun_out.body.starts_with(native),
+                gun_out.body.starts_with(&expected_gun),
                 "gun ours={ours} remaining={remaining}: {:?}",
                 gun_out.body
             );

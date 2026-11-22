@@ -1592,6 +1592,29 @@ fn a_structural_refusal_withholds_the_icon_and_its_entries_until_rebuilt() {
     }
     assert!(drawn_buttons(&mut harness, &two).is_empty());
     assert_eq!(gaps(&mut harness, REFUSED), 1);
+    let lost_tick = harness.tick(0.01);
+    let own = MissionWindows::find(&harness.native).unwrap();
+    let unprojected = [Reached {
+        region: 1,
+        entries: Some(&two),
+        point: Err(UNPROJECTED_PLACE),
+    }];
+    harness
+        .windows
+        .missions
+        .frame(&own, &res, &unprojected, VIEWPORT, &mut harness.report)
+        .unwrap();
+    harness.tick_windows(&res, lost_tick);
+    harness.frame(&res, &[(1, Some(&two), [0, 0])], 0.01);
+    let pool = harness.windows.missions.pool.as_ref().unwrap();
+    let icon = pool.visible().next().expect("the icon stays live");
+    assert!(
+        icon.withheld.unwrap().contains(REFUSED),
+        "structural refusal reason must survive projection loss/recovery, got {:?}",
+        icon.withheld
+    );
+    assert!(drawn_buttons(&mut harness, &two).is_empty());
+    assert_eq!(gaps(&mut harness, REFUSED), 1);
     harness.native = windows_of(SYNTHETIC_MISSION_GUI);
     {
         let windows = MissionWindows::find(&harness.native).unwrap();
@@ -2155,6 +2178,14 @@ fn slot_history_survives_unknown_census_and_unplaced_regions_becoming_drawable()
                 .slot_of(&6)
                 .expect("unanchored registered region still admits its logical slot");
             assert_ne!(slot5, slot6);
+            assert!(
+                view2.updated_grids.contains(&(5, slot5)),
+                "unprojectable slot still queues retained grid updates"
+            );
+            assert!(
+                view2.updated_grids.contains(&(6, slot6)),
+                "unanchored slot still queues retained grid updates"
+            );
             assert_eq!(view2.diverged, None);
             assert!(
                 view2

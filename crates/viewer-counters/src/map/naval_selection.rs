@@ -130,18 +130,6 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
     let scores = frame
         .complete::<tables::CountryGameScoreInputs>()
         .map_err(|e| io::Error::other(e.to_string()))?;
-    let forces = frame
-        .complete::<tables::TaskForces>()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let ships = frame
-        .complete::<tables::Ships>()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let queue = frame
-        .complete::<tables::NavalRepairQueue>()
-        .map_err(|e| io::Error::other(e.to_string()))?;
-    let fleet_inputs = frame
-        .complete::<tables::FleetCounterInputs>()
-        .map_err(|e| io::Error::other(format!("fleet task-force order is unavailable: {e}")))?;
     let country = scores
         .iter()
         .find(|row| {
@@ -154,7 +142,48 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
     if !country.navy_error.is_empty() {
         return Err(io::Error::other("viewing navy's fleet roster is unreadable"));
     }
-    let queued: std::collections::BTreeSet<u64> = queue
+    if country.fleets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let forces = frame
+        .complete::<tables::TaskForces>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let ships = frame
+        .complete::<tables::Ships>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let queue = frame
+        .complete::<tables::NavalRepairQueue>()
+        .map_err(|e| io::Error::other(e.to_string()))?;
+    let (fleet_inputs, truncated_missing) =
+        match viewer_foundation::map::tables::rows::<tables::FleetCounterInputs>(frame)? {
+            viewer_foundation::map::tables::Available::Complete(rows) => (rows, None),
+            viewer_foundation::map::tables::Available::Truncated { rows, missing } => {
+                (rows, Some(missing))
+            }
+            viewer_foundation::map::tables::Available::Unavailable { reason } => {
+                return Err(io::Error::other(format!(
+                    "fleet task-force order is unavailable: {reason}"
+                )));
+            }
+            viewer_foundation::map::tables::Available::NotRecorded { mode } => {
+                return Err(io::Error::other(format!(
+                    "fleet task-force order is unavailable: not recorded in a {mode} recording"
+                )));
+            }
+        };
+    let viewing_fleets: std::collections::HashSet<u64> = country
+        .fleets
+        .iter()
+        .map(|occurrence| occurrence.fleet)
+        .collect();
+    let mut fleet_forces: std::collections::HashMap<u64, Vec<u64>> =
+        std::collections::HashMap::with_capacity(viewing_fleets.len());
+    for force in forces {
+        if viewing_fleets.contains(&force.fleet) {
+            fleet_forces.entry(force.fleet).or_default().push(force.id);
+        }
+    }
+    let queued: std::collections::HashSet<u64> = queue
         .iter()
         .filter(|row| row.province == province)
         .filter_map(|row| {
@@ -165,20 +194,23 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
         })
         .collect();
     let mut members = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for occurrence in &country.fleets {
         let roster = fleet_inputs
             .binary_search_by_key(&occurrence.fleet, |row| row.fleet)
             .ok()
             .map(|at| &fleet_inputs[at])
-            .ok_or_else(|| {
-                io::Error::other(
+            .ok_or_else(|| match truncated_missing {
+                Some(missing) => io::Error::other(format!(
+                    "fleet task-force order is unavailable: viewing navy's fleet is absent from truncated FleetCounterInputs ({missing} missing rows)"
+                )),
+                None => io::Error::other(
                     "fleet task-force order is unavailable: viewing navy's fleet is absent from FleetCounterInputs",
-                )
+                ),
             })?;
-        let listed: std::collections::BTreeSet<u64> = roster.task_forces.iter().copied().collect();
-        if forces
-            .iter()
-            .any(|force| force.fleet == occurrence.fleet && !listed.contains(&force.id))
+        let listed: std::collections::HashSet<u64> = roster.task_forces.iter().copied().collect();
+        if let Some(expected) = fleet_forces.get(&occurrence.fleet)
+            && expected.iter().any(|id| !listed.contains(id))
         {
             return Err(io::Error::other(
                 "fleet task-force order is unavailable: FleetCounterInputs is missing a task force of the viewing navy's fleet",
@@ -192,9 +224,12 @@ pub fn base_members(frame: &DecodedFrame, viewer: u32, province: u32) -> io::Res
                 .ok_or_else(|| {
                     io::Error::other("fleet task-force order has an unresolved task-force handle")
                 })?;
-            if (force.province == province || queued.contains(&force.id))
-                && !members.contains(&force.id)
-            {
+            if force.fleet != occurrence.fleet {
+                return Err(io::Error::other(
+                    "fleet task-force order is contradictory: FleetCounterInputs lists a task force belonging to another fleet",
+                ));
+            }
+            if (force.province == province || queued.contains(&force.id)) && seen.insert(force.id) {
                 members.push(force.id);
             }
         }
@@ -593,6 +628,76 @@ mod tests {
                 },
                 FleetCounterInputRow {
                     fleet: 11,
+                    task_forces: vec![4, 3, 4, 2],
+                    ..Default::default()
+                },
+            ]),
+        );
+        assert_eq!(base_members(&frame, 3, 5).unwrap(), [4, 3, 2, 1]);
+
+        *frame.tables[TableId::FleetCounterInputs.index()] = TableView::Truncated {
+            rows: TableRows::FleetCounterInputs(vec![
+                FleetCounterInputRow {
+                    fleet: 10,
+                    task_forces: vec![1],
+                    ..Default::default()
+                },
+                FleetCounterInputRow {
+                    fleet: 11,
+                    task_forces: vec![4, 3, 2],
+                    ..Default::default()
+                },
+            ]),
+            missing: 1,
+        };
+        assert_eq!(base_members(&frame, 3, 5).unwrap(), [4, 3, 2, 1]);
+
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![
+                force(1, 10, 5),
+                force(2, 11, 5),
+                force(3, 11, 99),
+                force(4, 11, 5),
+                force(5, 20, 5),
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::FleetCounterInputs(vec![
+                FleetCounterInputRow {
+                    fleet: 10,
+                    task_forces: vec![1, 5],
+                    ..Default::default()
+                },
+                FleetCounterInputRow {
+                    fleet: 11,
+                    task_forces: vec![4, 3, 2],
+                    ..Default::default()
+                },
+            ]),
+        );
+        assert!(base_members(&frame, 3, 5).is_err());
+
+        put(
+            &mut frame,
+            TableRows::TaskForces(vec![
+                force(1, 10, 5),
+                force(2, 11, 5),
+                force(3, 11, 99),
+                force(4, 11, 5),
+            ]),
+        );
+        put(
+            &mut frame,
+            TableRows::FleetCounterInputs(vec![
+                FleetCounterInputRow {
+                    fleet: 10,
+                    task_forces: vec![1],
+                    ..Default::default()
+                },
+                FleetCounterInputRow {
+                    fleet: 11,
                     task_forces: vec![4, 2],
                     ..Default::default()
                 },
@@ -604,5 +709,15 @@ mod tests {
             reason: "older recording".into(),
         };
         assert!(base_members(&frame, 3, 5).is_err());
+
+        put(
+            &mut frame,
+            TableRows::CountryGameScoreInputs(vec![CountryGameScoreInputRow {
+                country: 7,
+                fleets: Vec::new(),
+                ..Default::default()
+            }]),
+        );
+        assert!(base_members(&frame, 3, 5).unwrap().is_empty());
     }
 }

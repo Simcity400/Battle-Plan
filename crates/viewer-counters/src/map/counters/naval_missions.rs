@@ -57,7 +57,6 @@ const COUNT: &str = "its count";
 const ENTRY_PLACE: &str = "its place in the missions list";
 const ENTRY_KEPT: [&str; 2] = [COUNT, ENTRY_PLACE];
 const LIST_PLACE: &str = "its missions list's place";
-const ICON_PLACE: &str = "its screen position";
 const UNANCHORED_PLACE: &str = "its strategic region has no icon position";
 const UNPROJECTED_PLACE: &str = "its icon position cannot be projected";
 
@@ -552,6 +551,7 @@ pub(super) struct MissionView {
     built: Option<(NativeWindows, [i32; 2])>,
     pool: Option<Pool<u32>>,
     icons: HashMap<SlotId, PooledIcon>,
+    unplaced: HashMap<SlotId, &'static str>,
     entries_withheld: Withheld<(SlotId, usize)>,
     diverged: Option<Cow<'static, str>>,
     census_undecided: Option<&'static str>,
@@ -1089,12 +1089,12 @@ impl MissionView {
                 continue;
             };
             match owner.point {
-                Ok(_) => pool.rewrote(slot, Rewrote::Part(ICON_PLACE)),
-                Err(why) => pool.refuse(
-                    slot,
-                    Unknown::Part(ICON_PLACE),
-                    format!("{MISSION_WINDOW} is not drawn: {why}").into(),
-                ),
+                Ok(_) => {
+                    self.unplaced.remove(&slot);
+                }
+                Err(why) => {
+                    self.unplaced.insert(slot, why);
+                }
             }
             let entries = owner.entries.unwrap_or_default();
             let (Some(instance), Some(icon)) = (pool.get(slot), self.icons.get_mut(&slot)) else {
@@ -1104,9 +1104,7 @@ impl MissionView {
             reach_entries(icon, windows, &held)?;
             match update_icon(windows, resources, instance, icon, entries, viewport) {
                 Ok(updated) => {
-                    if owner.point.is_ok() {
-                        self.updated_grids.push((region, slot));
-                    }
+                    self.updated_grids.push((region, slot));
                     if self.mode == NAVAL_UI_MODE
                         && let Some(counts) = self.badge_counts.get(&region)
                     {
@@ -1352,6 +1350,13 @@ impl MissionView {
                 *report
                     .naval_mission_gaps
                     .entry(why.to_owned().into())
+                    .or_default() += 1;
+                continue;
+            }
+            if let Some(why) = self.unplaced.get(&slot) {
+                *report
+                    .naval_mission_gaps
+                    .entry(format!("{MISSION_WINDOW} is not drawn: {why}").into())
                     .or_default() += 1;
                 continue;
             }

@@ -1046,6 +1046,19 @@ fn port_grouping_keeps_distinct_foreign_owners_apart_when_relations_are_unavaila
                     .map(|item| item.selectable.map_or_else(Vec::new, |(_, members)| members.to_vec()))
                     .collect();
                 assert_eq!(grouped, vec![vec![1, 2], vec![3]]);
+
+                inputs.visibility.political_mode = false;
+                let mut out = CounterFrame::default();
+                let non_allegiance_items = port_items(&inputs, &frame, &|raw| Some(raw), &tables, context, &ports, None, &mut out)
+                    .unwrap()
+                    .remove(&7)
+                    .unwrap()
+                    .unwrap();
+                let non_allegiance_grouped: Vec<Vec<u64>> = non_allegiance_items
+                    .into_iter()
+                    .map(|item| item.selectable.map_or_else(Vec::new, |(_, members)| members.to_vec()))
+                    .collect();
+                assert_eq!(non_allegiance_grouped, vec![vec![1, 2, 3]]);
             });
         },
     );
