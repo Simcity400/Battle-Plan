@@ -105,8 +105,6 @@ pub fn frames_until_named(side: &mut MapSide, what: impl Fn(&MapSide) -> String,
             continue;
         }
         let more = side
-            .entry()
-            .playhead()
             .wait_step_after(before, last)
             .unwrap_or_else(|error| panic!("the playhead stopped while waiting for {}: {error}; {}", what(side), seen(side)));
         assert!(more, "the map side reached the last recorded hour ({last}) without reaching {}: {}", what(side), seen(side));

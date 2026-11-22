@@ -860,6 +860,34 @@ impl Consumer {
         try_lock(&self.shared.ring).map(|ring| ring.reaches(self.id, head))
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
+        loop {
+            if lock(&self.shared.ring).has_ready(self.id, cap) {
+                return Ok(true);
+            }
+            let mut control = lock(&self.shared.control);
+            if let Some(error) = &control.error {
+                return Err(error.clone());
+            }
+            if control.published_steps > before.1 {
+                return Ok(true);
+            }
+            if control.newest.is_some_and(|newest| newest >= cap)
+                && control.caught_up_at.is_some_and(|at| at >= cap)
+            {
+                return Ok(false);
+            }
+            let version = control.version;
+            while control.version == version {
+                if let Some(error) = &control.error {
+                    return Err(error.clone());
+                }
+                control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+    }
+
     pub fn land(&mut self) {
         let id = self.id;
         self.shared.nudge(|control| control.lands.push(id));
@@ -1190,25 +1218,6 @@ impl Playhead {
     pub fn step_state(&self) -> (Option<Hour>, u64) {
         let control = lock(&self.shared.control);
         (control.newest, control.published_steps)
-    }
-
-    #[cfg(feature = "test-support")]
-    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
-        let mut control = lock(&self.shared.control);
-        loop {
-            if let Some(error) = &control.error {
-                return Err(error.clone());
-            }
-            if control.published_steps > before.1 {
-                return Ok(true);
-            }
-            if control.newest.is_some_and(|newest| newest >= cap)
-                && control.caught_up_at.is_some_and(|at| at >= cap)
-            {
-                return Ok(false);
-            }
-            control = self.shared.wake.wait(control).unwrap_or_else(std::sync::PoisonError::into_inner);
-        }
     }
 
     #[cfg(feature = "test-support")]
@@ -2973,7 +2982,10 @@ impl Stepper {
                     self.shared.free(held);
                     lock(&self.shared.report).2 = self.counters;
                     let caught_up = self.caught_up_at();
-                    self.shared.nudge(|control| control.caught_up_at = caught_up);
+                    self.shared.nudge(|control| {
+                        control.published_steps += 1;
+                        control.caught_up_at = caught_up;
+                    });
                     moved = true;
                 }
                 Err(steps) => {

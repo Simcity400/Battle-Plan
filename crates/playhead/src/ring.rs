@@ -374,6 +374,19 @@ impl Ring {
         taken
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn has_ready(&self, id: usize, head: Hour) -> bool {
+        let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else {
+            return false;
+        };
+        if let Some((before, step)) = seat.own.front()
+            && *before <= seat.next
+        {
+            return step.last <= head;
+        }
+        self.built.get(next_of(&self.built, seat.next)).is_some_and(|step| step.last <= head)
+    }
+
     pub(crate) fn ahead(&self, id: usize, out: &mut Vec<Arc<Step>>) {
         let Some(seat) = self.consumers[id].as_ref().filter(|seat| seat.parked.is_none()) else { return };
         let mut next = seat.next;

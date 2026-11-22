@@ -395,8 +395,6 @@ fn reach(side: &mut MapSide, target: Hour) {
             continue;
         }
         let more = side
-            .entry()
-            .playhead()
             .wait_step_after(before, cap)
             .unwrap_or_else(|error| panic!("the playhead stopped before hour {target}: {error}"));
         assert!(more, "the map side reached hour {:?} (target {target}) without advancing: {}", side.applied(), recorded::seen(side));
@@ -576,8 +574,6 @@ fn next_hour(side: &mut MapSide) -> i32 {
             continue;
         }
         let more = side
-            .entry()
-            .playhead()
             .wait_step_after(step_before, cap)
             .unwrap_or_else(|error| panic!("the playhead stopped past hour {before}: {error}"));
         assert!(more, "no step past hour {before} was applied up to {cap}: {}", recorded::seen(side));

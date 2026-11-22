@@ -273,12 +273,24 @@ struct Maker {
 impl Maker {
     fn spawn(
         routes: Arc<dyn Routes>,
-        #[cfg(test)] sent: Arc<(Mutex<usize>, std::sync::Condvar)>,
+        #[cfg(test)] sent: Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>,
     ) -> io::Result<(Sender<Job>, Receiver<Made>)> {
         let (jobs, receive) = mpsc::channel::<Job>();
         let (send, made) = mpsc::channel::<Made>();
         let mut maker = Self { routes, stops: HashMap::new(), ribbons: HashMap::new(), provinces_version: 0 };
         std::thread::Builder::new().name("convoys".into()).spawn(move || {
+            #[cfg(test)]
+            struct WorkerExit(Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>);
+            #[cfg(test)]
+            impl Drop for WorkerExit {
+                fn drop(&mut self) {
+                    let (state, changed) = &*self.0;
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).1 = true;
+                    changed.notify_all();
+                }
+            }
+            #[cfg(test)]
+            let _exit = WorkerExit(Arc::clone(&sent));
             viewer_foundation::worker_priority::background_priority();
             while let Ok(mut job) = receive.recv() {
                 let mut answered = 1;
@@ -290,8 +302,8 @@ impl Maker {
                 }
                 #[cfg(test)]
                 {
-                    let (count, changed) = &*sent;
-                    *count.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += answered;
+                    let (state, changed) = &*sent;
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).0 += answered;
                     changed.notify_all();
                 }
             }
@@ -530,7 +542,7 @@ pub struct Convoys {
     #[cfg(test)]
     blocking_waits: usize,
     #[cfg(test)]
-    sent: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    sent: Arc<(Mutex<(usize, bool)>, std::sync::Condvar)>,
     #[cfg(test)]
     jobs_sent: usize,
     worker_bytes: usize,
@@ -928,7 +940,7 @@ impl Convoys {
         if self.worker.is_none() {
             #[cfg(test)]
             let sent = {
-                self.sent = Arc::new((Mutex::new(0), std::sync::Condvar::new()));
+                self.sent = Arc::new((Mutex::new((0, false)), std::sync::Condvar::new()));
                 self.jobs_sent = 0;
                 Arc::clone(&self.sent)
             };
@@ -1226,9 +1238,10 @@ impl Layer for Convoys {
 impl Convoys {
     #[cfg(test)]
     fn wait_replies_ready(&self) {
-        let (count, changed) = &*self.sent;
-        let mut held = count.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        while *held < self.jobs_sent {
+        let (state, changed) = &*self.sent;
+        let mut held = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while held.0 < self.jobs_sent {
+            assert!(!held.1, "the convoys worker stopped before answering all {} jobs ({} answered)", self.jobs_sent, held.0);
             held = changed.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }

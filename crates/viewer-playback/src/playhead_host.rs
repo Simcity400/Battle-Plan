@@ -1193,6 +1193,14 @@ impl MapSide {
         self.frame_step(head, crate::layers::Settling::step(), true, true)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn wait_step_after(&self, before: (Option<Hour>, u64), cap: Hour) -> Result<bool, String> {
+        if self.pending.iter().any(|step| step.last() <= cap) {
+            return Ok(true);
+        }
+        self.consumer.wait_step_after(before, cap)
+    }
+
     pub fn frame_still(&mut self, head: Hour) -> io::Result<Frame> {
         self.frame_within(head, crate::layers::Settling::still(), true)
     }

@@ -201,8 +201,6 @@ fn reach(side: &mut MapSide, hour: i32) {
             continue;
         }
         let more = side
-            .entry()
-            .playhead()
             .wait_step_after(before, cap)
             .unwrap_or_else(|error| panic!("the playhead stopped before hour {hour}: {error}"));
         assert!(

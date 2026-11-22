@@ -225,8 +225,6 @@ fn frames_within(side: &mut MapSide, cap: i32, mut done: impl FnMut(&MapSide, &c
             continue;
         }
         let more = side
-            .entry()
-            .playhead()
             .wait_step_after(before, cap)
             .unwrap_or_else(|error| panic!("the playhead stopped before cap {cap}: {error}"));
         assert!(
