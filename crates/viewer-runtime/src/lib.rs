@@ -14,7 +14,6 @@ pub mod frame_limit;
 pub mod frame_writer;
 pub mod geometry;
 pub mod hour_check;
-pub mod image_rgba;
 pub mod install_check;
 pub mod label_reads;
 pub mod load_record;

@@ -13327,7 +13327,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.1",
  "content-reader-core",
- "content-reader-image",
  "content-reader-localisation",
  "content-reader-province-area",
  "content-reader-settings",

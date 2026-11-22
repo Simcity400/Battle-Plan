@@ -1,6 +1,8 @@
 
+mod image_rgba;
+
+use image_rgba::rgba8;
 use viewer_runtime::errors::examples;
-use viewer_runtime::image_rgba::rgba8;
 #[cfg(test)]
 use viewer_runtime::test_support::test_tga_rgba8;
 pub const NO_INTEL_SPRITE: &str = "GFX_unit_no_intel_icon_medium_white";

@@ -1,8 +1,8 @@
-use crate::errors::invalid;
 use content_reader_image::{Rgba8Image, dds, rgba::bc_block};
 use std::io;
+use viewer_runtime::errors::invalid;
 
-pub fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
+pub(super) fn rgba8(texture: &dds::Texture) -> io::Result<dds::Texture> {
     let block_size = match texture.format {
         dds::TextureFormat::Bc1 => 8,
         dds::TextureFormat::Bc2 | dds::TextureFormat::Bc3 => 16,

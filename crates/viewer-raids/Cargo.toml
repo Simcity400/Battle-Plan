@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["viewer-native-gui/test-support"]
+test-support = ["viewer-native-gui/test-support", "viewer-unit-reads/test-support"]
 
 [dependencies]
 viewer-foundation.workspace = true
