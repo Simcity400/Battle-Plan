@@ -15,14 +15,13 @@ use std::{
     },
     time::Instant,
 };
-use viewer_world::map::{
+use viewer_borders::{
     borders::{BorderClass, BorderMeshes},
-    map_mode::MapMode,
     border_pass::ClassPlan,
     demilitarized::{Zone, ZonePlan},
-    gradient::Attributes,
-    political::{Regions, UNAVAILABLE_COLOR},
 };
+use viewer_map_modes::{map_mode::MapMode, political::UNAVAILABLE_COLOR};
+use map_display_data::landscape::{Attributes, Regions};
 
 const NONE: u32 = u32::MAX;
 pub const LEFT_OUT: u8 = u8::MAX;

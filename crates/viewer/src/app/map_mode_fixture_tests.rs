@@ -2,7 +2,7 @@ use super::*;
 use crate::map::scene_failure_tests::Fixture;
 use viewer_foundation::map::camera::Placement;
 use viewer_foundation::map::test_support::TEST_HANG_GUARD;
-use viewer_world::map::map_mode::MapMode;
+use viewer_map_modes::map_mode::MapMode;
 
 const MAP: [f32; 2] = [640., 480.];
 
@@ -287,10 +287,10 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
 #[test]
 #[ignore = "verified replay/content and GPU; requires BATTLEPLAN_SCENE_FAILURE_INPUT"]
 fn the_air_and_navy_modes_write_strategic_region_names() -> std::io::Result<()> {
-    use viewer_world::map::map_mode::Stock;
+    use viewer_map_modes::map_mode::Stock;
     let fixture = Fixture::load("viewer-region-names")?;
     let hour = fixture.document.hour()?;
-    let none = viewer_world::map::name_pass::NameAreas::default();
+    let none = viewer_map_text::name_pass::NameAreas::default();
     assert_ne!(hour.name_areas(&MapMode::default())?, none);
     for stock in [Stock::StrategicAir, Stock::StrategicNavy] {
         let areas = hour.name_areas(&MapMode::Stock(stock))?;

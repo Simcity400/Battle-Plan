@@ -26,7 +26,7 @@ use viewer_foundation::{
     map::perspective::{Choice, Country, Vision},
     table_access::TokenKeys,
 };
-use viewer_world::map::map_mode::{MapMode, Stock};
+use viewer_map_modes::map_mode::{MapMode, Stock};
 
 #[derive(Default)]
 struct Memory {

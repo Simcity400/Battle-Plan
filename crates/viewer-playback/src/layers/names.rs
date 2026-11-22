@@ -28,10 +28,8 @@ use std::{
     time::Instant,
 };
 use viewer_foundation::map::name_draw::next_generation;
-use viewer_world::map::{
-    map_mode::{MapMode, NameLayer, NameLayers},
-    name_pass::{self, AreaText, PlacementInputs},
-};
+use viewer_map_modes::map_mode::{MapMode, NameLayer, NameLayers};
+use viewer_map_text::name_pass::{self, AreaText, PlacementInputs};
 
 #[derive(Clone, Copy)]
 struct Columns {
@@ -101,7 +99,7 @@ impl Target for OnScene<'_, '_> {
 
     fn install(&mut self, placements: &Placements) -> io::Result<()> {
         let gpu = &mut *self.0;
-        gpu.scene.set_hour_layers(gpu.device, gpu.queue, viewer_world::map::scene::HourLayers { names: Some(placements), ..Default::default() })
+        gpu.scene.set_hour_layers(gpu.device, gpu.queue, viewer_world::scene::HourLayers { names: Some(placements), ..Default::default() })
     }
 
     fn holds(&self, placements: &Placements) -> bool {

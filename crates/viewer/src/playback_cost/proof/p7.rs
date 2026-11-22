@@ -115,7 +115,7 @@ pub(super) fn names_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 pub(super) fn names_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
     let layer = names(layer);
     let mut compared = Compared::default();
-    let today = match document.hour()?.shared_names(&viewer_world::map::map_mode::MapMode::default()) {
+    let today = match document.hour()?.shared_names(&viewer_map_modes::map_mode::MapMode::default()) {
         Ok(today) => today,
         Err(error) => {
             compared.entries = 1;

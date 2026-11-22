@@ -215,7 +215,7 @@ fn every_wording_todays_limitation_maker_can_give_has_an_owner() {
     map_products::note_truncated_perspective(&mut out, "UnitIntel");
     map_products::note_truncated_perspective(&mut out, "CountryIntel");
     map_products::note_unreadable_names(&mut out, &[1]);
-    viewer_world::map::labels::note_withheld(&mut out, [(1, viewer_world::map::labels::NO_VICTORY_POINTS)]);
+    viewer_map_icons::labels::note_withheld(&mut out, [(1, viewer_map_icons::labels::NO_VICTORY_POINTS)]);
     lines.extend(out.into_lines());
     let by_status = super::status_notes(&Unread);
     let unowned: Vec<&String> = lines.iter().filter(|line| super::owner(line, &by_status).is_none()).collect();

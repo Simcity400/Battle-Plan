@@ -28,7 +28,6 @@ unify-adler2 = { package = "adler2", version = "2.0.1", default-features = false
 unify-bitflags-1 = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
 unify-bitflags-2 = { package = "bitflags", version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
 unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
-unify-crossbeam-utils = { package = "crossbeam-utils", version = "0.8.23", default-features = false, features = ["default", "std"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
 unify-either = { package = "either", version = "1.18.0", default-features = false, features = ["default", "std", "use_std"] }
 unify-fdeflate = { package = "fdeflate", version = "0.3.7", default-features = false, features = [] }
@@ -67,6 +66,22 @@ map-content = { path = "crates/map-content" }
 viewer-playback = { path = "crates/viewer-playback" }
 map-display-data = { path = "crates/map-display-data" }
 map-snow = { path = "crates/map-snow" }
+shader-pipeline = { path = "crates/shader-pipeline" }
+viewer-aircraft = { path = "crates/viewer-aircraft" }
+viewer-borders = { path = "crates/viewer-borders" }
+viewer-buildings = { path = "crates/viewer-buildings" }
+viewer-foundation = { path = "crates/viewer-foundation" }
+viewer-map-icons = { path = "crates/viewer-map-icons" }
+viewer-map-modes = { path = "crates/viewer-map-modes" }
+viewer-map-text = { path = "crates/viewer-map-text" }
+viewer-models = { path = "crates/viewer-models" }
+viewer-rail = { path = "crates/viewer-rail" }
+viewer-scene-base = { path = "crates/viewer-scene-base" }
+viewer-terrain = { path = "crates/viewer-terrain" }
+viewer-unit-history = { path = "crates/viewer-unit-history" }
+viewer-unit-models = { path = "crates/viewer-unit-models" }
+viewer-weather-effects = { path = "crates/viewer-weather-effects" }
+viewer-world = { path = "crates/viewer-world" }
 collector-naval-management = { path = "crates/collector-naval-management" }
 replay-columnar = { path = "crates/replay-columnar" }
 replay-frame = { path = "crates/replay-frame" }
