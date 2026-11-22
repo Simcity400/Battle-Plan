@@ -26,4 +26,4 @@ pub mod value;
 pub type Hour = i32;
 pub type SessionId = u64;
 pub type BranchId = u64;
-pub const FORMAT_VERSION: u16 = rows::compatibility::CAPTURE_ADDITIONS_FORMAT;
+pub const FORMAT_VERSION: u16 = rows::compatibility::POWER_LEDGER_COUNTED_DAY_FORMAT;

@@ -312,7 +312,7 @@ impl Value {
     }
 }
 
-const TOTALS: [&str; 22] = [
+const TOTALS: [&str; 23] = [
     "known",
     "payments",
     "unknown",
@@ -329,6 +329,7 @@ const TOTALS: [&str; 22] = [
     "realized_lost",
     "realized_unknown",
     "last_day",
+    "counted_day",
     "credits",
     "gained",
     "capped",
@@ -389,7 +390,7 @@ pub(super) fn listed(change: &Change<'_>, item: u32) -> (Option<SpendPayment>, O
     let day_payments = count(change, "day_payments");
     let day = (days > 0 || day_payments > 0 || count(change, "credits") > 0).then(|| SpendDay {
         item,
-        day: after("last_day").number().map(|day| day as i32),
+        day: after("counted_day").number().or_else(|| after("last_day").number()).map(|day| day as i32),
         read: change.hour,
         days,
         charge_raw: raw(delta(change, "day_charge")),

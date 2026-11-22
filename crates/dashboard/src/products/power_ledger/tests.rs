@@ -157,3 +157,88 @@ fn an_empty_lexical_literal_names_no_item_token() {
     assert_eq!(naming::token_of(Some(&frame), &row(5)), None);
     assert_eq!(naming::token_of(Some(&frame), &row(6)).as_deref(), Some("GER_idea"));
 }
+
+#[test]
+fn out_of_order_closed_days_keep_their_native_date_in_spending_replies() {
+    let make_frame = |hour: i32| {
+        let mut frame = source(1, hour, Some(1_000));
+        set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: SLOT, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+        set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: SLOT }]));
+        set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(Vec::new()));
+        let published = match hour {
+            193 => Some((daily(144, 3 * PP, 2 * PP, PP, 80), cost(144, 2 * PP, 80))),
+            194 => Some((daily(120, 3 * PP, PP, 2 * PP, 50), cost(120, PP, 50))),
+            195 => Some((daily(120, 3 * PP, 3 * PP, 0, 50), cost(120, 3 * PP, 50))),
+            196 => Some((daily(168, 3 * PP, 4 * PP, 0, 110), cost(168, 4 * PP, 110))),
+            197 => Some((daily(168, 3 * PP, 4 * PP, 0, 110), cost(168, 4 * PP, 110))),
+            _ => None,
+        };
+        let (days, costs) = published.map_or((Vec::new(), Vec::new()), |(day, cost)| (vec![day], vec![cost]));
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        let capture = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() };
+        set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![capture]));
+        frame
+    };
+    let frames = (FIRST..=197).map(make_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-ooo".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 197);
+    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.days, day.payments, day.charge_raw.clone(), day.day)).collect();
+    assert_eq!(
+        listed,
+        [
+            (193, 1, 1, Some("200000".into()), Some(144)),
+            (194, 1, 1, Some("100000".into()), Some(120)),
+            (196, 1, 1, Some("400000".into()), Some(168)),
+        ],
+        "out-of-order closed days report their true native date and never settle duplicates"
+    );
+
+    let middle_frame = |hour: i32| {
+        let mut frame = source_frame(hour);
+        let published = match hour {
+            193 => Some((daily(120, 3 * PP, PP, 2 * PP, 50), cost(120, PP, 50))),
+            194 => Some((daily(168, 3 * PP, 4 * PP, 0, 110), cost(168, 4 * PP, 110))),
+            195 => Some((daily(144, 3 * PP, 2 * PP, PP, 80), cost(144, 2 * PP, 80))),
+            _ => None,
+        };
+        let (days, costs) = published.map_or((Vec::new(), Vec::new()), |(day, cost)| (vec![day], vec![cost]));
+        set(&mut frame, TableId::CountryPowerDaily, TableRows::CountryPowerDaily(days));
+        set(&mut frame, TableId::CountryPowerDailyCosts, TableRows::CountryPowerDailyCosts(costs));
+        frame
+    };
+    let frames = (FIRST..=195).map(middle_frame).collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(crate::SourceKey { source_id: "power-ledger-mid".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let reply = asked(&source, FIRST, 195);
+    let listed: Vec<_> = reply.days.iter().map(|day| (day.read, day.days, day.payments, day.charge_raw.clone(), day.day)).collect();
+    assert_eq!(
+        listed,
+        [
+            (193, 1, 1, Some("100000".into()), Some(120)),
+            (194, 1, 1, Some("400000".into()), Some(168)),
+            (195, 1, 1, Some("200000".into()), Some(144)),
+        ],
+        "a closed day landing between earlier and later closed days counts as its own day and keeps its own native date"
+    );
+
+    let mut legacy = [super::Value::Number(0); super::TOTALS.len()];
+    legacy[super::position("days")] = super::Value::Number(1);
+    legacy[super::position("day_payments")] = super::Value::Number(1);
+    legacy[super::position("day_charge")] = super::Value::Number(PP);
+    legacy[super::position("last_day")] = super::Value::Number(144);
+    legacy[super::position("counted_day")] = super::Value::Unrecorded;
+    let (_, fallback) = super::listed(&super::Change { ordinal: 0, hour: 168, before: None, after: &legacy }, 0);
+    assert_eq!(fallback.expect("a day").day, Some(144), "recordings predating counted_day fall back to last_day");
+}
+
+fn source_frame(hour: i32) -> DecodedFrame {
+    let mut frame = source(1, hour, Some(1_000));
+    set(&mut frame, TableId::Countries, TableRows::Countries(vec![CountryRow { id: GER, canonical_slot: SLOT, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..Default::default() }]));
+    set(&mut frame, TableId::CountryLinks, TableRows::CountryLinks(vec![CountryLinkRow { id: GER, canonical_slot: SLOT }]));
+    set(&mut frame, TableId::CountryPowerChanges, TableRows::CountryPowerChanges(Vec::new()));
+    let capture = PoliticsCaptureCoverageRow { country: GER, epoch: 1, since_hour: FIRST, through_hour: hour, streams: PoliticsCaptureCoverageRow::ALL_STREAMS, ..Default::default() };
+    set(&mut frame, TableId::PoliticsCaptureCoverage, TableRows::PoliticsCaptureCoverage(vec![capture]));
+    frame
+}

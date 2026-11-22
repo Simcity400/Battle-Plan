@@ -19,7 +19,7 @@ mod tally;
 mod tests;
 
 use inputs::{Witness, invalid};
-use tally::{Payment, midnight};
+use tally::{DayRuns, ItemDays, Payment, midnight};
 
 const READS: &[Read] = &[
     Read { table: TableId::Countries, columns: Columns::These(&inputs::COUNTRY_SLOT), watch: Watch::Changed, required: true },
@@ -284,34 +284,6 @@ fn recurring(cause: PowerCause) -> bool {
 
 type Holds = BTreeMap<u64, Hold>;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct DayRuns(Vec<(i32, i32)>);
-
-impl DayRuns {
-    fn contains(&self, day: i32) -> bool {
-        let at = self.0.partition_point(|&(first, _)| first <= day);
-        at > 0 && day <= self.0[at - 1].1
-    }
-
-    fn insert(&mut self, day: i32) {
-        let at = self.0.partition_point(|&(first, _)| first <= day);
-        if at > 0 && day <= self.0[at - 1].1 {
-            return;
-        }
-        let merge_left = at > 0 && self.0[at - 1].1.checked_add(24) == Some(day);
-        let merge_right = at < self.0.len() && day.checked_add(24) == Some(self.0[at].0);
-        match (merge_left, merge_right) {
-            (true, true) => {
-                self.0[at - 1].1 = self.0[at].1;
-                self.0.remove(at);
-            }
-            (true, false) => self.0[at - 1].1 = day,
-            (false, true) => self.0[at].0 = day,
-            (false, false) => self.0.insert(at, (day, day)),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct BatchKey {
     raw: u32,
@@ -445,6 +417,7 @@ pub struct PowerLedger {
     by_raw: HashMap<u32, Vec<BatchKey>>,
     by_holder: HashMap<u32, Vec<BatchKey>>,
     settled: HashMap<u32, DayRuns>,
+    item_days: HashMap<(u32, u8, u32), ItemDays>,
     holds: HashMap<u32, Holds>,
     mismatched: HashSet<u32>,
     idle: bool,
@@ -527,6 +500,15 @@ impl PowerLedger {
 
     fn record_settled(&mut self, raw: u32, day: i32) {
         self.settled.entry(raw).or_default().insert(day);
+    }
+
+    fn unrecord_settled(&mut self, raw: u32, day: i32) {
+        if let Some(runs) = self.settled.get_mut(&raw) {
+            runs.remove(day);
+            if runs.0.is_empty() {
+                self.settled.remove(&raw);
+            }
+        }
     }
 
     fn read_identities(&mut self, hour: &Hour<'_>) -> Vec<u32> {
@@ -665,23 +647,22 @@ impl PowerLedger {
         Ok(ordinal)
     }
 
-    fn settle(own: &Rows<'_>, pending: &mut Pending, part: &Part) -> io::Result<()> {
+    fn settle(&mut self, own: &Rows<'_>, pending: &mut Pending, part: &Part) -> io::Result<()> {
+        if part.payments <= 0 {
+            return Ok(());
+        }
         if part.ordinal == Total::GAINS {
             let total = Self::gains_total(own, pending, part.holder, POLITICAL)?;
-            for _ in 0..part.payments {
-                tally::unmatched(total);
-            }
+            tally::unmatched(total, part.payments);
             return Ok(());
         }
         let Some(sequence) = part.sequence else { return Ok(()) };
         let item = Self::item_row(own, pending, part.holder, part.ordinal)?;
         let total = Self::item_total(own, pending, part.holder, part.currency, part.ordinal)?;
         if !item.charged {
-            for _ in 0..part.payments {
-                match part.spent {
-                    Recorded::Value(_) => tally::count(total, true),
-                    Recorded::NotRecorded => tally::unknown(total),
-                }
+            match part.spent {
+                Recorded::Value(_) => tally::count(total, true, part.payments),
+                Recorded::NotRecorded => tally::unknown(total, part.payments),
             }
             return Ok(());
         }
@@ -689,19 +670,23 @@ impl PowerLedger {
             Recorded::Value(spent) => Some(i128::from(spent)),
             Recorded::NotRecorded => None,
         };
-        for at in 0..part.payments {
-            let payment = Payment {
-                recurring: recurring(item.cause),
-                upkeep: item.cause == PowerCause::AbilityUpkeep,
-                hour: part.day,
-                read: part.read,
-                sequence,
-                ordinal: part.cost_ordinal.unwrap_or(0),
-                charge: if at == 0 { spent } else { spent.map(|_| 0) },
-                covered: part.covered,
-                realized: None,
-            };
-            tally::pay(total, &payment);
+        let key = (part.holder, part.currency, part.ordinal);
+        let seen = self.item_days.entry(key).or_default();
+        let payment = Payment {
+            recurring: recurring(item.cause),
+            upkeep: item.cause == PowerCause::AbilityUpkeep,
+            hour: part.day,
+            read: part.read,
+            sequence,
+            ordinal: part.cost_ordinal.unwrap_or(0),
+            charge: spent,
+            covered: part.covered,
+            realized: None,
+            count: part.payments,
+        };
+        tally::pay(total, seen, &payment);
+        if seen.counted.0.is_empty() {
+            self.item_days.remove(&key);
         }
         Ok(())
     }
@@ -723,7 +708,7 @@ impl PowerLedger {
         for key in ended_batches {
             if let Some(batch) = self.remove_batch(key, pending) {
                 for (&ordinal, part) in &batch.parts {
-                    Self::settle(out, pending, &batch.part_row(key, ordinal, part))?;
+                    self.settle(out, pending, &batch.part_row(key, ordinal, part))?;
                 }
                 if !batch.parts.is_empty() {
                     self.record_settled(key.raw, key.day);
@@ -742,6 +727,8 @@ impl PowerLedger {
 
     fn reconcile(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, moved: &HashSet<u32>) -> io::Result<()> {
         let today = midnight(hour.hour);
+        let run_first = self.run_first.unwrap_or(hour.hour);
+        let written_days = inputs::written_cost_days(hour)?;
         let keys: Vec<BatchKey> = self.batches.keys().copied().collect();
         for key in keys {
             let Some(batch) = self.batches.get(&key).cloned() else { continue };
@@ -750,14 +737,23 @@ impl PowerLedger {
             let moved_country = moved.contains(&key.raw) || batch.holder != self.slot(key.raw);
             let fresh = inputs::fresh_daily(hour, key.raw)?;
             let applied = fresh.as_ref().filter(|daily| daily.epoch == key.epoch && midnight(daily.day_hour) == key.day && daily.pp_sequence == Some(key.sequence));
+            let confirmed_zero = fresh.as_ref().is_some_and(|daily| {
+                midnight(daily.day_hour) == key.day
+                    && daily.pp_cost_raw == Some(0)
+                    && daily.pp_sequence.is_some()
+                    && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(daily.epoch, hour.hour, Streams::PP_DAILY_COSTS, hour.hour))
+            });
+            if key.day != today
+                && (moved_country || rows.is_empty())
+                && written_days.contains(&(key.raw, key.day))
+                && !self.settled.get(&key.raw).is_some_and(|runs| runs.contains(key.day))
+                && (all_day_rows.iter().any(|cost| cost.cost_raw != 0) || confirmed_zero)
+            {
+                self.remove_batch(key, pending);
+                continue;
+            }
             if rows.is_empty() {
-                let emptied = all_day_rows.is_empty()
-                    && fresh.as_ref().is_some_and(|daily| {
-                        midnight(daily.day_hour) == key.day
-                            && daily.pp_cost_raw == Some(0)
-                            && daily.pp_sequence.is_some()
-                            && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(daily.epoch, hour.hour, Streams::PP_DAILY_COSTS, hour.hour))
-                    });
+                let emptied = all_day_rows.is_empty() && confirmed_zero;
                 let held_sum = batch.parts.values().try_fold(0i128, |sum, part| match part.spent {
                     Recorded::Value(spent) => Some(sum + i128::from(spent)),
                     Recorded::NotRecorded => None,
@@ -767,7 +763,9 @@ impl PowerLedger {
                 if emptied {
                     self.remove_batch(key, pending);
                     self.mismatched.remove(&key.raw);
-                    self.record_settled(key.raw, key.day);
+                    if key.day > run_first && !self.raw_batches(key.raw).iter().any(|held| held.day == key.day) {
+                        self.record_settled(key.raw, key.day);
+                    }
                 } else if key.day == today && agrees {
                 } else {
                     if contradicted {
@@ -882,8 +880,16 @@ impl PowerLedger {
                 },
             );
         }
+        let confirmed_empty = next_parts.is_empty()
+            && reconciles
+            && applied.is_some_and(|daily| daily.pp_cost_raw == Some(0))
+            && witnesses.and_then(|view| inputs::witness(view, key.raw)).is_some_and(|witness| witness.covers(key.epoch, at, Streams::PP_DAILY_COSTS, at))
+            && key.day > self.run_first.unwrap_or(at);
         batch.parts = next_parts;
         self.insert_batch(key, batch, pending);
+        if confirmed_empty && !self.raw_batches(key.raw).iter().any(|held| held.day == key.day) {
+            self.record_settled(key.raw, key.day);
+        }
         Ok(())
     }
 
@@ -917,9 +923,11 @@ impl PowerLedger {
             let ordinal = self.item(own, pending, holder, ItemId::change(&row), first)?;
             let total = Self::item_total(own, pending, holder, row.currency as u8, ordinal)?;
             let Some(charge) = charge else {
-                tally::count(total, false);
+                tally::count(total, false, 1);
                 continue;
             };
+            let item_key = (holder, row.currency as u8, ordinal);
+            let seen = self.item_days.entry(item_key).or_default();
             let payment = Payment {
                 recurring: recurring(row.cause),
                 upkeep: row.cause == PowerCause::AbilityUpkeep,
@@ -930,8 +938,12 @@ impl PowerLedger {
                 charge,
                 covered,
                 realized: Some(row.realized_delta_raw()),
+                count: 1,
             };
-            tally::pay(total, &payment);
+            tally::pay(total, seen, &payment);
+            if seen.counted.0.is_empty() {
+                self.item_days.remove(&item_key);
+            }
             let day = midnight(at);
             if row.cause != PowerCause::DailyGain && midnight(row.hour) == day {
                 let key = part_key(holder, row.currency as u8, ordinal);
@@ -1018,6 +1030,32 @@ impl PowerLedger {
                     self.publish(hour, own, witnesses, pending, run_first, &inputs::Publication { country: raw, costs: Vec::new(), deleted_only: true })?;
                 }
             }
+            if complete {
+                let daily_candidates: Vec<u32> = pending.daily.iter().copied().collect();
+                for raw in daily_candidates {
+                    if inputs::holds_no_costs(hour, raw)?
+                        && let Some(daily) = inputs::fresh_daily(hour, raw)?
+                        && daily.pp_cost_raw == Some(0)
+                        && daily.pp_sequence.is_some()
+                        && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(daily.epoch, hour.hour, Streams::PP_DAILY_COSTS, hour.hour))
+                    {
+                        let day = midnight(daily.day_hour);
+                        if day > run_first {
+                            if day == today {
+                                let keys: Vec<BatchKey> = self.raw_batches(raw).into_iter().filter(|key| key.day == today).collect();
+                                for key in keys {
+                                    self.remove_batch(key, pending);
+                                }
+                                self.mismatched.remove(&raw);
+                            }
+                            if !self.raw_batches(raw).iter().any(|key| key.day == day) {
+                                self.record_settled(raw, day);
+                            }
+                            pending.daily.remove(&raw);
+                        }
+                    }
+                }
+            }
         }
         for raw in mem::take(&mut pending.daily) {
             if let Some(steady) = self.mismatch(hour, raw)? {
@@ -1033,11 +1071,13 @@ impl PowerLedger {
 
     fn mismatch(&self, hour: &Hour<'_>, raw: u32) -> io::Result<Option<bool>> {
         let today = midnight(hour.hour);
+        let has_open = || self.raw_batches(raw).into_iter().any(|key| key.day == today && self.batches.get(&key).is_some_and(|batch| !batch.unmatched));
         let Some(daily) = inputs::daily(hour, raw)? else {
-            let has_open = self.raw_batches(raw).into_iter().any(|key| key.day == today && self.batches.get(&key).is_some_and(|batch| !batch.unmatched));
-            return Ok(Some(has_open));
+            return Ok(Some(has_open()));
         };
-        let Some(sequence) = daily.pp_sequence else { return Ok(Some(false)) };
+        let Some(sequence) = daily.pp_sequence else {
+            return Ok(Some(has_open()));
+        };
         let key = BatchKey { raw, epoch: daily.epoch, day: midnight(daily.day_hour), sequence };
         let Some(batch) = self.batches.get(&key).filter(|batch| !batch.unmatched && batch.holder == self.slot(raw)) else {
             return Ok(None);
@@ -1054,14 +1094,13 @@ impl PowerLedger {
 
     fn publish(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, run_first: i32, publication: &inputs::Publication) -> io::Result<()> {
         if publication.deleted_only {
-            return self.delete(hour, own, witnesses, pending, publication);
+            return self.delete(hour, own, witnesses, pending, run_first, publication);
         }
         let at = hour.hour;
         let raw = publication.country;
         let holder = self.slot(raw);
         let daily = inputs::daily(hour, raw)?;
         let today = midnight(at);
-        let settled_before = self.settled.get(&raw).cloned();
         let mut applications: BTreeMap<(u64, i32, u64), Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
         for cost in &publication.costs {
             applications.entry((cost.epoch, midnight(cost.day_hour), cost.pp_sequence)).or_default().push(cost);
@@ -1080,7 +1119,7 @@ impl PowerLedger {
         let mut newly_settled = Vec::new();
         for ((epoch, day, sequence), costs) in applications {
             let opens = day == today;
-            if !opens && settled_before.as_ref().is_some_and(|runs| runs.contains(day)) {
+            if !opens && self.settled.get(&raw).is_some_and(|runs| runs.contains(day)) {
                 continue;
             }
             let matched = daily.as_ref().is_some_and(|daily| daily.epoch == epoch && midnight(daily.day_hour) == day && daily.pp_sequence == Some(sequence));
@@ -1135,8 +1174,11 @@ impl PowerLedger {
                         },
                     );
                 }
+                let had_parts = !parts.is_empty();
                 self.insert_batch(key, CostBatch { holder, unmatched: !matched, parts }, pending);
-                if confirmed_empty {
+                if had_parts {
+                    self.unrecord_settled(raw, day);
+                } else if confirmed_empty {
                     newly_settled.push(day);
                 }
             } else {
@@ -1154,7 +1196,7 @@ impl PowerLedger {
                         cost_ordinal: Some(*first),
                         read: at,
                     };
-                    Self::settle(own, pending, &part)?;
+                    self.settle(own, pending, &part)?;
                 }
                 if !items.is_empty() || confirmed_empty {
                     newly_settled.push(day);
@@ -1162,12 +1204,14 @@ impl PowerLedger {
             }
         }
         for day in newly_settled {
-            self.record_settled(raw, day);
+            if !self.raw_batches(raw).iter().any(|key| key.day == day) {
+                self.record_settled(raw, day);
+            }
         }
         Ok(())
     }
 
-    fn delete(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, publication: &inputs::Publication) -> io::Result<()> {
+    fn delete(&mut self, hour: &Hour<'_>, own: &Rows<'_>, witnesses: Option<&replay_columnar::store::TableView<'_>>, pending: &mut Pending, run_first: i32, publication: &inputs::Publication) -> io::Result<()> {
         let at = hour.hour;
         let raw = publication.country;
         let holder = self.slot(raw);
@@ -1185,7 +1229,9 @@ impl PowerLedger {
             }
             self.mismatched.remove(&raw);
             pending.daily.remove(&raw);
-            self.record_settled(raw, today);
+            if today > run_first {
+                self.record_settled(raw, today);
+            }
             return Ok(());
         }
         let mut survivors: BTreeMap<(u64, u64), Vec<&CountryPowerDailyCostRow>> = BTreeMap::new();
@@ -1198,6 +1244,10 @@ impl PowerLedger {
             let total: i128 = costs.iter().map(|cost| i128::from(cost.cost_raw)).sum();
             let applied = daily.as_ref().filter(|daily| daily.epoch == epoch && daily.pp_sequence == Some(sequence));
             let reconciles = applied.is_some_and(|daily| daily.pp_cost_raw.is_some_and(|cost| i128::from(cost) == total));
+            let confirmed_zero = reconciles
+                && applied.is_some_and(|daily| daily.pp_cost_raw == Some(0))
+                && witnesses.and_then(|view| inputs::witness(view, raw)).is_some_and(|witness| witness.covers(epoch, at, Streams::PP_DAILY_COSTS, at))
+                && today > run_first;
             if batch.holder != holder {
                 if !reconciles {
                     self.mismatched.insert(raw);
@@ -1235,9 +1285,13 @@ impl PowerLedger {
                         },
                     );
                 }
+                let emptied = next_parts.is_empty();
                 batch.holder = holder;
                 batch.parts = next_parts;
                 self.insert_batch(key, batch, pending);
+                if emptied && confirmed_zero && !self.raw_batches(raw).iter().any(|held| held.day == today) {
+                    self.record_settled(raw, today);
+                }
                 continue;
             }
             let mut remaining: BTreeMap<u32, (i128, i64, u32)> = BTreeMap::new();
@@ -1282,8 +1336,12 @@ impl PowerLedger {
                     None => {}
                 }
             }
+            let emptied = next_parts.is_empty();
             batch.parts = next_parts;
             self.insert_batch(key, batch, pending);
+            if emptied && confirmed_zero && !self.raw_batches(raw).iter().any(|held| held.day == today) {
+                self.record_settled(raw, today);
+            }
         }
         Ok(())
     }
@@ -1554,6 +1612,90 @@ fn partial(hour: &Hour<'_>, out: &mut Rows) {
     }
 }
 
+fn write_day_runs(blob: &mut Bytes, runs: &DayRuns) -> io::Result<()> {
+    blob.varint(runs.0.len() as u64)?;
+    let mut prev_last: Option<i32> = None;
+    for &(first, last) in &runs.0 {
+        if first.rem_euclid(24) != 0 || last.rem_euclid(24) != 0 {
+            return Err(invalid("PowerLedger's state holds a day run that is not aligned to midnight"));
+        }
+        if let Some(prev) = prev_last
+            && prev.checked_add(24).is_none_or(|next| first <= next)
+        {
+            return Err(invalid("PowerLedger's state holds unsorted, overlapping or unmerged day runs"));
+        }
+        let span = (i64::from(last) - i64::from(first)) / 24;
+        blob.varint(u64::from(first as u32))?;
+        blob.varint(u64::try_from(span).map_err(|_| invalid("PowerLedger's state holds an inverted day run"))?)?;
+        prev_last = Some(last);
+    }
+    Ok(())
+}
+
+fn read_day_runs(reader: &mut Reader<'_>, limit: usize, allow_empty: bool) -> io::Result<DayRuns> {
+    let run_count = reader.count()?;
+    if (!allow_empty && run_count == 0) || run_count > limit {
+        return Err(invalid("PowerLedger's state names an invalid day run count"));
+    }
+    let mut runs = Vec::with_capacity(run_count);
+    let mut prev_last: Option<i32> = None;
+    for _ in 0..run_count {
+        let first = reader.varint_u32()? as i32;
+        if first.rem_euclid(24) != 0 {
+            return Err(invalid(format!("PowerLedger's state names day {first} that is not a midnight")));
+        }
+        let span = reader.varint()?;
+        let last = i64::try_from(span)
+            .ok()
+            .and_then(|days| days.checked_mul(24))
+            .and_then(|hours| i64::from(first).checked_add(hours))
+            .and_then(|end| i32::try_from(end).ok())
+            .ok_or_else(|| invalid("PowerLedger's state holds a day run past 32 bits"))?;
+        if let Some(prev) = prev_last
+            && prev.checked_add(24).is_none_or(|next| first <= next)
+        {
+            return Err(invalid("PowerLedger's state holds unsorted, overlapping or unmerged day runs"));
+        }
+        prev_last = Some(last);
+        runs.push((first, last));
+    }
+    Ok(DayRuns(runs))
+}
+
+fn validate_batch_parts(batch: &CostBatch) -> io::Result<()> {
+    if batch.parts.is_empty() {
+        return Err(invalid("PowerLedger's state names an empty open batch"));
+    }
+    let mut spans = Vec::with_capacity(batch.parts.len());
+    for (&ordinal, part) in &batch.parts {
+        if batch.unmatched != (ordinal == Total::GAINS) {
+            return Err(invalid("PowerLedger's state pairs an unmatched batch with a matched item or vice versa"));
+        }
+        if part.covered && matches!(part.spent, Recorded::NotRecorded) {
+            return Err(invalid("PowerLedger's state marks an unknown part as covered"));
+        }
+        let payments = u64::try_from(part.payments)
+            .ok()
+            .filter(|&count| (1..=MAX_BATCH_PAYMENTS).contains(&count))
+            .ok_or_else(|| invalid("PowerLedger's state holds an impossible payment count"))?;
+        spans.push((part.cost_ordinal, payments));
+    }
+    spans.sort_unstable_by_key(|&(first, _)| first);
+    for pair in spans.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(invalid("PowerLedger's state assigns two batch parts the same first cost ordinal"));
+        }
+    }
+    let mut suffix = 0u64;
+    for &(first, payments) in spans.iter().rev() {
+        suffix = suffix
+            .checked_add(payments)
+            .filter(|&count| u64::from(first).checked_add(count).is_some_and(|end| end <= MAX_BATCH_PAYMENTS))
+            .ok_or_else(|| invalid("PowerLedger's state holds batch parts past the source ordinal range"))?;
+    }
+    Ok(())
+}
+
 impl Writer for PowerLedger {
     fn name(&self) -> &'static str {
         "PowerLedger"
@@ -1685,15 +1827,27 @@ impl Writer for PowerLedger {
         blob.varint(settled.len() as u64)?;
         for (raw, runs) in settled {
             blob.varint(u64::from(raw))?;
-            blob.varint(runs.0.len() as u64)?;
-            for &(first, last) in &runs.0 {
-                blob.varint(u64::from(first as u32))?;
-                let span = (i64::from(last) - i64::from(first)) / 24;
-                blob.varint(u64::try_from(span).map_err(|_| invalid("PowerLedger's state holds an inverted settled day run"))?)?;
+            write_day_runs(blob, runs)?;
+        }
+        let mut item_days: Vec<((u32, u8, u32), &ItemDays)> = self.item_days.iter().filter(|(_, seen)| !seen.counted.0.is_empty()).map(|(&key, seen)| (key, seen)).collect();
+        item_days.sort_unstable_by_key(|&(key, _)| key);
+        blob.varint(item_days.len() as u64)?;
+        for ((holder, currency, ordinal), seen) in item_days {
+            if currency > PowerCurrency::Command as u8 || ordinal == Total::GAINS {
+                return Err(invalid("PowerLedger's state names an invalid item day key"));
             }
+            if !seen.uncovered.is_subset_of(&seen.counted) {
+                return Err(invalid("PowerLedger's state marks an uncounted day uncovered"));
+            }
+            blob.varint(u64::from(holder))?;
+            blob.varint(u64::from(currency))?;
+            blob.varint(u64::from(ordinal))?;
+            write_day_runs(blob, &seen.counted)?;
+            write_day_runs(blob, &seen.uncovered)?;
         }
         blob.varint(self.batches.len() as u64)?;
         for (&key, batch) in &self.batches {
+            validate_batch_parts(batch)?;
             blob.varint(u64::from(key.raw))?;
             blob.varint(key.epoch)?;
             blob.varint(u64::from(key.day as u32))?;
@@ -1702,20 +1856,13 @@ impl Writer for PowerLedger {
             blob.varint(u64::from(batch.unmatched))?;
             blob.varint(batch.parts.len() as u64)?;
             for (&ordinal, part) in &batch.parts {
-                if batch.unmatched != (ordinal == Total::GAINS) {
-                    return Err(invalid("PowerLedger's state pairs an unmatched batch with a matched item or vice versa"));
-                }
-                if part.covered && matches!(part.spent, Recorded::NotRecorded) {
-                    return Err(invalid("PowerLedger's state marks an unknown part as covered"));
-                }
-                let payments = u64::try_from(part.payments).ok().filter(|&count| (1..=MAX_BATCH_PAYMENTS).contains(&count)).ok_or_else(|| invalid("PowerLedger's state holds an impossible payment count"))?;
                 blob.varint(u64::from(ordinal))?;
                 let flags = u64::from(part.covered) | (u64::from(matches!(part.spent, Recorded::Value(_))) << 1);
                 blob.varint(flags)?;
                 if let Recorded::Value(spent) = part.spent {
                     blob.varint(encode_signed(spent))?;
                 }
-                blob.varint(payments)?;
+                blob.varint(part.payments as u64)?;
                 blob.varint(u64::from(part.cost_ordinal))?;
                 blob.varint(u64::from(part.read as u32))?;
             }
@@ -1766,34 +1913,32 @@ impl Writer for PowerLedger {
         }
         for _ in 0..settled {
             let raw = reader.varint_u32()?;
-            let run_count = reader.count()?;
-            if run_count == 0 || run_count > blob.len() {
-                return Err(invalid("PowerLedger's state names an invalid settled day run count"));
-            }
-            let mut runs = Vec::with_capacity(run_count);
-            let mut prev_last: Option<i32> = None;
-            for _ in 0..run_count {
-                let first = reader.varint_u32()? as i32;
-                if first.rem_euclid(24) != 0 {
-                    return Err(invalid(format!("PowerLedger's state names settled day {first} that is not a midnight")));
-                }
-                let span = reader.varint()?;
-                let last = i64::try_from(span)
-                    .ok()
-                    .and_then(|days| days.checked_mul(24))
-                    .and_then(|hours| i64::from(first).checked_add(hours))
-                    .and_then(|end| i32::try_from(end).ok())
-                    .ok_or_else(|| invalid("PowerLedger's state holds a settled day run past 32 bits"))?;
-                if let Some(prev) = prev_last
-                    && prev.checked_add(24).is_none_or(|next| first <= next)
-                {
-                    return Err(invalid("PowerLedger's state holds unsorted, overlapping or unmerged settled day runs"));
-                }
-                prev_last = Some(last);
-                runs.push((first, last));
-            }
-            if self.settled.insert(raw, DayRuns(runs)).is_some() {
+            let runs = read_day_runs(&mut reader, blob.len(), false)?;
+            if self.settled.insert(raw, runs).is_some() {
                 return Err(invalid(format!("PowerLedger's state settles country {raw} twice")));
+            }
+        }
+        let item_days = reader.count()?;
+        if item_days > blob.len() {
+            return Err(invalid("PowerLedger's state counts more item day histories than it holds"));
+        }
+        for _ in 0..item_days {
+            let holder = reader.varint_u32()?;
+            let currency = u8::try_from(reader.varint()?).map_err(|_| invalid("PowerLedger's state names an item currency past u8"))?;
+            if currency > PowerCurrency::Command as u8 {
+                return Err(invalid("PowerLedger's state names an item currency past command"));
+            }
+            let ordinal = reader.varint_u32()?;
+            if ordinal == Total::GAINS {
+                return Err(invalid("PowerLedger's state records item days on the gains row"));
+            }
+            let counted = read_day_runs(&mut reader, blob.len(), false)?;
+            let uncovered = read_day_runs(&mut reader, blob.len(), true)?;
+            if !uncovered.is_subset_of(&counted) {
+                return Err(invalid("PowerLedger's state marks an uncounted day uncovered"));
+            }
+            if self.item_days.insert((holder, currency, ordinal), ItemDays { counted, uncovered }).is_some() {
+                return Err(invalid("PowerLedger's state holds duplicate item day histories"));
             }
         }
         let batches = reader.count()?;
@@ -1821,9 +1966,6 @@ impl Writer for PowerLedger {
             let mut parts = BTreeMap::new();
             for _ in 0..count {
                 let ordinal = reader.varint_u32()?;
-                if unmatched != (ordinal == Total::GAINS) {
-                    return Err(invalid("PowerLedger's state pairs an unmatched batch with a matched item or vice versa"));
-                }
                 let flags = reader.varint()?;
                 if flags == 1 || flags > 3 {
                     return Err(invalid("PowerLedger's state names invalid part flags"));
@@ -1841,8 +1983,10 @@ impl Writer for PowerLedger {
                     return Err(invalid(format!("PowerLedger's state names item {ordinal} twice in one batch")));
                 }
             }
+            let batch = CostBatch { holder, unmatched, parts };
+            validate_batch_parts(&batch)?;
             let key = BatchKey { raw, epoch, day, sequence };
-            if self.batches.insert(key, CostBatch { holder, unmatched, parts }).is_some() {
+            if self.batches.insert(key, batch).is_some() {
                 return Err(invalid("PowerLedger's state holds a duplicate open batch"));
             }
         }

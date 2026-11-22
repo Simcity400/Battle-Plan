@@ -11,7 +11,10 @@ use replay_data::{
         TableId,
     },
 };
-use std::{collections::HashMap, io};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+};
 
 pub(super) fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
@@ -233,6 +236,22 @@ pub(super) fn costs_of(hour: &Hour<'_>, country: u32) -> io::Result<Vec<CountryP
 
 pub(super) fn holds_no_costs(hour: &Hour<'_>, country: u32) -> io::Result<bool> {
     Ok(costs_complete(hour) && hour.table(TableId::CountryPowerDailyCosts).slot(u128::from(country) << 32).is_none())
+}
+
+pub(super) fn written_cost_days(hour: &Hour<'_>) -> io::Result<HashSet<(u32, i32)>> {
+    let table = TableId::CountryPowerDailyCosts;
+    if !costs_complete(hour) {
+        return Ok(HashSet::new());
+    }
+    let mut slots = hour.written_rows(table, Columns::Every);
+    slots.sort_unstable();
+    slots.dedup();
+    let mut days = HashSet::new();
+    for slot in slots {
+        let cost = row::<CountryPowerDailyCostRow>(hour, table, slot)?;
+        days.insert((cost.country, super::midnight(cost.day_hour)));
+    }
+    Ok(days)
 }
 
 pub(super) fn input_reason(hour: &Hour<'_>) -> Option<String> {

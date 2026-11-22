@@ -3710,6 +3710,19 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         capture += 1;
     }
+    history[TableId::PowerSpendTotals.index()] = LastChange {
+        introduced: history[TableId::PowerSpendTotals.index()].introduced,
+        ..appended_at(
+            TableId::PowerSpendTotals,
+            POWER_LEDGER_COUNTED_DAY_FORMAT,
+            "power ledger counted day",
+            &[AppendedField {
+                index: 32,
+                name: "counted_day",
+                introduced: POWER_LEDGER_COUNTED_DAY_FORMAT,
+            }],
+        )
+    };
     history
 };
 
@@ -4608,7 +4621,14 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, CAPTURE_ADDITIONS_FORMAT);
+        assert_eq!(FORMAT_VERSION, POWER_LEDGER_COUNTED_DAY_FORMAT);
+        let totals = TableId::PowerSpendTotals.last_change();
+        assert_eq!(totals.format, POWER_LEDGER_COUNTED_DAY_FORMAT);
+        assert_eq!(totals.kind, ChangeKind::AppendedOnly);
+        assert_eq!(TableId::PowerSpendTotals.field_name(32), Some("counted_day"));
+        assert!(totals.table_gap(TableId::PowerSpendTotals, CAPTURE_ADDITIONS_FORMAT).is_none());
+        assert_eq!(totals.fields(TableId::PowerSpendTotals, CAPTURE_ADDITIONS_FORMAT), 32);
+        assert_eq!(totals.fields(TableId::PowerSpendTotals, POWER_LEDGER_COUNTED_DAY_FORMAT), 33);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);
