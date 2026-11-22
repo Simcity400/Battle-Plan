@@ -48,7 +48,16 @@ macro_rules! keyed_pair {
             Divisions, DivisionStatus, DivisionMovement, DivisionPanelStats, DivisionLandInputs,
             DivisionRetreatBans, MovementStateTerms, CoreSupplyAccess, CountryUnitSpeedEntries,
             RiverRelations, DivisionTransportSpeeds, WeatherProvinces, DivisionTemplateIcons,
-            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables)
+            AirBaseRegistrations, CharacterRoleTraits, ScriptVariables,
+            RailCooldowns, IntelContributions, IntelSources, ShipModels, CountryCounterInputs,
+            ArmyOrderPlans, OrdersGroupPlans, Fronts, InvasionPreparations,
+            LandCombatDivisions, LandCombatSides, LandCombatModifiers, ReserveModifierTrees,
+            ProvinceUnitOrder, Ships, OrdersGroupMembers, ArmyUpgradeRequests,
+            AirBases, WingEquipment, AirWings, ProductionLines, Stockpiles, DivisionEquipment,
+            Fleets, TaskForces, UnitLeaders, PoliticalParties, ActiveIdeas, Politics,
+            ResearchSlots, DecisionCounts, Decisions, DynamicModifiers, PreferredTactics,
+            NavalCombatShips, OrdersGroupCounterInputs, CountryAppearance,
+            TaskForceCounterInputs, ProvinceBuildings, StateBuildings, BuildingConstruction)
     };
 }
 
@@ -71,6 +80,47 @@ pub fn takes_keyed_updates(table: TableId) -> bool {
             | TableId::AirBaseRegistrations
             | TableId::CharacterRoleTraits
             | TableId::ScriptVariables
+            | TableId::RailCooldowns
+            | TableId::IntelContributions
+            | TableId::IntelSources
+            | TableId::ShipModels
+            | TableId::CountryCounterInputs
+            | TableId::ArmyOrderPlans
+            | TableId::OrdersGroupPlans
+            | TableId::Fronts
+            | TableId::InvasionPreparations
+            | TableId::LandCombatDivisions
+            | TableId::LandCombatSides
+            | TableId::LandCombatModifiers
+            | TableId::ReserveModifierTrees
+            | TableId::ProvinceUnitOrder
+            | TableId::Ships
+            | TableId::OrdersGroupMembers
+            | TableId::ArmyUpgradeRequests
+            | TableId::AirBases
+            | TableId::WingEquipment
+            | TableId::AirWings
+            | TableId::ProductionLines
+            | TableId::Stockpiles
+            | TableId::DivisionEquipment
+            | TableId::Fleets
+            | TableId::TaskForces
+            | TableId::UnitLeaders
+            | TableId::PoliticalParties
+            | TableId::ActiveIdeas
+            | TableId::Politics
+            | TableId::ResearchSlots
+            | TableId::DecisionCounts
+            | TableId::Decisions
+            | TableId::DynamicModifiers
+            | TableId::PreferredTactics
+            | TableId::NavalCombatShips
+            | TableId::OrdersGroupCounterInputs
+            | TableId::CountryAppearance
+            | TableId::TaskForceCounterInputs
+            | TableId::ProvinceBuildings
+            | TableId::StateBuildings
+            | TableId::BuildingConstruction
     )
 }
 
@@ -476,10 +526,21 @@ impl SliceUpdate {
 }
 
 fn key_fits<R: crate::rows::RowCodec>(fresh: &[R], keys: &[u128]) -> bool {
-    fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
-        && fresh
-            .iter()
-            .all(|row| keys.binary_search(&row.key()).is_ok())
+    let mut prev: Option<u128> = None;
+    let mut cursor = 0;
+    for row in fresh {
+        let key = row.key();
+        if prev.is_some_and(|before| before >= key) {
+            return false;
+        }
+        prev = Some(key);
+        cursor += gallop(&keys[cursor..], |&candidate| candidate < key);
+        if keys.get(cursor) != Some(&key) {
+            return false;
+        }
+        cursor += 1;
+    }
+    true
 }
 #[cfg(any(test, feature = "capture", feature = "test-support"))]
 fn encode_keys<R: crate::rows::RowCodec>(
@@ -503,10 +564,23 @@ fn encode_keys<R: crate::rows::RowCodec>(
     let mut gone = 0_u32;
     let mut gone_key = 0_u128;
     deleted.clear();
+    let mut old_cursor = 0;
+    let mut fresh_cursor = 0;
     for &key in keys {
-        let before = old.binary_search_by_key(&key, |row| row.key()).ok();
+        old_cursor += gallop(&old[old_cursor..], |row| row.key() < key);
+        let before = old
+            .get(old_cursor)
+            .filter(|row| row.key() == key)
+            .map(|_| old_cursor);
         let previous = before.map(|i| &old[i]);
-        let at = fresh.binary_search_by_key(&key, |row| row.key()).ok();
+        let at = fresh
+            .get(fresh_cursor)
+            .filter(|row| row.key() == key)
+            .map(|_| {
+                let at = fresh_cursor;
+                fresh_cursor += 1;
+                at
+            });
         if let Some(at) = at {
             if fresh[at].encode_change(previous, changed_key, output)? {
                 changed = changed
@@ -542,29 +616,48 @@ fn apply_keys<R: crate::rows::RowCodec>(
 ) -> io::Result<Vec<R>> {
     let mut removed = 0_usize;
     let mut same_keys = true;
+    let mut old_cursor = 0;
+    let mut fresh_cursor = 0;
     for &key in keys {
-        let present = old.binary_search_by_key(&key, |row| row.key()).is_ok();
+        old_cursor += gallop(&old[old_cursor..], |row| row.key() < key);
+        let present = old.get(old_cursor).is_some_and(|row| row.key() == key);
         removed += usize::from(present);
-        same_keys &= present == fresh.binary_search_by_key(&key, |row| row.key()).is_ok();
+        let in_fresh = fresh
+            .get(fresh_cursor)
+            .is_some_and(|row| row.key() == key);
+        if in_fresh {
+            fresh_cursor += 1;
+        }
+        same_keys &= present == in_fresh;
     }
     if same_keys {
+        let mut cursor = 0;
         for row in &mut fresh {
-            let index = old
-                .binary_search_by_key(&row.key(), |old| old.key())
-                .map_err(|_| invalid("key update lost its baseline"))?;
-            std::mem::swap(row, &mut old[index]);
+            let key = row.key();
+            cursor += gallop(&old[cursor..], |existing| existing.key() < key);
+            if old.get(cursor).is_none_or(|existing| existing.key() != key) {
+                return Err(invalid("key update lost its baseline"));
+            }
+            std::mem::swap(row, &mut old[cursor]);
+            cursor += 1;
         }
         return Ok(fresh);
     }
     let mut rebuilt = allocation::vec(allocation::add(old.len() - removed, fresh.len())?)?;
     let mut replaced = allocation::vec(removed)?;
     let mut fresh = fresh.into_iter().peekable();
+    let mut key_cursor = 0;
     for row in std::mem::take(old) {
-        if keys.binary_search(&row.key()).is_ok() {
+        let row_key = row.key();
+        while keys.get(key_cursor).is_some_and(|&key| key < row_key) {
+            key_cursor += 1;
+        }
+        if keys.get(key_cursor) == Some(&row_key) {
             replaced.push(row);
+            key_cursor += 1;
             continue;
         }
-        while let Some(new) = fresh.next_if(|new| new.key() < row.key()) {
+        while let Some(new) = fresh.next_if(|new| new.key() < row_key) {
             rebuilt.push(new);
         }
         rebuilt.push(row);
@@ -631,7 +724,7 @@ mod tests {
             assert!(keyed_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
             assert!(!sliced_pair!(&empty, &empty, |_old, _new, _wrap| true, false), "{table:?}");
         }
-        assert_eq!(keyed, 16);
+        assert_eq!(keyed, 57);
     }
 
     fn input(country: u32, index: u32, progress: i64) -> ResearchInputRow {

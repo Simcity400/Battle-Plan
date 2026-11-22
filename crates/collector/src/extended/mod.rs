@@ -72,12 +72,21 @@ macro_rules! spool_inputs {
         $captured.table_inputs()
     };
     (group_counters, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
-        $captured.tables().map(TableInput::Sampled)
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (country_appearance, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
-        $captured.tables_at(Some($hour)).map(TableInput::Sampled)
+        $captured.table_inputs($conversion.projection.as_deref_mut(), Some($hour))
     };
     (country_counters, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (construction, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (naval_details, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.projection.as_deref_mut())
+    };
+    (naval_counters, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
     };
 
@@ -94,7 +103,10 @@ macro_rules! spool_inputs {
         $captured.table_inputs($conversion.lexical.as_deref_mut())
     };
     (characters, $captured:expr, $conversion:expr) => {
-        $captured.table_inputs($conversion.characters.as_deref_mut())
+        $captured.table_inputs(
+            $conversion.characters.as_deref_mut(),
+            $conversion.projection.as_deref_mut(),
+        )
     };
     (character_portraits, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
@@ -120,7 +132,7 @@ macro_rules! spool_inputs {
         )
     };
     (governance, $captured:expr, $conversion:expr) => {
-        $captured.table_inputs()
+        $captured.table_inputs($conversion.projection.as_deref_mut())
     };
     (country_tactic_unlocks, $captured:expr, $conversion:expr) => {
         $captured.table_inputs()
@@ -199,8 +211,7 @@ macro_rules! helper_pack {
     };
     ($view:expr, $pack:ident, helper_appearance; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {
         helper_pack!(@convert $out, $costs, $index, $pack, HelperView::sync_pack(&$view.0.$pack)
-            .tables_at(Some($hour))
-            .map(TableInput::Sampled))
+            .table_inputs($conversion.projection.as_deref_mut(), Some($hour)))
     };
     ($view:expr, $pack:ident, helper_exclusive; $conversion:ident, $lent:ident, $out:ident, $costs:ident, $index:ident, $hour:ident) => {
         helper_pack!(@convert $out, $costs, $index, $pack, spool_inputs!($pack, &$view.0.$pack, $conversion, $view.0, $hour))

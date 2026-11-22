@@ -8432,7 +8432,7 @@ mod tests {
         );
         let mut frame: FrameInput = staggered_frame(branch, hour, false).into();
         for (index, input) in native
-            .table_inputs(Some(&mut reuse))
+            .table_inputs(Some(&mut reuse), None)
             .into_iter()
             .enumerate()
         {

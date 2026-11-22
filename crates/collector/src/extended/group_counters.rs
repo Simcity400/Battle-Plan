@@ -1,4 +1,5 @@
 use crate::{
+    projection::{Projection, project_table},
     sampling::qpc,
     spooling::table,
     table_capture::{CaptureRows, grow_capacity, grow_vec},
@@ -9,7 +10,7 @@ use replay_data::{
     rows::CommanderAttackStats, rows::CommanderMovementStats, rows::OrdersGroupCounterInputRow,
     rows::Recorded, rows::TableId, rows::Witnessed, rows::tables,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{TableInput, TableView};
 use std::mem::size_of;
 #[cfg(test)]
 mod startup_tests;
@@ -227,28 +228,97 @@ impl Captured {
         [self.rows.outcome]
     }
 
-    fn commander_attack(&self, group: u64) -> Option<Option<CommanderAttackStats>> {
+    fn commander_entry(
+        &self,
+        group: u64,
+    ) -> Option<Option<&carmy_leader::AttackStats>> {
         let at = self
             .commanders
             .binary_search_by_key(&group, |(group, _)| *group)
             .ok()?;
-        self.commanders[at]
-            .1
-            .as_ref()
-            .map(|commander| commander.as_ref().map(recorded))
+        self.commanders[at].1.as_ref().map(|c| c.as_ref())
+    }
+
+    fn commander_attack(&self, group: u64) -> Option<Option<CommanderAttackStats>> {
+        self.commander_entry(group)
+            .map(|commander| commander.map(recorded))
     }
 
     fn commander_movement(&self, group: u64) -> Option<Option<CommanderMovementStats>> {
-        let at = self
-            .commanders
-            .binary_search_by_key(&group, |(group, _)| *group)
-            .ok()?;
-        self.commanders[at]
-            .1
-            .as_ref()
-            .map(|commander| commander.as_ref().map(recorded_movement))
+        self.commander_entry(group)
+            .map(|commander| commander.map(recorded_movement))
     }
 
+    fn row_equal(
+        &self,
+        r: &corders_group::CounterInputsRow,
+        previous: &OrdersGroupCounterInputRow,
+    ) -> bool {
+        if previous.group != r.group
+            || previous.withdrawing != r.withdrawing
+            || previous.attack != Recorded::Value(Witnessed(None))
+            || previous.hq_distance != Recorded::Value(r.hq_distance)
+            || previous.leader_enroute_days != Recorded::Value(r.leader_enroute_days)
+            || previous.border_war_presence != Recorded::Value(r.border_war_presence)
+            || previous.invasion_source_distance != Recorded::Value(r.invasion_source_distance)
+            || previous.hq_nearest_front != Recorded::Value(r.hq_nearest_front)
+        {
+            return false;
+        }
+        let commander_eq = match (
+            self.commander_entry(r.group),
+            &previous.commander_attack,
+            &previous.commander_movement,
+        ) {
+            (Some(Some(c)), Recorded::Value(Some(Some(pa))), Recorded::Value(Some(Some(pm)))) => {
+                pa.leader == c.leader
+                    && pa.fort == c.fort
+                    && pa.river == c.river
+                    && pa.snow == c.snow
+                    && pa.night == c.night
+                    && pa.terrain == c.terrain
+                    && pm.terrain == c.movement_terrain
+            }
+            (Some(None), Recorded::Value(Some(None)), Recorded::Value(Some(None))) => true,
+            (None, Recorded::Value(None), Recorded::Value(None)) => true,
+            _ => false,
+        };
+        if !commander_eq {
+            return false;
+        }
+        match (self.templates.value_ref(r.group), &previous.template_context) {
+            (Some(cur), Recorded::Value(Some(prev))) => {
+                std::sync::Arc::ptr_eq(cur, prev) || cur == prev
+            }
+            (None, Recorded::Value(None)) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn table_inputs(&self, projection: Option<&mut Projection<'_>>) -> [TableInput; N] {
+        [project_table::<tables::OrdersGroupCounterInputs, _>(
+            projection,
+            self.outcomes()[0],
+            &self.rows.rows,
+            |r| u128::from(r.group),
+            |r, previous| self.row_equal(r, previous),
+            |r| OrdersGroupCounterInputRow {
+                group: r.group,
+                attack: Recorded::Value(Witnessed(None)),
+                commander_attack: Recorded::Value(self.commander_attack(r.group)),
+                commander_movement: Recorded::Value(self.commander_movement(r.group)),
+                withdrawing: r.withdrawing,
+                hq_distance: Recorded::Value(r.hq_distance),
+                leader_enroute_days: Recorded::Value(r.leader_enroute_days),
+                border_war_presence: Recorded::Value(r.border_war_presence),
+                invasion_source_distance: Recorded::Value(r.invasion_source_distance),
+                hq_nearest_front: Recorded::Value(r.hq_nearest_front),
+                template_context: Recorded::Value(self.templates.value(r.group)),
+            },
+        )]
+    }
+
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
         [table::<tables::OrdersGroupCounterInputs, _>(
             self.outcomes()[0],

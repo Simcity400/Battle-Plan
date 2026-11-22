@@ -254,21 +254,73 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
     if store.epoch != EPOCH.load(Ordering::Acquire) || store.interests.organisations.is_empty() {
         return;
     }
-    for ordinal in 0..array.count {
-        let pointer = array
-            .element(ordinal, 8)
-            .and_then(|at| engine_native::read::<u64>(memory, at));
-        let Some(pointer) = pointer else {
-            unobserved!();
+    const ROSTER_BATCH: usize = 64;
+    const REFERENCE_FIELDS: [engine_native::memory::RecordField; 1] =
+        [engine_native::memory::RecordField {
+            source_offset: organisation::REFERENCE,
+            destination_offset: 0,
+            len: 8,
+        }];
+    const REFERENCE_LAYOUT: engine_native::memory::RecordLayout<'static> =
+        engine_native::memory::RecordLayout::new(&REFERENCE_FIELDS, 8)
+            .expect("valid record layout");
+    let mut pointer_bytes = [0_u8; ROSTER_BATCH * 8];
+    let mut pointers = [0_usize; ROSTER_BATCH];
+    let mut handle_bytes = [0_u8; ROSTER_BATCH * 8];
+    let mut first = 0_u32;
+    while first < array.count {
+        let count = ((array.count - first) as usize).min(ROSTER_BATCH);
+        let batch_ok = array
+            .slice(first, count as u32, 8)
+            .ok()
+            .is_some_and(|span| engine_native::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]));
+        if !batch_ok {
+            for ordinal in first..first + count as u32 {
+                let pointer = array
+                    .element(ordinal, 8)
+                    .and_then(|at| engine_native::read::<u64>(memory, at));
+                let Some(pointer) = pointer else {
+                    unobserved!();
+                    continue;
+                };
+                let Some(handle) =
+                    engine_native::read::<u64>(memory, pointer as usize + organisation::REFERENCE)
+                else {
+                    unobserved!();
+                    continue;
+                };
+                record_registered(&mut store, memory, base, pointer as usize, handle);
+            }
+            first += count as u32;
             continue;
-        };
-        let Some(handle) =
-            engine_native::read::<u64>(memory, pointer as usize + organisation::REFERENCE)
-        else {
-            unobserved!();
-            continue;
-        };
-        record_registered(&mut store, memory, base, pointer as usize, handle);
+        }
+        for (slot, chunk) in pointers[..count]
+            .iter_mut()
+            .zip(pointer_bytes[..count * 8].chunks_exact(8))
+        {
+            *slot = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+        }
+        let copied = memory.copy_records(
+            engine_native::memory::RecordSources::Pointers(&pointers[..count]),
+            &REFERENCE_LAYOUT,
+            &mut handle_bytes[..count * 8],
+        );
+        for index in 0..copied {
+            let handle = u64::from_le_bytes(handle_bytes[index * 8..(index + 1) * 8].try_into().unwrap());
+            record_registered(&mut store, memory, base, pointers[index], handle);
+        }
+        if copied < count {
+            for &pointer in &pointers[copied..count] {
+                let Some(handle) =
+                    engine_native::read::<u64>(memory, pointer + organisation::REFERENCE)
+                else {
+                    unobserved!();
+                    continue;
+                };
+                record_registered(&mut store, memory, base, pointer, handle);
+            }
+        }
+        first += count as u32;
     }
 }
 pub(super) fn refresh_context(

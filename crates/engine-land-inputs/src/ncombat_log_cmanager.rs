@@ -715,13 +715,21 @@ fn read_pool(
     Ok(())
 }
 
+const BUCKET_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: 24,
+}];
+const BUCKET_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&BUCKET_FIELDS, 24).expect("valid record layout");
+
 pub fn countries_with_deleted_groups(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     mut visit: impl FnMut(u32),
 ) -> Result<(), &'static str> {
-    let mut resolver = crate::creference_registry::HeaderResolver::default();
+    let mut resolver = crate::creference_registry::ScopedResolver::new(base);
     for_each_manager(
         memory,
         base,
@@ -731,7 +739,7 @@ pub fn countries_with_deleted_groups(
         |_, memory, vtables, country, groups| {
             let mut deleted = false;
             for_each_group(memory, vtables, groups, |_, _, _, reference| {
-                if !deleted && resolver.resolve(memory, base, reference)?.is_none() {
+                if !deleted && resolver.resolve(memory, reference)?.is_none() {
                     deleted = true;
                 }
                 Ok(())
@@ -775,10 +783,15 @@ pub fn deleted_logs(
         unread_rows: 0,
         memo: None,
     };
-    let mut resolver = crate::creference_registry::HeaderResolver::default();
+    let mut resolver = crate::creference_registry::ScopedResolver::new(base);
     let mut pointer_bytes = [0_u8; BATCH * 8];
     let mut pointers = [0_usize; BATCH];
     let mut identities = [0_u8; BATCH * 16];
+    let mut references = [0_u64; BATCH];
+    let mut cell_headers = [None; BATCH];
+    let mut cell_pointers = [0_usize; BATCH];
+    let mut cell_map = [0_usize; BATCH];
+    let mut cell_bytes = [0_u8; BATCH * 24];
     let mut group_bytes = [0_u8; logs::SIZE];
     let mut first = 0;
     while first < groups.count {
@@ -800,6 +813,7 @@ pub fn deleted_logs(
             &GROUP_IDENTITY_LAYOUT,
             &mut identities[..count * 16],
         );
+        let mut cell_count = 0_usize;
         for index in 0..count {
             if copied < index + 1 {
                 return Err("combat log group unreadable");
@@ -812,7 +826,41 @@ pub fn deleted_logs(
             if reference as u32 != corders_group::REFERENCE_TYPE {
                 return Err("combat log group reference is not an orders group");
             }
-            if resolver.resolve(memory, base, reference)?.is_some() {
+            references[index] = reference;
+            if let Some((header, cell)) = resolver.first_cell(memory, reference)? {
+                cell_headers[index] = Some(header);
+                cell_pointers[cell_count] = cell;
+                cell_map[index] = cell_count;
+                cell_count += 1;
+            } else {
+                cell_headers[index] = None;
+            }
+        }
+        let copied_cells = if cell_count != 0 {
+            memory.copy_records(
+                RecordSources::Pointers(&cell_pointers[..cell_count]),
+                &BUCKET_LAYOUT,
+                &mut cell_bytes[..cell_count * 24],
+            )
+        } else {
+            0
+        };
+        for index in 0..count {
+            let resolved = match cell_headers[index] {
+                Some(header) => {
+                    let slot = cell_map[index];
+                    if slot < copied_cells {
+                        let first_bucket: [u8; 24] = cell_bytes[slot * 24..(slot + 1) * 24]
+                            .try_into()
+                            .unwrap();
+                        resolver.resolve_gathered(memory, header, references[index], first_bucket)?
+                    } else {
+                        resolver.resolve(memory, references[index])?
+                    }
+                }
+                None => None,
+            };
+            if resolved.is_some() {
                 continue;
             }
             if !read_slice(memory, pointers[index], &mut group_bytes) {
@@ -823,7 +871,7 @@ pub fn deleted_logs(
                 &vtables,
                 country,
                 &group_bytes,
-                reference,
+                references[index],
                 Months::All,
                 &mut output,
             )?;

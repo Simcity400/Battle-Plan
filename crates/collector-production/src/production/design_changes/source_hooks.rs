@@ -300,15 +300,35 @@ unsafe fn around<const SITE: usize>(
             observe(&memory, base, sources::Key::Provider(a), false);
         } else if SITE == 2 && SOURCE_BASELINE.load(Ordering::Acquire) {
             if let Some(roster) = Array::read(&memory, a + IDEA_SOURCES, 8) {
-                for ordinal in 0..roster.count {
-                    if let Some(pointer) = roster
-                        .element(ordinal, 8)
-                        .and_then(|at| engine_native::read::<u64>(&memory, at))
-                    {
-                        observe(&memory, base, sources::Key::Direct(pointer as usize), false);
+                const SOURCE_BATCH: usize = 64;
+                let mut bytes = [0_u8; SOURCE_BATCH * 8];
+                let mut first = 0_u32;
+                while first < roster.count {
+                    let count = ((roster.count - first) as usize).min(SOURCE_BATCH);
+                    let batch_ok = roster
+                        .slice(first, count as u32, 8)
+                        .ok()
+                        .is_some_and(|span| {
+                            engine_native::read_slice(&memory, span.data, &mut bytes[..count * 8])
+                        });
+                    if batch_ok {
+                        for chunk in bytes[..count * 8].chunks_exact(8) {
+                            let pointer = u64::from_le_bytes(chunk.try_into().unwrap()) as usize;
+                            observe(&memory, base, sources::Key::Direct(pointer), false);
+                        }
                     } else {
-                        unobserved!();
+                        for ordinal in first..first + count as u32 {
+                            if let Some(pointer) = roster
+                                .element(ordinal, 8)
+                                .and_then(|at| engine_native::read::<u64>(&memory, at))
+                            {
+                                observe(&memory, base, sources::Key::Direct(pointer as usize), false);
+                            } else {
+                                unobserved!();
+                            }
+                        }
                     }
+                    first += count as u32;
                 }
             } else {
                 unobserved!();

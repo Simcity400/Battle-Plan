@@ -2489,6 +2489,165 @@ fn country_view<S: TableSchema, R>(
     )
 }
 
+fn project_rows<S: TableSchema, R>(
+    projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    captured: &CaptureRows<R>,
+    validate: impl Fn(&R) -> bool,
+    key: impl Fn(&R) -> u128,
+    equal: impl Fn(&R, &S::Row) -> bool,
+    convert: impl Fn(&R) -> S::Row,
+) -> TableInput {
+    let Some(source) = captured.rows.get(..captured.outcome.len()) else {
+        return crate::table_conversion::unavailable("governance row count exceeds capacity").into();
+    };
+    if source.iter().any(|row| !validate(row)) {
+        return crate::table_conversion::unavailable(
+            "governance arena span exceeds captured bytes",
+        )
+        .into();
+    }
+    collector_projection::projection::project_table::<S, _>(
+        projection,
+        captured.outcome,
+        source,
+        key,
+        equal,
+        convert,
+    )
+}
+
+fn project_country_rows<S: TableSchema, R>(
+    projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    captured: &CaptureRows<R>,
+    countries: &[u32],
+    validate: impl Fn(&R) -> bool,
+    key: impl Fn(u32, &R) -> u128,
+    equal: impl Fn(u32, &R, &S::Row) -> bool,
+    convert: impl Fn(u32, &R) -> S::Row,
+) -> TableInput {
+    let len = captured.outcome.len();
+    let Some((source, owners)) = captured.rows.get(..len).zip(countries.get(..len)) else {
+        return crate::table_conversion::unavailable(
+            "governance country row count exceeds capacity",
+        )
+        .into();
+    };
+    if source.iter().any(|row| !validate(row)) {
+        return crate::table_conversion::unavailable(
+            "governance arena span exceeds captured bytes",
+        )
+        .into();
+    }
+    let base = source.as_ptr() as usize;
+    let owner_of = |row: &R| {
+        let index = (row as *const R as usize - base) / size_of::<R>();
+        owners[index]
+    };
+    collector_projection::projection::project_table::<S, _>(
+        projection,
+        captured.outcome,
+        source,
+        |row| key(owner_of(row), row),
+        |row, previous| equal(owner_of(row), row, previous),
+        |row| convert(owner_of(row), row),
+    )
+}
+
+fn research_modifier_kind(kind: engine_research::research_modifiers::Kind) -> u8 {
+    match kind {
+        engine_research::research_modifiers::Kind::Technology => {
+            rows::ResearchModifierRow::TECHNOLOGY
+        }
+        engine_research::research_modifiers::Kind::CountrySpeed => {
+            rows::ResearchModifierRow::COUNTRY_SPEED
+        }
+        engine_research::research_modifiers::Kind::CategorySpeed => {
+            rows::ResearchModifierRow::CATEGORY_SPEED
+        }
+        engine_research::research_modifiers::Kind::DesignTeam => {
+            rows::ResearchModifierRow::DESIGN_TEAM
+        }
+        engine_research::research_modifiers::Kind::Experience => {
+            rows::ResearchModifierRow::EXPERIENCE
+        }
+        engine_research::research_modifiers::Kind::Sharing => rows::ResearchModifierRow::SHARING,
+        engine_research::research_modifiers::Kind::License => rows::ResearchModifierRow::LICENSE,
+        engine_research::research_modifiers::Kind::Scientist => {
+            rows::ResearchModifierRow::SCIENTIST
+        }
+        engine_research::research_modifiers::Kind::Year => rows::ResearchModifierRow::YEAR,
+        engine_research::research_modifiers::Kind::AheadFactor => {
+            rows::ResearchModifierRow::AHEAD_FACTOR
+        }
+        engine_research::research_modifiers::Kind::MinimumSpeed => {
+            rows::ResearchModifierRow::MINIMUM_SPEED
+        }
+        engine_research::research_modifiers::Kind::CountrySource => {
+            rows::ResearchModifierRow::COUNTRY_SOURCE
+        }
+        engine_research::research_modifiers::Kind::IdeaSource => {
+            rows::ResearchModifierRow::IDEA_SOURCE
+        }
+        engine_research::research_modifiers::Kind::ScriptSource => {
+            rows::ResearchModifierRow::SCRIPT_SOURCE
+        }
+        engine_research::research_modifiers::Kind::ScientistSource => {
+            rows::ResearchModifierRow::SCIENTIST_SOURCE
+        }
+        engine_research::research_modifiers::Kind::SharingMultiplier => {
+            rows::ResearchModifierRow::SHARING_MULTIPLIER
+        }
+        engine_research::research_modifiers::Kind::SharingMaximum => {
+            rows::ResearchModifierRow::SHARING_MAXIMUM
+        }
+        engine_research::research_modifiers::Kind::ModifierMetadata => {
+            rows::ResearchModifierRow::MODIFIER_METADATA
+        }
+        engine_research::research_modifiers::Kind::ScientistCategory => {
+            rows::ResearchModifierRow::SCIENTIST_CATEGORY
+        }
+        engine_research::research_modifiers::Kind::SharingMember => {
+            rows::ResearchModifierRow::SHARING_MEMBER
+        }
+        engine_research::research_modifiers::Kind::SharingPredecessor => {
+            rows::ResearchModifierRow::SHARING_PREDECESSOR
+        }
+        engine_research::research_modifiers::Kind::SharingFilter => {
+            rows::ResearchModifierRow::SHARING_FILTER
+        }
+        engine_research::research_modifiers::Kind::SharingCategory => {
+            rows::ResearchModifierRow::SHARING_CATEGORY
+        }
+        engine_research::research_modifiers::Kind::SharingDoctrine => {
+            rows::ResearchModifierRow::SHARING_DOCTRINE
+        }
+        engine_research::research_modifiers::Kind::SharingMissingMember => {
+            rows::ResearchModifierRow::SHARING_MISSING_MEMBER
+        }
+        engine_research::research_modifiers::Kind::GrantCounter => {
+            rows::ResearchModifierRow::GRANT_COUNTER
+        }
+        engine_research::research_modifiers::Kind::SpeedGrant => {
+            rows::ResearchModifierRow::SPEED_GRANT
+        }
+        engine_research::research_modifiers::Kind::CostGrant => {
+            rows::ResearchModifierRow::COST_GRANT
+        }
+        engine_research::research_modifiers::Kind::GrantUses => {
+            rows::ResearchModifierRow::GRANT_USES
+        }
+        engine_research::research_modifiers::Kind::GrantTechnology => {
+            rows::ResearchModifierRow::GRANT_TECHNOLOGY
+        }
+        engine_research::research_modifiers::Kind::GrantCategory => {
+            rows::ResearchModifierRow::GRANT_CATEGORY
+        }
+        engine_research::research_modifiers::Kind::SharingRoster => {
+            rows::ResearchModifierRow::SHARING_ROSTER
+        }
+    }
+}
+
 impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         self.convert_tables(
@@ -2498,8 +2657,464 @@ impl Captured {
         )
     }
 
-    pub fn table_inputs(&self) -> [TableInput; N] {
-        self.tables().map(TableInput::Sampled)
+    pub fn table_inputs(
+        &self,
+        mut projection: Option<&mut collector_projection::projection::Projection<'_>>,
+    ) -> [TableInput; N] {
+        if projection.is_none() {
+            return self.tables().map(TableInput::Sampled);
+        }
+        let focus = &self.focus_text.first[..self.focus_text.len];
+        let parties = &self.party_text.first[..self.party_text.len];
+        let ideas = &self.idea_text.first[..self.idea_text.len];
+        let timed_ideas = &self.timed_idea_text.first[..self.timed_idea_text.len];
+        let random_items = &self.random_item_text.first[..self.random_item_text.len];
+        let decisions = &self.decision_text.first[..self.decision_text.len];
+        let modifiers = &self.modifier_text.first[..self.modifier_text.len];
+        let values = &self.modifier_values.first[..self.modifier_values.len];
+        let tactics = &self.tactic_text.first[..self.tactic_text.len];
+        let balances = &self.balance_text.first[..self.balance_text.len];
+        let focus_valid = |span: Option<cnational_focus_progress::TokenSpan>| {
+            span.is_none_or(|span| valid(focus, span.start, span.len))
+        };
+        let focus_copy = |span: Option<cnational_focus_progress::TokenSpan>| {
+            span.map(|span| copy_span(focus, span.start, span.len))
+        };
+        let balance_valid = |span: engine_power_balance::power_balance_definition::Token| {
+            valid(balances, span.start, span.len)
+        };
+        let balance_copy = |span: engine_power_balance::power_balance_definition::Token| {
+            copy_span(balances, span.start, span.len)
+        };
+        let party_countries = &self.party_countries.first[..self.party_countries.len];
+        let idea_countries = &self.idea_countries.first[..self.idea_countries.len];
+        let decision_countries = &self.decision_countries.first[..self.decision_countries.len];
+        [
+            TableInput::Sampled(view::<tables::Focus, _>(
+                &self.focus,
+                |r| focus_valid(r.tree) && focus_valid(r.current) && focus_valid(r.continuous),
+                |r| rows::FocusRow {
+                    country: r.country,
+                    tree: focus_copy(r.tree),
+                    current: focus_copy(r.current),
+                    continuous: focus_copy(r.continuous),
+                    progress: r.progress,
+                    paused: r.paused,
+                    completed_count: r.completed_count,
+                },
+            )),
+            TableInput::Sampled(view::<tables::CompletedFocuses, _>(
+                &self.completed,
+                |r| valid(focus, r.token.start, r.token.len),
+                |r| rows::CompletedFocusRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    token: copy_span(focus, r.token.start, r.token.len),
+                },
+            )),
+            TableInput::Sampled(self.technologies_table()),
+            collector_projection::projection::scalar_table::<tables::ResearchSlots, _>(
+                projection.as_deref_mut(),
+                self.slots.outcome,
+                &self.slots.rows,
+                |r| {
+                    RowCodec::key(&rows::ResearchSlotRow {
+                        country: r.country,
+                        index: r.index,
+                        ..Default::default()
+                    })
+                },
+                |r| rows::ResearchSlotRow {
+                    country: r.country,
+                    index: r.index,
+                    technology_handle: r.technology_handle,
+                    technology_present: r.technology_present,
+                    database_index: rows::Recorded::Value(r.database_index),
+                    research_speed_raw: r.research_speed_raw,
+                    banked_days_raw: r.banked_days_raw,
+                    applied_days_raw: r.applied_days_raw,
+                },
+            ),
+            TableInput::Sampled(self.definitions_table()),
+            collector_projection::projection::scalar_table::<tables::Politics, _>(
+                projection.as_deref_mut(),
+                self.politics.outcome,
+                &self.politics.rows,
+                |r| {
+                    RowCodec::key(&rows::PoliticsRow {
+                        country: r.country,
+                        ..Default::default()
+                    })
+                },
+                |r| rows::PoliticsRow {
+                    country: r.country,
+                    last_election: r.row.last_election,
+                    capital: r.row.capital,
+                    ruling_party: r.row.ruling_party,
+                    original_capital: r.row.original_capital,
+                    has_elections: rows::Recorded::Value(r.row.has_elections),
+                    election_interval: rows::Recorded::Value(r.row.election_interval),
+                    next_election_cache: rows::Recorded::Value(r.row.next_election_cache),
+                    ..Default::default()
+                },
+            ),
+            project_country_rows::<tables::PoliticalParties, _>(
+                projection.as_deref_mut(),
+                &self.parties,
+                party_countries,
+                |r| {
+                    valid(parties, r.token_start, r.token_len)
+                        && valid(parties, r.name_start, r.name_len)
+                        && valid(parties, r.long_name_start, r.long_name_len)
+                },
+                |country, r| {
+                    RowCodec::key(&rows::PoliticalPartyRow {
+                        country,
+                        id: r.id,
+                        ..Default::default()
+                    })
+                },
+                |country, r, prev| {
+                    prev.country == country
+                        && prev.id == r.id
+                        && prev.popularity == r.popularity
+                        && prev.is_ruling == r.is_ruling
+                        && prev.tag == r.tag
+                        && prev.name_default == r.name_default
+                        && prev.token.as_slice() == &parties[r.token_start..r.token_start + r.token_len]
+                        && prev.name.as_slice() == &parties[r.name_start..r.name_start + r.name_len]
+                        && prev.long_name.as_slice()
+                            == &parties[r.long_name_start..r.long_name_start + r.long_name_len]
+                },
+                |country, r| rows::PoliticalPartyRow {
+                    country,
+                    id: r.id,
+                    popularity: r.popularity,
+                    is_ruling: r.is_ruling,
+                    token: copy_span(parties, r.token_start, r.token_len),
+                    tag: r.tag,
+                    name_default: r.name_default,
+                    name: copy_span(parties, r.name_start, r.name_len),
+                    long_name: copy_span(parties, r.long_name_start, r.long_name_len),
+                },
+            ),
+            project_country_rows::<tables::ActiveIdeas, _>(
+                projection.as_deref_mut(),
+                &self.ideas,
+                idea_countries,
+                |r| valid(ideas, r.token_start, r.token_len),
+                |country, r| {
+                    RowCodec::key(&rows::ActiveIdeaRow {
+                        country,
+                        ordinal: r.ordinal,
+                        ..Default::default()
+                    })
+                },
+                |country, r, prev| {
+                    prev.country == country
+                        && prev.ordinal == r.ordinal
+                        && prev.token.as_slice() == &ideas[r.token_start..r.token_start + r.token_len]
+                },
+                |country, r| rows::ActiveIdeaRow {
+                    country,
+                    ordinal: r.ordinal,
+                    token: copy_span(ideas, r.token_start, r.token_len),
+                },
+            ),
+            collector_projection::projection::scalar_table::<tables::DecisionCounts, _>(
+                projection.as_deref_mut(),
+                self.counts.outcome,
+                &self.counts.rows,
+                |r| {
+                    RowCodec::key(&rows::DecisionCountsRow {
+                        country: r.country,
+                        ..Default::default()
+                    })
+                },
+                |r| rows::DecisionCountsRow {
+                    country: r.country,
+                    taken: r.row.taken,
+                    re_enable: r.row.re_enable,
+                    remove: r.row.remove,
+                    timed: r.row.timed,
+                    targeted_timed: r.row.targeted_timed,
+                    targeted: r.row.targeted,
+                },
+            ),
+            project_country_rows::<tables::Decisions, _>(
+                projection.as_deref_mut(),
+                &self.decisions,
+                decision_countries,
+                |r| valid(decisions, r.token_start, r.token_len),
+                |country, r| {
+                    RowCodec::key(&rows::DecisionRow {
+                        country,
+                        container: r.container as u8,
+                        ordinal: r.ordinal,
+                        ..Default::default()
+                    })
+                },
+                |country, r, prev| {
+                    prev.country == country
+                        && prev.container == r.container as u8
+                        && prev.ordinal == r.ordinal
+                        && prev.days == r.days
+                        && prev.lifecycle == r.lifecycle
+                        && prev.target_kind == r.target_kind as u8
+                        && prev.country_target == r.country_target
+                        && prev.numeric_target == r.numeric_target
+                        && prev.ignore == r.ignore
+                        && prev.description_seed
+                            == replay_data::rows::Recorded::Value(r.description_seed)
+                        && prev.token.as_slice()
+                            == &decisions[r.token_start..r.token_start + r.token_len]
+                },
+                |country, r| rows::DecisionRow {
+                    country,
+                    container: r.container as u8,
+                    ordinal: r.ordinal,
+                    token: copy_span(decisions, r.token_start, r.token_len),
+                    days: r.days,
+                    lifecycle: r.lifecycle,
+                    target_kind: r.target_kind as u8,
+                    country_target: r.country_target,
+                    numeric_target: r.numeric_target,
+                    ignore: r.ignore,
+                    description_seed: replay_data::rows::Recorded::Value(r.description_seed),
+                },
+            ),
+            project_rows::<tables::DynamicModifiers, _>(
+                projection.as_deref_mut(),
+                &self.modifiers,
+                |r| {
+                    valid(modifiers, r.token_start, r.token_len)
+                        && valid(values, r.value_start, r.value_len)
+                },
+                |r| {
+                    RowCodec::key(&rows::DynamicModifierRow {
+                        country: r.country,
+                        ordinal: r.ordinal,
+                        ..Default::default()
+                    })
+                },
+                |r, prev| {
+                    prev.country == r.country
+                        && prev.ordinal == r.ordinal
+                        && prev.scope_country == r.scope_country
+                        && prev.scope_state == r.scope_state
+                        && prev.days_remaining == r.days_remaining
+                        && prev.enabled == r.enabled
+                        && prev.token.as_slice()
+                            == &modifiers[r.token_start..r.token_start + r.token_len]
+                        && prev.values.as_slice()
+                            == &values[r.value_start..r.value_start + r.value_len]
+                },
+                |r| rows::DynamicModifierRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    scope_country: r.scope_country,
+                    scope_state: r.scope_state,
+                    days_remaining: r.days_remaining,
+                    enabled: r.enabled,
+                    token: copy_span(modifiers, r.token_start, r.token_len),
+                    values: copy_span(values, r.value_start, r.value_len),
+                },
+            ),
+            project_rows::<tables::PreferredTactics, _>(
+                projection.as_deref_mut(),
+                &self.tactics,
+                |r| valid(tactics, r.token_start, r.row.token_len),
+                |r| {
+                    RowCodec::key(&rows::PreferredTacticRow {
+                        country: r.row.country,
+                        tactic_id: r.row.tactic_id,
+                        ..Default::default()
+                    })
+                },
+                |r, prev| {
+                    prev.country == r.row.country
+                        && prev.tactic_id == r.row.tactic_id
+                        && prev.token.as_slice()
+                            == &tactics[r.token_start..r.token_start + r.row.token_len]
+                },
+                |r| rows::PreferredTacticRow {
+                    country: r.row.country,
+                    tactic_id: r.row.tactic_id,
+                    token: copy_span(tactics, r.token_start, r.row.token_len),
+                },
+            ),
+            TableInput::Sampled(view::<tables::TechSharingGroups, _>(
+                &self.sharing,
+                |_| true,
+                |r| rows::TechSharingGroupRow {
+                    id: r.id,
+                    base_bonus: r.base_bonus,
+                    member_count: r.member_count,
+                },
+            )),
+            TableInput::Sampled(view::<tables::TechSharingMembers, _>(
+                &self.sharing_members,
+                |_| true,
+                |r| rows::TechSharingMemberRow {
+                    group: r.group,
+                    ordinal: r.ordinal,
+                    country: r.country,
+                    bonus: r.bonus,
+                },
+            )),
+            TableInput::Sampled(view::<tables::PowerBalances, _>(
+                &self.balances,
+                |r| {
+                    [r.balance, r.left, r.right, r.trending, r.active_range]
+                        .into_iter()
+                        .all(balance_valid)
+                },
+                |r| rows::PowerBalanceRow {
+                    ordinal: r.ordinal,
+                    value_raw: r.value_raw,
+                    balance: balance_copy(r.balance),
+                    left: balance_copy(r.left),
+                    right: balance_copy(r.right),
+                    trending: balance_copy(r.trending),
+                    active_range: balance_copy(r.active_range),
+                },
+            )),
+            TableInput::Sampled(view::<tables::PowerBalanceMembers, _>(
+                &self.balance_members,
+                |_| true,
+                |r| rows::PowerBalanceMemberRow {
+                    record: r.record,
+                    ordinal: r.ordinal,
+                    country: r.country,
+                    daily_raw: r.daily_raw,
+                    weekly_raw: r.weekly_raw,
+                    daily_present: r.daily_present,
+                    weekly_present: r.weekly_present,
+                    daily_flags: r.daily_flags,
+                    weekly_flags: r.weekly_flags,
+                },
+            )),
+            TableInput::Sampled(view::<tables::PowerBalanceRanges, _>(
+                &self.ranges,
+                |r| balance_valid(r.identity),
+                |r| rows::PowerBalanceRangeRow {
+                    record: r.record,
+                    ordinal: r.ordinal,
+                    identity: balance_copy(r.identity),
+                },
+            )),
+            TableInput::Sampled(view::<tables::PowerBalanceOverrides, _>(
+                &self.overrides,
+                |r| balance_valid(r.side) && balance_valid(r.gfx),
+                |r| rows::PowerBalanceOverrideRow {
+                    record: r.record,
+                    ordinal: r.ordinal,
+                    side: balance_copy(r.side),
+                    gfx: balance_copy(r.gfx),
+                },
+            )),
+            TableInput::Sampled(view::<tables::ResearchInputs, _>(
+                &self.research_inputs,
+                |_| true,
+                |r| rows::ResearchInputRow {
+                    country: r.slot.country,
+                    index: r.slot.index,
+                    technology_handle: r.slot.technology_handle,
+                    technology_present: r.slot.technology_present,
+                    database_index: rows::Recorded::Value(r.template_index),
+                    token: owned_vec(copy_vec(r.token.as_bytes())),
+                    classifier: r.classifier,
+                    level: r.level,
+                    progress_raw: r.progress_raw,
+                    cost_raw: r.cost_raw,
+                    cost_scale_raw: r.cost_scale_raw,
+                    cost_debug: r.cost_debug,
+                    research_speed_raw: r.slot.research_speed_raw,
+                    banked_days_raw: r.slot.banked_days_raw,
+                    applied_days_raw: r.slot.applied_days_raw,
+                    ahead_reduction_raw: r.ahead_reduction_raw,
+                    speed_bonus_raw: r.speed_bonus_raw,
+                    bonus_count: r.bonus_count,
+                },
+            )),
+            TableInput::Sampled(view::<tables::ResearchAppliedBonuses, _>(
+                &self.research_bonuses,
+                |_| true,
+                |r| rows::ResearchAppliedBonusRow {
+                    country: r.country,
+                    index: r.index,
+                    ordinal: r.ordinal,
+                    technology_handle: r.technology_handle,
+                    id: r.value.id,
+                    resolved: r.resolved,
+                    name: owned_vec(copy_vec(r.value.name.as_bytes())),
+                    ahead_reduction_raw: r.value.ahead_reduction_raw,
+                    speed_bonus_raw: r.value.speed_bonus_raw,
+                    cost_reduction_raw: r.cost_reduction_raw,
+                },
+            )),
+            TableInput::Sampled(view::<tables::ResearchModifiers, _>(
+                &self.research_modifiers,
+                |_| true,
+                |r| rows::ResearchModifierRow {
+                    country: r.country,
+                    index: r.index,
+                    ordinal: r.ordinal,
+                    technology_handle: r.technology_handle,
+                    kind: research_modifier_kind(r.kind),
+                    raw: r.raw,
+                    auxiliary: r.auxiliary,
+                    count: r.count,
+                    source_id: r.source_id,
+                    name: owned_vec(copy_vec(r.name.as_bytes())),
+                },
+            )),
+            collector_projection::projection::scalar_table::<tables::PartyLeaders, _>(
+                projection,
+                self.party_leaders.outcome,
+                &self.party_leaders.rows,
+                |r| {
+                    RowCodec::key(&rows::PartyLeaderRow {
+                        country: r.country,
+                        party: r.party,
+                        ordinal: r.ordinal,
+                        character: r.character,
+                        leader_id: r.leader_id,
+                        role: r.role,
+                    })
+                },
+                |r| rows::PartyLeaderRow {
+                    country: r.country,
+                    party: r.party,
+                    ordinal: r.ordinal,
+                    character: r.character,
+                    leader_id: r.leader_id,
+                    role: r.role,
+                },
+            ),
+            TableInput::Sampled(self.breakdowns_table()),
+            TableInput::Sampled(view::<tables::TimedIdeas, _>(
+                &self.timed_ideas,
+                |r| valid(timed_ideas, r.token_start, r.token_len),
+                |r| rows::TimedIdeaRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    token: copy_span(timed_ideas, r.token_start, r.token_len),
+                    days: r.days,
+                },
+            )),
+            TableInput::Sampled(view::<tables::DecisionRandomItems, _>(
+                &self.random_items,
+                |r| valid(random_items, r.token_start, r.token_len),
+                |r| rows::DecisionRandomItemRow {
+                    country: r.country,
+                    ordinal: r.ordinal,
+                    token: copy_span(random_items, r.token_start, r.token_len),
+                    count: r.count,
+                    target: r.target as u32,
+                },
+            )),
+        ]
     }
 
     fn breakdowns_table(&self) -> TableView {
