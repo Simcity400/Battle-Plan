@@ -56,7 +56,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 pub(crate) fn refresh_rate(hz: f64) -> io::Result<f64> {
-    let range = dashboard::protocol::MAP_FRAME_LIMIT_RANGE;
+    let range = dashboard_core::protocol::MAP_FRAME_LIMIT_RANGE;
     if range.contains(&hz) {
         Ok(hz)
     } else {
