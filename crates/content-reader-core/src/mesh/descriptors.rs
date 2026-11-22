@@ -1041,7 +1041,7 @@ impl Roster {
             )? {
                 let registered = add_objects(&parsed.items, &mut objects);
                 if let Some(overlay_names) = parsed.overlay_fallback_names {
-                    roster.record_overlay_refusals(overlay_names, &registered, &path.text());
+                    roster.record_overlay_refusals(overlay_names, &registered, &[], &path.text());
                 }
             }
         }
@@ -1120,12 +1120,7 @@ impl Roster {
                 }
             }
             if let Some(overlay_names) = parsed.overlay_fallback_names {
-                roster.record_overlay_refusals(overlay_names, &registered, &path);
-                for (child, parent) in file_clones {
-                    if let Some(source) = roster.unreadable_names.get(&parent).cloned() {
-                        roster.unreadable_names.entry(child).or_insert(source);
-                    }
-                }
+                roster.record_overlay_refusals(overlay_names, &registered, &file_clones, &path);
             }
         }
         for (name, declarations) in animations {
@@ -1144,14 +1139,22 @@ impl Roster {
         &mut self,
         overlay_names: BTreeSet<String>,
         registered: &BTreeSet<String>,
+        file_clones: &[(String, String)],
         path: &str,
     ) {
-        for name in overlay_names {
-            if !registered.contains(&name) {
-                self.unreadable_names
-                    .entry(name)
-                    .or_insert_with(|| path.to_owned());
+        let mut newly_refused: BTreeSet<String> = overlay_names
+            .into_iter()
+            .filter(|name| !registered.contains(name))
+            .collect();
+        for (child, parent) in file_clones {
+            if newly_refused.contains(parent) {
+                newly_refused.insert(child.clone());
             }
+        }
+        for name in newly_refused {
+            self.unreadable_names
+                .entry(name)
+                .or_insert_with(|| path.to_owned());
         }
     }
 

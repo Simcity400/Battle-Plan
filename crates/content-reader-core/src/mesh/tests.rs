@@ -2972,10 +2972,16 @@ fn recovery_handles_astra_r3_edge_cases() {
         b"objectTypes = { pdxmesh = { name = m file = m.mesh } }",
     );
     write(
+        "base/gfx/entities/00_bad.asset",
+        br#"entity = { name = "order_uncertain" pdxmesh = "m" game_data = { atlas_size = { @u = 1 } } }"#,
+    );
+    write(
         "base/gfx/entities/0_other.asset",
         br#"
             entity = { name = "dropped_clone_target" pdxmesh = "m" }
             entity = { name = "chain_parent" pdxmesh = "m" }
+            entity = { name = "order_parent" pdxmesh = "m" }
+            entity = { name = "order_uncertain" pdxmesh = "m" }
         "#,
     );
     write(
@@ -2986,6 +2992,13 @@ fn recovery_handles_astra_r3_edge_cases() {
             entity = { name = "chain_grandchild" clone = "chain_child" }
         "#,
     );
+    write(
+        "base/gfx/entities/2_order.asset",
+        br#"
+            entity = { name = "order_child" clone = "order_parent" }
+            entity = { name = "order_parent" clone = "order_uncertain" }
+        "#,
+    );
     let overlay_dir = root.join("overlay");
     write(
         "overlay/gfx/entities/1_clone.asset",
@@ -2994,6 +3007,13 @@ fn recovery_handles_astra_r3_edge_cases() {
             entity = { name = "chain_parent" pdxmesh = "m" }
             entity = { name = "chain_child" clone = "chain_parent" }
             entity = { name = "chain_grandchild" clone = "chain_child" }
+        "#,
+    );
+    write(
+        "overlay/gfx/entities/2_order.asset",
+        br#"
+            entity = { name = "order_child" clone = "order_parent" game_data = { atlas_size = { @u = 1 } } }
+            entity = { name = "order_parent" clone = "order_uncertain" }
         "#,
     );
     let descriptor = format!(
@@ -3048,6 +3068,21 @@ fn recovery_handles_astra_r3_edge_cases() {
         );
         assert!(overlay_roster.refused_declaration(descendant).is_some());
     }
+    assert_eq!(
+        overlay_roster
+            .unreadable_names
+            .get("order_parent")
+            .map(String::as_str),
+        Some("gfx/entities/00_bad.asset")
+    );
+    assert!(overlay_roster.refused_declaration("order_parent").is_some());
+    assert_eq!(
+        overlay_roster.unreadable_names.get("order_child"),
+        None,
+        "later refusal in same file must not propagate backward to earlier clone; refused={:?}",
+        overlay_roster.unreadable_names
+    );
+    assert_eq!(overlay_roster.refused_declaration("order_child"), None);
 
     let mut many_short_positions =
         String::from("entity = { name = \"many_short_positions\" pdxmesh = \"m\"\n");
