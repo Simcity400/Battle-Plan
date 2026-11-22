@@ -810,11 +810,13 @@ impl<'n> Reader<'n> {
                     line: token.line,
                     ..defined.value.clone()
                 };
-                let ambiguous = (!skip || defined.value.kind == Kind::Open)
-                    .then(|| self.active_unknown(defined.unknown.as_ref()))
-                    .flatten();
-                if let Some((defined_line, block)) = ambiguous
+                let recovering_scalar = self.recover_unsettled
+                    && matches!(defined.value.kind, Kind::Bare | Kind::Quoted);
+                if !recovering_scalar
+                    && (!skip || defined.value.kind == Kind::Open)
                     && self.unsettled.is_none()
+                    && let Some((defined_line, block)) =
+                        self.active_unknown(defined.unknown.as_ref())
                 {
                     self.unsettled = Some(Misread {
                         kind: crate::DiagnosticKind::Unsettled,
