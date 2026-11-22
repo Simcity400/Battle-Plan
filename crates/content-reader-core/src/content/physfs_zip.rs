@@ -173,9 +173,9 @@ impl Archive {
         &mut self,
         entry: &Entry,
         traced: bool,
-    ) -> ObservedResult<Vec<u8>> {
+    ) -> ObservedResult<Stored> {
         self.io.evidence = traced.then(ReadEvidence::default);
-        let result = self.stored(entry);
+        let result = self.stored_record(entry);
         let evidence = self.io.evidence.take();
         result.map_err(|error| ReadFailure {
             error,
@@ -195,24 +195,46 @@ impl Archive {
         Ok(parse_local_header(entry, &header).map(|offset| entry.local.wrapping_add(offset)))
     }
 
+    #[cfg(test)]
     pub(super) fn stored(&mut self, entry: &Entry) -> io::Result<Vec<u8>> {
+        let mut stored = self.stored_record(entry)?;
+        stored.bytes.truncate(stored.digest_len);
+        Ok(stored.bytes)
+    }
+
+    fn stored_record(&mut self, entry: &Entry) -> io::Result<Stored> {
         let len = self.io.len;
         let start = entry.local.min(len);
-        let end = if entry.local.checked_add(30).is_some_and(|end| end <= len) {
+        let (digest_end, decode_end) = if entry.local.checked_add(30).is_some_and(|end| end <= len)
+        {
             self.io.seek(entry.local);
             let header = self.io.bytes(30)?;
             let lengths = u64::from(u16::from_le_bytes([header[26], header[27]]))
                 + u64::from(u16::from_le_bytes([header[28], header[29]]));
-            entry
-                .local
-                .saturating_add(30 + lengths)
-                .saturating_add(entry.compressed)
-                .min(len)
+            let data = entry.local.saturating_add(30 + lengths);
+            let digest_end = data.saturating_add(entry.compressed).min(len);
+            let extra = u64::from(entry.encrypted()) * 12;
+            let decode_end = if entry.method == 0 {
+                data.saturating_add(extra)
+                    .checked_add(entry.size)
+                    .filter(|&end| end <= len)
+                    .map_or(digest_end, |end| end.max(digest_end))
+            } else {
+                data.saturating_add(extra)
+                    .saturating_add(entry.compressed)
+                    .max(digest_end)
+                    .min(len)
+            };
+            (digest_end, decode_end)
         } else {
-            len
+            (len, len)
         };
         self.io.seek(start);
-        self.io.bytes(end - start)
+        let bytes = self.io.bytes(decode_end - start)?;
+        Ok(Stored {
+            bytes,
+            digest_len: (digest_end - start) as usize,
+        })
     }
 
     fn end_of_central_directory(&mut self) -> io::Result<Directory> {
@@ -548,6 +570,21 @@ fn parse_local_header(entry: &Entry, header: &[u8]) -> Option<u64> {
         return None;
     }
     Some(30 + u64::from(u16_at(26)) + u64::from(u16_at(28)))
+}
+
+pub(super) struct Stored {
+    bytes: Vec<u8>,
+    digest_len: usize,
+}
+
+impl Stored {
+    pub(super) fn digest_bytes(&self) -> &[u8] {
+        &self.bytes[..self.digest_len]
+    }
+
+    pub(super) fn decode_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 pub(super) fn decode_stored(

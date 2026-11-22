@@ -926,7 +926,7 @@ const RECORD_DIGEST_SCHEME: &str = "archive-record-digest-2";
 
 enum RecordBytes {
     Plain(Vec<u8>),
-    Stored(Vec<u8>),
+    Stored(physfs_zip::Stored),
 }
 
 fn record_digest(
@@ -968,14 +968,15 @@ fn record_digest_observed(
         }
         None => {
             let stored = archive.stored_observed(entry, observed.enabled)?;
+            let digest_bytes = stored.digest_bytes();
             let mut hash = Sha256::new();
             hash.update(b"\0unopened archive record\0");
             hash.update(entry.opening());
-            hash.update(&stored);
-            let length = stored.len() as u64;
+            hash.update(digest_bytes);
+            let length = digest_bytes.len() as u64;
             let digest = hash.finalize().into();
             observed
-                .bytes((), &stored)
+                .bytes((), digest_bytes)
                 .map(|()| (digest, RecordBytes::Stored(stored), length))
         }
     };
@@ -2048,9 +2049,13 @@ impl ResolvedLayer {
                     if password.is_none() {
                         return Ok(None);
                     }
-                    let bytes =
-                        physfs_zip::decode_stored(entry, &stored, password, observed.enabled)
-                            .map_err(|failure| failure.context(context))?;
+                    let bytes = physfs_zip::decode_stored(
+                        entry,
+                        stored.decode_bytes(),
+                        password,
+                        observed.enabled,
+                    )
+                    .map_err(|failure| failure.context(context))?;
                     Ok(bytes.map(|bytes| {
                         io_counts::layer_bytes(self, &entry.name, &bytes);
                         observed.bytes((), &bytes).map(|()| bytes)
