@@ -21,6 +21,7 @@ pub const TABLES: [TableId; N] = [
 pub type Capacities = usize;
 pub struct Captured {
     rows: CaptureRows<producer::Entry>,
+    partial_interval: Option<&'static str>,
     deletion_unavailable: Option<&'static str>,
 }
 impl Captured {
@@ -30,11 +31,13 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
+            partial_interval: None,
             deletion_unavailable: None,
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
+        self.partial_interval = None;
         self.deletion_unavailable = None;
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -46,6 +49,7 @@ impl Captured {
     }
     pub fn fail(&mut self, reason: &'static str) {
         self.rows.fail(Outcome::Unavailable { reason });
+        self.partial_interval = None;
         self.deletion_unavailable = Some(reason);
     }
     pub fn capture(
@@ -54,22 +58,33 @@ impl Captured {
         _base: usize,
         _state: usize,
     ) -> [u64; N] {
-        self.capture_with(producer::drain)
+        self.capture_with(producer::drain_interval)
     }
     fn capture_with(
         &mut self,
-        drain: impl FnOnce(&mut Vec<producer::Entry>) -> Result<usize, &'static str>,
+        drain: impl FnOnce(&mut Vec<producer::Entry>) -> Result<producer::Drain, &'static str>,
     ) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match drain(&mut self.rows.rows) {
-            Ok(len) => Outcome::Rows { len },
-            Err(reason) => Outcome::Unavailable { reason },
-        };
+        match drain(&mut self.rows.rows) {
+            Ok(producer::Drain::Rows(len)) => {
+                self.rows.outcome = Outcome::Rows { len };
+            }
+            Ok(producer::Drain::Partial(reason)) => {
+                self.rows.outcome = Outcome::Rows { len: 0 };
+                self.partial_interval = Some(reason);
+            }
+            Err(reason) => {
+                self.rows.outcome = Outcome::Unavailable { reason };
+            }
+        }
         self.deletion_unavailable = producer::deletion_unavailable();
         [qpc().saturating_sub(start).max(0) as u64, 0]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
+        if let Some(reason) = self.partial_interval {
+            return [Outcome::Rows { len: 1 }, Outcome::Unavailable { reason }];
+        }
         [
             self.rows.outcome,
             match self.deletion_unavailable {
@@ -81,6 +96,23 @@ impl Captured {
         ]
     }
     pub fn tables(&self) -> [TableView; N] {
+        if let Some(reason) = self.partial_interval {
+            let Ok(marker_reason) = allocation::string(reason) else {
+                return std::array::from_fn(|_| unavailable("collector allocation failed"));
+            };
+            let Ok(mut rows) = allocation::vec(1) else {
+                return std::array::from_fn(|_| unavailable("collector allocation failed"));
+            };
+            rows.push(EquipmentDestructionRow {
+                coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+                unavailable_reason: Recorded::Value(marker_reason),
+                ..Default::default()
+            });
+            return [
+                TableView::Complete(TableRows::EquipmentDestruction(rows)),
+                unavailable(reason),
+            ];
+        }
         let Outcome::Rows { len } = self.rows.outcome else {
             let reason = match self.rows.outcome {
                 Outcome::Unavailable { reason } => reason,

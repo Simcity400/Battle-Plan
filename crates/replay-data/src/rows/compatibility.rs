@@ -3710,6 +3710,16 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         capture += 1;
     }
+    history[TableId::EquipmentLossCoverage.index()] = appended_at(
+        TableId::EquipmentLossCoverage,
+        EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+        "equipment losses startup coverage",
+        &[AppendedField {
+            index: 15,
+            name: "drain_state",
+            introduced: EQUIPMENT_DESTRUCTION_STARTUP_FORMAT,
+        }],
+    );
     history
 };
 
@@ -4047,6 +4057,9 @@ mod tests {
                     (TableId::FactionTheatres, 4),
                     (TableId::WeatherProvinces, 16),
                 ]);
+            }
+            if format < EQUIPMENT_DESTRUCTION_STARTUP_FORMAT {
+                fewer.push((TableId::EquipmentLossCoverage, 15));
             }
             if format < CONSTRUCTION_OUTPUT_OWNER_FORMAT {
                 fewer.push((TableId::ConstructionLineOutput, 15));
@@ -4608,7 +4621,13 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, CAPTURE_ADDITIONS_FORMAT);
+        assert_eq!(FORMAT_VERSION, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT);
+        let coverage = TableId::EquipmentLossCoverage.last_change();
+        assert_eq!(coverage.format, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT);
+        assert_eq!(coverage.kind, ChangeKind::AppendedOnly);
+        assert!(coverage.gap(TableId::EquipmentLossCoverage, CAPTURE_ADDITIONS_FORMAT).is_none());
+        assert_eq!(coverage.fields(TableId::EquipmentLossCoverage, CAPTURE_ADDITIONS_FORMAT), 15);
+        assert_eq!(coverage.fields(TableId::EquipmentLossCoverage, EQUIPMENT_DESTRUCTION_STARTUP_FORMAT), 16);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

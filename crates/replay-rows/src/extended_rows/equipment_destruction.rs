@@ -227,6 +227,7 @@ pub enum EquipmentDestructionCoverage {
     #[default]
     Complete = 0,
     SupplementalUnavailable = 1,
+    PartialInterval = 2,
 }
 
 impl NativeValue for EquipmentDestructionCoverage {
@@ -245,6 +246,7 @@ impl NativeValue for EquipmentDestructionCoverage {
         match field {
             Field::U8(0) => Ok(Self::Complete),
             Field::U8(1) => Ok(Self::SupplementalUnavailable),
+            Field::U8(2) => Ok(Self::PartialInterval),
             _ => Err(invalid("unsupported equipment destruction coverage")),
         }
     }

@@ -175,6 +175,17 @@ fn drained(country: u32, variant: u32, amount: i64) -> Op {
     )
 }
 
+fn partial_drain(reason: &'static str) -> Op {
+    set(
+        TableId::EquipmentDestruction,
+        EquipmentDestructionRow {
+            coverage: Recorded::Value(EquipmentDestructionCoverage::PartialInterval),
+            unavailable_reason: Recorded::Value(reason.to_owned()),
+            ..Default::default()
+        },
+    )
+}
+
 fn drain_key(country: u32, variant: u32) -> u128 {
     EquipmentDestructionRow { country, cause: EquipmentDestructionCause::LandCombat, variant: handle(variant), ..Default::default() }.key()
 }
@@ -298,8 +309,11 @@ fn equal_consecutive_drains_are_two_events_and_the_partial_startup_claims_nothin
     run.step(first);
     assert_eq!(run.total(GER, GER, LAND, Some(7)), None, "the partial startup interval claims nothing");
     assert_eq!(run.run_cell(6), Some(Cell::Missing), "nothing counted yet");
+    assert_eq!(run.run_cell(7), Some(Cell::Missing), "historical partial startup is never withheld");
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_PARTIAL_INTERVAL)));
     run.step(vec![drained(GER, 7, 5)]);
     assert_eq!(run.total(GER, GER, LAND, Some(7)), number(5));
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_COMPLETE)));
     run.step(Vec::new());
     assert_eq!(run.total(GER, GER, LAND, Some(7)), number(10), "an unchanged drain read again is a second drain");
     run.step(vec![gone(TableId::EquipmentDestruction, drain_key(GER, 7)), drained(ENG, 7, 3)]);
@@ -307,6 +321,63 @@ fn equal_consecutive_drains_are_two_events_and_the_partial_startup_claims_nothin
     assert_eq!(run.total(ENG, ENG, LAND, Some(7)), number(3));
     assert_eq!(run.run_cell(6), number(1), "counted from the first complete drain");
     assert_eq!(run.drain(), "");
+}
+
+#[test]
+fn structured_partial_intervals_with_reworded_text_never_withhold_the_run() {
+    let mut run = Run::new();
+    let mut first = countries();
+    first.push(partial_drain("reworded startup coverage wording"));
+    run.step(first);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), None, "startup partial interval claims nothing");
+    assert_eq!(run.run_cell(6), Some(Cell::Missing), "nothing counted yet");
+    assert_eq!(run.run_cell(7), Some(Cell::Missing), "startup partial interval is not withheld");
+    assert_eq!(run.run_cell(8), Some(Cell::Missing), "no lower bound before counting starts");
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_PARTIAL_INTERVAL)));
+    assert_eq!(run.drain(), "reworded startup coverage wording");
+
+    run.step(vec![gone(TableId::EquipmentDestruction, 0), drained(GER, 7, 5)]);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), number(5));
+    assert_eq!(run.run_cell(6), number(1));
+    assert_eq!(run.run_cell(7), Some(Cell::Missing));
+    assert_eq!(run.run_cell(8), Some(Cell::Missing));
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_COMPLETE)));
+    assert_eq!(run.drain(), "");
+
+    run.step(vec![gone(TableId::EquipmentDestruction, drain_key(GER, 7)), partial_drain("reworded branch transition wording")]);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), number(5), "branch partial interval keeps prior total as a lower bound");
+    assert_eq!(run.run_cell(6), number(1));
+    assert_eq!(run.run_cell(7), Some(Cell::Missing), "branch partial interval does not withhold the run");
+    assert_eq!(run.run_cell(8), number(2), "lower bound begins at the branch partial interval");
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_PARTIAL_INTERVAL)));
+    assert_eq!(run.drain(), "reworded branch transition wording");
+
+    run.step(vec![gone(TableId::EquipmentDestruction, 0), drained(GER, 7, 3)]);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), number(8), "complete drains after a branch partial interval keep counting");
+    assert_eq!(run.run_cell(7), Some(Cell::Missing));
+    assert_eq!(run.run_cell(8), number(2));
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_COMPLETE)));
+
+    run.step(vec![unavailable(TableId::EquipmentDestruction, "drain overflowed")]);
+    assert_eq!(run.total(GER, GER, LAND, Some(7)), Some(Cell::Unrecorded), "a refused drain withholds the run");
+    assert_eq!(run.run_cell(7), number(4));
+    assert_eq!(run.run_cell(15), number(i64::from(Coverage::DRAIN_STATE_WITHHELD)));
+    assert_eq!(run.drain(), "drain overflowed");
+}
+
+#[test]
+fn a_partial_interval_marker_mixed_with_loss_rows_is_refused() {
+    let mut run = Run::new();
+    let mut first = countries();
+    first.push(partial_drain("reworded startup coverage wording"));
+    first.push(drained(GER, 7, 5));
+    run.step(first);
+    let Status::Unavailable { reason } = run.status(TableId::EquipmentLossCoverage) else {
+        panic!("expected unavailable status for mixed partial marker and loss rows");
+    };
+    let view = run.store.view(TableId::EquipmentLossCoverage.index());
+    let text = String::from_utf8_lossy(view.string(reason).unwrap_or_default());
+    assert!(text.contains("partial interval marker"), "{text}");
 }
 
 #[test]

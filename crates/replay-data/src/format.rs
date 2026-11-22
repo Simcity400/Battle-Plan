@@ -251,7 +251,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::CAPTURE_ADDITIONS_FORMAT
+            crate::rows::compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {

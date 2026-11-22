@@ -3,7 +3,7 @@ use replay::{
     columnar_frames::Recording,
     lanes::{Cell, Keys, history},
 };
-use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentLossCoverageRow as Row, TableId};
+use replay_data::rows::{EQUIPMENT_DESTRUCTION_PARTIAL_REASON, EquipmentLossCoverageRow as Row, TableId, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
 #[cfg(any(test, feature = "export-types"))]
@@ -63,6 +63,7 @@ pub struct DestructionCoverageSpan {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RunCells {
     pub drain: Option<String>,
+    pub drain_state: Option<u8>,
     pub unread: Option<u8>,
     pub counted_from: Option<i32>,
     pub withheld_from: Option<i32>,
@@ -84,12 +85,13 @@ pub type Runs<T> = Vec<(i32, i32, Option<T>)>;
 
 const NOT_AVAILABLE: &str = "The equipment-loss tables were not available at these hours";
 const DRAIN_TEXT_UNREAD: &str = "The drain's reason was not read at these hours";
-const COLUMNS: [usize; 15] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+const COLUMNS: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 #[derive(Clone, Debug, Default)]
 pub struct Held {
     pub run: Runs<RunCells>,
     pub country: Runs<CountryCells>,
+    pub legacy_partial_text: bool,
 }
 
 fn number(cell: Option<&Cell>) -> Option<i64> {
@@ -105,6 +107,7 @@ fn hour(cell: Option<&Cell>) -> Option<i32> {
 
 impl Held {
     pub fn read(&mut self, recording: &Recording, run: u32, country: u128, whole: u128, first: i32, last: i32) -> io::Result<()> {
+        self.legacy_partial_text |= recording.format() < EQUIPMENT_DESTRUCTION_STARTUP_FORMAT;
         let keys = [country.min(whole), country.max(whole)];
         let read = dashboard_query::cost::storage(|| history(recording, run, TableId::EquipmentLossCoverage, &COLUMNS, Keys::These(&keys), first, last))?;
         let at = |column: usize| read.columns.binary_search(&column).ok();
@@ -119,6 +122,7 @@ impl Held {
                             Some(Cell::Unrecorded | Cell::Missing) | None => None,
                             Some(_) => Some(DRAIN_TEXT_UNREAD.to_owned()),
                         },
+                        drain_state: number(cell(15)).map(|value| value as u8),
                         unread: number(cell(5)).map(|value| value as u8),
                         counted_from: hour(cell(6)),
                         withheld_from: hour(cell(7)),
@@ -158,13 +162,13 @@ impl Held {
         let counted = self.counted_from();
         let mut out: Vec<DestructionCoverageSpan> = Vec::new();
         for (first, last, cells) in &self.run {
-            let Some(drain) = cells.as_ref().and_then(|cells| cells.drain.clone()) else { continue };
+            let Some(cells) = cells.as_ref() else { continue };
+            let Some(reason) = drain_coverage_reason(cells) else { continue };
             let first = match counted {
                 Some(counted) if *last < counted => continue,
                 Some(counted) => (*first).max(counted),
                 None => continue,
             };
-            let reason = (!drain.is_empty()).then_some(drain);
             match out.last_mut() {
                 Some(held) if held.reason == reason && held.last_hour + 1 == first => held.last_hour = *last,
                 _ => out.push(DestructionCoverageSpan { first_hour: first, last_hour: *last, reason }),
@@ -188,9 +192,7 @@ impl Held {
             match cells {
                 None => note(UnknownReason::DestructionGap, NOT_AVAILABLE, start),
                 Some(cells) => {
-                    for part in cells.drain.as_deref().unwrap_or_default().split("; ").filter(|part| !part.is_empty()) {
-                        note(classify(part), part, start);
-                    }
+                    classify_drain(cells, self.legacy_partial_text, |reason, detail| note(reason, detail, start));
                     if let Some(withheld) = cells.withheld_from {
                         note(UnknownReason::DestructionWithheld, Row::DRAIN_TRUNCATED, withheld.max(counted));
                     }
@@ -283,8 +285,110 @@ impl Held {
     }
 }
 
+fn default_drain_reason(state: u8) -> &'static str {
+    if state & Row::DRAIN_STATE_WITHHELD != 0 {
+        Row::DRAIN_TRUNCATED
+    } else if state & Row::DRAIN_STATE_PARTIAL_INTERVAL != 0 {
+        EQUIPMENT_DESTRUCTION_PARTIAL_REASON
+    } else if state & Row::DRAIN_STATE_NOT_READ != 0 {
+        Row::DRAIN_NOT_READ
+    } else if state & Row::DRAIN_STATE_LOST != 0 {
+        Row::DRAIN_LOST
+    } else if state & Row::DRAIN_STATE_OWNER_UNKNOWN != 0 {
+        Row::DRAIN_OWNER_UNKNOWN
+    } else if state & Row::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE != 0 {
+        Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED
+    } else {
+        Row::DRAIN_TRUNCATED
+    }
+}
+
+fn drain_coverage_reason(cells: &RunCells) -> Option<Option<String>> {
+    match cells.drain_state {
+        Some(Row::DRAIN_STATE_COMPLETE) | None => cells.drain.as_ref().map(|drain| (!drain.is_empty()).then(|| drain.clone())),
+        Some(state) => {
+            let reason = cells.drain.as_deref().filter(|text| !text.is_empty()).map(str::to_owned).unwrap_or_else(|| default_drain_reason(state).to_owned());
+            Some(Some(reason))
+        }
+    }
+}
+
+fn classify_drain(cells: &RunCells, legacy_partial_text: bool, mut note: impl FnMut(UnknownReason, &str)) {
+    let drain = cells.drain.as_deref().unwrap_or_default();
+    if let Some(state) = cells.drain_state {
+        if state == Row::DRAIN_STATE_COMPLETE {
+            for part in drain.split("; ").filter(|part| !part.is_empty()) {
+                note(UnknownReason::DestructionWithheld, part);
+            }
+            return;
+        }
+        if state & !Row::DRAIN_STATE_MASK != 0 {
+            let detail = if drain.is_empty() { Row::DRAIN_TRUNCATED } else { drain };
+            note(UnknownReason::DestructionWithheld, detail);
+            return;
+        }
+        if state & Row::DRAIN_STATE_PARTIAL_INTERVAL != 0 {
+            let detail = if drain.is_empty() { EQUIPMENT_DESTRUCTION_PARTIAL_REASON } else { drain };
+            note(UnknownReason::DestructionGap, detail);
+        }
+        if state & Row::DRAIN_STATE_NOT_READ != 0 {
+            let detail = if drain.is_empty() { Row::DRAIN_NOT_READ } else { drain };
+            note(UnknownReason::DestructionGap, detail);
+        }
+        if state & Row::DRAIN_STATE_LOST != 0 {
+            let detail = if drain.is_empty() { Row::DRAIN_LOST } else { drain };
+            note(UnknownReason::DestructionGap, detail);
+        }
+        let owner = state & Row::DRAIN_STATE_OWNER_UNKNOWN != 0;
+        let supplemental = state & Row::DRAIN_STATE_SUPPLEMENTAL_UNAVAILABLE != 0;
+        if owner && supplemental {
+            let mut parts = drain.split("; ").filter(|part| !part.is_empty());
+            let first = parts.next();
+            let rest: Vec<&str> = parts.collect();
+            if first == Some(Row::DRAIN_OWNER_UNKNOWN) {
+                note(UnknownReason::DestructionUnresolved, Row::DRAIN_OWNER_UNKNOWN);
+                if rest.is_empty() {
+                    note(UnknownReason::DestructionWithheld, Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED);
+                } else {
+                    for part in rest {
+                        note(UnknownReason::DestructionWithheld, part);
+                    }
+                }
+            } else {
+                note(UnknownReason::DestructionUnresolved, Row::DRAIN_OWNER_UNKNOWN);
+                let detail = if drain.is_empty() { Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED } else { drain };
+                note(UnknownReason::DestructionWithheld, detail);
+            }
+        } else if owner {
+            let detail = if drain.is_empty() { Row::DRAIN_OWNER_UNKNOWN } else { drain };
+            note(UnknownReason::DestructionUnresolved, detail);
+        } else if supplemental {
+            let detail = if drain.is_empty() { Row::DRAIN_SUPPLEMENTAL_NOT_RECORDED } else { drain };
+            note(UnknownReason::DestructionWithheld, detail);
+        }
+        if state & Row::DRAIN_STATE_WITHHELD != 0 {
+            let detail = if drain.is_empty() { Row::DRAIN_TRUNCATED } else { drain };
+            note(UnknownReason::DestructionWithheld, detail);
+        }
+        return;
+    }
+    for part in drain.split("; ").filter(|part| !part.is_empty()) {
+        note(classify_text(part, legacy_partial_text), part);
+    }
+}
+
+#[cfg(test)]
 pub fn classify(reason: &str) -> UnknownReason {
-    if reason == Row::DRAIN_NOT_READ || reason == Row::DRAIN_LOST || reason == EQUIPMENT_DESTRUCTION_PARTIAL_REASON {
+    classify_text(reason, false)
+}
+
+#[cfg(test)]
+pub fn classify_historical(reason: &str) -> UnknownReason {
+    classify_text(reason, true)
+}
+
+fn classify_text(reason: &str, legacy_partial_text: bool) -> UnknownReason {
+    if reason == Row::DRAIN_NOT_READ || reason == Row::DRAIN_LOST || (legacy_partial_text && reason == EQUIPMENT_DESTRUCTION_PARTIAL_REASON) {
         UnknownReason::DestructionGap
     } else if reason == Row::DRAIN_OWNER_UNKNOWN {
         UnknownReason::DestructionUnresolved

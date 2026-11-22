@@ -1946,10 +1946,25 @@ pub fn boundary(clock: Option<Clock>) {
     });
 }
 
-pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drain {
+    Rows(usize),
+    Partial(&'static str),
+}
+
+pub fn drain_interval(output: &mut Vec<Entry>) -> Result<Drain, &'static str> {
     drain_buffer(engine_native::walk::Buffer::Growing(output))
 }
-fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
+
+#[cfg(test)]
+pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    match drain_interval(output)? {
+        Drain::Rows(len) => Ok(len),
+        Drain::Partial(reason) => Err(reason),
+    }
+}
+
+fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<Drain, &'static str> {
     #[cfg(test)]
     if !tests::owns_observation() {
         return Err("equipment destruction hooks unavailable (see status unhooked)");
@@ -1970,7 +1985,9 @@ fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<us
     if store.transition {
         store.unproven_queue = false;
         store.entries.clear();
-        return Err("equipment destruction first/branch interval is partial");
+        return Ok(Drain::Partial(
+            replay_data::rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON,
+        ));
     }
     if store.unproven_queue {
         store.unproven_queue = false;
@@ -1991,7 +2008,7 @@ fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<us
     store.entries.clear();
     store.attach_interval = false;
     HANDED_OVER.fetch_add(len as u64, Ordering::Relaxed);
-    Ok(len)
+    Ok(Drain::Rows(len))
 }
 
 pub fn deletion_unavailable() -> Option<&'static str> {
