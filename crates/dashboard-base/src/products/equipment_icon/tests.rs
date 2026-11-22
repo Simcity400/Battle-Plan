@@ -1908,4 +1908,169 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
         diff_err.contains("capital state 2"),
         "expected origin capital state 2 error, got: {diff_err}"
     );
+
+    let shared_capital_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            europe = {
+                tanks_1 = {
+                    pool = { weight = 30 cultures = { western_european_gfx } icons = { GFX_a } }
+                    pool = { weight = 20 icons = { GFX_b } }
+                }
+            }
+            ITA = {
+                tanks_1 = { pool = { weight = 10 icons = { GFX_a } } }
+            }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned(), "ITA".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let shared_capital_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        shared_capital_pools,
+        Default::default(),
+        ["GFX_a".to_owned(), "GFX_b".to_owned()].into(),
+        Default::default(),
+    );
+    let mut shared_capital_frame = diff_country_frame.clone();
+    *shared_capital_frame.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![
+            PoliticsRow {
+                country: 11,
+                original_capital: 1,
+                ..Default::default()
+            },
+            PoliticsRow {
+                country: 21,
+                original_capital: 1,
+                ..Default::default()
+            },
+        ]));
+    let shared_capital_hour =
+        IconHour::read(&shared_capital_frame, &shared_capital_content).unwrap();
+    let shared_capital_variant = VariantDefinitionRow {
+        id: 4,
+        icon_kind: 1,
+        icon: b".".to_vec(),
+        creator_link: 11,
+        origin_link: 21,
+        ..Default::default()
+    };
+    assert_eq!(
+        chosen(
+            &shared_capital_content,
+            &shared_capital_hour,
+            &shared_capital_variant,
+            "tanks_1"
+        ),
+        Ok(Some(Icon::Sprite("GFX_a".into())))
+    );
+
+    let masked_error_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            default = {
+                tanks_1 = { pool = { weight = 10 icons = { GFX_a } } }
+            }
+            europe = {
+                tanks_1 = { pool = { weight = 20 icons = { GFX_b } } }
+            }
+            oceania = {
+                tanks_1 = { pool = { weight = 30 icons = { GFX_refused } } }
+            }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned(), "oceania".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let mut masked_error_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        masked_error_pools,
+        Default::default(),
+        ["GFX_a".to_owned(), "GFX_b".to_owned()].into(),
+        Default::default(),
+    );
+    masked_error_content
+        .refused_sprites
+        .insert("GFX_refused".to_owned(), "refused".to_owned());
+    let masked_error_hour = IconHour::read(&frame, &masked_error_content).unwrap();
+    let masked_error_variant = VariantDefinitionRow {
+        id: 5,
+        origin_link: 11,
+        ..Default::default()
+    };
+    let masked_err = chosen(
+        &masked_error_content,
+        &masked_error_hour,
+        &masked_error_variant,
+        "tanks_1",
+    )
+    .unwrap_err();
+    assert!(
+        masked_err.contains("capital state 1"),
+        "expected proven continent disagreement to take precedence over later asset error, got: {masked_err}"
+    );
+
+    let blocking_error_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            default = {
+                tanks_1 = { pool = { weight = 10 icons = { GFX_a } } }
+            }
+            europe = {
+                tanks_1 = { pool = { weight = 20 icons = { GFX_a } } }
+            }
+            oceania = {
+                tanks_1 = { pool = { weight = 30 icons = { GFX_refused } } }
+            }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned(), "oceania".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let mut blocking_error_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        blocking_error_pools,
+        Default::default(),
+        ["GFX_a".to_owned()].into(),
+        Default::default(),
+    );
+    blocking_error_content
+        .refused_sprites
+        .insert("GFX_refused".to_owned(), "refused".to_owned());
+    let blocking_error_hour = IconHour::read(&frame, &blocking_error_content).unwrap();
+    assert_eq!(
+        chosen(
+            &blocking_error_content,
+            &blocking_error_hour,
+            &masked_error_variant,
+            "tanks_1",
+        ),
+        Err("sprite GFX_refused is refused: refused".to_owned())
+    );
 }

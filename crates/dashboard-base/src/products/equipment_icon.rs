@@ -97,42 +97,43 @@ impl IconChoice {
             }
             return branch.otherwise.clone().map(|()| None);
         }
-        let mut cache: BTreeMap<&Probe, Option<Icon>> = BTreeMap::new();
-        let mut outcomes: Vec<Option<Icon>> = Vec::with_capacity(self.branches.len());
+        let mut cache: BTreeMap<&Probe, Result<Option<Icon>, String>> = BTreeMap::new();
+        let mut outcomes: Vec<Result<Option<Icon>, String>> =
+            Vec::with_capacity(self.branches.len());
         for branch in &self.branches {
-            let mut found = None;
+            let mut outcome = None;
             for probe in &branch.probes {
                 let hit = if let Some(cached) = cache.get(probe) {
                     cached.clone()
                 } else {
-                    let result = answer(probe)?;
+                    let result = answer(probe);
                     cache.insert(probe, result.clone());
                     result
                 };
-                if let Some(icon) = hit {
-                    found = Some(icon);
-                    break;
+                match hit {
+                    Ok(Some(icon)) => {
+                        outcome = Some(Ok(Some(icon)));
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        outcome = Some(Err(error));
+                        break;
+                    }
                 }
             }
-            let outcome = match found {
-                Some(icon) => Some(icon),
-                None => {
-                    branch.otherwise.clone()?;
-                    None
-                }
-            };
-            outcomes.push(outcome);
-        }
-        let Some(first) = outcomes.first() else {
-            return Ok(None);
-        };
-        if outcomes.iter().all(|outcome| outcome == first) {
-            return Ok(first.clone());
+            outcomes.push(outcome.unwrap_or_else(|| branch.otherwise.clone().map(|()| None)));
         }
         for index in 0..self.reasons.len() {
             for a in 0..self.branches.len() {
+                let Ok(left_icon) = &outcomes[a] else {
+                    continue;
+                };
                 for b in (a + 1)..self.branches.len() {
-                    if outcomes[a] == outcomes[b] {
+                    let Ok(right_icon) = &outcomes[b] else {
+                        continue;
+                    };
+                    if left_icon == right_icon {
                         continue;
                     }
                     let same_other = self.branches[a]
@@ -147,11 +148,41 @@ impl IconChoice {
                 }
             }
         }
-        Err(self
-            .reasons
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "continent unknown".to_owned()))
+        for a in 0..self.branches.len() {
+            let Ok(left_icon) = &outcomes[a] else {
+                continue;
+            };
+            for b in (a + 1)..self.branches.len() {
+                let Ok(right_icon) = &outcomes[b] else {
+                    continue;
+                };
+                if left_icon == right_icon {
+                    continue;
+                }
+                if let Some(index) = self.branches[a]
+                    .assignment
+                    .iter()
+                    .zip(&self.branches[b].assignment)
+                    .position(|(left, right)| left != right)
+                    && let Some(reason) = self.reasons.get(index)
+                {
+                    return Err(reason.clone());
+                }
+                return Err(self
+                    .reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "continent unknown".to_owned()));
+            }
+        }
+        let mut agreed: Option<&Option<Icon>> = None;
+        for outcome in &outcomes {
+            match outcome {
+                Ok(icon) => agreed = Some(icon),
+                Err(error) => return Err(error.clone()),
+            }
+        }
+        Ok(agreed.cloned().flatten())
     }
 
     pub fn shown(&self, catalogue: &Catalogue) -> Result<Option<Icon>, String> {
@@ -835,13 +866,19 @@ impl IconHour {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ContinentFact {
+    State(u32),
+    Slot(u32),
+}
+
 enum PoolMode<'a> {
     Discover {
-        unknowns: &'a mut Vec<(u32, String, BTreeSet<String>)>,
+        unknowns: &'a mut Vec<(ContinentFact, String, BTreeSet<String>)>,
         probes: &'a mut Vec<Probe>,
     },
     Assume {
-        continents: &'a BTreeMap<u32, Option<String>>,
+        continents: &'a BTreeMap<ContinentFact, Option<String>>,
         probes: &'a mut Vec<Probe>,
     },
 }
@@ -911,10 +948,10 @@ pub fn icon_choice(
     let reasons: Vec<String> = unknowns.iter().map(|(_, why, _)| why.clone()).collect();
     let mut branches = Vec::with_capacity(assignments.len());
     for assignment in assignments {
-        let continents: BTreeMap<u32, Option<String>> = unknowns
+        let continents: BTreeMap<ContinentFact, Option<String>> = unknowns
             .iter()
             .zip(&assignment)
-            .map(|((slot, _, _), continent)| (*slot, continent.clone()))
+            .map(|((fact, _, _), continent)| (*fact, continent.clone()))
             .collect();
         let mut branch_probes = Vec::new();
         let branch_otherwise = rule(
@@ -1183,11 +1220,14 @@ fn pool(
         .family
         .map(|name| type_model(&content.units, name).map(|family| (name, family.archetype)))
         .transpose()?;
-    let (place, canonical_slot, country_tag, capital_continent) = match country {
+    let (place, continent_fact, country_tag, capital_continent) = match country {
         Some(raw) => {
             let prepared = hour.prepared.as_ref().map_err(Clone::clone)?;
             let place = prepared.context(raw)?;
-            let canonical_slot = prepared.slot(raw);
+            let continent_fact = prepared
+                .capital_state(raw)
+                .map(ContinentFact::State)
+                .or_else(|| prepared.slot(raw).map(ContinentFact::Slot));
             let country_tag = if place.is_some() {
                 Some(hour.witnessed_tag(raw)?)
             } else {
@@ -1201,7 +1241,7 @@ fn pool(
                     .map_err(String::as_str),
                 None => Ok(None),
             };
-            (place, canonical_slot, country_tag, capital_continent)
+            (place, continent_fact, country_tag, capital_continent)
         }
         None => (None, None, None, Ok(None)),
     };
@@ -1217,8 +1257,8 @@ fn pool(
         capital_continent,
     };
     let has_dlc = |name: &str| Some(content.dlc.contains(name));
-    match (canonical_slot, capital_continent, mode) {
-        (Some(slot), Err(why), PoolMode::Discover { unknowns, probes }) => {
+    match (continent_fact, capital_continent, mode) {
+        (Some(fact), Err(why), PoolMode::Discover { unknowns, probes }) => {
             let relevant = content.pools.relevant_icon_continents(&context, has_dlc);
             if relevant.is_empty() {
                 let branch = content
@@ -1227,14 +1267,14 @@ fn pool(
                 for candidate in branch.items {
                     probes.push(Probe::Existing(candidate));
                 }
-            } else if let Some((_, _, set)) = unknowns.iter_mut().find(|(id, _, _)| *id == slot) {
+            } else if let Some((_, _, set)) = unknowns.iter_mut().find(|(id, _, _)| *id == fact) {
                 set.extend(relevant);
             } else {
-                unknowns.push((slot, why.to_owned(), relevant.into_iter().collect()));
+                unknowns.push((fact, why.to_owned(), relevant.into_iter().collect()));
             }
         }
-        (Some(slot), Err(why), PoolMode::Assume { continents, probes }) => {
-            let assumed = continents.get(&slot).and_then(|c| c.as_deref());
+        (Some(fact), Err(why), PoolMode::Assume { continents, probes }) => {
+            let assumed = continents.get(&fact).and_then(|c| c.as_deref());
             let branch = content
                 .pools
                 .lookup_icon_branch(&context, assumed, has_dlc)?;

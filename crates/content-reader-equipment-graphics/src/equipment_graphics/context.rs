@@ -132,12 +132,14 @@ pub struct CountryContext {
 pub struct Prepared {
     slots: BTreeMap<u32, u32>,
     contexts: BTreeMap<u32, CountryContext>,
+    capital_states: BTreeMap<u32, u32>,
 }
 
 impl Prepared {
     pub fn heap(&self) -> usize {
         let text = |text: &String| std::mem::size_of::<String>() + text.len();
         self.slots.len() * 2 * std::mem::size_of::<u32>()
+            + self.capital_states.len() * 2 * std::mem::size_of::<u32>()
             + self
                 .contexts
                 .values()
@@ -242,6 +244,7 @@ impl Prepared {
             faction_tags.insert(faction, ordered);
         }
         let mut contexts = BTreeMap::new();
+        let mut capital_states = BTreeMap::new();
         for (country_slot, tag) in tags {
             let capital = *capital_by_slot
                 .get(&country_slot)
@@ -249,6 +252,7 @@ impl Prepared {
             let capital_continent = if capital <= 0 {
                 Ok(None)
             } else if let Some(state) = states_by_id.get(&(capital as u32)) {
+                capital_states.insert(country_slot, capital as u32);
                 match state.continent {
                     Recorded::Value(Some(0)) => Ok(None),
                     Recorded::Value(Some(token)) => match &lexical {
@@ -293,7 +297,11 @@ impl Prepared {
                 },
             );
         }
-        Ok(Self { slots, contexts })
+        Ok(Self {
+            slots,
+            contexts,
+            capital_states,
+        })
     }
 
     pub fn slot(&self, country_ref: u32) -> Option<u32> {
@@ -301,6 +309,11 @@ impl Prepared {
             return None;
         }
         self.slots.get(&country_ref).copied()
+    }
+
+    pub fn capital_state(&self, country_ref: u32) -> Option<u32> {
+        let slot = self.slot(country_ref)?;
+        self.capital_states.get(&slot).copied()
     }
 
     pub fn context(&self, country_ref: u32) -> Result<Option<&CountryContext>, String> {
@@ -348,6 +361,7 @@ mod tests {
                 },
             )]
             .into(),
+            capital_states: BTreeMap::new(),
         };
         assert_eq!(prepared.context(0), Ok(None));
         assert_eq!(prepared.context(u32::MAX), Ok(None));
