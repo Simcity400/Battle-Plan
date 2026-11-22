@@ -491,7 +491,19 @@ pub(super) fn convoy_weapon_bound_from_database(
                 let mut pure_avg_delta_range = [0_i64, 0_i64];
                 let mut pure_avg_pos_sum = 0_i64;
                 let mut pure_avg_neg_sum = 0_i64;
-                let mut correlated: Vec<(i64, i64, Vec<i64>)> = Vec::new();
+                struct CorrelatedGroup {
+                    add: i64,
+                    mul: i64,
+                    avg_sum: i64,
+                    avg_cnt: i64,
+                    count: usize,
+                    avg_min_delta: i64,
+                    avg_max_delta: i64,
+                    avg_pos_sum: i64,
+                    avg_neg_sum: i64,
+                }
+                let mut correlated_by_key: BTreeMap<(i64, i64, i64, i64), CorrelatedGroup> =
+                    BTreeMap::new();
                 for (_, module) in &equipment.default_modules {
                     let Some(group) = database.module_stats(module) else {
                         continue;
@@ -561,7 +573,46 @@ pub(super) fn convoy_weapon_bound_from_database(
                             pure_mul_range[1].checked_add(mod_mul.max(0))?,
                         ];
                     } else {
-                        correlated.push((mod_add, mod_mul, mod_avg));
+                        let mut mod_avg_sum = 0_i64;
+                        let mut mod_avg_min = 0_i64;
+                        let mut mod_avg_max = 0_i64;
+                        let mut mod_avg_pos = 0_i64;
+                        let mut mod_avg_neg = 0_i64;
+                        for &delta in &mod_avg {
+                            mod_avg_sum = mod_avg_sum.checked_add(delta)?;
+                            mod_avg_min = mod_avg_min.min(delta);
+                            mod_avg_max = mod_avg_max.max(delta);
+                            if delta > 0 {
+                                mod_avg_pos = mod_avg_pos.checked_add(delta)?;
+                                mod_avg_pos.checked_mul(100_000)?;
+                            } else if delta < 0 {
+                                mod_avg_neg = mod_avg_neg.checked_add(delta)?;
+                                mod_avg_neg.checked_mul(100_000)?;
+                            }
+                        }
+                        let mod_avg_cnt = i64::try_from(mod_avg.len()).ok()?;
+                        mod_avg_sum.checked_mul(100_000)?;
+                        mod_avg_cnt.checked_mul(100_000)?;
+                        let entry = correlated_by_key
+                            .entry((mod_add, mod_mul, mod_avg_sum, mod_avg_cnt))
+                            .or_insert(CorrelatedGroup {
+                                add: mod_add,
+                                mul: mod_mul,
+                                avg_sum: mod_avg_sum,
+                                avg_cnt: mod_avg_cnt,
+                                count: 0,
+                                avg_min_delta: 0,
+                                avg_max_delta: 0,
+                                avg_pos_sum: 0,
+                                avg_neg_sum: 0,
+                            });
+                        entry.count = entry.count.checked_add(1)?;
+                        entry.avg_min_delta = entry.avg_min_delta.min(mod_avg_min);
+                        entry.avg_max_delta = entry.avg_max_delta.max(mod_avg_max);
+                        entry.avg_pos_sum = entry.avg_pos_sum.checked_add(mod_avg_pos)?;
+                        entry.avg_pos_sum.checked_mul(100_000)?;
+                        entry.avg_neg_sum = entry.avg_neg_sum.checked_add(mod_avg_neg)?;
+                        entry.avg_neg_sum.checked_mul(100_000)?;
                     }
                 }
                 let mut pure_avg_groups: Vec<(i64, i64)> = pure_avg_by_ratio.into_values().collect();
@@ -569,6 +620,8 @@ pub(super) fn convoy_weapon_bound_from_database(
                     (i128::from(a_sum) * i128::from(b_cnt))
                         .cmp(&(i128::from(b_sum) * i128::from(a_cnt)))
                 });
+                let correlated_groups: Vec<CorrelatedGroup> =
+                    correlated_by_key.into_values().collect();
                 for term in equipment
                     .scaled_by_reliability
                     .iter()
@@ -580,23 +633,30 @@ pub(super) fn convoy_weapon_bound_from_database(
                         pure_add_range[1].checked_add(term.value.max(0))?,
                     ];
                 }
-                if correlated.len() <= 12 {
+                let total_states = correlated_groups
+                    .iter()
+                    .try_fold(1_usize, |acc, group| acc.checked_mul(group.count.checked_add(1)?));
+                if let Some(states) = total_states
+                    && states <= 4096
+                {
                     let mut best: Option<[i64; 2]> = None;
-                    for mask in 0..(1_usize << correlated.len()) {
+                    for state in 0..states {
+                        let mut rem = state;
                         let mut corr_add = 0_i64;
                         let mut corr_mul = 0_i64;
                         let mut avg_sum = 0_i64;
                         let mut avg_count = 0_i64;
-                        for (bit, (mod_add, mod_mul, mod_avg)) in correlated.iter().enumerate() {
-                            if mask & (1 << bit) == 0 {
+                        for group in &correlated_groups {
+                            let radix = group.count + 1;
+                            let k = i64::try_from(rem % radix).ok()?;
+                            rem /= radix;
+                            if k == 0 {
                                 continue;
                             }
-                            corr_add = corr_add.checked_add(*mod_add)?;
-                            corr_mul = corr_mul.checked_add(*mod_mul)?;
-                            for &delta in mod_avg {
-                                avg_sum = avg_sum.checked_add(delta)?;
-                                avg_count = avg_count.checked_add(1)?;
-                            }
+                            corr_add = corr_add.checked_add(group.add.checked_mul(k)?)?;
+                            corr_mul = corr_mul.checked_add(group.mul.checked_mul(k)?)?;
+                            avg_sum = avg_sum.checked_add(group.avg_sum.checked_mul(k)?)?;
+                            avg_count = avg_count.checked_add(group.avg_cnt.checked_mul(k)?)?;
                         }
                         let base_avg = if avg_count > 0 {
                             avg_sum.checked_mul(100_000)? / avg_count.checked_mul(100_000)?
@@ -649,54 +709,60 @@ pub(super) fn convoy_weapon_bound_from_database(
                     }
                     return best;
                 }
-                let (mul_coupled, non_mul): (Vec<_>, Vec<_>) = correlated
+                let (mul_coupled, non_mul): (Vec<_>, Vec<_>) = correlated_groups
                     .into_iter()
-                    .partition(|(_, mod_mul, _)| *mod_mul != 0);
+                    .partition(|group| group.mul != 0);
                 let mut add_range = pure_add_range;
                 let mut avg_range = pure_avg_delta_range;
                 let mut avg_pos_sum = pure_avg_pos_sum;
                 let mut avg_neg_sum = pure_avg_neg_sum;
-                for (mod_add, _, mod_avg) in &non_mul {
+                for group in &non_mul {
+                    let count = i64::try_from(group.count).ok()?;
+                    let total_add = group.add.checked_mul(count)?;
                     add_range = [
-                        add_range[0].checked_add((*mod_add).min(0))?,
-                        add_range[1].checked_add((*mod_add).max(0))?,
+                        add_range[0].checked_add(total_add.min(0))?,
+                        add_range[1].checked_add(total_add.max(0))?,
                     ];
-                    for &delta in mod_avg {
-                        if delta > 0 {
-                            avg_pos_sum = avg_pos_sum.checked_add(delta)?;
-                            avg_pos_sum.checked_mul(100_000)?;
-                        } else if delta < 0 {
-                            avg_neg_sum = avg_neg_sum.checked_add(delta)?;
-                            avg_neg_sum.checked_mul(100_000)?;
-                        }
-                        avg_range = [avg_range[0].min(delta), avg_range[1].max(delta)];
-                    }
+                    avg_pos_sum = avg_pos_sum.checked_add(group.avg_pos_sum)?;
+                    avg_pos_sum.checked_mul(100_000)?;
+                    avg_neg_sum = avg_neg_sum.checked_add(group.avg_neg_sum)?;
+                    avg_neg_sum.checked_mul(100_000)?;
+                    avg_range = [
+                        avg_range[0].min(group.avg_min_delta),
+                        avg_range[1].max(group.avg_max_delta),
+                    ];
                 }
-                if mul_coupled.len() <= 12 {
+                let mul_states = mul_coupled
+                    .iter()
+                    .try_fold(1_usize, |acc, group| acc.checked_mul(group.count.checked_add(1)?));
+                if let Some(states) = mul_states
+                    && states <= 4096
+                {
                     let mut best: Option<[i64; 2]> = None;
-                    for mask in 0..(1_usize << mul_coupled.len()) {
+                    for state in 0..states {
+                        let mut rem = state;
                         let mut corr_add = 0_i64;
                         let mut corr_mul = 0_i64;
                         let mut mask_avg_range = avg_range;
                         let mut mask_pos_sum = avg_pos_sum;
                         let mut mask_neg_sum = avg_neg_sum;
-                        for (bit, (mod_add, mod_mul, mod_avg)) in mul_coupled.iter().enumerate() {
-                            if mask & (1 << bit) == 0 {
+                        for group in &mul_coupled {
+                            let radix = group.count + 1;
+                            let k = i64::try_from(rem % radix).ok()?;
+                            rem /= radix;
+                            if k == 0 {
                                 continue;
                             }
-                            corr_add = corr_add.checked_add(*mod_add)?;
-                            corr_mul = corr_mul.checked_add(*mod_mul)?;
-                            for &delta in mod_avg {
-                                if delta > 0 {
-                                    mask_pos_sum = mask_pos_sum.checked_add(delta)?;
-                                    mask_pos_sum.checked_mul(100_000)?;
-                                } else if delta < 0 {
-                                    mask_neg_sum = mask_neg_sum.checked_add(delta)?;
-                                    mask_neg_sum.checked_mul(100_000)?;
-                                }
-                                mask_avg_range =
-                                    [mask_avg_range[0].min(delta), mask_avg_range[1].max(delta)];
-                            }
+                            corr_add = corr_add.checked_add(group.add.checked_mul(k)?)?;
+                            corr_mul = corr_mul.checked_add(group.mul.checked_mul(k)?)?;
+                            mask_pos_sum = mask_pos_sum.checked_add(group.avg_pos_sum)?;
+                            mask_pos_sum.checked_mul(100_000)?;
+                            mask_neg_sum = mask_neg_sum.checked_add(group.avg_neg_sum)?;
+                            mask_neg_sum.checked_mul(100_000)?;
+                            mask_avg_range = [
+                                mask_avg_range[0].min(group.avg_min_delta),
+                                mask_avg_range[1].max(group.avg_max_delta),
+                            ];
                         }
                         let value_range = [
                             add_range[0]
@@ -726,25 +792,26 @@ pub(super) fn convoy_weapon_bound_from_database(
                     return best;
                 }
                 let mut mul_range = pure_mul_range;
-                for (mod_add, mod_mul, mod_avg) in &mul_coupled {
+                for group in &mul_coupled {
+                    let count = i64::try_from(group.count).ok()?;
+                    let total_add = group.add.checked_mul(count)?;
+                    let total_mul = group.mul.checked_mul(count)?;
                     add_range = [
-                        add_range[0].checked_add((*mod_add).min(0))?,
-                        add_range[1].checked_add((*mod_add).max(0))?,
+                        add_range[0].checked_add(total_add.min(0))?,
+                        add_range[1].checked_add(total_add.max(0))?,
                     ];
                     mul_range = [
-                        mul_range[0].checked_add((*mod_mul).min(0))?,
-                        mul_range[1].checked_add((*mod_mul).max(0))?,
+                        mul_range[0].checked_add(total_mul.min(0))?,
+                        mul_range[1].checked_add(total_mul.max(0))?,
                     ];
-                    for &delta in mod_avg {
-                        if delta > 0 {
-                            avg_pos_sum = avg_pos_sum.checked_add(delta)?;
-                            avg_pos_sum.checked_mul(100_000)?;
-                        } else if delta < 0 {
-                            avg_neg_sum = avg_neg_sum.checked_add(delta)?;
-                            avg_neg_sum.checked_mul(100_000)?;
-                        }
-                        avg_range = [avg_range[0].min(delta), avg_range[1].max(delta)];
-                    }
+                    avg_pos_sum = avg_pos_sum.checked_add(group.avg_pos_sum)?;
+                    avg_pos_sum.checked_mul(100_000)?;
+                    avg_neg_sum = avg_neg_sum.checked_add(group.avg_neg_sum)?;
+                    avg_neg_sum.checked_mul(100_000)?;
+                    avg_range = [
+                        avg_range[0].min(group.avg_min_delta),
+                        avg_range[1].max(group.avg_max_delta),
+                    ];
                 }
                 let value_range = [
                     add_range[0].checked_add(avg_range[0])?,

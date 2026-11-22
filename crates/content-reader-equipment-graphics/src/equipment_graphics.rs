@@ -251,6 +251,13 @@ pub struct SinglePlan {
 
 impl SinglePlan {
     pub fn resolve(&self, accept: impl Fn(&str) -> bool) -> Result<Option<String>, String> {
+        if self.branches.len() == 1 && self.ambiguity.is_none() {
+            return Ok(self.branches[0]
+                .items
+                .iter()
+                .find(|item| accept(item))
+                .cloned());
+        }
         let mut cache: BTreeMap<&str, bool> = BTreeMap::new();
         let mut agreed: Option<Option<&str>> = None;
         for branch in &self.branches {
@@ -611,6 +618,178 @@ impl Content {
         )
     }
 
+    pub fn relevant_icon_continents(
+        &self,
+        context: &Context<'_>,
+        has_dlc: impl Fn(&str) -> Option<bool>,
+    ) -> Vec<String> {
+        if context.country.is_none() {
+            return Vec::new();
+        }
+        let mut contexts = vec![(context.equipment, context.archetype)];
+        if let Some(family) = context.family
+            && family.0 != context.equipment
+        {
+            contexts.push(family);
+        }
+        let mut continents = Vec::new();
+        for (bucket, definitions) in &self.buckets {
+            let Bucket::Continent(continent) = bucket else {
+                continue;
+            };
+            let mut relevant = false;
+            'scan: for &(equipment, archetype) in &contexts {
+                for name in [Some(equipment), archetype].into_iter().flatten() {
+                    let Some(pools) = definitions.get(&name.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    for pool in pools
+                        .iter()
+                        .rev()
+                        .filter(|pool| !pool.icons.is_empty() && pool.matches(context))
+                    {
+                        if !matches!(has_dlc.holds(pool.id, &pool.limit), Ok(false)) {
+                            relevant = true;
+                            break 'scan;
+                        }
+                    }
+                }
+            }
+            if relevant {
+                continents.push(continent.clone());
+            }
+        }
+        continents
+    }
+
+    pub fn lookup_icon_branch(
+        &self,
+        context: &Context<'_>,
+        assumed_continent: Option<&str>,
+        has_dlc: impl Fn(&str) -> Option<bool>,
+    ) -> Result<CandidateBranch, String> {
+        let mut buckets = Vec::new();
+        if let Some(country) = context.country {
+            buckets.push((Bucket::Country(country.to_owned()), 0_u8));
+            buckets.extend(
+                context
+                    .faction_tags
+                    .iter()
+                    .cloned()
+                    .map(|tag| (Bucket::Faction(tag), 0_u8)),
+            );
+        }
+        buckets.push((Bucket::Default, 2_u8));
+        let mut contexts = vec![(context.equipment, context.archetype)];
+        if let Some(family) = context.family
+            && family.0 != context.equipment
+        {
+            contexts.push(family);
+        }
+        let mut pools_out = Vec::new();
+        let mut ordinal = 0_usize;
+        for (context_index, &(equipment, archetype)) in contexts.iter().enumerate() {
+            for (bucket, phase) in &buckets {
+                let Some(definitions) = self.buckets.get(bucket) else {
+                    continue;
+                };
+                for name in [Some(equipment), archetype].into_iter().flatten() {
+                    let Some(pools) = definitions.get(&name.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    for pool in pools
+                        .iter()
+                        .rev()
+                        .filter(|pool| !pool.icons.is_empty() && pool.matches(context))
+                    {
+                        if has_dlc.holds(pool.id, &pool.limit).map_err(|reason| {
+                            format!(
+                                "equipment graphics pool for {name} in {}: {reason}",
+                                pool.file
+                            )
+                        })? {
+                            pools_out.push((pool, context_index, *phase, ordinal));
+                            ordinal += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let mut unknown_limit_cutoff: Option<(std::cmp::Reverse<i64>, usize, u8, usize)> = None;
+        if context.country.is_some()
+            && let Some(continent) = assumed_continent
+            && let Some(definitions) = self
+                .buckets
+                .get(&Bucket::Continent(continent.to_ascii_lowercase()))
+        {
+            let mut continent_ordinal = 0_usize;
+            for (context_index, &(equipment, archetype)) in contexts.iter().enumerate() {
+                for name in [Some(equipment), archetype].into_iter().flatten() {
+                    let Some(pools) = definitions.get(&name.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    for pool in pools
+                        .iter()
+                        .rev()
+                        .filter(|pool| !pool.icons.is_empty() && pool.matches(context))
+                    {
+                        let visit = continent_ordinal;
+                        continent_ordinal += 1;
+                        match has_dlc.holds(pool.id, &pool.limit) {
+                            Ok(true) => {
+                                pools_out.push((pool, context_index, 1_u8, visit));
+                            }
+                            Ok(false) => {}
+                            Err(_) => {
+                                let rank = (
+                                    std::cmp::Reverse(pool.icons_weight()),
+                                    context_index,
+                                    1_u8,
+                                    visit,
+                                );
+                                unknown_limit_cutoff = Some(match unknown_limit_cutoff {
+                                    Some(current) => current.min(rank),
+                                    None => rank,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        pools_out.sort_by_key(|&(pool, context_index, phase, visit)| {
+            (
+                std::cmp::Reverse(pool.icons_weight()),
+                context_index,
+                phase,
+                visit,
+            )
+        });
+        let mut seen = BTreeSet::new();
+        let mut items = Vec::new();
+        for (pool, context_index, phase, visit) in pools_out {
+            if unknown_limit_cutoff.is_some_and(|limit| {
+                (
+                    std::cmp::Reverse(pool.icons_weight()),
+                    context_index,
+                    phase,
+                    visit,
+                ) >= limit
+            }) {
+                break;
+            }
+            for item in pool.icons.iter().rev() {
+                if seen.insert(item.as_str()) {
+                    items.push(item.clone());
+                }
+            }
+        }
+        Ok(CandidateBranch {
+            items,
+            truncated: unknown_limit_cutoff.is_some(),
+        })
+    }
+
     fn plan_single(
         &self,
         context: &Context<'_>,
@@ -684,6 +863,20 @@ impl Content {
                 }
             }
         }
+        let Some(why) = unknown_continent else {
+            known_pools.sort_by_key(|&(pool, _, _, _)| std::cmp::Reverse(weight_of(pool)));
+            let items = known_pools
+                .into_iter()
+                .flat_map(|(pool, _, _, _)| items_of(pool).iter().rev().cloned())
+                .collect();
+            return Ok(SinglePlan {
+                branches: vec![CandidateBranch {
+                    items,
+                    truncated: false,
+                }],
+                ambiguity: None,
+            });
+        };
         let unique_sequence = |pools: &[(&Pool, usize, u8, usize)],
                                cutoff: Option<(std::cmp::Reverse<i64>, usize, u8, usize)>|
          -> Vec<String> {
@@ -710,12 +903,6 @@ impl Content {
         let base_branch = CandidateBranch {
             items: unique_sequence(&known_pools, None),
             truncated: false,
-        };
-        let Some(why) = unknown_continent else {
-            return Ok(SinglePlan {
-                branches: vec![base_branch],
-                ambiguity: None,
-            });
         };
         let mut branches = vec![base_branch];
         for (bucket, definitions) in &self.buckets {

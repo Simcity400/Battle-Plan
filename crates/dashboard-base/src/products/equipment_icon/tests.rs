@@ -1626,4 +1626,107 @@ fn unknown_continent_prepared_icon_choice_keeps_common_winner_across_continents(
             .is_err()
     );
     assert_eq!(prepared.walk(|_| Ok(None)), Ok(None));
+
+    let family_pools = equipment_graphics::Content::from_texts(
+        &[br#"
+            europe = {
+                tanks_family = { pool = { weight = 10 icons = { GFX_a } } }
+                tanks_1 = { pool = { weight = 20 icons = { GFX_b } } }
+            }
+            default = {
+                tanks_1 = { pool = { weight = 10 icons = { GFX_a } } }
+            }
+        "#],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let family_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_family = { archetype = tanks }
+                tanks_1 = { archetype = tanks family = tanks_family }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        family_pools,
+        Default::default(),
+        ["GFX_a".to_owned(), "GFX_b".to_owned()].into(),
+        Default::default(),
+    );
+    let family_hour = IconHour::read(&frame, &family_content).unwrap();
+    assert_eq!(
+        chosen(&family_content, &family_hour, &from_germany, "tanks_1"),
+        Ok(Some(Icon::Sprite("GFX_a".into())))
+    );
+    let family_choice =
+        super::icon_choice(&family_content, &family_hour, &from_germany, "tanks_1");
+    assert!(
+        family_choice
+            .walk(|probe| match probe {
+                super::Probe::Existing(name) if name == "GFX_b" => {
+                    Ok(Some(Icon::Sprite(name.clone())))
+                }
+                _ => Ok(None),
+            })
+            .is_err()
+    );
+    assert_eq!(family_choice.walk(|_| Ok(None)), Ok(None));
+
+    let mut deep_icons = String::from("default = { tanks_1 = { pool = { icons = { GFX_tail_ok ");
+    for i in 0..20_000 {
+        deep_icons.push_str(&format!("GFX_miss_{i} "));
+    }
+    deep_icons.push_str("} } } }");
+    let deep_pools = equipment_graphics::Content::from_texts(
+        &[deep_icons.as_bytes()],
+        &equipment_graphics::Names {
+            countries: ["GER".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        },
+    )
+    .unwrap();
+    let deep_content = IconContent::from_parts(
+        equipment_types(&[br#"
+            equipments = {
+                tanks = { is_archetype = yes type = armor }
+                tanks_1 = { archetype = tanks }
+            }
+        "#])
+        .unwrap(),
+        Default::default(),
+        deep_pools,
+        Default::default(),
+        ["GFX_tail_ok".to_owned()].into(),
+        Default::default(),
+    );
+    let mut known_frame = frame.clone();
+    *known_frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        StateRow {
+            id: 1,
+            continent: Recorded::Value(Some(0)),
+            ..Default::default()
+        },
+    ]));
+    let deep_hour = IconHour::read(&known_frame, &deep_content).unwrap();
+    let deep_choice = super::icon_choice(&deep_content, &deep_hour, &from_germany, "tanks_1");
+    let handle = std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            deep_choice.walk(|probe| match probe {
+                super::Probe::Existing(name) if name == "GFX_tail_ok" => {
+                    Ok(Some(Icon::Sprite(name.clone())))
+                }
+                _ => Ok(None),
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        handle.join().unwrap(),
+        Ok(Some(Icon::Sprite("GFX_tail_ok".into())))
+    );
 }

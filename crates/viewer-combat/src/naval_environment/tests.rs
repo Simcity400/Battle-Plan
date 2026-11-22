@@ -908,6 +908,26 @@ fn convoy_weapon_bound_accounts_for_reliability_scaling_and_module_multipliers()
         bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
         Some(0)
     );
+    let (bound, misreads) = bound_of(
+        "equipment_modules = {
+            combined = { add_stats = { lg_attack = 0.08 } add_average_stats = { lg_attack = -0.1 } }
+         }
+         equipments = {
+            thirteen_combined = { type = convoy
+                default_modules = {
+                    s1 = combined s2 = combined s3 = combined s4 = combined
+                    s5 = combined s6 = combined s7 = combined s8 = combined
+                    s9 = combined s10 = combined s11 = combined s12 = combined
+                    s13 = combined
+                } }
+         }",
+    );
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(bound, Ok([-2_000, 94_000]));
+    assert_eq!(
+        bounded_total(0, 1, bound.as_ref().copied().map_err(String::as_str)),
+        Some(0)
+    );
 }
 
 #[test]

@@ -60,31 +60,25 @@ pub enum Probe {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-struct PoolBranch {
-    candidates: Vec<String>,
-    truncated: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
-enum ChoiceStep {
-    Probe(Probe),
-    Pool {
-        branches: Vec<PoolBranch>,
-        ambiguity: String,
-    },
+struct ChoiceBranch {
+    probes: Vec<Probe>,
+    otherwise: Result<(), String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct IconChoice {
-    steps: Vec<ChoiceStep>,
-    pub otherwise: Result<(), String>,
+    branches: Vec<ChoiceBranch>,
+    ambiguity: Option<String>,
 }
 
 impl IconChoice {
     pub fn unknown(reason: String) -> Self {
         Self {
-            steps: Vec::new(),
-            otherwise: Err(reason),
+            branches: vec![ChoiceBranch {
+                probes: Vec::new(),
+                otherwise: Err(reason),
+            }],
+            ambiguity: None,
         }
     }
 
@@ -92,7 +86,51 @@ impl IconChoice {
         &self,
         answer: impl Fn(&Probe) -> Result<Option<Icon>, String>,
     ) -> Result<Option<Icon>, String> {
-        walk_from(&self.steps, &self.otherwise, &answer, &mut BTreeMap::new())
+        if self.branches.len() == 1 && self.ambiguity.is_none() {
+            let branch = &self.branches[0];
+            for probe in &branch.probes {
+                if let Some(icon) = answer(probe)? {
+                    return Ok(Some(icon));
+                }
+            }
+            return branch.otherwise.clone().map(|()| None);
+        }
+        let mut cache: BTreeMap<&Probe, Option<Icon>> = BTreeMap::new();
+        let mut agreed: Option<Option<Icon>> = None;
+        for branch in &self.branches {
+            let mut found = None;
+            for probe in &branch.probes {
+                let hit = if let Some(cached) = cache.get(probe) {
+                    cached.clone()
+                } else {
+                    let result = answer(probe)?;
+                    cache.insert(probe, result.clone());
+                    result
+                };
+                if let Some(icon) = hit {
+                    found = Some(icon);
+                    break;
+                }
+            }
+            let outcome = match found {
+                Some(icon) => Some(icon),
+                None => {
+                    branch.otherwise.clone()?;
+                    None
+                }
+            };
+            match &agreed {
+                None => agreed = Some(outcome),
+                Some(prev) if prev == &outcome => {}
+                Some(_) => {
+                    return Err(self
+                        .ambiguity
+                        .clone()
+                        .unwrap_or_else(|| "continent unknown".to_owned()));
+                }
+            }
+        }
+        Ok(agreed.flatten())
     }
 
     pub fn shown(&self, catalogue: &Catalogue) -> Result<Option<Icon>, String> {
@@ -776,68 +814,23 @@ impl IconHour {
     }
 }
 
-fn probe_cached(
-    probe: &Probe,
-    answer: &impl Fn(&Probe) -> Result<Option<Icon>, String>,
-    cache: &mut BTreeMap<Probe, Option<Icon>>,
-) -> Result<Option<Icon>, String> {
-    if let Some(cached) = cache.get(probe) {
-        return Ok(cached.clone());
-    }
-    let result = answer(probe)?;
-    cache.insert(probe.clone(), result.clone());
-    Ok(result)
+enum PoolMode<'a> {
+    Discover {
+        unknowns: &'a mut Vec<(u32, String, BTreeSet<String>)>,
+        probes: &'a mut Vec<Probe>,
+    },
+    Assume {
+        continents: &'a BTreeMap<u32, Option<String>>,
+        probes: &'a mut Vec<Probe>,
+    },
 }
 
-fn walk_from(
-    steps: &[ChoiceStep],
-    otherwise: &Result<(), String>,
-    answer: &impl Fn(&Probe) -> Result<Option<Icon>, String>,
-    cache: &mut BTreeMap<Probe, Option<Icon>>,
-) -> Result<Option<Icon>, String> {
-    let Some((first, rest)) = steps.split_first() else {
-        return otherwise.clone().map(|()| None);
-    };
-    match first {
-        ChoiceStep::Probe(probe) => match probe_cached(probe, answer, cache)? {
-            Some(icon) => Ok(Some(icon)),
-            None => walk_from(rest, otherwise, answer, cache),
-        },
-        ChoiceStep::Pool {
-            branches,
-            ambiguity,
-        } => {
-            let mut agreed: Option<Option<Icon>> = None;
-            let mut tail_result: Option<Result<Option<Icon>, String>> = None;
-            for branch in branches {
-                let mut found = None;
-                for candidate in &branch.candidates {
-                    if let Some(icon) =
-                        probe_cached(&Probe::Existing(candidate.clone()), answer, cache)?
-                    {
-                        found = Some(icon);
-                        break;
-                    }
-                }
-                let outcome = match found {
-                    Some(icon) => Some(icon),
-                    None if branch.truncated => return Err(ambiguity.clone()),
-                    None => match &tail_result {
-                        Some(result) => result.clone()?,
-                        None => {
-                            let result = walk_from(rest, otherwise, answer, cache);
-                            tail_result = Some(result.clone());
-                            result?
-                        }
-                    },
-                };
-                match &agreed {
-                    None => agreed = Some(outcome),
-                    Some(prev) if prev == &outcome => {}
-                    Some(_) => return Err(ambiguity.clone()),
-                }
+impl PoolMode<'_> {
+    fn push(&mut self, probe: Probe) {
+        match self {
+            PoolMode::Discover { probes, .. } | PoolMode::Assume { probes, .. } => {
+                probes.push(probe);
             }
-            Ok(agreed.flatten())
         }
     }
 }
@@ -857,9 +850,65 @@ pub fn icon_choice(
     variant: &VariantDefinitionRow,
     spelling: &str,
 ) -> IconChoice {
-    let mut steps = Vec::new();
-    let otherwise = rule(content, hour, variant, spelling, &mut steps);
-    IconChoice { steps, otherwise }
+    let mut unknowns = Vec::new();
+    let mut probes = Vec::new();
+    let otherwise = rule(
+        content,
+        hour,
+        variant,
+        spelling,
+        &mut PoolMode::Discover {
+            unknowns: &mut unknowns,
+            probes: &mut probes,
+        },
+    );
+    if unknowns.is_empty() {
+        return IconChoice {
+            branches: vec![ChoiceBranch { probes, otherwise }],
+            ambiguity: None,
+        };
+    }
+    let mut assignments: Vec<BTreeMap<u32, Option<String>>> = vec![BTreeMap::new()];
+    for (raw, _, relevant) in &unknowns {
+        let mut next = Vec::with_capacity(assignments.len() * (1 + relevant.len()));
+        for base in &assignments {
+            let mut none_map = base.clone();
+            none_map.insert(*raw, None);
+            next.push(none_map);
+            for continent in relevant {
+                let mut some_map = base.clone();
+                some_map.insert(*raw, Some(continent.clone()));
+                next.push(some_map);
+            }
+        }
+        assignments = next;
+    }
+    let mut branches = Vec::new();
+    for continents in &assignments {
+        let mut branch_probes = Vec::new();
+        let branch_otherwise = rule(
+            content,
+            hour,
+            variant,
+            spelling,
+            &mut PoolMode::Assume {
+                continents,
+                probes: &mut branch_probes,
+            },
+        );
+        let branch = ChoiceBranch {
+            probes: branch_probes,
+            otherwise: branch_otherwise,
+        };
+        if !branches.contains(&branch) {
+            branches.push(branch);
+        }
+    }
+    let ambiguity = (branches.len() > 1).then(|| unknowns[0].1.clone());
+    IconChoice {
+        branches,
+        ambiguity,
+    }
 }
 
 fn rule(
@@ -867,7 +916,7 @@ fn rule(
     hour: &IconHour,
     variant: &VariantDefinitionRow,
     spelling: &str,
-    steps: &mut Vec<ChoiceStep>,
+    mode: &mut PoolMode<'_>,
 ) -> Result<(), String> {
     let key = content
         .units
@@ -909,7 +958,7 @@ fn rule(
             country,
             ideology.as_deref(),
             culture.as_deref(),
-            steps,
+            mode,
         )?;
     } else if variant.icon_active != 0 {
         if variant.icon_kind > 1 {
@@ -923,7 +972,7 @@ fn rule(
         } else {
             Probe::File(entry.clone().into_owned())
         };
-        steps.push(ChoiceStep::Probe(probe));
+        mode.push(probe);
     }
     let (l_link, l_slot) = if (variant.origin_link as i32) > 0 {
         let slot = *hour.links.get(&variant.origin_link).ok_or_else(|| {
@@ -1010,7 +1059,7 @@ fn rule(
         capital,
         l_link,
         &mut BTreeSet::new(),
-        steps,
+        mode,
     )
 }
 
@@ -1029,7 +1078,7 @@ fn fallback(
     capital: bool,
     country: Option<u32>,
     visited: &mut BTreeSet<String>,
-    steps: &mut Vec<ChoiceStep>,
+    mode: &mut PoolMode<'_>,
 ) -> Result<(), String> {
     let model = type_model(&content.units, key)?;
     if !visited.insert(key.to_owned()) {
@@ -1039,13 +1088,9 @@ fn fallback(
     for suffix in suffixes {
         for name in [Some(key), model.archetype].into_iter().flatten() {
             if let Some(tag) = names.tag.clone()? {
-                steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
-                    "GFX_{tag}_{name}{suffix}"
-                ))));
+                mode.push(Probe::Sprite(format!("GFX_{tag}_{name}{suffix}")));
             }
-            steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
-                "GFX_{name}{suffix}"
-            ))));
+            mode.push(Probe::Sprite(format!("GFX_{name}{suffix}")));
         }
     }
     for name in [Some(key), model.archetype].into_iter().flatten() {
@@ -1061,18 +1106,12 @@ fn fallback(
                     continue;
                 };
                 if let Some(tag) = names.technology_tag.clone()? {
-                    steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
-                        "GFX_{tag}_{technology}{suffix}"
-                    ))));
+                    mode.push(Probe::Sprite(format!("GFX_{tag}_{technology}{suffix}")));
                 }
                 if let Some(culture) = names.culture_2d.clone()? {
-                    steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
-                        "GFX_{culture}_{technology}{suffix}"
-                    ))));
+                    mode.push(Probe::Sprite(format!("GFX_{culture}_{technology}{suffix}")));
                 }
-                steps.push(ChoiceStep::Probe(Probe::Sprite(format!(
-                    "GFX_{technology}{suffix}"
-                ))));
+                mode.push(Probe::Sprite(format!("GFX_{technology}{suffix}")));
             }
         }
     }
@@ -1085,10 +1124,10 @@ fn fallback(
             capital,
             country,
             visited,
-            steps,
+            mode,
         )?;
     }
-    pool(content, hour, key, country, None, None, steps)
+    pool(content, hour, key, country, None, None, mode)
 }
 
 fn pool(
@@ -1098,7 +1137,7 @@ fn pool(
     country: Option<u32>,
     ideology: Option<&str>,
     culture: Option<&str>,
-    steps: &mut Vec<ChoiceStep>,
+    mode: &mut PoolMode<'_>,
 ) -> Result<(), String> {
     let model = type_model(&content.units, key)?;
     let family = model
@@ -1125,35 +1164,53 @@ fn pool(
         }
         None => (None, None, Ok(None)),
     };
-    let plan = content.pools.lookup_icon_plan(
-        &Context {
-            equipment: key,
-            archetype: model.archetype,
-            family,
-            subunit: None,
-            ideology,
-            culture,
-            country: country_tag,
-            faction_tags: place.map_or(&[], |place| place.faction_tags.as_slice()),
-            capital_continent,
-        },
-        |name| Some(content.dlc.contains(name)),
-    )?;
-    if let Some(ambiguity) = plan.ambiguity {
-        steps.push(ChoiceStep::Pool {
-            branches: plan
-                .branches
-                .into_iter()
-                .map(|branch| PoolBranch {
-                    candidates: branch.items,
-                    truncated: branch.truncated,
-                })
-                .collect(),
-            ambiguity,
-        });
-    } else if let Some(branch) = plan.branches.into_iter().next() {
-        for candidate in branch.items {
-            steps.push(ChoiceStep::Probe(Probe::Existing(candidate)));
+    let context = Context {
+        equipment: key,
+        archetype: model.archetype,
+        family,
+        subunit: None,
+        ideology,
+        culture,
+        country: country_tag,
+        faction_tags: place.map_or(&[], |place| place.faction_tags.as_slice()),
+        capital_continent,
+    };
+    let has_dlc = |name: &str| Some(content.dlc.contains(name));
+    match (country, capital_continent, mode) {
+        (Some(raw), Err(why), PoolMode::Discover { unknowns, probes }) => {
+            let relevant = content.pools.relevant_icon_continents(&context, has_dlc);
+            if relevant.is_empty() {
+                let branch = content
+                    .pools
+                    .lookup_icon_branch(&context, None, has_dlc)?;
+                for candidate in branch.items {
+                    probes.push(Probe::Existing(candidate));
+                }
+            } else if let Some((_, _, set)) = unknowns.iter_mut().find(|(id, _, _)| *id == raw) {
+                set.extend(relevant);
+            } else {
+                unknowns.push((raw, why.to_owned(), relevant.into_iter().collect()));
+            }
+        }
+        (Some(raw), Err(why), PoolMode::Assume { continents, probes }) => {
+            let assumed = continents.get(&raw).and_then(|c| c.as_deref());
+            let branch = content
+                .pools
+                .lookup_icon_branch(&context, assumed, has_dlc)?;
+            for candidate in branch.items {
+                probes.push(Probe::Existing(candidate));
+            }
+            if branch.truncated {
+                return Err(why.to_owned());
+            }
+        }
+        (_, _, mode) => {
+            let plan = content.pools.lookup_icon_plan(&context, has_dlc)?;
+            if let Some(branch) = plan.branches.into_iter().next() {
+                for candidate in branch.items {
+                    mode.push(Probe::Existing(candidate));
+                }
+            }
         }
     }
     Ok(())
