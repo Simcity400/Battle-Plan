@@ -13,7 +13,7 @@ use replay_frame::frame::DecodedFrame;
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Condvar, Mutex, atomic::AtomicBool, atomic::Ordering},
+    sync::{Arc, Condvar, Mutex, atomic::AtomicBool, atomic::Ordering},
     time::{Duration, Instant},
 };
 
@@ -158,6 +158,12 @@ pub fn combats(
     let sides = SOURCES[kind].sides(frame)?;
     let zero_visibility = viewer_foundation::visibility::ZeroVisibility::read_tables(frame, links);
     let viewer_raw = recorded_raw_viewer(frame, links, viewer);
+    let snapshot = Arc::new(engaged::Snapshot {
+        links: links.clone(),
+        relations: relations.cloned(),
+        zero_visibility,
+        controllers: None,
+    });
     let mut history = engaged::History::default();
     history.advance(
         engaged::Sample {
@@ -166,10 +172,7 @@ pub fn combats(
             alternate_viewer: None,
             alternate_viewer_raw: None,
             recording: false,
-            links,
-            relations,
-            zero_visibility: &zero_visibility,
-            controllers: None,
+            snapshot: &snapshot,
             refreshes: engaged::RefreshWitness::Unavailable,
             sides: sides.sides,
             complete: sides.complete,

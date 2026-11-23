@@ -1658,8 +1658,12 @@ fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
 
 #[test]
 fn a_side_whose_combat_ends_is_reported_once() {
-    let links = BTreeMap::from([(1, 1)]);
-    let relations = Relations::factions_for_tests(&[]);
+    let snapshot = Arc::new(engaged::Snapshot {
+        links: BTreeMap::from([(1, 1)]),
+        relations: Ok(Relations::factions_for_tests(&[])),
+        zero_visibility: ZeroVisibility::unavailable("unused"),
+        controllers: Some(Default::default()),
+    });
     let side = || engaged::Side {
         units: Some(vec![1]),
         added: engaged::Added::NoTrigger,
@@ -1668,7 +1672,6 @@ fn a_side_whose_combat_ends_is_reported_once() {
     };
     let mut history = engaged::History::default();
     let (mut changed, mut ended) = (Vec::new(), Vec::new());
-    let zero = ZeroVisibility::unavailable("unused");
     for (hour, sides, expect_changed, expect_ended) in [
         (0, vec![(7, 0), (7, 1)], 2, 0),
         (1, vec![(7, 0), (7, 1)], 0, 0),
@@ -1681,10 +1684,7 @@ fn a_side_whose_combat_ends_is_reported_once() {
                 alternate_viewer: None,
                 alternate_viewer_raw: None,
                 recording: false,
-                links: &links,
-                relations: Ok(&relations),
-                zero_visibility: &zero,
-                controllers: Some(Default::default()),
+                snapshot: &snapshot,
                 refreshes: engaged::RefreshWitness::Unavailable,
                 sides: sides.into_iter().map(|key| (key, side())).collect(),
                 complete: true,
@@ -2003,4 +2003,43 @@ fn a_block_played_by_two_branches_is_read_once() {
     assert!(piece_blocks(&index, 0, 1000, 2439).is_empty());
     let taken: Vec<u32> = piece_blocks(&index, 2, 1800, 2000).iter().map(|block| block.page).collect();
     assert_eq!(taken, [1]);
+}
+
+#[test]
+fn combat_engagement_refreshes_update_witness_without_rebuilding_cached_inputs() {
+    use replay_data::rows::{CombatEngagementRefreshRow, TableRows};
+    use replay_frame::frame::TableView;
+    let none: &[(u32, u32)] = &[];
+    let allied: &[(u32, u32)] = &[(1, 2)];
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+    let frame10 = naval_frame(6, &[1], none, 0, [0, 0]);
+    let frame11 = naval_frame(6, &[1], allied, 0, [0, 0]);
+    let mut frame12 = naval_frame(6, &[1], allied, 0, [0, 0]);
+    *frame12.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LAND_SIDE,
+            target: 100,
+            side: 0,
+            viewer: 1,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+        }]),
+    );
+    let frame13 = frame12.clone();
+
+    pass.fold_source(3, 10, Some(&frame10), Some(10), false, false, false);
+    pass.fold_source(3, 11, Some(&frame11), Some(10), false, false, false);
+    let cached_inputs = Arc::clone(pass.inputs.as_ref().unwrap());
+    pass.fold_source(3, 12, Some(&frame12), Some(10), false, true, false);
+    assert!(Arc::ptr_eq(pass.inputs.as_ref().unwrap(), &cached_inputs));
+    assert!(Arc::ptr_eq(&pass.viewer.as_ref().unwrap().inputs, &cached_inputs));
+    pass.fold_source(3, 13, Some(&frame13), Some(10), false, true, true);
+    assert!(Arc::ptr_eq(pass.inputs.as_ref().unwrap(), &cached_inputs));
+
+    let idx = index(&pass);
+    let mut check11 = frame11.clone();
+    let mut check12 = frame12.clone();
+    let mut check13 = frame13.clone();
+    assert_eq!(flags(&idx, &mut check11, 11, 1).land[&100], Engaged::No);
+    assert_eq!(flags(&idx, &mut check12, 12, 1).land[&100], Engaged::Yes);
+    assert_eq!(flags(&idx, &mut check13, 13, 1).land[&100], Engaged::Yes);
 }

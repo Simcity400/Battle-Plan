@@ -286,6 +286,48 @@ impl Column {
         mark(&mut self.unrecorded, slot, unrecorded);
     }
 
+    fn fill_from(&mut self, source: &replay_columnar::store::ColumnState, live: &[u32]) {
+        fn fill_scalars<T>(
+            cells: &mut [T],
+            source: &replay_columnar::store::ColumnState,
+            live: &[u32],
+            missing: &mut Option<Bits>,
+            unrecorded: &mut Option<Bits>,
+            cast: impl Fn(u64) -> T,
+        ) {
+            for &slot in live {
+                match source.value(slot) {
+                    Value::Number(bits) => cells[slot as usize] = cast(bits),
+                    Value::Text(id) => cells[slot as usize] = cast(u64::from(id)),
+                    Value::Missing => mark(missing, slot as usize, true),
+                    Value::Unrecorded => mark(unrecorded, slot as usize, true),
+                    Value::List(_) => {}
+                }
+            }
+        }
+        let Self { cells, missing, unrecorded, lists, .. } = self;
+        match cells {
+            Cells::W1(cells) => fill_scalars(cells, source, live, missing, unrecorded, |bits| bits as u8),
+            Cells::W2(cells) => fill_scalars(cells, source, live, missing, unrecorded, |bits| bits as u16),
+            Cells::W4(cells) => fill_scalars(cells, source, live, missing, unrecorded, |bits| bits as u32),
+            Cells::W8(cells) => fill_scalars(cells, source, live, missing, unrecorded, |bits| bits),
+            Cells::Lists(cells) => {
+                for &slot in live {
+                    match source.value(slot) {
+                        Value::List(bytes) if !bytes.is_empty() => {
+                            let cell = &mut cells[slot as usize];
+                            cell.extend_from_slice(bytes);
+                            *lists += cell.capacity();
+                        }
+                        Value::Missing => mark(missing, slot as usize, true),
+                        Value::Unrecorded => mark(unrecorded, slot as usize, true),
+                        Value::List(_) | Value::Number(_) | Value::Text(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn write(&mut self, written: &playhead::changes::Written) {
         let slots = written.slots();
         let Self { cells, missing, unrecorded, lists, .. } = self;
@@ -393,7 +435,7 @@ pub struct Mirror {
     keys: Option<Vec<u128>>,
     index: Option<HashMap<u128, u32, Keys>>,
     text: bool,
-    texts: HashMap<u32, Box<[u8]>>,
+    texts: HashMap<u32, Box<[u8]>, Keys>,
     texts_bytes: usize,
     status: (Status, Option<Hour>),
     reason: Option<(u32, Box<str>)>,
@@ -404,7 +446,7 @@ pub struct Mirror {
     refused: u64,
     #[cfg(any(test, feature = "test-support"))]
     moved: u64,
-    listed: Option<HashMap<u64, u32>>,
+    listed: Option<HashMap<u64, u32, Keys>>,
 }
 
 impl Mirror {
@@ -421,10 +463,16 @@ impl Mirror {
         let live: Vec<u32> = cells.rows().collect();
         let mut keys = lane.keyed().then(|| vec![0; slots]);
         let mut index = lane.keyed().then(|| HashMap::with_capacity_and_hasher(live.len(), Keys::default()));
-        let mut bits = Bits(vec![0; slots.div_ceil(64)]);
-        for &slot in &live {
-            bits.set(slot as usize, true);
-            if let (Some(keys), Some(index)) = (&mut keys, &mut index) {
+        let mut words = cells.live().words().to_vec();
+        let wanted_words = slots.div_ceil(64);
+        if words.len() < wanted_words {
+            words.resize(wanted_words, 0);
+        } else if words.len() > wanted_words {
+            words.truncate(wanted_words);
+        }
+        let bits = Bits(words);
+        if let (Some(keys), Some(index)) = (&mut keys, &mut index) {
+            for &slot in &live {
                 let key = cells.key(slot).expect("a live row has a key");
                 keys[slot as usize] = key;
                 index.insert(key, slot);
@@ -433,18 +481,16 @@ impl Mirror {
         for column in &mut held {
             column.cells.grow(slots);
             let source = cells.column(column.index).expect("a selected column");
-            for &slot in &live {
-                column.set(slot as usize, source.value(slot));
-            }
+            column.fill_from(source, &live);
         }
         let text = held.iter().any(|column| kinds[column.index] == Kind::Bytes);
-        let texts: HashMap<u32, Box<[u8]>> = if text { lane.texts().iter().map(|(id, text)| (id, text.into())).collect() } else { HashMap::new() };
+        let texts: HashMap<u32, Box<[u8]>, Keys> = if text { lane.texts().iter().map(|(id, text)| (id, text.into())).collect() } else { HashMap::default() };
         let texts_bytes = texts.values().map(|text| text.len() + 40).sum();
         let reason = match lane.status().0 {
             Status::Unavailable { reason } => Some((reason, lane.texts().iter().find(|&(id, _)| id == reason).map_or_else(|| unnamed(reason), |(_, text)| String::from_utf8_lossy(text).into()))),
             _ => None,
         };
-        let listed = lane.log().map(|_| HashMap::new());
+        let listed = lane.log().map(|_| HashMap::default());
         Self {
             table: lane.table(),
             columns: held,
@@ -477,6 +523,7 @@ impl Mirror {
 
     pub fn put_listed(&mut self, rows: &Rows) {
         let Some(listed) = &mut self.listed else { return };
+        listed.reserve(rows.ordinals().len());
         for (place, &ordinal) in rows.ordinals().iter().enumerate() {
             listed.insert(ordinal, place as u32);
             self.live.set(place, true);

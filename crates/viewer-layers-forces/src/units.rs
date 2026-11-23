@@ -144,6 +144,7 @@ impl Figure {
 struct Stack {
     key: StackKey,
     members: Vec<u32>,
+    live: bool,
     admitted: bool,
     figure: Option<Figure>,
     asked: Option<u64>,
@@ -271,6 +272,9 @@ pub struct Units {
     free: Vec<u32>,
     by_key: FastMap<StackKey, u32>,
     combat: FastMap<u64, u32>,
+    combat_scratch: FastMap<u64, u32>,
+    combat_ordered: Vec<(u128, u32)>,
+    combat_changed: Vec<u64>,
     links: FastMap<u32, u32>,
     divisions: Dirty,
     moved: Dirty,
@@ -334,6 +338,9 @@ impl Units {
             free: Vec::new(),
             by_key: FastMap::default(),
             combat: FastMap::default(),
+            combat_scratch: FastMap::default(),
+            combat_ordered: Vec::new(),
+            combat_changed: Vec::new(),
             links: FastMap::default(),
             divisions: Dirty::default(),
             moved: Dirty::default(),
@@ -575,16 +582,17 @@ impl Units {
             }
             self.deferred = deferred;
         }
-        let mut held: Vec<u32> = self.by_key.values().copied().collect();
-        held.sort_unstable();
-        for stack in held {
-            let admitted = self.admits(self.stacks[stack as usize].key.0);
-            let at = stack as usize;
+        for at in 0..self.stacks.len() {
+            if !self.stacks[at].live {
+                continue;
+            }
+            let stack = at as u32;
+            let admitted = self.admits(self.stacks[at].key.0);
             if self.stacks[at].admitted != admitted {
                 self.touched.push(stack);
+                self.to_upload = true;
+                self.stacks[at].admitted = admitted;
             }
-            self.to_upload |= self.stacks[at].admitted != admitted;
-            self.stacks[at].admitted = admitted;
             if let Some(figure) = &mut self.stacks[at].figure {
                 figure.admitted = admitted;
                 if admitted && figure.placed.is_none() {
@@ -647,6 +655,9 @@ impl Units {
         }
         self.statuses = mirrors.iter().filter_map(|mirror| mirror.status().map(|status| (mirror.table().index(), status))).collect();
         self.combat_dirty = true;
+        self.combat_scratch.clear();
+        self.combat_ordered.clear();
+        self.combat_changed.clear();
         self.links_dirty = true;
         if let Some(divisions) = rows(mirrors.get(TableId::Divisions)) {
             for slot in divisions.rows() {
@@ -763,30 +774,43 @@ impl Units {
 
     fn read_combat(&mut self, mirrors: &Mirrors) {
         let columns = self.columns();
-        let mut combat = FastMap::with_capacity_and_hasher(self.combat.len(), Default::default());
+        self.combat_scratch.clear();
         if let Some(combats) = rows(mirrors.get(TableId::LandCombats)) {
-            let mut ordered: Vec<(u128, u32)> = combats.rows().filter_map(|slot| Some((combats.key(slot)?, slot))).collect();
-            ordered.sort_unstable();
-            for (_, slot) in ordered {
+            self.combat_ordered.clear();
+            self.combat_ordered.extend(combats.rows().filter_map(|slot| Some((combats.key(slot)?, slot))));
+            self.combat_ordered.sort_unstable();
+            for &(_, slot) in &self.combat_ordered {
                 for (column, side) in [(columns.attackers, ATTACK), (columns.defenders, DEFEND)] {
                     if let Cell::Value(bytes) = combats.list(column, slot) {
                         decode::<8>(bytes, &mut self.items);
                         for &id in &self.items {
-                            combat.insert(id, side);
+                            self.combat_scratch.insert(id, side);
                         }
                     }
                 }
             }
         }
-        let old = std::mem::replace(&mut self.combat, combat);
+        std::mem::swap(&mut self.combat, &mut self.combat_scratch);
         let divisions = mirrors.get(TableId::Divisions);
-        let mut changed: Vec<u64> = old.iter().filter(|(id, side)| self.combat.get(id) != Some(side)).map(|(&id, _)| id).chain(self.combat.keys().filter(|id| !old.contains_key(id)).copied()).collect();
-        changed.sort_unstable();
-        for id in changed {
+        self.combat_changed.clear();
+        self.combat_changed.extend(
+            self.combat_scratch
+                .iter()
+                .filter(|(id, side)| self.combat.get(id) != Some(side))
+                .map(|(&id, _)| id)
+                .chain(self.combat.keys().filter(|id| !self.combat_scratch.contains_key(id)).copied()),
+        );
+        self.combat_changed.sort_unstable();
+        let mut changed = std::mem::take(&mut self.combat_changed);
+        for &id in &changed {
             if let Some(slot) = divisions.and_then(|divisions| divisions.slot(u128::from(id))) {
                 self.mark_stack_of(slot);
             }
         }
+        changed.clear();
+        self.combat_changed = changed;
+        self.combat_scratch.clear();
+        self.combat_ordered.clear();
     }
 
     fn signature(&mut self, mirrors: &Mirrors, id: u64, province: u32) -> (Option<[u32; 2]>, Option<PickRoute>) {
@@ -908,7 +932,7 @@ impl Units {
             let stack = match self.by_key.get(&key) {
                 Some(&stack) => stack,
                 None => {
-                    let fresh = Stack { key, members: Vec::new(), admitted: self.admits(key.0), figure: None, asked: None };
+                    let fresh = Stack { key, members: Vec::new(), live: true, admitted: self.admits(key.0), figure: None, asked: None };
                     let stack = match self.free.pop() {
                         Some(stack) => {
                             self.stacks[stack as usize] = fresh;
@@ -945,12 +969,14 @@ impl Units {
     fn place_stack(&mut self, stack: u32, mirrors: &Mirrors) {
         let columns = self.columns();
         let at = stack as usize;
-        if at >= self.stacks.len() || !self.by_key.get(&self.stacks[at].key).is_some_and(|&held| held == stack) {
+        if at >= self.stacks.len() || !self.stacks[at].live {
             return;
         }
         if self.stacks[at].members.is_empty() {
             let key = self.stacks[at].key;
             self.by_key.remove(&key);
+            self.stacks[at].live = false;
+            self.stacks[at].admitted = false;
             self.stacks[at].figure = None;
             if let Some(oldest) = self.stacks[at].asked.take() {
                 self.gone(oldest, stack);
@@ -1059,7 +1085,7 @@ impl Units {
         touched.dedup();
         for &stack in &touched {
             let at = stack as usize;
-            if at >= self.stacks.len() || self.by_key.get(&self.stacks[at].key) != Some(&stack) {
+            if at >= self.stacks.len() || !self.stacks[at].live {
                 continue;
             }
             let held = &self.stacks[at];
@@ -1106,7 +1132,7 @@ impl Units {
 
     fn place_figure(&mut self, stack: u32) {
         let at = stack as usize;
-        let live = at < self.stacks.len() && self.by_key.get(&self.stacks[at].key) == Some(&stack) && self.stacks[at].admitted;
+        let live = at < self.stacks.len() && self.stacks[at].live && self.stacks[at].admitted;
         let Some(figure) = self.stacks.get(at).filter(|_| live).and_then(|held| held.figure.as_ref()).filter(|figure| figure.placed.is_none()) else { return };
         let placed = self.figure(&figure.placing).map_err(Withheld::Unplaced);
         self.marked[2] += 1;
@@ -1349,6 +1375,9 @@ impl Units {
         self.free = Vec::new();
         self.by_key = FastMap::default();
         self.combat = FastMap::default();
+        self.combat_scratch = FastMap::default();
+        self.combat_ordered = Vec::new();
+        self.combat_changed = Vec::new();
         self.links = FastMap::default();
         self.divisions = Dirty::default();
         self.moved = Dirty::default();
@@ -1677,6 +1706,9 @@ impl Layer for Units {
             + self.free.capacity() * 4
             + self.by_key.capacity() * (std::mem::size_of::<StackKey>() + 4 + 8)
             + self.combat.capacity() * 20
+            + self.combat_scratch.capacity() * 20
+            + self.combat_ordered.capacity() * std::mem::size_of::<(u128, u32)>()
+            + self.combat_changed.capacity() * 8
             + self.links.capacity() * 12
             + self.divisions.bytes()
             + self.moved.bytes()
