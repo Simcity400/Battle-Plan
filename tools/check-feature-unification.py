@@ -18,7 +18,7 @@ reads, so `cargo build` and checks without `--all-targets` keep their own featur
 - `[workspace.dependencies]` declares `test-unify` and each narrow third-party crate once.
 
 This tool owns all three: `--fix` removes and regenerates them, so do not edit them by hand.
-Run the check after changing dependencies or features; it takes a few minutes.
+CI runs the check when a manifest changes; when it fails, run `--fix`, which takes a few minutes.
 """
 
 import argparse

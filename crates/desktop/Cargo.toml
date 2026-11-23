@@ -8,6 +8,7 @@ license.workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+serde_json.workspace = true
 
 [dependencies]
 replay-files.workspace = true

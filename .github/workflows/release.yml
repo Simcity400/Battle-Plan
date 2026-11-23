@@ -3,7 +3,7 @@ run-name: Release ${{ inputs.channel || 'nightly' }}${{ inputs.draft && ' (dry r
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "41 * * * *"
   workflow_dispatch:
     inputs:
       channel:
@@ -15,7 +15,7 @@ on:
           - stable
           - preview
       sha:
-        description: The commit to release; nightly defaults to main's head, stable to the nightly feed's commit
+        description: The commit to release; nightly defaults to main's newest green commit, stable to the nightly feed's commit
         type: string
         default: ""
       version:

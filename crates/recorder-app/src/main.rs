@@ -23,7 +23,7 @@ fn main() {
     if first.is_some_and(|arg| arg == replay_settings::recorder_settings::STARTED_WITH_REPLAY) && startup::held_by_a_job() {
         return;
     }
-    if app_update::refused_during_setup("BattlePlan Recorder") {
+    if app_update::refused_during_setup(app_update::recorder_name()) {
         return;
     }
     let Some(_instance) = startup::single_instance() else {

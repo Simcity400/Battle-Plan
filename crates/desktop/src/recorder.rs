@@ -37,7 +37,7 @@ pub fn start_recorder() {
         std::thread::spawn(move || {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
-                .set_title("BattlePlan Recorder")
+                .set_title(app_update::recorder_name())
                 .set_description(refusal)
                 .set_buttons(rfd::MessageButtons::Ok)
                 .show()
