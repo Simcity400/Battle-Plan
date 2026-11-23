@@ -2,7 +2,8 @@
 use dashboard_base::products::{Country, validate_country};
 use super::{LoadContext, Owner, owner_reads, spelled};
 use dashboard_base::{Source, catalogue::{self, Catalogue, View}, products::at_hour::{At, AtHour, Read}};
-use dashboard_text::{effect_description::{self, Context as Describing}, scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
+use dashboard_effects::{ScriptedEffects, effect_description::{self, Context as Describing}};
+use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
 use content_reader_core::{doctrines::Database, tokens::Token};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;

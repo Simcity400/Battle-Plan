@@ -1,7 +1,8 @@
 
 use super::{EventFeedItem, EventFeedKind, EventFeedOption, EventFeedUnavailable, row::FeedEvent, row::Slot};
 use dashboard_base::{catalogue::{self, Catalogue}, products::artwork};
-use dashboard_text::{effect_description, scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeName, ScriptedText}};
+use dashboard_effects::{ScriptedEffects, effect_description};
+use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, Link, ScopeName, ScriptedText}};
 use dashboard_query::Query;
 use replay::at::{Cursor, Read, Readers};
 use replay_data::rows::{TableId, tables};

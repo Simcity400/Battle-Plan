@@ -40,6 +40,7 @@ content-reader-weather.workspace = true
 replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
+dashboard-effects.workspace = true
 dashboard-text.workspace = true
 [dev-dependencies]
 dashboard-text = { workspace = true, features = ["test-support"] }

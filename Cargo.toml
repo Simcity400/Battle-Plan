@@ -244,6 +244,7 @@ dashboard-intelligence = { path = "crates/dashboard-intelligence" }
 dashboard-core = { path = "crates/dashboard-core" }
 dashboard-declare = { path = "crates/dashboard-declare" }
 dashboard-query = { path = "crates/dashboard-query" }
+dashboard-effects = { path = "crates/dashboard-effects" }
 dashboard-text = { path = "crates/dashboard-text" }
 engine = { path = "crates/engine" }
 engine-mutations = { path = "crates/engine-mutations" }

@@ -137,6 +137,7 @@ fn a_goals_completion_reward_is_described_for_the_factions_leader_and_said_missi
         ),
         ("localisation/test_l_english.yml", "\u{feff}l_english:\n POLITICS_ADD_POLITICAL_POWER:0 \"PP$VAL|0$\"\n"),
     ]);
+    let cat = dashboard_base::catalogue::tests::with_effect_describer(cat, dashboard_effects::effect_describer);
     cat.scripted_content().unwrap().set_synthetic_environment(Default::default());
     let mut frame = frame();
     for table in rewards::tables() {

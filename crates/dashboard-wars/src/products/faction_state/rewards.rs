@@ -1,6 +1,7 @@
 
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, at_hour::{At, AtHour, Owner, Read}}};
-use dashboard_text::{effect_description::{self, Context as Describing}, metadata, scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
+use dashboard_effects::{ScriptedEffects, effect_description::{self, Context as Describing}};
+use dashboard_text::{metadata, scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
