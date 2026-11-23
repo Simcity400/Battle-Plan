@@ -39,7 +39,7 @@ const READ: &[(TableId, Option<&[&str]>)] = &[
     (TableId::CombatEngagementRefreshes, None),
 ];
 
-const VIEWER: [TableId; 11] = [
+const VIEWER: [TableId; 10] = [
     TableId::CountryLinks,
     TableId::Countries,
     TableId::LocalPlayer,
@@ -50,7 +50,6 @@ const VIEWER: [TableId; 11] = [
     TableId::Subjects,
     TableId::CountryCounterInputs,
     TableId::ReservedCountryNaming,
-    TableId::CombatEngagementRefreshes,
 ];
 
 fn invalid(message: String) -> io::Error {
@@ -293,8 +292,9 @@ pub fn fold(
             let readable = campaign.is_none_or(|id| store.table::<tables::Campaign>().is_some_and(|rows| rows.len() == 1 && rows[0].id == id));
             let load = (start.load && hour == piece.first).then_some(hour);
             let restart = start.restart && hour == piece.first;
-            let kept = hour > first && !VIEWER.iter().any(|table| store.tables[table.index()].as_ref().is_some_and(|held| held.touched()));
-            pass.fold_source(start.branch, hour, readable.then_some(&store), load, restart, kept);
+            let inputs_kept = hour > first && !VIEWER.iter().any(|table| store.tables[table.index()].as_ref().is_some_and(|held| held.touched()));
+            let witness_kept = hour > first && !store.tables[TableId::CombatEngagementRefreshes.index()].as_ref().is_some_and(|held| held.touched());
+            pass.fold_source(start.branch, hour, readable.then_some(&store), load, restart, inputs_kept, witness_kept);
             spent.fold_ns += began.elapsed().as_nanos() as u64;
             spent.hours += 1;
             each(hour, &store, &spent);

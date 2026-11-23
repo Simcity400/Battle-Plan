@@ -176,21 +176,18 @@ fn side(units: &[u64], primary: &[u32]) -> Side {
     }
 }
 
-fn sample<'a>(
-    links: &'a BTreeMap<u32, u32>,
-    relations: &'a Relations,
-    units: &[u64],
-    primary: &[u32],
-) -> Sample<'a> {
-    defended(links, relations, units, primary, &[9])
+fn empty_sides() -> &'static BTreeMap<(u64, u8), SideWitness> {
+    static EMPTY: std::sync::OnceLock<BTreeMap<(u64, u8), SideWitness>> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(BTreeMap::new)
 }
 
-fn complete_witness() -> RefreshWitness {
+fn complete_witness() -> RefreshWitness<'static> {
     RefreshWitness::Complete {
-        sides: BTreeMap::new(),
-        controller_targets: Vec::new(),
-        local_viewers: Vec::new(),
-        cache_written_viewers: Vec::new(),
+        sides: empty_sides(),
+        controller_targets: &[],
+        local_viewers: &[],
+        cache_written_viewers: &[],
     }
 }
 
@@ -207,9 +204,30 @@ fn unused_zero() -> &'static ZeroVisibility {
     UNUSED.get_or_init(|| ZeroVisibility::unavailable("unused"))
 }
 
+fn snap_with(
+    links: &BTreeMap<u32, u32>,
+    relations: &Relations,
+    zero_visibility: &ZeroVisibility,
+    controllers: Option<Controllers>,
+) -> Arc<Snapshot> {
+    Arc::new(Snapshot {
+        links: links.clone(),
+        relations: Ok(relations.clone()),
+        zero_visibility: zero_visibility.clone(),
+        controllers,
+    })
+}
+
+fn snap(links: &BTreeMap<u32, u32>, relations: &Relations) -> Arc<Snapshot> {
+    snap_with(links, relations, unused_zero(), Some(Controllers::default()))
+}
+
+fn sample<'a>(snapshot: &'a Arc<Snapshot>, units: &[u64], primary: &[u32]) -> Sample<'a> {
+    defended(snapshot, units, primary, &[9])
+}
+
 fn defended<'a>(
-    links: &'a BTreeMap<u32, u32>,
-    relations: &'a Relations,
+    snapshot: &'a Arc<Snapshot>,
     units: &[u64],
     primary: &[u32],
     defenders: &[u64],
@@ -220,10 +238,7 @@ fn defended<'a>(
         alternate_viewer: None,
         alternate_viewer_raw: None,
         recording: false,
-        links,
-        relations: Ok(relations),
-        zero_visibility: unused_zero(),
-        controllers: Some(Controllers::default()),
+        snapshot,
         refreshes: complete_witness(),
         sides: BTreeMap::from([
             ((62, 0), side(units, primary)),
@@ -237,87 +252,77 @@ fn defended<'a>(
 #[test]
 fn a_land_removal_may_rebuild_the_other_side() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
     let mut history = History::default();
     let next = Continuity::Next;
-    history.advance(
-        defended(&links, &apart, &[7], &[2], &[8, 9]),
-        Continuity::Load,
-    );
-    history.advance(defended(&links, &allied, &[7], &[2], &[8, 9]), next);
+    history.advance(defended(&apart, &[7], &[2], &[8, 9]), Continuity::Load);
+    history.advance(defended(&allied, &[7], &[2], &[8, 9]), next);
     assert_eq!(history.side(62, 0), Engaged::No);
-    history.advance(defended(&links, &allied, &[7], &[2], &[9]), next);
+    history.advance(defended(&allied, &[7], &[2], &[9]), next);
     assert_eq!(history.side(62, 0), Engaged::No);
     assert_eq!(history.side(62, 1), Engaged::No);
+    let sides = BTreeMap::from([((62, 0), side_witness(UNITS))]);
     let witnessed = Sample {
         refreshes: RefreshWitness::Complete {
-            sides: BTreeMap::from([((62, 0), side_witness(UNITS))]),
-            controller_targets: Vec::new(),
-            local_viewers: Vec::new(),
-            cache_written_viewers: Vec::new(),
+            sides: &sides,
+            controller_targets: &[],
+            local_viewers: &[],
+            cache_written_viewers: &[],
         },
-        ..defended(&links, &allied, &[7], &[2], &[9])
+        ..defended(&allied, &[7], &[2], &[9])
     };
     history.advance(witnessed, next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
-    history.advance(defended(&links, &allied, &[6, 7], &[2], &[9]), next);
+    history.advance(defended(&allied, &[6, 7], &[2], &[9]), next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
-    history.advance(defended(&links, &allied, &[6, 7], &[2], &[]), next);
+    history.advance(defended(&allied, &[6, 7], &[2], &[]), next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
 }
 
 #[test]
 fn a_viewer_change_across_a_gap_is_not_a_rebuild_now() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
-    fn viewed<'a>(
-        links: &'a BTreeMap<u32, u32>,
-        relations: &'a Relations,
-        viewer: u32,
-    ) -> Sample<'a> {
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
+    fn viewed<'a>(snapshot: &'a Arc<Snapshot>, viewer: u32) -> Sample<'a> {
         Sample {
             viewer: Some(viewer),
-            ..sample(links, relations, &[7], &[2])
+            ..sample(snapshot, &[7], &[2])
         }
     }
     let mut history = History::default();
-    history.advance(viewed(&links, &apart, 5), Continuity::Load);
-    history.advance(viewed(&links, &allied, 1), Continuity::Gap);
+    history.advance(viewed(&apart, 5), Continuity::Load);
+    history.advance(viewed(&allied, 1), Continuity::Gap);
     assert_eq!(history.side(62, 0), Engaged::Unknown);
     let mut history = History::default();
-    history.advance(viewed(&links, &apart, 5), Continuity::Load);
-    history.advance(viewed(&links, &allied, 1), Continuity::Next);
+    history.advance(viewed(&apart, 5), Continuity::Load);
+    history.advance(viewed(&allied, 1), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
     let mut history = History::default();
-    history.advance(viewed(&links, &allied, 5), Continuity::Load);
-    history.advance(viewed(&links, &allied, 1), Continuity::Next);
+    history.advance(viewed(&allied, 5), Continuity::Load);
+    history.advance(viewed(&allied, 1), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
 }
 
 #[test]
 fn a_naval_removal_rebuilds_the_other_side() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
-    fn naval<'a>(
-        links: &'a BTreeMap<u32, u32>,
-        relations: &'a Relations,
-        defenders: &[u64],
-    ) -> Sample<'a> {
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
+    fn naval<'a>(snapshot: &'a Arc<Snapshot>, defenders: &[u64]) -> Sample<'a> {
         Sample {
             removal: Removal::BothSides,
-            ..defended(links, relations, &[7], &[2], defenders)
+            ..defended(snapshot, &[7], &[2], defenders)
         }
     }
     let mut history = History::default();
-    history.advance(naval(&links, &apart, &[8, 9]), Continuity::Load);
-    history.advance(naval(&links, &allied, &[8, 9]), Continuity::Next);
+    history.advance(naval(&apart, &[8, 9]), Continuity::Load);
+    history.advance(naval(&allied, &[8, 9]), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::No);
-    history.advance(naval(&links, &allied, &[9]), Continuity::Next);
+    history.advance(naval(&allied, &[9]), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
     assert_eq!(history.side(62, 1), Engaged::No);
-    history.advance(naval(&links, &apart, &[9]), Continuity::Next);
+    history.advance(naval(&apart, &[9]), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
-    let mut split = naval(&links, &apart, &[]);
+    let mut split = naval(&apart, &[]);
     split.sides.get_mut(&(62, 0)).unwrap().lists = Some((vec![1], vec![]));
     history.advance(split, Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::No);
@@ -326,26 +331,20 @@ fn a_naval_removal_rebuilds_the_other_side() {
 #[test]
 fn a_new_added_id_proves_a_rebuild() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
     let mut history = History::default();
-    history.advance(
-        added(&links, &apart, Added::Observed(vec![3])),
-        Continuity::Load,
-    );
-    history.advance(
-        added(&links, &allied, Added::Observed(vec![3])),
-        Continuity::Next,
-    );
+    history.advance(added(&apart, Added::Observed(vec![3])), Continuity::Load);
+    history.advance(added(&allied, Added::Observed(vec![3])), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::No);
     history.advance(
-        added(&links, &allied, Added::Observed(vec![3, 4])),
+        added(&allied, Added::Observed(vec![3, 4])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Yes);
 }
 
-fn added<'a>(links: &'a BTreeMap<u32, u32>, relations: &'a Relations, added: Added) -> Sample<'a> {
-    let mut sample = sample(links, relations, &[7], &[2]);
+fn added<'a>(snapshot: &'a Arc<Snapshot>, added: Added) -> Sample<'a> {
+    let mut sample = sample(snapshot, &[7], &[2]);
     sample.sides.get_mut(&(62, 0)).unwrap().added = added;
     sample
 }
@@ -353,66 +352,57 @@ fn added<'a>(links: &'a BTreeMap<u32, u32>, relations: &'a Relations, added: Add
 #[test]
 fn unavailable_added_ids_leave_a_possible_rebuild_until_two_observations_compare() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
-    fn unavailable<'a>(
-        links: &'a BTreeMap<u32, u32>,
-        relations: &'a Relations,
-        a: Added,
-    ) -> Sample<'a> {
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
+    fn unavailable<'a>(snapshot: &'a Arc<Snapshot>, a: Added) -> Sample<'a> {
         Sample {
             refreshes: RefreshWitness::Unavailable,
-            ..added(links, relations, a)
+            ..added(snapshot, a)
         }
     }
     let mut history = History::default();
     history.advance(
-        unavailable(&links, &apart, Added::Observed(vec![3])),
+        unavailable(&apart, Added::Observed(vec![3])),
         Continuity::Load,
     );
-    history.advance(
-        unavailable(&links, &allied, Added::Unavailable),
-        Continuity::Next,
-    );
+    history.advance(unavailable(&allied, Added::Unavailable), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
     history.advance(
-        unavailable(&links, &allied, Added::Observed(vec![3])),
+        unavailable(&allied, Added::Observed(vec![3])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
     history.advance(
-        unavailable(&links, &allied, Added::Observed(vec![3, 4])),
+        unavailable(&allied, Added::Observed(vec![3, 4])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Yes);
 
     let mut history = History::default();
     history.advance(
-        unavailable(&links, &apart, Added::Observed(vec![3])),
+        unavailable(&apart, Added::Observed(vec![3])),
         Continuity::Load,
     );
-    history.advance(
-        unavailable(&links, &apart, Added::Unavailable),
-        Continuity::Next,
-    );
+    history.advance(unavailable(&apart, Added::Unavailable), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::No);
     history.advance(
-        unavailable(&links, &allied, Added::Observed(vec![3, 4])),
+        unavailable(&allied, Added::Observed(vec![3, 4])),
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
 
     let mut witnessed = History::default();
-    witnessed.advance(added(&links, &apart, Added::Observed(vec![3])), Continuity::Load);
-    witnessed.advance(added(&links, &allied, Added::Unavailable), Continuity::Next);
+    witnessed.advance(added(&apart, Added::Observed(vec![3])), Continuity::Load);
+    witnessed.advance(added(&allied, Added::Unavailable), Continuity::Next);
     assert_eq!(witnessed.side(62, 0), Engaged::No);
+    let sides = BTreeMap::from([((62, 0), side_witness(RECORDED))]);
     let transfer = Sample {
         refreshes: RefreshWitness::Complete {
-            sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
-            controller_targets: Vec::new(),
-            local_viewers: Vec::new(),
-            cache_written_viewers: Vec::new(),
+            sides: &sides,
+            controller_targets: &[],
+            local_viewers: &[],
+            cache_written_viewers: &[],
         },
-        ..added(&links, &allied, Added::Unavailable)
+        ..added(&allied, Added::Unavailable)
     };
     witnessed.advance(transfer, Continuity::Next);
     assert_eq!(witnessed.side(62, 0), Engaged::Yes);
@@ -421,17 +411,17 @@ fn unavailable_added_ids_leave_a_possible_rebuild_until_two_observations_compare
 #[test]
 fn a_viewer_change_across_a_gap_rebuilds_nothing() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let allied = relations(true);
+    let allied = snap(&links, &relations(true));
     let mut history = History::default();
-    history.advance(sample(&links, &allied, &[7], &[2]), Continuity::Load);
+    history.advance(sample(&allied, &[7], &[2]), Continuity::Load);
     let moved = |viewer| Sample {
         viewer: Some(viewer),
-        ..sample(&links, &allied, &[7], &[2])
+        ..sample(&allied, &[7], &[2])
     };
     history.advance(moved(2), Continuity::Gap);
     assert_eq!(history.side(62, 0), Engaged::Unknown);
     let mut next = History::default();
-    next.advance(sample(&links, &allied, &[7], &[2]), Continuity::Load);
+    next.advance(sample(&allied, &[7], &[2]), Continuity::Load);
     next.advance(moved(2), Continuity::Next);
     assert_eq!(next.side(62, 0), Engaged::Yes);
 }
@@ -439,19 +429,19 @@ fn a_viewer_change_across_a_gap_rebuilds_nothing() {
 #[test]
 fn a_viewer_change_is_ordered_against_both_samples_relations() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
-    fn at<'a>(links: &'a BTreeMap<u32, u32>, viewer: u32, relations: &'a Relations) -> Sample<'a> {
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
+    fn at<'a>(snapshot: &'a Arc<Snapshot>, viewer: u32) -> Sample<'a> {
         Sample {
             viewer: Some(viewer),
-            ..sample(links, relations, &[7], &[1])
+            ..sample(snapshot, &[7], &[1])
         }
     }
-    let run = |hours: &[(u32, &Relations)]| {
+    let run = |hours: &[(u32, &Arc<Snapshot>)]| {
         let mut history = History::default();
-        history.advance(at(&links, 1, &apart), Continuity::Load);
+        history.advance(at(&apart, 1), Continuity::Load);
         assert_eq!(history.side(62, 0), Engaged::Yes);
-        for &(viewer, relations) in hours {
-            history.advance(at(&links, viewer, relations), Continuity::Next);
+        for &(viewer, snapshot) in hours {
+            history.advance(at(snapshot, viewer), Continuity::Next);
         }
         history.side(62, 0)
     };
@@ -459,8 +449,8 @@ fn a_viewer_change_is_ordered_against_both_samples_relations() {
     assert_eq!(run(&[(1, &allied), (2, &allied)]), Engaged::Yes);
     assert_eq!(run(&[(2, &allied)]), Engaged::Ambiguous(Ambiguity::Order));
     let mut ending = History::default();
-    ending.advance(at(&links, 1, &allied), Continuity::Load);
-    ending.advance(at(&links, 2, &apart), Continuity::Next);
+    ending.advance(at(&allied, 1), Continuity::Load);
+    ending.advance(at(&apart, 2), Continuity::Next);
     assert_eq!(ending.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
 }
 
@@ -478,24 +468,23 @@ fn rosters(links: &BTreeMap<u32, u32>, players: &[(i32, u32)], count: i64) -> Co
 fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
     let (apart, allied) = (relations(false), relations(true));
-    fn at<'a>(
-        links: &'a BTreeMap<u32, u32>,
-        relations: &'a Relations,
-        controllers: Option<Controllers>,
-        refreshes: RefreshWitness,
-    ) -> Sample<'a> {
-        Sample {
-            controllers,
-            refreshes,
-            ..sample(links, relations, &[7], &[2])
-        }
-    }
     let away = Some(rosters(&links, &[(40, 5)], 1));
-    let run = |relations: &Relations, controllers: Option<Controllers>, refreshes: RefreshWitness| {
+    let run = |relations: &Relations,
+               controllers: Option<Controllers>,
+               refreshes: RefreshWitness<'_>| {
         let mut history = History::default();
-        history.advance(at(&links, &apart, away.clone(), complete_witness()), Continuity::Load);
-        history.advance(at(&links, relations, away.clone(), complete_witness()), Continuity::Next);
-        history.advance(at(&links, relations, controllers, refreshes), Continuity::Next);
+        let s0 = snap_with(&links, &apart, unused_zero(), away.clone());
+        let s1 = snap_with(&links, relations, unused_zero(), away.clone());
+        let s2 = snap_with(&links, relations, unused_zero(), controllers);
+        history.advance(sample(&s0, &[7], &[2]), Continuity::Load);
+        history.advance(sample(&s1, &[7], &[2]), Continuity::Next);
+        history.advance(
+            Sample {
+                refreshes,
+                ..sample(&s2, &[7], &[2])
+            },
+            Continuity::Next,
+        );
         history.side(62, 0)
     };
     let joined = Some(rosters(&links, &[(40, 1)], 2));
@@ -505,10 +494,10 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
             &allied,
             away.clone(),
             RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: vec![1],
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[1],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             }
         ),
         Engaged::Yes
@@ -518,10 +507,10 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
             &allied,
             away.clone(),
             RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: vec![5],
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[5],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             }
         ),
         Engaged::No
@@ -531,10 +520,10 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
             &allied,
             away.clone(),
             RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: vec![99],
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[99],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             }
         ),
         Engaged::Ambiguous(Ambiguity::Scope)
@@ -553,74 +542,74 @@ fn a_controller_joining_the_viewer_may_refresh_a_stale_flag() {
 #[test]
 fn each_candidate_resolves_references_through_its_own_sample_links() {
     let allied = relations(true);
-    let before = BTreeMap::from([(1, 1), (5, 5), (7, 2)]);
-    let after = BTreeMap::from([(1, 1), (5, 5), (7, 3)]);
+    let before = snap(&BTreeMap::from([(1, 1), (5, 5), (7, 2)]), &allied);
+    let after = snap(&BTreeMap::from([(1, 1), (5, 5), (7, 3)]), &allied);
     let mut history = History::default();
-    history.advance(sample(&before, &allied, &[7], &[7]), Continuity::Load);
+    history.advance(sample(&before, &[7], &[7]), Continuity::Load);
     assert_eq!(history.side(62, 0), Engaged::Yes);
-    history.advance(sample(&after, &allied, &[7, 8], &[7]), Continuity::Next);
+    history.advance(sample(&after, &[7, 8], &[7]), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
     let mut steady = History::default();
-    steady.advance(sample(&after, &allied, &[7], &[7]), Continuity::Load);
-    steady.advance(sample(&after, &allied, &[7, 8], &[7]), Continuity::Next);
+    steady.advance(sample(&after, &[7], &[7]), Continuity::Load);
+    steady.advance(sample(&after, &[7, 8], &[7]), Continuity::Next);
     assert_eq!(steady.side(62, 0), Engaged::No);
-    let unlinked = BTreeMap::from([(1, 1), (5, 5)]);
+    let unlinked = snap(&BTreeMap::from([(1, 1), (5, 5)]), &allied);
     let mut unplaced = History::default();
-    unplaced.advance(sample(&unlinked, &allied, &[7], &[7]), Continuity::Load);
-    unplaced.advance(sample(&after, &allied, &[7, 8], &[7]), Continuity::Next);
+    unplaced.advance(sample(&unlinked, &[7], &[7]), Continuity::Load);
+    unplaced.advance(sample(&after, &[7, 8], &[7]), Continuity::Next);
     assert_eq!(unplaced.side(62, 0), Engaged::Unknown);
 }
 
 #[test]
 fn history_lags_diplomacy_until_the_unit_set_changes() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
     let mut history = History::default();
-    history.advance(sample(&links, &apart, &[7], &[2]), Continuity::Load);
+    history.advance(sample(&apart, &[7], &[2]), Continuity::Load);
     assert_eq!(history.combat(62), Engaged::No);
-    history.advance(sample(&links, &allied, &[7], &[2]), Continuity::Next);
+    history.advance(sample(&allied, &[7], &[2]), Continuity::Next);
     assert_eq!(history.combat(62), Engaged::No);
-    history.advance(sample(&links, &allied, &[7, 8], &[2]), Continuity::Next);
+    history.advance(sample(&allied, &[7, 8], &[2]), Continuity::Next);
     assert_eq!(history.combat(62), Engaged::Yes);
-    history.advance(sample(&links, &apart, &[7], &[2]), Continuity::Next);
+    history.advance(sample(&apart, &[7], &[2]), Continuity::Next);
     assert_eq!(history.combat(62), Engaged::Ambiguous(Ambiguity::Order));
-    history.advance(sample(&links, &apart, &[8], &[2]), Continuity::Next);
+    history.advance(sample(&apart, &[8], &[2]), Continuity::Next);
     assert_eq!(history.combat(62), Engaged::No);
-    history.advance(sample(&links, &apart, &[8], &[2]), Continuity::Gap);
+    history.advance(sample(&apart, &[8], &[2]), Continuity::Gap);
     assert_eq!(history.combat(62), Engaged::Unknown);
 
     let mut started = History::default();
     let empty = Sample {
         sides: BTreeMap::new(),
-        ..sample(&links, &allied, &[], &[])
+        ..sample(&allied, &[], &[])
     };
     started.advance(empty, Continuity::Load);
-    started.advance(sample(&links, &allied, &[7], &[2]), Continuity::Next);
+    started.advance(sample(&allied, &[7], &[2]), Continuity::Next);
     assert_eq!(started.combat(62), Engaged::Yes);
 }
 
 #[test]
 fn without_refresh_witness_diplomacy_change_is_ambiguous() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
     let mut history = History::default();
-    fn without<'a>(links: &'a BTreeMap<u32, u32>, relations: &'a Relations) -> Sample<'a> {
+    fn without<'a>(snapshot: &'a Arc<Snapshot>) -> Sample<'a> {
         Sample {
             refreshes: RefreshWitness::Unavailable,
-            ..sample(links, relations, &[7], &[2])
+            ..sample(snapshot, &[7], &[2])
         }
     }
-    history.advance(without(&links, &apart), Continuity::Load);
+    history.advance(without(&apart), Continuity::Load);
     assert_eq!(history.side(62, 0), Engaged::No);
-    history.advance(without(&links, &apart), Continuity::Next);
+    history.advance(without(&apart), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::No);
-    history.advance(without(&links, &allied), Continuity::Next);
+    history.advance(without(&allied), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
-    history.advance(without(&links, &allied), Continuity::Next);
+    history.advance(without(&allied), Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
     let joined = Sample {
         refreshes: RefreshWitness::Unavailable,
-        ..sample(&links, &allied, &[7, 8], &[2])
+        ..sample(&allied, &[7, 8], &[2])
     };
     history.advance(joined, Continuity::Next);
     assert_eq!(history.side(62, 0), Engaged::Yes);
@@ -629,20 +618,22 @@ fn without_refresh_witness_diplomacy_change_is_ambiguous() {
 #[test]
 fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
+    let (apart_rel, allied_rel) = (relations(false), relations(true));
+    let (apart, allied) = (snap(&links, &apart_rel), snap(&links, &allied_rel));
 
     let mut readd = History::default();
-    readd.advance(sample(&links, &apart, &[7], &[2]), Continuity::Load);
+    readd.advance(sample(&apart, &[7], &[2]), Continuity::Load);
     assert_eq!(readd.side(62, 0), Engaged::No);
+    let rec_sides = BTreeMap::from([((62, 0), side_witness(RECORDED))]);
     readd.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &rec_sides,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -650,12 +641,12 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     readd.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &rec_sides,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -665,33 +656,32 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     let mut naval_side = side(&[7], &[1]);
     naval_side.unit_lists = Some((vec![2], vec![]));
     fn naval_at<'a>(
-        links: &'a BTreeMap<u32, u32>,
-        relations: &'a Relations,
+        snapshot: &'a Arc<Snapshot>,
         naval_side: &Side,
-        refreshes: RefreshWitness,
+        refreshes: RefreshWitness<'a>,
     ) -> Sample<'a> {
         Sample {
             refreshes,
             sides: BTreeMap::from([((62, 0), naval_side.clone()), ((62, 1), side(&[9], &[5]))]),
             removal: Removal::BothSides,
-            ..sample(links, relations, &[7], &[1])
+            ..sample(snapshot, &[7], &[1])
         }
     }
     bounce.advance(
-        naval_at(&links, &apart, &naval_side, complete_witness()),
+        naval_at(&apart, &naval_side, complete_witness()),
         Continuity::Load,
     );
     assert_eq!(bounce.side(62, 0), Engaged::Yes);
+    let unit_sides = BTreeMap::from([((62, 0), side_witness(UNITS))]);
     bounce.advance(
         naval_at(
-            &links,
             &apart,
             &naval_side,
             RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), side_witness(UNITS))]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &unit_sides,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
         ),
         Continuity::Next,
@@ -701,20 +691,27 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     let zero_no = ZeroVisibility::for_tests([(2, Ok(false)), (5, Ok(false))]);
     let zero_yes = ZeroVisibility::for_tests([(2, Ok(true)), (5, Ok(false))]);
     let zero_missing = ZeroVisibility::unavailable("missing");
+    let apart_zero_no = snap_with(&links, &apart_rel, &zero_no, Some(Controllers::default()));
+    let allied_zero_no = snap_with(&links, &allied_rel, &zero_no, Some(Controllers::default()));
+    let allied_zero_yes = snap_with(&links, &allied_rel, &zero_yes, Some(Controllers::default()));
+    let allied_zero_missing = snap_with(
+        &links,
+        &allied_rel,
+        &zero_missing,
+        Some(Controllers::default()),
+    );
     let mut local = History::default();
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_no,
-            ..sample(&links, &apart, &[7], &[2])
+            ..sample(&apart_zero_no, &[7], &[2])
         },
         Continuity::Load,
     );
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_no,
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_no, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -722,14 +719,13 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![1],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[1],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_no, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -737,14 +733,13 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![0],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[0],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_no, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -752,14 +747,13 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_yes,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![0],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[0],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_yes, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -767,14 +761,13 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_yes,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![0],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[0],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_yes, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -782,14 +775,13 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_missing,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![0],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[0],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_missing, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -797,14 +789,13 @@ fn witnessed_same_roster_readd_remove_and_local_refresh_drive_engaged_state() {
     local.advance(
         Sample {
             recording: true,
-            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![99],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[99],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied_zero_no, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -818,10 +809,10 @@ fn remapped_controller_target_is_scope_ambiguous_not_proven() {
     let after_links = BTreeMap::from([(1, 1), (2, 2), (5, 5), (7, 3)]);
     let unlinked = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
     let witness_seven = || RefreshWitness::Complete {
-        sides: BTreeMap::new(),
-        controller_targets: vec![7],
-        local_viewers: Vec::new(),
-        cache_written_viewers: Vec::new(),
+        sides: empty_sides(),
+        controller_targets: &[7],
+        local_viewers: &[],
+        cache_written_viewers: &[],
     };
 
     for (prev_links, next_links) in [
@@ -830,14 +821,17 @@ fn remapped_controller_target_is_scope_ambiguous_not_proven() {
         (&unlinked, &before_links),
         (&before_links, &unlinked),
     ] {
+        let prev_apart = snap(prev_links, &apart);
+        let prev_allied = snap(prev_links, &allied);
+        let next_allied = snap(next_links, &allied);
         let mut history = History::default();
-        history.advance(sample(prev_links, &apart, &[7], &[2]), Continuity::Load);
-        history.advance(sample(prev_links, &allied, &[7], &[2]), Continuity::Next);
+        history.advance(sample(&prev_apart, &[7], &[2]), Continuity::Load);
+        history.advance(sample(&prev_allied, &[7], &[2]), Continuity::Next);
         assert_eq!(history.side(62, 0), Engaged::No);
         history.advance(
             Sample {
                 refreshes: witness_seven(),
-                ..sample(next_links, &allied, &[7], &[2])
+                ..sample(&next_allied, &[7], &[2])
             },
             Continuity::Next,
         );
@@ -848,23 +842,24 @@ fn remapped_controller_target_is_scope_ambiguous_not_proven() {
 #[test]
 fn partial_previous_census_still_applies_witnessed_side_refresh() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let allied = relations(true);
+    let allied = snap(&links, &relations(true));
     let mut history = History::default();
     let partial_empty = Sample {
         sides: BTreeMap::new(),
         complete: false,
-        ..sample(&links, &allied, &[], &[])
+        ..sample(&allied, &[], &[])
     };
     history.advance(partial_empty, Continuity::Load);
+    let sides = BTreeMap::from([((62, 0), side_witness(RECORDED))]);
     history.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([((62, 0), side_witness(RECORDED))]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &sides,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -874,13 +869,13 @@ fn partial_previous_census_still_applies_witnessed_side_refresh() {
 #[test]
 fn partial_previous_naval_census_with_local_sweep_uses_recorded_lists_alone() {
     let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
-    let allied = relations(true);
+    let allied = snap(&links, &relations(true));
     let mut history = History::default();
     let partial_empty = Sample {
         sides: BTreeMap::new(),
         complete: false,
         removal: Removal::BothSides,
-        ..sample(&links, &allied, &[], &[])
+        ..sample(&allied, &[], &[])
     };
     history.advance(partial_empty, Continuity::Load);
     let mut convoy_side = side(&[], &[2]);
@@ -888,15 +883,15 @@ fn partial_previous_naval_census_with_local_sweep_uses_recorded_lists_alone() {
     history.advance(
         Sample {
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![1],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[1],
+                cache_written_viewers: &[],
             },
             sides: BTreeMap::from([((62, 0), convoy_side), ((62, 1), side(&[9], &[5]))]),
             complete: true,
             removal: Removal::BothSides,
-            ..sample(&links, &allied, &[], &[])
+            ..sample(&allied, &[], &[])
         },
         Continuity::Next,
     );
@@ -906,14 +901,14 @@ fn partial_previous_naval_census_with_local_sweep_uses_recorded_lists_alone() {
 #[test]
 fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
     let links = BTreeMap::from([(101, 1), (701, 1), (2, 2), (5, 5)]);
-    let (apart, allied) = (relations(false), relations(true));
+    let (apart, allied) = (snap(&links, &relations(false)), snap(&links, &relations(true)));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(101),
             recording: true,
-            ..sample(&links, &allied, &[7], &[2])
+            ..sample(&allied, &[7], &[2])
         },
         Continuity::Load,
     );
@@ -923,7 +918,7 @@ fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
             viewer: Some(1),
             viewer_raw: Some(101),
             recording: true,
-            ..sample(&links, &apart, &[7], &[2])
+            ..sample(&apart, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -934,7 +929,7 @@ fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
             viewer_raw: Some(701),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &apart, &[7], &[2])
+            ..sample(&apart, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -946,13 +941,15 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     let links_before = BTreeMap::from([(701, 1), (202, 2), (3, 3), (5, 5)]);
     let links_after = BTreeMap::from([(701, 2), (202, 2), (3, 3), (5, 5)]);
     let shares_with_one = Relations::factions_for_tests(&[(1, 3)]);
+    let snap_before = snap(&links_before, &shares_with_one);
+    let snap_after = snap(&links_after, &shares_with_one);
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
-            ..sample(&links_before, &shares_with_one, &[7], &[3])
+            ..sample(&snap_before, &[7], &[3])
         },
         Continuity::Load,
     );
@@ -965,7 +962,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
             alternate_viewer_raw: Some(202),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links_after, &shares_with_one, &[7], &[3])
+            ..sample(&snap_after, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -976,7 +973,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links_after, &shares_with_one, &[7], &[3])
+            ..sample(&snap_after, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -988,7 +985,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
             viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
-            ..sample(&links_before, &shares_with_one, &[7], &[3])
+            ..sample(&snap_before, &[7], &[3])
         },
         Continuity::Load,
     );
@@ -999,7 +996,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links_after, &shares_with_one, &[7], &[3])
+            ..sample(&snap_after, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1011,13 +1008,16 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     let same_before = BTreeMap::from([(701, 1), (202, 1), (3, 3), (5, 5)]);
     let split_after = BTreeMap::from([(701, 2), (202, 1), (3, 3), (5, 5)]);
     let apart = relations(false);
+    let same_shared = snap(&same_before, &shares_with_one);
+    let same_apart = snap(&same_before, &apart);
+    let split_apart = snap(&split_after, &apart);
     let mut reverse_remap = History::default();
     reverse_remap.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
-            ..sample(&same_before, &shares_with_one, &[7], &[3])
+            ..sample(&same_shared, &[7], &[3])
         },
         Continuity::Load,
     );
@@ -1028,7 +1028,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
             viewer_raw: Some(701),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&same_before, &apart, &[7], &[3])
+            ..sample(&same_apart, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1039,7 +1039,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&split_after, &apart, &[7], &[3])
+            ..sample(&split_apart, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1055,14 +1055,15 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
     let apart = relations(false);
     let zero_yes = ZeroVisibility::for_tests([(2, Ok(true)), (5, Ok(false))]);
     let zero_no = ZeroVisibility::for_tests([(2, Ok(false)), (5, Ok(false))]);
+    let snap_yes = snap_with(&links, &apart, &zero_yes, Some(Controllers::default()));
+    let snap_no = snap_with(&links, &apart, &zero_no, Some(Controllers::default()));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            zero_visibility: &zero_yes,
-            ..sample(&links, &apart, &[7], &[2])
+            ..sample(&snap_yes, &[7], &[2])
         },
         Continuity::Load,
     );
@@ -1074,14 +1075,13 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
             alternate_viewer: Some(0),
             alternate_viewer_raw: Some(0),
             recording: true,
-            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![0],
-                cache_written_viewers: vec![0],
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[0],
+                cache_written_viewers: &[0],
             },
-            ..sample(&links, &apart, &[7], &[2])
+            ..sample(&snap_no, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -1091,9 +1091,8 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
             viewer: Some(0),
             viewer_raw: Some(0),
             recording: true,
-            zero_visibility: &zero_no,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &apart, &[7], &[2])
+            ..sample(&snap_no, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -1103,14 +1102,14 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
 #[test]
 fn unidentified_viewer_degrades_unavailable_hour_conservatively() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
-    let shares_with_three = Relations::factions_for_tests(&[(2, 3)]);
+    let shares_with_three = snap(&links, &Relations::factions_for_tests(&[(2, 3)]));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_three, &[7], &[2])
+            ..sample(&shares_with_three, &[7], &[2])
         },
         Continuity::Load,
     );
@@ -1121,7 +1120,7 @@ fn unidentified_viewer_degrades_unavailable_hour_conservatively() {
             viewer_raw: None,
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_three, &[7], &[2])
+            ..sample(&shares_with_three, &[7], &[2])
         },
         Continuity::Next,
     );
@@ -1131,14 +1130,14 @@ fn unidentified_viewer_degrades_unavailable_hour_conservatively() {
 #[test]
 fn local_all_sides_sweep_preserves_prior_cached_manager_viewer() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
-    let shares_with_two = Relations::factions_for_tests(&[(2, 3)]);
+    let shares_with_two = snap(&links, &Relations::factions_for_tests(&[(2, 3)]));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Load,
     );
@@ -1149,12 +1148,12 @@ fn local_all_sides_sweep_preserves_prior_cached_manager_viewer() {
             viewer_raw: Some(1),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![2],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[2],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1165,7 +1164,7 @@ fn local_all_sides_sweep_preserves_prior_cached_manager_viewer() {
             viewer_raw: Some(1),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1175,15 +1174,15 @@ fn local_all_sides_sweep_preserves_prior_cached_manager_viewer() {
 #[test]
 fn unavailable_interval_keeps_secondary_observer_in_manager_cache() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
-    let shares_with_two = Relations::factions_for_tests(&[(2, 3)]);
-    let apart = relations(false);
+    let shares_with_two = snap(&links, &Relations::factions_for_tests(&[(2, 3)]));
+    let apart = snap(&links, &relations(false));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Load,
     );
@@ -1196,7 +1195,7 @@ fn unavailable_interval_keeps_secondary_observer_in_manager_cache() {
             alternate_viewer_raw: Some(2),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &apart, &[7], &[3])
+            ..sample(&apart, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1207,7 +1206,7 @@ fn unavailable_interval_keeps_secondary_observer_in_manager_cache() {
             viewer_raw: Some(2),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &apart, &[7], &[3])
+            ..sample(&apart, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1217,18 +1216,26 @@ fn unavailable_interval_keeps_secondary_observer_in_manager_cache() {
 #[test]
 fn gap_does_not_establish_recording_manager_cache() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
-    let shares_with_one = Relations::factions_for_tests(&[(1, 3)]);
+    let shares_with_one = snap(&links, &Relations::factions_for_tests(&[(1, 3)]));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Gap,
     );
     assert_eq!(history.side(62, 0), Engaged::Unknown);
+    let rec_one = BTreeMap::from([(
+        (62, 0),
+        SideWitness {
+            lists: RECORDED,
+            recorded_viewers: vec![1],
+            units_viewers: Vec::new(),
+        },
+    )]);
     history.advance(
         Sample {
             viewer: Some(1),
@@ -1237,19 +1244,12 @@ fn gap_does_not_establish_recording_manager_cache() {
             alternate_viewer_raw: Some(2),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([(
-                    (62, 0),
-                    SideWitness {
-                        lists: RECORDED,
-                        recorded_viewers: vec![1],
-                        units_viewers: Vec::new(),
-                    },
-                )]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &rec_one,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1260,7 +1260,7 @@ fn gap_does_not_establish_recording_manager_cache() {
             viewer_raw: Some(2),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1270,37 +1270,38 @@ fn gap_does_not_establish_recording_manager_cache() {
 #[test]
 fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
-    let shares_with_one = Relations::factions_for_tests(&[(1, 3)]);
+    let shares_with_one = snap(&links, &Relations::factions_for_tests(&[(1, 3)]));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Gap,
     );
     assert_eq!(history.side(62, 0), Engaged::Unknown);
+    let rec_one = BTreeMap::from([(
+        (62, 0),
+        SideWitness {
+            lists: RECORDED,
+            recorded_viewers: vec![1],
+            units_viewers: Vec::new(),
+        },
+    )]);
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([(
-                    (62, 0),
-                    SideWitness {
-                        lists: RECORDED,
-                        recorded_viewers: vec![1],
-                        units_viewers: Vec::new(),
-                    },
-                )]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &rec_one,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1313,7 +1314,7 @@ fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
             alternate_viewer_raw: Some(2),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1324,7 +1325,7 @@ fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
             viewer_raw: Some(2),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1336,7 +1337,7 @@ fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Gap,
     );
@@ -1346,12 +1347,12 @@ fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
             viewer_raw: Some(1),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![2],
-                cache_written_viewers: Vec::new(),
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[2],
+                cache_written_viewers: &[],
             },
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1362,7 +1363,7 @@ fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
             viewer_raw: Some(1),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_one, &[7], &[3])
+            ..sample(&shares_with_one, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1374,9 +1375,19 @@ fn mid_campaign_gap_recovers_recording_manager_cache_after_full_tick() {
 
 #[test]
 fn gap_recovery_preserves_raw_aliases_across_later_remap() {
-    let aliased = BTreeMap::from([(101, 1), (202, 1), (3, 3), (5, 5)]);
-    let split = BTreeMap::from([(101, 1), (202, 2), (3, 3), (5, 5)]);
+    let aliased_links = BTreeMap::from([(101, 1), (202, 1), (3, 3), (5, 5)]);
+    let split_links = BTreeMap::from([(101, 1), (202, 2), (3, 3), (5, 5)]);
     let shares_with_one = Relations::factions_for_tests(&[(1, 3)]);
+    let aliased = snap(&aliased_links, &shares_with_one);
+    let split = snap(&split_links, &shares_with_one);
+    let rec_101 = BTreeMap::from([(
+        (62, 0),
+        SideWitness {
+            lists: RECORDED,
+            recorded_viewers: vec![101],
+            units_viewers: Vec::new(),
+        },
+    )]);
 
     let mut from_complete = History::default();
     from_complete.advance(
@@ -1384,7 +1395,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer: Some(1),
             viewer_raw: Some(101),
             recording: true,
-            ..sample(&aliased, &shares_with_one, &[7], &[3])
+            ..sample(&aliased, &[7], &[3])
         },
         Continuity::Gap,
     );
@@ -1394,19 +1405,12 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer_raw: Some(101),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([(
-                    (62, 0),
-                    SideWitness {
-                        lists: RECORDED,
-                        recorded_viewers: vec![101],
-                        units_viewers: Vec::new(),
-                    },
-                )]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &rec_101,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&aliased, &shares_with_one, &[7], &[3])
+            ..sample(&aliased, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1419,7 +1423,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             alternate_viewer_raw: Some(202),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&split, &shares_with_one, &[7], &[3])
+            ..sample(&split, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1430,7 +1434,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&split, &shares_with_one, &[7], &[3])
+            ..sample(&split, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1445,7 +1449,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer: Some(1),
             viewer_raw: Some(101),
             recording: true,
-            ..sample(&aliased, &shares_with_one, &[7], &[3])
+            ..sample(&aliased, &[7], &[3])
         },
         Continuity::Gap,
     );
@@ -1455,7 +1459,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer_raw: Some(101),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&aliased, &shares_with_one, &[7], &[3])
+            ..sample(&aliased, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1465,19 +1469,12 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer_raw: Some(101),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::from([(
-                    (62, 0),
-                    SideWitness {
-                        lists: RECORDED,
-                        recorded_viewers: vec![101],
-                        units_viewers: Vec::new(),
-                    },
-                )]),
-                controller_targets: Vec::new(),
-                local_viewers: Vec::new(),
-                cache_written_viewers: Vec::new(),
+                sides: &rec_101,
+                controller_targets: &[],
+                local_viewers: &[],
+                cache_written_viewers: &[],
             },
-            ..sample(&aliased, &shares_with_one, &[7], &[3])
+            ..sample(&aliased, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1490,7 +1487,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             alternate_viewer_raw: Some(202),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&split, &shares_with_one, &[7], &[3])
+            ..sample(&split, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1501,7 +1498,7 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&split, &shares_with_one, &[7], &[3])
+            ..sample(&split, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1514,14 +1511,14 @@ fn gap_recovery_preserves_raw_aliases_across_later_remap() {
 #[test]
 fn narrowing_recovers_exact_manager_cache_after_gap_and_observer_switch() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
-    let shares_with_two = Relations::factions_for_tests(&[(2, 3)]);
+    let shares_with_two = snap(&links, &Relations::factions_for_tests(&[(2, 3)]));
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Gap,
     );
@@ -1534,7 +1531,7 @@ fn narrowing_recovers_exact_manager_cache_after_gap_and_observer_switch() {
             alternate_viewer_raw: Some(2),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1545,12 +1542,12 @@ fn narrowing_recovers_exact_manager_cache_after_gap_and_observer_switch() {
             viewer_raw: Some(2),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![2],
-                cache_written_viewers: vec![2],
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[2],
+                cache_written_viewers: &[2],
             },
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1561,7 +1558,7 @@ fn narrowing_recovers_exact_manager_cache_after_gap_and_observer_switch() {
             viewer_raw: Some(2),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1574,7 +1571,7 @@ fn narrowing_recovers_exact_manager_cache_after_gap_and_observer_switch() {
             alternate_viewer_raw: Some(1),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1585,7 +1582,7 @@ fn narrowing_recovers_exact_manager_cache_after_gap_and_observer_switch() {
             viewer_raw: Some(1),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_two, &[7], &[3])
+            ..sample(&shares_with_two, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1598,13 +1595,15 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
     let links_aliased =
         BTreeMap::from([(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (101, 2), (202, 2)]);
     let shares_with_two = Relations::factions_for_tests(&[(2, 3)]);
+    let snap_init = snap(&links_init, &shares_with_two);
+    let snap_aliased = snap(&links_aliased, &shares_with_two);
     let mut history = History::default();
     history.advance(
         Sample {
             viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
-            ..sample(&links_init, &shares_with_two, &[7], &[3])
+            ..sample(&snap_init, &[7], &[3])
         },
         Continuity::Load,
     );
@@ -1617,7 +1616,7 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
             alternate_viewer_raw: Some(101),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links_init, &shares_with_two, &[7], &[3])
+            ..sample(&snap_init, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1630,12 +1629,12 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
             alternate_viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![101],
-                cache_written_viewers: vec![101],
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[101],
+                cache_written_viewers: &[101],
             },
-            ..sample(&links_aliased, &shares_with_two, &[7], &[3])
+            ..sample(&snap_aliased, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1646,7 +1645,7 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: complete_witness(),
-            ..sample(&links_init, &shares_with_two, &[7], &[3])
+            ..sample(&snap_init, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1657,7 +1656,7 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links_init, &shares_with_two, &[7], &[3])
+            ..sample(&snap_init, &[7], &[3])
         },
         Continuity::Next,
     );
@@ -1667,7 +1666,7 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
 #[test]
 fn gap_preserves_directly_witnessed_cache_write_for_next_hour() {
     let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]);
-    let shares_with_three = Relations::factions_for_tests(&[(2, 3)]);
+    let shares_with_three = snap(&links, &Relations::factions_for_tests(&[(2, 3)]));
     let mut history = History::default();
     history.advance(
         Sample {
@@ -1675,12 +1674,12 @@ fn gap_preserves_directly_witnessed_cache_write_for_next_hour() {
             viewer_raw: Some(3),
             recording: true,
             refreshes: RefreshWitness::Complete {
-                sides: BTreeMap::new(),
-                controller_targets: Vec::new(),
-                local_viewers: vec![4],
-                cache_written_viewers: vec![4],
+                sides: empty_sides(),
+                controller_targets: &[],
+                local_viewers: &[4],
+                cache_written_viewers: &[4],
             },
-            ..sample(&links, &shares_with_three, &[7], &[2])
+            ..sample(&shares_with_three, &[7], &[2])
         },
         Continuity::Gap,
     );
@@ -1691,9 +1690,158 @@ fn gap_preserves_directly_witnessed_cache_write_for_next_hour() {
             viewer_raw: Some(3),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
-            ..sample(&links, &shares_with_three, &[7], &[2])
+            ..sample(&shares_with_three, &[7], &[2])
         },
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Yes);
+}
+
+#[test]
+fn shared_snapshot_fast_paths_match_distinct_snapshots() {
+    let links = BTreeMap::from([(1, 1), (101, 1), (2, 2), (5, 5)]);
+    let apart_rel = relations(false);
+    let allied_rel = relations(true);
+    let with_controllers = snap_with(
+        &links,
+        &allied_rel,
+        unused_zero(),
+        Some(rosters(&links, &[(40, 5)], 1)),
+    );
+    let no_controllers = snap_with(&links, &allied_rel, unused_zero(), None);
+    let apart_none = snap_with(&links, &apart_rel, unused_zero(), None);
+    let apart_some = snap_with(
+        &links,
+        &apart_rel,
+        unused_zero(),
+        Some(rosters(&links, &[(40, 5)], 1)),
+    );
+    let rec_sides = BTreeMap::from([((62, 0), side_witness(RECORDED))]);
+    let unit_sides = BTreeMap::from([((62, 0), side_witness(UNITS))]);
+
+    let run_pair = |steps: &[(
+        &Arc<Snapshot>,
+        Continuity,
+        Option<u32>,
+        Option<u32>,
+        Option<u32>,
+        Option<u32>,
+        bool,
+        RefreshWitness<'_>,
+        &[u64],
+    )]| {
+        let mut shared = History::default();
+        let mut distinct = History::default();
+        let mut out = Vec::new();
+        for &(
+            base_snap,
+            continuity,
+            viewer,
+            viewer_raw,
+            alternate_viewer,
+            alternate_viewer_raw,
+            recording,
+            refreshes,
+            units,
+        ) in steps
+        {
+            let cloned_snap = Arc::new((**base_snap).clone());
+            shared.advance(
+                Sample {
+                    viewer,
+                    viewer_raw,
+                    alternate_viewer,
+                    alternate_viewer_raw,
+                    recording,
+                    refreshes,
+                    ..sample(base_snap, units, &[2])
+                },
+                continuity,
+            );
+            distinct.advance(
+                Sample {
+                    viewer,
+                    viewer_raw,
+                    alternate_viewer,
+                    alternate_viewer_raw,
+                    recording,
+                    refreshes,
+                    ..sample(&cloned_snap, units, &[2])
+                },
+                continuity,
+            );
+            assert_eq!(shared.side(62, 0), distinct.side(62, 0));
+            assert_eq!(shared.side(62, 1), distinct.side(62, 1));
+            out.push(shared.side(62, 0));
+        }
+        out
+    };
+
+    assert_eq!(
+        run_pair(&[
+            (&apart_none, Continuity::Load, Some(1), None, None, None, false, complete_witness(), &[7]),
+            (&no_controllers, Continuity::Next, Some(1), None, None, None, false, complete_witness(), &[7]),
+            (&no_controllers, Continuity::Next, Some(1), None, None, None, false, RefreshWitness::Unavailable, &[7]),
+        ]),
+        vec![Engaged::No, Engaged::No, Engaged::Ambiguous(Ambiguity::Scope)]
+    );
+
+    assert_eq!(
+        run_pair(&[
+            (&apart_some, Continuity::Load, Some(1), Some(1), None, None, true, complete_witness(), &[7]),
+            (&with_controllers, Continuity::Next, Some(1), Some(1), None, None, true, complete_witness(), &[7]),
+            (&with_controllers, Continuity::Next, Some(1), Some(999), None, None, true, RefreshWitness::Unavailable, &[7]),
+        ]),
+        vec![Engaged::No, Engaged::No, Engaged::Unknown]
+    );
+
+    assert_eq!(
+        run_pair(&[
+            (&apart_some, Continuity::Load, Some(1), Some(1), None, None, true, complete_witness(), &[7]),
+            (&with_controllers, Continuity::Next, Some(1), Some(1), Some(1), Some(101), true, complete_witness(), &[7]),
+            (&with_controllers, Continuity::Next, Some(1), Some(1), Some(1), Some(101), true, RefreshWitness::Unavailable, &[7]),
+            (
+                &with_controllers,
+                Continuity::Next,
+                Some(1),
+                Some(1),
+                None,
+                None,
+                false,
+                RefreshWitness::Complete {
+                    sides: &rec_sides,
+                    controller_targets: &[1],
+                    local_viewers: &[],
+                    cache_written_viewers: &[],
+                },
+                &[7],
+            ),
+            (
+                &with_controllers,
+                Continuity::Next,
+                Some(1),
+                Some(1),
+                None,
+                None,
+                false,
+                RefreshWitness::Complete {
+                    sides: &unit_sides,
+                    controller_targets: &[],
+                    local_viewers: &[],
+                    cache_written_viewers: &[],
+                },
+                &[7],
+            ),
+        ]),
+        vec![Engaged::No, Engaged::No, Engaged::Ambiguous(Ambiguity::Scope), Engaged::Yes, Engaged::Yes]
+    );
+
+    assert_eq!(
+        run_pair(&[
+            (&with_controllers, Continuity::Gap, Some(1), Some(1), None, None, true, complete_witness(), &[7]),
+            (&with_controllers, Continuity::Next, Some(1), Some(1), None, None, true, RefreshWitness::Unavailable, &[7]),
+            (&with_controllers, Continuity::Next, None, None, None, None, true, RefreshWitness::Unavailable, &[7]),
+        ]),
+        vec![Engaged::Unknown, Engaged::Unknown, Engaged::Unknown]
+    );
 }

@@ -1136,11 +1136,17 @@ impl KeyIndex {
         }
     }
 
+    #[inline]
     fn reserve(&mut self, additional: usize, keys: &Keys) {
         let needed = self.held.saturating_add(additional);
         if needed == 0 || needed * 4 <= self.buckets.len() * 3 {
             return;
         }
+        self.grow(needed, keys);
+    }
+
+    #[cold]
+    fn grow(&mut self, needed: usize, keys: &Keys) {
         let _label = label("store: index grown");
         let size = (needed * 4 / 3 + 1).next_power_of_two().max(16);
         let old = std::mem::replace(&mut self.buckets, vec![0; size]);
@@ -1150,24 +1156,30 @@ impl KeyIndex {
         }
     }
 
-    fn insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<()> {
-        if let Some(held) = self.find(key, keys) {
-            return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {held}")));
+    fn prepare_insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<usize> {
+        self.reserve(1, keys);
+        let mask = self.buckets.len() - 1;
+        let mut at = self.bucket(key, mask);
+        loop {
+            match self.buckets[at] {
+                0 => return Ok(at),
+                held if keys.get(held - 1) == key => {
+                    return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {}", held - 1)));
+                }
+                _ => at = (at + 1) & mask,
+            }
         }
-        self.insert(key, slot, keys);
+    }
+
+    fn insert_unique(&mut self, key: u128, slot: u32, keys: &Keys) -> io::Result<()> {
+        let at = self.prepare_insert_unique(key, slot, keys)?;
+        self.buckets[at] = slot + 1;
+        self.held += 1;
         Ok(())
     }
 
     fn insert(&mut self, key: u128, slot: u32, keys: &Keys) {
-        if (self.held + 1) * 4 > self.buckets.len() * 3 {
-            let _label = label("store: index grown");
-            let size = ((self.held + 1) * 4 / 3 + 1).next_power_of_two().max(16);
-            let old = std::mem::replace(&mut self.buckets, vec![0; size]);
-            self.held = 0;
-            for held in old.into_iter().filter(|&held| held != 0) {
-                self.place(keys.get(held - 1), held);
-            }
-        }
+        self.reserve(1, keys);
         self.place(key, slot + 1);
     }
 
@@ -1450,11 +1462,10 @@ impl TableState {
         if self.live.get(slot) {
             return Err(invalid(format!("Insert names slot {slot}, which holds a row")));
         }
-        if let Some(index) = &self.index
-            && let Some(held) = index.find(key, &self.keys).filter(|&held| held != slot)
-        {
-            return Err(invalid(format!("Row key {key:#x} at slot {slot} is already held at slot {held}")));
-        }
+        let bucket = match &mut self.index {
+            Some(index) => Some(index.prepare_insert_unique(key, slot, &self.keys)?),
+            None => None,
+        };
         if slot >= self.slots {
             self.slots = slot + 1;
         }
@@ -1464,8 +1475,9 @@ impl TableState {
         if slot == self.free_from {
             self.free_from += 1;
         }
-        if let Some(index) = &mut self.index {
-            index.insert(key, slot, &self.keys);
+        if let (Some(index), Some(at)) = (&mut self.index, bucket) {
+            index.buckets[at] = slot + 1;
+            index.held += 1;
         }
         for column in &mut self.columns {
             column.grow(slots);
