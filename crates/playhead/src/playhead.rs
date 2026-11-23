@@ -382,7 +382,10 @@ struct Answer {
     ready: Condvar,
 }
 
-struct Reply(Option<Arc<Answer>>);
+struct Reply {
+    answer: Option<Arc<Answer>>,
+    on_done: Option<Arc<dyn Fn() + Send + Sync>>,
+}
 
 impl Reply {
     fn answer(answer: &Arc<Answer>, rows: io::Result<Rows>) {
@@ -391,16 +394,24 @@ impl Reply {
     }
 
     fn give(mut self, rows: io::Result<Rows>) {
-        if let Some(answer) = self.0.take() {
+        let on_done = self.on_done.take();
+        if let Some(answer) = self.answer.take() {
             Self::answer(&answer, rows);
+        }
+        if let Some(on_done) = on_done {
+            on_done();
         }
     }
 }
 
 impl Drop for Reply {
     fn drop(&mut self) {
-        if let Some(answer) = self.0.take() {
+        let on_done = self.on_done.take();
+        if let Some(answer) = self.answer.take() {
             Self::answer(&answer, Err(io::Error::other("The playhead stopped before it read the rows asked")));
+        }
+        if let Some(on_done) = on_done {
+            on_done();
         }
     }
 }
@@ -416,9 +427,18 @@ impl LogReads {
     }
 
     pub fn rows(&self, wanted: Wanted) -> Asked {
+        self.rows_with(wanted, None)
+    }
+
+    pub fn rows_notifying(&self, wanted: Wanted, on_done: Arc<dyn Fn() + Send + Sync>) -> Asked {
+        self.rows_with(wanted, Some(on_done))
+    }
+
+    fn rows_with(&self, wanted: Wanted, on_done: Option<Arc<dyn Fn() + Send + Sync>>) -> Asked {
         let answer = Arc::new(Answer::default());
-        let reply = Reply(Some(Arc::clone(&answer)));
-        if lock(&self.shared.jobs).stop {
+        let reply = Reply { answer: Some(Arc::clone(&answer)), on_done };
+        let stopped = lock(&self.shared.jobs).stop;
+        if stopped {
             drop(reply);
         } else {
             self.shared.queue([((3, 0), Job::Rows(wanted, reply))]);
@@ -522,6 +542,10 @@ struct Shared {
     settings: Settings,
     epoch: AtomicU64,
     freed_ns: AtomicU64,
+    activity: AtomicU64,
+    control_seq: AtomicU64,
+    next_watcher: AtomicU64,
+    watchers: Mutex<Vec<(u64, bool, Arc<dyn Fn() + Send + Sync>)>>,
     control: Mutex<Control>,
     wake: Condvar,
     jobs: Mutex<Jobs>,
@@ -535,6 +559,41 @@ struct Shared {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+std::thread_local! {
+    static HELD_CLOCK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct ClockGuard<'a> {
+    prev: usize,
+    guard: MutexGuard<'a, Clock>,
+}
+
+impl std::ops::Deref for ClockGuard<'_> {
+    type Target = Clock;
+
+    fn deref(&self) -> &Clock {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ClockGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Clock {
+        &mut self.guard
+    }
+}
+
+impl Drop for ClockGuard<'_> {
+    fn drop(&mut self) {
+        HELD_CLOCK.set(self.prev);
+    }
+}
+
+fn lock_clock(clock: &Mutex<Clock>) -> ClockGuard<'_> {
+    let guard = lock(clock);
+    let prev = HELD_CLOCK.replace(std::ptr::from_ref(clock) as usize);
+    ClockGuard { prev, guard }
 }
 
 fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
@@ -567,6 +626,26 @@ impl Shared {
         }
     }
 
+    fn notify_control(&self) {
+        self.control_seq.fetch_add(1, Ordering::Release);
+        self.activity.fetch_add(1, Ordering::Release);
+        let watchers: Vec<Arc<dyn Fn() + Send + Sync>> = lock(&self.watchers).iter().map(|(_, _, wake)| Arc::clone(wake)).collect();
+        for wake in watchers {
+            wake();
+        }
+    }
+
+    fn notify_published(&self) {
+        self.activity.fetch_add(1, Ordering::Release);
+        let watchers: Vec<Arc<dyn Fn() + Send + Sync>> = lock(&self.watchers)
+            .iter()
+            .filter_map(|(_, on_publish, wake)| on_publish.then(|| Arc::clone(wake)))
+            .collect();
+        for wake in watchers {
+            wake();
+        }
+    }
+
     fn nudge(&self, change: impl FnOnce(&mut Control)) {
         let mut control = lock(&self.control);
         change(&mut control);
@@ -587,7 +666,11 @@ impl Shared {
     }
 
     fn seek(&self, hour: Hour) {
-        self.seek_locked(&mut lock(&self.clock), hour);
+        {
+            let mut clock = lock_clock(&self.clock);
+            self.seek_locked(&mut clock, hour);
+        }
+        self.notify_control();
     }
 
     fn seek_locked(&self, clock: &mut Clock, hour: Hour) {
@@ -813,6 +896,7 @@ impl Drop for StepperExit {
                 control.error = Some("playhead stepper panicked".into());
             }
         });
+        self.shared.notify_control();
     }
 }
 
@@ -843,11 +927,19 @@ impl Consumer {
         let taken = ring.take(self.id, head, out);
         drop(ring);
         if taken > 0 {
-            if let Some(reset) = out[from..].iter().find(|step| step.reset) {
+            let released = if let Some(reset) = out[from..].iter().find(|step| step.reset) {
                 let now = Instant::now();
-                lock(&self.shared.clock).shown(reset.epoch, now);
-            }
+                let mut clock = lock_clock(&self.shared.clock);
+                let was_held = clock.held().is_some();
+                clock.shown(reset.epoch, now);
+                was_held && clock.held().is_none()
+            } else {
+                false
+            };
             self.shared.try_nudge();
+            if released {
+                self.shared.notify_control();
+            }
         }
         taken
     }
@@ -864,11 +956,13 @@ impl Consumer {
         }
     }
 
+    pub fn try_take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> Option<usize> {
+        let ring = self.lock_ring()?;
+        Some(self.take_from(ring, head, out))
+    }
+
     pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
-        let Some(ring) = self.lock_ring() else {
-            return 0;
-        };
-        self.take_from(ring, head, out)
+        self.try_take(head, out).unwrap_or(0)
     }
 
     pub fn ahead(&self, out: &mut Vec<Arc<Step>>) {
@@ -877,20 +971,26 @@ impl Consumer {
         }
     }
 
-    pub fn advance(&self, head: Hour) {
+    pub fn try_advance(&self, head: Hour) -> bool {
         if self.blocking {
             self.ask_blocking(head);
-            return;
+            return true;
         }
         if !self.shared.ask(Some(self.id), head) {
-            return;
+            return false;
         }
-        if !self.asked.load(Ordering::Relaxed)
-            && let Some(mut ring) = try_lock(&self.shared.ring)
-        {
+        if !self.asked.load(Ordering::Relaxed) {
+            let Some(mut ring) = try_lock(&self.shared.ring) else {
+                return false;
+            };
             ring.asks(self.id);
             self.asked.store(true, Ordering::Relaxed);
         }
+        true
+    }
+
+    pub fn advance(&self, head: Hour) {
+        let _ = self.try_advance(head);
     }
 
     pub fn lands_itself(&self) {
@@ -907,6 +1007,7 @@ impl Consumer {
             control.lands.push(id);
             control.caught_up_at = None;
         });
+        self.shared.notify_control();
     }
 
     pub fn state(&self, step: &Step, table: usize) -> Option<State> {
@@ -985,6 +1086,17 @@ impl Drop for Consumer {
     }
 }
 
+pub struct Watcher {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        lock(&self.shared.watchers).retain(|(id, _, _)| *id != self.id);
+    }
+}
+
 impl Playhead {
     pub fn new(pages: Arc<dyn Pages>, timeline: Timeline, settings: Settings, hook: Option<Hook>) -> io::Result<Self> {
         if settings.step_threads == 0 || settings.fetch_threads == 0 || settings.ring == 0 {
@@ -1000,6 +1112,10 @@ impl Playhead {
             settings,
             epoch: AtomicU64::new(0),
             freed_ns: AtomicU64::new(0),
+            activity: AtomicU64::new(0),
+            control_seq: AtomicU64::new(0),
+            next_watcher: AtomicU64::new(0),
+            watchers: Mutex::default(),
             control: Mutex::new(Control {
                 version: 0,
                 head: first,
@@ -1078,6 +1194,7 @@ impl Playhead {
             let since = vec![control.selection; tables.len()];
             control.readers.insert(Reader(id), Declaration { tables, since, rebuild });
         });
+        self.shared.notify_control();
         Ok(Reader(id))
     }
 
@@ -1087,7 +1204,9 @@ impl Playhead {
             if control.readers.get(&reader).is_some_and(|held| held.tables == tables) {
                 control.hook_requested = true;
                 control.version += 1;
+                drop(control);
                 self.shared.wake.notify_all();
+                self.shared.notify_control();
                 return Ok(());
             }
         }
@@ -1103,7 +1222,12 @@ impl Playhead {
                 found = true;
             }
         });
-        if found { Ok(()) } else { Err(invalid(format!("Reader {} is retired", reader.0))) }
+        if found {
+            self.shared.notify_control();
+            Ok(())
+        } else {
+            Err(invalid(format!("Reader {} is retired", reader.0)))
+        }
     }
 
     fn check(&self, tables: &[Declared]) -> io::Result<()> {
@@ -1138,6 +1262,7 @@ impl Playhead {
                 control.caught_up_at = None;
             }
         });
+        self.shared.notify_control();
     }
 
     pub fn consumer(&self, reader: Reader) -> Consumer {
@@ -1152,12 +1277,12 @@ impl Playhead {
     }
 
     pub fn head(&self, now: Instant) -> Hour {
-        lock(&self.shared.clock).frame(now)
+        lock_clock(&self.shared.clock).frame(now)
     }
 
     pub fn head_from(&self, at: Hour, by: Duration) -> Option<Hour> {
         let last = self.shared.timeline.last();
-        let clock = lock(&self.shared.clock);
+        let clock = lock_clock(&self.shared.clock);
         if !clock.playing() || clock.held().is_some() || at >= last {
             return None;
         }
@@ -1165,13 +1290,14 @@ impl Playhead {
     }
 
     pub fn anchor(&self, position: f64, playing: bool, speed: f64, at: Instant, sought: bool) {
-        let mut clock = lock(&self.shared.clock);
+        let mut clock = lock_clock(&self.shared.clock);
         if sought {
             self.shared.seek_locked(&mut clock, position.floor() as Hour);
         }
         clock.anchor(position, playing, speed, at);
         drop(clock);
         self.shared.nudge(|_| {});
+        self.shared.notify_control();
     }
 
     pub fn frame_rate(&self, rate: f64) {
@@ -1182,6 +1308,7 @@ impl Playhead {
         control.version += 1;
         drop(control);
         self.shared.resize();
+        self.shared.notify_control();
     }
 
     pub fn step_hours(&self) -> Hour {
@@ -1189,9 +1316,44 @@ impl Playhead {
         ((control.pace / control.rate).round() as Hour).max(1)
     }
 
+    pub fn frame_period(&self) -> Duration {
+        let rate = lock(&self.shared.control).rate;
+        Duration::from_secs_f64((1.0 / rate).max(0.001))
+    }
+
+    pub fn playing(&self) -> bool {
+        let clock = lock_clock(&self.shared.clock);
+        clock.playing() && clock.held().is_none()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn clock_held_on_current_thread(&self) -> bool {
+        HELD_CLOCK.get() == std::ptr::from_ref(&self.shared.clock) as usize
+    }
+
+    pub fn activity(&self) -> u64 {
+        self.shared.activity.load(Ordering::Acquire)
+    }
+
+    pub fn control_seq(&self) -> u64 {
+        self.shared.control_seq.load(Ordering::Acquire)
+    }
+
+    pub fn watch(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Watcher {
+        let id = self.shared.next_watcher.fetch_add(1, Ordering::Relaxed);
+        lock(&self.shared.watchers).push((id, true, wake));
+        Watcher { shared: Arc::clone(&self.shared), id }
+    }
+
+    pub fn watch_control(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Watcher {
+        let id = self.shared.next_watcher.fetch_add(1, Ordering::Relaxed);
+        lock(&self.shared.watchers).push((id, false, wake));
+        Watcher { shared: Arc::clone(&self.shared), id }
+    }
+
     pub fn play(&self, speed: f64) {
         if speed > 0.0 {
-            lock(&self.shared.clock).play(speed, Instant::now());
+            lock_clock(&self.shared.clock).play(speed, Instant::now());
             self.pace(speed);
         }
     }
@@ -1200,6 +1362,7 @@ impl Playhead {
         if speed > 0.0 {
             self.shared.nudge(|control| control.pace = speed);
             if self.shared.leads() { self.shared.resize(); }
+            self.shared.notify_control();
         }
     }
 
@@ -1220,22 +1383,33 @@ impl Playhead {
     }
 
     pub fn pause(&self) {
-        lock(&self.shared.clock).pause(Instant::now());
+        lock_clock(&self.shared.clock).pause(Instant::now());
         self.shared.nudge(|_| {});
+        self.shared.notify_control();
     }
 
     pub fn seed_paused_query(&self) {
-        let mut clock = lock(&self.shared.clock);
-        if !clock.playing() && clock.held().is_none() {
-            let hour = clock.head(Instant::now());
-            if self.newest().is_some_and(|newest| newest > hour) {
-                self.shared.seek_locked(&mut clock, hour);
+        let sought = {
+            let mut clock = lock_clock(&self.shared.clock);
+            if !clock.playing() && clock.held().is_none() {
+                let hour = clock.head(Instant::now());
+                if self.newest().is_some_and(|newest| newest > hour) {
+                    self.shared.seek_locked(&mut clock, hour);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
+        };
+        if sought {
+            self.shared.notify_control();
         }
     }
 
     pub fn holding(&self) -> Option<u64> {
-        lock(&self.shared.clock).held()
+        lock_clock(&self.shared.clock).held()
     }
 
     pub fn epoch(&self) -> u64 {
@@ -1258,9 +1432,16 @@ impl Playhead {
         self.shared.wake.notify_all();
     }
 
+    pub fn wake_waiters(&self) {
+        let mut control = lock(&self.shared.control);
+        control.version += 1;
+        drop(control);
+        self.shared.wake.notify_all();
+    }
+
     pub fn place(&self, hour: Hour) {
         let hour = self.shared.timeline.clamp(hour);
-        let mut clock = lock(&self.shared.clock);
+        let mut clock = lock_clock(&self.shared.clock);
         if clock.held().is_some() {
             drop(clock);
             return self.shared.seek(hour);
@@ -1268,6 +1449,7 @@ impl Playhead {
         clock.place(hour, Instant::now());
         drop(clock);
         self.shared.nudge(|_| {});
+        self.shared.notify_control();
     }
 
     pub fn seek(&self, hour: Hour) {
@@ -1430,6 +1612,7 @@ impl Playhead {
 
     fn stop(&mut self) -> Vec<Lane> {
         self.shared.nudge(|control| control.stop = true);
+        self.shared.notify_control();
         lock(&self.shared.jobs).stop = true;
         self.shared.work.notify_all();
         let lanes = self.stepper.take().map(|stepper| stepper.join().unwrap_or_default()).unwrap_or_default();
@@ -1755,7 +1938,7 @@ impl Stepper {
                         }
                         moved = true;
                     } else if self.hook_requested
-                        && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock(&self.shared.clock).playing())
+                        && (self.quantum() == 1 || self.newest == Some(self.shared.timeline.last()) || !lock_clock(&self.shared.clock).playing())
                     {
                         self.hook_declared();
                         moved = true;
@@ -1781,6 +1964,7 @@ impl Stepper {
             if let Err(error) = outcome {
                 self.failed = true;
                 self.shared.nudge(|control| control.error = Some(error.to_string()));
+                self.shared.notify_control();
             }
             self.publish_joins();
             self.report(false);
@@ -2517,6 +2701,7 @@ impl Stepper {
             control.published_steps += 1;
             self.publish_caught_up(control, caught_up);
         });
+        self.shared.notify_published();
         Ok(true)
     }
 
@@ -2756,7 +2941,7 @@ impl Stepper {
         }
         let last = self.shared.timeline.pieces[self.piece].last;
         let held = {
-            let clock = lock(&self.shared.clock);
+            let clock = lock_clock(&self.shared.clock);
             !clock.playing() || clock.held().is_some()
         };
         if held && lock(&self.shared.ring).frames().is_some_and(|(_, hour)| hour.min(last) < newest.min(last)) {
@@ -2868,6 +3053,7 @@ impl Stepper {
             control.published_steps += 1;
             self.publish_caught_up(control, caught_up);
         });
+        self.shared.notify_published();
         Ok(true)
     }
 
@@ -3006,13 +3192,14 @@ impl Stepper {
             control.published_steps += 1;
             self.publish_caught_up(control, caught_up);
         });
+        self.shared.notify_published();
         Ok(true)
     }
 
     fn adopt_parked(&mut self) -> bool {
         let parked = lock(&self.shared.ring).parked_seats();
         let held = {
-            let clock = lock(&self.shared.clock);
+            let clock = lock_clock(&self.shared.clock);
             !clock.playing() || clock.held().is_some()
         };
         let mut moved = false;
@@ -3194,6 +3381,7 @@ impl Stepper {
                         control.published_steps += 1;
                         self.publish_caught_up(control, caught_up);
                     });
+                    self.shared.notify_published();
                     moved = true;
                 }
                 Err(steps) => {
@@ -3230,6 +3418,7 @@ impl Stepper {
                     control.published_steps += 1;
                     self.publish_caught_up(control, caught_up);
                 });
+                self.shared.notify_published();
             }
             Err(step) => self.shared.free(step),
         }

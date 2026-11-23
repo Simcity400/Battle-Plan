@@ -509,7 +509,7 @@ impl dashboard_follow::registry::Playheads for FollowPlayheads {
         let held = dashboard_follow::host::held_tables(&**entry.pages(), entry.kinds().len());
         let host = dashboard_follow::host::PlayheadHost::new(Arc::clone(&entry), crate::playhead_host::Entry::playhead, crate::playhead_host::Entry::follow_anchor, follow, held).map_err(|error| error.to_string())?;
         let hook = entry.hooks().add(hook);
-        let rows = Arc::new(FollowRows { entry, branch, hook, views: std::sync::Mutex::new(std::sync::Weak::new()) });
+        let rows = Arc::new(FollowRows { entry, branch, hook, views: std::sync::Mutex::new(std::sync::Weak::new()), on_publish: std::sync::Mutex::new(None) });
         host.show_panels(rows, Arc::clone(push));
         self.hosts.lock().unwrap_or_else(|error| error.into_inner()).insert(key, Arc::downgrade(&host));
         Ok(host as Arc<dyn dashboard_follow::registry::Hosted>)
@@ -521,6 +521,7 @@ struct FollowRows {
     entry: Arc<crate::playhead_host::Entry>,
     branch: u64,
     views: std::sync::Mutex<std::sync::Weak<crate::playhead_host::views::apart::Following>>,
+    on_publish: std::sync::Mutex<Option<dashboard_follow::panel::Wake>>,
 }
 
 impl Drop for FollowRows {
@@ -532,19 +533,32 @@ impl Drop for FollowRows {
 impl dashboard_follow::panel::PanelRows for FollowRows {
     fn reader(&self, tables: &[replay_data::rows::TableId]) -> io::Result<Box<dyn dashboard_follow::panel::PanelReader>> {
         use crate::playhead_host::views::{Need, Pace, apart::Following};
-        let following = {
+        let (following, created) = {
             let mut held = self.views.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             match held.upgrade() {
-                Some(following) => following,
+                Some(following) => (following, false),
                 None => {
                     let following = Arc::new(Following::open(&self.entry, self.branch)?);
                     *held = Arc::downgrade(&following);
-                    following
+                    (following, true)
                 }
             }
         };
+        if created
+            && let Some(wake) = self.on_publish.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        {
+            following.views().set_on_publish(wake);
+        }
         let reader = following.views().reader_at("follow panel", &tables.iter().copied().map(Need::every).collect::<Vec<Need>>(), Pace::Step);
         Ok(Box::new(FollowRowReader { reader, entry: Arc::clone(&self.entry), _following: following }))
+    }
+
+    fn on_publish(&self, wake: dashboard_follow::panel::Wake) {
+        *self.on_publish.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&wake));
+        let following = self.views.lock().unwrap_or_else(std::sync::PoisonError::into_inner).upgrade();
+        if let Some(following) = following {
+            following.views().set_on_publish(wake);
+        }
     }
 }
 
@@ -1752,7 +1766,7 @@ mod tests {
         let entry = crate::playhead_host::open_clocked(units, hourly_steps(), 0, crate::playhead_host::Side::Follow).unwrap();
         entry.set_capture(replay_data::scope::CaptureMode::Full);
         entry.playhead().seek(1);
-        let rows = FollowRows { hook: entry.hooks().add(Box::new(|_, _| {})), entry: Arc::clone(&entry), branch: RECORDING.branch, views: std::sync::Mutex::new(std::sync::Weak::new()) };
+        let rows = FollowRows { hook: entry.hooks().add(Box::new(|_, _| {})), entry: Arc::clone(&entry), branch: RECORDING.branch, views: std::sync::Mutex::new(std::sync::Weak::new()), on_publish: std::sync::Mutex::new(None) };
         let panel = rows.reader(&[replay_data::rows::TableId::Countries]).unwrap();
         let following = rows.views.lock().unwrap().clone();
         assert!(following.upgrade().is_some(), "the panel's reader holds the store it reads");

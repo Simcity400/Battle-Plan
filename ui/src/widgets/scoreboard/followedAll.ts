@@ -61,7 +61,7 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
     const failure = cause ? cause.reason ?? 'The followed stream failed' : undefined;
     const error = cause ? cause.error ?? asFailure(new Error(failure!)) : undefined;
     return { reason: unavailable?.reason, failure, error };
-  }, [entries]);
+  }, [entries, view]);
   const retryable = outcome.error !== undefined;
   const retry = useCallback(() => { if (retryable && pipeline) restartPipeline(pipeline); }, [retryable, pipeline]);
   return useMemo(() => ({

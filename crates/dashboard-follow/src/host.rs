@@ -10,7 +10,7 @@ use serde_json::Value;
 use replay_frame::frame::DecodedFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use playhead::{
-    Declared, Playhead, Reader,
+    Declared, Playhead, Reader, Watcher,
     pages::{Pages, Run},
 };
 use replay_columnar::{
@@ -21,14 +21,62 @@ use replay_data::Hour;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 
 const FRAME: Duration = Duration::from_micros(16_667);
+const PANEL_POLL: Duration = Duration::from_millis(8);
+
+struct WaitGate {
+    version: AtomicU64,
+    state: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl WaitGate {
+    fn new() -> Self {
+        Self { version: AtomicU64::new(0), state: Mutex::new(false), cv: Condvar::new() }
+    }
+
+    fn stamp(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
+    }
+
+    fn wake(&self) {
+        self.version.fetch_add(1, Ordering::Release);
+        let _guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(_guard);
+        self.cv.notify_all();
+    }
+
+    fn stop(&self) {
+        self.version.fetch_add(1, Ordering::Release);
+        let mut stopped = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        *stopped = true;
+        drop(stopped);
+        self.cv.notify_all();
+    }
+
+    fn wait(&self, seen: u64, timeout: Option<Duration>) -> bool {
+        let mut stopped = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if *stopped {
+            return true;
+        }
+        if self.version.load(Ordering::Acquire) != seen {
+            return false;
+        }
+        stopped = match timeout {
+            Some(dur) if !dur.is_zero() => self.cv.wait_timeout(stopped, dur).unwrap_or_else(PoisonError::into_inner).0,
+            Some(_) => return false,
+            None => self.cv.wait(stopped).unwrap_or_else(PoisonError::into_inner),
+        };
+        *stopped
+    }
+}
 
 pub fn held_tables(pages: &dyn Pages, tables: usize) -> Vec<bool> {
     (0..tables)
@@ -352,6 +400,11 @@ pub struct PlayheadHost<E: Send + Sync + 'static> {
     reader: Reader,
     held: Vec<bool>,
     stop: Arc<AtomicBool>,
+    driver_gate: Arc<WaitGate>,
+    panel_gate: Arc<WaitGate>,
+    panel_work: Arc<AtomicU64>,
+    _driver_watch: Watcher,
+    _panel_watch: Watcher,
     driver: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -462,11 +515,31 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
         playhead.share_budget(crate::lead::budget())?;
         playhead.lead(crate::lead::LEAD);
         let needs_seed = Arc::new(AtomicBool::new(false));
-        let (seeds, waiting, tokens) = (needs_seed.clone(), panels.clone(), reads.clone());
+        let driver_gate = Arc::new(WaitGate::new());
+        let panel_gate = Arc::new(WaitGate::new());
+        let panel_work = Arc::new(AtomicU64::new(0));
+        follow.set_wake({
+            let driver_gate = Arc::clone(&driver_gate);
+            Arc::new(move || driver_gate.wake())
+        });
+        let driver_watch = playhead.watch({
+            let driver_gate = Arc::clone(&driver_gate);
+            Arc::new(move || driver_gate.wake())
+        });
+        let panel_watch = playhead.watch_control({
+            let panel_gate = Arc::clone(&panel_gate);
+            let panel_work = Arc::clone(&panel_work);
+            Arc::new(move || {
+                panel_work.fetch_add(1, Ordering::Release);
+                panel_gate.wake();
+            })
+        });
+        let (seeds, waiting, tokens, gate, follow_ref) = (needs_seed.clone(), panels.clone(), reads.clone(), Arc::clone(&driver_gate), follow.clone());
         let driver = std::thread::Builder::new().name("follow driver".into()).spawn(move || {
             let mut taken = Vec::new();
             let mut next = Instant::now();
             while !stopping.load(Ordering::Acquire) {
+                let seen = gate.stamp();
                 let playhead = get(&driven);
                 if seeds.swap(false, Ordering::AcqRel) {
                     let mut held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
@@ -483,35 +556,63 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                         }
                     }
                 }
-                let (head, told) = {
+                let playing = playhead.playing();
+                let (has_work, told) = {
                     let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
-                    (playhead.head(Instant::now()), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
+                    (!held.products.is_empty() || !held.shown.is_empty() || follow_ref.has_work(), held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3)))
                 };
+                let head = playhead.head(Instant::now());
                 if let Some((push, route, seek)) = told { push.head(route, seek, head); }
-                consumer.advance(head);
-                consumer.take(head, &mut taken);
+                let advance_ok = consumer.try_advance(head);
+                let take_ok = consumer.try_take(head, &mut taken).is_some();
                 taken.clear();
-                next += FRAME;
-                let now = Instant::now();
-                if next > now {
-                    std::thread::sleep(next - now);
+                let contended = !advance_ok || !take_ok;
+                let timeout = if contended {
+                    Some(Duration::from_millis(2))
+                } else if playing && has_work {
+                    let now = Instant::now();
+                    if next <= now {
+                        next = now + FRAME;
+                    }
+                    Some(next.saturating_duration_since(now))
                 } else {
-                    next = now;
+                    next = Instant::now();
+                    None
+                };
+                if gate.wait(seen, timeout) {
+                    return;
                 }
             }
         })?;
 
-        Ok(Arc::new(Self { owner, panels, reads, needs_seed, get, anchored, follow, reader, held, stop, driver: Mutex::new(Some(driver)) }))
+        Ok(Arc::new(Self { owner, panels, reads, needs_seed, get, anchored, follow, reader, held, stop, driver_gate, panel_gate, panel_work, _driver_watch: driver_watch, _panel_watch: panel_watch, driver: Mutex::new(Some(driver)) }))
     }
 
     pub fn playhead(&self) -> &Playhead {
         (self.get)(&self.owner)
     }
 
+    fn wake_panels(&self) {
+        self.panel_work.fetch_add(1, Ordering::Release);
+        self.panel_gate.wake();
+    }
+
     pub fn show_panels(&self, rows: Arc<dyn PanelRows>, push: Arc<Push>) {
-        let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
-        panels.rows = Some(rows);
-        panels.push = Some(push);
+        rows.on_publish({
+            let panel_gate = Arc::clone(&self.panel_gate);
+            let panel_work = Arc::clone(&self.panel_work);
+            Arc::new(move || {
+                panel_work.fetch_add(1, Ordering::Release);
+                panel_gate.wake();
+            })
+        });
+        {
+            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            panels.rows = Some(rows);
+            panels.push = Some(push);
+        }
+        self.driver_gate.wake();
+        self.wake_panels();
     }
 }
 
@@ -526,62 +627,94 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
 
     fn panel(&self, id: u32, panel: Box<dyn Panel>, lanes: u32) -> Result<(), String> {
         let class = (id % lanes.max(1), lanes.max(1));
-        let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(exact) = panel.exact() {
-            let read = exact.advance.clone();
-            if panels.push.is_none() { return Err("This playhead has no panel transport".into()); }
+        {
+            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(exact) = panel.exact() {
+                let read = exact.advance.clone();
+                if panels.push.is_none() { return Err("This playhead has no panel transport".into()); }
+                panels.remove(id);
+                self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
+                let seed = Some((self.playhead().epoch(), self.playhead().head(Instant::now())));
+                let host = Some(HostCells { follow: self.follow.clone(), held: self.held.clone() });
+                let product = StepProduct { id, seed, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), class, host, followed: None, input: None, resend: false };
+                panels.due.insert((Hour::MIN, id));
+                panels.products.insert(id, product);
+                self.needs_seed.store(true, Ordering::Release);
+                drop(panels);
+                self.driver_gate.wake();
+                return Ok(());
+            }
+            let rows = panels.rows.clone().ok_or("This playhead's host gives panels no rows at the head")?;
+            let reader = rows.reader(panel.tables()).map_err(|error| format!("Rows at the head are refused: {error}"))?;
             panels.remove(id);
-            self.reads.lock().unwrap_or_else(PoisonError::into_inner).register(id);
-            let seed = Some((self.playhead().epoch(), self.playhead().head(Instant::now())));
-            let host = Some(HostCells { follow: self.follow.clone(), held: self.held.clone() });
-            let product = StepProduct { id, seed, read, lanes: Vec::new(), wire: Default::default(), last: None, joined: false, next: Some(Hour::MIN), cells: Vec::new(), class, host, followed: None, input: None, resend: false };
-            panels.due.insert((Hour::MIN, id));
-            panels.products.insert(id, product);
-            self.needs_seed.store(true, Ordering::Release);
-            return Ok(());
-        }
-        let rows = panels.rows.clone().ok_or("This playhead's host gives panels no rows at the head")?;
-        let reader = rows.reader(panel.tables()).map_err(|error| format!("Rows at the head are refused: {error}"))?;
-        panels.remove(id);
-        panels.shown.insert(id, Shown::new(panel, reader, class));
-        if panels.thread.is_none() {
-            let (held, stopping) = (Arc::downgrade(&self.panels), Arc::clone(&self.stop));
-            let (owner, get) = (self.owner.clone(), self.get);
-            let thread = std::thread::Builder::new()
-                .name("follow panels".into())
-                .spawn(move || {
-                    let mut next = Instant::now();
-                    while !stopping.load(Ordering::Acquire) {
-                        let Some(panels) = held.upgrade() else { return };
-                        {
-                            let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-                            panels.stamp.2 = get(&owner).epoch() as u32;
-                            evaluate(&mut panels);
+            panels.shown.insert(id, Shown::new(panel, reader, class));
+            if panels.thread.is_none() {
+                let (held, stopping, gate, work_seq) = (Arc::downgrade(&self.panels), Arc::clone(&self.stop), Arc::clone(&self.panel_gate), Arc::clone(&self.panel_work));
+                let (owner, get) = (self.owner.clone(), self.get);
+                let thread = std::thread::Builder::new()
+                    .name("follow panels".into())
+                    .spawn(move || {
+                        let mut next: Option<Instant> = None;
+                        let mut seen_work = u64::MAX;
+                        while !stopping.load(Ordering::Acquire) {
+                            let seen = gate.stamp();
+                            let work = work_seq.load(Ordering::Acquire);
+                            let now = Instant::now();
+                            let Some(panels) = held.upgrade() else { return };
+                            let playhead = get(&owner);
+                            let playing = playhead.playing();
+                            let poll = (playhead.frame_period() / 2).clamp(Duration::from_millis(4), PANEL_POLL);
+                            let due = work != seen_work || next.is_some_and(|deadline| now >= deadline);
+                            let active = if due {
+                                let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
+                                panels.stamp.2 = playhead.epoch() as u32;
+                                evaluate(&mut panels);
+                                seen_work = work;
+                                !panels.shown.is_empty() && playing
+                            } else {
+                                !panels.lock().unwrap_or_else(PoisonError::into_inner).shown.is_empty() && playing
+                            };
+                            drop(panels);
+                            let timeout = if active {
+                                let deadline = match next {
+                                    Some(deadline) if deadline > now => deadline,
+                                    _ => {
+                                        let deadline = now + poll;
+                                        next = Some(deadline);
+                                        deadline
+                                    }
+                                };
+                                Some(deadline.saturating_duration_since(Instant::now()))
+                            } else {
+                                next = None;
+                                None
+                            };
+                            if gate.wait(seen, timeout) {
+                                return;
+                            }
                         }
-                        drop(panels);
-                        next += FRAME;
-                        let now = Instant::now();
-                        if next > now {
-                            std::thread::sleep(next - now);
-                        } else {
-                            next = now;
-                        }
-                    }
-                })
-                .map_err(|error| error.to_string())?;
-            panels.thread = Some(thread);
+                    })
+                    .map_err(|error| error.to_string())?;
+                panels.thread = Some(thread);
+            }
         }
+        self.driver_gate.wake();
+        self.wake_panels();
         Ok(())
     }
 
     fn serve(&self, session: u64) {
         self.follow.serve(session);
         self.panels.lock().unwrap_or_else(PoisonError::into_inner).session = session;
+        self.driver_gate.wake();
+        self.wake_panels();
     }
 
     fn unpanel(&self, id: u32) {
         self.reads.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
         self.panels.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+        self.driver_gate.wake();
+        self.wake_panels();
     }
 
     fn anchor(&self, anchor: Anchor) {
@@ -593,25 +726,31 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
         let epoch = self.playhead().epoch();
         reads.anchor(epoch, anchor.seek);
         drop(reads);
-        let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
-        let epoch = epoch as u32;
-        let previous = panels.pace.replace((anchor.playing, anchor.speed));
-        panels.stamp.2 = epoch;
-        let different_seek = panels.stamp.3 != anchor.seek;
-        panels.stamp.3 = anchor.seek;
-        if different_seek || anchor.sought || previous.is_some_and(|(playing, _)| playing && !anchor.playing) {
-            for shown in panels.shown.values_mut() {
-                shown.frame = None;
-                shown.data = None;
-                shown.pushed = None;
+        {
+            let mut panels = self.panels.lock().unwrap_or_else(PoisonError::into_inner);
+            let epoch = epoch as u32;
+            let previous = panels.pace.replace((anchor.playing, anchor.speed));
+            panels.stamp.2 = epoch;
+            let different_seek = panels.stamp.3 != anchor.seek;
+            panels.stamp.3 = anchor.seek;
+            if different_seek || anchor.sought || previous.is_some_and(|(playing, _)| playing && !anchor.playing) {
+                for shown in panels.shown.values_mut() {
+                    shown.frame = None;
+                    shown.data = None;
+                    shown.pushed = None;
+                }
             }
         }
+        self.driver_gate.wake();
+        self.wake_panels();
     }
 }
 
 impl<E: Send + Sync + 'static> Drop for PlayheadHost<E> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.driver_gate.stop();
+        self.panel_gate.stop();
         for token in self.reads.lock().unwrap_or_else(PoisonError::into_inner).tokens.values() { token.store(true, Ordering::Release); }
         if let Some(driver) = self.driver.lock().unwrap_or_else(PoisonError::into_inner).take() {
             let _ = driver.join();
@@ -654,4 +793,27 @@ fn a_retired_product_read_cannot_publish_its_seed() {
     let new = current.tokens[&4].clone();
     current.remove(4);
     assert!(new.load(Ordering::Acquire));
+}
+
+#[cfg(test)]
+#[test]
+fn wait_gate_never_misses_wake_before_wait_and_stops_blocked_waiter() {
+    let gate = Arc::new(WaitGate::new());
+    let seen = gate.stamp();
+    gate.wake();
+    assert!(!gate.wait(seen, None));
+
+    let seen = gate.stamp();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = Arc::clone(&gate);
+    let handle = std::thread::spawn(move || {
+        ready_tx.send(()).unwrap();
+        let stopped = worker.wait(seen, None);
+        done_tx.send(stopped).unwrap();
+    });
+    ready_rx.recv().unwrap();
+    gate.stop();
+    assert!(done_rx.recv().unwrap());
+    handle.join().unwrap();
 }
