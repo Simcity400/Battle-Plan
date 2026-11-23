@@ -506,14 +506,14 @@ export type CampaignClockReply = { available: boolean, recordedSeconds: number |
 export type ApmParams = { branchId: string, group: ApmGroup, registry: boolean, firstHour: number | null, lastHour: number | null, tags: Array<string> | null, membership: Array<ApmMembership> | null, players: Array<string>, buckets: number, };
 export type ApmReply = { available: boolean, players: Array<ApmPlayer>, series: Array<ApmSeries>, warnings: Array<string>, };
 export type ApmGroup = "country" | "player";
-export type ApmPlayer = { id: string, name: string, tags: Array<string>, };
+export type ApmPlayer = { id: string, name: string | null, nameMissing: string | null, tags: Array<string>, };
 export type ApmValue = { apm: number | null, confirmedApm: number | null, orders: string | null, pausedOrders: string | null, unpausedMinutes: number | null, complete: boolean,
 /**
  * Part of the period no capture observed; orders and minutes both leave it out.
  */
 gaps: boolean, };
 export type ApmBucket = { firstHour: number, lastHour: number, value: ApmValue, };
-export type ApmSeries = { id: string, name: string, tag: string | null, hour: number, summary: ApmValue, points: Array<ApmBucket>, };
+export type ApmSeries = { id: string, name: string | null, nameMissing: string | null, tag: string | null, hour: number, summary: ApmValue, points: Array<ApmBucket>, };
 export type ApmMembership = { tag: string, firstHour: number, lastHour: number, };
 export type CountryParams = { branchId: string, country: CountryRef, };
 export type FocusReply = { history: FocusHistory,

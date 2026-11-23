@@ -431,17 +431,12 @@ fn live_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i
     Ok(())
 }
 
-fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
-    let recording = query.replay.recording();
-    let range = combat.map(|combat| (u128::from(combat) << 33, u128::from(combat) << 33 | 0x1_FFFF_FFFF));
-    let ended = dashboard_query::cost::storage(|| {
-        lanes::history(recording, run, TableId::LandBattleEnds, &columns.ends, range.map_or(Keys::All, |(low, high)| Keys::Range(low, high)), from, to)
-    })?;
-    for (key, _, settled, cells) in written_ends(&ended) {
+fn decode_ended_rows(ended: &lanes::History, out: &mut BTreeMap<Key, Battle>) {
+    for (key, _, settled, cells) in written_ends(ended) {
         if out.get(&key).is_some_and(|battle| battle.end.is_some()) {
             continue;
         }
-        let n = |column: usize| number(&ended, cells, column);
+        let n = |column: usize| number(ended, cells, column);
         let (combat, start, result_only) = key;
         let end = Ended {
             kind: n(0).and_then(|value| u8::try_from(value).ok()),
@@ -473,6 +468,15 @@ fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: 
         }
         battle.end = Some(end);
     }
+}
+
+fn ended_battles(query: &Query<'_>, columns: &Columns, run: u32, from: i32, to: i32, combat: Option<u64>, out: &mut BTreeMap<Key, Battle>) -> io::Result<()> {
+    let recording = query.replay.recording();
+    let range = combat.map(|combat| (u128::from(combat) << 33, u128::from(combat) << 33 | 0x1_FFFF_FFFF));
+    let ended = dashboard_query::cost::storage(|| {
+        lanes::history(recording, run, TableId::LandBattleEnds, &columns.ends, range.map_or(Keys::All, |(low, high)| Keys::Range(low, high)), from, to)
+    })?;
+    decode_ended_rows(&ended, out);
     let asks: Vec<(i32, u128)> = written_ends(&ended).map(|(_, key, hour, _)| (hour, key)).collect();
     if !asks.is_empty() {
         let lists = [15, 16, 24, 25];
@@ -783,7 +787,9 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
         let read = census.iter().rev().find(|(hour, _)| *hour <= first).and_then(|(hour, read)| read.as_ref().map(|read| (*hour, read)));
         let (counts, roster_unknown, duration) = match read {
             Some((hour, read)) => {
-                province = province.or(read.province);
+                if battle.result_only.is_none() {
+                    province = province.or(read.province);
+                }
                 (read.counts.unwrap_or([0, 0]), read.counts.is_none(), read.duration.map_or(0, |duration| duration + (first - hour)))
             }
             None => ([0, 0], true, 0),
@@ -835,9 +841,9 @@ fn shape(battle: &Battle, data: &Combats, names: &Names, links: &dashboard_base:
     let (end_moment, end_unknown_hour) = match end.filter(|end| end.kind != Some(LandBattleEndRow::RESULT_ONLY)) {
         Some(end) => match (end.kind, end.end_hour) {
             (None, _) => (Some(BattleEnd::Unknown { unknown: "Ending kind not recorded".into() }), Some(end.written)),
-            (Some(LandBattleEndRow::UNKNOWN), hour) => (Some(BattleEnd::Unknown { unknown: "Ending not recorded".into() }), Some(hour.unwrap_or(end.written))),
-            (Some(_), Some(hour)) => (Some(BattleEnd::Moment(BattleMoment { hour, bound: BattleBound::Exact })), None),
             (Some(_), None) => (Some(BattleEnd::Unknown { unknown: "Ending hour not recorded".into() }), Some(end.written)),
+            (Some(LandBattleEndRow::UNKNOWN), Some(hour)) => (Some(BattleEnd::Unknown { unknown: "Ending not recorded".into() }), Some(hour)),
+            (Some(_), Some(hour)) => (Some(BattleEnd::Moment(BattleMoment { hour, bound: BattleBound::Exact })), None),
         },
         None => (None, None),
     };

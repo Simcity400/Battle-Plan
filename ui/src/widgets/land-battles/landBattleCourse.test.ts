@@ -3,7 +3,7 @@ import test from 'node:test';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { landBattleRows } from './landBattlesData.ts';
 import type { LandBattle, LandBattlesWindow } from './landBattlesData.ts';
-import { battleOutcome, battleTooltip, courseDivisions, courseEquipment, courseExtent, courseManpower, heldTerrain, lengthText, missingTerrain, paintBattle, sameKnownSides, sideLook,
+import { battleOutcome, battleTooltip, courseDivisions, courseEquipment, courseExtent, courseManpower, drillChartHour, heldTerrain, lengthText, missingTerrain, paintBattle, sameKnownSides, sideLook,
   validateLandBattleCourse, validateLandBattleTerrain, winners } from './landBattleCourse.ts';
 
 const run = (firstHour: number, lastHour: number, counts: [number, number], rosterUnknown = false) =>
@@ -100,6 +100,25 @@ test('the outcome names the winners; endings and verdicts that were not read sta
   assert.deepEqual(battleOutcome(unread), { kind: 'unknown', text: 'Ending not recorded' });
   const verdict = landBattleRows(new Map([[0, window([battle({ result: { ...battle().result!, winner: { unknown: 'No winning side' } } })])]]), 21, () => true, true)[0];
   assert.deepEqual(battleOutcome(verdict), { kind: 'unknown', text: 'No winning side' });
+
+  const unreadHourWinner = landBattleRows(new Map([[0, window([battle({
+    end: { unknown: 'Ending hour not recorded' }, endUnknownHour: 25, settledHour: 25,
+    runs: [run(10, 24, [3, 2])],
+    result: { hour: null, duration: 15, winner: { side: 1 }, countries: [['A'], ['B', 'C', 'D']], countriesUnknown: [false, false] },
+  })])]]), 40, () => true, true)[0];
+  assert.deepEqual(battleOutcome(unreadHourWinner), { kind: 'won', side: 1 }, 'a missing end hour keeps a recorded winner');
+  const unreadHourLooks = unreadHourWinner.sides.map(side => sideLook(side, names));
+  const unreadHourTip = battleTooltip(unreadHourWinner, unreadHourLooks, null, ['blue', 'orange'], false);
+  assert.equal(unreadHourTip.rows.find(entry => entry.label === 'Ended')?.value, 'Ending hour not recorded');
+  assert.equal(unreadHourTip.rows.at(-1)?.value, 'Country B and 2 more won');
+  assert.equal(unreadHourWinner.settledHour, 25);
+  assert.equal(drillChartHour(unreadHourWinner, 40), 25, 'drill chart caps at settlement bound when end hour is unread');
+  const course = validateLandBattleCourse(wire([
+    { hour: 24, terminal: false, sides: [{ manpower: 12, variants: [] }, { manpower: 4, variants: [] }] },
+  ], [run(10, 24, [3, 2])]));
+  const [attackers, defenders] = courseManpower(course, drillChartHour(unreadHourWinner, 40));
+  assert.deepEqual(attackers, [{ firstHour: 24, lastHour: 25, value: 12 }]);
+  assert.deepEqual(defenders, [{ firstHour: 24, lastHour: 25, value: 4 }]);
 });
 
 test('the tooltip is one compact summary: no per-design rows, whole equipment and one dated loss note', () => {

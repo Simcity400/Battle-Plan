@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createElement, isValidElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { cellContent, cellText, columnAlign, growColumnWidths, hideOrder, tableGrid } from './columns.ts';
+import { cellContent, cellText, columnAlign, growColumnWidths, hideOrder, tableGrid, withHidden } from './columns.ts';
 import type { TableColumn } from './columns';
 import { densityRowHeight, rowOffsets, sortRows, visibleRange } from './logic.ts';
 import { acesFixture, generalsFixture } from './military.fixture.ts';
@@ -83,4 +83,28 @@ test('hidden columns hide largest priority first and give the tooltip their cell
   const row = { name: 'Recorded', amount: 12345 };
   assert.deepEqual(columns.map(column => cellText(column, row)), ['Recorded', '12,345', '12345 units', 'text 12345', 'x']);
   assert.deepEqual(columns.slice(1, 3).map(column => cellText(column, { name: '', amount: null })), ['—', '—'], 'missing stays a dash');
+
+  const lostColumn: TableColumn<{ name: string; amount: number | null }> = {
+    key: 'lost', header: 'Lost', label: 'Lost', numeric: true, priority: 2, value: () => null,
+    paint: value => String(value), missingText: (_key, reason) => reason === 'Not in this agreement' ? '—' : 'Not recorded',
+  };
+  const liveValues = {
+    get: () => undefined,
+    missing: (key: string) => key.startsWith('unread') ? 'Fuel lost not recorded at this hour' : 'Not in this agreement',
+  };
+  const unreadTip = withHidden(null, row, [lostColumn], [columns[0]], 'unread', 800, liveValues)!;
+  assert.deepEqual(unreadTip.rows, [{ label: 'Lost', value: 'Fuel lost not recorded at this hour', detail: 'Fuel lost not recorded at this hour', tone: 'muted', divider: false }]);
+  const absentTip = withHidden(null, row, [lostColumn], [columns[0]], 'absent', 800, liveValues)!;
+  assert.deepEqual(absentTip.rows, [{ label: 'Lost', value: 'Not in this agreement', detail: 'Not in this agreement', tone: 'muted', divider: false }]);
+
+  const defaultDashColumn: TableColumn<{ name: string; amount: number | null }> = {
+    key: 'deliveries', header: 'Deliveries', label: 'Completed deliveries', numeric: true, priority: 2, value: () => null,
+    paint: value => String(value),
+  };
+  const dashUnreadTip = withHidden(null, row, [defaultDashColumn], [columns[0]], 'unread', 800, liveValues)!;
+  assert.deepEqual(dashUnreadTip.rows, [{ label: 'Completed deliveries', value: 'Fuel lost not recorded at this hour', detail: 'Fuel lost not recorded at this hour', tone: 'muted', divider: false }]);
+  const spokenTip = withHidden({ title: 'Recorded', rows: [], spoken: 'Recorded' }, row, [defaultDashColumn], [columns[0]], 'unread', 800, liveValues)!;
+  assert.equal(spokenTip.spoken, 'Recorded; Completed deliveries Fuel lost not recorded at this hour', 'the reason is spoken, not a dash');
+  const noReasonTip = withHidden(null, row, [defaultDashColumn], [columns[0]], 'none', 800, { get: () => undefined, missing: () => '' })!;
+  assert.deepEqual(noReasonTip.rows, [{ label: 'Completed deliveries', value: '—', divider: false }]);
 });

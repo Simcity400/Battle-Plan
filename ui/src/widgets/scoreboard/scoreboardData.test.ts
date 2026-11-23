@@ -1,17 +1,19 @@
-import { gatedHour } from '../../test-support/gated.ts';
-import { countryKey } from '../../dashboard/countryKey.ts';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
-import { message } from '../../dashboard/follow/messages.fixture.ts';
-import type { Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
-import { DEFAULT_SORT, OPTIONS, definition } from './definition.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
+import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
+import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { buildColumnLayouts } from '../../families/table/layout.ts';
+import { deriveTableAudit, deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
+import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts';
 import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
-import { drawnCell, followedValues, formatCell, isPartial, measureCell, rankedTags, rankingColumn, rankingDescending, replyRows, replyValues, scoreboardParams, scoreboardSort,
-  scoreboardTooltip, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
-import { cellText } from '../../draw/tables/surface.ts';
-import { liveKey } from '../../charts/live.ts';
+import { gatedHour } from '../../test-support/gated.ts';
+import { DEFAULT_SORT, OPTIONS, TABLE_BASE, definition } from './definition.ts';
+import { isPartial, rankedTags, rankingColumn, rankingDescending, scoreboardParams, scoreboardSort, selectedColumns, validateColumnsReply, validateScoreboardReply } from './scoreboardData.ts';
+import { scoreboardColumnsSpec, scoreboardDeclaration, scoreboardProjection } from './scoreboardProjection.ts';
 
 const family = (kind: string, measure: string) => ({ kind, measure });
 const factories: ScoreboardColumn = { key: 'factories', label: 'Factories', unit: 'factories', decimals: 0, available: true, reason: null,
@@ -45,84 +47,65 @@ test.skip('a top ranks by the sorted measure, else the measure chosen, never by 
   assert.equal(rankingColumn(registry, { column: 'casualties', direction: 'descending' }, 'casualties', 'factories'), factories);
   assert.deepEqual(scoreboardParams('1', gatedHour(50), [power, casualties], [], 10, factories),
     { branchId: '1', hour: 50, columns: ['politicalPower', 'casualties'], countries: [], top: { count: 10, sort: 'factories', descending: true } });
-  assert.equal(rankingDescending({ column: 'factories', direction: 'ascending' }, factories), false, 'sorted ascending by the rank column: the least');
-  assert.equal(rankingDescending({ column: 'country', direction: 'ascending' }, factories), true, 'sorted by name: the greatest');
+  assert.equal(rankingDescending({ column: 'factories', direction: 'ascending' }, factories), false);
+  assert.equal(rankingDescending({ column: 'country', direction: 'ascending' }, factories), true);
   assert.deepEqual(scoreboardParams('1', gatedHour(50), [power], ['GER'], null, factories), { branchId: '1', hour: 50, columns: ['politicalPower'], countries: ['GER'] });
-  assert.equal(scoreboardParams('1', gatedHour(50), [power], [], null, factories), null, 'no country chosen asks nothing');
-  assert.equal(scoreboardParams('1', gatedHour(50), [], ['GER'], null, factories), null, 'no column asks nothing');
+  assert.equal(scoreboardParams('1', gatedHour(50), [power], [], null, factories), null);
+  assert.equal(scoreboardParams('1', gatedHour(50), [], ['GER'], null, factories), null);
 });
 
-test('a reply\'s cells are exact amounts by the columns asked, a missing value keeps its reason and never reads as zero', () => {
+test('a reply’s cells are exact amounts, a missing value keeps its reason, and slot/tag keys stay distinct', () => {
   const wide = (1n << 80n) + 1n;
   const reply: ScoreboardReply = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [
     { country: 'GER', tag: 'GER', cells: [{ valueRaw: `-${wide}`, missing: null, partial: true }, { valueRaw: null, missing: 'GER\'s stability was not recorded at this hour', partial: false }] },
   ] }, 2);
-  const [row] = replyRows(reply, ['casualtiesTaken', 'stability']);
-  assert.deepEqual(row!.cells.get('casualtiesTaken'), { amount: -wide, missing: null, partial: true });
-  const [slotted] = replyRows({ ...reply, rows: [{ ...reply.rows[0]!, country: 5 }] }, ['casualtiesTaken', 'stability']);
-  assert.equal(slotted!.key, countryKey(5), 'a country chosen by slot keys its row by that slot, as the followed rows and the exact reads do');
-  assert.equal(slotted!.tag, 'GER');
+  const shown = [taken, stability];
+  const model = scoreboardProjection.project(
+    { answers: new Map(), panels: new Map([['main', reply]]), live: new Map() },
+    40,
+    { shown, candidates: ['GER'], top: null, rankMarkers: false, looks: { GER: [{ from: 0, name: 'Germany' }] } },
+  );
+  const settings = tableDefaults(model.columns, TABLE_BASE);
+  const flat = resolveTableRows(model, settings);
+  const audit = deriveTableAudit({ model, flatRows: flat, visibleColumns: buildColumnLayouts(model.columns, settings) });
+  assert.ok(audit.find(row => row.key === 'GER:casualtiesTaken')?.value?.includes(`["partial",["int","-${wide}"],"Some inputs were not recorded at this hour",false]`));
+  assert.ok(audit.find(row => row.key === 'GER:stability')?.value?.includes(`["notRecorded","GER's stability was not recorded at this hour"]`));
+  const tip = deriveTableTooltip(flat, 'GER', model.columns, new Set(), 40);
+  assert.ok(tip);
+  assert.equal(tip.rows.find(row => row.label === 'Stability')?.detail, "GER's stability was not recorded at this hour");
+
   const cells = [{ valueRaw: '1', missing: null, partial: false }, { valueRaw: '2', missing: null, partial: false }];
   const both = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 'GER', tag: 'GER', cells }] }, 2);
-  assert.deepEqual(replyRows(both, ['casualtiesTaken', 'stability']).map(row => row.key), [countryKey(5), 'GER'], 'a slot and a tag holding the same country are two rows');
+  const bothModel = scoreboardProjection.project(
+    { answers: new Map(), panels: new Map([['main', both]]), live: new Map() },
+    40,
+    { shown, candidates: [], top: null, rankMarkers: false, looks: { GER: [{ from: 0, name: 'Germany' }] } },
+  );
+  assert.deepEqual(bothModel.rows.map(row => row.key), [countryKey(5), 'GER']);
   assert.throws(() => validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 5, tag: 'GER', cells }] }, 2), /Invalid Scoreboard row/);
-  assert.equal(row!.cells.get('stability')!.amount, null);
-  assert.equal(formatCell(taken, -wide, true), '† −1,208,925,819,614,629,174,706,177');
-  assert.equal(formatCell(stability, 50_000n), '50%');
-  assert.equal(formatCell(power, 123_456_78n), '123.45678');
-  assert.equal(formatCell(stability, null), '—');
-  assert.deepEqual([formatCell(taken, 0n), formatCell(power, 0n)], ['None', '0'], 'a casualty total of zero (or no row) reads None; another zero stays 0');
-  const tooltip = scoreboardTooltip(key => row!.cells.get(key)!, [taken, stability], 'Germany', 40);
-  assert.deepEqual(tooltip.rows.map(item => item.label), ['Casualties taken', 'Stability'], 'one row per measure, no description rows');
-  assert.deepEqual(tooltip.rows[1], { label: 'Stability', value: 'GER\'s stability was not recorded at this hour', tone: 'muted' });
-  assert.equal(tooltip.note, '† Partial total');
   assert.throws(() => validateScoreboardReply({ ...reply, rows: [{ tag: 'GER', cells: [{ valueRaw: null, missing: null, partial: false }] }] }, 1), /row/);
-  assert.throws(() => validateScoreboardReply(reply, 3), /row/, 'a cell for every column asked');
+  assert.throws(() => validateScoreboardReply(reply, 3), /row/);
 });
 
-test('followed values are read by tag exactly, a value not recorded is missing for its reason, and a rank names its countries in order', () => {
+test('followed values and rankings preserve exact precision, partial markers and missing reasons', () => {
   const V = CELL.value, U = CELL.unrecorded;
   const followed = answer({ keys: [7n, 8n, 0n], columns: 1, names: ['ITA', 'GER', 'SOV'], values: [(1n << 60n) + 3n, 0n, 0n], states: [V, U, CELL.noRow],
     reasons: [null, null, 'SOV is held by no country'] });
-  const values = followedValues(followed);
-  assert.equal(values.get('ITA'), (1n << 60n) + 3n);
-  assert.equal(values.get('GER'), undefined, 'a value not recorded is never zero');
-  assert.equal(values.missing('GER'), 'Not recorded at this hour');
-  assert.equal(values.missing('SOV'), 'SOV is held by no country');
-  assert.equal(values.missing('ENG'), 'Not in the answer');
-  assert.deepEqual(rankedTags(followed), ['ITA'], 'only countries with a value rank');
-  assert.equal(followedValues(undefined).missing('ITA'), 'Not read yet');
-  assert.equal(followedValues(answer({ notRecorded: 'No territory is recorded' })).missing('ITA'), 'No territory is recorded');
+  assert.deepEqual(rankedTags(followed), ['ITA']);
   assert.equal(isPartial(1n), true);
   assert.equal(isPartial(0n), false);
-  assert.equal(isPartial(undefined), false, 'an unknown mark is not a subtotal');
-});
+  assert.equal(isPartial(undefined), false);
 
-test('the table draws each measure exactly as the scoreboard formats it, with its partial mark, and a missing value by its reason', () => {
-  const amounts = [0n, 7n, -7n, 50_000n, 123_456_78n, -1_000_000n, 1_234_567_000_000n, (1n << 62n) + 1n, -(1n << 62n), 10n ** 15n + 3n];
-  const columns = [factories, power, stability, taken];
-  for (const amount of amounts) for (const partial of [false, true]) {
-    const rows = replyRows({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 'GER', tag: 'GER',
-      cells: columns.map(() => ({ valueRaw: String(amount), missing: null, partial })) }] }, columns.map(column => column.key));
-    const values = replyValues(rows, columns);
-    for (const column of columns) {
-      assert.equal(cellText(measureCell(column, 'GER'), values), formatCell(column, amount, partial), `${column.key} ${amount} ${partial}`);
-    }
-  }
-  const missing = replyRows({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 'GER', tag: 'GER',
-    cells: [{ valueRaw: null, missing: 'GER\'s stability was not recorded at this hour', partial: false }, { valueRaw: null, missing: 'Unavailable here', partial: false }] }] },
-  ['stability', 'casualties']);
-  const values = replyValues(missing, [stability, casualties]);
-  assert.equal(cellText(measureCell(stability, 'GER'), values), 'GER\'s stability was not recorded at this hour', 'never "0", never a dash');
-  assert.equal(cellText(measureCell(casualties, 'GER'), values), casualties.reason, 'a column not in the recording says why');
-  assert.equal(cellText(measureCell(stability, 'ITA'), values), 'Not in the reply');
-
-  const wide = (1n << 62n) + 1n;
-  const drawn = { values: { [liveKey('GER', 'casualtiesTaken')]: wide, [liveKey('GER', 'casualtiesTaken:partial')]: 2, [liveKey('GER', 'factories')]: 12 },
-    missing: { [liveKey('GER', 'stability')]: 'GER\'s stability was not recorded at this hour' } };
-  assert.deepEqual(drawnCell(drawn, 'GER', 'casualtiesTaken'), { amount: wide, missing: null, partial: true });
-  assert.deepEqual(drawnCell(drawn, 'GER', 'factories'), { amount: 12n, missing: null, partial: false });
-  assert.deepEqual(drawnCell(drawn, 'GER', 'stability'), { amount: null, missing: 'GER\'s stability was not recorded at this hour', partial: false });
+  const model = scoreboardProjection.project(
+    { answers: new Map([['factories', followed]]), panels: new Map(), live: new Map() },
+    40,
+    { shown: [factories, casualties], candidates: ['ITA', 'GER', 'SOV', 'ENG'], top: null, rankMarkers: false, looks: {} },
+  );
+  const byKey = new Map(model.rows.map(row => [row.key, row]));
+  assert.deepEqual(byKey.get('ITA')!.cells.factories!.value, { kind: 'known', value: (1n << 60n) + 3n });
+  assert.equal(byKey.get('GER')!.cells.factories!.value.kind, 'notRecorded');
+  assert.deepEqual(byKey.get('SOV')!.cells.factories!.value, { kind: 'notRecorded', reason: 'SOV is held by no country' });
+  assert.deepEqual(byKey.get('ITA')!.cells.casualties!.value, { kind: 'notRecorded', reason: casualties.reason });
 });
 
 test('the registry names the measure behind every available column', () => {
@@ -130,4 +113,146 @@ test('the registry names the measure behind every available column', () => {
   assert.equal(validateColumnsReply(reply).columns.length, registry.length);
   assert.throws(() => validateColumnsReply({ ...reply, columns: [{ ...factories, family: null }] }), /column/);
   assert.throws(() => validateColumnsReply({ ...reply, defaultSort: 'ships' }), /defaults/);
+});
+
+test('followed scoreboard filters selected countries by holder existence at hour, resolves slot keys to dated tags, and matches exact scoreboard audit', () => {
+  const slotKey = '\u00007';
+  const holders = {
+    [slotKey]: [{ tag: 'GER', firstHour: 0, lastHour: 104 }, { tag: 'GDR', firstHour: 105, lastHour: 200 }],
+    ITA: [{ tag: 'ITA', firstHour: 110, lastHour: 200 }],
+  };
+  const looks = {
+    GER: [{ from: 0, name: 'Germany' }],
+    GDR: [{ from: 105, name: 'East Germany' }],
+    ITA: [{ from: 110, name: 'Italy' }],
+  };
+  const facAns = parseFollowed(message(100, [{
+    id: 1,
+    answer: {
+      keys: [1n, 2n],
+      columns: 1,
+      names: [slotKey, 'ITA'],
+      values: [0n, 0n],
+      states: [CELL.unrecorded, CELL.noRow],
+      reasons: ['Factories not recorded', 'ITA is held by no country'],
+    },
+  }])).answers[0]!.answer;
+  const exactReply: ScoreboardReply = {
+    branchId: '1',
+    hour: 100,
+    missing: null,
+    warnings: [],
+    rows: [
+      { country: 7, tag: 'GER', cells: [{ valueRaw: null, missing: 'Factories not recorded', partial: false }] },
+    ],
+  };
+  const opts = {
+    shown: [factories],
+    candidates: [slotKey, 'ITA'],
+    holders,
+    top: null,
+    rankMarkers: false,
+    looks,
+  };
+  const followed = scoreboardProjection.project({ answers: new Map([['factories', facAns]]), panels: new Map(), live: new Map() }, 100, opts);
+  const exact = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exactReply]]), live: new Map() }, 100, opts);
+
+  assert.deepEqual(followed.rows.map(r => r.key), [slotKey], 'ITA does not exist at hour 100 and is omitted on follow as on exact');
+  assert.deepEqual(followed.rows[0]!.cells.country!.value, { kind: 'known', value: 'Germany' }, 'slot key resolves display label via dated tag GER');
+  assert.deepEqual(followed.rows[0]!.cells.factories!.value, { kind: 'notRecorded', reason: 'Factories not recorded' }, 'existing country with missing measurement stays');
+
+  const specs = scoreboardColumnsSpec([factories], null);
+  const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
+  const layouts = buildColumnLayouts(specs, settings);
+  assert.deepEqual(
+    deriveTableAudit({ model: followed, flatRows: resolveTableRows(followed, settings), visibleColumns: layouts }),
+    deriveTableAudit({ model: exact, flatRows: resolveTableRows(exact, settings), visibleColumns: layouts }),
+  );
+  assert.equal(scoreboardProjection.nextChange?.(EMPTY_SOURCES, 100, opts), 105, 'nextChange reports slot tag switch boundary');
+});
+
+test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, enables country colours, and keeps rows when all columns are unavailable', () => {
+  const bin525 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_525.bin', import.meta.url));
+  const bin800 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_800.bin', import.meta.url));
+  const ans525 = parseAnswer(new Uint8Array(bin525));
+  const ans800 = parseAnswer(new Uint8Array(bin800));
+  const opts = {
+    shown: [power],
+    candidates: ['\u00007', 'ITA'],
+    holders: {
+      '\u00007': [{ tag: 'GER', firstHour: 500, lastHour: 1000 }],
+      ITA: [{ tag: 'ITA', firstHour: 800, lastHour: 1000 }],
+    },
+    top: null,
+    rankMarkers: false,
+    looks: { GER: [{ from: 500, name: 'Germany' }], ITA: [{ from: 800, name: 'Italy' }] },
+  };
+  const exact525: ScoreboardReply = {
+    branchId: '1',
+    hour: 525,
+    missing: null,
+    warnings: [],
+    rows: [
+      { country: 7, tag: 'GER', cells: [{ valueRaw: null, missing: "GER's politicalPower was not recorded at this hour", partial: false }] },
+    ],
+  };
+  const exact800: ScoreboardReply = {
+    branchId: '1',
+    hour: 800,
+    missing: null,
+    warnings: [],
+    rows: [
+      { country: 7, tag: 'GER', cells: [{ valueRaw: '8225', missing: null, partial: false }] },
+      { country: 'ITA', tag: 'ITA', cells: [{ valueRaw: '3225', missing: null, partial: false }] },
+    ],
+  };
+  const specs = scoreboardColumnsSpec([power], null);
+  const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
+  const layouts = buildColumnLayouts(specs, settings);
+
+  const f525 = scoreboardProjection.project({ answers: new Map([['politicalPower', ans525]]), panels: new Map(), live: new Map() }, 525, opts);
+  const e525 = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exact525]]), live: new Map() }, 525, opts);
+  assert.deepEqual(
+    deriveTableAudit({ model: f525, flatRows: resolveTableRows(f525, settings), visibleColumns: layouts, rankShown: true }),
+    deriveTableAudit({ model: e525, flatRows: resolveTableRows(e525, settings), visibleColumns: layouts, rankShown: true }),
+    'S2+N3: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 525 match exact board audit verbatim',
+  );
+
+  const f800 = scoreboardProjection.project({ answers: new Map([['politicalPower', ans800]]), panels: new Map(), live: new Map() }, 800, opts);
+  const e800 = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exact800]]), live: new Map() }, 800, opts);
+  assert.deepEqual(
+    deriveTableAudit({ model: f800, flatRows: resolveTableRows(f800, settings), visibleColumns: layouts, rankShown: true }),
+    deriveTableAudit({ model: e800, flatRows: resolveTableRows(e800, settings), visibleColumns: layouts, rankShown: true }),
+    'S2: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 800 match exact board audit verbatim',
+  );
+
+  assert.equal(scoreboardDeclaration.countries.mode, 'multi');
+  assert.equal(scoreboardDeclaration.countries.colours, true, 'M6: scoreboard requests country colours for country-tone column bars');
+
+  assert.deepEqual(
+    scoreboardParams('1', gatedHour(50), [power], [], null, factories),
+    { branchId: '1', hour: 50, columns: ['politicalPower'], countries: [] },
+  );
+
+  const followSrc = scoreboardDeclaration.source;
+  assert.equal(followSrc.kind, 'multi');
+  const unavailPlan = followSrc.follow({
+    branch: { id: '1', firstHour: 0, lastHour: 200 },
+    aux: { branchId: '1', columns: [casualties], defaultColumns: ['casualties'], defaultSort: 'casualties', warnings: [] },
+    options: { columns: 'casualties', tableSort: '', topMeasure: '' },
+    countries: { top: null, tags: ['GER'], holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] }, membership: null },
+  } as unknown as Parameters<typeof followSrc.follow>[0]);
+  assert.equal(unavailPlan.unavailable, undefined);
+  assert.equal(unavailPlan.allowEmptyFollow, true);
+
+  const unavailModel = scoreboardProjection.project(EMPTY_SOURCES, 50, {
+    shown: [casualties],
+    candidates: ['GER'],
+    holders: { GER: [{ tag: 'GER', firstHour: 0, lastHour: 200 }] },
+    top: null,
+    rankMarkers: false,
+    looks: { GER: [{ from: 0, name: 'Germany' }] },
+  });
+  assert.equal(unavailModel.rows.length, 1);
+  assert.deepEqual(unavailModel.rows[0]!.cells.casualties!.value, { kind: 'notRecorded', reason: casualties.reason });
 });

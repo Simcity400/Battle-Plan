@@ -19,6 +19,7 @@ export interface LandBattleRow extends BattleRow {
   provinceId: number | null;
   windowIndex: number;
   readHour: number;
+  settledHour?: number;
   peak: LandPeak;
   peakUnknown: boolean;
   sidePeaks: [LandPeak | null, LandPeak | null] | null;
@@ -308,7 +309,11 @@ function landRowAt(h: LandBattle, index: number, at: number, matches: CountryMat
   for (let index = h.losses.length - 1; index >= 0; index--) {
     if (h.losses[index].hour <= at) { loss = h.losses[index]; break; }
   }
-  const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read, start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
+  const settledHour = h.settledHour !== undefined && h.settledHour <= at ? h.settledHour
+    : endedAt !== null && known(endedAt) ? endedAt : undefined;
+  const row: LandBattleRow = { id: h.id, provinceId: h.provinceId, windowIndex: index, readHour: read,
+    ...(settledHour !== undefined ? { settledHour } : {}),
+    start: h.start, end, place: { name: null, hour: h.start.hour }, peak, peakUnknown,
     sidePeaks: sides,
     lossRead: loss ? { hour: loss.hour, terminal: loss.terminal, equipmentRaw: loss.equipmentRaw } : null,
     length: { label: 'Length', value: Math.max(resultHour - h.start.hour, duration - h.counterBase, 0), atLeast: h.start.bound === 'by' },

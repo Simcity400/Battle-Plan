@@ -95,7 +95,7 @@ function Result({ row, looks, live }: { row: LandBattleRow; looks: SideLook[]; l
   if (look.unknown) {
     const label = SIDES[outcome.side];
     return <span className="lb-result" title={`${label} won`}>
-      <span className="lb-side-name">{label}</span><span className="lb-won">won</span></span>;
+      <span className="lb-winner-side">{label}</span><span className="lb-won">won</span></span>;
   }
   return <span className="lb-result" title={`${look.countries.map(part => part.name).join(', ') || SIDES[outcome.side]} won`}>
     <Flags look={look} max={2} />{look.name && <span className="lb-side-name">{look.name}</span>}<span className="lb-won">won</span></span>;
@@ -212,7 +212,7 @@ function battleCellsElement(item: LandBattleRow, values: LandBattleRow, sides: S
     if (look.unknown) {
       const label = SIDES[outcome.side];
       made.title = `${label} won`;
-      made.append(element('span', 'lb-side-name', label), element('span', 'lb-won', 'won'));
+      made.append(element('span', 'lb-winner-side', label), element('span', 'lb-won', 'won'));
       return made;
     }
     made.title = `${look.countries.map(part => part.name).join(', ') || SIDES[outcome.side]} won`;

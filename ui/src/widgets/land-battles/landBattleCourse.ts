@@ -86,6 +86,11 @@ export function courseExtent(runs: readonly (readonly Run[])[]): [number, number
   return any ? [0, most] : null;
 }
 
+export function drillChartHour(row: Pick<LandBattleRow, 'end' | 'settledHour'>, shownHour: number): number {
+  const bound = row.end && 'hour' in row.end ? row.end.hour : row.settledHour;
+  return bound !== undefined ? Math.min(shownHour, bound) : shownHour;
+}
+
 export function courseManpower(course: LandCourse, at: number): [Run[], Run[]] {
   const runs: [Run[], Run[]] = [[], []];
   const reads = course.reads.filter(read => read.hour <= at);
@@ -163,8 +168,9 @@ export function sideLook(side: BattleSide, country: BattleCountryLabel): SideLoo
 export type BattleOutcome = { kind: 'ongoing' } | { kind: 'won'; side: number } | { kind: 'unknown'; text: string };
 export function battleOutcome(row: LandBattleRow): BattleOutcome {
   if (row.end === null) return { kind: 'ongoing' };
+  if ('side' in row.winner) return { kind: 'won', side: row.winner.side };
   if ('unknown' in row.end) return { kind: 'unknown', text: row.end.unknown };
-  return 'unknown' in row.winner ? { kind: 'unknown', text: row.winner.unknown } : { kind: 'won', side: row.winner.side };
+  return { kind: 'unknown', text: row.winner.unknown };
 }
 
 export function lossNote(row: LandBattleRow): string | undefined {

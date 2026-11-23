@@ -126,36 +126,120 @@ fn a_result_without_runs_is_listed_from_the_hour_it_was_written() {
 
 #[test]
 fn unread_end_kind_hour_and_side_lists_stay_unknown_and_survive_country_filters() {
-    let data = Combats { from: 10, census: HashMap::new(), sides: HashMap::new(), losses: HashMap::new(), since: HashMap::new() };
+    let end_cells = |set: &[(usize, Cell)]| -> Box<[Cell]> {
+        let mut cells = vec![Cell::Missing; 27];
+        for &(column, value) in set {
+            cells[column] = value;
+        }
+        cells.into()
+    };
+    let battle_key = |combat: u64, start: u32, result_only: bool| -> u128 {
+        u128::from(combat) << 33 | if result_only { 1_u128 << 32 } else { 0 } | u128::from(start)
+    };
+    let ended = lanes::History {
+        columns: (0..27).collect(),
+        to: 30,
+        texts: Vec::new(),
+        keys: vec![
+            (
+                battle_key(8, 10, false),
+                vec![lanes::Step {
+                    hour: 25,
+                    cells: Some(end_cells(&[
+                        (0, Cell::Unrecorded),
+                        (1, Cell::Number(20)),
+                        (18, Cell::Number(1)),
+                        (20, Cell::Number(1)),
+                        (26, Cell::Number(0)),
+                    ])),
+                }],
+            ),
+            (
+                battle_key(9, 10, false),
+                vec![lanes::Step {
+                    hour: 25,
+                    cells: Some(end_cells(&[
+                        (0, Cell::Number(i64::from(LandBattleEndRow::FINALIZED))),
+                        (1, Cell::Unrecorded),
+                        (18, Cell::Number(2)),
+                        (20, Cell::Number(2)),
+                        (26, Cell::Number(0)),
+                    ])),
+                }],
+            ),
+            (
+                battle_key(10, 10, false),
+                vec![lanes::Step {
+                    hour: 25,
+                    cells: Some(end_cells(&[(0, Cell::Number(i64::from(LandBattleEndRow::UNKNOWN))), (1, Cell::Unrecorded)])),
+                }],
+            ),
+            (
+                battle_key(11, 10, false),
+                vec![lanes::Step {
+                    hour: 25,
+                    cells: Some(end_cells(&[(0, Cell::Number(i64::from(LandBattleEndRow::UNKNOWN))), (1, Cell::Number(22))])),
+                }],
+            ),
+            (
+                battle_key(7, 10, true),
+                vec![lanes::Step {
+                    hour: 25,
+                    cells: Some(end_cells(&[
+                        (0, Cell::Number(i64::from(LandBattleEndRow::RESULT_ONLY))),
+                        (1, Cell::Unrecorded),
+                        (4, Cell::Unrecorded),
+                        (18, Cell::Number(77)),
+                        (20, Cell::Number(1)),
+                    ])),
+                }],
+            ),
+        ],
+    };
+    let mut decoded = BTreeMap::new();
+    decode_ended_rows(&ended, &mut decoded);
+    let mut census = HashMap::new();
+    census.insert(7, vec![(10, Some(CensusRead { province: Some(7), duration: Some(1), counts: Some([2, 2]) }))]);
+    let data = Combats { from: 10, census, sides: HashMap::new(), losses: HashMap::new(), since: HashMap::new() };
     let names = Names::new(&Holders::default());
     let links = dashboard_base::queries::country_ids::RunLinks { slots: HashMap::new() };
-    let unread_kind = Battle {
-        combat: 8,
-        start: 10,
-        end: Some(Ended { kind: None, end_hour: Some(20), written: 25, result: Some(1), winners: Some(1), result_unknown: 0, ..Ended::default() }),
-        ..Battle::default()
-    };
-    let shaped = shape(&unread_kind, &data, &names, &links, 1, 10, 30, 30).history;
+
+    let unread_kind = &decoded[&(8, 10, None)];
+    assert_eq!(unread_kind.end.as_ref().unwrap().kind, None, "production decoder keeps unread end kind as None");
+    let shaped = shape(unread_kind, &data, &names, &links, 1, 10, 30, 30).history;
     assert_eq!(shaped.end, Some(BattleEnd::Unknown { unknown: "Ending kind not recorded".into() }));
     assert_eq!(shaped.end_unknown_hour, Some(25));
+    assert_eq!(shaped.settled_hour, Some(25));
     let result = shaped.result.as_ref().unwrap();
     assert_eq!(result.countries_unknown, [true, true], "unread side lists keep both sides unknown even when the bitmask is zero");
 
-    let unread_hour = Battle {
-        combat: 9,
-        start: 10,
-        end: Some(Ended { kind: Some(LandBattleEndRow::FINALIZED), end_hour: None, written: 25, result: Some(2), winners: Some(2), result_sides: [Some(vec![1]), None], result_unknown: 0, ..Ended::default() }),
-        ..Battle::default()
-    };
+    let mut unread_hour = decoded[&(9, 10, None)].clone();
+    assert_eq!(unread_hour.end.as_ref().unwrap().end_hour, None, "production decoder keeps unread end hour as None");
+    unread_hour.end.as_mut().unwrap().result_sides = [Some(vec![1]), None];
     let shaped = shape(&unread_hour, &data, &names, &links, 1, 10, 30, 30).history;
     assert_eq!(shaped.end, Some(BattleEnd::Unknown { unknown: "Ending hour not recorded".into() }));
     assert_eq!(shaped.end_unknown_hour, Some(25));
+    assert_eq!(shaped.settled_hour, Some(25));
     let result = shaped.result.as_ref().unwrap();
     assert_eq!(result.hour, None, "an unread result hour never copies the settlement hour");
+    assert_eq!(result.winner, BattleWinner::Side { side: 1 });
     assert_eq!(ranked_hour(&shaped, 12), 25, "ranking length and country lookup keep main's settlement-hour fallback when result hour is unread");
     assert_eq!(result.countries_unknown[1], true, "an unread defender side list stays unknown");
     let filter = BattleCountryFilter { countries: Some(vec!["GER".into()]), ..BattleCountryFilter::default() };
     assert!(filter.matches(&Holders::default(), [(&result.countries[0], result.countries_unknown[0]), (&result.countries[1], result.countries_unknown[1])], 25));
+
+    let unknown_unread_hour = shape(&decoded[&(10, 10, None)], &data, &names, &links, 1, 10, 30, 30).history;
+    assert_eq!(unknown_unread_hour.end, Some(BattleEnd::Unknown { unknown: "Ending hour not recorded".into() }));
+    assert_eq!(unknown_unread_hour.end_unknown_hour, Some(25));
+
+    let unknown_dated = shape(&decoded[&(11, 10, None)], &data, &names, &links, 1, 10, 30, 30).history;
+    assert_eq!(unknown_dated.end, Some(BattleEnd::Unknown { unknown: "Ending not recorded".into() }));
+    assert_eq!(unknown_dated.end_unknown_hour, Some(22));
+
+    let result_only = shape(&decoded[&(7, 10, Some(25))], &data, &names, &links, 1, 10, 30, 30).history;
+    assert_eq!(result_only.province_id, None, "a result-only key never inherits a live battle's census province");
+    assert_eq!(result_only.end, None, "a result-only key keeps no battle end");
+    assert_eq!(result_only.settled_hour, Some(25));
 
     let mut known_run_unknown_result = shaped;
     known_run_unknown_result.runs = vec![LandBattleRun {

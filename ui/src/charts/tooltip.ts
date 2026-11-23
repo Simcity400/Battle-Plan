@@ -1,9 +1,14 @@
 
+import { valueStateText, type ValueStateProps } from '../components/valueStateText.ts';
+import type { Value } from '../families/value.ts';
+
 export interface TooltipRow {
   detail?: string;
   label: string;
   lookupKey?: string;
   value?: string;
+  valueState?: ValueStateProps;
+  rawValue?: Value;
   swatch?: string;
   icon?: string;
   countryFlag?: { nameFailure?: Error; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
@@ -34,10 +39,15 @@ export function countryNameDetails(...countries: readonly ({ name?: string; name
 
 export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number }
 
+function tooltipRowValueText(row: TooltipRow): string | undefined {
+  if (row.valueState) return valueStateText(row.valueState);
+  return row.value;
+}
+
 export function tooltipText(content: TooltipContent): string {
   if (content.spoken) return content.spoken;
   return [content.title, content.subtitle,
-    ...content.rows.map(row => [row.label, row.value].filter(Boolean).join(' ')),
+    ...content.rows.map(row => [row.label, tooltipRowValueText(row)].filter(Boolean).join(' ')),
     content.description, content.note]
     .filter(Boolean).join('; ');
 }
@@ -57,7 +67,16 @@ const SMALL_CHARS = 42;
 const lines = (text: string, perLine: number) => Math.max(1, Math.ceil(text.length / perLine));
 
 export function tooltipRowHeight(row: TooltipRow): number {
-  return (row.short ? 1 : lines(`${row.label}  ${row.value ?? ''}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
+  const displayValue = row.valueState
+    ? (row.valueState.kind === 'missing'
+      ? 'Not recorded'
+      : row.valueState.kind === 'notApplicable'
+        ? '\u2014'
+        : row.valueState.kind === 'partial'
+          ? `${row.valueState.text ?? ''} partial`
+          : (row.valueState.text ?? ''))
+    : (row.value ?? '');
+  return (row.short ? 1 : lines(`${row.label}  ${displayValue}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
 }
 
 export function tooltipHeight(content: TooltipContent): number {
@@ -112,8 +131,10 @@ let revision = 0;
 
 const emit = () => { for (const listener of listeners) listener(); };
 
+const stringifyContent = (content: TooltipContent): string => JSON.stringify(content, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
+
 export function showTooltip(owner: string, content: TooltipContent, x: number, y: number, contentKey?: string): void {
-  const nextKey = `${owner}\u0000${contentKey ?? JSON.stringify(content)}`;
+  const nextKey = `${owner}\u0000${contentKey ?? stringifyContent(content)}`;
   if (nextKey === key && state && state.x === x && state.y === y && (contentKey == null || state.content === content)) return;
   const sameScroll = state?.owner === owner && content.scrollable && state.content.scrollable
     && (content.scrollId != null ? content.scrollId === state.content.scrollId : nextKey === key);

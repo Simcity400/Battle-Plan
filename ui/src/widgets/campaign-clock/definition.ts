@@ -5,5 +5,5 @@ export const definition = {
   description: 'Recorded real time spent playing and paused, with recording gaps kept separate.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'moment',
   data: true, countrySelection: false, history: true,
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 8 }, options: [],
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 8 }, options: [], playsBackDated: true,
 } as const satisfies WidgetMeta;

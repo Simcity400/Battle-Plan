@@ -11,7 +11,7 @@ use replay_columnar::envelope::{SPAN_BLOCKS, UNIT_ORDINALS};
 use replay_data::{
     identity::{CaptureMode, Identity, Roster, SampleBoundary, SessionStart, Verification},
     rows::{
-        CampaignRow, ClockRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
+        CampaignRow, ClockRow, CountryFactoriesRow, CountryLinkRow, CountryResourceRow, CountryRow, FactionMemberRow, FactionRow, MarketEventRow,
         ProvinceRow, RowCodec, StateRow, TableId, TableRows, WorldTensionRow,
     },
 };
@@ -233,11 +233,15 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(data: Data, hours: RangeInclusive<i32>) -> Self {
-        Self::record(data, hours, None)
+        Self::record(data, hours, None, false)
+    }
+
+    pub fn with_not_recorded_factories(hours: RangeInclusive<i32>) -> Self {
+        Self::record(Data::Power, hours, None, true)
     }
 
     pub fn with_gap(data: Data, hours: RangeInclusive<i32>, gap: RangeInclusive<i32>) -> Self {
-        Self::record(data, hours, Some(gap))
+        Self::record(data, hours, Some(gap), false)
     }
 
     pub fn campaign(data: Data) -> Self {
@@ -252,13 +256,16 @@ impl Fixture {
         fixture
     }
 
-    fn record(data: Data, hours: RangeInclusive<i32>, gap: Option<RangeInclusive<i32>>) -> Self {
+    fn record(data: Data, hours: RangeInclusive<i32>, gap: Option<RangeInclusive<i32>>, not_recorded_factories: bool) -> Self {
         let (first, last) = hours.into_inner();
         let campaign = CampaignRow { id: b"tiles".to_vec() };
         let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
             country_rows(frame, hour, matches!(data, Data::Power))?;
+            if not_recorded_factories {
+                frame.table::<CountryFactoriesRow>(TableId::CountryFactories, Input::NotRecorded { read: false, sample: Sample::FromReadBit })?;
+            }
             match data {
                 Data::Power => Ok(()),
                 Data::Resources => resource_rows(frame, hour),

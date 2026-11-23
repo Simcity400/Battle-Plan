@@ -1,5 +1,5 @@
 import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type FollowAnswer, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
-import { SAME, type Ack, type Bitmap, type Entry, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
+import { SAME, type Ack, type Bitmap, type Entry, type FailureOrigin, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
 import { parseAnswer, parseDatedPanelRecord, parseFollowed, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { mergeChanged } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
@@ -33,12 +33,14 @@ export interface Painted {
   motion: boolean;
   mode?: 'picture' | 'refused';
   reason?: string;
+  nextChangeAt?: number;
   hit?: (point: readonly [number, number]) => string | null;
 }
 
 export interface LaneView {
-  next?(scene: Scene, hour: number): number;
+  next?(scene: Scene, hour: number, state?: Map<string, unknown>): number;
   paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted;
+  unmount?(widget: number, state: Map<string, unknown>): void;
 }
 
 export interface Presented<B extends Bitmap> { lane: number; serial: number; resets: [number, number][]; entries: Entry<B>[] }
@@ -183,7 +185,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   unmount(widget: number) {
-    this.widgets.delete(widget);
+    const held = this.widgets.get(widget);
+    if (held) {
+      this.host.views(held.view).unmount?.(widget, held.state);
+      this.widgets.delete(widget);
+    }
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
 
@@ -570,7 +576,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const scene: Scene = { widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures, model: widget.model };
     const version = widget.subs.length ? pictures.map(picture => picture.parts.map(part => part.version).join('.')).join('|') : `bound:${widget.binding.generation}`;
     const at = Math.max(joined.window[0], Math.min(target, joined.c));
-    let window = changeWindow(joined.window, at, hour => view.next!(scene, hour), widget.start?.version === version ? widget.start.hour : undefined);
+    let window = changeWindow(joined.window, at, hour => view.next!(scene, hour, widget.state), widget.start?.version === version ? widget.start.hour : undefined);
     if (target > window[1]) window = [window[0], joined.window[1]];
     widget.start = { version, hour: window[0] };
     return { pictures, window, h: joined.h, c: joined.c };
@@ -618,30 +624,50 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       widget.served = this.requests;
       if (selected === 'lost') {
         const lost = { pictures: [], window: [-Infinity, Infinity] as Window, h: target, c: target };
-        entries.push(this.entry(widget, lost, { surfaces: [], fields: {}, motion: false }, 'failed', LOST, [], request.seek));
+        entries.push(this.entry(widget, lost, { surfaces: [], fields: {}, motion: false }, 'failed', LOST, [], request.seek, 0, 'stream'));
         made.push({ widget, selected: lost });
         surfaces.push([]);
         continue;
       }
       const view = this.host.views(widget.view);
-      let painted: Painted, mode: Entry['mode'] = 'picture', reason: string | undefined;
-      try {
-        painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: selected.pictures, model: widget.model,
-          hour: selected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
-        mode = painted.mode ?? 'picture'; reason = painted.reason;
-        const refusals = selected.pictures.map(refusalOf);
-        if (mode === 'picture' && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
-        else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
-          painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
-      } catch (error) {
-        painted = { surfaces: [], fields: {}, motion: false };
-        mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+      let activeSelected = selected;
+      let painted: Painted = { surfaces: [], fields: {}, motion: false };
+      let mode: Entry['mode'] = 'picture', reason: string | undefined, failureOrigin: FailureOrigin | undefined;
+      for (let pass = 0; pass < 4; pass++) {
+        try {
+          painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: activeSelected.pictures, model: widget.model,
+            hour: activeSelected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
+          mode = painted.mode ?? 'picture'; reason = painted.reason; failureOrigin = undefined;
+          const refusals = activeSelected.pictures.map(refusalOf);
+          if (painted.mode === undefined && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = [...new Set(refusals)].join('; '); }
+          else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
+            painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
+        } catch (error) {
+          painted = { surfaces: [], fields: {}, motion: false };
+          mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+          failureOrigin = 'local';
+          break;
+        }
+        if (painted.nextChangeAt !== undefined && painted.nextChangeAt > activeSelected.window[0]) {
+          const clampedHi = Math.min(activeSelected.window[1], painted.nextChangeAt - 1);
+          if (clampedHi < activeSelected.window[1]) {
+            activeSelected = { ...activeSelected, window: [activeSelected.window[0], clampedHi] };
+          }
+          if (target > activeSelected.window[1] && pass < 3) {
+            const nextSelected = this.select(widget, target);
+            if (nextSelected && nextSelected !== 'lost' && nextSelected.window[0] > activeSelected.window[0]) {
+              activeSelected = nextSelected;
+              continue;
+            }
+          }
+        }
+        break;
       }
       widget.motion = painted.motion;
       widget.cost = widget.cost * 0.8 + (this.time() - start) * 0.2;
       if (motion) this.stats.motion++;
       const parts: (B | typeof SAME | null)[] = [];
-      const entry = this.entry(widget, selected, painted, mode, reason, parts, request.seek, this.time() - start);
+      const entry = this.entry(widget, activeSelected, painted, mode, reason, parts, request.seek, this.time() - start, failureOrigin);
       painted.surfaces.forEach((surface, k) => {
         if (!surface || parts[k] === SAME) return;
         let source = shared.get(surface.content);
@@ -649,7 +675,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         slots.push([entries.length, k, source]);
       });
       entries.push(entry);
-      made.push({ widget, selected });
+      made.push({ widget, selected: activeSelected });
       surfaces.push(parts);
     }
     let crops: B[] = [];
@@ -660,7 +686,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const { widget, selected } = made[e]!;
         this.presented.delete(entries[e]!.id);
         widget.sent = { ...widget.installed?.contents ?? {} };
-        entries[e] = this.entry(widget, selected, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek);
+        entries[e] = this.entry(widget, selected, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek, 0, 'local');
         surfaces[e] = [];
       }
       slots.length = 0;
@@ -684,7 +710,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: entries.length, ms: this.time() - began });
   }
 
-  private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0): Entry<B> {
+  private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, failureOrigin?: FailureOrigin): Entry<B> {
     const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++, contents: Record<string, string> = { hour: String(selected.window[0]) };
     if (mode === 'failed' && reason !== undefined) contents.failed = reason;
     const fields: Record<string, unknown> = {};
@@ -706,6 +732,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.presented.set(id, { widget: widget.id, sent });
     return Object.freeze({ widget: widget.id, binding: widget.binding.generation, id, h: selected.h, c: selected.c, lo: selected.window[0], hi: selected.window[1],
       gen: Object.freeze(gen), follows: selected.pictures.some(picture => followsChannel(picture)), mode, ...reason !== undefined ? { reason } : {},
+      ...failureOrigin !== undefined ? { failureOrigin } : {},
       surfaces: parts, content: Object.freeze(contents), fields: Object.freeze(fields), ms });
   }
 
