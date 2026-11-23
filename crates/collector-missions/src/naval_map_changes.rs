@@ -115,6 +115,15 @@ pub fn accident_token(navy: usize) -> Option<(u64, u64)> {
 pub fn ledger_token(navy: usize) -> Option<(u64, u64)> {
     LEDGERS.sequence(navy)
 }
+
+#[cfg(feature = "test-support")]
+pub fn ledger_observation_fixture(navies: usize) -> impl Fn(usize) {
+    LEDGERS.offer(navies);
+    LEDGERS.boundary(false);
+    LEDGERS.set_enabled(true);
+    |navy| drop(LEDGERS.notify(navy))
+}
+
 pub fn active() -> usize {
     MINES
         .active()

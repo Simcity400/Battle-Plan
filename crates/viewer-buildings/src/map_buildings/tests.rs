@@ -99,7 +99,7 @@ fn installed_building_snapshots_share_immutable_slots() {
     );
     let mut next = input.clone();
     next.hour += 1;
-    next.slots.get_mut(0).entity = None;
+    next.slots.edit(0, |slot| slot.entity = None);
     assert!(input.slots[0].entity.is_some());
     assert!(history.prepared.as_ref().unwrap().slots[0].entity.is_some());
 }
@@ -110,7 +110,7 @@ fn destruction_hysteresis_survives_hide_and_resets_on_seek() {
     history.set(prepared(10, 6_000_000, false), true);
     assert_eq!(at(&mut history, 50.0, 0.0)[0].0, 2);
     let mut hidden = prepared(11, 9_000_000, false);
-    hidden.slots.get_mut(0).entity = None;
+    hidden.slots.edit(0, |slot| slot.entity = None);
     assert!(!history.set(hidden, true));
     assert!(at(&mut history, 50.0, 1.0).is_empty());
     history.set(prepared(12, 7_000_000, false), true);
@@ -266,7 +266,7 @@ fn only_provinces_in_view_are_created_and_recreation_restarts_the_clock() {
 
     let mut history = BuildingHistory::default();
     let mut same_mesh = prepared(10, 0, false);
-    same_mesh.slots.get_mut(0).entity_mut().ruined.mesh = 1;
+    same_mesh.slots.edit(0, |slot| slot.entity_mut().ruined.mesh = 1);
     history.set(same_mesh, true);
     let before = at(&mut history, 50.0, 0.0)[0].1.animation_epoch;
     history.set(prepared(11, 10_000_000, false), true);
@@ -999,8 +999,8 @@ fn settled_groups_match_full_reapplication_through_camera_hour_and_budget_change
             for history in [&mut cached, &mut reference] {
                 let mut next = history.prepared.as_ref().unwrap().clone();
                 next.hour += 1;
-                next.slots.get_mut(1).entity_mut().damaged = true;
-                next.slots.get_mut(3).entity = None;
+                next.slots.edit(1, |slot| slot.entity_mut().damaged = true);
+                next.slots.edit(3, |slot| slot.entity = None);
                 history.set(next, true);
             }
         }
@@ -1208,7 +1208,9 @@ fn symbolic_buildings_preserve_the_independent_local_history_schedule() {
         .enumerate()
     {
         let mut source = prepared(10 + index as i32, health, false);
-        source.slots.get_mut(0).drawn_at_distance = (index != 2).then_some(false);
+        source.slots.edit(0, |slot| {
+            slot.drawn_at_distance = (index != 2).then_some(false);
+        });
         let closed = source
             .display_with(
                 [9; 32],
