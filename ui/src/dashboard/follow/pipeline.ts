@@ -1,6 +1,6 @@
 import { flushSync } from 'react-dom';
 import { engine } from '../../engine/frame.ts';
-import type { DashboardClient, DashboardSource } from '../client';
+import type { DashboardClient, DashboardSource, FollowOpen } from '../client';
 import type { PlaybackController, PlaybackSnapshot } from '../playback';
 import { canonical } from './canonical.ts';
 import { Page, type PageMessage, type PageSurface, type RebindChange, type WidgetView } from './page.ts';
@@ -12,6 +12,7 @@ import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
 import type { GatedParams } from '../regionTime';
+import { asFailure, RefusedError, type Failure } from '../queryError.ts';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
@@ -19,20 +20,24 @@ export interface LaneWorker { postMessage(message: ToLane, transfer?: Transferab
 
 export interface PipelineHost {
   lanes: readonly LaneWorker[];
-  open(ports: readonly MessagePort[]): Promise<string | void>;
+  open(ports: readonly MessagePort[]): FollowOpen;
   channel(): { port1: MessagePort; port2: MessagePort };
   frameRate(): number;
   rate(): number;
+  close?(): void;
 }
 
-export type SubStatus = 'pending' | 'followed' | 'refused';
+export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
-  id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string;
+  id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
   widgets: Set<number>; released: boolean;
 }
 
-interface RouteState { page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number; serial: Promise<unknown>; told: string | null }
+interface RouteState {
+  page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number;
+  serial: Promise<unknown>; told: string | null; error?: { seek: number; failure: Failure };
+}
 
 interface WidgetState {
   id: number; lane: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
@@ -46,9 +51,11 @@ const NO_CHANNEL = 'This connection has no channel for pushed answers';
 
 export class Pipeline {
   readonly page: Page<ImageBitmap>;
+  readonly generation: number;
   private readonly host: PipelineHost;
   private readonly clock: PlaybackController;
   private readonly client: DashboardClient;
+  private readonly abort = new AbortController();
   private readonly subs = new Map<string, SubState>();
   private readonly byId = new Map<number, SubState>();
   private readonly routes = new Map<string, RouteState>();
@@ -64,12 +71,14 @@ export class Pipeline {
   private redated = new Set<WidgetState>();
   private dated = false;
   private framing = false;
+  private closed = false;
+  private closeReader: (() => void) | null = null;
   private stopPublish: (() => void) | null = null;
   private stopClock: (() => void) | null = null;
   private rate: number;
 
-  constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost) {
-    this.clock = clock; this.client = client; this.host = host; this.rate = host.rate();
+  constructor(clock: PlaybackController, client: DashboardClient, host: PipelineHost, generation = 0) {
+    this.clock = clock; this.client = client; this.host = host; this.rate = host.rate(); this.generation = generation;
     const count = host.lanes.length;
     perfLog?.lanes(count);
     this.loads = Array.from({ length: count }, () => 0);
@@ -77,7 +86,7 @@ export class Pipeline {
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
     const channels = host.lanes.map(() => host.channel());
-    channels.forEach((channel, lane) => host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: host.rate() }, [channel.port1]));
+    channels.forEach((channel, lane) => host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: this.rate }, [channel.port1]));
     this.ports = channels.map(channel => channel.port2);
     this.stopPublish = clock.onPublish((previous, next) => this.published(previous, next), true);
     this.stopClock = clock.subscribe(() => this.anchor());
@@ -87,15 +96,44 @@ export class Pipeline {
 
   get lanes() { return this.host.lanes.length; }
 
-  close() { this.stopPublish?.(); this.stopClock?.(); for (const port of this.ports) port.close(); }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.abort.abort();
+    this.stopPublish?.(); this.stopPublish = null;
+    this.stopClock?.(); this.stopClock = null;
+    for (const lane of this.host.lanes) lane.onmessage = null;
+    this.closeReader?.(); this.closeReader = null;
+    this.host.close?.();
+    for (const port of this.ports) port.close();
+    this.page.dispose();
+    perfLog?.dropGeneration(this.generation);
+    this.widgets.clear(); this.shared.clear(); this.subs.clear(); this.byId.clear(); this.routes.clear();
+    this.audits.clear(); this.answered.clear(); this.hits.clear(); this.changed.clear(); this.redated.clear();
+  }
 
   private post(lane: number | 'all', message: PageMessage) {
+    if (this.closed) return;
     if (lane === 'all') for (const worker of this.host.lanes) worker.postMessage(message);
     else this.host.lanes[lane]!.postMessage(message);
   }
 
   private open(): Promise<void> {
-    this.opened ??= this.host.open(this.ports).then(session => { if (typeof session === 'string') this.session = session; });
+    if (!this.opened) {
+      const started = this.host.open(this.ports);
+      const ready = 'ready' in started ? started.ready : started;
+      if ('close' in started) {
+        if (this.closed) started.close();
+        else this.closeReader = started.close;
+      }
+      this.opened = ready.then(opened => {
+        const session = typeof opened === 'string' ? opened : opened?.session;
+        const close = typeof opened === 'object' && opened ? opened.close : undefined;
+        if (this.closed) { close?.(); return; }
+        if (close && !this.closeReader) this.closeReader = close;
+        if (typeof session === 'string') this.session = session;
+      });
+    }
     return this.opened;
   }
 
@@ -107,6 +145,7 @@ export class Pipeline {
   }
 
   private published(previous: PlaybackSnapshot, next: PlaybackSnapshot) {
+    if (this.closed) return;
     const rate = this.host.rate();
     if (rate !== this.rate) { this.rate = rate; for (const lane of this.host.lanes) lane.postMessage({ type: 'options', rate }); }
     const step = next.playing && previous.playing && next.seekSequence === previous.seekSequence ? Math.max(0, next.hour - previous.hour) : this.page.step;
@@ -120,6 +159,7 @@ export class Pipeline {
   private readonly audits = new Map<number, Map<number, (fields: Readonly<Record<string, unknown>>) => readonly AuditRow[] | undefined>>();
 
   audit(id: number, owner: number, rows: ((fields: Readonly<Record<string, unknown>>) => readonly AuditRow[] | undefined) | null) {
+    if (this.closed) return;
     let owners = this.audits.get(id);
     if (rows) { if (!owners) this.audits.set(id, owners = new Map()); owners.set(owner, rows); }
     else { owners?.delete(owner); if (owners && !owners.size) this.audits.delete(id); }
@@ -129,6 +169,7 @@ export class Pipeline {
   private answers = 0;
 
   answer(id: number, owner: number, shown: { hour: number; rows: () => readonly AuditRow[] | undefined } | null) {
+    if (this.closed) return;
     let owners = this.answered.get(id);
     if (shown) { if (!owners) this.answered.set(id, owners = new Map()); owners.set(owner, { ...shown, entry: -++this.answers }); }
     else { owners?.delete(owner); if (owners && !owners.size) this.answered.delete(id); }
@@ -145,7 +186,7 @@ export class Pipeline {
       const answers = [...this.answered.get(held.id) ?? []];
       for (const [owner, answer] of answers) {
         const hour = clock(answer.hour), rows = answer.rows();
-        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name, surface, placement: held.id, owner, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
+        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name, surface, placement: held.id, owner, generation: this.generation, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
           since: hour, through: hour, eligibleHour: hour, entry: answer.entry, parts: [], drawMs: 0, ...rows ? { rows } : {},
           mode: 'picture', dim: false, reset: 0, binding: shown.binding, inspect: shown.inspect, tooltip: false });
       }
@@ -154,18 +195,20 @@ export class Pipeline {
       if (!owners.length && answers.length) continue;
       for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
       const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
+      const auditMissing = audit !== undefined && view.mode === 'picture' && rows === undefined;
       const rawAudit = view.mode === 'picture' && view.fields ? view.fields.audit : undefined;
       const auditId = rawAudit && typeof rawAudit === 'object' && typeof (rawAudit as { id?: unknown }).id === 'number' && (rawAudit as { id: number }).id > 0
         ? (rawAudit as { id: number }).id
         : undefined;
+      if (auditId !== undefined) perfLog?.pinPicture(this.generation, held.id, owner, auditId);
       recordPicture({ t: 'picture', at, shownAt: at, seek, widget: name,
-        surface, placement: held.id, owner, renderer: 'page',
+        surface, placement: held.id, owner, generation: this.generation, renderer: 'page',
         head: clock(view.target), hour, offset, ...shown.pin !== null ? { fixedHour: clock(shown.pin) } : {},
         ...view.h !== undefined ? { since: clock(view.h) } : {}, ...shown.installed ? { through: clock(shown.installed.c) } : {},
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
         ...shown.installed ? { entry: shown.installed.id, parts: Object.values(shown.content),
           face: Object.entries(shown.content).filter(([part]) => part !== 'hour').map(([part, id]) => `${part}=${id}`).join('|') } : {},
-        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {},
+        drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {}, ...auditId !== undefined ? { auditId } : {}, ...auditMissing ? { auditMissing: true } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
       }
@@ -173,6 +216,7 @@ export class Pipeline {
   }
 
   private flush() {
+    if (this.closed) return;
     const changed = this.changed, dated = this.dated, redated = this.redated;
     this.changed = new Set(); this.redated = new Set();
     this.dated = false;
@@ -181,9 +225,14 @@ export class Pipeline {
   }
 
   private receive(lane: number, message: FromLane) {
+    if (this.closed) return;
     if (message.type === 'failure') {
       const routes = new Set<number>();
       for (const widget of this.widgets.values()) if (message.lane === -1 || widget.lane === lane) routes.add(this.page.widgets.get(widget.id)!.route);
+      const failure = asFailure(new Error(message.reason));
+      for (const route of this.routes.values()) {
+        if (routes.has(route.page)) route.error = { seek: this.page.seek, failure };
+      }
       for (const route of routes) this.page.fail(route, this.page.command(route), message.reason);
       this.flush();
       return;
@@ -204,9 +253,9 @@ export class Pipeline {
   }
 
   private commitSoon() {
-    if (this.framing) return;
+    if (this.closed || this.framing) return;
     this.framing = true;
-    engine.next('commit', () => { this.framing = false; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
+    engine.next('commit', () => { this.framing = false; if (this.closed) return; this.page.frame(); this.flush(); if (auditing()) this.sample(this.page.seek); });
   }
 
   private place(key: string | undefined) {
@@ -248,6 +297,7 @@ export class Pipeline {
   }
 
   unmount(id: number) {
+    if (this.closed) return;
     const widget = this.widgets.get(id);
     if (!widget) return;
     this.audits.delete(id);
@@ -261,9 +311,34 @@ export class Pipeline {
 
   lane(id: number) { return this.widgets.get(id)?.lane ?? 0; }
 
-  status(sub: number): { status: SubStatus; reason?: string } {
+  status(sub: number): { status: SubStatus; reason?: string; error?: Failure } {
     const held = this.byId.get(sub);
-    return held ? { status: held.status, ...held.reason !== undefined ? { reason: held.reason } : {} } : { status: 'pending' };
+    if (!held) return { status: 'pending' };
+    const routeError = held.route.error?.seek === this.page.seek ? held.route.error.failure : undefined;
+    const error = held.error ?? routeError;
+    return { status: held.status, ...held.reason !== undefined ? { reason: held.reason } : {}, ...error !== undefined ? { error } : {} };
+  }
+
+  widgetError(id: number): Failure | undefined {
+    const widget = this.widgets.get(id);
+    if (!widget) return undefined;
+    for (const sub of widget.subs.values()) {
+      const error = this.status(sub).error;
+      if (error) return error;
+    }
+    return undefined;
+  }
+
+  binding(id: number): number { return this.page.widgets.get(id)?.binding ?? 0; }
+
+  retryWidget(id: number) {
+    if (this.closed) return;
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    this.page.retryLocal(id);
+    widget.binding = this.timed(widget, widget.binding);
+    this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...widget.model !== undefined ? { model: widget.model } : {} });
+    this.flush();
   }
 
   view(id: number): WidgetView | null { return this.widgets.has(id) ? this.page.view(id) : null; }
@@ -288,6 +363,7 @@ export class Pipeline {
   }
 
   subscribe(widgetId: number, token: object, source: DashboardSource, branch: string, offset: number, query: FollowQuery, channel: Channel, product?: string) {
+    if (this.closed) return;
     const widget = this.widgets.get(widgetId);
     if (!widget) return;
     const route = this.routeOf(source, branch, offset);
@@ -310,6 +386,7 @@ export class Pipeline {
   }
 
   unsubscribe(widgetId: number, token: object) {
+    if (this.closed) return;
     const widget = this.widgets.get(widgetId);
     const id = widget?.subs.get(token);
     if (!widget || id === undefined) return;
@@ -326,7 +403,7 @@ export class Pipeline {
     this.subs.delete(sub.key); this.byId.delete(id);
     sub.released = true;
     this.host.lanes[sub.lane]!.postMessage({ type: 'unfollow', sub: id });
-    if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route).catch(() => {});
+    if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route, new AbortController().signal).catch(() => {});
     if (!this.holds(sub.route)) { sub.route.told = null; const page = this.nextRoute++; this.page.carry(sub.route.page, page); sub.route.page = page; }
   }
 
@@ -340,7 +417,9 @@ export class Pipeline {
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
     widget.mounted = true;
     const refused = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'refused');
-    if (refused) this.page.name(widget.id, 'failed', refused.reason);
+    const failed = subs.map(id => this.byId.get(id)).find(sub => sub?.status === 'failed');
+    if (refused) this.page.name(widget.id, 'refused', refused.reason);
+    else if (failed) this.page.name(widget.id, 'failed', failed.reason, 'stream');
     this.flush();
   }
 
@@ -389,7 +468,7 @@ export class Pipeline {
     this.flush();
   }
 
-  inspect(id: number, key: string | null) { this.page.inspect(id, key); this.flush(); }
+  inspect(id: number, key: string | null) { if (this.closed) return; this.page.inspect(id, key); this.flush(); }
 
   inspecting(id: number) { return this.page.widgets.get(id)?.inspect ?? null; }
 
@@ -409,21 +488,22 @@ export class Pipeline {
     if (held) this.host.lanes[held.lane]!.postMessage({ type: 'exact', sub, hour, data, refused });
   }
 
-  private ask(product: 'follow' | 'unfollow' | 'follow-clock', params: Record<string, unknown>, route: RouteState) {
+  private ask(product: 'follow' | 'unfollow' | 'follow-clock', params: Record<string, unknown>, route: RouteState, signal = this.abort.signal) {
     const sessioned = this.session ? { ...params, session: this.session } : params;
     return this.client.product(productRequest({ sourceId: route.source.id, revision: route.source.revision, product, params: sessioned as GatedParams }),
-      new AbortController().signal).then(reply => reply.data);
+      signal).then(reply => reply.data);
   }
 
   private register(sub: SubState, query: FollowQuery, product?: string) {
+    if (this.closed) return;
     this.host.lanes[sub.lane]!.postMessage({ type: 'follow', sub: sub.id, channel: sub.channel, ...product !== undefined ? { product } : {} });
     if (sub.channel === 'pinned') { sub.status = 'followed'; return; }
     if (!this.client.openFollow) { this.refuse(sub, NO_CHANNEL); return; }
-    void this.open().then(() => sub.released ? null
+    void this.open().then(() => this.closed || sub.released ? null
       : this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes }, sub.route))
       .then(reply => {
         const data = reply as { available?: boolean; reason?: string; route?: number } | null;
-        if (sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route).catch(() => {}); return; }
+        if (this.closed || sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {}); return; }
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
         const first = !this.holds(sub.route), moved = sub.route.native !== null && sub.route.native !== data.route;
         if (moved) sub.route.page = this.nextRoute++;
@@ -433,16 +513,30 @@ export class Pipeline {
         for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
         if (first || moved) sub.route.told = null;
         this.anchor();
-      }, error => this.refuse(sub, error instanceof Error ? error.message : String(error)));
+      }, error => {
+        if (this.closed || sub.released) return;
+        const failure = asFailure(error);
+        if (error instanceof RefusedError) this.refuse(sub, failure.message);
+        else this.fail(sub, failure);
+      });
   }
 
   private refuse(sub: SubState, reason: string) {
-    sub.status = 'refused'; sub.reason = reason;
-    for (const widget of sub.widgets) this.page.name(widget, 'failed', reason);
+    if (this.closed) return;
+    sub.status = 'refused'; sub.reason = reason; sub.error = undefined;
+    for (const widget of sub.widgets) this.page.name(widget, 'refused', reason);
+    this.flush();
+  }
+
+  private fail(sub: SubState, failure: Failure) {
+    if (this.closed) return;
+    sub.status = 'failed'; sub.reason = failure.message; sub.error = failure;
+    for (const widget of sub.widgets) this.page.name(widget, 'failed', failure.message, 'stream');
     this.flush();
   }
 
   private anchor() {
+    if (this.closed) return;
     const s = this.clock.getSnapshot();
     const held = new Set([...this.subs.values()].filter(sub => sub.status === 'followed' && sub.channel !== 'pinned').map(sub => sub.route));
     for (const route of this.routes.values()) {
@@ -455,29 +549,92 @@ export class Pipeline {
       const composedAt = performance.timeOrigin + (s.composedAt ?? performance.now());
       const page = route.page;
       route.serial = route.serial.then(async () => {
-        if (!this.holds(route) || route.page !== page) return;
+        if (this.closed || !this.holds(route) || route.page !== page) return;
         let reason: string | null = null;
+        let failure: Failure | undefined;
         try {
           const data = await this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
             frameRate: this.host.frameRate(), seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
-          if (data?.available !== true) reason = data?.reason ?? 'The followed stream is no longer available';
-        } catch (error) { if (route.page === page) route.told = null; reason = error instanceof Error ? error.message : String(error); }
-        if (reason !== null && this.holds(route) && route.page === page && this.page.fail(page, command, reason)) this.flush();
+          if (data?.available !== true) {
+            reason = data?.reason ?? 'The followed stream is no longer available';
+            failure = asFailure(new Error(reason));
+          }
+        } catch (error) {
+          if (route.page === page) route.told = null;
+          failure = asFailure(error);
+          reason = failure.message;
+        }
+        if (!this.closed && reason !== null && this.holds(route) && route.page === page) {
+          if (this.page.fail(page, command, reason)) {
+            route.error = { seek: this.page.seek, failure: failure! };
+            this.flush();
+          }
+        }
       });
     }
   }
 }
 
-const pipelines = new WeakMap<PlaybackController, WeakMap<DashboardClient, Pipeline>>();
-const byClock = new WeakMap<PlaybackController, Pipeline>();
+interface PipelineSlot {
+  pipeline: Pipeline;
+  client: DashboardClient;
+  host: () => PipelineHost;
+  listeners: Set<() => void>;
+}
 
-export const pipelineOf = (clock: PlaybackController) => byClock.get(clock) ?? null;
+const pipelines = new WeakMap<PlaybackController, WeakMap<DashboardClient, PipelineSlot>>();
+const byClock = new WeakMap<PlaybackController, PipelineSlot>();
+const clockGeneration = new WeakMap<PlaybackController, number>();
+const clockListeners = new WeakMap<PlaybackController, Set<() => void>>();
+const ownerOf = new WeakMap<Pipeline, { clock: PlaybackController; slot: PipelineSlot }>();
+
+export const pipelineOf = (clock: PlaybackController) => byClock.get(clock)?.pipeline ?? null;
+export const pipelineGeneration = (clock: PlaybackController) => clockGeneration.get(clock) ?? 1;
 
 export function pipelineFor(clock: PlaybackController, client: DashboardClient, host: () => PipelineHost): Pipeline {
   let byClient = pipelines.get(clock);
   if (!byClient) pipelines.set(clock, byClient = new WeakMap());
-  let pipeline = byClient.get(client);
-  if (!pipeline) byClient.set(client, pipeline = new Pipeline(clock, client, host()));
-  byClock.set(clock, pipeline);
-  return pipeline;
+  let slot = byClient.get(client);
+  if (!slot) {
+    const existing = byClock.get(clock);
+    const generation = existing ? (clockGeneration.get(clock) ?? 1) + 1 : (clockGeneration.get(clock) ?? 1);
+    clockGeneration.set(clock, generation);
+    const pipeline = new Pipeline(clock, client, host(), generation);
+    slot = { pipeline, client, host, listeners: new Set() };
+    byClient.set(client, slot);
+    ownerOf.set(pipeline, { clock, slot });
+  }
+  byClock.set(clock, slot);
+  return slot.pipeline;
+}
+
+export function subscribePipeline(clock: PlaybackController, client: DashboardClient, listener: () => void): () => void {
+  const slot = pipelines.get(clock)?.get(client);
+  if (!slot) return () => {};
+  slot.listeners.add(listener);
+  return () => { slot.listeners.delete(listener); };
+}
+
+export function subscribeClockPipeline(clock: PlaybackController, listener: () => void): () => void {
+  let set = clockListeners.get(clock);
+  if (!set) clockListeners.set(clock, set = new Set());
+  set.add(listener);
+  return () => { set.delete(listener); };
+}
+
+export function restartPipeline(pipeline: Pipeline): Pipeline | null {
+  const owned = ownerOf.get(pipeline);
+  if (!owned) return null;
+  const { clock, slot } = owned;
+  if (slot.pipeline !== pipeline) return slot.pipeline;
+  pipeline.close();
+  const generation = (clockGeneration.get(clock) ?? 0) + 1;
+  clockGeneration.set(clock, generation);
+  const next = new Pipeline(clock, slot.client, slot.host(), generation);
+  slot.pipeline = next;
+  byClock.set(clock, slot);
+  ownerOf.set(next, { clock, slot });
+  for (const listener of [...slot.listeners]) listener();
+  for (const listener of [...clockListeners.get(clock) ?? []]) listener();
+  return next;
 }

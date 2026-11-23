@@ -28,7 +28,7 @@ export function ownerKeys(owner: SeriesOwner | null, parts: readonly string[]): 
 }
 import { followStore } from './follow/store.ts';
 import { rowAmount } from './follow/painters.ts';
-import { followRefusal, followsHead, useFollow } from './follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, useFollow } from './follow/useFollow.ts';
 import type { FollowEntry, FollowStore } from './follow/store';
 import type { PlaybackController } from './playback';
 import { followAtHead, tileHead } from './tiles/head.ts';
@@ -163,10 +163,11 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
 
   const unrecorded = useMemo(() => unrecordedReason(tiles?.key === tileKey ? tiles.lines : null), [tiles, tileKey]);
   const reached = useMemo(() => reachedKeyLines(spec?.keys ?? [], stateRead.data), [owner, stateRead.data]);
-  const retry = () => { setFailure(undefined); view.current?.retry(); stateRead.retry(); };
+  const followErr = following ? followFailure(followed) : null;
+  const retry = () => { followErr?.retry(); setFailure(undefined); view.current?.retry(); stateRead.retry(); };
   const stateError = stateRead.errorKey === JSON.stringify(reads) ? stateRead.error : undefined;
   const tilesError = tiles?.key === tileKey && tiles.error ? asFailure(tiles.error) : undefined;
-  const error = useHeldFailure((failure?.owner === owner ? failure.error : undefined) ?? stateError ?? tilesError,
+  const error = useHeldFailure(followErr?.error ?? (failure?.owner === owner ? failure.error : undefined) ?? stateError ?? tilesError,
     stateRead.data !== undefined || summaryByKey.size > 0, retry);
   return { enabled, owner, decimals, lines: reached, states: stateRead.data, summaryByKey, summaryOf, revision: readLines, subscribe, onSummaryView, onNavigateHour,
     keyboardHour: keyboard?.owner === owner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner === owner ? keyboard.revision : undefined,

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { buildWidgetClassifierExpr, createOutcomeWatcher, measureIdleCost, runThrottled } from './sweepHelpers.mjs';
-import { REFUSAL_TEXT, classifyWidgetSnapshot } from './verdicts.mjs';
+import { classifyWidgetSnapshot } from './verdicts.mjs';
 
 const source = readFileSync(new URL('./sweep.mjs', import.meta.url), 'utf8');
 
@@ -165,22 +165,43 @@ test('measureIdleCost returns bounds on success and records a failure without th
   assert.equal(cleanupPauses, 2, 'cleanup pause runs after idle failure');
 });
 
-test('browser widget classifier expression delegates directly to classifyWidgetSnapshot', () => {
-  const expr = buildWidgetClassifierExpr(classifyWidgetSnapshot, REFUSAL_TEXT);
+test('browser widget classifier expression delegates directly to classifyWidgetSnapshot using explicit data-state', () => {
+  const expr = buildWidgetClassifierExpr(classifyWidgetSnapshot);
   const runInPage = new Function('window', `return (${expr});`);
+  const nodeWith = (state, text, detail = null) => ({
+    getAttribute: name => name === 'data-state' ? state : name === 'data-detail' ? detail : null,
+    textContent: text,
+  });
   const makeNode = (map, probeState = null) => ({
     querySelector: sel => map[sel] ?? null,
     __probe: probeState,
   });
   const win = { __e2e: { stateOf: a => a.__probe } };
   const classify = runInPage(win);
+  const errNode = nodeWith('error', 'Couldn’t load.', 'No table 44 in the schema');
   assert.deepEqual(
-    classify(makeNode({ '[data-state="error"], [role="alert"]': { getAttribute: () => null, textContent: 'Changed rows arrived without the table they change.' } })),
-    { outcome: 'error', detail: 'Changed rows arrived without the table they change.', notMigrated: false },
+    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': errNode, '[data-state="error"], [role="alert"]': errNode })),
+    { outcome: 'error', detail: 'No table 44 in the schema', notMigrated: false },
   );
+  const unavailNode = nodeWith('unavailable', 'Not in this recording.', 'No table 44 in the schema');
   assert.deepEqual(
-    classify(makeNode({ '[data-state="error"], [role="alert"]': { getAttribute: () => null, textContent: 'No table 44 in the schema' } })),
+    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': unavailNode, '[data-state="unavailable"]': unavailNode })),
     { outcome: 'refusal', detail: 'No table 44 in the schema', notMigrated: false },
+  );
+  const outsideNode = nodeWith('outside', 'This time is outside the recording.');
+  assert.deepEqual(
+    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': outsideNode, '[data-state="outside"]': outsideNode })),
+    { outcome: 'outside', detail: 'This time is outside the recording.', notMigrated: false },
+  );
+  const gapNode = nodeWith('not-recorded', 'Not recorded at this time.');
+  assert.deepEqual(
+    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': gapNode, '[data-state="not-recorded"]': gapNode })),
+    { outcome: 'not-recorded', detail: 'Not recorded at this time.', notMigrated: false },
+  );
+  const placeholderNode = nodeWith('placeholder', 'Any custom copy');
+  assert.deepEqual(
+    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': placeholderNode, '[data-playback-placeholder], [data-state="placeholder"]': placeholderNode })),
+    { outcome: 'placeholder', detail: 'Any custom copy', notMigrated: true },
   );
   assert.deepEqual(
     classify(makeNode({}, { state: 'loading', drawing: true })),

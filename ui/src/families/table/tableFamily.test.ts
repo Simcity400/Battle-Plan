@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { NOT_LIVE_CELL, NOT_RECORDED, repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { liveKey, valuesOf } from '../../charts/live.ts';
 import { tableSettingsOf, type TableSettings, type TableTheme } from './settings.ts';
-import { nextLookChange } from './looks.ts';
+import { nextLookChange } from '../looks.ts';
 import { resolveHeadSpan } from './declaration.ts';
 import { familyTableLaneView, liveAdapter } from './laneView.ts';
 import { registerTableProjection } from './registry.ts';
@@ -19,14 +19,20 @@ import { occupiedStatesProjection } from '../../widgets/occupied-states/occupied
 import { apmTableColumns, apmTableProjection } from '../../widgets/player-apm/apmProjection.ts';
 import { TABLE_BASE as SCOREBOARD_BASE } from '../../widgets/scoreboard/definition.ts';
 import { RANK_SOURCE, scoreboardColumnsSpec, scoreboardProjection } from '../../widgets/scoreboard/scoreboardProjection.ts';
-import { AuditSnapshotStore, canonicalAuditValue } from '../audit.ts';
+import { AuditSnapshotStore, canonicalAuditData, canonicalAuditValue } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
-import { effectiveCountryUnobserved, resolveRetainedHeadSpan } from '../sources.ts';
+import { holderRunAt, nextHoldersChange, nextRangesChange, nextWindowRangesChange, overlapsHourRanges, resolveSlotHolderRuns } from '../holders.ts';
+import { effectiveCountryUnobserved, resolveDisplayedStaticSnapshot, resolveRetainedHeadSpan, selectionUnobservedReason } from '../sources.ts';
+import { SlotTags } from '../../dashboard/countrySlots.ts';
+import { groupUnobserved } from '../../dashboard/groups.ts';
+import { capturePictures, capturePicturesBatch } from '../../dashboard/pulled.ts';
+import { isFamilyAuditing, subscribeFamilyAuditing } from '../audit.ts';
 import { InvalidFamilyValueError, knownValue, notApplicable, notRecorded, partialValue, zeroValue } from '../value.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths } from './layout.ts';
-import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveTableRows, type TableColumnSpec } from './model.ts';
+import { declareTableProjection, deriveTableAudit, deriveTableMirror, deriveTableTooltip, resolveCellPaintModel, resolveTableRows, type TableColumnSpec } from './model.ts';
 import { createTablePicture, drawFamilyTable, hitFamilyTable } from './painter.ts';
+import { openGate } from '../../test-support/gated.ts';
 import { NOT_NAMED } from '../../widgets/occupied-states/occupiedStatesData.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
@@ -37,11 +43,46 @@ const floatBits = (value: number): bigint => {
   return view.getBigInt64(0, true);
 };
 
-const packTag = (tag: string): bigint => {
-  let out = 0n;
-  for (let i = tag.length - 1; i >= 0; i--) out = (out << 8n) | BigInt(tag.charCodeAt(i));
-  return out;
-};
+function headTextAnswer(rows: readonly { readonly key: bigint; readonly id: string; readonly values: readonly (bigint | string | null)[] }[]) {
+  const cols = rows[0]?.values.length ?? 0;
+  const texts: string[] = [];
+  const held = new Map<string, number>();
+  const intern = (s: string) => {
+    let at = held.get(s);
+    if (at === undefined) held.set(s, at = texts.push(s) - 1);
+    return at;
+  };
+  const names: number[] = [];
+  const rawVals: bigint[] = [];
+  const states: number[] = [];
+  for (const row of rows) {
+    names.push(intern(row.id));
+    for (const v of row.values) {
+      if (v === null) { rawVals.push(0n); states.push(CELL.missing); }
+      else if (typeof v === 'string') { rawVals.push(BigInt(intern(v))); states.push(CELL.value); }
+      else { rawVals.push(v); states.push(CELL.value); }
+    }
+  }
+  const bytes: number[] = [];
+  const u8 = (v: number) => bytes.push(v & 0xff);
+  const u32 = (v: number) => { for (let i = 0; i < 4; i++) u8(Number((BigInt(v) >> BigInt(8 * i)) & 0xffn)); };
+  const u64 = (v: bigint) => { for (let i = 0; i < 8; i++) u8(Number((BigInt.asUintN(64, v) >> BigInt(8 * i)) & 0xffn)); };
+  const pad = () => { while (bytes.length % 8) u8(0); };
+  u8(1); u8(1); u8(0); u8(0); u32(rows.length); u32(cols); u32(texts.length);
+  rows.forEach(r => u64(r.key));
+  rows.forEach(r => u64(r.key >> 64n));
+  rawVals.forEach(v => u64(v));
+  states.forEach(s => u8(s)); pad();
+  for (let i = 0; i < rows.length; i++) u32(0xffff_ffff); pad();
+  names.forEach(n => u32(n)); pad();
+  const enc = texts.map(t => new TextEncoder().encode(t));
+  let end = 0; u32(0);
+  for (const b of enc) { end += b.length; u32(end); }
+  pad();
+  for (const b of enc) b.forEach(u8);
+  pad();
+  return parseAnswer(new Uint8Array(bytes));
+}
 
 const TEST_THEME: TableTheme = {
   surface: '#111111',
@@ -141,12 +182,13 @@ test('campaign-clock projection produces identical audit output for followed wir
     warnings: [],
   };
   const settings = tableSettingsOf(undefined, CLOCK_COLUMNS, CLOCK_TABLE_BASE);
+  const clockLayouts = buildColumnLayouts(CLOCK_COLUMNS, settings);
   const followedModel = campaignClockProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 50, {});
   const exactModel = campaignClockProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 50, {});
-  const followedAudit = deriveTableAudit(resolveTableRows(followedModel, settings), CLOCK_COLUMNS, 50, followedModel.empty);
-  const exactAudit = deriveTableAudit(resolveTableRows(exactModel, settings), CLOCK_COLUMNS, 50, exactModel.empty);
+  const followedAudit = deriveTableAudit({ model: followedModel, flatRows: resolveTableRows(followedModel, settings), visibleColumns: clockLayouts });
+  const exactAudit = deriveTableAudit({ model: exactModel, flatRows: resolveTableRows(exactModel, settings), visibleColumns: clockLayouts });
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.equal(followedAudit.find(r => r.key === 'total:time')?.value, canonicalAuditValue(knownValue(3661)));
+  assert.ok(followedAudit.find(r => r.key === 'total:time')?.value?.includes(canonicalAuditValue(knownValue(3661))));
 });
 
 test('scoreboard projection matches followed and exact audits with missing, partial, zero, and tied rows', () => {
@@ -214,39 +256,31 @@ test('scoreboard projection matches followed and exact audits with missing, part
 
     const followedFlat = resolveTableRows(followedModel, settings);
     const exactFlat = resolveTableRows(exactModel, settings);
-    const followedAudit = deriveTableAudit(followedFlat, specs, 40, followedModel.empty);
-    const exactAudit = deriveTableAudit(exactFlat, specs, 40, exactModel.empty);
+    const sbLayouts = buildColumnLayouts(specs, settings);
+    const followedAudit = deriveTableAudit({ model: followedModel, flatRows: followedFlat, visibleColumns: sbLayouts });
+    const exactAudit = deriveTableAudit({ model: exactModel, flatRows: exactFlat, visibleColumns: sbLayouts });
 
     assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
     assert.equal(followedFlat.at(-1)?.kind === 'data' && followedFlat.at(-1)?.key, 'ENG', `missing ENG sorts last in ${direction}`);
     const order = followedFlat.map(r => r.key);
     assert.ok(order.indexOf('FRA') < order.indexOf('ITA'), 'tied France precedes Italy by name A-Z regardless of wire vs reply input order');
-    assert.equal(followedAudit.find(r => r.key === 'FRA:casualties')?.value, canonicalAuditValue(zeroValue(0)), 'known zero renders zero state');
-    assert.equal(followedAudit.find(r => r.key === 'ITA:casualties')?.value, canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour')));
+    assert.ok(followedAudit.find(r => r.key === 'FRA:casualties')?.value?.includes(canonicalAuditValue(zeroValue(0))), 'known zero renders zero state');
+    assert.ok(followedAudit.find(r => r.key === 'ITA:casualties')?.value?.includes(canonicalAuditValue(partialValue(500n, 'Some inputs were not recorded at this hour'))));
   }
 });
 
 test('apm-table projection matches followed wire answers and exact replies, including partial gaps and notApplicable zero minutes', () => {
-  const wire = answer({
-    keys: [1n, 2n],
-    columns: 9,
-    names: ['GER', 'ITA'],
-    values: [
-      floatBits(45.2), floatBits(45.2), 120n, 15n, floatBits(2.6), 1n, 1n, packTag('GER'), 100n,
-      0n, 0n, 0n, 0n, floatBits(0), 1n, 0n, packTag('ITA'), 100n,
-    ],
-    states: [
-      CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value,
-      CELL.missing, CELL.missing, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value, CELL.value,
-    ],
-  });
+  const wire = headTextAnswer([
+    { key: 1n, id: 'GER', values: [floatBits(45.2), floatBits(45.2), 120n, 15n, floatBits(2.6), 1n, 1n, 'GER', 100n, 'GER', null] },
+    { key: 2n, id: 'ITA', values: [null, null, 0n, 0n, floatBits(0), 1n, 0n, 'ITA', 100n, 'ITA', null] },
+  ]);
   const reply: ApmReply = {
     available: true,
     warnings: [],
     players: [],
     series: [
-      { id: 'GER', name: 'GER', tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '120', pausedOrders: '15', unpausedMinutes: 2.6, complete: true, gaps: true }, points: [] },
-      { id: 'ITA', name: 'ITA', tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', pausedOrders: '0', unpausedMinutes: 0, complete: true, gaps: false }, points: [] },
+      { id: 'GER', name: 'GER', nameMissing: null, tag: 'GER', hour: 100, summary: { apm: 45.2, confirmedApm: 45.2, orders: '120', pausedOrders: '15', unpausedMinutes: 2.6, complete: true, gaps: true }, points: [] },
+      { id: 'ITA', name: 'ITA', nameMissing: null, tag: 'ITA', hour: 100, summary: { apm: null, confirmedApm: null, orders: '0', pausedOrders: '0', unpausedMinutes: 0, complete: true, gaps: false }, points: [] },
     ],
   };
   const opts = {
@@ -254,18 +288,18 @@ test('apm-table projection matches followed wire answers and exact replies, incl
     showPaused: true,
     cellBars: true,
     rankMarkers: false,
-    playerNames: {},
     labels: { GER: [{ from: 0, name: 'Germany' }], ITA: [{ from: 0, name: 'Italy' }] },
   };
   const cols = apmTableColumns(false, true, true);
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } });
+  const apmLayouts = buildColumnLayouts(cols, settings);
   const fModel = apmTableProjection.project({ answers: new Map([['main', wire]]), panels: new Map(), live: new Map() }, 100, opts);
   const eModel = apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 100, opts);
-  const fAudit = deriveTableAudit(resolveTableRows(fModel, settings), cols, 100, fModel.empty);
-  const eAudit = deriveTableAudit(resolveTableRows(eModel, settings), cols, 100, eModel.empty);
+  const fAudit = deriveTableAudit({ model: fModel, flatRows: resolveTableRows(fModel, settings), visibleColumns: apmLayouts });
+  const eAudit = deriveTableAudit({ model: eModel, flatRows: resolveTableRows(eModel, settings), visibleColumns: apmLayouts });
   assert.equal(pictureError('table', fAudit, { values: new Map(eAudit.map(r => [r.key, r.value!])), ordered: true }), null);
-  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.startsWith('["partial","45.2",'));
-  assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.startsWith('["notApplicable",'));
+  assert.ok(fAudit.find(r => r.key === 'GER:apm')?.value?.includes('["partial",["num","45.2"],'));
+  assert.ok(fAudit.find(r => r.key === 'ITA:apm')?.value?.includes('["notApplicable",'));
 });
 
 test('occupied-states, game-score (with faction groups), and division-template (with obsolete tree) project deterministically', () => {
@@ -294,7 +328,8 @@ test('occupied-states, game-score (with faction groups), and division-template (
   const occSettings = tableSettingsOf(undefined, OCCUPIED_DEFAULTS, OCCUPIED_BASE);
   const occRows = resolveTableRows(occModel, occSettings);
   assert.equal(occRows.length, 1);
-  assert.equal(deriveTableAudit(occRows, occModel.columns, 50).find(r => r.key === '1:resistance')?.value, canonicalAuditValue(knownValue(2_500_000)));
+  const occLayouts = buildColumnLayouts(occModel.columns, occSettings);
+  assert.ok(deriveTableAudit({ model: occModel, flatRows: occRows, visibleColumns: occLayouts }).find(r => r.key === '1:resistance')?.value?.includes(canonicalAuditValue(knownValue(2_500_000))));
 
   const gsReply = {
     missing: null,
@@ -441,8 +476,9 @@ test('1,500 countries project, sort, audit identically, and paint only visible r
   const exactRows = resolveTableRows(exactModel, settings);
   assert.equal(followedRows.length, count);
 
-  const followedAudit = deriveTableAudit(followedRows, specs, 200);
-  const exactAudit = deriveTableAudit(exactRows, specs, 200);
+  const sb1500Layouts = buildColumnLayouts(specs, settings);
+  const followedAudit = deriveTableAudit({ model: followedModel, flatRows: followedRows, visibleColumns: sb1500Layouts, window: { first: 0, count: 30 } });
+  const exactAudit = deriveTableAudit({ model: exactModel, flatRows: exactRows, visibleColumns: sb1500Layouts, window: { first: 0, count: 30 } });
   assert.equal(pictureError('table', followedAudit, { values: new Map(exactAudit.map(r => [r.key, r.value!])), ordered: true }), null);
 
   const { ctx, counts, reset } = instrumentedContext();
@@ -492,10 +528,10 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
   const flat15 = resolveTableRows(at15, settings);
   const tip = deriveTableTooltip(flat15, '1', at15.columns, new Set(), 15);
   assert.ok(tip);
-  assert.equal(tip.rows.find(r => r.label === 'Resistance')?.value, '25%');
-  assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.value, '0', 'known assigned with no live cell reads 0');
-  assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.value, '87.5%');
-  assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.value, 'Poland');
+  assert.equal(tip.rows.find(r => r.label === 'Resistance')?.valueState?.text, '25%');
+  assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
+  assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.valueState?.text, '87.5%');
+  assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland');
 
   assert.equal(run(25).empty, 'Occupied states unavailable for these countries.');
   assert.equal(run(35).empty, 'Membership not recorded');
@@ -743,28 +779,32 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     { key: 'rate', label: 'Rate', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'decimal1' },
   ];
   const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'rate', direction: 'descending' } });
-  const mkRows = (rate: number, groupLabel: string) => resolveTableRows({
+  const mkModel = (rate: number, groupLabel: string) => ({
     columns: cols,
     hour: 10,
     rank: true,
     rows: [
-      { key: 'A', name: 'A', group: { key: 'g1', label: groupLabel, order: 0 }, cells: { name: { value: knownValue('A') }, rate: { value: rate === 0 ? zeroValue(0) : knownValue(rate), format: 'decimal1', country: 'GER' } } },
+      { key: 'A', name: 'A', group: { key: 'g1', label: groupLabel, order: 0 }, cells: { name: { value: knownValue('A') }, rate: { value: rate === 0 ? zeroValue(0) : knownValue(rate), format: 'decimal1' as const, country: 'GER' } } },
     ],
-  }, settings);
-  const auditZero = deriveTableAudit(mkRows(0, 'Axis'), cols, 10, undefined, { rankShown: true });
-  const auditTiny = deriveTableAudit(mkRows(0.04, 'Axis'), cols, 10, undefined, { rankShown: true });
+  });
+  const colLayouts = buildColumnLayouts(cols, settings);
+  const mZero = mkModel(0, 'Axis');
+  const mTiny = mkModel(0.04, 'Axis');
+  const mRenamed = mkModel(0.04, 'New Axis');
+  const auditZero = deriveTableAudit({ model: mZero, flatRows: resolveTableRows(mZero, settings), visibleColumns: colLayouts, rankShown: true });
+  const auditTiny = deriveTableAudit({ model: mTiny, flatRows: resolveTableRows(mTiny, settings), visibleColumns: colLayouts, rankShown: true });
   assert.notEqual(
     pictureError('table', auditZero, { values: new Map(auditTiny.map(r => [r.key, r.value!])), ordered: true }),
     null,
     'canonical audit distinguishes 0 from 0.04 despite identical display rounding',
   );
-  const auditRenamedGroup = deriveTableAudit(mkRows(0.04, 'New Axis'), cols, 10, undefined, { rankShown: true });
+  const auditRenamedGroup = deriveTableAudit({ model: mRenamed, flatRows: resolveTableRows(mRenamed, settings), visibleColumns: colLayouts, rankShown: true });
   assert.notEqual(
     pictureError('table', auditTiny, { values: new Map(auditRenamedGroup.map(r => [r.key, r.value!])), ordered: true }),
     null,
     'canonical audit catches group header changes',
   );
-  const auditOneCol = deriveTableAudit(mkRows(0.04, 'Axis'), [cols[0]!], 10, undefined, { rankShown: true });
+  const auditOneCol = deriveTableAudit({ model: mTiny, flatRows: resolveTableRows(mTiny, settings), visibleColumns: [colLayouts[0]!], rankShown: true });
   assert.notEqual(
     pictureError('table', auditTiny, { values: new Map(auditOneCol.map(r => [r.key, r.value!])), ordered: true }),
     null,
@@ -913,9 +953,565 @@ test('round 2 regressions: canonical audit, snapshot store, retained static span
     }, laneState, () => `c${seq++}`);
     const firstPaint = mk('ordinary', 1);
     const secondPaint = mk('headquarters', 4);
+    assert.equal(firstPaint.mode, 'picture', 'N4: familyTableLaneView returns explicit mode picture');
     assert.notEqual(firstPaint.fields.nav!.content, secondPaint.fields.nav!.content, 'row.meta change invalidates nav field');
     assert.notEqual(firstPaint.fields.meta!.content, secondPaint.fields.meta!.content, 'column priority change invalidates meta field');
   } finally {
     (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
   }
+});
+
+test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert/flag/missingName/pill/tooltip), N6 native slot holder tie-break, M4 ever-gap refusal, S1 frozen static snapshot, M5 dateless game-score empty, and N18 frozen change caches', () => {
+  assert.notEqual(canonicalAuditValue(knownValue('1000')), canonicalAuditValue(knownValue(1000)), 'M1: string "1000" and number 1000 do not collide');
+  assert.equal(canonicalAuditValue(knownValue(1e21)), canonicalAuditValue(knownValue(10n ** 21n)), 'M1: 1e21 and 10n**21n serialize identically');
+  assert.equal(canonicalAuditValue(knownValue(-0)), canonicalAuditValue(knownValue(0)));
+  assert.notEqual(canonicalAuditData({ a: '1000' }), canonicalAuditData({ a: 1000 }));
+  assert.equal(canonicalAuditData({ b: 1, a: 2 }), canonicalAuditData({ a: 2, b: 1 }), 'canonicalAuditData sorts object keys deterministically');
+
+  const occCols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
+    { key: 'garrison', label: 'Garrison', as: 'meterBefore', tone: 'blue', offered: ['meterBefore'], priority: 1, numeric: true, format: 'integer' },
+  ];
+  const occSettings = tableSettingsOf(undefined, occCols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'garrison', direction: 'descending' } });
+  const occLayouts = buildColumnLayouts(occCols, occSettings);
+  const mkOcc = (opts: { fraction: number; alert: boolean; flag: string; missingName: boolean; pill: string; extra: string }) => {
+    const model = {
+      columns: occCols,
+      hour: 50,
+      rank: true,
+      summaryPill: opts.pill,
+      rows: [{
+        key: 'S1',
+        name: opts.missingName ? 'Name not recorded' : 'Germany',
+        cells: {
+          country: {
+            value: opts.missingName ? notRecorded('Name absent') : knownValue('Germany'),
+            iconSlot: true,
+            country: 'GER',
+            looks: [{ from: 0, name: opts.missingName ? null : 'Germany', flag: opts.flag, ...(opts.missingName ? { status: 'Name absent' } : {}) }],
+          },
+          garrison: {
+            value: knownValue(12),
+            format: 'integer' as const,
+            bar: { fraction: knownValue(opts.fraction), alert: opts.alert },
+          },
+        },
+        tooltipExtra: [{ label: 'Equipment', value: knownValue(opts.extra) }],
+      }],
+    };
+    return deriveTableAudit({ model, flatRows: resolveTableRows(model, occSettings), visibleColumns: occLayouts, rankShown: true });
+  };
+  const baseAudit = mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' });
+  const diff = (other: ReturnType<typeof mkOcc>) => pictureError('table', baseAudit, { values: new Map(other.map(r => [r.key, r.value!])), ordered: true });
+  assert.notEqual(diff(mkOcc({ fraction: 0.4, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison bar fraction change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: true, flag: 'ger.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches garrison alert flag change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'pol.png', missingName: false, pill: '1 state', extra: '80%' })), null, 'N1: catches flag identity change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: true, pill: '1 state', extra: '80%' })), null, 'N1: catches missingName hatch change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '2 states', extra: '80%' })), null, 'N1: catches summaryPill change');
+  assert.notEqual(diff(mkOcc({ fraction: 0.8, alert: false, flag: 'ger.png', missingName: false, pill: '1 state', extra: '40%' })), null, 'N1: catches tooltipExtra change');
+
+  const slotRuns = resolveSlotHolderRuns([
+    { tag: 'Z', firstHour: 0, lastHour: 20, countryId: 5 },
+    { tag: 'A', firstHour: 10, lastHour: 20, countryId: 5 },
+  ]);
+  assert.deepEqual(slotRuns, [{ tag: 'Z', firstHour: 0, lastHour: 20, countryId: 5 }], 'N6: equal countryId breaks tie by earlier firstHour before tag');
+  assert.equal(holderRunAt([
+    { tag: 'Z', firstHour: 0, lastHour: 20, countryId: 5 },
+    { tag: 'A', firstHour: 10, lastHour: 20, countryId: 5 },
+  ], 10)?.tag, 'Z', 'N6: unsorted holderRunAt uses identical (countryId, firstHour, tag) precedence');
+  const nativeCase = resolveSlotHolderRuns([
+    { tag: 'GER', firstHour: 1, lastHour: 10, countryId: 10 },
+    { tag: 'PRU', firstHour: 5, lastHour: 15, countryId: 10 },
+    { tag: 'D01', firstHour: 6, lastHour: 8, countryId: 9 },
+  ]);
+  assert.deepEqual(nativeCase.map(r => [r.tag, r.firstHour, r.lastHour]), [['GER', 1, 5], ['D01', 6, 8], ['GER', 9, 10], ['PRU', 11, 15]]);
+
+  assert.equal(
+    selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]),
+    'Group membership is incomplete for this campaign.',
+    'M4: membership ever refuses when unobserved gaps make campaign membership incomplete',
+  );
+  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
+  assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
+
+  const retainedData = { series: [] };
+  const ctxA = { tag: 'A', role: 'occupier' };
+  const ctxB = { tag: 'B', role: 'occupied' };
+  const surfaceA = { settings: 'sA', looks: 'lA' };
+  const surfaceB = { settings: 'sB', looks: 'lB' };
+  const frozenGate = openGate(0, 100);
+  const snap1 = resolveDisplayedStaticSnapshot(null, {
+    data: retainedData, moment: undefined, requestKey: 'req-1', satisfiesCurrent: true,
+    requestedSpan: [10, 50], context: ctxA, gate: frozenGate, extra: surfaceA,
+  });
+  const snapRefreshed = resolveDisplayedStaticSnapshot(snap1, {
+    data: retainedData, moment: undefined, requestKey: 'req-1', satisfiesCurrent: true,
+    requestedSpan: [10, 50], context: ctxB, gate: frozenGate, extra: surfaceB,
+  });
+  assert.equal(snapRefreshed?.context, ctxB, 'F1: when reply satisfies current request, option/role/settings/looks changes refresh immediately');
+  assert.equal(snapRefreshed?.extra, surfaceB, 'F1: refreshed snapshot carries current settings and looks');
+  const snapHeld = resolveDisplayedStaticSnapshot(snapRefreshed, {
+    data: retainedData, moment: undefined, requestKey: 'req-2', satisfiesCurrent: false,
+    requestedSpan: [20, 60], context: ctxA, gate: frozenGate, extra: surfaceA,
+  });
+  assert.equal(snapHeld, snapRefreshed, 'S1: retained reply for superseded request freezes complete context, settings, looks and span');
+  assert.deepEqual(snapHeld?.span, [10, 50]);
+  assert.equal(snapHeld?.context, ctxB, 'S1: retained snapshot keeps its frozen context');
+  assert.equal(snapHeld?.extra, surfaceB, 'S1: retained snapshot keeps its frozen settings and looks without leaking current ones');
+  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, {
+    data: { series: [1] }, moment: JSON.stringify([20, 60, 1]), requestKey: 'req-2', satisfiesCurrent: true,
+    requestedSpan: [20, 60], context: ctxA, gate: frozenGate, extra: surfaceA,
+  });
+  assert.deepEqual(snap2?.span, [20, 60], 'S1: updates once new reply arrives');
+  assert.equal(snap2?.context, ctxA, 'S1: updated snapshot carries the new selection context');
+  assert.equal(snap2?.extra, surfaceA, 'S1: updated snapshot carries the new settings and looks');
+
+  const emptyGsA = gameScoreProjection.project({
+    answers: new Map(),
+    panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
+    live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
+  }, 10, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  const emptyGsB = gameScoreProjection.project({
+    answers: new Map(),
+    panels: new Map([['main', { missing: null, warnings: [], hints: {}, multipliers: [], rows: [] }]]),
+    live: new Map([['main', { get: () => undefined, missing: () => 'Not recorded' }]]),
+  }, 250, { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} });
+  assert.equal(emptyGsA.empty, 'No country’s scores recorded at this time.', 'M5: dateless empty message');
+  assert.equal(emptyGsA.empty, emptyGsB.empty, 'M5: empty message does not depend on advancing hour');
+
+  const winRanges: [number, number][] = [[10, 20], [50, 60]];
+  assert.equal(nextWindowRangesChange(winRanges, 168, 5), 10);
+  assert.equal(nextWindowRangesChange(winRanges, 168, 15), 50);
+  assert.equal(nextWindowRangesChange(winRanges, 168, 55), 188);
+  assert.equal(nextWindowRangesChange(winRanges, 168, 190), 228);
+  assert.throws(() => { winRanges.push([100, 110]); }, TypeError, 'N18: indexed ranges are frozen against in-place mutation');
+  const mutHolders: Record<string, { tag: string; firstHour: number; lastHour: number }[]> = { GER: [{ tag: 'GER', firstHour: 0, lastHour: 10 }] };
+  assert.equal(nextHoldersChange(mutHolders, 5), 11);
+  assert.throws(() => { mutHolders.GER![0]!.lastHour = 99; }, TypeError, 'N18: indexed holder runs are frozen against in-place mutation');
+  const mutRanges: [number, number][] = [[1, 5]];
+  assert.equal(nextRangesChange(mutRanges, 2), 6);
+  assert.throws(() => { mutRanges[0]![1] = 20; }, TypeError, 'N18: indexed range tuples are frozen against in-place mutation');
+});
+
+test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 whole-panel refusal, P5 capture-gated audit serialization, N6 UTF-8 tag tie-break, N18 deep tuple freeze & indexed overlap, M4 filter ever-gap refusal, and M9 focused index', async () => {
+  const cols: TableColumnSpec[] = [
+    { key: 'country', label: 'Country', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
+    { key: 'score', label: 'Score', as: 'faint', tone: 'country', offered: ['faint'], priority: 1, numeric: true, format: 'integer' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'score', direction: 'descending' } });
+  const layouts = buildColumnLayouts(cols, settings);
+  const mkModel = (hour: number) => ({
+    columns: cols,
+    hour,
+    rank: true,
+    rows: [{
+      key: 'GER',
+      name: 'Germany',
+      cells: {
+        country: { value: knownValue('Germany'), iconSlot: true, country: 'GER' },
+        score: { value: knownValue(100), format: 'integer' as const, country: 'GER' },
+      },
+    }],
+  });
+  const m10 = mkModel(10);
+  const m12 = mkModel(12);
+  const flat10 = resolveTableRows(m10, settings);
+  const flat12 = resolveTableRows(m12, settings);
+  const colorsA = { countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(10, 20, 30)' }] }, country: {} };
+  const colorsB = { countryLooks: { GER: [{ from: 0, name: 'Germany', color: 'rgb(200, 10, 10)' }] }, country: {} };
+  const audit10 = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsA });
+  const audit12 = deriveTableAudit({ model: m12, flatRows: flat12, visibleColumns: layouts, rankShown: true, countryColors: colorsA });
+  assert.equal(
+    pictureError('table', audit10, { values: new Map(audit12.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'P1: tooltip audit omits presentation hour so valid picture at hour 10 matches exact audit at hour 12',
+  );
+  const tip10 = deriveTableTooltip(flat10, 'GER', cols, new Set(), 10)!;
+  assert.equal(tip10.subtitle, undefined, 'P1: deriveRowTooltip carries no hour-derived subtitle');
+  const auditColorDiff = deriveTableAudit({ model: m10, flatRows: flat10, visibleColumns: layouts, rankShown: true, countryColors: colorsB });
+  assert.notEqual(
+    pictureError('table', audit10, { values: new Map(auditColorDiff.map(r => [r.key, r.value!])), ordered: true }),
+    null,
+    'N1/P1: resolved country colour change is caught by CellPaintModel audit',
+  );
+  const paintModel = resolveCellPaintModel(m10.rows[0]!.cells.score, layouts[1]!, 10, new Map([['score', 100]]), colorsA);
+  assert.equal(paintModel.countryColor, 'rgb(10, 20, 30)', 'P1: CellPaintModel carries resolved countryColor for painter');
+
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const laneView = familyTableLaneView(() => {});
+    const laneState = new Map<string, unknown>();
+    let seq = 1;
+    const refusedPaint = laneView.paint({
+      widget: 1,
+      subs: [{ id: 7, channel: 'panel' }],
+      pictures: [{ parts: [{ value: { kind: 'panel', data: null, refused: 'Game score panel refused by recording' } }] }],
+      model: {
+        family: 'table',
+        kind: 'game-score',
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        sources: { main: 7 },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+      },
+      hour: 10,
+      speed: 0,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    } as never, laneState, () => `r${seq++}`);
+    assert.equal(refusedPaint.mode, 'refused', 'P2: whole-panel refusal produces mode refused, never empty mode picture');
+    assert.equal(refusedPaint.reason, 'Game score panel refused by recording');
+
+    const auditState = new Map<string, unknown>();
+    const paintNoAudit = laneView.paint({
+      widget: 2,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'table',
+        kind: 'game-score',
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        sources: {},
+        staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+      },
+      hour: 10,
+      speed: 24,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    }, auditState, () => `a${seq++}`);
+    assert.equal(paintNoAudit.fields.audit, undefined, 'P5: zero audit serialization when capture is inactive');
+    assert.equal(paintNoAudit.mode, 'picture', 'P2: populated table returns explicit mode picture');
+
+    const seen: boolean[] = [];
+    const unsub = subscribeFamilyAuditing(() => { seen.push(isFamilyAuditing()); });
+    try {
+      assert.equal(isFamilyAuditing(), false);
+      await capturePictures(true);
+      assert.equal(isFamilyAuditing(), true);
+      await capturePictures(false);
+      assert.equal(isFamilyAuditing(), false);
+      assert.deepEqual(seen, [true, false], 'P5: shared family auditing hook notifies on capture start and end');
+    } finally {
+      unsub();
+      await capturePicturesBatch(100);
+    }
+
+    const paintWithAudit = laneView.paint({
+      widget: 2,
+      subs: [],
+      pictures: [],
+      model: {
+        family: 'table',
+        kind: 'game-score',
+        options: { all: true, membership: null, top: null, by: 'total', factions: false, factionRuns: null, rankMarkers: false, cellBars: false, labels: {} },
+        settings: tableSettingsOf(undefined, gameScoreColumns(), { density: 'comfortable', overflow: 'tooltip', sort: { column: 'total', direction: 'descending' } }),
+        sources: {},
+        staticPanels: { main: { missing: null, warnings: [], hints: {}, multipliers: [], rows: [{ tag: 'GER', total: { missing: null }, army: { missing: null }, navy: { missing: null }, air: { missing: null }, industry: { missing: null }, land: { missing: null } }] } },
+        width: 320,
+        height: 200,
+        scrollLeft: 0,
+        scrollTop: 0,
+        audit: true,
+        auditId: 42,
+      },
+      hour: 10,
+      speed: 24,
+      binding: { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null },
+      inspect: null,
+      now: 100,
+    }, auditState, () => `a${seq++}`);
+    assert.equal((paintWithAudit.fields.audit?.value as { id?: number } | undefined)?.id, 42, 'P5: serializes audit once capture activates');
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+
+  const utf8Runs = [
+    { tag: '\u{10000}', firstHour: 0, lastHour: 10, countryId: 1 },
+    { tag: '\uE000', firstHour: 0, lastHour: 10, countryId: 1 },
+  ];
+  assert.equal(resolveSlotHolderRuns(utf8Runs)[0]!.tag, '\uE000', 'N6: U+E000 precedes U+10000 in UTF-8 byte order despite higher UTF-16 code unit');
+  assert.equal(holderRunAt(utf8Runs, 5)?.tag, '\uE000', 'N6: holderRunAt uses native UTF-8 order');
+  const slots = new SlotTags({
+    countries: [
+      { tag: '\u{10000}', identities: [{ slot: 1, countryId: 1, firstHour: 0, lastHour: 10 }], unresolved: [] },
+      { tag: '\uE000', identities: [{ slot: 1, countryId: 1, firstHour: 0, lastHour: 10 }], unresolved: [] },
+    ],
+  });
+  assert.equal(slots.tagAt(1, 5), '\uE000', 'N6: SlotTags.tagAt uses native UTF-8 order');
+
+  const shallowFrozenOuter = Object.freeze([[10, 20] as [number, number], [40, 50] as [number, number]]);
+  assert.equal(overlapsHourRanges(shallowFrozenOuter, 15, 25), true, 'N18: indexed overlap finds intersecting interval');
+  assert.equal(overlapsHourRanges(shallowFrozenOuter, 21, 39), false, 'N18: indexed overlap skips disjoint interval');
+  assert.equal(overlapsHourRanges(shallowFrozenOuter, 50, 60), true, 'N18: indexed overlap includes boundary');
+  assert.throws(() => { (shallowFrozenOuter[0] as [number, number])[1] = 999; }, TypeError, 'N18: inner tuple frozen even when outer array was already frozen');
+
+  const filterGroupUnobserved = groupUnobserved(
+    {
+      humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
+      factions: [],
+      wars: [],
+      unobserved: { humans: [{ firstHour: 10, lastHour: 20 }], factions: [], wars: [] },
+      countryIdentities: [],
+      warnings: [],
+    } as never,
+    { type: 'humans' },
+  );
+  assert.equal(
+    selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false }, filterGroupUnobserved),
+    'Group membership is incomplete for this campaign.',
+    'M4: filter policy applies ever-membership incompleteness refusal when groupUnobserved has gaps',
+  );
+
+  const mirrorRows = Array.from({ length: 10 }, (_, i) => ({
+    key: `R${i}`,
+    name: `Row ${i}`,
+    cells: { country: { value: knownValue(`Row ${i}`) }, score: { value: knownValue(10 - i) } },
+  }));
+  const flatMirror = resolveTableRows({ columns: cols, hour: 10, rows: mirrorRows }, settings);
+  const mirrorWithIdx = deriveTableMirror(flatMirror, cols, 10, false, { first: 5, count: 2 }, 'R1', 1);
+  assert.equal(mirrorWithIdx.rows[0]!.key, 'R1', 'M9: deriveTableMirror uses supplied O(1) focusedIndex');
+  assert.equal(mirrorWithIdx.rows[0]!.rowIndex, 1);
+});
+
+test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-country/20-row viewport art loader & unmount cleanup, F7 local vs stream failure origin, and F8 typed tooltip ValueState & audit', async () => {
+  const { Lane } = await import('../../draw/lane.ts');
+  const { Page } = await import('../../dashboard/follow/page.ts');
+  const { tooltipText } = await import('../../charts/tooltip.ts');
+
+  const cols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
+    { key: 'val', label: 'Value', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'decimal1' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } });
+
+  registerTableProjection({
+    kind: 'test-r5-reveal',
+    family: 'table',
+    project(_sources, hour) {
+      return {
+        columns: cols,
+        hour,
+        unsorted: true,
+        rows: [
+          {
+            key: 'parent',
+            name: 'Parent',
+            cells: { name: { value: knownValue('Parent') }, val: { value: knownValue(1) } },
+            initiallyOpen: true,
+            children: [
+              { key: 'child-late', name: 'Child Late', revealAt: 25, cells: { name: { value: knownValue('Child Late') }, val: { value: knownValue(2) } } },
+            ],
+          },
+          { key: 'row-late', name: 'Row Late', revealAt: 40, cells: { name: { value: knownValue('Row Late') }, val: { value: knownValue(3) } } },
+        ],
+      };
+    },
+  });
+
+  registerTableProjection({
+    kind: 'test-r5-art-1500',
+    family: 'table',
+    project(_sources, hour) {
+      return {
+        columns: cols,
+        hour,
+        unsorted: true,
+        rows: Array.from({ length: 1500 }, (_, i) => {
+          const tag = `C${String(i).padStart(4, '0')}`;
+          return {
+            key: tag,
+            name: tag,
+            cells: {
+              name: {
+                value: knownValue(tag),
+                iconSlot: true,
+                country: tag,
+                looks: [
+                  { from: 0, name: tag, flag: `/flags/${tag}_early.png` },
+                  { from: 100, name: tag, flag: `/flags/${tag}_mid.png` },
+                  { from: 200, name: tag, flag: `/flags/${tag}_late.png` },
+                ],
+              },
+              val: { value: knownValue(i + 1) },
+            },
+          };
+        }),
+      };
+    },
+  });
+
+  let throwLocalPaint = false;
+  registerTableProjection({
+    kind: 'test-r5-local-fail',
+    family: 'table',
+    project(_sources, hour) {
+      if (throwLocalPaint) throw new Error('local projection crash');
+      return {
+        columns: cols,
+        hour,
+        rows: [{ key: 'ok', name: 'Ok', cells: { name: { value: knownValue('Ok') }, val: { value: knownValue(7) } } }],
+      };
+    },
+  });
+
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const presented: { widget: number; hour: number; navCount: number; mode: string; failureOrigin?: string }[] = [];
+    const requestedArt: string[] = [];
+    const abortedArt: string[] = [];
+    const closedArt: string[] = [];
+    const artResolvers = new Map<string, (bmp: ImageBitmap) => void>();
+
+    const tableView = familyTableLaneView(() => {}, {
+      artMaxEntries: 40,
+      fetchBitmap: (url, signal) => new Promise<ImageBitmap>((resolve, reject) => {
+        requestedArt.push(url);
+        signal.addEventListener('abort', () => {
+          abortedArt.push(url);
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+        artResolvers.set(url, resolve);
+      }),
+    });
+
+    const page = new Page<{ width: number; close(): void }>({ lanes: 1, post: (_lane, msg) => { if (msg.type === 'frame') lane.frame(msg); } });
+    const lane = new Lane<{ width: number; close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => tableView,
+      crop: async sources => sources.map(s => ({ width: s.width, close() {} })),
+      present: presentation => {
+        for (const entry of presentation.entries) {
+          const nav = entry.fields.nav as readonly unknown[] | undefined;
+          presented.push({ widget: entry.widget, hour: entry.lo, navCount: nav ? nav.length : -1, mode: entry.mode, failureOrigin: entry.failureOrigin });
+        }
+        page.offer(presentation);
+        page.frame();
+      },
+      release: () => {},
+      fail: () => {},
+      later: run => queueMicrotask(run),
+    });
+
+    const flushTicks = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+    page.mount(1, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.mount(1, [], 'table');
+    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, {
+      family: 'table', kind: 'test-r5-reveal', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    });
+    page.publish(10, { playing: false });
+    await flushTicks();
+    assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 1, 'F5: at hour 10 only parent is visible');
+    page.publish(25, { playing: false });
+    await flushTicks();
+    assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 2, 'F5: crossing child revealAt=25 invalidates lane window and reveals child row');
+    page.publish(40, { playing: false });
+    await flushTicks();
+    assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 3, 'F5: crossing row revealAt=40 invalidates lane window and reveals top-level row');
+
+    page.mount(2, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.mount(2, [], 'table');
+    const viewportHeight20Rows = 20 * 28;
+    lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
+      family: 'table', kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
+    });
+    page.publish(120, { playing: false });
+    await flushTicks();
+    assert.equal(requestedArt.length, 20, `F6: 1500-country model with 20-row viewport requests only 20 visible flags at displayed hour (got ${requestedArt.length})`);
+    assert.ok(requestedArt.every(url => url.endsWith('_mid.png')), 'F6: requests only the displayed hour flag, never past/future look history');
+    for (let i = 0; i < 10; i++) {
+      const url = requestedArt[i]!;
+      artResolvers.get(url)!({ width: 20, height: 14, close() { closedArt.push(url); } } as unknown as ImageBitmap);
+    }
+    await flushTicks();
+    lane.unmount(2);
+    assert.equal(abortedArt.length, 10, 'F6: unmount aborts remaining 10 pending fetches');
+    assert.equal(closedArt.length, 10, 'F6: unmount closes all 10 decoded bitmaps');
+
+    page.mount(3, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.mount(3, [], 'table');
+    throwLocalPaint = true;
+    lane.bind(3, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: 10, dated: { h: 10, c: 10 } }, {
+      family: 'table', kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    });
+    page.publish(10, { playing: false });
+    await flushTicks();
+    assert.equal(page.view(3).mode, 'failed', 'F7: projection error puts widget in failed mode');
+    assert.equal(page.view(3).failureOrigin, 'local', 'F7: local projection error carries local failure origin');
+    throwLocalPaint = false;
+    page.retryLocal(3);
+    lane.bind(3, { generation: page.view(3).binding!, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: 10, dated: { h: 10, c: 10 } }, {
+      family: 'table', kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    });
+    await flushTicks();
+    assert.equal(page.view(3).mode, 'picture', 'F7: local retry recovers without restarting pipeline');
+
+    page.name(3, 'failed', 'stream broken', 'stream');
+    assert.equal(page.view(3).failureOrigin, 'stream', 'F7: subscription/stream failure carries stream failure origin');
+
+    lane.unmount(1);
+    lane.unmount(3);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+
+  const layouts = buildColumnLayouts(cols, settings);
+  const mkTipModel = (extraVal: ReturnType<typeof partialValue> | ReturnType<typeof knownValue>) => ({
+    columns: cols,
+    hour: 10,
+    rows: [{
+      key: 'GER',
+      name: 'Germany',
+      cells: { name: { value: knownValue('Germany') }, val: { value: knownValue(10) } },
+      tooltipExtra: [{ label: 'Strength', value: extraVal, format: 'decimal1' as const }],
+    }],
+  });
+  const mAtLeast = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: true }));
+  const mPlainPartial = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: false }));
+  const mDiffUnderlying = mkTipModel(partialValue(1.004, 'Missing corps', { atLeast: true }));
+  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols, new Set(), 10)!;
+  const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
+  assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
+  assert.equal(extraRow.valueState?.kind, 'partial');
+  assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
+  assert.ok(tooltipText(tipAtLeast).includes('at least 1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText including atLeast');
+
+  const auditA = deriveTableAudit({ model: mAtLeast, flatRows: resolveTableRows(mAtLeast, settings), visibleColumns: layouts });
+  const auditB = deriveTableAudit({ model: mPlainPartial, flatRows: resolveTableRows(mPlainPartial, settings), visibleColumns: layouts });
+  const auditC = deriveTableAudit({ model: mDiffUnderlying, flatRows: resolveTableRows(mDiffUnderlying, settings), visibleColumns: layouts });
+  assert.notEqual(
+    auditA.find(r => r.key === 'GER:_tooltip')?.value,
+    auditB.find(r => r.key === 'GER:_tooltip')?.value,
+    'F8: tooltip audit distinguishes atLeast: true vs false',
+  );
+  assert.notEqual(
+    auditA.find(r => r.key === 'GER:_tooltip')?.value,
+    auditC.find(r => r.key === 'GER:_tooltip')?.value,
+    'F8: tooltip audit distinguishes distinct underlying numeric values that format identically',
+  );
 });

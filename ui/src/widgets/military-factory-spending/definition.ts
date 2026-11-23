@@ -33,5 +33,6 @@ export const definition = {
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 11 },
   options: OPTIONS,
+  viewSwitch: { option: 'view' },
   variants,
 } as const satisfies WidgetMeta;

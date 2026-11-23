@@ -2,7 +2,6 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
@@ -35,7 +34,7 @@ import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { agreementRows, agreementValues, amountOf } from './agreementsData';
 import type { AgreementRow, Direction } from './agreementsData';
-import { AGREEMENT, DEFAULT_SORT, DIRECTIONS, OPTIONS } from './definition';
+import { AGREEMENT, DEFAULT_SORT, OPTIONS } from './definition';
 import './lendLeaseAgreements.css';
 import type { LendLeaseHistoryReply } from '../../generated/dashboard';
 import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
@@ -168,7 +167,6 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const main = parent ?? <div className="lend-lease-agreements" ref={head.root}>
     <div className="lend-lease-caption-line">
       <span>{dayLabel(hour)}</span>
-      <Segmented value={direction} options={DIRECTIONS} label="Direction" onChange={value => setOption?.('direction', value)} />
     </div>
     <div className="lend-lease-agreements-table">{body}</div>
   </div>;

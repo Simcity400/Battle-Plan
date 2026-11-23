@@ -1,11 +1,12 @@
 import type { ComponentType } from 'react';
 import { loadable } from '../components/loadable';
+import WidgetState from '../components/WidgetState';
 import type { WidgetProps, WidgetRenderer } from '../dashboard/definitions';
 import DeclaredTableWidget from '../families/table/DeclaredTableWidget';
 import type { AnyTableWidgetDeclaration } from '../families/table/declaration';
 import { loadedWidgetRenderer, loadWidgetRenderer } from './rendererLoaders';
 
-type Slot = 'render' | 'headerControls' | 'countryChip';
+type Slot = 'render' | 'countryChip';
 const nothing = () => null;
 const declaredRenderers = new WeakMap<AnyTableWidgetDeclaration, ComponentType<WidgetProps>>();
 
@@ -29,7 +30,7 @@ export function lazyWidget(kind: string, slots: readonly Slot[]): WidgetRenderer
     };
     const wrapper = loadable<object>(
       async () => pick(await loadWidgetRenderer(kind)),
-      () => slot === 'render' ? <div className="dash-empty" role="status">Loading widget…</div> : null,
+      () => slot === 'render' ? <WidgetState kind="loading" label="Loading widget…" /> : null,
       () => { const loaded = loadedWidgetRenderer(kind); return loaded && pick(loaded); },
     );
     Object.assign(renderer, { [slot]: wrapper });

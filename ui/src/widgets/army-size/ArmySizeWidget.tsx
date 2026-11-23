@@ -39,7 +39,7 @@ import { stickyLimit, stickyMembers } from '../../dashboard/follow/stickyMembers
 import type { StickyMembers } from '../../dashboard/follow/stickyMembers';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
-import { followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, followRefusal, followsHead, useFollow } from '../../dashboard/follow/useFollow.ts';
 import { NumericReply } from '../../dashboard/numericReply';
 import { useProduct } from '../../dashboard/products';
 import { useFrameWindows } from './frameWindows.ts';
@@ -165,6 +165,7 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   }, [woken, reportShown]));
   const followedHead = followsHead(followed) && followed.entry !== null;
   const refused = followRefusal(followed);
+  const followErr = followFailure(followed);
   followedEntry.current = followedHead && liveRaceView ? followed.entry : null;
   followedRows.scope = followQuery ? canonical(followQuery) : '';
   followedRows.limit = stickyLimit(Math.max(1, resolved.top ?? resolved.tags.length));
@@ -365,7 +366,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
 
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its army sizes." />;
-    if (refused) return <WidgetState kind="unavailable" message={refused} />;
+    if (refused) return <WidgetState kind="unavailable" technical={refused} />;
+    if (followErr) return <WidgetState kind="error" failure={followErr.error} onRetry={followErr.retry} />;
     if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (invalidSavedSelection) return <WidgetState kind="unavailable" message="Saved country unavailable." />;
     if (metadata.error) return <WidgetState kind="error" failure={asFailure(metadata.error)} onRetry={metadata.retry} />;

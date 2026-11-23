@@ -27,7 +27,14 @@ export class ActiveHeads {
   };
 }
 
-export interface ReadCoverage { outside: boolean; outsideMessage?: string; outsideDetail?: string }
+export interface ReadCoverage {
+  outside: boolean;
+  outsideKind?: 'outside' | 'not-recorded';
+  outsideMessage?: string;
+  outsideDetail?: string;
+  outsideSpan?: { firstHour: number; lastHour: number };
+  outsidePinned?: boolean;
+}
 
 export type AxisSpan = readonly [low: number, high: number];
 
@@ -140,7 +147,8 @@ export function useRegionHourAt(runtime: Timed, region: Region): (axis: AxisHour
   return useCallback((axis: AxisHour) => regionHour(region, track, runtime.tracks, axis), [region, track, runtime.tracks]);
 }
 
-const outsideKey = (outside: Outside | null) => outside ? `${outside.message}\u0000${outside.detail ?? ''}` : '';
+const outsideKey = (outside: Outside | null) => outside
+  ? JSON.stringify([outside.kind ?? 'outside', outside.message, outside.detail ?? '', outside.span?.firstHour ?? null, outside.span?.lastHour ?? null, !!outside.pinned]) : '';
 const unwatched = () => () => {};
 
 export function useRegionOutside(runtime: Timed, region: Region, on = true): Outside | null {
@@ -152,8 +160,8 @@ export function useRegionOutside(runtime: Timed, region: Region, on = true): Out
   const key = useSyncExternalStore(moves ? watch : unwatched, now, now);
   return useMemo(() => {
     if (!key) return null;
-    const [message, detail] = key.split('\u0000');
-    return { message, detail: detail || undefined };
+    const [kind, message, detail, firstHour, lastHour, pinned] = JSON.parse(key) as ['outside' | 'not-recorded', string, string, number | null, number | null, boolean];
+    return { kind, message, detail: detail || undefined, span: firstHour !== null && lastHour !== null ? { firstHour, lastHour } : undefined, pinned: pinned || undefined };
   }, [key]);
 }
 
@@ -162,8 +170,9 @@ export function useRegionCoverage(runtime: Timed, region: Region): ReadCoverage 
   return useMemo(() => coverageOf(outside), [outside]);
 }
 
-export const coverageOf = (outside: Outside | null): ReadCoverage =>
-  outside ? { outside: true, outsideMessage: outside.message, outsideDetail: outside.detail } : { outside: false };
+export const coverageOf = (outside: Outside | null): ReadCoverage => outside
+  ? { outside: true, outsideKind: outside.kind ?? 'outside', outsideMessage: outside.message, outsideDetail: outside.detail, outsideSpan: outside.span, outsidePinned: outside.pinned }
+  : { outside: false };
 
 export function epochOf(epochs: readonly number[] | undefined, hour: number | null): number {
   if (hour === null) return -1;
@@ -230,6 +239,8 @@ const none = () => false;
 export function useOutsideRecording(read?: ReadCoverage, shown = false): Outside | null {
   const scope = useContext(RegionContext);
   const reading = useSyncExternalStore(scope?.heads.subscribe ?? unsubscribed, scope?.heads.any ?? none, scope?.heads.any ?? none);
-  if (read) return read.outside ? { message: read.outsideMessage ?? OUTSIDE_MESSAGE, detail: read.outsideDetail } : null;
+  if (read) return read.outside
+    ? { kind: read.outsideKind ?? 'outside', message: read.outsideMessage ?? OUTSIDE_MESSAGE, detail: read.outsideDetail, span: read.outsideSpan, pinned: read.outsidePinned }
+    : null;
   return scope?.outside && (reading || shown) ? scope.outside : null;
 }

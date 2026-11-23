@@ -34,6 +34,7 @@ export const definition = {
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true },
   defaultCountries: TOP_COUNTRIES,
   options: OPTIONS,
+  viewSwitch: { option: 'count' },
   variants: [...raceViewVariants('Equipment produced', OPTIONS), ...breakdownVariants('Equipment produced', OPTIONS),
     ...choiceVariants(OPTIONS.find(field => field.key === 'count'), () => 'Equipment output (IC)', ['ic'])],
 } as const satisfies WidgetMeta;

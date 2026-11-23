@@ -33,6 +33,15 @@ fn frame(payloads: Vec<Vec<u8>>) -> Vec<u8> {
     body
 }
 
+fn session_key(session: &str) -> Option<(&str, u64)> {
+    let (page, seq) = session.rsplit_once(':')?;
+    (!page.is_empty()).then_some((page, seq.parse::<u64>().ok()?))
+}
+
+fn is_older_session(incoming: &str, current: &str) -> bool {
+    matches!((session_key(incoming), session_key(current)), (Some((p1, s1)), Some((p2, s2))) if p1 == p2 && s1 < s2)
+}
+
 impl<O: Outbox, R> Asks<O, R> {
     pub fn offered(&mut self) -> Option<Answer<R>> {
         self.parked.as_ref()?;
@@ -43,13 +52,16 @@ impl<O: Outbox, R> Asks<O, R> {
         Some((self.parked.take().expect("held"), frame(payloads)))
     }
 
-    pub fn ask(&mut self, session: String, asker: R) -> Vec<Answer<R>> {
+    pub fn ask(&mut self, session: String, asker: R) -> Result<Vec<Answer<R>>, R> {
+        if self.session.as_deref().is_some_and(|current| is_older_session(&session, current)) {
+            return Err(asker);
+        }
         let mut answers: Vec<Answer<R>> = self.parked.take().map(|replaced| (replaced, Vec::new())).into_iter().collect();
         if self.session.as_deref() != Some(session.as_str()) {
             self.outbox.restart(&session);
             self.session = Some(session);
             answers.push((asker, Vec::new()));
-            return answers;
+            return Ok(answers);
         }
         let payloads = self.outbox.take();
         if payloads.is_empty() {
@@ -57,7 +69,7 @@ impl<O: Outbox, R> Asks<O, R> {
         } else {
             answers.push((asker, frame(payloads)));
         }
-        answers
+        Ok(answers)
     }
 }
 
@@ -87,12 +99,43 @@ pub fn refuse(responder: UriSchemeResponder, status: StatusCode, why: &str) {
     responder.respond(response);
 }
 
-pub fn param<'a>(request: &'a Request<Vec<u8>>, name: &str) -> Option<&'a str> {
-    request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=')).filter(|value| !value.is_empty())
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn percent_decode(raw: &str) -> Option<String> {
+    if !raw.as_bytes().contains(&b'%') {
+        return Some(raw.to_owned());
+    }
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = hex_nibble(*bytes.get(i + 1)?)?;
+            let lo = hex_nibble(*bytes.get(i + 2)?)?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+pub fn param(request: &Request<Vec<u8>>, name: &str) -> Option<String> {
+    let raw = request.uri().query()?.split('&').find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=')).filter(|value| !value.is_empty())?;
+    percent_decode(raw).filter(|value| !value.is_empty())
 }
 
 fn session(request: &Request<Vec<u8>>) -> Option<String> {
-    param(request, "session").map(str::to_owned)
+    param(request, "session")
 }
 
 impl<O: Outbox> Pull<O> {
@@ -119,9 +162,13 @@ impl<O: Outbox> Pull<O> {
         let Some(session) = session(request) else {
             return refuse(responder, StatusCode::BAD_REQUEST, "An ask names its session");
         };
-        let answers = self.asks().ask(session, responder);
-        for answer in answers {
-            respond(answer);
+        match self.asks().ask(session, responder) {
+            Ok(answers) => {
+                for answer in answers {
+                    respond(answer);
+                }
+            }
+            Err(stale) => refuse(stale, StatusCode::CONFLICT, "Superseded follow session"),
         }
     }
 }
@@ -160,8 +207,8 @@ mod tests {
     #[test]
     fn an_ask_is_held_until_something_comes_and_answered_with_everything_waiting_then() {
         let mut asks = Asks::<Queue, u32>::default();
-        assert_eq!(asks.ask("a".into(), 0), vec![(0, Vec::new())], "the page's first ask: answered empty at once");
-        assert!(asks.ask("a".into(), 1).is_empty(), "nothing waits: held");
+        assert_eq!(asks.ask("a".into(), 0), Ok(vec![(0, Vec::new())]), "the page's first ask: answered empty at once");
+        assert_eq!(asks.ask("a".into(), 1), Ok(Vec::new()), "nothing waits: held");
         assert!(asks.offered().is_none(), "nothing put: still held");
         asks.outbox.held.push(vec![0; 3]);
         let (asker, body) = asks.offered().expect("the held ask is answered");
@@ -171,31 +218,63 @@ mod tests {
     #[test]
     fn what_comes_while_the_page_handles_an_answer_waits_for_its_next_ask_in_one_answer() {
         let mut asks = Asks::<Queue, u32>::default();
-        asks.ask("a".into(), 0);
-        asks.ask("a".into(), 1);
+        assert!(asks.ask("a".into(), 0).is_ok());
+        assert!(asks.ask("a".into(), 1).is_ok());
         asks.outbox.held.push(vec![1]);
         asks.offered().expect("answered");
         for length in 2..6 {
             asks.outbox.held.push(vec![0; length]);
             assert!(asks.offered().is_none(), "no ask is held while the page handles the answer");
         }
-        let answers = asks.ask("a".into(), 2);
+        let answers = asks.ask("a".into(), 2).expect("same session accepted");
         assert_eq!(answers.len(), 1);
         assert_eq!(lengths(&answers[0].1), [2, 3, 4, 5], "everything waiting, in order");
-        assert!(asks.ask("a".into(), 3).is_empty(), "then nothing waits: held");
+        assert_eq!(asks.ask("a".into(), 3), Ok(Vec::new()), "then nothing waits: held");
     }
 
     #[test]
     fn a_new_page_restarts_the_stream_at_its_first_ask_and_the_ask_held_for_the_old_one_is_answered_empty() {
         let mut asks = Asks::<Queue, u32>::default();
-        asks.ask("old".into(), 0);
-        assert!(asks.ask("old".into(), 1).is_empty());
+        assert!(asks.ask("old".into(), 0).is_ok());
+        assert_eq!(asks.ask("old".into(), 1), Ok(Vec::new()));
         asks.outbox.held.push(vec![7]);
-        let answers = asks.ask("new".into(), 2);
+        let answers = asks.ask("new".into(), 2).expect("new session accepted");
         assert_eq!(answers, vec![(1, Vec::new()), (2, Vec::new())], "the old page's ask ends empty; the new page's first is answered empty at once");
         assert_eq!(asks.outbox.restarts, 2, "each page's first ask restarts the stream");
-        assert!(asks.ask("new".into(), 3).is_empty(), "what was held for the old page never reaches the new one");
+        assert_eq!(asks.ask("new".into(), 3), Ok(Vec::new()), "what was held for the old page never reaches the new one");
         asks.outbox.held.push(vec![9]);
         assert_eq!(asks.offered().map(|(asker, _)| asker), Some(3), "the new page's ask is held and answered");
+    }
+
+    #[test]
+    fn an_older_session_arriving_after_a_newer_one_changes_nothing() {
+        let mut asks = Asks::<Queue, u32>::default();
+        assert_eq!(asks.ask("page1:2".into(), 0), Ok(vec![(0, Vec::new())]));
+        assert_eq!(asks.ask("page1:2".into(), 1), Ok(Vec::new()));
+        assert_eq!(asks.ask("page1:1".into(), 99), Err(99), "retired session is ignored");
+        assert_eq!(asks.outbox.restarts, 1, "retired session does not restart the host outbox");
+        asks.outbox.held.push(vec![0; 4]);
+        let (asker, body) = asks.offered().expect("the newer session's parked ask stays held and receives payloads");
+        assert_eq!((asker, lengths(&body)), (1, vec![4]));
+        assert_eq!(asks.ask("page2:1".into(), 2), Ok(vec![(2, Vec::new())]), "a reloaded page can still take over");
+        assert_eq!(asks.outbox.restarts, 2);
+    }
+
+    #[test]
+    fn percent_encoded_session_param_decodes_colon_for_registry_and_ordering() {
+        let req = tauri::http::Request::builder()
+            .uri("http://push.localhost/follow?session=page-id%3A2&released=64")
+            .body(Vec::new())
+            .unwrap();
+        let decoded = super::param(&req, "session").expect("decoded session");
+        assert_eq!(decoded, "page-id:2");
+        assert_eq!(super::param(&req, "released").as_deref(), Some("64"));
+        let old = tauri::http::Request::builder()
+            .uri("http://push.localhost/follow?session=page-id%3A1")
+            .body(Vec::new())
+            .unwrap();
+        let mut asks = Asks::<Queue, u32>::default();
+        assert_eq!(asks.ask(decoded, 0), Ok(vec![(0, Vec::new())]));
+        assert_eq!(asks.ask(super::param(&old, "session").unwrap(), 1), Err(1));
     }
 }

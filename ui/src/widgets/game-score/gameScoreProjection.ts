@@ -1,4 +1,3 @@
-import { dayLabel } from '../../charts/draw.ts';
 import { liveKey } from '../../charts/live.ts';
 import { formatRaw } from '../../charts/race/measureRaceData.ts';
 import {
@@ -12,7 +11,7 @@ import {
   type TableWidgetDeclaration,
 } from '../../families/table/declaration.ts';
 import { inHourRanges, nextFactionsChange } from '../../families/holders.ts';
-import { lookAt, type CountryLooksMap } from '../../families/table/looks.ts';
+import { lookAt, type CountryLooksMap } from '../../families/looks.ts';
 import {
   declareTableProjection,
   type DeclarativeColumnSpec,
@@ -170,7 +169,7 @@ export const gameScoreProjection: TableProjection<GameScoreProjectionOptions> = 
         filtered = reply.rows.filter(row => chosen.has(row.tag));
       }
       if (!filtered.length) {
-        return { rows: [], empty: `No country’s scores recorded on ${dayLabel(hour)}.`, emptyKind: 'unavailable', warnings: reply.warnings };
+        return { rows: [], empty: 'No country’s scores recorded at this time.', emptyKind: 'unavailable', warnings: reply.warnings };
       }
       return { rows: filtered, warnings: reply.warnings };
     },

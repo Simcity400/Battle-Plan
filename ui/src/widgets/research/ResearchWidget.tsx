@@ -1,15 +1,12 @@
-import { useCallback, useContext, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useRef, useState } from 'react';
 import type { NarrowTable } from '../../charts/table/options';
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
 import ContentSetPicker from '../../components/ContentSetPicker';
 import { useContextMenu } from '../../components/ContextMenu';
-import { Icon } from '../../components/Icons';
 import { Popover, PopoverHeading, usePopover } from '../../components/Popover';
 import type { AnchorRect } from '../../components/Popover';
-import { Segmented } from '../../components/Segmented';
-import ListSkeleton from '../../components/Skeleton';
 import WidgetState from '../../components/WidgetState';
 import { VirtualList } from '../../components/VirtualList';
 import { jumpItem, rowJumpProps } from '../../charts/jump';
@@ -20,7 +17,6 @@ import { narrowTableOf, tableSortOf } from '../../charts/table/options';
 import { useOpenTooltip } from '../../charts/openTooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
-import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { contentKey, contentSet, resolveOptions, setToken, toggleContentSet } from '../../dashboard/options';
@@ -33,7 +29,7 @@ import { useRegionHourAt } from '../../dashboard/widgetTime';
 import { useRecordedRows } from '../../dashboard/widgetPerf';
 import { perfLog } from '../../shell/perf';
 import type { ResearchData, ResearchSlotHistory } from './types';
-import { DEFAULT_SORT, OPTIONS, VIEWS } from './definition';
+import { DEFAULT_SORT, OPTIONS } from './definition';
 import ResearchExplanation from './ResearchExplanation';
 import { ResearchWithDoctrines } from './DoctrinePanel';
 import { researchJourney } from './researchJourney';
@@ -152,7 +148,6 @@ export default function ResearchWidget(props: WidgetProps) {
 function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps) {
   const menu = useContextMenu('Research actions');
   const owner = useId();
-  const actions = useContext(HeaderActionsSlot);
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'list' ? 'list' : 'columns';
   const gate = useGate(runtime, widget, SPEC, active);
@@ -221,19 +216,14 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   }, [breakdown, runtime, hourAt]);
   const jump = useCallback<Jump>(at => track ? rowJumpProps(runtime, track.id, at, menu.open) : {}, [runtime, track, menu.open]);
   const completed = useMemo(() => lanes.reduce((total, lane) => total + lane.items.filter(item => item.kind === 'completed').length, 0), [lanes]);
-  const slot = actions ?? headerSlot;
-  const header = <>
-    {slot && createPortal(<Segmented value={view} options={VIEWS} onChange={value => setOption?.('view', value)} label="Research view" />, slot)}
-    {headerSlot && completed > 0 && createPortal(<span className="pill">{usNumber.format(completed)} completed</span>, headerSlot)}
-  </>;
-  if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
+  const header = headerSlot && data && slots ? createPortal(<span className="pill">{usNumber.format(completed)} completed</span>, headerSlot) : null;
+  if (!track || !tag) return <WidgetState kind="nothing-chosen" prompt="Load a campaign and choose a country to see its research." />;
   if (!gate.open) return <>{header}<GateState gate={gate} loading="Loading research…" /></>;
   if (hour === undefined) return <>{header}<WidgetState kind="outside" /></>;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return <>{header}{failure}</>;
-  if (!data || !slots) return <>{header}<ListSkeleton label="Loading research…" /></>;
-  if (!lanes.length) return <>{header}{failure}<div className="dash-empty" role="status"><span className="empty-icon"><Icon name="history" /></span>
-    <p>No research slots recorded by {researchDate(hour)}.</p></div></>;
+  if (!data || !slots) return <>{header}<WidgetState kind="loading" label="Loading research…" /></>;
+  if (!lanes.length) return <>{header}{failure}<WidgetState kind="empty" icon="history" message={`No research slots recorded by ${researchDate(hour)}.`} /></>;
   const detailHour = shown && Math.min(shown.hour, following ? runtime.clock.getHour() + track.axisOffset : hour);
   const detailSlots = detailHour === null ? null : researchAt(data.history, detailHour);
   const shownSlot = shown ? detailSlots?.find(item => item.index === shown.slotIndex) : undefined;
@@ -328,6 +318,6 @@ function ResearchList({ rows, text, looks, sort, density, narrow, setOption, men
   const body: ReactNode = rows.length
     ? <Table rowRevision={row => [row, columns]} label="Research history" rows={rows} columns={columns} rowKey={row => row.key} sort={sort} setOption={setOption} narrow={narrow}
       cellBars={false} rankMarkers={false} density={density} muted={row => row.kind === 'gap'} onRowClick={click} menu={menu} tooltip={tooltip} />
-    : <div className="dash-empty" role="status">No research in these folders by this date.</div>;
+    : <WidgetState kind="empty" scale="section" message="No research in these folders by this date." />;
   return <div className="research-list" onPointerDownCapture={event => { pointer.current = { x: event.clientX, y: event.clientY }; }}>{body}</div>;
 }

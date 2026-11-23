@@ -22,7 +22,7 @@ export function validateWidgetAvailability(value: unknown): WidgetAvailability {
 
 export function scopeReason(definition: Pick<WidgetMeta, 'data' | 'captureModes'>, mode: CaptureMode | undefined): string | null {
   if (!definition.data || mode === undefined || (definition.captureModes ?? ['full']).includes(mode)) return null;
-  return `Not in this recording: a ${mode === 'map' ? 'Map' : mode} recording holds the campaign map and its battle windows only.`;
+  return `This is a ${mode === 'map' ? 'Map' : mode} recording, which holds the campaign map and battle windows only.`;
 }
 
 export function availabilityReason(required: boolean, track: boolean, data?: WidgetAvailability, error?: Failure): string | null {

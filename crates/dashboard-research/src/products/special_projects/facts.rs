@@ -294,7 +294,11 @@ impl Facts {
         }
     }
 
-    pub fn hour(&mut self, hour: &Hour<'_>) {
+    pub(crate) fn histories_only(&mut self, hour: &Hour<'_>) {
+        self.histories(hour);
+    }
+
+    pub fn hour_span(&mut self, hour: &Hour<'_>, last: i32) {
         let (country, at) = (hour.country, hour.at);
         self.histories(hour);
         for read in hour.reads {
@@ -319,7 +323,7 @@ impl Facts {
             let look = self.look(Look { definition: row.definition, person, last: remembered.map(|(id, _)| id) });
             let run = Run {
                 first: at,
-                last: at,
+                last,
                 read: read.read,
                 look,
                 progress: progress(row),
@@ -330,17 +334,17 @@ impl Facts {
             };
             let runs = &mut self.projects[index].runs;
             match runs.last_mut() {
-                Some(held) if held.last.checked_add(1) == Some(at) && held.same(&run) => held.last = at,
+                Some(held) if held.last.checked_add(1) == Some(at) && held.same(&run) => held.last = last,
                 _ => runs.push(run),
             }
         }
         if hour.published {
-            extend(&mut self.observed, at, at);
+            extend(&mut self.observed, at, last);
             for (&owner, &read) in hour.projects {
                 let spans = self.reads.entry(owner).or_default();
                 match spans.last_mut() {
-                    Some(span) if span.1.checked_add(1) == Some(at) && span.2 == read => span.1 = at,
-                    _ => spans.push((at, at, read)),
+                    Some(span) if span.1.checked_add(1) == Some(at) && span.2 == read => span.1 = last,
+                    _ => spans.push((at, last, read)),
                 }
             }
         }

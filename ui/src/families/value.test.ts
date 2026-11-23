@@ -20,7 +20,8 @@ import {
   wireWhole,
   zeroValue,
 } from './value.ts';
-import { auditValue, formatValueState, spokenValue } from './valueFormat.ts';
+import { canonicalAuditData } from './audit.ts';
+import { auditValue, formatScalar, formatValueState, spokenValue, type ValueFormat } from './valueFormat.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
@@ -147,11 +148,13 @@ test('formatting and spoken forms render zero as 0, never None or dash, and carr
   assert.equal(spokenValue(notApplicable('Peacetime'), 'integer'), 'Not applicable: Peacetime');
   assert.equal(spokenValue(partialValue(15, 'Gaps'), 'integer'), '15, partial: Gaps');
 
-  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', '0']));
+  assert.equal(auditValue(zeroValue(0), 'integer'), JSON.stringify(['zero', ['int', '0']]));
   assert.equal(auditValue(notRecorded('No sensor'), 'integer'), JSON.stringify(['notRecorded', 'No sensor']));
   assert.equal(auditValue(notApplicable('Peacetime'), 'integer'), JSON.stringify(['notApplicable', 'Peacetime']));
-  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', '15', 'Gaps', false]));
+  assert.equal(auditValue(partialValue(15, 'Gaps'), 'integer'), JSON.stringify(['partial', ['int', '15'], 'Gaps', false]));
   assert.notEqual(auditValue(zeroValue(0), 'decimal1'), auditValue(knownValue(0.04), 'decimal1'));
+  assert.notEqual(auditValue(knownValue('1000')), auditValue(knownValue(1000)));
+  assert.equal(auditValue(knownValue(1e21)), auditValue(knownValue(10n ** 21n)));
 });
 
 test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, decimal1, percent2, and maxDecimals', () => {
@@ -161,4 +164,86 @@ test('bigint formatting preserves exact precision beyond 2^53 in clockSeconds, d
   assert.equal(spokenValue(knownValue(big), { decimals: 0, maxDecimals: 2 }), '1,152,921,504,606,846,983');
   const bigSeconds = 3600n * 100000000000000000n + 61n;
   assert.equal(spokenValue(knownValue(bigSeconds), 'clockSeconds'), '100000000000000000:01:01');
+
+  assert.equal(spokenValue(knownValue(1e21), 'integer'), spokenValue(knownValue(10n ** 21n), 'integer'));
+  assert.equal(spokenValue(knownValue(1e21), 'integer'), '1,000,000,000,000,000,000,000');
+  assert.equal(spokenValue(knownValue(1e21), 'decimal1'), spokenValue(knownValue(10n ** 21n), 'decimal1'));
+  assert.equal(spokenValue(knownValue(1e21), 'percent2'), spokenValue(knownValue(10n ** 21n), 'percent2'));
+});
+
+test('canonicalAuditData encodes Map and Set deterministically with tags and throws on unsupported container types', () => {
+  const m1 = new Map<string, number>([['b', 2], ['a', 1]]);
+  const m2 = new Map<string, number>([['a', 1], ['b', 2]]);
+  const m3 = new Map<string, number>([['a', 1], ['b', 3]]);
+  assert.equal(canonicalAuditData(m1), canonicalAuditData(m2));
+  assert.notEqual(canonicalAuditData(m1), canonicalAuditData(m3));
+  assert.notEqual(canonicalAuditData(m1), canonicalAuditData({}));
+
+  const s1 = new Set(['z', 'a']);
+  const s2 = new Set(['a', 'z']);
+  const s3 = new Set(['a', 'b']);
+  assert.equal(canonicalAuditData(s1), canonicalAuditData(s2));
+  assert.notEqual(canonicalAuditData(s1), canonicalAuditData(s3));
+  assert.notEqual(canonicalAuditData(s1), canonicalAuditData({}));
+
+  class CustomBox { x: number; constructor(x: number) { this.x = x; } }
+  assert.throws(() => canonicalAuditData(new Date(0)), /Unsupported audit value type: Date/);
+  assert.throws(() => canonicalAuditData(/abc/), /Unsupported audit value type: RegExp/);
+  assert.throws(() => canonicalAuditData(new CustomBox(1)), /Unsupported audit value type: CustomBox/);
+  assert.throws(() => canonicalAuditData(Symbol('s')), /Unsupported audit value type: symbol/);
+  assert.throws(() => canonicalAuditData(() => 1), /Unsupported audit value type: function/);
+});
+
+test('F4: canonicalAuditData recognises family values only by exact plain-object shape and never drops extra fields or skips prototype checks', () => {
+  const recA = { kind: 'partial', value: 10, reason: 'gap', hour: 100 };
+  const recB = { kind: 'partial', value: 10, reason: 'gap', hour: 200 };
+  assert.notEqual(canonicalAuditData(recA), canonicalAuditData(recB), 'extra field hour is preserved and differentiates records');
+
+  const knownExtraA = { kind: 'known', value: 5, extra: 'a' };
+  const knownExtraB = { kind: 'known', value: 5, extra: 'b' };
+  assert.notEqual(canonicalAuditData(knownExtraA), canonicalAuditData(knownExtraB), 'extra fields on known-like plain objects are not dropped');
+
+  class FakePartial {
+    kind = 'partial' as const;
+    value = 1;
+    reason = 'gap';
+  }
+  assert.throws(() => canonicalAuditData(new FakePartial()), /Unsupported audit value type: FakePartial/);
+  assert.equal(
+    canonicalAuditData(partialValue(10, 'gap', { atLeast: true })),
+    JSON.stringify(['partial', ['int', '10'], 'gap', true]),
+  );
+});
+
+test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SAFE_INTEGER + 2', () => {
+  const formats: ValueFormat[] = [
+    'integer',
+    'fixed5Percent',
+    'fixed5Amount',
+    'fixed5Width',
+    'clockSeconds',
+    'decimal1',
+    'percent2',
+    { decimals: 2 },
+    { decimals: 2, percent: true },
+    { decimals: 0, maxDecimals: 2 },
+    { decimals: 0, maxDecimals: 2, signed: true },
+  ];
+  const samples = [1e21, 1e-7, Number.MAX_SAFE_INTEGER + 2];
+  for (const format of formats) {
+    for (const sample of samples) {
+      const text = formatScalar(sample, format);
+      assert.equal(/[eE][+-]?\d/.test(text), false, `format ${JSON.stringify(format)} on ${sample} produced exponent string: ${text}`);
+    }
+  }
+  assert.equal(formatScalar(1e21, { decimals: 2 }), '10,000,000,000,000,000,000');
+  assert.equal(formatScalar(1e21, { decimals: 2, percent: true }), '1,000,000,000,000,000,000,000%');
+  assert.equal(formatScalar(1e21, { decimals: 0, maxDecimals: 2 }), '1,000,000,000,000,000,000,000');
+  assert.equal(formatScalar(1e-7, { decimals: 2 }), '0');
+  assert.equal(formatScalar(1e-7, 'decimal1'), '0');
+  assert.equal(formatScalar(1e-7, 'percent2'), '0.00%');
+  assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 2 }), '0');
+  assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, 'integer'), '9,007,199,254,740,992');
+  assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, { decimals: 2 }), '90,071,992,547,409.92');
+  assert.equal(formatScalar(1e21, 'clockSeconds'), '277777777777777777:46:40');
 });

@@ -2,11 +2,14 @@ import argparse
 import base64
 import datetime
 import hashlib
+import http.client
+import io
 import json
 import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -263,6 +266,15 @@ class Resolve(unittest.TestCase):
         self.assertEqual(self.resolve(whole_run_state=broken)["due"], "false")
         self.assertEqual(self.resolve(draft=True, whole_run_state=broken)["due"], "true")
 
+    def test_a_scheduled_nightly_waits_for_a_change_besides_a_stable_releases_version_bump(self):
+        bump = f"{release.BUMP_AUTHOR}\x00Release: v1.4.3 is the workspace version"
+        landed = lambda *lines: mock.Mock(side_effect=lambda *args: "\n".join(lines) if args[0] == "log" else "")
+        self.assertEqual(self.resolve(git=landed(bump))["due"], "false")
+        self.assertEqual(self.resolve(git=landed(bump, f"{release.BUMP_AUTHOR}\x00Map: fog of war (#280)"))["due"], "true")
+        self.assertEqual(self.resolve(git=landed("Someone\x00Release: v1.4.3 is the workspace version"))["due"], "true",
+                         "only the release's own commit is passed over")
+        self.assertEqual(self.resolve(scheduled=False, git=landed(bump))["due"], "true", "a nightly asked for by hand releases the bump")
+
     def test_a_failed_or_running_whole_workspace_run_bars_nightlies_until_one_passes(self):
         def listed(*conclusions):
             return json.dumps({"workflow_runs": [{"conclusion": found, "status": "in_progress" if found is None else "completed",
@@ -402,6 +414,75 @@ class Finalize(unittest.TestCase):
             self.finalize('[workspace.package]\nversion = "1.4.3"\n', [1], moved=False)
 
 
+def model_reply(chosen, finished="stop"):
+    text = chosen if isinstance(chosen, str) else json.dumps(chosen)
+    return {"choices": [{"index": 0, "finish_reason": finished, "message": {"role": "assistant", "content": text}}]}
+
+
+class Notes(unittest.TestCase):
+    def test_a_summary_keeps_highlights_citing_this_releases_pulls_and_counts_the_other_visible_ones(self):
+        chosen = {"highlights": [{"label": "Fog of war.", "detail": "The map hides what a country cannot see.", "pulls": [12, 10]}],
+                  "others": [11, 12, 13]}
+        self.assertEqual(release.read_highlights(model_reply(chosen), [10, 11, 12, 13, 14]), (
+            [{"label": "Fog of war", "detail": "The map hides what a country cannot see.", "pulls": [10, 12]}], 2))
+        many = {"highlights": [{"label": f"Feature {n}", "detail": "Works.", "pulls": [n]} for n in range(1, 10)], "others": []}
+        highlights, more = release.read_highlights(model_reply(many), range(1, 10))
+        self.assertEqual((len(highlights), more), (release.HIGHLIGHTS, 2))
+
+    def test_a_reply_that_is_cut_short_malformed_or_cites_another_releases_pulls_writes_no_summary(self):
+        cited = {"highlights": [{"label": "Feature", "detail": "Works.", "pulls": [99]}], "others": []}
+        for reply, reason in ((model_reply(cited, "length"), "ended length"), (model_reply("{\"highlights\": ["), "not JSON"),
+                              (model_reply(cited), "lacks"), (model_reply({"highlights": [], "others": [99]}), "not this release's"),
+                              (model_reply({"highlights": [{"label": "", "detail": "Works.", "pulls": [1]}]}), "lacks"),
+                              ([], "not a chat completion"), ({"choices": [None]}, "not a chat completion"),
+                              ({"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"highlights": [], "others": []}),
+                                                                                  "refusal": "I can't help with that."}}]}, "refused")):
+            with self.assertRaisesRegex(release.Refused, reason):
+                release.read_highlights(reply, [1, 2])
+        with mock.patch.object(release, "urllib") as network, mock.patch.dict(os.environ, {"GROQ_API_KEY": ""}):
+            self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
+            network.request.urlopen.assert_not_called()
+        nested = mock.MagicMock()
+        nested.__enter__.return_value = io.BytesIO(json.dumps(model_reply("[" * 100_000)).encode())
+        echoed = urllib.error.HTTPError(release.SUMMARY_URL, 401, "Unauthorized", {}, io.BytesIO(b'{"error": "bad key gsk_secret"}'))
+        cut = urllib.error.HTTPError(release.SUMMARY_URL, 500, "Server Error", {}, mock.Mock(read=mock.Mock(side_effect=TimeoutError())))
+        for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{"), None, echoed, cut):
+            failed = mock.Mock(side_effect=failure, return_value=nested)
+            with mock.patch.object(release.urllib.request, "urlopen", failed), mock.patch.dict(os.environ, {"GROQ_API_KEY": "gsk_secret"}), \
+                    mock.patch.object(release, "say") as said:
+                self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
+                self.assertNotIn("gsk_secret", said.call_args.args[0])
+        self.assertEqual(json.loads(failed.call_args.args[0].data)["reasoning_effort"], "medium")
+
+    def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
+        notes = {"version": "1.4.3", "since": "1.4.2", "date": None, "changes": 3, "more": 1,
+                 "highlights": [{"label": "Fog of war", "detail": "The map hides what a country cannot see.", "pulls": [10]}],
+                 "pulls": [{"number": 10, "title": "Map: fog of war"}, {"number": 11, "title": "CI: faster"}]}
+        page = release.render_notes(notes)
+        self.assertIn("**v1.4.3** · 3 changes", page)
+        self.assertIn("- **Fog of war.** The map hides what a country cannot see.", page)
+        self.assertIn("### Plus 1 more fix or improvement.", page)
+        self.assertLess(page.index("<summary>"), page.index("- CI: faster (#11)"))
+        self.assertIn("- And 1 change made without a pull request.", page)
+        plain = release.render_notes({**notes, "highlights": None, "more": None})
+        self.assertNotIn("<details>", plain)
+        self.assertIn("- Map: fog of war (#10)", plain)
+        self.assertEqual(release.render_notes({**notes, "since": None, "changes": 0, "pulls": []}), "The first release on this channel.\n")
+        quiet = {**notes, "highlights": [], "more": 0}
+        self.assertNotIn("internal", release.render_notes(quiet), "a change without a pull request was never read, so it is not called internal")
+        self.assertIn("these changes are internal", release.render_notes({**quiet, "changes": 2}))
+
+    def test_the_feed_carries_this_release_then_the_newest_earlier_ones_it_replaces(self):
+        entry = lambda version: {"version": version}
+        earlier = [entry(f"1.4.3-nightly.202611{day:02}.{day}") for day in range(1, 13)]
+        feed = {"releases": [entry("1.4.3-nightly.20261130.40"), *earlier]}
+        carried = release.feed_history(entry("1.4.3-nightly.20261113.13"), feed)
+        self.assertEqual([item["version"] for item in carried][:3],
+                         ["1.4.3-nightly.20261113.13", "1.4.3-nightly.20261112.12", "1.4.3-nightly.20261111.11"])
+        self.assertEqual(len(carried), release.HISTORY)
+        self.assertEqual(release.feed_history(entry("1.4.3"), None), [entry("1.4.3")])
+
+
 class TakenUp(unittest.TestCase):
     def test_a_release_whose_feed_failed_is_taken_up_only_with_the_installer_it_records(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -426,6 +507,11 @@ class TakenUp(unittest.TestCase):
                 served[name] = b"swapped"
                 with self.assertRaisesRegex(release.Refused, "not the one its release records"):
                     release.taken_up("owner/repo", "v1.4.3", recorded, chosen, dist, False)
+                with self.assertRaisesRegex(release.Refused, "has no notes.json"):
+                    release.taken_notes("owner/repo", "v1.4.3", {"assets": [{"name": name}]}, dist)
+                served["notes.json"] = b'{"version": "1.4.3"}'
+                self.assertEqual(release.taken_notes("owner/repo", "v1.4.3", {"assets": [{"name": "notes.json"}]}, dist).read_bytes(),
+                                 served["notes.json"])
 
 
 if __name__ == "__main__":

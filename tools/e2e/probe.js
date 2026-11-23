@@ -66,7 +66,7 @@
     if ([...article.querySelectorAll('canvas')].some(c => c.drawPending && shownOnScreen(c))) return { state: 'loading', drawing: true };
     if ([...article.querySelectorAll('[role=status]')].some(e => /^Loading\b/.test((e.textContent || '').trim()) && shownOnScreen(e))) return { state: 'loading' };
     const content = article.querySelector('.dash-widget-content');
-    const notice = content?.querySelector('[data-state=empty], [data-state=unavailable]');
+    const notice = content?.querySelector('[data-state=empty], [data-state=unavailable], [data-state=outside], [data-state=not-recorded], [data-state=nothing-chosen], [data-state=no-members]');
     if (notice && (content.textContent || '').trim() === (notice.textContent || '').trim())
       return { state: notice.getAttribute('data-state'), text: (notice.textContent || '').trim().slice(0, 200) };
     if (!(content?.textContent || '').trim() && !content?.querySelector('canvas, svg, img')) return { state: 'blank' };
@@ -203,14 +203,25 @@
     const entry = p.painted.find(f => f.start === data); if (entry) entry.end = performance.now();
     if (data === p.frameStart) sampleFrame();
   };
+  let loopId = 0;
+  let recordingFrames = false;
+  const shouldRun = () => Boolean(p.tracking || p.watching || p.settler || recordingFrames);
+  const startLoop = () => {
+    if (loopId || !shouldRun()) return;
+    loopId = requestAnimationFrame(frame);
+  };
+  const stopLoopIfIdle = () => {
+    if (!shouldRun() && loopId) { cancelAnimationFrame(loopId); loopId = 0; }
+  };
   const frame = now => {
+    loopId = 0;
     p.painted.push({ start: now, end: null });
     if (p.painted.length > 8000) p.painted.splice(0, 4000);
     afterPaint.port2.postMessage(now);
     p.frames.push(now);
     if (p.frames.length > 8000) p.frames.splice(0, 4000);
     p.frameStart = now;
-    requestAnimationFrame(frame);
+    if (shouldRun()) loopId = requestAnimationFrame(frame);
   };
   let placeholderSince = null;
   const placeholderEnd = at => { if (placeholderSince !== null) p.placeholders.ms += at - placeholderSince; placeholderSince = null; };
@@ -233,7 +244,6 @@
     if (p.alt && p.altAt === null) { try { if (p.alt()) p.altAt = p.frameStart; } catch {   } }
     p.settler?.();
   };
-  requestAnimationFrame(frame);
 
   p.mark = (done, ignore = null, alt = null, altQuiet = 0) => {
     p.ignore = ignore;
@@ -243,6 +253,7 @@
     p.alt = alt ? new Function(`return (${alt});`) : null; p.altAt = null; p.altQuiet = altQuiet;
     p.t0 = performance.now();
     p.t0Epoch = performance.timeOrigin + p.t0;
+    startLoop();
     return p.t0;
   };
   p.inFlight = () => { try { return window.__busy ? window.__busy.kinds() : null; } catch { return null; } };
@@ -267,6 +278,7 @@
       }
     };
     p.settler = check;
+    startLoop();
   });
   p.report = (now, timedOut, visible) => {
     const ended = i => {
@@ -305,7 +317,9 @@
       placeholderMs: (placeholderEnd(now), p.placeholders.ms), placeholderAt: [...p.placeholders.where],
       loafs: p.loafs.filter(l => l.dur >= 50 && l.start + l.dur >= p.t0).map(l => ({ dur: Math.round(l.dur), top: l.top })) };
   };
-  p.watch = () => { p.watching = true; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; };
-  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; return { ms: p.placeholders.ms, where: [...p.placeholders.where] }; };
+  p.watch = () => { p.watching = true; placeholderSince = null; p.placeholders = { ms: 0, where: new Set() }; startLoop(); };
+  p.unwatch = () => { placeholderEnd(performance.now()); p.watching = false; stopLoopIfIdle(); return { ms: p.placeholders.ms, where: [...p.placeholders.where] }; };
+  p.startFrames = () => { recordingFrames = true; startLoop(); };
+  p.stopFrames = () => { recordingFrames = false; stopLoopIfIdle(); };
   p.gaps = (from, to) => { const f = p.frames.filter(t => t >= from && t <= to); const gaps = []; for (let i = 1; i < f.length; i++) gaps.push(f[i] - f[i - 1]); return gaps; };
 })();

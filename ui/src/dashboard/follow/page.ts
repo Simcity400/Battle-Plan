@@ -11,6 +11,7 @@ export interface PageSurface<B extends Bitmap = Bitmap> {
 }
 
 export type Mode = 'picture' | 'refused' | 'failed';
+export type FailureOrigin = 'stream' | 'local';
 export type Shown = Mode | 'reading' | 'outside';
 
 export interface Generation { seek: number; reset: number }
@@ -27,6 +28,7 @@ export interface Entry<B extends Bitmap = Bitmap> {
   follows: boolean;
   mode: Mode;
   reason?: string;
+  failureOrigin?: FailureOrigin;
   surfaces: readonly (B | Same | null)[];
   content: Readonly<Record<string, string>>;
   fields: Readonly<Record<string, unknown>>;
@@ -62,14 +64,17 @@ export type PageMessage = FrameRequest
 
 export interface Installed {
   id: number; h: number; c: number; lo: number; hi: number; gen: Generation; binding: number; follows: boolean;
-  mode: Mode; reason?: string; fields: Readonly<Record<string, unknown>>; ms: number; kept: readonly string[]; structure?: string;
+  mode: Mode; reason?: string; failureOrigin?: FailureOrigin; fields: Readonly<Record<string, unknown>>; ms: number; kept: readonly string[]; structure?: string;
 }
 
 export interface WidgetView {
   mode: Shown;
   reason?: string;
+  failureOrigin?: FailureOrigin;
   target: number;
   id?: number;
+  binding?: number;
+  installedBinding?: number;
   h?: number;
   through?: number;
   painted?: number;
@@ -93,7 +98,7 @@ export interface Mount<B extends Bitmap = Bitmap> {
 interface Widget<B extends Bitmap> {
   id: number; route: number; lane: number; offset: number; pin: number | null; bounds: readonly [number, number] | null;
   surfaces: readonly PageSurface<B>[]; binding: number; installed: Installed | null; content: Record<string, string>;
-  status: Shown; reason?: string; inspect: string | null; early: Entry<B> | null; changed?: () => void; dated?: () => void;
+  status: Shown; reason?: string; failureOrigin?: FailureOrigin; inspect: string | null; early: Entry<B> | null; changed?: () => void; dated?: () => void;
   failed: boolean; face: string; drawn: number;
 }
 
@@ -213,9 +218,10 @@ export class Page<B extends Bitmap = Bitmap> {
     if (this.sent.size > 256) for (const key of [...this.sent.keys()].slice(0, 128)) this.sent.delete(key);
   }
 
-  private clear(widget: Widget<B>, status: Shown, reason?: string) {
+  private clear(widget: Widget<B>, status: Shown, reason?: string, failureOrigin?: FailureOrigin) {
     this.drop(widget.installed);
     widget.installed = null; widget.content = {}; widget.status = status; widget.reason = reason;
+    widget.failureOrigin = status === 'failed' ? failureOrigin : undefined;
     for (const surface of widget.surfaces) surface.clear();
     this.touched.add(widget);
   }
@@ -224,7 +230,7 @@ export class Page<B extends Bitmap = Bitmap> {
 
   private reading(widget: Widget<B>) {
     const failed = widget.pin === null ? this.route(widget.route).failed : null;
-    this.clear(widget, failed ? 'failed' : 'reading', failed?.reason);
+    this.clear(widget, failed ? 'failed' : 'reading', failed?.reason, failed ? 'stream' : undefined);
   }
 
   private revalidate(widget: Widget<B>) {
@@ -349,7 +355,7 @@ export class Page<B extends Bitmap = Bitmap> {
       this.disown(entry);
       this.stats.failed++;
       widget.failed = true;
-      this.clear(widget, 'failed', 'drawing failed');
+      this.clear(widget, 'failed', 'drawing failed', 'local');
       this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason: 'drawing failed' });
       return;
     }
@@ -368,8 +374,9 @@ export class Page<B extends Bitmap = Bitmap> {
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     this.drop(widget.installed);
     widget.installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
-      mode: entry.mode, reason: entry.reason, fields, ms: entry.ms ?? 0, kept, structure: structureOf(widget.content, fields) };
+      mode: entry.mode, reason: entry.reason, failureOrigin: entry.failureOrigin, fields, ms: entry.ms ?? 0, kept, structure: structureOf(widget.content, fields) };
     widget.status = entry.mode; widget.reason = entry.reason;
+    widget.failureOrigin = entry.mode === 'failed' ? entry.failureOrigin : undefined;
     this.acks[widget.lane]!.push({ widget: widget.id, binding: widget.binding, id: entry.id });
     this.stats.installs++;
     if (drew) { widget.drawn++; this.touched.add(widget); } else this.redated.add(widget);
@@ -396,11 +403,11 @@ export class Page<B extends Bitmap = Bitmap> {
 
   view(id: number): WidgetView {
     const widget = this.widgets.get(id)!, at = this.target(widget), shown = widget.installed;
-    if (widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1])) return { mode: 'outside', target: at, dim: false, tooltip: null };
-    if (!shown) return { mode: widget.status, reason: widget.reason, target: at, dim: false, tooltip: null };
+    if (widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1])) return { mode: 'outside', target: at, binding: widget.binding, dim: false, tooltip: null };
+    if (!shown) return { mode: widget.status, reason: widget.reason, ...(widget.failureOrigin ? { failureOrigin: widget.failureOrigin } : {}), target: at, binding: widget.binding, dim: false, tooltip: null };
     const tip = shown.fields.tooltip as { key: string; text: unknown } | undefined;
     const until = Math.min(shown.c, shown.hi);
-    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: shown.structure ?? structureOf(widget.content, shown.fields), target: at,
+    return { mode: shown.mode, reason: shown.reason, ...(shown.failureOrigin ? { failureOrigin: shown.failureOrigin } : {}), id: shown.id, binding: widget.binding, installedBinding: shown.binding, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: shown.structure ?? structureOf(widget.content, shown.fields), target: at,
       dim: (!this.playing && at > until) || shown.binding !== widget.binding, fields: shown.fields,
       tooltip: tip && widget.inspect !== null && tip.key === widget.inspect ? tip.text : null };
   }
@@ -413,7 +420,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (change.offset !== undefined) widget.offset = change.offset;
     if (change.bounds !== undefined) widget.bounds = change.bounds;
     if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
-    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget)) this.reading(widget); }
+    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget) || widget.status === 'failed' || widget.status === 'refused') this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);
     this.touched.add(widget);
     this.tell();
@@ -441,13 +448,24 @@ export class Page<B extends Bitmap = Bitmap> {
     this.request(true, false);
   }
 
-  name(id: number, status: 'failed' | 'reading', reason?: string) {
+  name(id: number, status: 'failed' | 'refused' | 'reading', reason?: string, failureOrigin?: FailureOrigin) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (status === 'failed') widget.failed = true;
-    if (widget.early) { this.refuse(widget, widget.early, status === 'failed' ? 'failed' : 'binding'); widget.early = null; }
-    this.clear(widget, status, reason);
+    if (status === 'failed' || status === 'refused') widget.failed = true;
+    if (widget.early) { this.refuse(widget, widget.early, status === 'reading' ? 'binding' : status); widget.early = null; }
+    this.clear(widget, status, reason, status === 'failed' ? (failureOrigin ?? 'stream') : undefined);
     this.tell();
+  }
+
+  retryLocal(id: number) {
+    const widget = this.widgets.get(id);
+    if (!widget) return;
+    widget.failed = false;
+    widget.binding++;
+    if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
+    this.clear(widget, 'reading');
+    this.tell();
+    this.request(true, false);
   }
 
   lane(id: number) { return this.widgets.get(id)?.lane; }
@@ -473,11 +491,27 @@ export class Page<B extends Bitmap = Bitmap> {
     at.failed = { seek: this.seek, reason };
     for (const widget of this.widgets.values()) if (widget.route === route && widget.pin === null) {
       if (widget.early) { this.refuse(widget, widget.early, 'failed stream'); widget.early = null; }
-      this.clear(widget, 'failed', reason);
+      this.clear(widget, 'failed', reason, 'stream');
     }
     this.post('all', { type: 'fail', route, seek: this.seek, command, reason });
     this.tell();
     return true;
+  }
+
+  dispose() {
+    for (const presentation of this.queue) for (const entry of presentation.entries) { closeParts(entry); this.disown(entry); }
+    this.queue = [];
+    for (const widget of this.widgets.values()) {
+      if (widget.early) { closeParts(widget.early); this.disown(widget.early); widget.early = null; }
+      this.drop(widget.installed);
+      widget.installed = null;
+      widget.surfaces = [];
+      widget.changed = undefined;
+      widget.dated = undefined;
+    }
+    this.widgets.clear(); this.routes.clear(); this.kept.clear(); this.sent.clear(); this.touched.clear(); this.redated.clear();
+    for (const list of this.acks) list.length = 0;
+    for (const list of this.refusals) list.length = 0;
   }
 
   pending(lane: number) { return { installed: this.acks[lane]!.length, refused: this.refusals[lane]!.length }; }

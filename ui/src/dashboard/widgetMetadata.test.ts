@@ -63,13 +63,13 @@ test('widget metadata preserves world controls and content-choice title policies
     const grid = () => renderToStaticMarkup(createElement(Grid, { template, runtime, editing: false, onLayouts() {}, onApply() {}, onRemove() {} }));
     assert.doesNotMatch(grid(), /COUNTRY_CHIP/);
     assert.doesNotMatch(grid(), /Synthetic campaign/, 'a widget on the sidebar’s campaign needs no recording name under its title');
-    assert.match(grid(), /World history: follow playback/);
+    assert.match(grid(), /World history: time, Whole campaign/);
     template.widgets = [country];
     assert.match(grid(), /COUNTRY_CHIP/);
     Object.defineProperty(globalThis, 'IntersectionObserver', { configurable: true, value: class {} });
     try {
       const waiting = grid();
-      assert.match(waiting, /aria-label="Loading Country history…"/); assert.doesNotMatch(waiting, /WIDGET_BODY/);
+      assert.match(waiting, /aria-label="Loading country history…"/); assert.doesNotMatch(waiting, /WIDGET_BODY/);
     } finally { Reflect.deleteProperty(globalThis, 'IntersectionObserver'); }
     assert.match(grid(), /WIDGET_BODY/, 'server rendering mounts the body at once');
     const picker = renderToStaticMarkup(createElement(Picker, { runtime, disabled: false, onAdd() {}, onOpen() {} }));

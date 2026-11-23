@@ -198,17 +198,22 @@ export class Session {
   holds(expression) { return this.app.evaluate(`!!(${expression})`); }
 
   async drag(from, to, moves = 24) {
-    const start = await this.app.evaluate('performance.now()');
-    await this.app.mouse('mouseMoved', from.x, from.y);
-    await this.app.mouse('mousePressed', from.x, from.y, { buttons: 1 });
-    for (let i = 1; i <= moves; i++) {
-      await this.app.mouse('mouseMoved', from.x + (to.x - from.x) * i / moves, from.y + (to.y - from.y) * i / moves, { buttons: 1 });
-      await sleep(16);
+    await this.app.evaluate('__e2e.startFrames()');
+    try {
+      const start = await this.app.evaluate('performance.now()');
+      await this.app.mouse('mouseMoved', from.x, from.y);
+      await this.app.mouse('mousePressed', from.x, from.y, { buttons: 1 });
+      for (let i = 1; i <= moves; i++) {
+        await this.app.mouse('mouseMoved', from.x + (to.x - from.x) * i / moves, from.y + (to.y - from.y) * i / moves, { buttons: 1 });
+        await sleep(16);
+      }
+      const end = await this.app.evaluate('performance.now()');
+      await this.app.mouse('mouseReleased', to.x, to.y);
+      const gaps = (await this.app.evaluate(`__e2e.gaps(${start}, ${end})`)).sort((a, b) => a - b);
+      return { frameGapMax: gaps.length ? gaps.at(-1) : null, frameGapP95: gaps.length ? gaps[Math.min(gaps.length - 1, Math.ceil(gaps.length * 0.95) - 1)] : null };
+    } finally {
+      await this.app.evaluate('__e2e.stopFrames()').catch(() => {});
     }
-    const end = await this.app.evaluate('performance.now()');
-    await this.app.mouse('mouseReleased', to.x, to.y);
-    const gaps = (await this.app.evaluate(`__e2e.gaps(${start}, ${end})`)).sort((a, b) => a - b);
-    return { frameGapMax: gaps.length ? gaps.at(-1) : null, frameGapP95: gaps.length ? gaps[Math.min(gaps.length - 1, Math.ceil(gaps.length * 0.95) - 1)] : null };
   }
 
   async wheel(deltaY) {

@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
 import { narrowTableOf, tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -9,13 +9,14 @@ import { useHeldTimeline } from '../../dashboard/countryNamesAt';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useSlotTagsState } from '../../dashboard/countrySlots.ts';
 import { lookStarts } from '../../dashboard/countryTimeline';
+import type { DashboardClient } from '../../dashboard/client';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { Channel } from '../../dashboard/follow/facts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import { usePlaybackHour } from '../../dashboard/follow/useFollow.ts';
 import GateState from '../../dashboard/GateState';
-import { countryMatch, countryMatchChangeHours, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
-import { resolveWindow, TRAILING_HOURS } from '../../dashboard/model';
+import { countryMatch, countryMatchChangeHours, groupUnobserved, membershipUnrecordedAt, noMembersAt, rankedCandidates, resolveCountries, worldFilter } from '../../dashboard/groups';
+import { resolveWindow, TRAILING_HOURS, type WidgetTime } from '../../dashboard/model';
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveOptions } from '../../dashboard/options';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
@@ -24,15 +25,21 @@ import { useGate } from '../../dashboard/regionGate';
 import { axisAt, SPEC } from '../../dashboard/regionTime';
 import { forwardRequest, productRequest } from '../../dashboard/request.ts';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { perfLog } from '../../shell/perf.ts';
-import type { FamilySources } from '../contract.ts';
+import type { FamilySources, FamilySourceSubscription } from '../contract.ts';
+import { overlapsHourRanges } from '../holders.ts';
+import type { CountryLooksMap } from '../looks.ts';
 import {
   buildDatedCountryLooks,
   effectiveCountryUnobserved,
   extractFactionData,
   freezeGate,
-  resolveRetainedHeadSpan,
+  resolveDisplayedStaticSnapshot,
+  selectionUnobservedReason,
+  type DisplayedStaticSnapshot,
+  type FrozenGate,
 } from '../sources.ts';
 import {
   resolveHeadSpan,
@@ -42,8 +49,8 @@ import {
   type HolderRun,
   type TableWidgetDeclaration,
 } from './declaration.ts';
-import FamilyTableHost, { type FamilySourceSubscription } from './FamilyTableHost.tsx';
-import type { CountryLooksMap } from './looks.ts';
+import FamilyTableHost from './FamilyTableHost.tsx';
+import type { TableColumnSpec } from './model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 const NO_TAGS: readonly string[] = [];
@@ -80,6 +87,61 @@ function buildFilterTimeline(
   return { passing, unrecorded, bounds };
 }
 
+interface FrozenExactSnapshot<TProjectionOptions, TAux> {
+  readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
+  readonly client: DashboardClient;
+  readonly following: boolean;
+  readonly timeMode: WidgetTime['mode'];
+  readonly window: { readonly firstHour: number; readonly lastHour: number } | null;
+  readonly ctx: DeclaredTableContext<TAux>;
+  readonly gate: FrozenGate;
+}
+
+function createFrozenExactSources<TProjectionOptions, TAux>(
+  frozen: FrozenExactSnapshot<TProjectionOptions, TAux>,
+): (wantedHour: number) => Promise<FamilySources | null> {
+  return async (wantedHour: number): Promise<FamilySources | null> => {
+    if (!perfLog) return null;
+    const recorded = frozen.gate.recorded(wantedHour);
+    if (recorded === null) return null;
+    const src = frozen.declaration.source;
+    const ctx = frozen.ctx;
+    if (src.kind === 'panel') {
+      const params = src.params(ctx);
+      if (!params) return null;
+      const req = forwardRequest(ctx.track.source, src.product, { ...params, hour: recorded });
+      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await frozen.client.product(req, new AbortController().signal)).data);
+      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map([['main', repliedCells(raw).read()]]) };
+    }
+    if (src.kind === 'head') {
+      const span = !frozen.following && ctx.staticSpan
+        ? frozen.gate.span(ctx.staticSpan[0], ctx.staticSpan[1])
+        : (() => {
+          const resolved = resolveHeadSpan(
+            src.timeShape,
+            src.windowHours ?? TRAILING_HOURS,
+            frozen.timeMode,
+            ctx.branch,
+            frozen.window,
+            recorded,
+          );
+          return resolved ? frozen.gate.span(resolved.first, resolved.last) : null;
+        })();
+      if (!span) return null;
+      const params = src.productParams(ctx, span);
+      if (!params) return null;
+      const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.product, params });
+      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await frozen.client.product(req, new AbortController().signal)).data);
+      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
+    }
+    const params = src.exactParams(ctx, recorded, 'exact');
+    if (!params) return null;
+    const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.exactProduct, params });
+    const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await frozen.client.product(req, new AbortController().signal)).data);
+    return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
+  };
+}
+
 export interface DeclaredTableWidgetProps<TProjectionOptions, TAux> extends WidgetProps {
   readonly declaration: TableWidgetDeclaration<TProjectionOptions, TAux>;
   readonly selectedKey?: string | null;
@@ -100,6 +162,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   extraWarnings,
 }: DeclaredTableWidgetProps<TProjectionOptions, TAux>) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  useWidgetSkeleton('table');
   const following = widget.time.mode === 'follow';
   const options = useMemo(
     () => resolveOptions(declaration.optionFields ?? [], widget.options),
@@ -172,10 +235,10 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   const groups = useCountryGroups(runtime, track, active && fetchGroups);
 
   const allTagsText = useMemo(
-    () => (groups.data?.countryIdentities ?? []).map(history => history.tag).sort().join(','),
+    () => JSON.stringify((groups.data?.countryIdentities ?? []).map(history => history.tag).sort()),
     [groups.data],
   );
-  const allTags = useMemo(() => (allTagsText ? allTagsText.split(',') : NO_TAGS), [allTagsText]);
+  const allTags = useMemo(() => (allTagsText !== '[]' ? JSON.parse(allTagsText) as string[] : NO_TAGS), [allTagsText]);
 
   const rawSelected = selectedCountryKeys(widget.countries, track);
   const selectedText = JSON.stringify(rawSelected);
@@ -269,8 +332,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     [isMulti, policy, groups.data],
   );
 
-  const wantsColours = isFilter && policy.colours === true;
-  const wantsLabels = (isFilter && (policy.labels === true || wantsColours)) || (isMulti && policy.labels === true);
+  const wantsColours = (isFilter || isMulti) && policy.colours === true;
+  const wantsLabels = (isFilter || isMulti) && (policy.labels === true || wantsColours);
   const labelTags = useMemo(() => {
     if (!wantsLabels) return NO_TAGS;
     if (isFilter) return allTags;
@@ -299,6 +362,11 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     [wantsLabels, labelsText],
   );
 
+  const filterUnobserved = useMemo(
+    () => (isFilter && widget.countries.kind === 'group' && groups.data ? groupUnobserved(groups.data, widget.countries.group) : undefined),
+    [isFilter, widget.countries, groups.data],
+  );
+
   const countriesState = useMemo<DeclaredCountryState>(() => ({
     all: widget.countries.kind === 'all',
     tags: effectiveMulti?.tags ?? NO_TAGS,
@@ -314,10 +382,10 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     factionUnobserved: factionData.unobserved,
     factionIncomplete: factionData.incomplete,
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
-    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? null,
+    reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
-    unobservedIn: (first: number, last: number) => unobserved.some(([spanFirst, spanLast]) => spanFirst <= last && first <= spanLast),
-  }), [widget.countries.kind, effectiveMulti, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
+    unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
+  }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const staticRange = useMemo(() => {
     if (following || !track || !window) return null;
@@ -473,6 +541,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     track?.source,
   );
 
+  const staticReqKey = useMemo(() => (staticReq ? JSON.stringify(staticReq) : null), [staticReq]);
   const expectedStaticKey = useMemo(() => {
     if (!staticReq || !dynamicKeys.length) return null;
     const params = staticReq.params as Record<string, unknown>;
@@ -481,82 +550,118 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   const staticHeld = !following && staticReq !== null && staticProduct.data !== undefined
     && (staticProduct.asking !== undefined || (expectedStaticKey !== null && staticProduct.moment !== expectedStaticKey));
 
-  const staticSources = useMemo<{ readonly sources: FamilySources; readonly hour: number; readonly span?: readonly [number, number] | null } | null>(() => {
-    if (following || staticProduct.data === undefined) return null;
-    const src = declaration.source;
-    let shownHour = pinHour ?? lastHour;
-    let shownSpan: readonly [number, number] | null = null;
-    if (src.kind === 'panel' && staticProduct.moment) {
-      const parsed = JSON.parse(staticProduct.moment) as number[];
-      if (typeof parsed[0] === 'number') shownHour = parsed[0];
-    } else if (src.kind === 'head') {
-      shownSpan = resolveRetainedHeadSpan(
-        staticProduct.moment,
-        staticRange ? [staticRange.first, staticRange.last] as const : null,
-      );
-      if (shownSpan) shownHour = shownSpan[1];
-    } else if (src.kind === 'multi' && typeof (staticProduct.data as { hour?: unknown }).hour === 'number') {
-      shownHour = (staticProduct.data as { hour: number }).hour;
-    }
-    const live = src.kind === 'panel'
-      ? new Map([['main', repliedCells(staticProduct.data).read()]])
-      : new Map();
-    return {
-      sources: { answers: new Map(), panels: new Map([['main', staticProduct.data]]), live },
-      hour: shownHour,
-      ...(shownSpan ? { span: shownSpan } : {}),
-    };
-  }, [following, staticProduct.data, staticProduct.moment, declaration.source, pinHour, lastHour, staticRange]);
-
-  const retainedStaticSpan = staticSources?.span ?? null;
   const frozenGate = useMemo(
     () => freezeGate(gate),
     [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
   );
 
-  const exactSources = useCallback(async (wantedHour: number): Promise<FamilySources | null> => {
-    if (!ctx || !perfLog) return null;
-    const recorded = frozenGate.recorded(wantedHour);
-    if (recorded === null) return null;
+  interface FrozenStaticSurface {
+    readonly columns: readonly TableColumnSpec[];
+    readonly settings: TableSettings;
+    readonly countryLooks: CountryLooksMap | undefined;
+  }
+
+  const currentSurface = useMemo<FrozenStaticSurface>(
+    () => ({ columns, settings, countryLooks: wantsColours ? labels : undefined }),
+    [columns, settings, wantsColours, labels],
+  );
+
+  const pendingStaticByMomentRef = useRef(
+    new Map<string, { readonly requestKey: string | null; readonly context: DeclaredTableContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null; readonly extra: FrozenStaticSurface }>(),
+  );
+  if (!following && staticReq && ctx) {
+    const key = expectedStaticKey ?? '__single__';
+    pendingStaticByMomentRef.current.set(key, {
+      requestKey: staticReqKey,
+      context: ctx,
+      gate: frozenGate,
+      span: staticRange ? [staticRange.first, staticRange.last] as const : null,
+      extra: currentSurface,
+    });
+    if (pendingStaticByMomentRef.current.size > 32) {
+      pendingStaticByMomentRef.current.delete(pendingStaticByMomentRef.current.keys().next().value!);
+    }
+  }
+
+  const displayedStaticRef = useRef<DisplayedStaticSnapshot<DeclaredTableContext<TAux>, FrozenStaticSurface> | null>(null);
+  const displayedStatic = useMemo(() => {
+    if (following || staticProduct.data === undefined || !ctx) {
+      displayedStaticRef.current = null;
+      return null;
+    }
+    const satisfiesCurrent = staticReq !== null && !staticHeld;
+    const matched = !satisfiesCurrent ? pendingStaticByMomentRef.current.get(staticProduct.moment ?? '__single__') : undefined;
+    const sourceCtx = satisfiesCurrent ? ctx : (matched?.context ?? ctx);
+    const sourceGate = satisfiesCurrent ? frozenGate : (matched?.gate ?? frozenGate);
+    const sourceExtra = satisfiesCurrent ? currentSurface : (matched?.extra ?? currentSurface);
+    const requested = satisfiesCurrent
+      ? (staticRange ? [staticRange.first, staticRange.last] as const : null)
+      : (matched?.span ?? (staticRange ? [staticRange.first, staticRange.last] as const : null));
+    const next = resolveDisplayedStaticSnapshot(displayedStaticRef.current, {
+      data: staticProduct.data,
+      moment: staticProduct.moment,
+      requestKey: satisfiesCurrent ? staticReqKey : (matched?.requestKey ?? staticReqKey),
+      satisfiesCurrent,
+      requestedSpan: requested,
+      context: sourceCtx,
+      gate: sourceGate,
+      extra: sourceExtra,
+    });
+    displayedStaticRef.current = next;
+    return next;
+  }, [following, staticReq, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, staticRange, ctx, frozenGate, currentSurface]);
+
+  const staticSources = useMemo<{ readonly sources: FamilySources; readonly hour: number; readonly span?: readonly [number, number] | null } | null>(() => {
+    if (following || !displayedStatic) return null;
     const src = declaration.source;
-    if (src.kind === 'panel') {
-      const params = src.params(ctx);
-      if (!params) return null;
-      const req = forwardRequest(ctx.track.source, src.product, { ...params, hour: recorded });
-      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
-      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map([['main', repliedCells(raw).read()]]) };
+    let shownHour = pinHour ?? lastHour;
+    let shownSpan: readonly [number, number] | null = null;
+    if (src.kind === 'panel' && displayedStatic.moment) {
+      const parsed = JSON.parse(displayedStatic.moment) as number[];
+      if (typeof parsed[0] === 'number') shownHour = parsed[0];
+    } else if (src.kind === 'head') {
+      shownSpan = displayedStatic.span;
+      if (shownSpan) shownHour = shownSpan[1];
+    } else if (src.kind === 'multi' && typeof (displayedStatic.data as { hour?: unknown }).hour === 'number') {
+      shownHour = (displayedStatic.data as { hour: number }).hour;
     }
-    if (src.kind === 'head') {
-      const span = !following && retainedStaticSpan
-        ? frozenGate.span(retainedStaticSpan[0], retainedStaticSpan[1])
-        : (() => {
-          const resolved = resolveHeadSpan(
-            src.timeShape,
-            src.windowHours ?? TRAILING_HOURS,
-            widget.time.mode,
-            ctx.branch,
-            window,
-            recorded,
-          );
-          return resolved ? frozenGate.span(resolved.first, resolved.last) : null;
-        })();
-      if (!span) return null;
-      const params = src.productParams(ctx, span);
-      if (!params) return null;
-      const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.product, params });
-      const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
-      return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-    }
-    const params = src.exactParams(ctx, recorded, 'exact');
-    if (!params) return null;
-    const req = productRequest({ sourceId: ctx.track.source.id, revision: ctx.track.source.revision, product: src.exactProduct, params });
-    const raw = await perfLog.exactOnce(JSON.stringify(req), async () => (await runtime.client.product(req, new AbortController().signal)).data);
-    return { answers: new Map(), panels: new Map([['main', raw]]), live: new Map() };
-  }, [ctx, frozenGate, following, retainedStaticSpan, widget.time.mode, window, declaration.source, runtime.client]);
+    const live = src.kind === 'panel'
+      ? new Map([['main', repliedCells(displayedStatic.data).read()]])
+      : new Map();
+    return {
+      sources: { answers: new Map(), panels: new Map([['main', displayedStatic.data]]), live },
+      hour: shownHour,
+      ...(shownSpan ? { span: shownSpan } : {}),
+    };
+  }, [following, displayedStatic, declaration.source, pinHour, lastHour]);
+
+  const retainedStaticSpan = staticSources?.span ?? null;
+  const displayedCtx = useMemo<DeclaredTableContext<TAux> | null>(() => {
+    if (following) return ctx;
+    if (displayedStatic) return { ...displayedStatic.context, staticSpan: retainedStaticSpan };
+    return ctx;
+  }, [ctx, following, displayedStatic, retainedStaticSpan]);
+  const displayedGate = !following && displayedStatic ? displayedStatic.gate : frozenGate;
+  const displayedColumns = !following && displayedStatic ? displayedStatic.extra.columns : columns;
+  const displayedSettings = !following && displayedStatic ? displayedStatic.extra.settings : settings;
+  const displayedCountryLooks = !following && displayedStatic ? displayedStatic.extra.countryLooks : (wantsColours ? labels : undefined);
+
+  const exactSources = useMemo(() => {
+    if (!displayedCtx || !perfLog) return undefined;
+    return createFrozenExactSources({
+      declaration,
+      client: runtime.client,
+      following,
+      timeMode: widget.time.mode,
+      window,
+      ctx: displayedCtx,
+      gate: displayedGate,
+    });
+  }, [displayedCtx, displayedGate, declaration, runtime.client, following, widget.time.mode, window]);
 
   const projectionOptions = useMemo(
-    () => (ctx ? declaration.projectionOptions(ctx) : ({} as TProjectionOptions)),
-    [ctx, declaration.projectionOptions],
+    () => (displayedCtx ? declaration.projectionOptions(displayedCtx) : ({} as TProjectionOptions)),
+    [displayedCtx, declaration.projectionOptions],
   );
 
   const bounds = useMemo<readonly [number, number] | null>(
@@ -565,17 +670,17 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   );
 
   const contextMenuItems = useCallback(
-    (_key: string, _name: string, atHour: number) => (declaration.jumpToDate && track ? [jumpItem(runtime, track.id, atHour)] : []),
+    (_key: string | null, _name: string | null, atHour: number) => (declaration.jumpToDate && track ? [jumpItem(runtime, track.id, atHour)] : []),
     [declaration.jumpToDate, runtime, track],
   );
 
-  const customUnavailable = ctx && declaration.unavailable ? declaration.unavailable(ctx, moment) : null;
+  const customUnavailable = displayedCtx && declaration.unavailable ? declaration.unavailable(displayedCtx, staticSources?.hour ?? moment) : null;
   const combinedWarnings = useMemo(() => {
-    const fromDecl = ctx && declaration.warnings ? declaration.warnings(ctx, followPlan.refused) : [];
+    const fromDecl = displayedCtx && declaration.warnings ? declaration.warnings(displayedCtx, followPlan.refused) : [];
     const fromGroups = groups.data?.warnings ?? [];
     const all = [...fromGroups, ...fromDecl, ...(extraWarnings ?? [])];
     return all.length ? all : undefined;
-  }, [ctx, declaration.warnings, followPlan.refused, groups.data?.warnings, extraWarnings]);
+  }, [displayedCtx, declaration.warnings, followPlan.refused, groups.data?.warnings, extraWarnings]);
 
   const loadingLabel = `Loading ${declaration.subject}…`;
   const blockedState = (() => {
@@ -593,11 +698,12 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     } else if (coverage.outside) {
       return <WidgetState kind="outside" read={coverage} />;
     }
-    if (followPlan.refused) return <WidgetState kind="unavailable" message={followPlan.refused} />;
+    if (followPlan.refused) return <WidgetState kind="unavailable" technical={followPlan.refused} />;
     if (auxEnabled && auxResult.error) return <WidgetState kind="error" failure={auxResult.error} onRetry={auxResult.retry} />;
     if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
     if (isFilter) {
       if (filterMatch?.reason) return <WidgetState kind="unavailable" message={filterMatch.reason} />;
+      if (countriesState.reason) return <WidgetState kind="unavailable" message={countriesState.reason} />;
       if (!filterMatch?.ready || !groups.data) return <WidgetState kind="loading" label={loadingLabel} />;
     }
     if (isMulti) {
@@ -636,9 +742,9 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   })();
 
   const bannerFailure = (isSingle && singleCountry?.chosen && singleCountry.error && singleCountry.historyHeld)
-    ? <WidgetState kind="error" failure={singleCountry.error} onRetry={singleCountry.retry} />
+    ? <WidgetState kind="error" scale="section" failure={singleCountry.error} onRetry={singleCountry.retry} />
     : ((isFilter || needsGroups) && groups.error && groups.data)
-      ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+      ? <WidgetState kind="error" scale="section" failure={groups.error} onRetry={groups.retry} />
       : null;
 
   const host = <FamilyTableHost
@@ -651,18 +757,18 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     widget={widget}
     runtime={runtime}
     active={active}
-    columns={columns}
-    settings={settings}
+    columns={displayedColumns}
+    settings={displayedSettings}
     onSettings={setOption && declaration.settings.kind !== 'fixed' ? onSettings : undefined}
     editableColumns={declaration.settings.kind === 'table' || declaration.settings.kind === 'custom'}
     subscriptions={followPlan.subs}
     allowEmptyFollow={followPlan.allowEmptyFollow}
     staticSources={staticSources}
-    exactSources={ctx && perfLog && !blockedState ? exactSources : undefined}
+    exactSources={displayedCtx && perfLog && !blockedState ? exactSources : undefined}
     offset={track?.axisOffset ?? 0}
     pin={following ? null : (declaration.source.kind === 'panel' ? (staticSources?.hour ?? pinHour) : staticSources?.hour ?? null)}
     bounds={bounds}
-    countryLooks={wantsColours ? labels : undefined}
+    countryLooks={displayedCountryLooks}
     selectedKey={selectedKey}
     onActivate={onActivate}
     contextMenuItems={declaration.jumpToDate ? contextMenuItems : undefined}

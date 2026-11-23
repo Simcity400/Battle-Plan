@@ -3,7 +3,7 @@ import type { CountrySelection } from '../dashboard/model';
 import type { Gate } from '../dashboard/regionGate';
 import type { CountryGroupReply, HourSpan } from '../generated/dashboard';
 import { nextFactionsChange, type FamilyFactionRun, type HourRanges } from './holders.ts';
-import type { CountryLook, CountryLooksMap } from './table/looks.ts';
+import type { CountryLook, CountryLooksMap } from './looks.ts';
 
 export { nextFactionsChange };
 export type { FamilyFactionRun };
@@ -34,6 +34,57 @@ export function resolveRetainedHeadSpan(
   return fallback;
 }
 
+export interface DisplayedStaticSnapshot<TContext = unknown, TExtra = unknown> {
+  readonly data: unknown;
+  readonly moment: string | undefined;
+  readonly requestKey: string | null;
+  readonly span: readonly [number, number] | null;
+  readonly context: TContext;
+  readonly gate: FrozenGate;
+  readonly extra: TExtra;
+}
+
+export interface DisplayedStaticInput<TContext, TExtra> {
+  readonly data: unknown;
+  readonly moment: string | undefined;
+  readonly requestKey: string | null;
+  readonly satisfiesCurrent: boolean;
+  readonly requestedSpan: readonly [number, number] | null;
+  readonly context: TContext;
+  readonly gate: FrozenGate;
+  readonly extra: TExtra;
+}
+
+export function resolveDisplayedStaticSnapshot<TContext, TExtra = undefined>(
+  previous: DisplayedStaticSnapshot<TContext, TExtra> | null,
+  input: DisplayedStaticInput<TContext, TExtra>,
+): DisplayedStaticSnapshot<TContext, TExtra> | null {
+  if (input.data === undefined) return null;
+  if (input.satisfiesCurrent) {
+    return {
+      data: input.data,
+      moment: input.moment,
+      requestKey: input.requestKey,
+      span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
+      context: input.context,
+      gate: input.gate,
+      extra: input.extra,
+    };
+  }
+  if (previous && previous.data === input.data && previous.moment === input.moment) {
+    return previous;
+  }
+  return {
+    data: input.data,
+    moment: input.moment,
+    requestKey: input.requestKey,
+    span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
+    context: input.context,
+    gate: input.gate,
+    extra: input.extra,
+  };
+}
+
 export function effectiveCountryUnobserved(
   selection: CountrySelection,
   raw: readonly HourSpan[] | undefined,
@@ -41,6 +92,17 @@ export function effectiveCountryUnobserved(
   if (!raw?.length) return [];
   if (selection.kind !== 'group' || selection.membership !== 'hour') return [];
   return raw.map(span => [span.firstHour, span.lastHour] as const);
+}
+
+export function selectionUnobservedReason(
+  selection: CountrySelection,
+  raw: readonly HourSpan[] | undefined,
+): string | null {
+  if (!raw?.length) return null;
+  if (selection.kind === 'group' && selection.membership === 'ever') {
+    return 'Group membership is incomplete for this campaign.';
+  }
+  return null;
 }
 
 export interface FamilyFactionData {

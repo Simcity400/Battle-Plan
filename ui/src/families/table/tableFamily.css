@@ -128,18 +128,6 @@
 .tf-more-cols:focus-visible { filter: brightness(1.1); }
 .tf-th-static { overflow: hidden; text-overflow: ellipsis; }
 
-.tf-notes {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 10px;
-  font-size: var(--type-xs, 11.5px);
-  color: var(--muted);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-}
-
 .tf-body-wrap {
   position: relative;
   flex: 1 1 auto;

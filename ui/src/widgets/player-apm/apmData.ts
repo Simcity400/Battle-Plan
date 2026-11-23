@@ -11,9 +11,13 @@ const identityOrder = new Intl.Collator('en', { numeric: true });
 export function validateApm(value: unknown): ApmReply {
   const reply = value as ApmReply;
   if (!reply || typeof reply.available !== 'boolean' || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')
-    || !Array.isArray(reply.players) || !reply.players.every(player => player && typeof player.id === 'string' && typeof player.name === 'string'
+    || !Array.isArray(reply.players) || !reply.players.every(player => player && typeof player.id === 'string'
+      && (player.name === null || typeof player.name === 'string')
+      && (player.nameMissing === null || typeof player.nameMissing === 'string')
       && Array.isArray(player.tags) && player.tags.every(tag => typeof tag === 'string'))
-    || !Array.isArray(reply.series) || !reply.series.every(series => series && typeof series.id === 'string' && typeof series.name === 'string'
+    || !Array.isArray(reply.series) || !reply.series.every(series => series && typeof series.id === 'string'
+      && (series.name === null || typeof series.name === 'string')
+      && (series.nameMissing === null || typeof series.nameMissing === 'string')
       && Number.isSafeInteger(series.hour)
       && (series.tag === null || typeof series.tag === 'string') && validValue(series.summary) && Array.isArray(series.points)
       && series.points.every((point, index) => Number.isSafeInteger(point.firstHour) && Number.isSafeInteger(point.lastHour)
@@ -34,18 +38,40 @@ export function apmRuns(series: ApmSeries, paused = false): Run[] {
   return runs;
 }
 
-export function playerNames(rows: readonly { id: string; name: string }[], registry = rows): Map<string, string> {
-  const known = new Map(registry.map(row => [row.id, row.name]));
-  const named = rows.map(row => ({ id: row.id, name: known.get(row.id) ?? row.name }));
-  const shared = new Map<string, string[]>();
-  for (const row of [...registry, ...named.filter(row => !known.has(row.id))].sort((a, b) => identityOrder.compare(a.id, b.id))) {
-    const name = known.get(row.id) ?? row.name;
-    shared.set(name, [...shared.get(name) ?? [], row.id]);
+export function playerNames(
+  rows: readonly { id: string; name: string | null }[],
+  registry?: readonly { id: string; name: string | null }[],
+): Map<string, string> {
+  const dated = new Map<string, string>();
+  const seen = new Set<string>();
+  const all: { id: string; name: string }[] = [];
+  for (const row of rows) {
+    if (row.name !== null && row.name.trim() !== '') {
+      dated.set(row.id, row.name);
+      if (!seen.has(row.id)) {
+        seen.add(row.id);
+        all.push({ id: row.id, name: row.name });
+      }
+    }
   }
-  return new Map(named.map(row => {
-    const ids = shared.get(row.name)!;
-    return [row.id, ids.length > 1 ? `${row.name} (${ids.indexOf(row.id) + 1})` : row.name];
-  }));
+  if (registry) {
+    for (const row of registry) {
+      if (row.name !== null && row.name.trim() !== '' && !seen.has(row.id)) {
+        seen.add(row.id);
+        all.push({ id: row.id, name: row.name });
+      }
+    }
+  }
+  const shared = new Map<string, string[]>();
+  for (const row of all.sort((a, b) => identityOrder.compare(a.id, b.id))) {
+    shared.set(row.name, [...shared.get(row.name) ?? [], row.id]);
+  }
+  const out = new Map<string, string>();
+  for (const [id, name] of dated) {
+    const ids = shared.get(name)!;
+    out.set(id, ids.length > 1 ? `${name} (${ids.indexOf(id) + 1})` : name);
+  }
+  return out;
 }
 
 export const apmText = (value: number | null | undefined) => value == null ? 'Unknown' : value.toLocaleString(undefined, { maximumFractionDigits: 1 });

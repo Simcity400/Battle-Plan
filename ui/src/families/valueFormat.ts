@@ -1,3 +1,4 @@
+import type { ValueStateProps } from '../components/ValueState';
 import { formatNativeFixed5 } from '../charts/valueAxis.ts';
 import { canonicalAuditValue } from './audit.ts';
 import { assertValue, type Scalar, type Value } from './value.ts';
@@ -9,12 +10,50 @@ function percentCell(raw: string | bigint): string {
   return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
 }
 
+function exactTruncBigInt(value: number | bigint): bigint {
+  if (typeof value === 'bigint') return value;
+  const whole = Math.trunc(value);
+  return BigInt(whole === 0 ? 0 : whole);
+}
+
+function groupDigits(digits: string): string {
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function formatFixedDecimal(raw: number | bigint, maxDecimals: number, fixed: boolean, group: boolean, minus: string, plus = false): string {
+  if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.abs(raw) >= 2 ** 53)) {
+    const big = exactTruncBigInt(raw);
+    if (big === 0n) return '0';
+    const negative = big < 0n;
+    const digits = (negative ? -big : big).toString();
+    const whole = group ? groupDigits(digits) : digits;
+    const frac = fixed && maxDecimals > 0 ? `.${'0'.repeat(maxDecimals)}` : '';
+    return `${negative ? minus : plus ? '+' : ''}${whole}${frac}`;
+  }
+  if (raw === 0) return '0';
+  const negative = raw < 0;
+  const rounded = Math.abs(raw).toFixed(maxDecimals);
+  const dot = rounded.indexOf('.');
+  const wholeDigits = dot < 0 ? rounded : rounded.slice(0, dot);
+  const fracRaw = dot < 0 ? '' : rounded.slice(dot + 1);
+  const frac = fixed ? fracRaw : fracRaw.replace(/0+$/, '');
+  const isZero = /^0+$/.test(wholeDigits) && (!frac || /^0+$/.test(frac));
+  if (isZero) return fixed && maxDecimals > 0 ? `0.${'0'.repeat(maxDecimals)}` : '0';
+  const whole = group ? groupDigits(wholeDigits) : wholeDigits;
+  return `${negative ? minus : plus ? '+' : ''}${whole}${frac ? `.${frac}` : ''}`;
+}
+
 function amountText(value: number | bigint, decimals: number, percent = false): string {
-  let raw: number | bigint = typeof value === 'number' ? Math.trunc(value) : value;
+  let raw: number | bigint = typeof value === 'bigint'
+    ? value
+    : Math.abs(value) >= 2 ** 53
+      ? exactTruncBigInt(value)
+      : Math.trunc(value);
   if (percent) raw = typeof raw === 'number' && Math.abs(raw) < 2 ** 46 ? raw * 100 : BigInt(raw) * 100n;
   const negative = raw < 0;
-  const digits = String(negative ? -raw : raw).padStart(decimals + 1, '0');
-  const whole = digits.slice(0, digits.length - decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const abs = negative ? -raw : raw;
+  const digits = (typeof abs === 'bigint' ? abs.toString() : abs >= 2 ** 53 ? BigInt(abs).toString() : String(abs)).padStart(decimals + 1, '0');
+  const whole = groupDigits(digits.slice(0, digits.length - decimals));
   const fraction = decimals ? digits.slice(digits.length - decimals).replace(/0+$/, '') : '';
   return `${negative ? '−' : ''}${whole}${fraction ? `.${fraction}` : ''}${percent ? '%' : ''}`;
 }
@@ -48,8 +87,9 @@ function formatGroupedBigInt(raw: bigint, plus = false): string {
 }
 
 export function formatClockSeconds(seconds: number | bigint): string {
-  if (typeof seconds === 'bigint') {
-    const total = seconds < 0n ? 0n : seconds;
+  if (typeof seconds === 'bigint' || (Number.isFinite(seconds) && Math.abs(seconds) >= 2 ** 53)) {
+    const floored = typeof seconds === 'bigint' ? seconds : BigInt(Math.floor(seconds));
+    const total = floored < 0n ? 0n : floored;
     const hours = total / 3600n;
     const minutes = (total / 60n) % 60n;
     const secs = total % 60n;
@@ -62,7 +102,7 @@ export function formatClockSeconds(seconds: number | bigint): string {
 }
 
 export function formatFixed5Amount(value: number | bigint): string {
-  const big = typeof value === 'bigint' ? value : BigInt(Math.trunc(value));
+  const big = exactTruncBigInt(value);
   if (big === 0n) return '0';
   if (big < 0n) return '!';
   return formatNativeFixed5(big, 2);
@@ -71,38 +111,27 @@ export function formatFixed5Amount(value: number | bigint): string {
 export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   if (typeof raw === 'string') return raw;
   if (!format || format === 'integer') {
-    if (typeof raw === 'bigint') {
-      const negative = raw < 0n;
-      const digits = String(negative ? -raw : raw).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      return `${negative ? '\u2212' : ''}${digits}`;
+    if (typeof raw === 'bigint' || (Number.isFinite(raw) && Math.abs(raw) >= 2 ** 53)) {
+      return formatGroupedBigInt(exactTruncBigInt(raw));
     }
     const whole = Math.trunc(raw);
     if (whole === 0) return '0';
     const negative = whole < 0;
-    const digits = String(Math.abs(whole)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const digits = groupDigits(String(Math.abs(whole)));
     return `${negative ? '\u2212' : ''}${digits}`;
   }
   if (format === 'clockSeconds') return formatClockSeconds(raw);
   if (format === 'decimal1') {
-    if (typeof raw === 'bigint') return formatGroupedBigInt(raw);
-    if (raw === 0) return '0';
-    const negative = raw < 0;
-    const text = Math.abs(raw).toLocaleString('en-US', { maximumFractionDigits: 1 });
-    return `${negative ? '\u2212' : ''}${text}`;
+    return formatFixedDecimal(raw, 1, false, true, '\u2212');
   }
   if (format === 'percent2') {
-    if (typeof raw === 'bigint') {
-      if (raw === 0n) return '0%';
-      const negative = raw < 0n;
-      return `${negative ? '-' : ''}${(negative ? -raw : raw).toString()}.00%`;
-    }
-    if (raw === 0) return '0%';
-    return `${raw.toFixed(2)}%`;
+    if (raw === 0 || raw === 0n) return '0%';
+    return `${formatFixedDecimal(raw, 2, true, false, '-')}%`;
   }
   if (format === 'fixed5Percent') {
     if (raw === 0 || raw === 0n) return '0%';
     if (typeof raw === 'bigint' || Math.abs(raw) >= 2 ** 40) {
-      return percentCell(typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw)));
+      return percentCell(exactTruncBigInt(raw));
     }
     const int = Math.trunc(raw);
     const pct = Math.min(100, Math.max(0, Math.trunc((int + (int < 0 ? -50000 : 50000)) / 100000)));
@@ -110,7 +139,7 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
   }
   if (format === 'fixed5Amount') return formatFixed5Amount(raw);
   if (format === 'fixed5Width') {
-    const big = typeof raw === 'bigint' ? raw : BigInt(Math.trunc(raw));
+    const big = exactTruncBigInt(raw);
     if (big === 0n) return '0';
     return formatNativeFixed5(big, 1);
   }
@@ -120,12 +149,8 @@ export function formatScalar(raw: Scalar, format?: ValueFormat): string {
     return `${format.percent ? '0%' : '0'}${suffix}`;
   }
   if (format.maxDecimals !== undefined && format.decimals === 0) {
-    if (typeof raw === 'bigint') {
-      return `${formatGroupedBigInt(raw, format.signed === true)}${format.percent ? '%' : ''}${suffix}`;
-    }
-    const negative = raw < 0;
-    const text = Math.abs(raw).toLocaleString('en-US', { maximumFractionDigits: format.maxDecimals });
-    return `${negative ? '\u2212' : sign}${text}${format.percent ? '%' : ''}${suffix}`;
+    const formatted = formatFixedDecimal(raw, format.maxDecimals, false, true, '\u2212', format.signed === true);
+    return `${formatted}${format.percent ? '%' : ''}${suffix}`;
   }
   return `${sign}${amountText(raw, format.decimals, format.percent)}${suffix}`;
 }
@@ -155,6 +180,27 @@ export function formatValueState(value: Value, format?: ValueFormat): FormattedV
       const spoken = `${lead}, partial: ${value.reason}`;
       return { kind: 'partial', text, reason: value.reason, ...(value.atLeast ? { atLeast: true } : {}), spoken, audit: spoken };
     }
+  }
+}
+
+export function valueStateProps(value: Value, format?: ValueFormat, narrow = false): ValueStateProps {
+  const formatted = formatValueState(value, format);
+  switch (formatted.kind) {
+    case 'known':
+    case 'zero':
+      return { kind: formatted.kind, text: formatted.text, ...(narrow ? { narrow: true } : {}) };
+    case 'notRecorded':
+      return { kind: 'missing', reason: formatted.reason, ...(narrow ? { narrow: true } : {}) };
+    case 'notApplicable':
+      return { kind: 'notApplicable', reason: formatted.reason, ...(narrow ? { narrow: true } : {}) };
+    case 'partial':
+      return {
+        kind: 'partial',
+        text: formatted.text,
+        reason: formatted.reason,
+        ...(formatted.atLeast ? { atLeast: true } : {}),
+        ...(narrow ? { narrow: true } : {}),
+      };
   }
 }
 

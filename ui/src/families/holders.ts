@@ -1,3 +1,5 @@
+import { compareTags } from '../dashboard/tagOrder.ts';
+
 export type HourRanges = readonly (readonly [number, number])[];
 
 export interface HolderRun {
@@ -13,6 +15,12 @@ export interface RawSlotHolderRun {
   readonly firstHour: number;
   readonly lastHour: number;
   readonly countryId: number;
+}
+
+function beatsSlotHolder(candidate: { readonly countryId: number; readonly firstHour: number; readonly tag: string }, current: { readonly countryId: number; readonly firstHour: number; readonly tag: string }): boolean {
+  if (candidate.countryId !== current.countryId) return candidate.countryId < current.countryId;
+  if (candidate.firstHour !== current.firstHour) return candidate.firstHour < current.firstHour;
+  return compareTags(candidate.tag, current.tag) < 0;
 }
 
 export function resolveSlotHolderRuns(raw: readonly RawSlotHolderRun[]): HolderRun[] {
@@ -34,7 +42,7 @@ export function resolveSlotHolderRuns(raw: readonly RawSlotHolderRun[]): HolderR
     for (let j = 0; j < raw.length; j++) {
       const run = raw[j]!;
       if (run.firstHour <= from && to <= run.lastHour) {
-        if (!winner || run.countryId < winner.countryId || (run.countryId === winner.countryId && run.tag < winner.tag)) {
+        if (!winner || beatsSlotHolder(run, winner)) {
           winner = run;
         }
       }
@@ -102,7 +110,10 @@ export function holderRunAt(runs: readonly HolderRun[] | undefined, hour: number
       if (
         !best
         || (run.countryId !== undefined && best.countryId !== undefined
-          ? (run.countryId < best.countryId || (run.countryId === best.countryId && run.tag < best.tag))
+          ? beatsSlotHolder(
+              { countryId: run.countryId, firstHour: run.firstHour, tag: run.tag },
+              { countryId: best.countryId, firstHour: best.firstHour, tag: best.tag },
+            )
           : false)
       ) {
         best = run;
@@ -121,7 +132,7 @@ export function buildChangeIndex(edges: Iterable<number>): readonly number[] {
   for (const edge of edges) {
     if (Number.isFinite(edge)) unique.add(edge);
   }
-  return [...unique].sort((a, b) => a - b);
+  return Object.freeze([...unique].sort((a, b) => a - b));
 }
 
 export function nextChangeAfter(bounds: readonly number[] | undefined, hour: number): number {
@@ -138,7 +149,43 @@ export function nextChangeAfter(bounds: readonly number[] | undefined, hour: num
 
 const holdersIndexCache = new WeakMap<object, readonly number[]>();
 const rangesIndexCache = new WeakMap<object, readonly number[]>();
+const windowRangesIndexCache = new WeakMap<object, Map<number, readonly number[]>>();
 const membershipIndexCache = new WeakMap<object, readonly number[]>();
+
+const mergedRangesCache = new WeakMap<object, readonly (readonly [number, number])[]>();
+
+function freezeRanges(ranges: HourRanges): void {
+  for (let i = 0; i < ranges.length; i++) {
+    if (!Object.isFrozen(ranges[i])) Object.freeze(ranges[i]);
+  }
+  if (!Object.isFrozen(ranges)) Object.freeze(ranges);
+}
+
+function indexedRanges(ranges: HourRanges): readonly (readonly [number, number])[] {
+  let merged = mergedRangesCache.get(ranges);
+  if (merged) return merged;
+  freezeRanges(ranges);
+  const valid: [number, number][] = [];
+  for (let i = 0; i < ranges.length; i++) {
+    const [first, last] = ranges[i]!;
+    if (first <= last) valid.push([first, last]);
+  }
+  valid.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out: (readonly [number, number])[] = [];
+  for (let i = 0; i < valid.length; i++) {
+    const [first, last] = valid[i]!;
+    const prev = out[out.length - 1] as [number, number] | undefined;
+    if (prev && prev[1] + 1 >= first) {
+      if (last > prev[1]) prev[1] = last;
+    } else {
+      out.push([first, last]);
+    }
+  }
+  for (let i = 0; i < out.length; i++) Object.freeze(out[i]);
+  merged = Object.freeze(out);
+  mergedRangesCache.set(ranges, merged);
+  return merged;
+}
 
 export function nextHoldersChange(holders: Readonly<Record<string, readonly HolderRun[]>> | null | undefined, hour: number): number {
   if (!holders) return Infinity;
@@ -150,8 +197,11 @@ export function nextHoldersChange(holders: Readonly<Record<string, readonly Hold
       for (let i = 0; i < runs.length; i++) {
         const run = runs[i]!;
         edges.push(run.firstHour, run.lastHour + 1);
+        Object.freeze(run);
       }
+      Object.freeze(runs);
     }
+    Object.freeze(holders);
     bounds = buildChangeIndex(edges);
     holdersIndexCache.set(holders, bounds);
   }
@@ -167,8 +217,30 @@ export function nextRangesChange(ranges: HourRanges | null | undefined, hour: nu
       const [first, last] = ranges[i]!;
       edges.push(first, last + 1);
     }
+    freezeRanges(ranges);
     bounds = buildChangeIndex(edges);
     rangesIndexCache.set(ranges, bounds);
+  }
+  return nextChangeAfter(bounds, hour);
+}
+
+export function nextWindowRangesChange(ranges: HourRanges | null | undefined, windowHours: number, hour: number): number {
+  if (!ranges || !ranges.length) return Infinity;
+  let byWindow = windowRangesIndexCache.get(ranges);
+  if (!byWindow) {
+    freezeRanges(ranges);
+    byWindow = new Map();
+    windowRangesIndexCache.set(ranges, byWindow);
+  }
+  let bounds = byWindow.get(windowHours);
+  if (!bounds) {
+    const edges: number[] = [];
+    for (let i = 0; i < ranges.length; i++) {
+      const [first, last] = ranges[i]!;
+      edges.push(first, last + windowHours);
+    }
+    bounds = buildChangeIndex(edges);
+    byWindow.set(windowHours, bounds);
   }
   return nextChangeAfter(bounds, hour);
 }
@@ -184,20 +256,31 @@ export function nextMembershipChange(membership: Readonly<Record<string, HourRan
         const [first, last] = ranges[i]!;
         edges.push(first, last + 1);
       }
+      freezeRanges(ranges);
     }
+    Object.freeze(membership);
     bounds = buildChangeIndex(edges);
     membershipIndexCache.set(membership, bounds);
   }
   return nextChangeAfter(bounds, hour);
 }
 
-export function inHourRanges(ranges: HourRanges | null | undefined, hour: number): boolean {
-  if (!ranges || !ranges.length) return false;
-  for (let i = 0; i < ranges.length; i++) {
-    const [first, last] = ranges[i]!;
-    if (first <= hour && hour <= last) return true;
+export function overlapsHourRanges(ranges: HourRanges | null | undefined, firstHour: number, lastHour: number): boolean {
+  if (!ranges || !ranges.length || firstHour > lastHour) return false;
+  const merged = indexedRanges(ranges);
+  if (!merged.length) return false;
+  let low = 0;
+  let high = merged.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (merged[mid]![1] < firstHour) low = mid + 1;
+    else high = mid;
   }
-  return false;
+  return low < merged.length && merged[low]![0] <= lastHour;
+}
+
+export function inHourRanges(ranges: HourRanges | null | undefined, hour: number): boolean {
+  return overlapsHourRanges(ranges, hour, hour);
 }
 
 export interface FamilyFactionRun {
@@ -230,9 +313,13 @@ export function nextFactionsChange(
           for (let j = 0; j < run.names.length; j++) {
             const nameRun = run.names[j]!;
             edges.push(nameRun.firstHour, nameRun.lastHour + 1);
+            Object.freeze(nameRun);
           }
+          Object.freeze(run.names);
         }
+        Object.freeze(run);
       }
+      Object.freeze(runs);
       bounds = buildChangeIndex(edges);
       factionBoundsCache.set(runs, bounds);
     }

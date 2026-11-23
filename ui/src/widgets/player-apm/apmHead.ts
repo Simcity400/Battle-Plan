@@ -1,11 +1,12 @@
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import type { SortValue } from '../../charts/table/logic';
-import { CELL, cellState, cellValue, rowName } from '../../dashboard/follow/message.ts';
+import { CELL, cellState, cellValue, rowName, textAt } from '../../dashboard/follow/message.ts';
 import type { FollowedAnswer, FollowedRows } from '../../dashboard/follow/message';
-import type { ApmGroup, ApmMembership, ApmSeries, ApmValue } from '../../generated/dashboard';
+import type { ApmGroup, ApmMembership, ApmPlayer, ApmSeries, ApmValue } from '../../generated/dashboard';
+import { playerNames } from './apmData.ts';
 
-const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8 } as const;
+const APM = { apm: 0, confirmedApm: 1, orders: 2, pausedOrders: 3, minutes: 4, complete: 5, gaps: 6, tag: 7, hour: 8, name: 9, nameMissing: 10 } as const;
 const CLOCK = { recorded: 0, playing: 1, paused: 2, complete: 3 } as const;
 
 const bits = new DataView(new ArrayBuffer(8));
@@ -15,13 +16,8 @@ function float(answer: FollowedRows, at: number): number | null {
   return bits.getFloat64(0, true);
 }
 const whole = (answer: FollowedRows, at: number): bigint | null => cellState(answer, at) === CELL.value ? cellValue(answer, at) : null;
-
-function unpacked(raw: bigint | null): string | null {
-  if (raw === null) return null;
-  let out = '';
-  for (let value = BigInt.asUintN(64, raw); value > 0n; value >>= 8n) out += String.fromCharCode(Number(value & 0xffn));
-  return out || null;
-}
+const textCell = (answer: FollowedRows, at: number): string | null =>
+  cellState(answer, at) === CELL.value ? textAt(answer, Number(cellValue(answer, at))) : null;
 
 export function apmHeadQuery(params: { branchId: string; group: ApmGroup; tags: string[] | null; membership: ApmMembership[] | null; players: string[] },
   branch: { firstHour: number; lastHour: number }, windowHours: number) {
@@ -44,8 +40,11 @@ export function apmHeadRows(answer: FollowedAnswer | undefined): ApmSeries[] {
   const held = rowsOf(answer);
   if (!held) return [];
   return Array.from({ length: held.rows }, (_, row) => {
-    const at = row * held.columns, id = rowName(held, row) ?? String(row), tag = unpacked(whole(held, at + APM.tag));
-    return { id, name: id, tag, hour: Number(whole(held, at + APM.hour) ?? 0n), summary: valueAt(held, row), points: [] };
+    const at = row * held.columns, id = rowName(held, row) ?? String(row);
+    const tag = textCell(held, at + APM.tag);
+    const name = held.columns > APM.name ? textCell(held, at + APM.name) : null;
+    const nameMissing = held.columns > APM.nameMissing ? textCell(held, at + APM.nameMissing) : null;
+    return { id, name, nameMissing, tag, hour: Number(whole(held, at + APM.hour) ?? 0n), summary: valueAt(held, row), points: [] };
   });
 }
 
@@ -54,7 +53,7 @@ export function apmHeadStructure(answer: FollowedAnswer | undefined): string {
   const held = rowsOf(answer);
   if (!held) return '';
   let out = '';
-  for (let row = 0; row < held.rows; row++) out += `${rowName(held, row)}:${unpacked(whole(held, row * held.columns + APM.tag)) ?? ''}\u0000`;
+  for (let row = 0; row < held.rows; row++) out += `${rowName(held, row)}:${textCell(held, row * held.columns + APM.tag) ?? ''}\u0000`;
   return out;
 }
 
@@ -104,4 +103,54 @@ export function apmPausedView(head: number | null, first: number, last: number, 
 
 export function apmHolders(rows: readonly Pick<ApmSeries, 'id' | 'tag' | 'hour'>[], shown: number | null): { key: string; tag: string; hour: number }[] {
   return rows.flatMap(row => row.tag ? [{ key: row.id, tag: row.tag, hour: shown === null ? row.hour : Math.min(row.hour, shown) }] : []);
+}
+
+export const ABSENT_PLAYER_NAME_REASON = 'Player name was not recorded in the period to this hour.';
+
+export function apmHeadNamesKey(answer: FollowedAnswer | undefined): string {
+  if (!answer) return '';
+  if (answer.kind === 'notRecorded') return `notRecorded:${answer.reason}`;
+  const rows = apmHeadRows(answer);
+  if (!rows.length) return '';
+  return JSON.stringify(rows.map(row => [row.id, row.name, row.nameMissing]));
+}
+
+export function datedPlayerNames(
+  rows: readonly Pick<ApmSeries, 'id' | 'name'>[],
+  headAnswer: FollowedAnswer | undefined,
+  registry?: readonly Pick<ApmPlayer, 'id' | 'name'>[],
+): Map<string, string> {
+  if (!headAnswer) return playerNames(rows, registry);
+  const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row.name]));
+  const datedRows = rows.map(row => ({ id: row.id, name: headById.get(row.id) ?? null }));
+  return playerNames(datedRows, registry);
+}
+
+export function datedPlayerNameMissing(
+  rows: readonly Pick<ApmSeries, 'id' | 'name' | 'nameMissing'>[],
+  headAnswer: FollowedAnswer | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!headAnswer) {
+    for (const row of rows) {
+      if (row.name === null || row.name.trim() === '') {
+        out.set(row.id, row.nameMissing ?? ABSENT_PLAYER_NAME_REASON);
+      }
+    }
+    return out;
+  }
+  if (headAnswer.kind === 'notRecorded') {
+    for (const row of rows) out.set(row.id, headAnswer.reason);
+    return out;
+  }
+  const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row]));
+  for (const row of rows) {
+    const dated = headById.get(row.id);
+    if (!dated) {
+      out.set(row.id, ABSENT_PLAYER_NAME_REASON);
+    } else if (dated.name === null || dated.name.trim() === '') {
+      out.set(row.id, dated.nameMissing ?? ABSENT_PLAYER_NAME_REASON);
+    }
+  }
+  return out;
 }

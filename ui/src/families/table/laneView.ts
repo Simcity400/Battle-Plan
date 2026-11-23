@@ -4,10 +4,11 @@ import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
-import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
+import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
+import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
-import { nextLookChange, type CountryLooksMap } from './looks.ts';
+import { nextLookChange, type CountryLooksMap } from '../looks.ts';
 import {
   deriveTableAudit,
   deriveTableMirror,
@@ -19,7 +20,7 @@ import {
   type TableModel,
 } from './model.ts';
 import {
-  collectCellIcons,
+  collectVisibleCellIcons,
   createTablePicture,
   drawFamilyTable,
   glideDurationForSpeed,
@@ -69,12 +70,14 @@ interface PhaseTally {
   auditMs: number;
 }
 
+type NavTuple = readonly [string, string, number, number, string, unknown];
+
 interface HeldFamilyTable {
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
   picture: FamilyTablePicture;
   content: string;
-  icons: Map<string, ImageBitmap | null>;
+  art: FamilyArtLoader;
   widthConfigKey: string;
   fixedWidths: Record<string, number>;
   priorRows: readonly FlatTableRow[];
@@ -94,7 +97,12 @@ interface HeldFamilyTable {
   validFrom: number;
   validUntil: number;
   cachedModel: TableModel | null;
+  cachedModelKind: string;
+  cachedModelHasTimeBoundaries: boolean;
+  cachedModelNextAt: number;
   cachedRows: readonly FlatTableRow[];
+  cachedHasGroupHeaders: boolean;
+  cachedRowIndex: Map<string, number>;
 
   layoutCols: readonly TableColumnSpec[] | null;
   layoutSettings: TableSettings | null;
@@ -108,7 +116,7 @@ interface HeldFamilyTable {
 
   metaSig: string;
   metaField: FieldEntry | null;
-  navSig: string;
+  navItems: readonly NavTuple[] | null;
   navField: FieldEntry | null;
   tableSig: string;
   tableField: FieldEntry | null;
@@ -125,6 +133,7 @@ interface HeldFamilyTable {
   flusher: TrailingFlushScheduler;
 
   auditId: number;
+  auditWindowKey: string;
   auditField: FieldEntry | null;
   phases: PhaseTally;
   phasesField: FieldEntry | null;
@@ -221,11 +230,13 @@ function lazyLiveMap(
 export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): FamilySources {
   let answers: Map<string, FollowedAnswer | undefined> | null = null;
   let panels: Map<string, unknown> | null = null;
+  let refused: Map<string, string> | null = null;
   let live: ReadonlyMap<string, LiveValues<number | bigint | string> | null> | null = null;
   const ensureNonLive = () => {
-    if (answers && panels) return;
+    if (answers && panels && refused) return;
     answers = new Map();
     panels = new Map();
+    refused = new Map();
     if (binding.staticAnswers) {
       for (const [name, answer] of Object.entries(binding.staticAnswers)) answers.set(name, answer);
     }
@@ -238,23 +249,67 @@ export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): Fam
       const head = picture?.parts[0]?.value;
       if (!head) continue;
       if (head.kind === 'answer') answers.set(name, answerOf(head));
-      else if (head.kind === 'panel' && head.refused === null) panels.set(name, head.data);
+      else if (head.kind === 'panel') {
+        if (head.refused === null) panels.set(name, head.data);
+        else refused.set(name, head.refused);
+      }
     }
   };
   return {
     get answers() { ensureNonLive(); return answers!; },
     get panels() { ensureNonLive(); return panels!; },
+    get refused() { ensureNonLive(); return refused!; },
     get live() { return live ??= lazyLiveMap(scene, binding); },
   };
 }
 
-function loadIcon(held: HeldFamilyTable, url: string) {
-  if (held.icons.has(url)) return;
-  held.icons.set(url, null);
-  void fetch(url)
-    .then(response => { if (!response.ok) throw new Error(`icon ${response.status}`); return response.blob(); })
-    .then(blob => createImageBitmap(blob))
-    .then(image => { held.icons.set(url, image); held.picture = createTablePicture(); held.wake?.(); }, () => {});
+function sameColumnSpecs(a: readonly TableColumnSpec[] | null, b: readonly TableColumnSpec[]): boolean {
+  if (a === b) return true;
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ca = a[i]!, cb = b[i]!;
+    if (
+      ca.key !== cb.key
+      || ca.label !== cb.label
+      || ca.as !== cb.as
+      || ca.tone !== cb.tone
+      || ca.priority !== cb.priority
+      || ca.numeric !== cb.numeric
+      || ca.text !== cb.text
+      || ca.hideable !== cb.hideable
+      || ca.sortable !== cb.sortable
+      || ca.hint !== cb.hint
+      || ca.format !== cb.format
+      || ca.offered.length !== cb.offered.length
+      || (ca.widest?.length ?? 0) !== (cb.widest?.length ?? 0)
+    ) return false;
+    for (let j = 0; j < ca.offered.length; j++) if (ca.offered[j] !== cb.offered[j]) return false;
+    if (ca.widest && cb.widest) {
+      for (let j = 0; j < ca.widest.length; j++) if (ca.widest[j] !== cb.widest[j]) return false;
+    }
+  }
+  return true;
+}
+
+function sameNavItems(prev: readonly NavTuple[] | null, rows: readonly FlatTableRow[]): boolean {
+  if (!prev) return false;
+  let pos = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i]!;
+    if (item.kind !== 'data') continue;
+    const old = prev[pos++];
+    if (!old) return false;
+    const treeState = item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1;
+    if (
+      old[0] !== item.key
+      || old[1] !== item.name
+      || old[2] !== i
+      || old[3] !== treeState
+      || old[4] !== (item.parent ?? '')
+      || old[5] !== (item.row.meta ?? null)
+    ) return false;
+  }
+  return pos === prev.length;
 }
 
 function cachedField(held: HeldFamilyTable, name: string, text: string, content: () => string): string {
@@ -266,12 +321,16 @@ function cachedField(held: HeldFamilyTable, name: string, text: string, content:
 }
 
 function widthConfigOf(columns: readonly TableColumnSpec[], settings: TableSettings, theme: TableTheme | undefined): string {
-  let out = `${theme?.font ?? ''}|${theme?.fontSize.small ?? 0}|${theme?.fontSize.body ?? 0}|${settings.order.join(',')}`;
-  for (const c of columns) {
-    const own = settings.columns[c.key];
-    out += `;${c.key}:${c.label}:${c.as}:${own?.show ?? true}:${own?.as ?? ''}:${own?.width ?? ''}:${c.numeric ? 1 : 0}`;
-  }
-  return out;
+  return JSON.stringify([
+    theme?.font ?? '',
+    theme?.fontSize.small ?? 0,
+    theme?.fontSize.body ?? 0,
+    settings.order,
+    columns.map(c => {
+      const own = settings.columns[c.key];
+      return [c.key, c.label, c.as, own?.show ?? true, own?.as ?? '', own?.width ?? null, c.numeric ? 1 : 0];
+    }),
+  ]);
 }
 
 function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readonly FlatTableRow[]): Record<string, string[]> {
@@ -293,32 +352,35 @@ function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readon
   return samples;
 }
 
-function navSignature(rows: readonly FlatTableRow[]): string {
-  let sig = String(rows.length);
-  for (let i = 0; i < rows.length; i++) {
-    const item = rows[i]!;
-    if (item.kind === 'data') {
-      const meta = item.row.meta === undefined ? '' : JSON.stringify(item.row.meta);
-      sig += `\u0000${item.key}:${item.name}:${item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1}:${meta}`;
-    } else {
-      sig += `\u0001${item.key}`;
-    }
-  }
-  return sig;
-}
-
 function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, rankWidth: number): string {
-  let cols = '';
-  for (let i = 0; i < model.columns.length; i++) {
-    const c = model.columns[i]!;
-    cols += `,${c.key}:${c.label}:${c.priority}:${c.as}:${c.offered.join('.')}:${c.text ? 1 : 0}:${c.hideable === false ? 0 : 1}:${c.sortable === false ? 0 : 1}:${c.numeric ? 1 : 0}:${c.hint ?? ''}`;
-  }
-  return `${model.empty ?? ''}|${model.emptyDetail ?? ''}|${model.emptyKind ?? 'empty'}|${model.summaryPill ?? ''}|${(model.notes ?? []).join('\u0000')}|${(model.warnings ?? []).join('\u0000')}|${hasTree ? 1 : 0}|${model.unsorted ? 1 : 0}|${rankShown ? 1 : 0}|${rankWidth}|${cols}`;
+  return JSON.stringify([
+    model.empty ?? null,
+    model.emptyDetail ?? null,
+    model.emptyKind ?? 'empty',
+    model.summaryPill ?? null,
+    model.notes ?? [],
+    model.warnings ?? [],
+    hasTree,
+    model.unsorted === true,
+    rankShown,
+    rankWidth,
+    model.columns.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ? 1 : 0, c.hideable === false ? 0 : 1, c.sortable === false ? 0 : 1, c.numeric ? 1 : 0, c.hint ?? '']),
+  ]);
 }
 
-export function familyTableLaneView(wake: (widget: number) => void): LaneView {
+export interface FamilyTableLaneOptions {
+  readonly cadenceTimers?: CadenceTimers;
+  readonly clock?: () => number;
+  readonly fetchBitmap?: FamilyArtFetcher;
+  readonly artMaxEntries?: number;
+}
+
+export function familyTableLaneView(
+  wake: (widget: number) => void,
+  laneOptions?: FamilyTableLaneOptions,
+): LaneView {
   return {
-    next(scene: Scene, hour: number): number {
+    next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyTableBinding(bound)) return Infinity;
       const projection = tableProjection(bound.kind);
@@ -331,7 +393,27 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         const sources = sourcesFromScene(scene, bound);
         soonest = Math.min(soonest, projection.nextChange(sources, hour, bound.options));
       }
+      const held = state?.get('familyTable') as HeldFamilyTable | undefined;
+      if (
+        held?.cachedModel
+        && held.cachedModelHasTimeBoundaries
+        && held.cachedModelKind === bound.kind
+        && samePictures(held.prevParts, scene.pictures)
+        && held.prevOptions === bound.options
+        && held.prevStaticPanels === bound.staticPanels
+        && held.prevStaticAnswers === bound.staticAnswers
+      ) {
+        soonest = Math.min(soonest, nextTableChange(held.cachedModel, hour));
+      }
       return soonest;
+    },
+    unmount(_widget: number, state: Map<string, unknown>): void {
+      const held = state.get('familyTable') as HeldFamilyTable | undefined;
+      if (held) {
+        held.flusher.cancel();
+        held.art.dispose();
+        state.delete('familyTable');
+      }
     },
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
       const bound = input.model;
@@ -354,12 +436,16 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
         const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const art = new FamilyArtLoader({
+          maxEntries: laneOptions?.artMaxEntries,
+          fetchBitmap: laneOptions?.fetchBitmap,
+        });
         state.set('familyTable', held = {
           canvas,
           ctx,
           picture: createTablePicture(),
           content: content(),
-          icons: new Map(),
+          art,
           widthConfigKey: '',
           fixedWidths: {},
           priorRows: [],
@@ -376,7 +462,12 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           validFrom: Infinity,
           validUntil: -Infinity,
           cachedModel: null,
+          cachedModelKind: '',
+          cachedModelHasTimeBoundaries: false,
+          cachedModelNextAt: Infinity,
           cachedRows: [],
+          cachedHasGroupHeaders: false,
+          cachedRowIndex: new Map(),
           layoutCols: null,
           layoutSettings: null,
           layoutWidth: -1,
@@ -388,7 +479,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           widthsField: null,
           metaSig: '',
           metaField: null,
-          navSig: '',
+          navItems: null,
           navField: null,
           tableSig: '',
           tableField: null,
@@ -398,11 +489,17 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           tipField: null,
           focusTipGate,
           focusTipField: null,
-          flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate]),
+          flusher: new TrailingFlushScheduler([mirrorGate, tipGate, focusTipGate], laneOptions?.cadenceTimers),
           auditId: -1,
+          auditWindowKey: '',
           auditField: null,
           phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 },
           phasesField: null,
+        });
+        const holder = held;
+        art.setOnLoad(() => {
+          holder.picture = createTablePicture();
+          holder.wake?.();
         });
       }
       held.wake = () => wake(input.widget);
@@ -413,8 +510,9 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       }
       held.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      const sortSig = `${bound.settings.sort.column}\u0000${bound.settings.sort.direction}`;
+      const sortSig = JSON.stringify([bound.settings.sort.column, bound.settings.sort.direction]);
       const canReuseModel = held.cachedModel !== null
+        && held.cachedModelKind === bound.kind
         && samePictures(held.prevParts, input.pictures)
         && held.prevOptions === bound.options
         && held.prevStaticPanels === bound.staticPanels
@@ -433,14 +531,23 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       } else {
         const sources = sourcesFromScene(input, bound);
         model = projection.project(sources, input.hour, bound.options);
+        const modelNextAt = nextTableChange(model, input.hour);
         flatRows = resolveTableRows(model, bound.settings, bound.expanded);
-        for (const url of collectCellIcons(flatRows)) loadIcon(held, url);
+        let hasGroups = false;
+        const rowIndex = new Map<string, number>();
+        for (let i = 0; i < flatRows.length; i++) {
+          const item = flatRows[i]!;
+          if (item.kind === 'group-header') hasGroups = true;
+          else rowIndex.set(item.key, i);
+        }
         let nextBoundary = Math.min(
           nextLookChange(optionsLooks(bound.options), input.hour),
           nextLookChange(bound.theme?.countryLooks, input.hour),
+          modelNextAt,
         );
-        if (projection.nextChange) nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
-        if (model.rows.some(r => r.revealAt !== undefined)) nextBoundary = Math.min(nextBoundary, nextTableChange(model, input.hour));
+        if (projection.nextChange) {
+          nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
+        }
         held.prevParts = snapshotPictures(input.pictures);
         held.prevOptions = bound.options;
         held.prevStaticPanels = bound.staticPanels;
@@ -450,15 +557,24 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         held.validFrom = input.hour;
         held.validUntil = nextBoundary;
         held.cachedModel = model;
+        held.cachedModelKind = bound.kind;
+        held.cachedModelNextAt = modelNextAt;
+        held.cachedModelHasTimeBoundaries = Number.isFinite(modelNextAt);
         held.cachedRows = flatRows;
+        held.cachedHasGroupHeaders = hasGroups;
+        held.cachedRowIndex = rowIndex;
       }
       const tProj = timed ? performance.now() : 0;
+      if (model.refused !== undefined) {
+        held.flusher.cancel();
+        return { mode: 'refused', reason: model.refused, surfaces: [], fields: {}, motion: false };
+      }
 
       const rankShown = model.rank === true;
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
       const layoutSame = held.cachedLayout !== null
-        && held.layoutCols === model.columns
+        && sameColumnSpecs(held.layoutCols, model.columns)
         && held.layoutSettings === bound.settings
         && held.layoutWidth === bound.width
         && held.layoutRankShown === rankShown
@@ -516,7 +632,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         held.widthsField = { value: widthsPayload, content: cachedField(held, 'widths', widthsText, content) };
       }
 
-      const now = input.now;
+      const now = laneOptions?.clock ? laneOptions.clock() : input.now;
       const glideMs = glideDurationForSpeed(input.speed, bound.reducedMotion === true);
       const rowHeight = ROW_HEIGHT[bound.settings.density];
       if (modelChanged) {
@@ -563,6 +679,10 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       const selectedKey = bound.selectedKey ?? null;
       const focusedKey = bound.focusedKey ?? null;
 
+      const visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
+      const visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+      held.art.requestVisible(collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast));
+
       let painted = false;
       if (bound.theme) {
         const result = drawFamilyTable(held.ctx, {
@@ -585,8 +705,9 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
           selectedKey,
           focusedKey,
           empty: model.empty,
-          icons: held.icons,
+          icons: held.art.map,
           dpr,
+          hasGroupHeaders: held.cachedHasGroupHeaders,
         }, held.picture);
         painted = result.drew;
       }
@@ -624,23 +745,22 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       fields.meta = held.metaField!;
 
       if (modelChanged || !held.navField) {
-        const nSig = navSignature(flatRows);
-        if (nSig !== held.navSig || !held.navField) {
-          held.navSig = nSig;
-          const navItems: (readonly [string, string, number, number, string, unknown])[] = [];
+        if (!held.navField || !sameNavItems(held.navItems, flatRows)) {
+          const navItems: NavTuple[] = [];
           for (let i = 0; i < flatRows.length; i++) {
             const item = flatRows[i]!;
             if (item.kind === 'data') {
               navItems.push([item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null]);
             }
           }
+          held.navItems = navItems;
           held.navField = { value: navItems, content: content() };
         }
       }
       fields.nav = held.navField!;
 
-      const focusedIndex = focusedKey ? flatRows.findIndex(item => item.kind === 'data' && item.key === focusedKey) : -1;
-      const inspectedPresent = inspectedKey ? flatRows.some(item => item.kind === 'data' && item.key === inspectedKey) : false;
+      const focusedIndex = focusedKey ? (held.cachedRowIndex.get(focusedKey) ?? -1) : -1;
+      const inspectedPresent = inspectedKey ? held.cachedRowIndex.has(inspectedKey) : false;
       const tSig = `${flatRows.length}:${focusedIndex}:${inspectedPresent ? 1 : 0}`;
       if (tSig !== held.tableSig || !held.tableField) {
         held.tableSig = tSig;
@@ -652,7 +772,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
       if (modelChanged || layoutChanged) held.mirrorGate.invalidate();
       if (!held.mirrorField || held.mirrorGate.due(now, input.speed, mirrorKey)) {
         const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey);
+        const mirror = deriveTableMirror(flatRows, visibleSpecs, model.hour, rankShown, bound.window, focusedKey, focusedIndex);
         const mirrorText = JSON.stringify(mirror);
         held.mirrorField = { value: mirror, content: cachedField(held, 'mirror', mirrorText, content) };
         held.mirrorGate.record(now, mirrorKey);
@@ -669,12 +789,14 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         return builtTip;
       };
 
+      const stringifyTip = (payload: unknown): string => JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
+
       if (inspectedKey) {
         if (modelChanged || layoutChanged) held.tipGate.invalidate();
         if (!held.tipField || held.tipGate.due(now, input.speed, inspectedKey)) {
           const tooltip = getTip(inspectedKey);
           const tipPayload = { key: `row:${inspectedKey}`, text: tooltip ? { hour: model.hour, rowKey: inspectedKey, content: tooltip } : null };
-          const tipText = JSON.stringify(tipPayload);
+          const tipText = stringifyTip(tipPayload);
           held.tipField = { value: tipPayload, content: cachedField(held, 'tooltip', tipText, content) };
           held.tipGate.record(now, inspectedKey);
         }
@@ -689,7 +811,7 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         if (!held.focusTipField || held.focusTipGate.due(now, input.speed, focusedKey)) {
           const tooltip = getTip(focusedKey);
           const tipPayload = { key: `focus:${focusedKey}`, text: tooltip ? { hour: model.hour, rowKey: focusedKey, content: tooltip } : null };
-          const tipText = JSON.stringify(tipPayload);
+          const tipText = stringifyTip(tipPayload);
           held.focusTipField = { value: tipPayload, content: cachedField(held, 'focusTooltip', tipText, content) };
           held.focusTipGate.record(now, focusedKey);
         }
@@ -705,13 +827,29 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
 
       if (bound.audit) {
         const nextAuditId = bound.auditId ?? -1;
-        if (modelChanged || layoutChanged || !held.auditField || held.auditId !== nextAuditId) {
-          const visibleSpecs = layout.columns.map(col => model.columns.find(spec => spec.key === col.key)!).filter(Boolean);
-          const auditRows = deriveTableAudit(flatRows, visibleSpecs, model.hour, model.empty, { rankShown, emptyKind: model.emptyKind });
+        const winKey = bound.window ? `${bound.window.first}:${bound.window.count}` : '';
+        if (modelChanged || layoutChanged || !held.auditField || held.auditId !== nextAuditId || held.auditWindowKey !== winKey) {
+          const cachedMaxima = held.picture.maxima && held.picture.maximaRows === flatRows && held.picture.maximaHour === model.hour
+            ? held.picture.maxima
+            : undefined;
+          const auditRows = deriveTableAudit({
+            model,
+            flatRows,
+            visibleColumns: layout.columns,
+            hiddenKeys: new Set(layout.hidden),
+            rankShown,
+            maxima: cachedMaxima,
+            window: bound.window,
+            countryColors: bound.theme,
+          });
           held.auditId = nextAuditId;
+          held.auditWindowKey = winKey;
           held.auditField = { value: { id: nextAuditId, rows: auditRows }, content: content() };
         }
         fields.audit = held.auditField;
+      } else {
+        held.auditField = null;
+        held.auditId = -1;
       }
 
       if (timed) {
@@ -735,7 +873,15 @@ export function familyTableLaneView(wake: (widget: number) => void): LaneView {
         return at.toggle ? `toggle:${at.rowKey}` : `row:${at.rowKey}`;
       };
 
-      return { surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
+      const handledPicture = model.rows.length > 0 || model.empty !== undefined;
+      return {
+        ...(handledPicture ? { mode: 'picture' as const } : {}),
+        ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
+        surfaces: [{ source: held.canvas, content: held.content }],
+        fields,
+        motion: moving,
+        hit,
+      };
     },
   };
 }

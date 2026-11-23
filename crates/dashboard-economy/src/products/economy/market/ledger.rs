@@ -87,38 +87,49 @@ fn text_cell(value: Option<String>) -> LogCell {
 
 pub struct Mapped {
     pub cells: Vec<LogCell>,
-    pub variant: u64,
+    pub variant: Option<u64>,
 }
 
 const EQUIPMENT: usize = 8;
 
 fn map(key: u128, cells: &[Cell], columns: &Columns, tag: impl Fn(u32) -> Option<String>) -> Mapped {
-    let raw_kind = number(cells, columns.kind).and_then(|kind| u8::try_from(kind).ok());
-    let kind = raw_kind.unwrap_or(u8::MAX);
-    let ordinal = number(cells, columns.ordinal).and_then(|ordinal| u32::try_from(ordinal).ok()).unwrap_or(0);
-    let reason = MarketEventRow { kind, ordinal, ..MarketEventRow::default() }.delivery_unavailable_reason();
-    let party = |column: usize| number(cells, column).and_then(|raw| u32::try_from(raw).ok()).filter(|&raw| raw != 0).and_then(&tag);
-    let raw_agreement = number(cells, columns.agreement);
-    let raw_variant = number(cells, columns.variant);
-    let variant = raw_variant.map_or(0, |variant| variant as u64);
+    let kind = number(cells, columns.kind).and_then(|kind| u8::try_from(kind).ok());
+    let ordinal = number(cells, columns.ordinal).and_then(|ordinal| u32::try_from(ordinal).ok());
+    let reason = match kind {
+        Some(34) => match ordinal {
+            Some(ordinal) => MarketEventRow { kind: 34, ordinal, ..MarketEventRow::default() }.delivery_unavailable_reason().map(str::to_owned),
+            None => Some("Delivery amount unavailable: refusal reason not recorded".to_owned()),
+        },
+        _ => None,
+    };
+    let party = |column: usize| match number(cells, column) {
+        None => LogCell::NotRecorded,
+        Some(0) => LogCell::Missing,
+        Some(raw) => u32::try_from(raw).ok().and_then(&tag).map_or(LogCell::Missing, |value| LogCell::Text { value }),
+    };
+    let variant = number(cells, columns.variant).map(|variant| variant as u64);
     let raw = |column: usize| if reason.is_some() { LogCell::Missing } else { number_cell(number(cells, column)) };
     Mapped {
         cells: vec![
             LogCell::Text { value: key.to_string() },
             number_cell(number(cells, columns.occurrence)),
-            raw_kind.map_or(LogCell::NotRecorded, |kind| LogCell::Number { value: kind.to_string() }),
+            kind.map_or(LogCell::NotRecorded, |kind| LogCell::Number { value: kind.to_string() }),
             number_cell(number(cells, columns.mode)),
-            raw_agreement.map_or(LogCell::NotRecorded, |agreement| LogCell::Text { value: format!("{:016x}", agreement as u64) }),
-            text_cell(party(columns.country)),
-            text_cell(party(columns.receiver)),
-            raw_variant.map_or(LogCell::NotRecorded, |variant| LogCell::Text { value: (variant as u64).to_string() }),
+            number(cells, columns.agreement).map_or(LogCell::NotRecorded, |agreement| LogCell::Text { value: format!("{:016x}", agreement as u64) }),
+            party(columns.country),
+            party(columns.receiver),
+            variant.map_or(LogCell::NotRecorded, |variant| LogCell::Text { value: variant.to_string() }),
             LogCell::Missing,
-            if variant == 0 { LogCell::Missing } else { LogCell::Text { value: "Equipment not named yet".into() } },
+            match variant {
+                None => LogCell::Text { value: "Equipment design not recorded".into() },
+                Some(0) => LogCell::Missing,
+                Some(_) => LogCell::Text { value: "Equipment not named yet".into() },
+            },
             raw(columns.amount),
             raw(columns.auxiliary),
             number_cell(number(cells, columns.total)),
             number_cell(number(cells, columns.lost_total)),
-            text_cell(reason.map(str::to_owned)),
+            text_cell(reason),
         ],
         variant,
     }
@@ -272,7 +283,7 @@ fn enrich_rows(
     match context {
         Err(why) => {
             for row in &mut mapped {
-                if row.variant != 0 {
+                if row.variant.is_some_and(|variant| variant != 0) {
                     row.cells[EQUIPMENT + 1] = LogCell::Text { value: why.clone() };
                 }
             }
@@ -283,7 +294,7 @@ fn enrich_rows(
             let mut seeker: Option<replay_lanes::at::Seeker<'_>> = None;
             for ((run, hour), ats) in by_run_hour {
                 dashboard_text::metadata::check_cancel(cancelled)?;
-                let variants: Vec<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect::<BTreeSet<_>>().into_iter().collect();
+                let variants: Vec<u64> = ats.iter().filter_map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect::<BTreeSet<_>>().into_iter().collect();
                 if variants.is_empty() {
                     continue;
                 }
@@ -293,13 +304,14 @@ fn enrich_rows(
                 };
                 for &at in &ats {
                     let row = &mut mapped[at];
-                    match batch.get(&row.variant).and_then(|name| name.as_ref()) {
-                        Some(name) => {
-                            row.cells[EQUIPMENT] = LogCell::Text { value: name.clone() };
-                            row.cells[EQUIPMENT + 1] = LogCell::Missing;
+                    if let Some(variant) = row.variant.filter(|&variant| variant != 0) {
+                        match batch.get(&variant).and_then(|name| name.as_ref()) {
+                            Some(name) => {
+                                row.cells[EQUIPMENT] = LogCell::Text { value: name.clone() };
+                                row.cells[EQUIPMENT + 1] = LogCell::Missing;
+                            }
+                            None => row.cells[EQUIPMENT + 1] = LogCell::Text { value: "The recording does not name this design at the ledger's reads".into() },
                         }
-                        None if row.variant != 0 => row.cells[EQUIPMENT + 1] = LogCell::Text { value: "The recording does not name this design at the ledger's reads".into() },
-                        None => {}
                     }
                 }
             }
@@ -562,8 +574,20 @@ mod tests {
         assert_eq!(cell(&mapped, "amountRaw"), LogCell::Number { value: "250000".into() });
         assert_eq!(cell(&mapped, "totalRaw"), LogCell::Number { value: "900000".into() });
         assert_eq!(cell(&mapped, "reason"), LogCell::Missing);
-        assert_eq!((mapped.variant, cell(&mapped, "variant")), (6, LogCell::Text { value: "6".into() }));
+        assert_eq!((mapped.variant, cell(&mapped, "variant")), (Some(6), LogCell::Text { value: "6".into() }));
         assert!(matches!(cell(&mapped, "equipmentMissing"), LogCell::Text { .. }), "a design is unnamed until the page names it, and says so");
+        let unrecorded = vec![Cell::Unrecorded; TableId::MarketEvents.field_count()];
+        let mapped = map(23, &unrecorded, &columns, tag);
+        assert_eq!(cell(&mapped, "kind"), LogCell::NotRecorded, "an unrecorded kind is never 255");
+        assert_eq!(cell(&mapped, "contract"), LogCell::NotRecorded, "an unrecorded agreement handle is never all zeroes");
+        assert_eq!(cell(&mapped, "seller"), LogCell::NotRecorded);
+        assert_eq!(cell(&mapped, "buyer"), LogCell::NotRecorded);
+        assert_eq!((mapped.variant, cell(&mapped, "variant")), (None, LogCell::NotRecorded), "an unrecorded variant is never zero");
+        assert_eq!(cell(&mapped, "equipmentMissing"), LogCell::Text { value: "Equipment design not recorded".into() });
+        let mut missing_refusal = vec![Cell::Unrecorded; TableId::MarketEvents.field_count()];
+        missing_refusal[columns.kind] = Cell::Number(34);
+        let mapped = map(24, &missing_refusal, &columns, tag);
+        assert_eq!(cell(&mapped, "reason"), LogCell::Text { value: "Delivery amount unavailable: refusal reason not recorded".into() });
     }
 
     #[test]

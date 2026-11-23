@@ -12,7 +12,7 @@ import { useHeadHour } from '../../widgets/army-size/headHour.ts';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { OptionValue } from '../../dashboard/options';
 import { followStore } from '../../dashboard/follow/store.ts';
-import { useFollow } from '../../dashboard/follow/useFollow.ts';
+import { followFailure, useFollow } from '../../dashboard/follow/useFollow.ts';
 import type { FollowEntry } from '../../dashboard/follow/store';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import { resolveWindow } from '../../dashboard/model';
@@ -106,6 +106,8 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   [following, track?.branch.id, family, named, gate.follow]);
   const memberWakes = useMemo(() => new Set<() => void>(), []);
   const followed = useFollow(store, query, target, () => { liveRef.current?.wake(); for (const wake of [...memberWakes]) wake(); }, answerShape);
+  const followErr = following ? followFailure(followed) : null;
+  const followWaiting = following && query !== null && (followed.status === 'pending' || (followed.status === 'followed' && !membersPushed(followed.status, followed.entry?.answer)));
   const answered = useRef<{ store: unknown; entry: FollowEntry } | null>(null);
   if (followed.entry && membersPushed(followed.status, followed.entry.answer)) answered.current = { store, entry: followed.entry };
   else if (followed.status !== 'pending' && followed.status !== 'followed') answered.current = null;
@@ -113,7 +115,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     : answered.current?.store === store ? answered.current?.entry ?? null : null;
   const pushed = valuesEntry !== null;
   const refused = pushed && valuesEntry?.answer?.kind === 'notRecorded' ? valuesEntry.answer.reason : null;
-  const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length && askAt !== null ? productRequest({
+  const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && !followWaiting && !followErr && members.length && askAt !== null ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
     params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } }) : null, active, validateStates, track?.source);
   const live = useMemo(() => valuesEntry ? liveRace(runtime.clock, axisOffset,
@@ -165,7 +167,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     return () => onDiagnostics(NO_WARNINGS);
   }, [diagnosticKey, onDiagnostics]);
 
-  const error = view === 'race' ? (fixed ? groups.error : rosters.error) ?? (pushed ? undefined : asked.error) : lines.error;
+  const error = view === 'race' ? (fixed ? groups.error : rosters.error) ?? followErr?.error ?? (pushed || followWaiting ? undefined : asked.error) : lines.error;
   const pinnedMembers = options.show === 'members';
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, kind, measure, widget.countries]);
   const drillControl = useDrill(runtime, useRegion(widget), pinnedMembers && only ? only : null);
@@ -190,10 +192,14 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     extent={extent} playhead={drill.breakdown != null ? membersHour : playhead} hour={membersHour} head={membersHead} onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} /> : null;
   const state = !track ? <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />
     : gate.outside ? <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />
-      : error ? <WidgetState kind="error" failure={error} onRetry={view === 'race' ? () => { rosters.retry(); groups.retry(); asked.retry(); } : lines.retry} />
+      : error ? <WidgetState kind="error" failure={error} onRetry={view === 'race' ? () => {
+          if (fixed) { if (groups.error) groups.retry(); } else if (rosters.error) rosters.retry();
+          if (followErr && (fixed || !rosters.error)) followErr.retry();
+          if (!pushed && !followWaiting && !followErr && asked.error) asked.retry();
+        } : lines.retry} />
         : looks.loading && !group ? <WidgetState kind="loading" label="Loading factions…" />
           : view === 'race' && rosterData?.missing ? <WidgetState kind="unavailable" message={rosterData.missing} />
-            : view === 'race' && (!rosterData || !live && members.length > 0 && !asked.data) ? <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} /> : undefined;
+            : view === 'race' && (!rosterData || (followWaiting && !pushed) || (!live && members.length > 0 && !asked.data)) ? <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} /> : undefined;
   if (pinnedMembers) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); anchor.current = element; }}>
     {!only ? <WidgetState kind="empty" icon="shield" message="Choose a faction group shown as one total in the widget settings." />
       : <DrillHost drill={drillControl} runtime={runtime} mode="inline" anchor={anchor} title={`${entityLooks.name(only, membersHour)}: members`} day={dayLabel(membersHour)} canFollow main={null}>

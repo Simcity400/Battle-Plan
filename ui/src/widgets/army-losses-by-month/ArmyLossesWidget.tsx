@@ -1,8 +1,8 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo,  useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { WidgetCaption } from '../../dashboard/widgetFrame';
 import { useContextMenu } from '../../components/ContextMenu';
-import { Segmented } from '../../components/Segmented';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import Legend from '../../charts/Legend';
@@ -33,7 +33,7 @@ import { CHANNELS, LEDGERS, LEDGER_LABELS, OTHER, armyName, chartView, designAmo
   monthView, resolveArmyLosses, validateArmyLosses } from './armyLossesData';
 import type { ArmyLossesData, EquipmentStack, Ledger, ManpowerStack, Measure, MonthArmy, MonthBars } from './armyLossesData';
 import type { ArmyLossesReply } from './types';
-import { LEDGER_CHOICES, MEASURES, OPTIONS } from './definition';
+import { LEDGER_CHOICES, OPTIONS } from './definition';
 import './armyLosses.css';
 import { SPEC, axisAt } from '../../dashboard/regionTime.ts';
 import { useRegion, useRegionHourAt } from '../../dashboard/widgetTime.ts';
@@ -190,10 +190,7 @@ export default function ArmyLossesWidget({ widget, runtime, active, setOption, o
   const legend = bars && bars.parts.length > 1 ? bars.parts.map(part => ({ id: part.key, label: part.label, color: colour(part.key) })) : [];
   const unrecorded = charted && !!bars?.periods.some(period => period.unknown);
   return <div ref={rootRef} className="army-losses" data-detail={countryLabel.nameFailure?.message}>{menu.menu}
-    {setOption && <div className="army-losses-caption"><span>{caption} per month</span>
-      <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />
-      {measure === 'equipment' && <Segmented value={ledger} options={LEDGER_CHOICES} label="Ledger" onChange={value => setOption('ledger', value)} />}
-    </div>}
+    <WidgetCaption>{caption} per month</WidgetCaption>
     {country.chosen && country.error && country.historyHeld ? <WidgetState kind="error" failure={country.error} onRetry={country.retry} /> : null}
     <DrillHost drill={drillControl} runtime={runtime} subject={month !== null} mode={options.drill === 'popout' ? 'popout' : 'inline'} title={month === null ? 'Month' : monthLabel(month)}
       day={month === null ? '' : monthLabel(month)} canFollow={false} anchor={anchor}

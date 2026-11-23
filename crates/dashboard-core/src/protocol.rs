@@ -617,6 +617,13 @@ pub fn validate_map_views(clock_id: &str, views: &[DashboardMapView]) -> Result<
     Ok(())
 }
 
+pub fn validate_map_holes(holes: &[ViewBounds]) -> Result<(), &'static str> {
+    if holes.len() > 128 {
+        return Err("Too many native map holes");
+    }
+    holes.iter().try_for_each(|hole| hole.validate().map(drop))
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardMapState {

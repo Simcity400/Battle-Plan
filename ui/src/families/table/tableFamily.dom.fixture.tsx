@@ -2,14 +2,19 @@ import { Profiler } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { tooltipStore } from '../../charts/tooltip.ts';
+import TooltipLayer from '../../charts/TooltipLayer.tsx';
 import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
-import { pipelineFor, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
+import { pipelineFor, type LaneWorker, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
 import { FollowedWidgetKey } from '../../dashboard/follow/store.ts';
 import { answerBody } from '../../dashboard/follow/messages.fixture.ts';
 import { packet, resetStamps, splitForLanes } from '../../dashboard/follow/split.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback.ts';
+import type { FromLane, ToLane } from '../../draw/laneMessages';
+import { laneDispatch } from '../../draw/laneDispatch.ts';
+import type { CadenceTimers } from '../cadence.ts';
+import { familyTableLaneView } from './laneView.ts';
 import { tableSettingsOf } from './settings.ts';
 import { SCOREBOARD_FIXTURE_COLUMNS, scoreboardColumnsSpec, scoreboardProjection } from './tableFamilyDomShared.ts';
 import FamilyTableHost from './FamilyTableHost.tsx';
@@ -67,7 +72,50 @@ const client = {
 
 const clock = new PlaybackController();
 clock.setBounds({ firstHour: 0, lastHour: 2000 });
-const workers = [0, 1].map(() => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }));
+
+let cadenceHold = false;
+let frozenNow = 0;
+let timerIdSeq = 1;
+let timerFiredCount = 0;
+const heldTimers = new Map<number, () => void>();
+const controlledClock = () => (cadenceHold ? frozenNow : performance.now());
+const controlledTimers: CadenceTimers = {
+  set(fn, ms) {
+    if (cadenceHold) {
+      const id = timerIdSeq++;
+      heldTimers.set(id, fn);
+      return id as unknown as ReturnType<typeof setTimeout>;
+    }
+    return setTimeout(() => { timerFiredCount++; fn(); }, ms);
+  },
+  clear(id) {
+    const num = id as unknown as number;
+    if (heldTimers.delete(num)) return;
+    clearTimeout(id);
+  },
+};
+
+function createControlledLane(): LaneWorker {
+  const worker: LaneWorker = {
+    onmessage: null,
+    postMessage(message: ToLane) {
+      queueMicrotask(() => dispatch(message));
+    },
+  };
+  const dispatch = laneDispatch(
+    (message: FromLane) => {
+      queueMicrotask(() => worker.onmessage?.({ data: message } as MessageEvent<FromLane>));
+    },
+    {
+      views: (_kind, wake) => familyTableLaneView(wake, { cadenceTimers: controlledTimers, clock: controlledClock }),
+      crop: sources => Promise.all(sources.map(source => createImageBitmap(source as OffscreenCanvas))),
+      later: run => requestAnimationFrame(() => run()),
+    },
+  );
+  return worker;
+}
+
+const workers = [0, 1].map(() => createControlledLane());
 const host: PipelineHost = {
   lanes: workers,
   open: list => client.openFollow!(list),
@@ -235,7 +283,9 @@ window.tableFamilyDom = {
             pin={null}
             bounds={[0, 2000]}
             onActivate={key => { activated.push(key); }}
+            contextMenuItems={(key, _name, hour) => [{ label: `Jump to date (${key ?? 'empty'}@${hour})`, run: () => {} }]}
           />
+          <TooltipLayer />
         </Profiler>
       </FollowedWidgetKey.Provider>,
     ));
@@ -281,7 +331,7 @@ window.tableFamilyDom = {
     };
     feed(10);
     const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
-    clock.setSpeed(24);
+    clock.setSpeed(48);
     clock.setPlaying(true);
 
     let playingDuringAdvance = false;
@@ -300,10 +350,17 @@ window.tableFamilyDom = {
 
       const wantTop = 'FRA';
       const pauseHour = sentThrough + 1;
+      frozenNow = performance.now() + 50;
+      cadenceHold = true;
+      timerFiredCount = 0;
+      heldTimers.clear();
       flipFromHour = pauseHour;
       feed(pauseHour);
       const reachedFlip = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= pauseHour && !pipeline.view(pipeId)?.dim, 4000);
       if (!reachedFlip) throw new Error(`Live playback did not reach flipped hour ${pauseHour} (at ${pipeline.view(pipeId)?.h})`);
+      const beforePauseTop = hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key') ?? null;
+      const pendingTimersBeforePause = heldTimers.size;
+      const timerFiredBeforePause = timerFiredCount;
 
       clock.setPlaying(false);
       const flushedOnPause = await until(
@@ -313,6 +370,8 @@ window.tableFamilyDom = {
       if (!flushedOnPause) {
         throw new Error(`Mirror did not flush to ${wantTop} on pause (top=${hostNode?.querySelector('.table-accessibility tbody tr')?.getAttribute('data-row-key')})`);
       }
+      const timerFiredAfterPause = timerFiredCount;
+      const pendingTimersAfterPause = heldTimers.size;
 
       const view = pipeline.view(pipeId);
       const mirrorRows = [...(hostNode?.querySelectorAll('.table-accessibility tbody tr') ?? [])].map(tr => ({
@@ -322,6 +381,11 @@ window.tableFamilyDom = {
       return {
         playingDuringAdvance,
         playingBeforePause,
+        beforePauseTop,
+        pendingTimersBeforePause,
+        pendingTimersAfterPause,
+        timerFiredBeforePause,
+        timerFiredAfterPause,
         commits: playCommits,
         totalInstallReads: playReads,
         pauseInstallReads: totalInstallReads,
@@ -332,6 +396,8 @@ window.tableFamilyDom = {
         mirrorRows,
       };
     } finally {
+      cadenceHold = false;
+      heldTimers.clear();
       stopFeed();
       clock.setPlaying(false);
     }
@@ -445,6 +511,7 @@ window.tableFamilyDom = {
   },
 
   async pinFocusedRow() {
+    totalInstallReads = 0;
     const active = document.activeElement as HTMLElement | null;
     active?.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
     await until(() => (tooltipStore.get()?.content.subtitle ?? '').startsWith('Pinned at '), 2000);
@@ -459,28 +526,98 @@ window.tableFamilyDom = {
     return result;
   },
 
+  async testOverflowTooltipDuringPlayback() {
+    const origHeightDesc = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+    Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => 90 });
+    window.dispatchEvent(new Event('resize'));
+    const startHour = (pipeline.view(pipeId)?.h ?? 50) + 1;
+    sendHour(startHour, [20n, 90n, 80n, -1n], [BigInt(startHour), BigInt(startHour * 2), 3n, 4n]);
+    clock.step(1);
+    const tipVisible = await until(() => !!tooltipStore.get()?.content.spoken, 2000);
+    if (!tipVisible) throw new Error(`Overflowing tooltip did not truncate with spoken fallback (tip=${JSON.stringify(tooltipStore.get()?.content)})`);
+    let sent = startHour;
+    const feed = (hour: number) => {
+      while (sent < hour + 6) {
+        sent++;
+        sendHour(sent, [20n, 90n, 80n, -1n], [BigInt(sent), BigInt(sent * 2), 3n, 4n]);
+      }
+    };
+    const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
+    try {
+      commits = 0;
+      totalInstallReads = 0;
+      installs = 0;
+      feed(startHour + 1);
+      clock.setSpeed(168);
+      clock.setPlaying(true);
+      const advanced = await until(() => (pipeline.view(pipeId)?.h ?? 0) >= startHour + 6 && installs >= 3, 2000);
+      if (!advanced) throw new Error(`Playback with overflowing tooltip did not advance (h=${pipeline.view(pipeId)?.h}, installs=${installs})`);
+      return { tipOverflowed: true, commits, installReads: totalInstallReads, installs };
+    } finally {
+      stopFeed();
+      clock.setPlaying(false);
+      if (origHeightDesc) Object.defineProperty(window, 'innerHeight', origHeightDesc);
+      window.dispatchEvent(new Event('resize'));
+    }
+  },
+
   async testKeyboardAndNarrow() {
     activated = [];
     const firstRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr')!;
     const firstKey = firstRow.getAttribute('data-row-key');
     firstRow.focus();
     firstRow.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    await until(() => {
+    const moved = await until(() => {
       const cur = (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key');
       return !!cur && cur !== firstKey;
     }, 2000);
+    if (!moved) throw new Error(`ArrowDown did not move focus off ${firstKey}`);
     const afterDown = (document.activeElement as HTMLElement | null)?.getAttribute('data-row-key') ?? null;
     document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    await until(() => activated.length === 1, 2000);
+    const didActivate = await until(() => activated.length === 1, 2000);
+    if (!didActivate) throw new Error('Enter did not activate focused row');
     const liveStatus = hostNode!.querySelector('.tf-live-region')?.textContent ?? '';
 
     hostNode!.style.width = '210px';
-    await until(() => !!hostNode!.querySelector('.tf-more-cols'), 3000);
+    const hasMore = await until(() => !!hostNode!.querySelector('.tf-more-cols'), 3000);
+    if (!hasMore) throw new Error('Narrow table did not render +N columns button');
     const moreBtn = hostNode!.querySelector<HTMLButtonElement>('.tf-more-cols');
     const moreText = moreBtn?.textContent ?? '';
     moreBtn?.click();
-    await until(() => !!document.querySelector('.tf-chooser'), 2000);
+    const opened = await until(() => !!document.querySelector('.tf-chooser'), 2000);
+    if (!opened) throw new Error('+N columns button did not open chooser');
     const menuOpen = !!document.querySelector('.tf-chooser');
-    return { afterDown, activated: [...activated], liveStatus, moreText, menuOpen, totalInstallReads };
+    return { firstKey, afterDown, activated: [...activated], liveStatus, moreText, menuOpen, totalInstallReads };
+  },
+
+  async testEmptySpaceContextMenuAndValueStateTooltip() {
+    document.querySelector<HTMLElement>('.tf-chooser:popover-open')?.hidePopover?.();
+    hostNode!.style.width = '460px';
+    const nextHour = Math.floor(clock.getSnapshot().hour) + 2;
+    clock.seek(nextHour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(nextHour, [20n, 90n, 80n, -1n], [BigInt(nextHour), BigInt(nextHour * 2), 3n, 4n], true);
+    await until(() => {
+      const view = pipeline.view(pipeId);
+      return view?.mode === 'picture' && view.h === nextHour && !view.dim;
+    }, 2000);
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    const bodyEl = hostNode!.querySelector<HTMLElement>('.tf-body')!;
+    bodyEl.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+    await until(() => pipeline.view(pipeId)?.fields?.tooltip == null, 1500);
+    const frameEl = hostNode!.querySelector<HTMLElement>('.tf-frame')!;
+    const box = frameEl.getBoundingClientRect();
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: box.left + 12, clientY: box.bottom - 8 });
+    frameEl.dispatchEvent(ev);
+    const opened = await until(() => !!document.querySelector('[role="menu"]:popover-open [role="menuitem"]'), 2000);
+    const menuLabel = document.querySelector('[role="menu"]:popover-open [role="menuitem"]')?.textContent ?? null;
+    document.querySelector<HTMLElement>('[role="menu"]:popover-open')?.hidePopover?.();
+
+    const engRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr[data-row-key="ENG"]')!;
+    engRow.focus();
+    const tipShown = await until(() => !!document.querySelector('.chart-tooltip [data-value-state="missing"]'), 2000);
+    const hasMissingState = !!document.querySelector('.chart-tooltip [data-value-state="missing"]');
+    const hasKnownState = !!document.querySelector('.chart-tooltip [data-value-state="known"]');
+    return { opened, menuLabel, tipShown, hasMissingState, hasKnownState };
   },
 };

@@ -38,8 +38,8 @@ export default function CountryPeople({ runtime, widget, track, tag, time = SPEC
   const current = answersKey(data?.asked, tag) && data?.branchId === track?.branch.id;
   useEffect(() => { onWarnings?.(current ? data?.warnings ?? [] : []); return () => onWarnings?.([]); }, [current, data, onWarnings]);
   if (!tag || !track) return null;
-  if (head.error && !data) return <WidgetState kind="error" what="manpower and politics" failure={head.error} onRetry={head.retry} />;
-  if (!data || !current) return <div ref={head.root}><WidgetState kind="loading" label="Loading country details…" /></div>;
+  if (head.error && !data) return <WidgetState kind="error" scale="section" what="manpower and politics" failure={head.error} onRetry={head.retry} />;
+  if (!data || !current) return <div ref={head.root}><WidgetState kind="loading" scale="section" label="Loading country details…" /></div>;
   const number = (value: number | null) => value === null ? 'Not recorded' : usNumber.format(value);
   return <section ref={head.root} className="country-people" aria-label={view === 'manpower' ? 'Recruitment and manpower pools' : 'Elections and governments in exile'}>
     <dl ref={facts} className="country-people-facts">{data[view].map(fact => <div key={fact.label}><dt>{fact.label}</dt><dd data-fact={fact.label}>{peopleValue(fact)}</dd></div>)}</dl>

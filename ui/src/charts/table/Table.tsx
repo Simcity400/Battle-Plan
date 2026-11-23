@@ -479,12 +479,8 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     const values = live?.read() ?? null;
     if (held?.row !== row || held.build !== tooltip || held.hidden !== hiddenColumns || held.shown !== shownColumns || held.key !== key
       || held.viewport !== viewportHeight || held.values !== values) {
-      const hidden = values ? hiddenColumns.map(column => column.paint ? { ...column, text: (item: T) => {
-        const key = liveKey(rowKey(item), column.key), value = values.get(key);
-        return value == null || isMissing(value) ? null : column.paint!(value, key);
-      } } : column) : hiddenColumns;
       tipCache.current = { row, build: tooltip, hidden: hiddenColumns, shown: shownColumns, key, viewport: viewportHeight, values,
-        content: withHidden(tooltip?.(row) ?? null, row, hidden, shownColumns, key, viewportHeight) };
+        content: withHidden(tooltip?.(row) ?? null, row, hiddenColumns, shownColumns, key, viewportHeight, values) };
     }
     return tipCache.current!.content;
   }, [tooltip, hiddenColumns, shownColumns, rowKey, viewportHeight, live]);
@@ -539,7 +535,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       for (const cell of liveCells.current) {
         if (cell.from) paintFrom(cell.from, cell.column, values.get(cell.from.key));
         const value = values.get(cell.key);
-        if (value == null || isMissing(value)) { cell.text.put(cell.column.missingText?.(cell.key) ?? '—', values.missing(cell.key)); cell.bar?.put('0%'); continue; }
+        if (value == null || isMissing(value)) { const reason = values.missing(cell.key); cell.text.put(cell.column.missingText?.(cell.key, reason) ?? '—', reason); cell.bar?.put('0%'); continue; }
         cell.text.put(cell.column.paint!(value, cell.key), '');
         if (!cell.bar) continue;
         let maximum = maxima.get(cell.column.key);

@@ -64,6 +64,14 @@ fn set_map_view(
 }
 
 #[tauri::command]
+async fn set_map_holes(host: State<'_, NativeHost>, holes: Vec<ViewBounds>) -> Result<(), String> {
+    if let Some(applied) = host.set_holes(holes)? {
+        let _ = applied.await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn select_native_view(host: State<'_, NativeHost>, dashboard: bool) -> Result<(), String> {
     host.select_view(dashboard)
 }
@@ -575,7 +583,7 @@ fn main() {
                 "/follow" => context.app_handle().state::<follow_push::FollowPush>().ask(&request, responder),
                 "/credit" => match (pull::param(&request, "session"), pull::param(&request, "released").and_then(|released| released.parse::<u64>().ok())) {
                     (Some(session), Some(released)) => {
-                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(session)) {
+                        if let Some(epoch) = context.app_handle().state::<follow_push::FollowPush>().outbox(|relay| relay.epoch_of(&session)) {
                             dashboard_follow::registry::registry().credit(epoch, released);
                         }
                         pull::refuse(responder, StatusCode::NO_CONTENT, "");
@@ -642,6 +650,7 @@ fn main() {
             answer_close_question,
             leave_app,
             set_map_view,
+            set_map_holes,
             select_native_view,
             map_action,
             export_map,

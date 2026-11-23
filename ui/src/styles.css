@@ -57,6 +57,8 @@
   --chart-grid: color-mix(in srgb, var(--border) 55%, var(--surface));
   --chart-axis: color-mix(in srgb, var(--border) 88%, var(--text));
   --chart-hatch-spacing: 8px;
+  --hatch: color-mix(in srgb, var(--text) 38%, transparent);
+  --hatch-edge: color-mix(in srgb, var(--text) 20%, transparent);
 
   font-family: var(--font-ui); font-size: var(--font-size-ui); line-height: 1.45;
   color: var(--text); background: var(--canvas); color-scheme: dark;
@@ -74,6 +76,8 @@
   --hover: color-mix(in srgb, var(--text) 5%, transparent);
   --field: color-mix(in srgb, var(--raised) 55%, var(--surface));
   --field-hover: color-mix(in srgb, var(--raised) 85%, var(--surface));
+  --hatch: color-mix(in srgb, var(--text) 42%, transparent);
+  --hatch-edge: color-mix(in srgb, var(--text) 22%, transparent);
 }
 :root[data-motion='reduced'] { --t-fast: 0ms; --t: 0ms; --t-slow: 0ms; }
 .theme-switching, .theme-switching *, .theme-switching *::before, .theme-switching *::after { transition: none !important; }
@@ -172,9 +176,9 @@ input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0
 .segmented { display: inline-flex; gap: 2px; padding: 3px; border-radius: calc(var(--r-sm) + 3px); background: color-mix(in srgb, var(--text) 6%, transparent); box-shadow: inset 0 0 0 1px var(--line-soft); }
 .segmented > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 26px; padding: 0 11px; border: 0; border-radius: var(--r-sm);
   background: transparent; color: color-mix(in srgb, var(--muted) 80%, var(--text)); font-size: 0.75rem; font-weight: 500; white-space: nowrap; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
-.segmented > button:hover:not(:disabled) { color: var(--text); }
+.segmented > button:hover:not(:disabled):not([aria-disabled='true']) { color: var(--text); }
 .segmented > button[aria-pressed='true'], .segmented > button[aria-checked='true'] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line-soft); }
-.segmented > button:disabled { opacity: .5; cursor: default; }
+.segmented > button:disabled, .segmented > button[aria-disabled='true'] { opacity: .5; cursor: default; }
 .segmented > button svg { width: 14px; height: 14px; }
 
 .pill { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; background: var(--hover); color: var(--muted);

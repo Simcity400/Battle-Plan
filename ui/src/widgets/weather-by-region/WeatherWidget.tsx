@@ -3,7 +3,6 @@ import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import RegionProvinces from './RegionProvinces';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import { useContextMenu } from '../../components/ContextMenu';
 import HeatChart from '../../charts/heat/HeatChart';
 import type { HeatPeriod } from '../../charts/heat/layout';
@@ -23,7 +22,6 @@ import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { windowExtent } from '../../dashboard/widgetRequests';
 import { mix } from '../../shell/appearance/color';
 import { useHeadHour } from '../army-size/headHour.ts';
-import { SHOWS } from './definition';
 import { columnTooltip, pickedDay, shownRegions, uncoveredSpans, weatherPeriods, weatherRows } from './weatherData';
 import type { Choice, WeatherPeriod, WeatherShow } from './weatherData';
 import { useWeatherInView } from './useWeather';
@@ -31,7 +29,7 @@ import './weather.css';
 import {  recordedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
 
-export default function WeatherWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+export default function WeatherWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const drillControl = useDrill(runtime, useRegion(widget));
   const drill = drillControl.state;
   const dispatch = drillControl.dispatch;
@@ -94,7 +92,6 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
       <span><i aria-hidden="true" style={{ background: gap }} />Not recorded</span>
       <span><i aria-hidden="true" style={hatchStyle(tokens)} />Unknown</span>
     </div>
-    {setOption && <Segmented value={show} options={SHOWS} label="Show" onChange={value => setOption('show', value)} />}
   </div>;
   const chart = !window || !extent || extent[1] < extent[0] ? <WidgetState kind="outside" />
     : error ? <WidgetState kind="error" failure={error} onRetry={retry} />

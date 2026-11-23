@@ -47,10 +47,9 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
   const stash = useRef<Stash<T, N>>({ lane, rows: new Map(), notes: new Map(), version: 0, failed: new Set() });
   if (stash.current.lane !== lane) stash.current = { lane, rows: new Map(), notes: new Map(), version: 0, failed: new Set() };
   const merged = useRef<{ held: Held<T, N>; version: number; lane: string | null; loaded: Held<T, N> } | null>(null);
-  const base = pagesOf(held, lane);
-  if (!merged.current || merged.current.held !== base || merged.current.version !== stash.current.version || merged.current.lane !== lane) {
-    const waiting = stash.current;
-    merged.current = { held: base, version: waiting.version, lane, loaded: waiting.rows.size ? withStash(base, waiting) : base };
+  if (!merged.current || merged.current.held !== held || merged.current.version !== stash.current.version || merged.current.lane !== lane) {
+    const base = pagesOf(held, lane), waiting = stash.current;
+    merged.current = { held, version: waiting.version, lane, loaded: waiting.rows.size ? withStash(base, waiting) : base };
   }
   const loaded = merged.current.loaded;
   const latest = useRef({ spec, row, notes, loaded, counts, before, cut, active, drawn: 0, shown: 0, playing: false, at: null as number | null });
@@ -127,7 +126,7 @@ export function useLogPages<T, N = never>(client: DashboardClient, clock: Playba
     for (const index of asked) load(index);
     const waiting = stash.current;
     for (const index of [...waiting.rows.keys()]) if (!kept(index)) { waiting.rows.delete(index); waiting.notes.delete(index); waiting.version++; }
-    const held = merged.current?.held ?? latest.current.loaded;
+    const held = pagesOf(merged.current?.held ?? latest.current.loaded, lane);
     if ([...held.rows.keys()].some(index => !kept(index))) {
       setHeld(before => before.lane !== lane ? before : { lane, rows: new Map([...before.rows].filter(([index]) => kept(index))),
         notes: new Map([...before.notes].filter(([index]) => kept(index))), errors: before.errors });

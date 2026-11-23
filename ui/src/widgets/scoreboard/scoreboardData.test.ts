@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { tableSortOf, tableSortToken } from '../../charts/table/options.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
-import { CELL, parseFollowed } from '../../dashboard/follow/message.ts';
+import { CELL, parseAnswer, parseFollowed } from '../../dashboard/follow/message.ts';
 import { message, type Spec } from '../../dashboard/follow/messages.fixture.ts';
 import { EMPTY_SOURCES } from '../../families/contract.ts';
+import { buildColumnLayouts } from '../../families/table/layout.ts';
 import { deriveTableAudit, deriveTableTooltip, resolveTableRows } from '../../families/table/model.ts';
 import { tableDefaults, tableSettingsOf } from '../../families/table/settings.ts';
 import type { ScoreboardColumn, ScoreboardReply } from '../../generated/dashboard';
@@ -65,12 +67,12 @@ test('a reply’s cells are exact amounts, a missing value keeps its reason, and
   );
   const settings = tableDefaults(model.columns, TABLE_BASE);
   const flat = resolveTableRows(model, settings);
-  const audit = deriveTableAudit(flat, model.columns, 40);
-  assert.equal(audit.find(row => row.key === 'GER:casualtiesTaken')?.value, JSON.stringify(['partial', `-${wide}`, 'Some inputs were not recorded at this hour', false]));
-  assert.equal(audit.find(row => row.key === 'GER:stability')?.value, JSON.stringify(['notRecorded', "GER's Stability was not recorded at this hour"]));
+  const audit = deriveTableAudit({ model, flatRows: flat, visibleColumns: buildColumnLayouts(model.columns, settings) });
+  assert.ok(audit.find(row => row.key === 'GER:casualtiesTaken')?.value?.includes(`["partial",["int","-${wide}"],"Some inputs were not recorded at this hour",false]`));
+  assert.ok(audit.find(row => row.key === 'GER:stability')?.value?.includes(`["notRecorded","GER's stability was not recorded at this hour"]`));
   const tip = deriveTableTooltip(flat, 'GER', model.columns, new Set(), 40);
   assert.ok(tip);
-  assert.equal(tip.rows.find(row => row.label === 'Stability')?.detail, "GER's Stability was not recorded at this hour");
+  assert.equal(tip.rows.find(row => row.label === 'Stability')?.detail, "GER's stability was not recorded at this hour");
 
   const cells = [{ valueRaw: '1', missing: null, partial: false }, { valueRaw: '2', missing: null, partial: false }];
   const both = validateScoreboardReply({ branchId: '1', hour: 40, missing: null, warnings: [], rows: [{ country: 5, tag: 'GER', cells }, { country: 'GER', tag: 'GER', cells }] }, 2);
@@ -161,47 +163,71 @@ test('followed scoreboard filters selected countries by holder existence at hour
 
   const specs = scoreboardColumnsSpec([factories], null);
   const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
+  const layouts = buildColumnLayouts(specs, settings);
   assert.deepEqual(
-    deriveTableAudit(resolveTableRows(followed, settings), specs, 100),
-    deriveTableAudit(resolveTableRows(exact, settings), specs, 100),
+    deriveTableAudit({ model: followed, flatRows: resolveTableRows(followed, settings), visibleColumns: layouts }),
+    deriveTableAudit({ model: exact, flatRows: resolveTableRows(exact, settings), visibleColumns: layouts }),
   );
   assert.equal(scoreboardProjection.nextChange?.(EMPTY_SOURCES, 100, opts), 105, 'nextChange reports slot tag switch boundary');
 });
 
-test('scoreboard normalizes absent-row missing reasons across followed and exact paths, keeps rows when all columns are unavailable, and allows empty countries in params', () => {
-  const followedAbsent = answer({
-    keys: [1n],
-    columns: 1,
-    names: ['\u00007'],
-    values: [0n],
-    states: [CELL.noRow],
-    reasons: ["7's free7 was not recorded at this hour"],
-  });
-  const exactAbsent: ScoreboardReply = {
+test('scoreboard decodes checked-in native FOL3 fixtures for slot+tag queries, matches Rust missing reasons without TS rewriting, enables country colours, and keeps rows when all columns are unavailable', () => {
+  const bin525 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_525.bin', import.meta.url));
+  const bin800 = readFileSync(new URL('../../../../crates/dashboard-follow/fixtures/series_slot_tag_800.bin', import.meta.url));
+  const ans525 = parseAnswer(new Uint8Array(bin525));
+  const ans800 = parseAnswer(new Uint8Array(bin800));
+  const opts = {
+    shown: [power],
+    candidates: ['\u00007', 'ITA'],
+    holders: {
+      '\u00007': [{ tag: 'GER', firstHour: 500, lastHour: 1000 }],
+      ITA: [{ tag: 'ITA', firstHour: 800, lastHour: 1000 }],
+    },
+    top: null,
+    rankMarkers: false,
+    looks: { GER: [{ from: 500, name: 'Germany' }], ITA: [{ from: 800, name: 'Italy' }] },
+  };
+  const exact525: ScoreboardReply = {
     branchId: '1',
-    hour: 100,
+    hour: 525,
     missing: null,
     warnings: [],
     rows: [
-      { country: 7, tag: 'GER', cells: [{ valueRaw: null, missing: 'GER holds no row of country-factories at this hour', partial: false }] },
+      { country: 7, tag: 'GER', cells: [{ valueRaw: null, missing: "GER's politicalPower was not recorded at this hour", partial: false }] },
     ],
   };
-  const opts = {
-    shown: [factories],
-    candidates: ['\u00007'],
-    holders: { '\u00007': [{ tag: 'GER', firstHour: 0, lastHour: 200 }] },
-    top: null,
-    rankMarkers: false,
-    looks: { GER: [{ from: 0, name: 'Germany' }] },
+  const exact800: ScoreboardReply = {
+    branchId: '1',
+    hour: 800,
+    missing: null,
+    warnings: [],
+    rows: [
+      { country: 7, tag: 'GER', cells: [{ valueRaw: '8225', missing: null, partial: false }] },
+      { country: 'ITA', tag: 'ITA', cells: [{ valueRaw: '3225', missing: null, partial: false }] },
+    ],
   };
-  const fModel = scoreboardProjection.project({ answers: new Map([['factories', followedAbsent]]), panels: new Map(), live: new Map() }, 100, opts);
-  const eModel = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exactAbsent]]), live: new Map() }, 100, opts);
-  const specs = scoreboardColumnsSpec([factories], null);
+  const specs = scoreboardColumnsSpec([power], null);
   const settings = tableSettingsOf(undefined, specs, TABLE_BASE);
+  const layouts = buildColumnLayouts(specs, settings);
+
+  const f525 = scoreboardProjection.project({ answers: new Map([['politicalPower', ans525]]), panels: new Map(), live: new Map() }, 525, opts);
+  const e525 = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exact525]]), live: new Map() }, 525, opts);
   assert.deepEqual(
-    deriveTableAudit(resolveTableRows(fModel, settings), specs, 100, fModel.empty, { rankShown: true }),
-    deriveTableAudit(resolveTableRows(eModel, settings), specs, 100, eModel.empty, { rankShown: true }),
+    deriveTableAudit({ model: f525, flatRows: resolveTableRows(f525, settings), visibleColumns: layouts, rankShown: true }),
+    deriveTableAudit({ model: e525, flatRows: resolveTableRows(e525, settings), visibleColumns: layouts, rankShown: true }),
+    'S2+N3: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 525 match exact board audit verbatim',
   );
+
+  const f800 = scoreboardProjection.project({ answers: new Map([['politicalPower', ans800]]), panels: new Map(), live: new Map() }, 800, opts);
+  const e800 = scoreboardProjection.project({ answers: new Map(), panels: new Map([['main', exact800]]), live: new Map() }, 800, opts);
+  assert.deepEqual(
+    deriveTableAudit({ model: f800, flatRows: resolveTableRows(f800, settings), visibleColumns: layouts, rankShown: true }),
+    deriveTableAudit({ model: e800, flatRows: resolveTableRows(e800, settings), visibleColumns: layouts, rankShown: true }),
+    'S2: real native FOL3 bytes for [Slot(7), Tag(ITA)] at hour 800 match exact board audit verbatim',
+  );
+
+  assert.equal(scoreboardDeclaration.countries.mode, 'multi');
+  assert.equal(scoreboardDeclaration.countries.colours, true, 'M6: scoreboard requests country colours for country-tone column bars');
 
   assert.deepEqual(
     scoreboardParams('1', gatedHour(50), [power], [], null, factories),
