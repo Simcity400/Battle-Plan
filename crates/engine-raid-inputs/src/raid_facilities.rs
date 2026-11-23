@@ -84,44 +84,67 @@ pub fn walk_buffer(
         let countries = ccountry::Reader::new(memory, base, game)?;
         let mut len = 0usize;
         let mut found = false;
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            found = true;
-            let status = status::from_country(memory, base, country, &countries)?;
-            let programs = status::programs(memory, status)?;
-            output.ensure(
-                len.checked_add(programs.count as usize)
-                    .ok_or("raid facility row count overflow")?,
-            )?;
-            for ordinal in 0..programs.count {
-                if let Some(out) = output.get_mut(len) {
-                    let pointer = programs
-                        .element(ordinal, 8)
-                        .and_then(|at| read::<u64>(memory, at))
-                        .and_then(|pointer| usize::try_from(pointer).ok())
-                        .ok_or("raid facility pointer unreadable")?;
-                    *out = row(memory, base, pointer, country.id, ordinal)?;
-                    let owner = countries.resolve(out.owner)?;
-                    if let Some(token) = out.active_project {
-                        let owner_status = status::from_country(memory, base, owner, &countries)?;
-                        if let Some((definition, project_owner)) =
-                            crate::nproject_cproject_pool::active_definition(
-                                memory,
-                                base,
-                                owner_status,
-                                token,
-                            )?
-                        {
-                            if countries.resolve(project_owner)?.pointer != owner.pointer {
-                                return Err("active project owner differs from pool owner");
+        let mut batch_countries = [ccountry::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; status::BATCH];
+        let mut statuses = [status::BatchedStatus::EMPTY; status::BATCH];
+        let mut slot = 1_u32;
+        while slot < countries.count() {
+            let mut n = 0_usize;
+            while slot < countries.count() && n < status::BATCH {
+                let cur = slot;
+                slot += 1;
+                let Some(country) = countries.at(cur)? else {
+                    continue;
+                };
+                found = true;
+                batch_countries[n] = country;
+                n += 1;
+            }
+            if n == 0 {
+                break;
+            }
+            status::read_batch(memory, base, &countries, &batch_countries[..n], &mut statuses)?;
+            for entry in &statuses[..n] {
+                let country = entry.country;
+                let programs = match &entry.block {
+                    Some(block) => status::programs_from_block(block)?,
+                    None => status::programs(memory, entry.status)?,
+                };
+                output.ensure(
+                    len.checked_add(programs.count as usize)
+                        .ok_or("raid facility row count overflow")?,
+                )?;
+                for ordinal in 0..programs.count {
+                    if let Some(out) = output.get_mut(len) {
+                        let pointer = programs
+                            .element(ordinal, 8)
+                            .and_then(|at| read::<u64>(memory, at))
+                            .and_then(|pointer| usize::try_from(pointer).ok())
+                            .ok_or("raid facility pointer unreadable")?;
+                        *out = row(memory, base, pointer, country.id, ordinal)?;
+                        let owner = countries.resolve(out.owner)?;
+                        if let Some(token) = out.active_project {
+                            let owner_status = status::from_country(memory, base, owner, &countries)?;
+                            if let Some((definition, project_owner)) =
+                                crate::nproject_cproject_pool::active_definition(
+                                    memory,
+                                    base,
+                                    owner_status,
+                                    token,
+                                )?
+                            {
+                                if countries.resolve(project_owner)?.pointer != owner.pointer {
+                                    return Err("active project owner differs from pool owner");
+                                }
+                                out.project_definition = Some(definition);
                             }
-                            out.project_definition = Some(definition);
                         }
                     }
+                    len = len.checked_add(1).ok_or("raid facility count overflow")?;
                 }
-                len = len.checked_add(1).ok_or("raid facility count overflow")?;
             }
         }
         if !found {

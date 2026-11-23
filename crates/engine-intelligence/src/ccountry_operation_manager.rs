@@ -1,8 +1,27 @@
 
 use crate::{
     Memory, ccharacter::Literal, ccountry, coperation_instance, cpdx_array::Array,
-    csubject_relation::Name, operation_assigned_operative, read, walk::Outcome,
+    csubject_relation::Name,
+    memory::{RecordField, RecordLayout, RecordSources},
+    operation_assigned_operative, read,
+    walk::Outcome,
 };
+
+const COUNTRY_BATCH: usize = 64;
+const OP_MGR_PTR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::OPERATION_MANAGER,
+    destination_offset: 0,
+    len: 8,
+}];
+const OP_MGR_PTR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&OP_MGR_PTR_FIELDS, 8).expect("valid operation manager ptr layout");
+const OP_MGR_HEAD_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: OWNER_COUNTRY,
+    destination_offset: 0,
+    len: 24,
+}];
+const OP_MGR_HEAD_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&OP_MGR_HEAD_FIELDS, 24).expect("valid operation manager head layout");
 
 pub const OWNER_COUNTRY: usize = 0x08;
 #[cfg(test)]
@@ -92,117 +111,188 @@ pub fn walk_buffer(
         let mut assigned_error = None;
         let (mut bytes_len, mut required_bytes) = (0_usize, 0_usize);
         let (mut parts_len, mut required_parts) = (0_usize, 0_usize);
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            found_country = true;
-            let manager = country
-                .pointer
-                .checked_add(ccountry::OPERATION_MANAGER)
-                .and_then(|p| read::<u64>(memory, p))
-                .and_then(|p| usize::try_from(p).ok())
-                .filter(|&p| p != 0)
-                .ok_or("country operation manager unreadable or null")?;
-            let head = manager
-                .checked_add(OWNER_COUNTRY)
-                .and_then(|p| read::<[u8; 24]>(memory, p))
-                .ok_or("operation manager header unreadable")?;
-            if u64::from_le_bytes(head[..8].try_into().unwrap()) != country.pointer as u64 {
-                return Err("operation manager owner mismatch");
+        let mut batch_countries = [ccountry::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; COUNTRY_BATCH];
+        let mut country_ptrs = [0_usize; COUNTRY_BATCH];
+        let mut mgr_ptr_bytes = [0_u8; COUNTRY_BATCH * 8];
+        let mut mgr_ptrs = [0_usize; COUNTRY_BATCH];
+        let mut mgr_head_bytes = [0_u8; COUNTRY_BATCH * 24];
+        let mut slot = 1_u32;
+        while slot < countries.count() {
+            let mut n = 0_usize;
+            let mut all_safe = true;
+            while slot < countries.count() && n < COUNTRY_BATCH {
+                let cur = slot;
+                slot += 1;
+                let Some(country) = countries.at(cur)? else {
+                    continue;
+                };
+                found_country = true;
+                batch_countries[n] = country;
+                country_ptrs[n] = country.pointer;
+                all_safe &= country
+                    .pointer
+                    .checked_add(ccountry::OPERATION_MANAGER + 8)
+                    .is_some();
+                n += 1;
             }
-            let roster = Array::from_header(head[8..].try_into().unwrap(), 8)
-                .ok_or("operation roster unreadable or invalid")?;
-            output.ensure(
-                len.checked_add(roster.count as usize)
-                    .ok_or("operation row demand overflow")?,
-            )?;
-            for index in 0..roster.count {
-                let pointer = roster
-                    .element(index, 8)
-                    .and_then(|p| read::<u64>(memory, p))
-                    .and_then(|p| usize::try_from(p).ok())
-                    .filter(|&p| p != 0)
-                    .ok_or("operation roster pointer unreadable or null")?;
-                let mut operation = coperation_instance::instance(memory, base, pointer)?;
-                if operation.owner_pointer != country.pointer {
-                    return Err("operation instance owner mismatch");
-                }
-                if operation.row.target != 0 {
-                    countries.resolve(operation.row.target)?;
-                }
-                operation.row.owner = country.id;
-                required_bytes = required_bytes
-                    .checked_add(operation.effect_description.len)
-                    .ok_or("operation description byte demand overflow")?;
-                descriptions.ensure(required_bytes)?;
-                let part_count = operation.row.part_count();
-                required_parts = required_parts
-                    .checked_add(part_count)
-                    .ok_or("operation part demand overflow")?;
-                parts.ensure(required_parts)?;
-                let fits = output.len() != len
-                    && operation.effect_description.len <= descriptions.len() - bytes_len
-                    && part_count <= parts.len() - parts_len;
-                let mut written = 0;
-                operation.parts(memory, base, |part| {
-                    if fits {
-                        parts[parts_len + written] = part;
-                        written += 1;
-                    }
-                })?;
-                if !fits {
-                    unread_rows = unread_rows
-                        .checked_add(1)
-                        .ok_or("operation omitted count overflow")?;
-                } else {
-                    Literal::copy_all(
-                        memory,
-                        [&operation.effect_description],
-                        &mut descriptions[bytes_len..bytes_len + operation.effect_description.len],
-                    )
-                    .map_err(|_| "operation effect description bytes unreadable")?;
-                    operation.row.effect_description = Name {
-                        start: bytes_len,
-                        len: operation.effect_description.len,
-                    };
-                    bytes_len += operation.effect_description.len;
-                    operation.row.parts_start = parts_len;
-                    parts_len += part_count;
-                    output[len] = operation.row;
-                    len += 1;
-                }
-                if assigned_error.is_none() {
-                    if let Err(reason) = assigned.ensure(
-                        assigned_len
-                            .checked_add(operation.assigned.count as usize)
-                            .ok_or("operation assigned demand overflow")?,
-                    ) {
-                        assigned_error = Some(reason);
-                        continue;
-                    }
-                    for ordinal in 0..operation.assigned.count {
-                        if assigned_len == assigned.len() {
-                            assigned_unread = assigned_unread
-                                .checked_add(operation.assigned.count - ordinal)
-                                .ok_or("operation assigned omitted count overflow")?;
+            if n == 0 {
+                break;
+            }
+            let ptrs_copied = if all_safe {
+                memory.copy_records(
+                    RecordSources::Pointers(&country_ptrs[..n]),
+                    &OP_MGR_PTR_LAYOUT,
+                    &mut mgr_ptr_bytes[..n * 8],
+                )
+            } else {
+                0
+            };
+            let mut head_safe = ptrs_copied == n;
+            if head_safe {
+                for i in 0..n {
+                    let mgr = usize::try_from(u64::from_le_bytes(
+                        mgr_ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+                    ))
+                    .ok()
+                    .filter(|&p| p != 0);
+                    match mgr {
+                        Some(p) if p.checked_add(OWNER_COUNTRY + 24).is_some() => {
+                            mgr_ptrs[i] = p;
+                        }
+                        _ => {
+                            head_safe = false;
                             break;
                         }
-                        let Some(bytes) = operation
-                            .assigned
-                            .element(ordinal, operation_assigned_operative::STRIDE)
-                            .and_then(|p| read::<[u8; 12]>(memory, p))
-                        else {
-                            assigned_error = Some("operation assigned slot unreadable");
-                            break;
+                    }
+                }
+            }
+            let heads_copied = if head_safe {
+                memory.copy_records(
+                    RecordSources::Pointers(&mgr_ptrs[..n]),
+                    &OP_MGR_HEAD_LAYOUT,
+                    &mut mgr_head_bytes[..n * 24],
+                )
+            } else {
+                0
+            };
+            for i in 0..n {
+                let country = batch_countries[i];
+                let head: [u8; 24] = if i < heads_copied {
+                    mgr_head_bytes[i * 24..(i + 1) * 24].try_into().unwrap()
+                } else {
+                    let manager = country
+                        .pointer
+                        .checked_add(ccountry::OPERATION_MANAGER)
+                        .and_then(|p| read::<u64>(memory, p))
+                        .and_then(|p| usize::try_from(p).ok())
+                        .filter(|&p| p != 0)
+                        .ok_or("country operation manager unreadable or null")?;
+                    manager
+                        .checked_add(OWNER_COUNTRY)
+                        .and_then(|p| read::<[u8; 24]>(memory, p))
+                        .ok_or("operation manager header unreadable")?
+                };
+                if u64::from_le_bytes(head[..8].try_into().unwrap()) != country.pointer as u64 {
+                    return Err("operation manager owner mismatch");
+                }
+                let roster = Array::from_header(head[8..].try_into().unwrap(), 8)
+                    .ok_or("operation roster unreadable or invalid")?;
+                output.ensure(
+                    len.checked_add(roster.count as usize)
+                        .ok_or("operation row demand overflow")?,
+                )?;
+                for index in 0..roster.count {
+                    let pointer = roster
+                        .element(index, 8)
+                        .and_then(|p| read::<u64>(memory, p))
+                        .and_then(|p| usize::try_from(p).ok())
+                        .filter(|&p| p != 0)
+                        .ok_or("operation roster pointer unreadable or null")?;
+                    let mut operation = coperation_instance::instance(memory, base, pointer)?;
+                    if operation.owner_pointer != country.pointer {
+                        return Err("operation instance owner mismatch");
+                    }
+                    if operation.row.target != 0 {
+                        countries.resolve(operation.row.target)?;
+                    }
+                    operation.row.owner = country.id;
+                    required_bytes = required_bytes
+                        .checked_add(operation.effect_description.len)
+                        .ok_or("operation description byte demand overflow")?;
+                    descriptions.ensure(required_bytes)?;
+                    let part_count = operation.row.part_count();
+                    required_parts = required_parts
+                        .checked_add(part_count)
+                        .ok_or("operation part demand overflow")?;
+                    parts.ensure(required_parts)?;
+                    let fits = output.len() != len
+                        && operation.effect_description.len <= descriptions.len() - bytes_len
+                        && part_count <= parts.len() - parts_len;
+                    let mut written = 0;
+                    operation.parts(memory, base, |part| {
+                        if fits {
+                            parts[parts_len + written] = part;
+                            written += 1;
+                        }
+                    })?;
+                    if !fits {
+                        unread_rows = unread_rows
+                            .checked_add(1)
+                            .ok_or("operation omitted count overflow")?;
+                    } else {
+                        Literal::copy_all(
+                            memory,
+                            [&operation.effect_description],
+                            &mut descriptions
+                                [bytes_len..bytes_len + operation.effect_description.len],
+                        )
+                        .map_err(|_| "operation effect description bytes unreadable")?;
+                        operation.row.effect_description = Name {
+                            start: bytes_len,
+                            len: operation.effect_description.len,
                         };
-                        assigned[assigned_len] = operation_assigned_operative::Row {
-                            operation: operation.row.id,
-                            ordinal,
-                            operative: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
-                            selection: u32::from_le_bytes(bytes[8..].try_into().unwrap()),
-                        };
-                        assigned_len += 1;
+                        bytes_len += operation.effect_description.len;
+                        operation.row.parts_start = parts_len;
+                        parts_len += part_count;
+                        output[len] = operation.row;
+                        len += 1;
+                    }
+                    if assigned_error.is_none() {
+                        if let Err(reason) = assigned.ensure(
+                            assigned_len
+                                .checked_add(operation.assigned.count as usize)
+                                .ok_or("operation assigned demand overflow")?,
+                        ) {
+                            assigned_error = Some(reason);
+                            continue;
+                        }
+                        for ordinal in 0..operation.assigned.count {
+                            if assigned_len == assigned.len() {
+                                assigned_unread = assigned_unread
+                                    .checked_add(operation.assigned.count - ordinal)
+                                    .ok_or("operation assigned omitted count overflow")?;
+                                break;
+                            }
+                            let Some(bytes) = operation
+                                .assigned
+                                .element(ordinal, operation_assigned_operative::STRIDE)
+                                .and_then(|p| read::<[u8; 12]>(memory, p))
+                            else {
+                                assigned_error = Some("operation assigned slot unreadable");
+                                break;
+                            };
+                            assigned[assigned_len] = operation_assigned_operative::Row {
+                                operation: operation.row.id,
+                                ordinal,
+                                operative: u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+                                selection: u32::from_le_bytes(bytes[8..].try_into().unwrap()),
+                            };
+                            assigned_len += 1;
+                        }
                     }
                 }
             }

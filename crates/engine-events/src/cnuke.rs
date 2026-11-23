@@ -1,6 +1,28 @@
 
-use crate::{Memory, ccountry, cpdx_array::Array, walk::Outcome};
+use crate::{
+    Memory, ccountry,
+    cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    walk::Outcome,
+};
 use engine_sites::Rva;
+
+const COUNTRY_BATCH: usize = 64;
+const NUKE_HEADER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::NUKES,
+    destination_offset: 0,
+    len: 16,
+}];
+const NUKE_HEADER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&NUKE_HEADER_FIELDS, 16).expect("valid nuke header layout");
+const PAIR_BYTES: usize = STRIDE * 2;
+const NUKE_PAIR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: PAIR_BYTES,
+}];
+const NUKE_PAIR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&NUKE_PAIR_FIELDS, PAIR_BYTES).expect("valid nuke pair layout");
 
 pub const VTABLE_RVA: Rva = Rva(0x0286_4640);
 pub const STRIDE: usize = 0x48;
@@ -52,39 +74,122 @@ fn walk_rows(
     let mut found_country = false;
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
-    for slot in 1..countries.count() {
-        let Some(country) = countries.at(slot)? else {
-            continue;
-        };
-        found_country = true;
-        let array = country
-            .pointer
-            .checked_add(ccountry::NUKES)
-            .and_then(|address| Array::read(memory, address, STRIDE))
-            .ok_or("country nuke array unreadable or invalid")?;
-        rows.ensure(
-            len.checked_add(array.count as usize)
-                .ok_or("nuke row count overflow")?,
-        )?;
-        for nuke_type in 0..array.count {
-            if len == rows.len() {
-                unread_rows = unread_rows
-                    .checked_add(1)
-                    .ok_or("nuke row count overflow")?;
+    let mut batch_countries = [ccountry::Country {
+        id: 0,
+        canonical_slot: 0,
+        pointer: 0,
+    }; COUNTRY_BATCH];
+    let mut batch_ptrs = [0_usize; COUNTRY_BATCH];
+    let mut batch_headers = [0_u8; COUNTRY_BATCH * 16];
+    let mut batch_arrays = [Array::default(); COUNTRY_BATCH];
+    let mut pair_ptrs = [0_usize; COUNTRY_BATCH];
+    let mut pair_slots = [0_usize; COUNTRY_BATCH];
+    let mut pair_bytes = [0_u8; COUNTRY_BATCH * PAIR_BYTES];
+    let mut slot = 1_u32;
+    while slot < countries.count() {
+        let mut n = 0_usize;
+        let mut all_safe = true;
+        while slot < countries.count() && n < COUNTRY_BATCH {
+            let cur = slot;
+            slot += 1;
+            let Some(country) = countries.at(cur)? else {
                 continue;
+            };
+            found_country = true;
+            batch_countries[n] = country;
+            batch_ptrs[n] = country.pointer;
+            all_safe &= country.pointer.checked_add(ccountry::NUKES + 16).is_some();
+            n += 1;
+        }
+        if n == 0 {
+            break;
+        }
+        let headers_copied = if all_safe {
+            memory.copy_records(
+                RecordSources::Pointers(&batch_ptrs[..n]),
+                &NUKE_HEADER_LAYOUT,
+                &mut batch_headers[..n * 16],
+            )
+        } else {
+            0
+        };
+        let mut pair_count = 0_usize;
+        for i in 0..n {
+            let array = if i < headers_copied {
+                Array::from_header(
+                    batch_headers[i * 16..(i + 1) * 16].try_into().unwrap(),
+                    STRIDE,
+                )
+                .ok_or("country nuke array unreadable or invalid")?
+            } else {
+                batch_countries[i]
+                    .pointer
+                    .checked_add(ccountry::NUKES)
+                    .and_then(|address| Array::read(memory, address, STRIDE))
+                    .ok_or("country nuke array unreadable or invalid")?
+            };
+            batch_arrays[i] = array;
+            if array.count == 2
+                && array.data != 0
+                && array.data.checked_add(PAIR_BYTES).is_some()
+            {
+                pair_ptrs[pair_count] = array.data;
+                pair_slots[pair_count] = i;
+                pair_count += 1;
             }
-            let object = array
-                .element(nuke_type, STRIDE)
-                .ok_or("nuke address overflow")?;
-            rows[len] = read_row(
-                memory,
-                object,
-                vtable,
-                country.pointer,
-                country.id,
-                nuke_type,
+        }
+        let pairs_copied = if pair_count > 0 {
+            memory.copy_records(
+                RecordSources::Pointers(&pair_ptrs[..pair_count]),
+                &NUKE_PAIR_LAYOUT,
+                &mut pair_bytes[..pair_count * PAIR_BYTES],
+            )
+        } else {
+            0
+        };
+        let mut pair_index = [usize::MAX; COUNTRY_BATCH];
+        for k in 0..pairs_copied {
+            pair_index[pair_slots[k]] = k;
+        }
+        for i in 0..n {
+            let country = batch_countries[i];
+            let array = batch_arrays[i];
+            rows.ensure(
+                len.checked_add(array.count as usize)
+                    .ok_or("nuke row count overflow")?,
             )?;
-            len += 1;
+            let k = pair_index[i];
+            for nuke_type in 0..array.count {
+                if len == rows.len() {
+                    unread_rows = unread_rows
+                        .checked_add(1)
+                        .ok_or("nuke row count overflow")?;
+                    continue;
+                }
+                rows[len] = if k != usize::MAX {
+                    let off = k * PAIR_BYTES + nuke_type as usize * STRIDE;
+                    decode_row(
+                        &pair_bytes[off..off + STRIDE],
+                        vtable,
+                        country.pointer,
+                        country.id,
+                        nuke_type,
+                    )?
+                } else {
+                    let object = array
+                        .element(nuke_type, STRIDE)
+                        .ok_or("nuke address overflow")?;
+                    read_row(
+                        memory,
+                        object,
+                        vtable,
+                        country.pointer,
+                        country.id,
+                        nuke_type,
+                    )?
+                };
+                len += 1;
+            }
         }
     }
     if !found_country {
@@ -94,6 +199,36 @@ fn walk_rows(
         Outcome::Rows { len }
     } else {
         Outcome::Truncated { len, unread_rows }
+    })
+}
+
+fn decode_row(
+    entry: &[u8],
+    vtable: u64,
+    owner: usize,
+    country: u32,
+    nuke_type: u32,
+) -> Result<Row, &'static str> {
+    if u64::from_le_bytes(entry[..8].try_into().unwrap()) != vtable {
+        return Err("nuke vtable mismatch");
+    }
+    if !matches!(
+        u32::from_le_bytes(entry[SERIAL_TYPE..SERIAL_TYPE + 4].try_into().unwrap()),
+        SERIAL_TYPE_VALUE | LOADED_SERIAL_TYPE_VALUE
+    ) {
+        return Err("nuke serialized type mismatch");
+    }
+    if u64::from_le_bytes(entry[COUNTRY..COUNTRY + 8].try_into().unwrap()) != owner as u64 {
+        return Err("nuke owner mismatch");
+    }
+    if u32::from_le_bytes(entry[TYPE..TYPE + 4].try_into().unwrap()) != nuke_type {
+        return Err("nuke type does not match native array ordinal");
+    }
+    Ok(Row {
+        country,
+        nuke_type,
+        amount_raw: i64::from_le_bytes(entry[AMOUNT..AMOUNT + 8].try_into().unwrap()),
+        ready: i32::from_le_bytes(entry[READY..READY + 4].try_into().unwrap()),
     })
 }
 

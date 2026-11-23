@@ -1403,8 +1403,13 @@ impl Shared {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
         frame.reset_verdicts();
         frame.verdicts_reset = true;
+        let before = frame.clock_bytes();
         let result = frame.prepare_clock(self.clock_required());
-        self.measure_frame(index);
+        if frame.clock_bytes() != before
+            || self.frames.slot(index).bytes.load(Ordering::Relaxed) == 0
+        {
+            self.measure_frame(index);
+        }
         if result.is_err() {
             self.recording.store(false, Ordering::Release);
         }

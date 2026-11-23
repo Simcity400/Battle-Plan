@@ -1,5 +1,10 @@
 
-use crate::{Memory, ccountry, cpdx_array::Array, read};
+use crate::{
+    Memory, ccountry,
+    cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read,
+};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_e0d8);
@@ -10,6 +15,158 @@ pub const OWNER: usize = 0x10;
 pub const PROJECT_POOL: usize = 0x18;
 pub const PROGRAMS: usize = 0x20;
 pub const BREAKTHROUGH: usize = 0x50;
+pub const BATCH: usize = 64;
+pub const BLOCK_LEN: usize = 0x68;
+
+const PTR_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::PROGRAM_STATUS,
+    destination_offset: 0,
+    len: 8,
+}];
+const PTR_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&PTR_FIELDS, 8).expect("valid program status pointer layout");
+const BLOCK_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: 0,
+    destination_offset: 0,
+    len: BLOCK_LEN,
+}];
+const BLOCK_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&BLOCK_FIELDS, BLOCK_LEN).expect("valid program status block layout");
+
+#[derive(Clone, Copy)]
+pub struct BatchedStatus {
+    pub country: ccountry::Country,
+    pub status: usize,
+    pub block: Option<[u8; BLOCK_LEN]>,
+}
+
+impl BatchedStatus {
+    pub const EMPTY: Self = Self {
+        country: ccountry::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        },
+        status: 0,
+        block: None,
+    };
+}
+
+pub fn read_batch(
+    memory: &impl Memory,
+    base: usize,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    batch: &[ccountry::Country],
+    out: &mut [BatchedStatus; BATCH],
+) -> Result<usize, &'static str> {
+    let n = batch.len();
+    if n == 0 {
+        return Ok(0);
+    }
+    let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")? as u64;
+    let secondary =
+        engine_sites::at(base, SECONDARY_VTABLE_RVA).ok_or("module address overflow")? as u64;
+    let mut country_ptrs = [0_usize; BATCH];
+    let mut ptr_bytes = [0_u8; BATCH * 8];
+    let mut safe_count = 0;
+    for (i, country) in batch.iter().enumerate() {
+        if country.pointer.checked_add(ccountry::PROGRAM_STATUS + 8).is_some() {
+            country_ptrs[i] = country.pointer;
+            safe_count += 1;
+        }
+    }
+    let ptrs_copied = if safe_count == n {
+        memory.copy_records(
+            RecordSources::Pointers(&country_ptrs[..n]),
+            &PTR_LAYOUT,
+            &mut ptr_bytes[..n * 8],
+        )
+    } else {
+        0
+    };
+    let mut status_ptrs = [0_usize; BATCH];
+    let mut block_ptrs = [0_usize; BATCH];
+    let mut block_slots = [0_usize; BATCH];
+    let mut block_count = 0_usize;
+    for (i, &country) in batch.iter().enumerate() {
+        let status = if i < ptrs_copied {
+            let p = usize::try_from(u64::from_le_bytes(
+                ptr_bytes[i * 8..(i + 1) * 8].try_into().unwrap(),
+            ))
+            .map_err(|_| "project status pointer unreadable")?;
+            if p == 0 {
+                return Err("project status pointer is null");
+            }
+            p
+        } else {
+            0
+        };
+        status_ptrs[i] = status;
+        if status != 0 && status.checked_add(BLOCK_LEN).is_some() {
+            block_ptrs[block_count] = status;
+            block_slots[block_count] = i;
+            block_count += 1;
+        }
+    }
+    let mut blocks = [0_u8; BATCH * BLOCK_LEN];
+    let blocks_copied = if block_count > 0 {
+        memory.copy_records(
+            RecordSources::Pointers(&block_ptrs[..block_count]),
+            &BLOCK_LAYOUT,
+            &mut blocks[..block_count * BLOCK_LEN],
+        )
+    } else {
+        0
+    };
+    let mut block_index = [usize::MAX; BATCH];
+    for k in 0..blocks_copied {
+        block_index[block_slots[k]] = k;
+    }
+    for (i, &country) in batch.iter().enumerate() {
+        let k = block_index[i];
+        if k != usize::MAX {
+            let slice = &blocks[k * BLOCK_LEN..(k + 1) * BLOCK_LEN];
+            if u64::from_le_bytes(slice[..8].try_into().unwrap()) != expected
+                || u64::from_le_bytes(slice[8..16].try_into().unwrap()) != secondary
+            {
+                return Err("project status vtable mismatch");
+            }
+            let owner = u32::from_le_bytes(slice[16..20].try_into().unwrap());
+            if countries.resolve(owner)?.pointer != country.pointer {
+                return Err("project status owner mismatch");
+            }
+            let mut block = [0_u8; BLOCK_LEN];
+            block.copy_from_slice(slice);
+            out[i] = BatchedStatus {
+                country,
+                status: status_ptrs[i],
+                block: Some(block),
+            };
+        } else {
+            let status = from_country(memory, base, country, countries)?;
+            out[i] = BatchedStatus {
+                country,
+                status,
+                block: None,
+            };
+        }
+    }
+    Ok(n)
+}
+
+pub fn programs_from_block(block: &[u8; BLOCK_LEN]) -> Result<Array, &'static str> {
+    Array::from_header(block[PROGRAMS..PROGRAMS + 16].try_into().unwrap(), 8)
+        .ok_or("program array unreadable or invalid")
+}
+
+pub fn pool_from_block(block: &[u8; BLOCK_LEN]) -> Result<usize, &'static str> {
+    usize::try_from(u64::from_le_bytes(
+        block[PROJECT_POOL..PROJECT_POOL + 8].try_into().unwrap(),
+    ))
+    .ok()
+    .filter(|&p| p != 0)
+    .ok_or("project pool pointer unreadable or null")
+}
 
 pub fn from_country(
     memory: &impl Memory,
