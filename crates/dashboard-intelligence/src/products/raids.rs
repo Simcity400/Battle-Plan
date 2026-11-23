@@ -5,7 +5,7 @@ use dashboard_base::catalogue::{self, CachedResult, Catalogue, View};
 use dashboard_query::{Query, log, read, series::MissingSpan};
 use engine_native::craid_instance as native;
 use content_reader_raids::raids::Catalog;
-use replay::lanes::{self, Cell, Keys};
+use replay_lanes::lanes::{self, Cell, Keys};
 use replay_data::rows::{RaidEndRow, RaidScope, TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
 use std::{

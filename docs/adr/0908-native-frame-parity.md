@@ -18,4 +18,4 @@ Preparation and commit can each give tables to multiple lanes. The order is by l
 
 The parity tests feed the real recorder store and row encoder the same conversion inputs, including truncation, missing tables, sample retention, owner slices, and helper lanes stopping halfway through a step. They compare the wire and read-back state. Live error paths use allocation-free error kinds even inside a diagnostic scope, while offline writers retain messages.
 
-[Frame writer](../../crates/replay/src/native_frame.rs) · [Parity tests](../../crates/replay/src/native_frame/tests.rs)
+[Frame writer](../../crates/replay-journal/src/native_frame.rs) · [Parity tests](../../crates/replay-journal/src/native_frame/tests.rs)

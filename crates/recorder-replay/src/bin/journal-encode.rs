@@ -1,10 +1,7 @@
-use replay::{
-    campaign::live::Progress,
-    columnar_file::Settings,
-    columnar_journal::Source,
-    encode_report::{self, Everything},
-    multiplied::{Factors, Multiplied, Start},
-};
+use replay::campaign::live::Progress;
+use replay_settings::compression::Settings;
+use replay::campaign::encode_report::{self, Everything};
+use replay_journal::{columnar_journal::Source, multiplied::{Factors, Multiplied, Start}};
 use serde_json::json;
 use std::{
     io,
@@ -21,7 +18,7 @@ fn main() -> io::Result<()> {
         && flag == "--preroll"
     {
         let started = Instant::now();
-        replay::multiplied::preroll(Path::new(directory), capture.parse().map_err(|_| usage())?, block.parse().map_err(|_| usage())?, Path::new(file))?;
+        replay_journal::multiplied::preroll(Path::new(directory), capture.parse().map_err(|_| usage())?, block.parse().map_err(|_| usage())?, Path::new(file))?;
         eprintln!("{}", json!({ "preroll": file, "seconds": started.elapsed().as_secs_f64(), "bytes": std::fs::metadata(file)?.len() }));
         return Ok(());
     }
@@ -90,9 +87,9 @@ fn main() -> io::Result<()> {
     let encoded_as = encode_report::encoder_source(multiplied, start.as_ref().map(|start| start.block));
     let mut writer = encode_report::open_encoded(out, &state, capture, settings, &encoded_as, recorder_derive::writers())?;
     writer.time(timed);
-    let multiplication_enabled = replay::FEATURES.contains(&"multiplied");
+    let multiplication_enabled = replay_journal::FEATURES.contains(&"multiplied");
     if (times.is_some() || start.is_some()) && !multiplication_enabled {
-        return Err(io::Error::other("--times and --start need a build with the feature replay/multiplied"));
+        return Err(io::Error::other("--times and --start need a build with the feature recorder-replay/multiplied"));
     }
     let tables = replay_data::rows::TableId::ALL.len();
     let factors = times.unwrap_or_else(|| Factors { factor: vec![1; tables], in_phase: vec![false; tables] });
@@ -101,7 +98,7 @@ fn main() -> io::Result<()> {
     let first_hours = source.hours_before(writer.segments());
     source.start(writer.segments())?;
     eprintln!("{}", json!({ "in_phase": source.in_phase(), "journal_schema_digest_is_a_prefix": source.exact_schema, "taken_up_at_segment": writer.segments(),
-        "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": multiplication_enabled, "keep_journal": replay::FEATURES.contains(&"keep-journal") } }));
+        "build": { "memory_labels": engine_allocation::labels::ENABLED, "multiplied": multiplication_enabled, "keep_journal": replay_journal::FEATURES.contains(&"keep-journal") } }));
     let facts = facts.filter(|_| !writer.carries_facts());
     let mut host = Everything::new(facts, pace);
     host.blocks = started_after.unwrap_or_else(|| source.blocks_before(writer.segments()));

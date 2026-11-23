@@ -6,7 +6,7 @@ use dashboard_world::products::subjects::settle;
 use super::lend_lease_balance::SCALE;
 use dashboard_base::{Source, span::HourSpan};
 use dashboard_query::identity::Holder;
-use replay::lanes::{self, Cell, Keys};
+use replay_lanes::lanes::{self, Cell, Keys};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -194,7 +194,7 @@ impl Product for LendLeasePartners {
             let run = stretch.run;
             let read: Vec<(i32, i32)> = dashboard_query::cost::storage(|| lanes::statuses(recording, run, TableId::WarLendLeaseHistories, stretch.first, stretch.last))?
                 .into_iter()
-                .filter(|held| replay::columnar_frames::available(held.status))
+                .filter(|held| replay_recording::columnar_frames::available(held.status))
                 .map(|held| (held.first, held.last))
                 .collect();
             let links = dashboard_base::queries::links(source, run)?;

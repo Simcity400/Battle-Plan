@@ -1843,12 +1843,12 @@ fn recovered_hours(
                 }
             }
         }
-        let recovered = replay::spool::recover_prefix(prefix);
+        let recovered = replay_capture_spool::spool::recover_prefix(prefix);
         if exact_cap && recovered.valid_bytes != prefix.len() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         for record in recovered.records {
-            if let replay::spool::Record::Frame(frame) = record {
+            if let replay_capture_spool::spool::Record::Frame(frame) = record {
                 hours += 1;
                 attempted_committed |= frame.hour == attempted_hour;
             }

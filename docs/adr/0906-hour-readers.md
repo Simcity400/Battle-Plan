@@ -6,4 +6,4 @@ Successive hour requests reuse the last table state. Read identity includes the 
 
 Differential tests compare independent seeks to direct frames and reused cursors across run and block boundaries, restoring and reversing the hour order. Partial key and column reads must equal the relevant subset without creating missing keys or decoding a withheld opaque field. Decoder counters check that advancing across hours uses restarts only when needed.
 
-[Hour reads](../../crates/replay/src/at.rs) · [Reader parity tests](../../crates/replay/src/at/tests.rs)
+[Hour reads](../../crates/replay-lanes/src/at.rs) · [Reader parity tests](../../crates/replay-lanes/src/at/tests.rs)

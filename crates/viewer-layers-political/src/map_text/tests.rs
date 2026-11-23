@@ -89,7 +89,7 @@ fn record(recorded: impl Fn(u32) -> bool) -> viewer_layer_core::playhead_host::u
 
 fn insert_whole(store: &mut Store, table: TableId, slot: u32, key: u128) {
     use replay_columnar::state::Kind;
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut changes = store.table(table.index()).unwrap();
     changes.insert_at(slot, key).unwrap();
     for (column, kind) in kinds[table.index()].iter().enumerate() {

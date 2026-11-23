@@ -13,6 +13,8 @@ doctest = false
 export-types = ["dashboard-base/export-types", "dashboard-air/export-types", "dashboard-economy/export-types", "dashboard-intelligence/export-types", "dashboard-land/export-types", "dashboard-naval/export-types", "dashboard-players/export-types", "dashboard-politics/export-types", "dashboard-production/export-types", "dashboard-research/export-types", "dashboard-wars/export-types", "dashboard-world/export-types"]
 
 [dependencies]
+replay-tools.workspace = true
+replay.workspace = true
 base64 = "0.22.1"
 blake3 = { workspace = true }
 content-reader-core = { workspace = true }
@@ -43,7 +45,6 @@ engine-heap = { workspace = true }
 job-priority = { workspace = true }
 playhead = { path = "../playhead" }
 recording-upgrade = { workspace = true }
-replay = { workspace = true }
 replay-data = { workspace = true }
 replay-frame = { workspace = true }
 rfd = { workspace = true }
@@ -66,6 +67,7 @@ name = "dashboard-bridge"
 path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
+replay = { workspace = true, features = ["test-support"] }
 content-reader-core = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
@@ -80,7 +82,6 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 dashboard-wars = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
 playhead = { path = "../playhead", features = ["test-support"] }
-replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 
@@ -94,9 +95,11 @@ workspace = true
 content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay = { workspace = true, features = ["default", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
+replay-tools = { workspace = true, features = ["default", "journal"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
 unify-indexmap = { workspace = true }

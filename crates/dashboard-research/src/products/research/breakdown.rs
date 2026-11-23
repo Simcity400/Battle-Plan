@@ -6,7 +6,7 @@ use super::{
 use dashboard_base::{Source, products::{LoadContext, Product}};
 use dashboard_text::metadata::check_cancel;
 use dashboard_query::{Query, cost, identity::Holder};
-use replay::lanes::{self, Cell, History, Keys};
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_data::{
     cadence::STAGGER_PERIOD,
     rows::{Recorded, ResearchAppliedBonusRow, ResearchInputRow, ResearchModifierRow, TableId},

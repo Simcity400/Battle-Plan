@@ -1,6 +1,6 @@
 use super::{Course, RaidPreparationRun, province_of, scope_of};
 use engine_native::craid_instance as native;
-use replay::lanes::{Cell, Step};
+use replay_lanes::lanes::{Cell, Step};
 
 fn step(hour: i32, phase: i32, outcome: i32, travelled: Option<i64>, preparation: i64) -> Step {
     let travelled = travelled.map_or(Cell::Missing, Cell::Number);

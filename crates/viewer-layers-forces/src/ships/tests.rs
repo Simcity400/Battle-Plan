@@ -357,7 +357,7 @@ fn over(province: u32, height: f32) -> View {
 
 #[test]
 fn a_view_that_draws_no_ship_declares_nothing_and_one_that_does_composes() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut far = Ships::new(fake()).unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "ships");
     far.inputs(&over(10, 600.0), &mut inputs).unwrap();

@@ -1,6 +1,6 @@
 use super::coverage::{CountryCells, Coverage, Held, RunCells, UnknownReason, classify, classify_historical};
 use super::*;
-use replay::lanes::Bin;
+use replay_lanes::lanes::Bin;
 use replay_data::rows::EquipmentLossCoverageRow as Row;
 
 const LEGACY_PARTIAL_TEXT: &str = "equipment destruction first/branch interval is partial";
@@ -202,13 +202,9 @@ fn startup_and_branch_partial_intervals_stay_distinct_from_withheld_reads() {
 
 #[test]
 fn historical_and_current_recordings_distinguish_startup_partial_and_withheld_hours() {
-    use replay::{
-        columnar_file::{BlockEnd, FileWriter, Settings},
-        columnar_frames::{
-            Recording, columns_at, fixtures, schema,
-            synthetic::{Input, Sample},
-        },
-    };
+    use replay_journal::{columnar_file::{BlockEnd, FileWriter}, fixtures, synthetic::{Input, Sample}};
+    use replay_settings::compression::Settings;
+    use replay_recording::{columnar_frames::Recording, schema::{columns_at, schema}};
     use replay_columnar::{
         container::{SectionKey, Tags},
         envelope::{self, Identity},
@@ -285,7 +281,7 @@ fn historical_and_current_recordings_distinguish_startup_partial_and_withheld_ho
     };
     let unit = unit::Settings { restore_blocks: 1, ..unit::Settings::at(3) };
     let mut file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, old_columns.len(), Settings { level: unit.level }, None).unwrap();
-    let mut store = Store::new(old_kinds.clone(), replay::columnar_frames::keeps_last()[..old_columns.len()].to_vec());
+    let mut store = Store::new(old_kinds.clone(), replay_recording::schema::keeps_last()[..old_columns.len()].to_vec());
     store.declare_logs(&replay_data::rows::logs()[..old_columns.len()]).unwrap();
     store.attach(Encoder::new(&old_kinds, unit).unwrap());
     file.start_run(1, envelope::epoch::START, 100).unwrap();
@@ -352,7 +348,7 @@ fn historical_and_current_recordings_distinguish_startup_partial_and_withheld_ho
     };
     let mut session = Vec::new();
     SessionStart { id: 1, process_id: 1, process_start_time: 1, qpc_frequency: 1, sample_boundary: SampleBoundary::EndOfHour, capture_mode: Mode::Full, identity: game }.encode(&mut session).unwrap();
-    let capture = replay::columnar_file::Capture {
+    let capture = replay_recording::capture::Capture {
         campaign_id: b"historical-coverage".to_vec(),
         content: Vec::new(),
         capture_mode: 0,
@@ -406,10 +402,8 @@ fn current_format_unrecorded_drain_state_with_empty_text_is_never_complete() {
 
 #[test]
 fn recording_break_keeps_each_runs_counting_boundary_and_partial_startup_separate() {
-    use replay::columnar_frames::{
-        Recording, fixtures,
-        synthetic::{Input, Sample},
-    };
+    use replay_recording::columnar_frames::Recording;
+    use replay_journal::{fixtures, synthetic::{Input, Sample}};
     use replay_data::rows::{CountryLinkRow, CountryRow, EquipmentDestructionCoverage, EquipmentDestructionRow, compatibility::EQUIPMENT_DESTRUCTION_STARTUP_FORMAT};
 
     let countries = [CountryRow { id: 1, canonical_slot: 1, tag: b"GER".to_vec(), ..Default::default() }];
@@ -615,7 +609,8 @@ fn current_format_unrecorded_drain_state_with_nonempty_text_reports_gap_not_gues
 #[test]
 fn contiguous_load_with_supplemental_gap_exports_exact_run_boundaries_and_gates_startup_reads() {
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source as base_frame};
-    use replay::{campaign::Replay, spool::Record};
+    use replay::campaign::Replay;
+    use replay_capture_spool::spool::Record;
     use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
     use replay_frame::{
         branches::{BranchReason, BranchStart, Parentage},
@@ -803,7 +798,8 @@ fn destruction_chart_bins_clip_before_first_withheld_hour() {
 #[test]
 fn exact_read_at_child_hour_with_supplemental_gap_never_synthesizes_zero_for_parent_design() {
     use dashboard_base::test_fixtures::{CAMPAIGN, records, source as base_frame};
-    use replay::{campaign::Replay, spool::Record};
+    use replay::campaign::Replay;
+    use replay_capture_spool::spool::Record;
     use replay_data::rows::{EquipmentDestructionCoverage, EquipmentDestructionRow, TableRows};
     use replay_frame::{
         branches::{BranchReason, BranchStart, Parentage},

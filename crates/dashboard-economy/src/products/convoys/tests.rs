@@ -1,5 +1,5 @@
 use super::*;
-use replay::lanes::Step;
+use replay_lanes::lanes::Step;
 
 #[test]
 fn the_schema_numbers_the_cells_convoy_health_reads() {

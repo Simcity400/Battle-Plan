@@ -4,7 +4,7 @@ use replay::campaign::SeekResult;
 
 fn source(replay: Replay) -> (Arc<Replay>, MapSource) {
     let replay = Arc::new(replay);
-    let natives = Arc::new(Natives::new(&replay).unwrap());
+    let natives = Arc::new(Natives::new(replay.recording()).unwrap());
     let source = Columnar::new(natives).open(Arc::clone(&replay)).unwrap();
     (replay, source)
 }
@@ -100,7 +100,7 @@ fn map_source_steps_and_seeks_beside_the_hour_cursor() {
     let tables = dashboard_base::map_tables::selected_tables();
     for path in paths.split(';').filter(|path| !path.is_empty()) {
         let replay = Arc::new(Replay::open_path(std::path::Path::new(path)).unwrap());
-        let mut source = Columnar::new(Arc::new(Natives::new(&replay).unwrap())).open(Arc::clone(&replay)).unwrap();
+        let mut source = Columnar::new(Arc::new(Natives::new(replay.recording()).unwrap())).open(Arc::clone(&replay)).unwrap();
         let mut cursor = replay::campaign::HourCursor::new(Arc::clone(&replay), tables, false);
         let mut held = Vec::new();
         for block in &replay.index {

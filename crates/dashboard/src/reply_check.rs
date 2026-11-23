@@ -233,7 +233,7 @@ pub struct Report {
     pub skipped: usize,
     pub ignored: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache: Option<replay::cold_cache::Probe>,
+    pub cache: Option<replay_tools::cold_cache::Probe>,
     #[serde(skip)]
     patterns: Vec<Vec<String>>,
     pub products: BTreeMap<String, Tally>,

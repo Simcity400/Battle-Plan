@@ -223,7 +223,7 @@ fn out_of_order_closed_days_keep_their_native_date_in_spending_replies() {
 
 #[test]
 fn format_142_recording_without_day_log_falls_back_to_last_day_end_to_end() {
-    use replay::columnar_frames::synthetic::{Input, Sample};
+    use replay_journal::synthetic::{Input, Sample};
     use replay_data::rows::{ClockRow, PowerSpendTotalRow, compatibility::CAPTURE_ADDITIONS_FORMAT, tables};
     let frames: Vec<DecodedFrame> = (FIRST..=168)
         .map(|hour| {
@@ -476,7 +476,7 @@ fn overlapping_coverage_gap_preserves_specific_day_log_refusal_on_affected_hour(
         identity::{Holder, HolderRun, Holders},
         timeline::{Join, Stretch, Timeline},
     };
-    use replay::lanes::LogGap;
+    use replay_lanes::lanes::LogGap;
     use replay_columnar::manifest::Status;
     let make_frame = |hour: i32| {
         let mut frame = source_frame(hour);

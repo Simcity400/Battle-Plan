@@ -9,7 +9,7 @@ use dashboard_query::{Query, read};
 use content_reader_country_names::country_names::CountryNames;
 use content_reader_localisation::localisation::Localisation;
 use replay_looks::Look;
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_data::rows::{Recorded, TableId, TagHolderRow};
 use serde::{Deserialize, Serialize};
 use std::{

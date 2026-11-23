@@ -1,7 +1,5 @@
-use replay::{
-    columnar_file::{Capture, Stop, capture_of},
-    columnar_journal::{JournalWriter, Witness, segment_of},
-};
+use replay_recording::capture::{Capture, Stop, capture_of};
+use replay_journal::columnar_journal::{JournalWriter, Witness, segment_of};
 use std::{
     collections::VecDeque,
     fs, io,

@@ -4,10 +4,8 @@ use dashboard_base::{products::{LoadContext, Product}, queries::country_ids::{Na
 use dashboard_base::{Source, catalogue, span::HourSpan};
 use dashboard_base::products::{resources::ResourceNaming};
 use dashboard_query::{Query, identity::Holder, read};
-use replay::{
-    columnar_frames::Recording,
-    lanes::{self, Cell, History, Keys},
-};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::lanes::{self, Cell, History, Keys};
 use replay_columnar::summary::{Cells, Source as Column};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};

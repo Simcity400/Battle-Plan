@@ -211,7 +211,7 @@ fn recording_while_held(
         };
         let held = in_newest.get();
         in_newest.set(
-            replay::columnar_journal::segments(&campaign_dir).is_ok_and(|held| held.len() == 1),
+            replay_journal::columnar_journal::segments(&campaign_dir).is_ok_and(|held| held.len() == 1),
         );
         held && Replay::open_path(recording).is_ok_and(|saved| saved.index.len() > blocks)
     };
@@ -294,7 +294,7 @@ fn a_discard_whose_collector_never_detached_is_recorded_at_once_and_finished_whe
     assert!(recorded_frames(&recording).contains(&(10, 5)));
     drop(live);
     let campaign_dir = session.join(campaign());
-    let (_, _, newest) = replay::columnar_journal::segments(&campaign_dir)
+    let (_, _, newest) = replay_journal::columnar_journal::segments(&campaign_dir)
         .unwrap()
         .pop()
         .unwrap();
@@ -424,7 +424,7 @@ const SECOND: &str = "8bb2e3e7-f322-45b0-9514-010098493828";
 fn write_second_campaign(session: &Path) {
     let mut records = load_segment_records(12, 5..=6, RELOAD);
     for record in &mut records {
-        if let replay::spool::Record::Frame(frame) = record {
+        if let replay_capture_spool::spool::Record::Frame(frame) = record {
             frame.tables[TableId::Campaign.index()] = replay_frame::frame::TableUpdate::Snapshot(
                 replay_data::rows::TableRows::Campaign(vec![replay_data::rows::CampaignRow {
                     id: SECOND.as_bytes().to_vec(),

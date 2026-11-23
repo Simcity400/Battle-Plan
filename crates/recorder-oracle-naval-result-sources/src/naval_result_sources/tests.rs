@@ -1,5 +1,5 @@
 use super::*;
-use replay::spool::Record;
+use replay_capture_spool::spool::Record;
 use replay_data::{
     identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
     rows::CampaignRow, rows::ClockRow, rows::NavalCombatRow, rows::NavalResultRow, rows::TableRows,

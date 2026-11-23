@@ -187,7 +187,7 @@ fn bins_of_no_view_are_refused() {
     for bin_hours in [0, -6, 100, 6 * 16 * 15 + 6] {
         assert!(level_of(bin_hours).is_err(), "{bin_hours}");
     }
-    assert_eq!(level_of(5).unwrap(), replay::lanes::WALKED);
+    assert_eq!(level_of(5).unwrap(), replay_lanes::lanes::WALKED);
     assert_eq!(level_of(90).unwrap(), 0);
     assert_eq!(level_of(96 * 15).unwrap(), 1);
 }
@@ -416,7 +416,7 @@ fn a_line_has_the_same_bins_asked_alone_or_beside_tags_held_over_other_hours() {
             for (at, tag) in tags.iter().enumerate() {
                 let alone = together(&query, &[tag], bin_hours, index).remove(0);
                 assert_eq!(both[at], alone, "{tag} beside {tags:?}, bins of {bin_hours} hours");
-                if level_of(bin_hours).unwrap() != replay::lanes::WALKED && bucket_hours(level_of(bin_hours).unwrap()) == bin_hours {
+                if level_of(bin_hours).unwrap() != replay_lanes::lanes::WALKED && bucket_hours(level_of(bin_hours).unwrap()) == bin_hours {
                     for bucket in alone.iter().flatten() {
                         assert_eq!((bucket.min_hour, bucket.max_hour), (bucket.first_hour, bucket.first_hour), "{tag}'s extremes in a bin of {bin_hours} hours");
                     }

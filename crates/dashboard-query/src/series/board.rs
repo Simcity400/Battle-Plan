@@ -4,7 +4,7 @@ use crate::{
     identity::{Country, Holder},
     read,
 };
-use replay::lanes::Keys;
+use replay_lanes::lanes::Keys;
 use replay_columnar::manifest::Status;
 use std::{collections::HashMap, io};
 
@@ -105,7 +105,7 @@ fn values(lines: &[&Line<'_, '_>], countries: &[Country], hour: i32, run: u32) -
         wanted.dedup();
         let snapshot = match wanted.is_empty() {
             true => None,
-            false => Some(crate::cost::storage(|| replay::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
+            false => Some(crate::cost::storage(|| replay_lanes::lanes::at_keys(recording, run, table, hour, Some(&asked), Keys::These(&wanted)))?),
         };
         let complete = snapshot.as_ref().is_some_and(|snapshot| matches!(snapshot.status, Status::Complete));
         let view = snapshot.as_ref().map(|snapshot| snapshot.view());

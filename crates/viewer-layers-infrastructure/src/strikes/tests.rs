@@ -73,7 +73,7 @@ fn a_row_appended_or_forgotten_updates_the_impacts_at_the_head_as_composed() {
 #[test]
 fn a_strike_appended_and_forgotten_inside_a_step_reaches_the_layer_in_birth_order() {
     let recording = record(20, strikes);
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let pages: Arc<dyn Pages> = recording;
     let table = TableId::NuclearStrikes;
     let columns = [column(table, "province"), column(table, "nuke_type")];

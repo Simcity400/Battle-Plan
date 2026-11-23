@@ -3,7 +3,8 @@ use playhead::{
     Timeline,
     pages::{Pages, WorldPages},
 };
-use replay::{campaign::Replay, columnar_frames::Recording};
+use replay::campaign::Replay;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::state::Kind;
 use replay_data::BranchId;
 use std::{

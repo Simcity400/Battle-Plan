@@ -6,7 +6,8 @@ use dashboard_core::invalid;
 use dashboard_core::dto::CountryMetadata;
 use dashboard_query::identity::Holder;
 use serde::{Deserialize, Serialize};
-use replay::{columnar_frames::Recording, lanes};
+use replay_recording::columnar_frames::Recording;
+use replay_lanes::lanes;
 use replay_columnar::summary::{self, Source as Summary};
 use replay_data::rows::{TableId, TerritoryTotalRow};
 use std::{

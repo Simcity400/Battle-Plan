@@ -68,11 +68,11 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
         let mut hours: Vec<i32> = Vec::new();
         let stored = recording.run(run)?;
         let written = [replay_data::rows::column::<CountryFuelRow>("award_day"), replay_data::rows::column::<CountryFuelRow>("demand")];
-        let cells = replay::lanes::history(recording, run, TableId::CountryFuel, &written, replay::lanes::Keys::These(&[key]), from, to)?;
+        let cells = replay_lanes::lanes::history(recording, run, TableId::CountryFuel, &written, replay_lanes::lanes::Keys::These(&[key]), from, to)?;
         for (_, steps) in &cells.keys {
             for cells in steps.iter().filter_map(|step| step.cells.as_ref()) {
                 hours.extend(cells.iter().filter_map(|cell| match cell {
-                    replay::lanes::Cell::Written(hour) => Some(*hour),
+                    replay_lanes::lanes::Cell::Written(hour) => Some(*hour),
                     _ => None,
                 }));
             }
@@ -85,7 +85,7 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
         }
         let asks: Vec<(i32, u128)> = hours.iter().filter(|&&hour| hour <= last).map(|&hour| (hour, key)).collect();
         let mut rows: BTreeMap<i32, CountryFuelRow> = BTreeMap::new();
-        replay::lanes::at_each(recording, run, TableId::CountryFuel, None, &asks, &mut |hour, key, row| {
+        replay_lanes::lanes::at_each(recording, run, TableId::CountryFuel, None, &asks, &mut |hour, key, row| {
             if let Some((view, slot)) = row
                 && let Some(row) = typed::<tables::CountryFuel>(&view, key, slot, recording.format())?
             {
@@ -98,7 +98,7 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
         if parts.is_some() {
             let (low, high) = (key << 83, (key << 83) | ((1u128 << 83) - 1));
             let position = replay_data::rows::column::<FuelDemandPartRow>("position");
-            let lives = replay::lanes::history(recording, run, TableId::FuelDemandParts, &[position], replay::lanes::Keys::Range(low, high), hours[0], to.min(last))?;
+            let lives = replay_lanes::lanes::history(recording, run, TableId::FuelDemandParts, &[position], replay_lanes::lanes::Keys::Range(low, high), hours[0], to.min(last))?;
             let mut asks: Vec<(i32, u128)> = Vec::new();
             for &hour in rows.keys() {
                 for (part, steps) in &lives.keys {
@@ -110,7 +110,7 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
                 held.insert(hour, Vec::new());
             }
             dashboard_text::metadata::check_cancel(cancelled)?;
-            replay::lanes::at_each(recording, run, TableId::FuelDemandParts, None, &asks, &mut |hour, key, row| {
+            replay_lanes::lanes::at_each(recording, run, TableId::FuelDemandParts, None, &asks, &mut |hour, key, row| {
                 match row {
                     Some((view, slot)) => {
                         if let Some(part) = typed::<tables::FuelDemandParts>(&view, key, slot, recording.format())? {
@@ -124,7 +124,7 @@ pub(crate) fn country_reads(query: &Query<'_>, id: u32, first: i32, last: i32, p
                 Ok(())
             })?;
         }
-        let last_read = |start: i32| replay::lanes::reads(recording, run, TableId::CountryFuel, start, from).map(|reads| reads.last().map(|&(_, last)| last));
+        let last_read = |start: i32| replay_lanes::lanes::reads(recording, run, TableId::CountryFuel, start, from).map(|reads| reads.last().map(|&(_, last)| last));
         let read = match hours[0] == from {
             true => match last_read(from.saturating_sub(super::DAY_HOURS).max(stored.first_hour))? {
                 Some(read) => Some(read),

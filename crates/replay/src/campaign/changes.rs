@@ -1,11 +1,6 @@
 use super::{BlockIndex, Replay};
-use crate::{
-    Hour,
-    codec::{Decoder, invalid},
-    format::FormatVersion,
-    frame::{DecodedFrame, Metrics, SharedView, TableUpdate, TableView, decode_update},
-    rows::{DeltaRow, TableId, TableRows, compatibility::HISTORY, full_mask},
-};
+use replay_data::{Hour, codec::{Decoder, invalid}, format::FormatVersion, rows::{DeltaRow, TableId, TableRows, compatibility::HISTORY, full_mask}};
+use replay_frame::frame::{DecodedFrame, Metrics, SharedView, TableUpdate, TableView, decode_update};
 use std::{io, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

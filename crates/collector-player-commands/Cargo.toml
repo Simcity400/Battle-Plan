@@ -18,6 +18,7 @@ tap-foreign-probe = ["collector-hooks/tap-foreign-probe"]
 test-support = ["collector-hooks/test-support", "collector-lifetime/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support", "dep:collector-test-support"]
 
 [dependencies]
+replay-recording.workspace = true
 collector-hooks.workspace = true
 collector-lifetime.workspace = true
 collector-memory.workspace = true
@@ -28,7 +29,6 @@ engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
 engine-sites.workspace = true
-replay.workspace = true
 replay-data.workspace = true
 replay-frame = { workspace = true, features = ["capture"] }
 serde = { workspace = true, features = ["derive"] }
@@ -36,7 +36,7 @@ serde_json.workspace = true
 collector-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
-replay = { workspace = true, features = ["test-support"] }
+replay-capture-spool.workspace = true
 collector-test-support.workspace = true
 collector-hooks = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
@@ -53,12 +53,9 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 collector-player-commands = { workspace = true, features = ["default", "test-support"] }
-content-reader-province-area = { workspace = true, features = ["test-support"] }
-content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
-recorder-derive-framework = { workspace = true, features = ["test-support"] }
-replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
+replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

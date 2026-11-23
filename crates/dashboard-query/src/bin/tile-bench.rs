@@ -523,9 +523,9 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
     };
     let threads = threads.unwrap_or_else(|| (std::thread::available_parallelism().map_or(1, std::num::NonZero::get) / 2).max(2));
     let sets: Vec<(String, Vec<String>)> = [8, 100, all.len()].into_iter().map(|n| (format!("{n}"), all.iter().take(n).cloned().collect())).collect();
-    let mut cache = replay::cold_cache::probe_file(
+    let mut cache = replay_tools::cold_cache::probe_file(
         path,
-        replay::cold_cache::ResetScope::FreshRecordingAndIndexPerBatch,
+        replay_tools::cold_cache::ResetScope::FreshRecordingAndIndexPerBatch,
     )?;
     let mut rows = Vec::new();
     let mut opens = Vec::new();
@@ -540,9 +540,9 @@ fn time(path: &Path, group: usize, threads: Option<usize>) -> Result<Value> {
             while index <= last_index {
                 let indices: Vec<i64> = (index..=(index + 2).min(last_index)).collect();
                 index += 3;
-                cache = replay::cold_cache::probe_file(
+                cache = replay_tools::cold_cache::probe_file(
                     path,
-                    replay::cold_cache::ResetScope::FreshRecordingAndIndexPerBatch,
+                    replay_tools::cold_cache::ResetScope::FreshRecordingAndIndexPerBatch,
                 )?;
                 let opened = Instant::now();
                 let replay = open(path)?;

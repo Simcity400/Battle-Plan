@@ -161,7 +161,7 @@ fn a_table_not_recorded_is_drawn_as_today_and_a_held_settle_catches_up_with_the_
 
 #[test]
 fn content_without_battle_defines_or_a_silent_view_declares_nothing() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut silent = Sounds::new(Some(audio(false)));
     let mut inputs = Inputs::new(&kinds, "sounds");
     silent.inputs(&View::default(), &mut inputs).unwrap();

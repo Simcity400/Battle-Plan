@@ -6,10 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use replay::{
-    campaign::Replay, campaign::Revision, campaign::SeekResult, packing::Budgeted, spool::ControlRecord,
-    spool::Recovered, spool::Recovery,
-};
+use replay::campaign::{Replay, Revision, SeekResult};
+use replay_settings::packing::Budgeted;
+use replay_recording::control::ControlRecord;
+use replay_capture_spool::spool::{Recovered, Recovery};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     BranchId, Hour, SessionId, format::FormatVersion, identity::Identity, identity::SessionStart,
@@ -40,9 +40,8 @@ pub use session::{
     reconcile_session, save_waiting, session_loads, unsaved, unsaved_bytes, waiting_name, written_campaigns,
 };
 use content_reader_localisation::localisation::Localisation;
-use replay::{
-    recorder_settings::RecorderSettings, recording_files,
-};
+use replay_settings::recorder_settings::RecorderSettings;
+use replay_files::recording_files;
 use serde_json::{Value, json};
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -163,10 +162,10 @@ fn json_temporary(path: &Path) -> Result<(PathBuf, fs::File)> {
 type Result<T> = std::result::Result<T, String>;
 
 pub fn with_packing<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
-    if replay::packing::Packing::active() {
+    if replay_settings::packing::Packing::active() {
         return work();
     }
-    let packing = replay::packing::Packing::new()
+    let packing = replay_settings::packing::Packing::new()
         .map_err(|error| format!("Packing could not start: {error}"))?;
     packing.promote();
     packing.run(work)
@@ -605,7 +604,7 @@ fn revision_of(value: &Value) -> Option<Revision> {
     })
 }
 
-fn block_settings() -> replay::columnar_file::Settings {
+fn block_settings() -> replay_settings::compression::Settings {
     RecorderSettings::load()
         .map(|settings| settings.compression)
         .unwrap_or_default()
@@ -613,7 +612,7 @@ fn block_settings() -> replay::columnar_file::Settings {
 }
 
 fn recording_stem(replay: &Replay, naming: Naming<'_>, multiplayer: bool) -> Result<String> {
-    let _phase = replay::packing::Packing::phase(replay::packing::Phase::Publication);
+    let _phase = replay_settings::packing::Packing::phase(replay_settings::packing::Phase::Publication);
     let name = crate::recording_name::recording_name(replay, naming.localisation, multiplayer)
         .map_err(|error| error.to_string())?;
     if let Some(report) = naming.report {
@@ -746,7 +745,7 @@ fn failure_tracker(
                 observed,
                 range
                     .and_then(|range| range.load_signal)
-                    .and_then(replay::commands::load_marker),
+                    .and_then(replay_recording::command_packet::load_marker),
             )
             .map_err(|error| error.to_string())?;
     } else {
@@ -953,7 +952,7 @@ fn failure_observation(
     expected: Option<BranchId>,
     bundled: bool,
 ) -> Result<replay_frame::branches::Observation> {
-    let signal = signal.and_then(replay::commands::load_marker);
+    let signal = signal.and_then(replay_recording::command_packet::load_marker);
     let mut observation = tracker
         .observe(None, hour, signal, gaps)
         .map_err(|error| error.to_string())?;
@@ -983,7 +982,7 @@ fn failure_records_inner(
     partial_override: Option<&ControlRecord>,
     contexts: Option<&[UncommittedRange]>,
 ) -> Result<(Vec<Recovered>, bool)> {
-    use replay::commands::load_marker;
+    use replay_recording::command_packet::load_marker;
     let tail_branch = segments
         .iter()
         .rev()
@@ -1005,7 +1004,7 @@ fn failure_records_inner(
     let mut matching_session = false;
     let mut recorded_branches = BTreeSet::new();
     let mut last_clock = None;
-    let mut latest_phase: Option<&replay::commands::Phase> = None;
+    let mut latest_phase: Option<&replay_recording::command_packet::Phase> = None;
     for record in segments.iter().flat_map(|(_, recovery)| &recovery.records) {
         match record {
             Recovered::SessionStart(session) => {

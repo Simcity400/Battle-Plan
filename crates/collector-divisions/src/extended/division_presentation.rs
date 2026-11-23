@@ -4576,7 +4576,7 @@ pub mod tests {
 
     #[test]
     fn cold_attach_and_post_gap_keyframes_admit_every_experience_column() {
-        use replay::{spool::Record, spool::encode_record};
+        use replay_capture_spool::spool::{Record, encode_record};
         use replay_data::{rows::RowCodec, rows::TableRows};
         use replay_frame::{
             branches::Gap, frame::DecodedFrame, frame::FrameEncoder, frame::Metrics,

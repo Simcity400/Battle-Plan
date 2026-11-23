@@ -310,7 +310,7 @@ fn a_view_that_hides_the_layer_declares_nothing_and_shown_again_composes() {
         }
     });
     let resources = View { fog: false, map_mode: MapMode::Stock(Stock::Resources), ..View::default() };
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "naval_counters");
     layer_seeing_all().inputs(&resources, &mut inputs).unwrap();
     assert!(inputs.into_tables().is_empty(), "the resources mode draws no unit counters");
@@ -362,7 +362,7 @@ fn outside_the_view_a_change_stays_marked_and_a_base_is_always_made() {
 
 #[test]
 fn the_layer_declares_against_this_schema() {
-    let kinds = replay::columnar_frames::schema().unwrap();
+    let kinds = replay_recording::schema::schema().unwrap();
     let mut layer = layer_seeing_all();
     let mut inputs = viewer_layer_core::layers::Inputs::new(&kinds, "naval_counters");
     layer.inputs(&View::default(), &mut inputs).unwrap();

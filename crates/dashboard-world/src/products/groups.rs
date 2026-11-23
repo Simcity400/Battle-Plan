@@ -5,7 +5,7 @@ use dashboard_base::{Source, catalogue, content, span::HourSpan};
 use dashboard_query::{Query, identity::Holder, read};
 use content_reader_core::faction_templates::Catalog;
 use content_reader_localisation::localisation::Localisation;
-use replay::columnar_frames::Recording;
+use replay_recording::columnar_frames::Recording;
 use replay_columnar::store::{TableView, Value};
 use replay_data::rows::{GroupSpanRow as Span, TableId, TagHolderRow, WarEventRow};
 use serde::{Deserialize, Serialize};

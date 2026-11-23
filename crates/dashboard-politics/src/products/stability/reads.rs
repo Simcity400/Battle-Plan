@@ -31,7 +31,7 @@ pub(crate) fn reads(query: &dashboard_query::Query<'_>, from: i32, to: i32) -> i
     let recording = query.replay.recording();
     let mut out: Vec<HourSpan> = Vec::new();
     for stretch in query.timeline.within(from, to) {
-        let held = dashboard_query::cost::storage(|| replay::lanes::available_reads(recording, stretch.run, TableId::CountryStabilityInputs, stretch.first, stretch.last))?;
+        let held = dashboard_query::cost::storage(|| replay_lanes::lanes::available_reads(recording, stretch.run, TableId::CountryStabilityInputs, stretch.first, stretch.last))?;
         for (first, last) in held {
             match out.last_mut() {
                 Some(span) if i64::from(span.last_hour) + 1 == i64::from(first) => span.last_hour = last,

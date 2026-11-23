@@ -9,10 +9,8 @@ use crate::{
     },
     pages::{Pages, Run, Span, WorldPages},
 };
-use replay::{
-    campaign::{Replay, timelines},
-    spool::Record,
-};
+use replay::campaign::{Replay, timelines};
+use replay_capture_spool::spool::Record;
 use replay_columnar::{
     manifest::Status,
     state::{Cell, Kind},
