@@ -6,7 +6,6 @@ pub fn kinds() -> Vec<Vec<Kind>> {
     TableId::ALL.iter().map(|&table| column_kinds(table)).collect()
 }
 
-#[cfg(any(test, feature = "test-support"))]
 pub mod noting {
     use crate::framework::{Hour, Output, Read, Rows, Uses, Writer};
     use replay_columnar::leaf::Writer as Bytes;
@@ -56,7 +55,6 @@ pub mod noting {
         }
 
         fn start(&mut self) {
-            crate::framework::note_keys();
             self.0.start();
         }
 
@@ -82,7 +80,6 @@ pub mod noting {
         }
 
         fn load(&mut self, blob: &[u8]) -> io::Result<()> {
-            crate::framework::note_keys();
             self.0.load(blob)
         }
 
@@ -92,12 +89,35 @@ pub mod noting {
     }
 }
 
+use crate::framework::{Output, Rows};
 use replay_columnar::{
     state::{Cell, Kind},
     store::{Store, StringSource},
 };
 use replay_data::rows::{Field, List, Opaque, RowCodec, TABLE_COUNT, TableId};
 use std::io;
+
+pub fn logging<T>(
+    input: &Store,
+    outputs: &[Output],
+    write: impl FnOnce(&mut Rows<'_>) -> io::Result<T>,
+) -> io::Result<T> {
+    let mut scratch = store();
+    scratch.resume(input.tables().to_vec(), input.strings().next())?;
+    let lent = outputs.iter()
+        .filter_map(|output| match *output {
+            Output::State(table) => {
+                scratch.index(table.index());
+                Some(scratch.lend(table.index()))
+            }
+            Output::Log(..) => None,
+        })
+        .collect::<io::Result<_>>()?;
+    let mut rows = Rows::lending(input, lent);
+    let result = write(&mut rows)?;
+    rows.check_writes()?;
+    Ok(result)
+}
 
 pub fn column_kinds(table: TableId) -> Vec<Kind> {
     use replay_data::rows::Kind as Wire;

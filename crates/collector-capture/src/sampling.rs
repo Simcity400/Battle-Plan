@@ -3914,7 +3914,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                     && !collector_memory::terminal::failed()
                 {
                     frame.extended.settle_intel_residual(
-                        &cached,
                         collector_intel::intel::CaptureContext {
                             base: shared.base,
                             game_state: state,
@@ -5127,7 +5126,6 @@ unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: i
                             continue;
                         }
                         frame.extended.settle_intel_residual(
-                            &cached,
                             collector_intel::intel::CaptureContext {
                                 base: shared.base,
                                 game_state: state,

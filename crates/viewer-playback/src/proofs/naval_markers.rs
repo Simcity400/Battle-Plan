@@ -4,7 +4,7 @@ use crate::document::Document;
 use viewer_layer_core::{layers::{Layer, Upstream}, engagements::Index, comparison::Compared, playhead_host::mirror::Mirrors};
 use serde_json::json;
 use std::{io, sync::Arc};
-use viewer_counters::map::counters::NavalMarkerValues;
+use viewer_counters_naval::naval_markers::NavalMarkerValues;
 use viewer_engagements::engagement_history::History;
 
 pub fn make_with(document: &Document, index: Option<Index>) -> Box<dyn Layer> {
