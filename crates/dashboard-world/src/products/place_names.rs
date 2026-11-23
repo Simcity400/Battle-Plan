@@ -73,16 +73,7 @@ struct Cached {
 }
 
 impl Content {
-    pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
-        let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Place names need the recorded content stack and language"))?;
-        let cat = catalogue::catalogue(source, options)?;
-        let state = source.state::<Cached>();
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some((held, content)) = &state.held
-            && Arc::ptr_eq(held, &cat)
-        {
-            return Ok(Arc::clone(content));
-        }
+    pub fn from_catalogue(cat: Arc<Catalogue>) -> Self {
         let regions = dashboard_base::content::strategic_regions(&cat.content.layers)
             .map(|regions| {
                 let named = |region: &content_reader_regions::regions::StrategicRegion| {
@@ -105,7 +96,20 @@ impl Content {
                 Regions { by_region, by_province, notes: regions.notes.clone() }
             })
             .map_err(|error| format!("Strategic-region names unavailable: {error}"));
-        let content = Arc::new(Self { cat: Arc::clone(&cat), regions });
+        Self { cat, regions }
+    }
+
+    pub fn read(source: &Source, load: &LoadContext) -> io::Result<Arc<Self>> {
+        let options = load.content.as_ref().ok_or_else(|| dashboard_core::refused("Place names need the recorded content stack and language"))?;
+        let cat = catalogue::catalogue(source, options)?;
+        let state = source.state::<Cached>();
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some((held, content)) = &state.held
+            && Arc::ptr_eq(held, &cat)
+        {
+            return Ok(Arc::clone(content));
+        }
+        let content = Arc::new(Self::from_catalogue(Arc::clone(&cat)));
         state.held = Some((cat, Arc::clone(&content)));
         Ok(content)
     }

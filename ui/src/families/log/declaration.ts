@@ -5,6 +5,7 @@ import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
 import type { DashboardSource } from '../../dashboard/client';
 import type { Channel } from '../../dashboard/follow/facts';
 import type { FamilyProjection, FamilySources } from '../contract.ts';
+import { lookAt } from '../table/looks.ts';
 import type { LogDensity, LogLayoutKind, LogModel, LogRowSpec } from './model.ts';
 
 export interface LogCountryLook {
@@ -19,16 +20,7 @@ export type LogLooksMap = Readonly<Record<string, readonly LogCountryLook[]>>;
 
 export function logLookAt(looks: LogLooksMap | undefined, tag: string | null | undefined, hour: number): LogCountryLook | null {
   if (!looks || !tag) return null;
-  const runs = looks[tag];
-  if (!runs || !runs.length) return null;
-  let low = 0;
-  let high = runs.length;
-  while (low < high) {
-    const mid = (low + high) >> 1;
-    if (runs[mid]!.from <= hour) low = mid + 1;
-    else high = mid;
-  }
-  return runs[Math.max(0, low - 1)] ?? null;
+  return lookAt(looks[tag], hour) ?? null;
 }
 
 export interface LogSourceSubscription {

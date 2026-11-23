@@ -5,11 +5,13 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { HOUR_EPOCH } from '../../dashboard/calendar.ts';
 import { datedPanel } from '../../dashboard/follow/messages.fixture.ts';
-import { pipelineFor, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
+import { pipelineFor, type LaneWorker, type PipelineHost } from '../../dashboard/follow/pipeline.ts';
+import type { FromLane } from '../../draw/laneMessages';
 import { packet, resetStamps, splitForLanes } from '../../dashboard/follow/split.ts';
 import { FollowedWidgetKey } from '../../dashboard/follow/store.ts';
 import type { WidgetSpec } from '../../dashboard/model';
 import { PlaybackController } from '../../dashboard/playback.ts';
+import { FrameEngine } from '../../engine/frame.ts';
 import type { LogCell, LogPageRow } from '../../generated/dashboard';
 import { divisionLogProjection, type DivisionLogProjectionOptions } from '../../widgets/division-log/divisionLogProjection.ts';
 import FamilyLogHost from './FamilyLogHost.tsx';
@@ -90,8 +92,31 @@ function makeTailReply(total: number, upToHour: number): LogTailReplyWire {
   };
 }
 
+let pendingFrame: ((now: number) => void) | null = null;
+let virtualNow = 0;
+const controlledEngine = new FrameEngine({
+  request(run) {
+    pendingFrame = run;
+  },
+});
+
+function syncVirtualClock(): void {
+  virtualNow = performance.now();
+}
+
+function tickFrame(dtMs: number): void {
+  const base = Math.max(virtualNow, performance.now());
+  virtualNow = base + dtMs;
+  const run = pendingFrame;
+  pendingFrame = null;
+  if (run) run(virtualNow);
+  else controlledEngine.tick(virtualNow);
+}
+
 let ports: readonly MessagePort[] = [];
 let seek = 0;
+let followResolved: (() => void) | null = null;
+const followReady = new Promise<void>(resolve => { followResolved = resolve; });
 const stamp = resetStamps();
 const send = (bytes: Uint8Array) => {
   const resets = stamp(bytes);
@@ -114,16 +139,55 @@ const client = {
   available: true,
   openFollow: (opened: readonly MessagePort[]) => { ports = opened; return Promise.resolve(); },
   product: async (request: { product: string }) => {
-    if (request.product === 'follow') return { data: { available: true, route: ROUTE, epoch: 1, generation: 1 } };
+    if (request.product === 'follow') {
+      return { data: { available: true, route: ROUTE, epoch: 1, generation: 1 } };
+    }
+    if (request.product === 'follow-clock') {
+      queueMicrotask(() => followResolved?.());
+      return { data: { available: true } };
+    }
     return { data: { available: true } };
   },
 } as unknown as DashboardClient;
 
-const clock = new PlaybackController();
+const clock = new PlaybackController(controlledEngine);
 clock.setBounds({ firstHour: BASE_HOUR, lastHour: BASE_HOUR + 4000 });
 const workers = [0, 1].map(() => new Worker(new URL('../../draw/lane.worker.ts', import.meta.url), { type: 'module' }));
+const laneListeners = new Set<(lane: number, message: FromLane) => void>();
+const lanes: LaneWorker[] = workers.map((worker, laneIndex) => {
+  let handler: ((event: MessageEvent<FromLane>) => void) | null = null;
+  return {
+    postMessage(message, transfer) {
+      if (transfer) worker.postMessage(message, transfer);
+      else worker.postMessage(message);
+    },
+    get onmessage() { return handler; },
+    set onmessage(next) {
+      handler = next;
+      worker.onmessage = next
+        ? (event: MessageEvent<FromLane>) => {
+            next(event);
+            for (const listener of [...laneListeners]) listener(laneIndex, event.data);
+          }
+        : null;
+    },
+  };
+});
+
+function waitForLane(predicate: (lane: number, message: FromLane) => boolean): Promise<void> {
+  return new Promise<void>(resolve => {
+    const listener = (lane: number, message: FromLane) => {
+      if (predicate(lane, message)) {
+        laneListeners.delete(listener);
+        resolve();
+      }
+    };
+    laneListeners.add(listener);
+  });
+}
+
 const host: PipelineHost = {
-  lanes: workers,
+  lanes,
   open: list => client.openFollow!(list),
   channel: () => new MessageChannel(),
   frameRate: () => 60,
@@ -152,6 +216,7 @@ const OPTIONS: DivisionLogProjectionOptions = {
   events: 'both',
   showTotals: true,
   lossesAvailable: true,
+  fromHour: BASE_HOUR,
   looks: {
     GER: [{ from: 0, name: 'Germany' }],
     SOV: [{ from: 0, name: 'Soviet Union' }],
@@ -181,11 +246,29 @@ let subId = -1;
 let pipeId = -1;
 let flushWrapped = false;
 
-const nextPoll = () => new Promise<void>(resolve => setTimeout(resolve, 16));
-async function until(predicate: () => boolean, limitMs = 6000) {
-  const deadline = performance.now() + limitMs;
-  while (!predicate() && performance.now() < deadline) await nextPoll();
-  return predicate();
+function waitForInstall(predicate: () => boolean): Promise<void> {
+  if (predicate()) return Promise.resolve();
+  return new Promise<void>(resolve => {
+    const stop = pipeline.onInstall(pipeId, () => {
+      if (predicate()) {
+        stop();
+        resolve();
+      }
+    });
+  });
+}
+
+function waitForDom(root: HTMLElement, predicate: () => boolean): Promise<void> {
+  if (predicate()) return Promise.resolve();
+  return new Promise<void>(resolve => {
+    const observer = new MutationObserver(() => {
+      if (predicate()) {
+        observer.disconnect();
+        resolve();
+      }
+    });
+    observer.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+  });
 }
 
 function measureLayoutReadsDuring<T>(fn: () => T): { result: T; reads: number } {
@@ -274,33 +357,33 @@ window.logFamilyDom = {
       </FollowedWidgetKey.Provider>,
     ));
 
-    const ready = await until(() => {
+    await waitForDom(hostNode, () => {
       const canvas = hostNode?.querySelector<HTMLCanvasElement>('canvas.family-log-canvas');
       if (!canvas?.dataset.placement) return false;
       pipeId = Number(canvas.dataset.placement);
       return pipeId > 0;
     });
-    if (!ready) throw new Error('Log canvas did not mount');
 
     const beforePaintMeta = pipeline.view(pipeId)?.fields?.meta as LogMetaField | undefined;
     const initialHour = beforePaintMeta?.hour ?? null;
 
     const internal = pipeline as unknown as { widgets: Map<number, { subs: Map<object, number> }> };
     subId = [...(internal.widgets.get(pipeId)?.subs.values() ?? [])][0]!;
-    await until(() => pipeline.status(subId).status === 'followed');
+    await followReady;
 
     clock.seek(BASE_HOUR + 100);
     seek = clock.getSnapshot().seekSequence;
-    send(datedPanel(subId, BASE_HOUR + 100, makeTailReply(120, BASE_HOUR + 100), seek, ROUTE));
-    const painted = await until(() => {
+    const firstPaintDone = waitForInstall(() => {
       const view = pipeline.view(pipeId);
       return view?.mode === 'picture' && view.through === BASE_HOUR + 100;
     });
+    send(datedPanel(subId, BASE_HOUR + 100, makeTailReply(120, BASE_HOUR + 100), seek, ROUTE));
+    await firstPaintDone;
     ensureFlushInstrumentation();
     const afterMeta = pipeline.view(pipeId)?.fields?.meta as LogMetaField | undefined;
     const pillsText = hostNode.querySelector('.family-log-pills')?.textContent ?? '';
     return {
-      painted,
+      painted: true,
       initialHour,
       afterFirstHour: afterMeta?.hour ?? null,
       expectedFirstHour: BASE_HOUR + 100,
@@ -327,16 +410,20 @@ window.logFamilyDom = {
     const stopFeed = clock.onPublish((_prev, next) => feed(next.hour));
     clock.setSpeed(24);
     clock.setPlaying(true);
+    syncVirtualClock();
 
+    const widgetLane = pipeline.lane(pipeId);
     let playingDuringAdvance = false;
     try {
-      const reached = await until(() => {
-        const snap = clock.getSnapshot();
-        const view = pipeline.view(pipeId);
-        if (snap.playing && (view?.h ?? 0) >= startHour + 4) playingDuringAdvance = true;
-        return snap.playing && (view?.h ?? 0) >= targetHour && !view?.dim;
-      }, 8000);
-      if (!reached) throw new Error(`Log live playback did not reach ${targetHour} (at ${pipeline.view(pipeId)?.h})`);
+      while (clock.getHour() < targetHour) {
+        const nextMinTarget = clock.getHour() + 1;
+        const served = waitForLane((lane, msg) => lane === widgetLane && msg.type === 'served' && msg.target >= nextMinTarget);
+        tickFrame(42);
+        await served;
+        if (clock.getSnapshot().playing && clock.getHour() >= startHour + 4) {
+          playingDuringAdvance = true;
+        }
+      }
       const playingBeforePause = clock.getSnapshot().playing;
       const playCommits = commits;
       const playReads = totalInstallReads;
@@ -344,13 +431,15 @@ window.logFamilyDom = {
       const pillsAfterPlay = hostNode?.querySelector('.family-log-pills')?.textContent ?? '';
 
       totalInstallReads = 0;
-      clock.setPlaying(false);
-      const pausedHour = Math.floor(clock.getHour());
-      const expectedTopKey = `d:${totalFor(pausedHour) - 1}`;
-      const flushedOnPause = await until(
+      const expectedHour = clock.getHour();
+      const expectedTopKey = `d:${totalFor(expectedHour) - 1}`;
+      const mirrorUpdated = waitForDom(
+        hostNode!,
         () => hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"]')?.dataset.rowKey === expectedTopKey,
-        1200,
       );
+      clock.setPlaying(false);
+      await mirrorUpdated;
+      const pausedHour = Math.floor(clock.getHour());
       const pauseReads = totalInstallReads;
       const afterMeta = pipeline.view(pipeId)?.fields?.meta as LogMetaField | undefined;
       return {
@@ -362,7 +451,7 @@ window.logFamilyDom = {
         playInstalls,
         scrollPageFetches,
         pillsAfterPlay,
-        flushedOnPause,
+        flushedOnPause: hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"]')?.dataset.rowKey === expectedTopKey,
         mirrorTopKey: hostNode?.querySelector<HTMLDivElement>('.family-log-mirror [role="option"]')?.dataset.rowKey ?? null,
         expectedTopKey,
         finalHour: afterMeta?.hour ?? null,
@@ -381,19 +470,34 @@ window.logFamilyDom = {
     const baseTotal = baseMeta?.total ?? 144;
     clock.setSpeed(1);
     clock.setPlaying(true);
+    syncVirtualClock();
+
+    const jumpMounted = waitForDom(hostNode!, () => !!hostNode?.querySelector('.family-log-jump'));
     scrollEl.scrollTop = 180;
     scrollEl.dispatchEvent(new Event('scroll'));
-    await until(() => !!hostNode?.querySelector('.family-log-jump'));
+    await jumpMounted;
     const jumpBefore = hostNode?.querySelector('.family-log-jump')?.textContent ?? '';
 
+    const jumpUpdated = waitForDom(hostNode!, () => (hostNode?.querySelector('.family-log-jump')?.textContent ?? '').includes('new'));
     const nextHour = baseHour + 1;
     send(datedPanel(subId, nextHour, makeTailReply(baseTotal + 10, nextHour), seek, ROUTE));
-    await until(() => (hostNode?.querySelector('.family-log-jump')?.textContent ?? '').includes('new'), 3000);
+    send(datedPanel(subId, nextHour + 1, makeTailReply(baseTotal + 10, nextHour + 1), seek, ROUTE));
+    let jumped = false;
+    void jumpUpdated.then(() => { jumped = true; });
+    const widgetLane = pipeline.lane(pipeId);
+    while (!jumped && clock.getHour() < nextHour + 5) {
+      const wantTarget = clock.getHour();
+      const served = waitForLane((lane, msg) => lane === widgetLane && msg.type === 'served' && msg.target >= wantTarget);
+      tickFrame(500);
+      await served;
+    }
+    await jumpUpdated;
     const jumpAfter = hostNode?.querySelector('.family-log-jump')?.textContent ?? '';
 
+    const jumpCleared = waitForDom(hostNode!, () => !hostNode?.querySelector('.family-log-jump'));
     const btn = hostNode?.querySelector<HTMLButtonElement>('.family-log-jump');
     btn?.click();
-    await until(() => !hostNode?.querySelector('.family-log-jump'));
+    await jumpCleared;
     const scrollAfterJump = scrollEl.scrollTop;
     clock.setPlaying(false);
     return { jumpBefore, jumpAfter, scrollAfterJump };

@@ -124,6 +124,7 @@ pub enum Data {
     Power,
     Resources,
     Market,
+    DenseMarket(i32, u64),
     Tension,
     Faction,
 }
@@ -263,6 +264,36 @@ impl Fixture {
                 Data::Power => Ok(()),
                 Data::Resources => resource_rows(frame, hour),
                 Data::Market => market_rows(frame, hour),
+                Data::DenseMarket(dense_hour, dense_count) => {
+                    let events: Vec<MarketEventRow> = if hour == dense_hour {
+                        (0..dense_count)
+                            .map(|idx| MarketEventRow {
+                                id: 10_000 + idx,
+                                occurrence: 10_000 + idx,
+                                hour,
+                                country: 9001,
+                                kind: 20,
+                                agreement: 10_000 + idx,
+                                amount_raw: (idx as i64 + 1) * 1000,
+                                ..MarketEventRow::default()
+                            })
+                            .collect()
+                    } else if hour % 6 == 0 {
+                        vec![MarketEventRow {
+                            id: hour as u64,
+                            occurrence: hour as u64,
+                            hour,
+                            country: 9001,
+                            kind: 20,
+                            agreement: hour as u64,
+                            amount_raw: 1000,
+                            ..MarketEventRow::default()
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    sample(frame, TableId::MarketEvents, &events)
+                }
                 Data::Tension => sample(frame, TableId::WorldTension, &[WorldTensionRow { total_raw: tension(hour), ..WorldTensionRow::default() }]),
                 Data::Faction => faction_rows(frame, hour),
             }

@@ -32,5 +32,5 @@ export default function MarketDrill({ runtime, widget, time, tags, selected, act
   return <div ref={head.root} style={{ display: 'contents' }}><TradeMarketView data={data} selected={selected} values={head.live.read()}
     deliveries={<MarketOccurrences runtime={runtime} track={track} gate={gate} kinds={DELIVERY_KINDS} tags={tags} span={gate.span(track.branch.firstHour, track.branch.lastHour)}
       cut={following ? { follow: true, offset: track.axisOffset } : { follow: false, hour: data.hour }} active={active} label="Deliveries"
-      density="compact" months={false} animate={false} />} /></div>;
+      density="compact" months={false} />} /></div>;
 }

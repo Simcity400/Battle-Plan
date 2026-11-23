@@ -104,6 +104,27 @@ export function pageReplyToTail(
   };
 }
 
+export function mergeFrozenPageIntoTail(
+  frozenTail: LogTailReplyWire,
+  pageTail: LogTailReplyWire,
+): LogTailReplyWire {
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  for (const list of [frozenTail.warnings, pageTail.warnings]) {
+    for (const msg of list ?? []) {
+      if (msg && !seen.has(msg)) {
+        seen.add(msg);
+        warnings.push(msg);
+      }
+    }
+  }
+  return {
+    ...pageTail,
+    facetTotals: pageTail.facetTotals.length > 0 ? pageTail.facetTotals : frozenTail.facetTotals,
+    warnings,
+  };
+}
+
 export function facetTotalMap(reply: LogTailReplyWire): ReadonlyMap<string, number> {
   const out = new Map<string, number>();
   for (const item of reply.facetTotals ?? []) {

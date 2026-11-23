@@ -1,7 +1,8 @@
-import { countryFromKey } from './countryKey.ts';
 import type { LogRow } from '../charts/log/logData';
 import type { LogReplyRow } from '../charts/log/logSource';
-import type { FacetFilter, LogCell } from '../generated/dashboard';
+import type { LogCell } from '../generated/dashboard';
+import type { BoundHour } from './regionTime';
+import { countryScopeFacet, type CountryScopeFilter, type DivisionFacet } from '../widgets/division-log/divisionLogData.ts';
 import { FUEL_QUANTITY, fixedText } from './market.ts';
 
 export const MARKET_LOG = 'market-events';
@@ -49,9 +50,13 @@ export function ledgerEntry(row: LogReplyRow): LogRow<LedgerItem> {
   } };
 }
 
-export function ledgerFacets(kinds: readonly number[], tags: readonly string[] | null): FacetFilter[] {
-  const facets: FacetFilter[] = [{ name: 'kind', values: [...kinds], countries: [] }];
-  if (tags) facets.push({ name: 'country|receiver', values: [], countries: tags.map(countryFromKey) });
+export function ledgerFacets<H extends number = BoundHour>(
+  kinds: readonly number[],
+  scope: readonly string[] | CountryScopeFilter<H> | null,
+): DivisionFacet<H>[] {
+  const facets: DivisionFacet<H>[] = [{ name: 'kind', values: [...kinds], countries: [] }];
+  const countryFacet = countryScopeFacet('country|receiver', scope);
+  if (countryFacet) facets.push(countryFacet);
   return facets;
 }
 
@@ -61,7 +66,12 @@ export function shownKinds(enabled: (key: KindKey) => boolean): number[] {
   return kinds.sort((a, b) => a - b);
 }
 
-const lease = (item: LedgerItem) => item.kind !== null && (item.kind <= 6 || (item.kind === 34 && item.mode !== 20));
+const lease = (item: LedgerItem): boolean | null => {
+  if (item.kind === null) return null;
+  if (item.kind <= 6) return true;
+  if (item.kind === 34) return item.mode === null ? null : item.mode !== 20;
+  return false;
+};
 
 export function ledgerTitle(item: LedgerItem, name: (tag: string | null) => string): string {
   switch (item.kind) {
@@ -75,7 +85,12 @@ export function ledgerTitle(item: LedgerItem, name: (tag: string | null) => stri
     case 12: return 'Contract removed';
     case 20: return `Delivery to ${name(item.buyer)}`;
     case 21: return `Payment collected from ${name(item.buyer)}`;
-    default: return lease(item) ? 'Lend-lease delivery amount unavailable' : 'Delivery amount unavailable';
+    default: {
+      const isLease = lease(item);
+      if (isLease === true) return 'Lend-lease delivery amount unavailable';
+      if (isLease === false) return 'Delivery amount unavailable';
+      return 'Delivery amount unavailable (mode not recorded)';
+    }
   }
 }
 
@@ -93,7 +108,11 @@ export function ledgerFigure(item: LedgerItem): { text: string; negative: boolea
 export const ledgerIcon = (kind: number | null) => kind === null ? 'history' : kind === 21 ? 'chart-bars' : kind === 3 || kind === 4 || kind === 5 || kind === 20 || kind === 34 ? 'anchor'
   : kind === 6 || kind === 12 ? 'close' : kind === 10 ? 'search' : 'handshake';
 
-export const ledgerSelection = (item: LedgerItem) => item.contract === null ? null
-  : lease(item) ? `agreement:${item.contract}` : `contract:${item.kind === 10}:${item.contract}`;
+export function ledgerSelection(item: LedgerItem): string | null {
+  if (item.kind === null || item.contract === null) return null;
+  const isLease = lease(item);
+  if (isLease === null) return null;
+  return isLease ? `agreement:${item.contract}` : `contract:${item.kind === 10}:${item.contract}`;
+}
 
 export const LEDGER_EMPTY = 'No market activity matches these settings.';

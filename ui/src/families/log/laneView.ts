@@ -4,8 +4,8 @@ import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '.
 import type { AuditRow } from '../../draw/notifications';
 import type { FamilyAuditField } from '../audit.ts';
 import { CadenceGate, TrailingFlushScheduler } from '../cadence.ts';
-import type { FamilySources, MirrorModel } from '../contract.ts';
-import { buildLogLayout, LOG_MONTH_HEIGHT, type LogLayout } from './layout.ts';
+import { EMPTY_SOURCES, type FamilySources, type MirrorModel } from '../contract.ts';
+import { buildLogLayout, LOG_MONTH_HEIGHT, scrollGeometryOf, type LogLayout, type LogScrollGeometry } from './layout.ts';
 import {
   deriveGapTooltip,
   deriveLogMirror,
@@ -17,6 +17,7 @@ import {
 } from './model.ts';
 import { collectLogIcons, createLogPicture, drawLog, hitLogItem, type LogPicture, type LogTheme } from './painter.ts';
 import { logProjection } from './registry.ts';
+import { isLogTailReply, mergeFrozenPageIntoTail } from './tailReply.ts';
 
 const MIRROR_CADENCE_MS = 1000;
 const TOOLTIP_CADENCE_MS = 250;
@@ -61,9 +62,23 @@ export interface LogMetaField {
   readonly compressed: boolean;
   readonly rowHeight: number;
   readonly offset: number;
+  readonly geometry: LogScrollGeometry;
   readonly facetPills: readonly LogFacetPill[];
   readonly warnings: readonly string[];
 }
+
+const EMPTY_GEOMETRY: LogScrollGeometry = {
+  offset: 0,
+  loadedCount: 0,
+  total: 0,
+  rowHeight: 28,
+  offsetTop: 0,
+  localHeight: 0,
+  logicalHeight: 0,
+  physicalHeight: 0,
+  compressed: false,
+  rowTops: [],
+};
 
 export interface LogNavEntry {
   readonly key: string;
@@ -78,6 +93,8 @@ type FieldEntry = { value: unknown; content: string };
 interface HeldFamilyLog {
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
+  backCanvas: OffscreenCanvas;
+  backCtx: OffscreenCanvasRenderingContext2D;
   picture: LogPicture;
   content: string;
   icons: Map<string, ImageBitmap | null>;
@@ -103,6 +120,8 @@ interface HeldFamilyLog {
   metaField: FieldEntry | null;
   navSig: string;
   navField: FieldEntry | null;
+  activeNavSig: string;
+  activeNavField: FieldEntry | null;
   mirrorField: FieldEntry | null;
   tooltipField: FieldEntry | null;
   auditSig: string;
@@ -217,7 +236,13 @@ function totalFromLivePanel(subs: Scene['subs'], pictures: readonly Picture<Lane
 
 export function familyLogLaneView(wake: (widget: number) => void): LaneView {
   return {
-    next: () => Infinity,
+    next(scene: Scene, hour: number): number {
+      const binding = scene.model;
+      if (!isFamilyLogBinding(binding)) return Infinity;
+      if (binding.frozenHour != null || binding.staticHour != null) return Infinity;
+      const projection = logProjection(binding.kind);
+      return projection?.nextChange ? projection.nextChange(EMPTY_SOURCES, hour, binding.options) : Infinity;
+    },
     paint(input: PaintInput, state, content): Painted {
       const binding = input.model;
       const surface = input.binding.surfaces[0];
@@ -235,11 +260,15 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         const h = Math.max(1, Math.round(surface.height * surface.dpr));
         const canvas = new OffscreenCanvas(w, h);
         const ctx = canvas.getContext('2d')!;
+        const backCanvas = new OffscreenCanvas(w, h);
+        const backCtx = backCanvas.getContext('2d')!;
         const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
         const tooltipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         held = {
           canvas,
           ctx,
+          backCanvas,
+          backCtx,
           picture: createLogPicture(),
           content: content(),
           icons: new Map(),
@@ -263,6 +292,8 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           metaField: null,
           navSig: '',
           navField: null,
+          activeNavSig: '',
+          activeNavField: null,
           mirrorField: null,
           tooltipField: null,
           auditSig: '',
@@ -277,7 +308,10 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
       if (held.canvas.width !== targetW || held.canvas.height !== targetH) {
         held.canvas.width = targetW;
         held.canvas.height = targetH;
+        held.backCanvas.width = targetW;
+        held.backCanvas.height = targetH;
         held.picture.signature = null;
+        held.picture.lastSlice = null;
       }
 
       const fields: Record<string, FieldEntry> = {};
@@ -295,11 +329,22 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         held.frozenSnapTail = undefined;
       }
       held.prevFrozenHour = binding.frozenHour ?? null;
-      const effectiveFrozenPanels = binding.frozenHour != null
-        ? (binding.frozenPanels && Object.keys(binding.frozenPanels).length > 0
-          ? binding.frozenPanels
-          : held.frozenSnapTail !== undefined ? { tail: held.frozenSnapTail } : undefined)
-        : undefined;
+      let effectiveFrozenPanels: Readonly<Record<string, unknown>> | undefined;
+      if (binding.frozenHour != null) {
+        if (binding.frozenPanels && Object.keys(binding.frozenPanels).length > 0) {
+          const pageTail = binding.frozenPanels.tail;
+          if (isLogTailReply(pageTail) && isLogTailReply(held.frozenSnapTail)) {
+            effectiveFrozenPanels = {
+              ...binding.frozenPanels,
+              tail: mergeFrozenPageIntoTail(held.frozenSnapTail, pageTail),
+            };
+          } else {
+            effectiveFrozenPanels = binding.frozenPanels;
+          }
+        } else if (held.frozenSnapTail !== undefined) {
+          effectiveFrozenPanels = { tail: held.frozenSnapTail };
+        }
+      }
       const { sources, parts, refused, ready } = buildSources(binding, input.subs, input.pictures, effectiveFrozenPanels);
 
       if (refused) {
@@ -316,6 +361,7 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           compressed: false,
           rowHeight: 28,
           offset: 0,
+          geometry: EMPTY_GEOMETRY,
           facetPills: [],
           warnings: [],
         };
@@ -342,6 +388,7 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           compressed: false,
           rowHeight: 28,
           offset: 0,
+          geometry: EMPTY_GEOMETRY,
           facetPills: [],
           warnings: [],
         };
@@ -359,7 +406,7 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         || held.prevHour !== activeHour
         || held.prevOptions !== binding.options
         || held.prevStaticPanels !== binding.staticPanels
-        || held.prevFrozenPanels !== effectiveFrozenPanels
+        || held.prevFrozenPanels !== binding.frozenPanels
         || (!effectiveFrozenPanels && !sameParts(held.prevParts, parts));
 
       if (inputsChanged) {
@@ -367,7 +414,7 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         held.prevParts = parts;
         held.prevOptions = binding.options;
         held.prevStaticPanels = binding.staticPanels;
-        held.prevFrozenPanels = effectiveFrozenPanels;
+        held.prevFrozenPanels = binding.frozenPanels;
         held.prevHour = activeHour;
         held.cachedLayout = null;
         held.mirrorGate.invalidate();
@@ -396,48 +443,32 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         compressed: layout.compressed,
         rowHeight: layout.rowHeight,
         offset: model.offset,
+        geometry: scrollGeometryOf(layout),
         facetPills: model.facetPills ?? [],
         warnings: model.warnings ?? [],
       };
-      const metaSig = JSON.stringify([
-        meta.mode,
-        meta.empty?.kind ?? '',
-        meta.empty?.message ?? '',
-        meta.hour,
-        meta.total,
-        meta.liveTotal,
-        meta.logicalHeight,
-        meta.offset,
-        meta.facetPills,
-        meta.warnings,
-      ]);
+      let pillsSig = '';
+      if (meta.facetPills.length > 0) {
+        for (let i = 0; i < meta.facetPills.length; i++) {
+          const p = meta.facetPills[i]!;
+          const c = p.count;
+          pillsSig += `${p.key}:${c.kind}:${c.kind === 'known' || c.kind === 'zero' || c.kind === 'partial' ? String(c.value) : ''}:${c.kind === 'notRecorded' || c.kind === 'notApplicable' || c.kind === 'partial' ? c.reason : ''};`;
+        }
+      }
+      const warnSig = meta.warnings.length > 0 ? meta.warnings.join('\0') : '';
+      const metaSig = `${meta.mode}|${meta.empty?.kind ?? ''}|${meta.empty?.message ?? ''}|${meta.hour}|${meta.total}|${meta.liveTotal}|${meta.logicalHeight}|${meta.offset}|${pillsSig}|${warnSig}`;
       if (metaSig !== held.metaSig || !held.metaField) {
         held.metaSig = metaSig;
         held.metaField = { value: meta, content: content() };
       }
       fields.meta = held.metaField;
 
-      const navEntries: LogNavEntry[] = [];
-      for (const item of layout.items) {
-        if (item.kind === 'row') {
-          navEntries.push({ key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, meta: item.row.meta });
-        } else if (item.kind === 'gap') {
-          navEntries.push({ key: item.key, hour: item.span.lastHour, top: item.top, height: item.height });
-        }
-      }
-      const navSig = navEntries.map(e => `${e.key}@${e.top}`).join('|');
-      if (navSig !== held.navSig || !held.navField) {
-        held.navSig = navSig;
-        held.navField = { value: navEntries, content: content() };
-      }
-      fields.nav = held.navField;
-
       const theme = binding.theme;
       let auditRows: AuditRow[] = [];
       let visibleStart = 0;
       let visibleEnd = 0;
       if (theme && !isEmpty) {
-        const result = drawLog(held.ctx, held.picture, {
+        const result = drawLog(held.backCtx, held.picture, {
           model,
           layout,
           density: binding.density,
@@ -451,8 +482,18 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           selectedKey: binding.selectedKey ?? null,
           icons: held.icons,
           dpr: surface.dpr,
+          prevCanvas: held.canvas,
+          wantAudit: binding.audit === true,
         });
-        if (result.drew) held.content = content();
+        if (result.drew) {
+          const swapCanvas = held.canvas;
+          const swapCtx = held.ctx;
+          held.canvas = held.backCanvas;
+          held.ctx = held.backCtx;
+          held.backCanvas = swapCanvas;
+          held.backCtx = swapCtx;
+          held.content = content();
+        }
         auditRows = result.auditRows;
         visibleStart = result.visibleStart;
         visibleEnd = result.visibleEnd;
@@ -462,6 +503,7 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         held.ctx.setTransform(surface.dpr, 0, 0, surface.dpr, 0, 0);
         held.ctx.clearRect(0, 0, surface.width, surface.height);
         held.picture.signature = null;
+        held.picture.lastSlice = null;
       }
 
       if (binding.audit) {
@@ -469,7 +511,11 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
           ? [{ row: '__empty__', key: '__empty__', value: JSON.stringify(['empty', model.empty.kind, model.empty.message]) }]
           : auditRows;
         const auditValue: FamilyAuditField = { id: binding.auditId ?? 0, rows: finalAuditRows };
-        const auditSig = `${auditValue.id}|${model.hour}|${finalAuditRows.map(r => `${r.key}=${r.value}`).join(';')}`;
+        let auditSig = `${auditValue.id}|${model.hour}`;
+        for (let i = 0; i < finalAuditRows.length; i++) {
+          const r = finalAuditRows[i]!;
+          auditSig += `|${r.key}=${r.value}`;
+        }
         if (auditSig !== held.auditSig || !held.auditField) {
           held.auditSig = auditSig;
           held.auditField = { value: auditValue, content: content() };
@@ -488,23 +534,60 @@ export function familyLogLaneView(wake: (widget: number) => void): LaneView {
         const mirror: MirrorModel = deriveLogMirror(layout.items, firstRowIdx, MIRROR_ROWS, model.total);
         held.mirrorGate.record(now, mirrorKey);
         held.mirrorField = { value: mirror, content: content() };
+
+        const navEntries: LogNavEntry[] = [];
+        let navSig = '';
+        for (let i = 0; i < layout.items.length; i++) {
+          const item = layout.items[i]!;
+          if (item.kind === 'row') {
+            navEntries.push({ key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, meta: item.row.meta });
+            navSig += `${item.row.key}@${item.top}|`;
+          } else if (item.kind === 'gap') {
+            navEntries.push({ key: item.key, hour: item.span.lastHour, top: item.top, height: item.height });
+            navSig += `${item.key}@${item.top}|`;
+          }
+        }
+        if (navSig !== held.navSig || !held.navField) {
+          held.navSig = navSig;
+          held.navField = { value: navEntries, content: content() };
+        }
       }
       if (held.mirrorField) fields.mirror = held.mirrorField;
+      if (held.navField) fields.nav = held.navField;
 
       const activeKey = input.inspect ?? binding.focusedKey ?? null;
       if (activeKey) {
+        const item = layout.items.find((entry): entry is Exclude<FlatLogItem, { kind: 'month' }> => entry.kind !== 'month' && entry.key === activeKey);
+        const activeEntry: LogNavEntry | null = item
+          ? (item.kind === 'row'
+            ? { key: item.row.key, hour: item.row.hour, top: item.top, height: item.height, meta: item.row.meta }
+            : { key: item.key, hour: item.span.lastHour, top: item.top, height: item.height })
+          : null;
+        const activeSig = activeEntry ? `${activeEntry.key}@${activeEntry.hour}` : '';
+        if (activeSig !== held.activeNavSig || !held.activeNavField) {
+          held.activeNavSig = activeSig;
+          held.activeNavField = { value: activeEntry, content: content() };
+        }
+        fields.activeNav = held.activeNavField;
+
         const tipKey = `${activeKey}|${model.hour}`;
         if (held.tooltipGate.due(now, speed, activeKey, pauseFlushed)) {
-          const item = layout.items.find((entry): entry is Exclude<FlatLogItem, { kind: 'month' }> => entry.kind !== 'month' && entry.key === activeKey);
           const tip = item ? (item.kind === 'row' ? deriveLogTooltip(item.row) : deriveGapTooltip(item.span)) : null;
           held.tooltipGate.record(now, activeKey);
           held.tooltipField = { value: { key: activeKey, content: tip }, content: `${tipKey}:${content()}` };
         }
         if (held.tooltipField) fields.tooltip = held.tooltipField;
-      } else if (held.tooltipField?.value !== null) {
-        held.tooltipGate.reset();
-        held.tooltipField = { value: null, content: content() };
-        fields.tooltip = held.tooltipField;
+      } else {
+        if (held.activeNavSig !== '' || !held.activeNavField) {
+          held.activeNavSig = '';
+          held.activeNavField = { value: null, content: content() };
+        }
+        fields.activeNav = held.activeNavField;
+        if (held.tooltipField?.value !== null) {
+          held.tooltipGate.reset();
+          held.tooltipField = { value: null, content: content() };
+          fields.tooltip = held.tooltipField;
+        }
       }
 
       held.scheduler.sync(now, speed, () => wake(input.widget));

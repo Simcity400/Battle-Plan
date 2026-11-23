@@ -130,8 +130,8 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
     let last = query.timeline.last;
     let second = query.timeline.stretches[1].first;
     let reader = market(&query);
-    let kinds = FacetFilter { name: "kind".into(), values: vec![1, 7], countries: Vec::new() };
-    let countries = FacetFilter { name: "country".into(), values: Vec::new(), countries: vec!["ITA".into(), "GER".into()] };
+    let kinds = FacetFilter { name: "kind".into(), values: vec![1, 7], ..Default::default() };
+    let countries = FacetFilter { name: "country".into(), countries: vec!["ITA".into(), "GER".into()], ..Default::default() };
     for (filters, keep) in [
         (vec![kinds.clone()], Box::new(|_: i32, kind: u8, _: u32| kind == 1 || kind == 7) as Box<dyn Fn(i32, u8, u32) -> bool>),
         (vec![countries.clone()], Box::new(|_: i32, _: u8, _: u32| true)),
@@ -179,48 +179,66 @@ fn a_facet_filter_keeps_its_values_and_its_tags_holders_rows() {
             }
         }
     }
-    assert!(reader.select(&[FacetFilter { name: "kind".into(), values: Vec::new(), countries: vec!["GER".into()] }], FIRST, last).is_err(), "a kind holds no country");
+    assert!(reader.select(&[FacetFilter { name: "kind".into(), countries: vec!["GER".into()], ..Default::default() }], FIRST, last).is_err(), "a kind holds no country");
     assert!(reader.select(&[FacetFilter { name: "nope".into(), ..FacetFilter::default() }], FIRST, last).is_err());
 }
 
 #[test]
-fn a_tag_filter_over_two_facets_keeps_the_rows_either_names() {
+fn a_tag_filter_over_two_facets_keeps_each_matching_event_once() {
     let first = ITA_FROM - 120;
     let fixture = Fixture::with_gap(Data::Market, first..=LAST, FIRST + FIRST_HOURS..=SECOND - 1);
     let query = fixture.query();
     let reader = market(&query);
-    let parties = FacetFilter { name: "country|receiver".into(), values: Vec::new(), countries: vec!["ITA".into(), "GER".into()] };
+    let parties = FacetFilter { name: "country|receiver".into(), countries: vec!["ITA".into(), "GER".into()], ..Default::default() };
     let selection = reader.select(&[parties], query.timeline.first, LAST).unwrap();
     assert_eq!(selection.groups, vec![Some("ITA".into()), Some("GER".into())]);
     let mut wanted = Vec::new();
+    let mut both_matched = 0usize;
     for (hour, key, kind, country) in events(&query, first, LAST, |_, _, _| true) {
         let receiver = fixture::receiver(country, kind, hour);
-        for (group, id) in [(0usize, 9002u32), (1, 9001)] {
-            if country == id || receiver == id {
-                wanted.push((hour, group, key));
-            }
+        let ita = country == 9002 || receiver == 9002;
+        let ger = country == 9001 || receiver == 9001;
+        if ita && ger {
+            both_matched += 1;
+        }
+        if ita {
+            wanted.push((hour, 0usize, key));
+        } else if ger {
+            wanted.push((hour, 1usize, key));
         }
     }
     wanted.sort_unstable();
-    assert!(wanted.iter().any(|row| row.1 == 0) && wanted.windows(2).any(|pair| pair[0].0 == pair[1].0 && pair[0].2 == pair[1].2), "the fixture has rows both tags hold");
+    assert!(both_matched > 0, "the fixture has rows both selected parties hold");
+    assert!(wanted.iter().any(|row| row.1 == 0) && wanted.iter().any(|row| row.1 == 1));
     let (mut got, mut cursor) = (Vec::new(), 0);
+    let mut seen_keys = HashSet::new();
     loop {
         let page = reader.page(&selection.patterns, 2, first, LAST, cursor, 100).unwrap();
         assert_eq!(page.total(), wanted.len() as u64);
-        got.extend(page.rows.iter().map(|paged| (paged.row.hour, paged.group, paged.row.key)));
+        for (idx, paged) in page.rows.iter().enumerate() {
+            assert_eq!(paged.ordinal, page.first + idx as u64);
+            assert!(seen_keys.insert((paged.row.hour, paged.row.key)), "each event appears once");
+            got.push((paged.row.hour, paged.group, paged.row.key));
+        }
         match page.cursor() {
             Some(next) => cursor = next,
             None => break,
         }
     }
     assert_eq!(got, wanted);
+    let tail = reader.tail(&selection.patterns, 2, first, LAST, 50).unwrap();
+    assert_eq!(tail.total(), wanted.len() as u64);
+    let tail_got: Vec<_> = tail.rows.iter().rev().map(|paged| (paged.row.hour, paged.group, paged.row.key)).collect();
+    assert_eq!(tail_got, wanted[wanted.len() - 50..]);
     for bin_hours in [3, 96] {
         let counts = reader.counts(&selection.patterns, 2, first, LAST, bin_hours).unwrap();
+        let sum: u64 = counts.iter().map(|c| c.bins.iter().map(|(_, count)| *count).sum::<u64>()).sum();
+        assert_eq!(sum, wanted.len() as u64, "counts sum to deduplicated total, bins of {bin_hours}");
         for (group, counts) in counts.iter().enumerate() {
             assert_eq!(counts.bins.iter().map(|(_, count)| count).sum::<u64>(), wanted.iter().filter(|row| row.1 == group).count() as u64, "group {group}, bins of {bin_hours}");
         }
     }
-    assert!(reader.select(&[FacetFilter { name: "kind|country".into(), values: vec![1], countries: Vec::new() }], first, LAST).is_err(), "values name one facet");
+    assert!(reader.select(&[FacetFilter { name: "kind|country".into(), values: vec![1], ..Default::default() }], first, LAST).is_err(), "values name one facet");
 }
 
 #[test]
@@ -280,8 +298,8 @@ fn tail_matches_the_newest_rows_of_page_in_reverse_across_ranges_and_limits() {
     let reader = market(&query);
     let filters = [
         Vec::new(),
-        vec![FacetFilter { name: "kind".into(), values: vec![1, 3], countries: Vec::new() }],
-        vec![FacetFilter { name: "country".into(), values: Vec::new(), countries: vec![Country::tag("GER"), Country::tag("ITA")] }],
+        vec![FacetFilter { name: "kind".into(), values: vec![1, 3], ..Default::default() }],
+        vec![FacetFilter { name: "country".into(), countries: vec![Country::from("GER"), Country::from("ITA")], ..Default::default() }],
     ];
     for facets in filters {
         for (from, to, limit) in [
@@ -312,7 +330,7 @@ fn total_matches_exact_row_count_including_partial_tail_bucket() {
     let fixture = Fixture::campaign(Data::Market);
     let query = fixture.query();
     let reader = market(&query);
-    let facets = vec![FacetFilter { name: "kind".into(), values: vec![2], countries: Vec::new() }];
+    let facets = vec![FacetFilter { name: "kind".into(), values: vec![2], ..Default::default() }];
     let from = FIRST + 601;
     for offset in 0..18 {
         let to = from + offset;
@@ -321,4 +339,86 @@ fn total_matches_exact_row_count_including_partial_tail_bucket() {
         let expected = events(&query, from, to, |_, kind, _| kind == 2).len() as u64;
         assert_eq!(got, expected, "exact total for partial bin at {from}..={to}");
     }
+}
+
+#[test]
+fn dense_bucket_tail_decodes_only_requested_rows_and_bounded_cache_matches_uncached() {
+    let first = 600;
+    let last = 620;
+    let dense_hour = 602;
+    let dense_count = 400u64;
+    let fixture = Fixture::new(Data::DenseMarket(dense_hour, dense_count), first..=last);
+    let query = fixture.query();
+    let log = dashboard_declare::log("market-events").unwrap();
+    let shared = Arc::new(Mutex::new(BucketCache::with_limits(1, 2048)));
+    let uncached = Reader::new(&query, log).unwrap();
+    let selection = uncached.select(&[], first, last).unwrap();
+
+    let (cold_tail, cold_counts) = replay_columnar::unit::reader::count_decodes(|| {
+        let reader = Reader::with_cache(&query, log, Arc::clone(&shared)).unwrap();
+        reader.tail(&selection.patterns, selection.groups.len(), first, dense_hour, 16).unwrap()
+    });
+    assert_eq!(cold_tail.rows.len(), 16);
+    assert_eq!(cold_counts.log_rows_at_rows, 16, "only the 16 tail rows are fully decoded from a 400-row bucket");
+
+    let (warm_tail, warm_counts) = replay_columnar::unit::reader::count_decodes(|| {
+        let reader = Reader::with_cache(&query, log, Arc::clone(&shared)).unwrap();
+        reader.tail(&selection.patterns, selection.groups.len(), first, dense_hour, 16).unwrap()
+    });
+    assert_eq!(warm_counts.log_span_rows, 0, "warm immutable bucket cache skips facet re-scan");
+    assert_eq!(warm_counts.log_rows_at_rows, 16, "warm step still decodes only the 16 tail rows");
+    assert_eq!(
+        warm_tail.rows.iter().map(|r| &r.row).collect::<Vec<_>>(),
+        cold_tail.rows.iter().map(|r| &r.row).collect::<Vec<_>>()
+    );
+
+    let direct = uncached.tail(&selection.patterns, selection.groups.len(), first, dense_hour, 16).unwrap();
+    assert_eq!(
+        warm_tail.rows.iter().map(|r| &r.row).collect::<Vec<_>>(),
+        direct.rows.iter().map(|r| &r.row).collect::<Vec<_>>()
+    );
+
+    let reader_evict = Reader::with_cache(&query, log, Arc::clone(&shared)).unwrap();
+    let late = reader_evict.tail(&selection.patterns, selection.groups.len(), first, last, 16).unwrap();
+    let late_direct = uncached.tail(&selection.patterns, selection.groups.len(), first, last, 16).unwrap();
+    assert_eq!(
+        late.rows.iter().map(|r| &r.row).collect::<Vec<_>>(),
+        late_direct.rows.iter().map(|r| &r.row).collect::<Vec<_>>()
+    );
+    assert!(shared.lock().unwrap().len() <= 1, "bounded bucket cache respects its capacity limit");
+}
+
+#[test]
+fn dated_membership_and_unobserved_spans_filter_per_row_hour() {
+    let fixture = Fixture::campaign(Data::Market);
+    let query = fixture.query();
+    let reader = market(&query);
+    let from = FIRST;
+    let to = FIRST + 600;
+    let join_hour = FIRST + 200;
+    let unobs_first = FIRST + 300;
+    let unobs_last = FIRST + 360;
+    let filter = FacetFilter {
+        name: "country".into(),
+        membership: vec![CountrySpan { country: Country::from("GER"), first_hour: join_hour, last_hour: to }],
+        unobserved: vec![UnobservedSpan { first_hour: unobs_first, last_hour: unobs_last }],
+        ..Default::default()
+    };
+    let selection = reader.select(&[filter], from, to).unwrap();
+    let wanted = events(&query, from, to, |hour, _, country| {
+        country == 9001 && hour >= join_hour && !(unobs_first..=unobs_last).contains(&hour)
+    });
+    assert!(!wanted.is_empty());
+    let pre_join = events(&query, from, join_hour - 1, |_, _, country| country == 9001);
+    assert!(!pre_join.is_empty(), "fixture must have pre-join events to prove they are excluded");
+
+    let page = reader.page(&selection.patterns, selection.groups.len(), from, to, 0, 500).unwrap();
+    assert_eq!(page.total(), wanted.len() as u64);
+    assert!(page.rows.iter().all(|r| r.row.hour >= join_hour && !(unobs_first..=unobs_last).contains(&r.row.hour)));
+    let tail = reader.tail(&selection.patterns, selection.groups.len(), from, to, 64).unwrap();
+    assert_eq!(tail.total(), wanted.len() as u64);
+    assert_eq!(reader.total(&selection.patterns, from, to).unwrap(), wanted.len() as u64);
+    let counts = reader.counts(&selection.patterns, selection.groups.len(), from, to, 6).unwrap();
+    let counted: u64 = counts[0].bins.iter().map(|(_, c)| *c).sum();
+    assert_eq!(counted, wanted.len() as u64);
 }

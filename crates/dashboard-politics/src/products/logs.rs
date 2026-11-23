@@ -1,11 +1,13 @@
 
 pub use dashboard_base::products::log_page::{
-    LogCell, LogFacetCountAsk, LogFacetTotal, LogPageParams, LogPageReply, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, page, tail,
+    LogCaches, LogCell, LogFacetCountAsk, LogFacetTotal, LogPageParams, LogPageReply, LogPageRow, LogTailParams, LogTailReply, dated_tail_panel, missing, page, page_with, tail, tail_with,
 };
 
 use dashboard_base::products::{LoadContext, Product};
 use dashboard_base::Source;
 use dashboard_follow::panel::Panel;
+#[cfg(any(test, feature = "export-types"))]
+use dashboard_query::log::{CountrySpan, UnobservedSpan};
 use dashboard_query::{
     Query,
     log::{self, FacetFilter},
@@ -95,12 +97,27 @@ impl Product for LogPage {
     const KEY: &'static str = "log-page";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LogPageParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, log, facets, from: Start, to: End, cursor, pageSize, columns, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        log,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        columns,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {
-        vec![FacetFilter::decl(), LogPageParams::decl(), LogCell::decl(), LogPageRow::decl(), LogPageReply::decl()]
+        vec![CountrySpan::decl(), UnobservedSpan::decl(), FacetFilter::decl(), LogPageParams::decl(), LogCell::decl(), LogPageRow::decl(), LogPageReply::decl()]
     }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
@@ -116,8 +133,9 @@ impl Product for LogPage {
             None => (0..all.len()).collect(),
             Some(names) => names.iter().map(|name| dashboard_declare::field(log.table, name)).collect::<io::Result<_>>()?,
         };
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-        let (page, rows, missing) = page(&query, params, |paged, tag| LogPageRow {
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
+        let caches = dashboard_base::queries::log_caches(source);
+        let (page, rows, missing) = page_with(&query, params, Some(&caches), |paged, tag| LogPageRow {
             hour: paged.row.hour,
             key: paged.row.key.to_string(),
             ordinal: paged.ordinal.to_string(),
@@ -139,7 +157,7 @@ impl Product for LogPage {
     }
 }
 
-fn load_tail_at(query: &Query<'_>, params: &LogTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<LogTailReply> {
+fn load_tail_at(query: &Query<'_>, caches: Option<&LogCaches>, params: &LogTailParams, hour: i32, cancelled: &AtomicBool) -> io::Result<LogTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
     let log = declared(&params.log)?;
     let all: Vec<&'static str> = (0..log.table.field_count()).filter_map(|column| log.table.field_name(column)).collect();
@@ -147,8 +165,8 @@ fn load_tail_at(query: &Query<'_>, params: &LogTailParams, hour: i32, cancelled:
         None => (0..all.len()).collect(),
         Some(names) => names.iter().map(|name| dashboard_declare::field(log.table, name)).collect::<io::Result<_>>()?,
     };
-    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-    let (page, rows, facet_totals, missing) = tail(query, &params.log, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| LogPageRow {
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
+    let (page, rows, facet_totals, missing) = tail_with(query, &params.log, &params.facets, params.from, hour, params.limit, &params.count_facets, caches, |paged, tag| LogPageRow {
         hour: paged.row.hour,
         key: paged.row.key.to_string(),
         ordinal: paged.ordinal.to_string(),
@@ -188,8 +206,16 @@ impl Product for LogTail {
         countFacets,
         "facets[].countries[]",
         "facets[].values[]",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End,
         "countFacets[].facets[].countries[]",
-        "countFacets[].facets[].values[]"
+        "countFacets[].facets[].values[]",
+        "countFacets[].facets[].membership[].firstHour": Start,
+        "countFacets[].facets[].membership[].lastHour": End,
+        "countFacets[].facets[].unobserved[].firstHour": Start,
+        "countFacets[].facets[].unobserved[].lastHour": End
     ];
     type Reply = LogTailReply;
 
@@ -205,7 +231,8 @@ impl Product for LogTail {
     fn load(source: &Source, params: &Self::Params, _context: &LoadContext, cancelled: &AtomicBool) -> io::Result<Self::Reply> {
         let query = dashboard_base::queries::query(source, branch(&params.branch_id)?)?;
         let hour = params.hour.unwrap_or(query.timeline.last);
-        load_tail_at(&query, params, hour, cancelled)
+        let caches = dashboard_base::queries::log_caches(source);
+        load_tail_at(&query, Some(&caches), params, hour, cancelled)
     }
 }
 
@@ -215,11 +242,12 @@ pub fn dated_panel(source: &Source, _load: &LoadContext, asked: &serde_json::Val
     let params: LogTailParams = dashboard_query::named::named(&request).map_err(|error| format!("Invalid log-tail panel: {error}"))?;
     LogTail::validate(&params)?;
     let query = dashboard_base::queries::query(source, branch(&params.branch_id).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let caches = dashboard_base::queries::log_caches(source);
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
     Ok(dated_tail_panel(executable, move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        load_tail_at(&query, &params, hour, cancelled)
+        load_tail_at(&query, Some(&caches), &params, hour, cancelled)
     }))
 }
 

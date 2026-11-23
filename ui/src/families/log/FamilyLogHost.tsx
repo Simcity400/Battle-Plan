@@ -25,6 +25,7 @@ import {
   LOG_MIN_TAIL_LIMIT,
   logicalScrollFromPhysical,
   physicalScrollFromLogical,
+  rowIndexAtLogicalY,
   tailLimitForViewport,
   visibleItemRange,
 } from './layout.ts';
@@ -195,6 +196,7 @@ export default function FamilyLogHost<TOptions>({
   const lastMirrorKeyRef = useRef('');
   const lastExtentHeightRef = useRef(-1);
   const navRef = useRef<readonly LogNavEntry[]>([]);
+  const activeNavRef = useRef<LogNavEntry | null>(null);
   const lastHourRef = useRef<number | null>(staticSources?.hour ?? null);
   const lastMetaRef = useRef<LogMetaField | null>(null);
   const auditStoreRef = useRef<AuditSnapshotStore<LogAuditSnapshot<TOptions>> | null>(null);
@@ -216,9 +218,17 @@ export default function FamilyLogHost<TOptions>({
   const metaSigRef = useRef('');
 
   const paintPills = useCallback((pills: readonly LogFacetPill[]) => {
+    if (!pills.length && lastPillsSigRef.current === '') return;
     const host = pillsRef.current;
     if (!host) return;
-    const sig = pills.map(p => `${p.key}:${p.label}:${p.tone ?? ''}:${p.count.kind === 'known' || p.count.kind === 'zero' ? String(p.count.value) : p.count.kind}`).join('|');
+    let sig = '';
+    for (let i = 0; i < pills.length; i++) {
+      const p = pills[i]!;
+      const c = p.count;
+      const valPart = c.kind === 'known' || c.kind === 'zero' || c.kind === 'partial' ? String(c.value) : '';
+      const reasonPart = c.kind === 'notRecorded' || c.kind === 'notApplicable' || c.kind === 'partial' ? c.reason : '';
+      sig += `${p.key}:${p.label}:${p.tone ?? ''}:${c.kind}:${valPart}:${reasonPart}|`;
+    }
     if (sig === lastPillsSigRef.current) return;
     lastPillsSigRef.current = sig;
     if (!pills.length) {
@@ -228,9 +238,22 @@ export default function FamilyLogHost<TOptions>({
     const fragment = document.createDocumentFragment();
     for (const pill of pills) {
       const span = document.createElement('span');
-      span.className = `pill${pill.tone && pill.tone !== 'default' && pill.tone !== 'muted' ? ` ${pill.tone}` : ''}`;
-      const countText = pill.count.kind === 'known' || pill.count.kind === 'zero' ? Number(pill.count.value).toLocaleString() : 'Not recorded';
-      span.textContent = `${pill.label} ${countText}`;
+      const toneClass = pill.tone && pill.tone !== 'default' && pill.tone !== 'muted' ? ` ${pill.tone}` : '';
+      const stateClass = pill.count.kind === 'partial' ? ' is-partial' : pill.count.kind === 'notRecorded' ? ' is-missing' : '';
+      span.className = `pill${toneClass}${stateClass}`;
+      if (pill.count.kind === 'known' || pill.count.kind === 'zero') {
+        span.textContent = `${pill.label} ${Number(pill.count.value).toLocaleString()}`;
+      } else if (pill.count.kind === 'partial') {
+        const prefix = pill.count.atLeast ? '≥ ' : '';
+        span.textContent = `${pill.label} ${prefix}${Number(pill.count.value).toLocaleString()} (partial)`;
+        span.title = pill.count.reason;
+      } else if (pill.count.kind === 'notRecorded') {
+        span.textContent = `${pill.label} Not recorded`;
+        span.title = pill.count.reason;
+      } else {
+        span.textContent = `${pill.label} —`;
+        span.title = pill.count.reason;
+      }
       fragment.append(span);
     }
     host.replaceChildren(fragment);
@@ -509,14 +532,16 @@ export default function FamilyLogHost<TOptions>({
 
       if (rawMeta) paintPills(rawMeta.facetPills);
 
-      const nextSig = JSON.stringify([mode, reason, rawMeta?.empty ?? null, rawMeta?.warnings ?? []]);
+      const emptySpec = rawMeta?.empty ?? null;
+      const warningsList = rawMeta?.warnings ?? [];
+      const nextSig = `${mode}|${reason ?? ''}|${emptySpec?.kind ?? ''}|${emptySpec?.message ?? ''}|${warningsList.length > 0 ? warningsList.join('\0') : ''}`;
       if (nextSig !== metaSigRef.current) {
         metaSigRef.current = nextSig;
         setMeta({
           mode,
           reason,
-          empty: rawMeta?.empty ?? null,
-          warnings: rawMeta?.warnings ?? [],
+          empty: emptySpec,
+          warnings: warningsList,
         });
       }
 
@@ -531,6 +556,7 @@ export default function FamilyLogHost<TOptions>({
 
       const nav = shown.fields.nav as readonly LogNavEntry[] | undefined;
       if (nav) navRef.current = nav;
+      if ('activeNav' in shown.fields) activeNavRef.current = (shown.fields.activeNav as LogNavEntry | null | undefined) ?? null;
 
       if (rawMeta) {
         const extH = Math.max(viewportRef.current.height, rawMeta.physicalHeight);
@@ -567,8 +593,7 @@ export default function FamilyLogHost<TOptions>({
       const loader = latestRef.current.onLoadScrollPage;
       const curMeta = lastMetaRef.current;
       if (!frozen || !loader || !curMeta) return;
-      const rowH = Math.max(1, curMeta.rowHeight);
-      const targetRow = Math.floor(logicalTop / rowH);
+      const targetRow = rowIndexAtLogicalY(curMeta.geometry, logicalTop);
       const pageSize = Math.max(limitRef.current, 128);
       if (targetRow < curMeta.offset || targetRow + 24 >= curMeta.offset + pageSize) {
         const aligned = Math.max(0, Math.floor(targetRow / pageSize) * pageSize);
@@ -591,22 +616,7 @@ export default function FamilyLogHost<TOptions>({
       const physTop = node.scrollTop;
       const curMeta = lastMetaRef.current;
       const vh = viewportRef.current.height || 200;
-      const logicalTop = curMeta
-        ? logicalScrollFromPhysical(
-          {
-            items: [],
-            localHeight: curMeta.logicalHeight,
-            logicalHeight: curMeta.logicalHeight,
-            physicalHeight: curMeta.physicalHeight,
-            compressed: curMeta.compressed,
-            rowHeight: curMeta.rowHeight,
-            offsetTop: curMeta.offset * curMeta.rowHeight,
-            monthStarts: [],
-          },
-          vh,
-          physTop,
-        )
-        : physTop;
+      const logicalTop = curMeta ? logicalScrollFromPhysical(curMeta.geometry, vh, physTop) : physTop;
       viewportRef.current.physicalTop = physTop;
       viewportRef.current.scrollTop = logicalTop;
 
@@ -688,7 +698,8 @@ export default function FamilyLogHost<TOptions>({
       const down = pointerDownRef.current;
       pointerDownRef.current = null;
       if (!down || down.cancelled || down.button !== 0 || !down.key) return;
-      const entry = navRef.current.find(item => item.key === down.key);
+      const active = activeNavRef.current;
+      const entry = active && active.key === down.key ? active : navRef.current.find(item => item.key === down.key);
       if (entry) latestRef.current.onActivate?.(entry.key, entry.meta, entry.hour);
     };
 
@@ -696,7 +707,8 @@ export default function FamilyLogHost<TOptions>({
       const key = inspectedKeyRef.current;
       const builder = latestRef.current.contextMenuItems;
       if (!key || !builder || heldRef.current || dimRef.current) return;
-      const entry = navRef.current.find(item => item.key === key);
+      const active = activeNavRef.current;
+      const entry = active && active.key === key ? active : navRef.current.find(item => item.key === key);
       if (!entry) return;
       const items = builder(entry.key, entry.hour, entry.meta);
       if (items.length) {
@@ -822,20 +834,7 @@ export default function FamilyLogHost<TOptions>({
         else if (entry.top + entry.height > st + vh) nextTop = entry.top + entry.height - vh;
         if (nextTop !== st) {
           viewportRef.current.scrollTop = nextTop;
-          node.scrollTop = physicalScrollFromLogical(
-            {
-              items: [],
-              localHeight: curMeta.logicalHeight,
-              logicalHeight: curMeta.logicalHeight,
-              physicalHeight: curMeta.physicalHeight,
-              compressed: curMeta.compressed,
-              rowHeight: curMeta.rowHeight,
-              offsetTop: curMeta.offset * curMeta.rowHeight,
-              monthStarts: [],
-            },
-            vh,
-            nextTop,
-          );
+          node.scrollTop = physicalScrollFromLogical(curMeta.geometry, vh, nextTop);
         }
       }
       const box = frameRef.current?.getBoundingClientRect();

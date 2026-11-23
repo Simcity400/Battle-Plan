@@ -135,7 +135,7 @@ fn division_log_tail_and_dated_panel_match_page_and_count_partial_tail_bin() {
     )
     .unwrap();
     let load = LoadContext { content: None };
-    let facets = vec![FacetFilter { name: "kind".into(), values: vec![0, 1, 2], countries: Vec::new() }];
+    let facets = vec![FacetFilter { name: "kind".into(), values: vec![0, 1, 2], ..Default::default() }];
     let page = DivisionLog::load(
         &source,
         &DivisionLogParams { branch_id: "1".into(), facets: facets.clone(), from: None, to: 1_901.0, cursor: None, page_size: 64 },
@@ -144,8 +144,8 @@ fn division_log_tail_and_dated_panel_match_page_and_count_partial_tail_bin() {
     )
     .unwrap();
     let count_facets = vec![
-        LogFacetCountAsk { key: "created".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![0], countries: Vec::new() }] },
-        LogFacetCountAsk { key: "vanished".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![3], countries: Vec::new() }] },
+        LogFacetCountAsk { key: "created".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![0], ..Default::default() }] },
+        LogFacetCountAsk { key: "vanished".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![3], ..Default::default() }] },
     ];
     let tail = DivisionLogTail::load(
         &source,
@@ -180,9 +180,108 @@ fn division_log_tail_and_dated_panel_match_page_and_count_partial_tail_bin() {
     let art = Content::load(&source, &load);
     let params = DivisionLogTailParams { branch_id: "1".into(), facets, from: None, hour: None, limit: 64, count_facets };
     let cache = source.state::<PlaceCache>();
+    let log_caches = dashboard_base::queries::log_caches(&source);
     for hour in [1_901, 1_100, 1_500, 1_901, 1_100] {
-        let cached = load_tail_at(&query, &links, &art, Err("content unavailable"), Some(&cache), &params, hour, &AtomicBool::new(false)).unwrap();
-        let uncached = load_tail_at(&query, &links, &art, Err("content unavailable"), None, &params, hour, &AtomicBool::new(false)).unwrap();
+        let cached = load_tail_at(&query, &links, &art, Err("content unavailable"), Some(&cache), Some(&log_caches), &params, hour, &AtomicBool::new(false)).unwrap();
+        let uncached = load_tail_at(&query, &links, &art, Err("content unavailable"), None, None, &params, hour, &AtomicBool::new(false)).unwrap();
         assert_eq!(cached, uncached, "cached vs uncached at {hour}");
     }
+}
+
+#[test]
+fn place_cache_resolves_names_hits_evicts_and_forgets_matching_uncached() {
+    use replay::campaign::Replay;
+    use replay_data::rows::{CountryAppearanceRow, DivisionRow, ProvinceNameRow, ProvinceRow, ReservedCountryNamingRow, StateRow, TableRows};
+    use replay_frame::frame::TableView;
+
+    let (cat, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+        ("hoi4.exe", "test"),
+        ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+        ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+        ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+        ("map/default.map", "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp"),
+        ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+        ("history/states/mod.txt", "state={id=64 name=MOD_STATE}"),
+        (
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n MOD_STATE:0 \"Mod state\"\n ORI_VICTORY_POINTS_17:0 \"Original town\"\n RENAME_EARLY:0 \"Early town\"\n RENAME_LATE:0 \"Late town\"\n",
+        ),
+    ]);
+    let places = PlaceContent::from_catalogue(Arc::new(cat));
+    let frames = (100..=108)
+        .map(|hour| {
+            let mut frame = dashboard_base::test_fixtures::source(1, hour, Some(1));
+            *frame.tables[TableId::CountryAppearance.index()] = TableView::Complete(TableRows::CountryAppearance(vec![
+                CountryAppearanceRow { country: 9001, original_tag_reference: Recorded::Value(Some(1)), original_tag: Recorded::Value(Some(b"ORI".to_vec())), ..Default::default() },
+            ]));
+            *frame.tables[TableId::ReservedCountryNaming.index()] = TableView::Complete(TableRows::ReservedCountryNaming(vec![ReservedCountryNamingRow::default()]));
+            *frame.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(
+                [17, 18, 19].map(|id| ProvinceRow { id, state: 64, owner: 9001, controller: 9001, ..Default::default() }).to_vec(),
+            ));
+            let rename = if hour < 105 { b"RENAME_EARLY".to_vec() } else { b"RENAME_LATE".to_vec() };
+            *frame.tables[TableId::ProvinceNames.index()] = TableView::Complete(TableRows::ProvinceNames(vec![ProvinceNameRow { province: 18, name: rename }]));
+            *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow { id: 64, owner: 9001, controller: 9001, ..Default::default() }]));
+            let mut divs = vec![DivisionRow { id: 1u64 << 32 | 1, roster_owner: 9001, logical_owner: 9001, province: 17, hit_points: 100_000, ..Default::default() }];
+            if hour >= 102 {
+                divs.push(DivisionRow { id: 2u64 << 32 | 1, roster_owner: 9001, logical_owner: 9001, province: 18, hit_points: 100_000, ..Default::default() });
+            }
+            if hour >= 104 {
+                divs.push(DivisionRow { id: 3u64 << 32 | 1, roster_owner: 9001, logical_owner: 9001, province: 19, hit_points: 100_000, ..Default::default() });
+            }
+            if hour >= 106 {
+                divs.push(DivisionRow { id: 4u64 << 32 | 1, roster_owner: 9001, logical_owner: 9001, province: 18, hit_points: 100_000, ..Default::default() });
+            }
+            *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(divs));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), dashboard_base::test_fixtures::CAMPAIGN.into(), &[dashboard_base::test_fixtures::records(1, frames)])
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
+    let source = Source::from_replay(
+        dashboard_base::SourceKey { source_id: "div-places".into(), revision: "1".into() },
+        "synthetic.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let links = links_by_run(&source, &query).unwrap();
+    let art = Content::load(&source, &LoadContext { content: None });
+    let facets = vec![FacetFilter { name: "kind".into(), values: vec![0, 1, 2], ..Default::default() }];
+    let params = DivisionLogTailParams { branch_id: "1".into(), facets, from: None, hour: None, limit: 64, count_facets: Vec::new() };
+    let source_cache = source.state::<PlaceCache>();
+
+    let first = load_tail_at(&query, &links, &art, Ok(&places), Some(&source_cache), None, &params, 108, &AtomicBool::new(false)).unwrap();
+    let uncached = load_tail_at(&query, &links, &art, Ok(&places), None, None, &params, 108, &AtomicBool::new(false)).unwrap();
+    assert_eq!(first, uncached);
+    let place_names: Vec<Option<&str>> = first
+        .rows
+        .iter()
+        .map(|row| match &row.cells[PLACE_NAME] {
+            LogCell::Text { value } => Some(value.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(place_names.contains(&Some("Early town")), "resolved early province rename: {place_names:?}");
+    assert!(place_names.contains(&Some("Late town")), "resolved late province rename: {place_names:?}");
+    assert!(place_names.contains(&Some("Mod state")), "resolved fallback state name: {place_names:?}");
+    assert!(PlaceCache::len(&source_cache) >= 3, "cache populated on resolution");
+
+    let warm = load_tail_at(&query, &links, &art, Ok(&places), Some(&source_cache), None, &params, 108, &AtomicBool::new(false)).unwrap();
+    assert_eq!(warm, uncached, "warm cache hit matches uncached");
+
+    let bounded = Mutex::new(PlaceCache::with_capacity(2));
+    for hour in [102, 104, 106, 108, 102] {
+        let got = load_tail_at(&query, &links, &art, Ok(&places), Some(&bounded), None, &params, hour, &AtomicBool::new(false)).unwrap();
+        let want = load_tail_at(&query, &links, &art, Ok(&places), None, None, &params, hour, &AtomicBool::new(false)).unwrap();
+        assert_eq!(got, want, "bounded cache with eviction matches uncached at {hour}");
+        assert!(PlaceCache::len(&bounded) <= 2, "bounded cache never exceeds capacity");
+    }
+
+    forget(&source);
+    assert_eq!(PlaceCache::len(&source_cache), 0, "source invalidation clears PlaceCache");
+    let after_forget = load_tail_at(&query, &links, &art, Ok(&places), Some(&source_cache), None, &params, 108, &AtomicBool::new(false)).unwrap();
+    assert_eq!(after_forget, uncached, "re-resolution after forget matches uncached");
 }

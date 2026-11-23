@@ -1,13 +1,13 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
+import { LOG_FAMILY_OPTIONS } from '../../families/log/options.ts';
 
 export const OPTIONS: readonly OptionField[] = [
   { key: 'events', section: 'options', label: 'Divisions', kind: 'choice', default: 'both',
     choices: [{ value: 'both', label: 'Created and lost' }, { value: 'created', label: 'Created' }, { value: 'lost', label: 'Lost and transferred' }] },
   { key: 'templates', section: 'options', label: 'Template types', kind: 'content-set', catalogue: true, default: '', automatic: 'Every template' },
   { key: 'totals', section: 'options', label: 'Totals', kind: 'toggle', default: false },
-  ...LOG_OPTIONS,
+  ...LOG_FAMILY_OPTIONS,
 ];
 export const definition = {
   kind: 'division-log', version: 1, title: 'Division log', icon: 'shield',

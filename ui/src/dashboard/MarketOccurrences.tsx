@@ -9,13 +9,14 @@ import type { Gate } from './regionGate';
 import type { BoundWindow } from './regionTime';
 import { forwardRequest } from './request.ts';
 import type { LogCut } from './useLogPages';
-import { ledgerFacets, MARKET_LEDGER, MARKET_LEDGER_TAIL, type LedgerItem } from './marketLedger.ts';
+import { ledgerFacets, ledgerSelection, MARKET_LEDGER, MARKET_LEDGER_TAIL, type LedgerItem } from './marketLedger.ts';
 import type { FamilySources } from '../families/contract.ts';
 import FamilyLogHost from '../families/log/FamilyLogHost.tsx';
 import type { LogControlsSpec, LogSourceSubscription } from '../families/log/declaration.ts';
 import { LOG_MIN_TAIL_LIMIT } from '../families/log/layout.ts';
 import { isLogTailReply, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from '../families/log/tailReply.ts';
 import { useLogLooks } from '../families/log/useLogLooks.ts';
+import type { CountryScopeFilter } from '../widgets/division-log/divisionLogData.ts';
 import { marketLedgerProjection, type MarketLedgerProjectionOptions } from '../widgets/market-ledger/marketLedgerProjection.ts';
 import type { LogPageReply } from '../generated/dashboard';
 
@@ -24,14 +25,13 @@ export interface MarketOccurrencesProps {
   track: BoundTrack;
   gate: Gate;
   kinds: readonly number[];
-  tags: readonly string[] | null;
+  tags: readonly string[] | CountryScopeFilter | null;
   span: BoundWindow | null;
   cut: LogCut;
   active: boolean;
   label: string;
   density: LogDensity;
   months: boolean;
-  animate: boolean;
   onOpen?: (item: LedgerItem, hour: number) => void;
   empty?: ReactNode;
   widget?: WidgetSpec;
@@ -185,23 +185,32 @@ export default function MarketOccurrences({
 
   const projectionOptions = useMemo<MarketLedgerProjectionOptions>(() => ({
     looks,
+    fromHour: fromParam ?? track.branch.firstHour,
     ...(typeof empty === 'string' ? { emptyMessage: empty } : {}),
-  }), [looks, empty]);
+  }), [looks, fromParam, track.branch.firstHour, empty]);
 
   const onActivate = useCallback((_key: string, meta?: unknown, hour?: number) => {
-    if (onOpen && meta && hour !== undefined) onOpen(meta as LedgerItem, hour);
+    if (!onOpen || !meta || hour === undefined) return;
+    const item = meta as LedgerItem;
+    if (ledgerSelection(item) !== null) onOpen(item, hour);
   }, [onOpen]);
 
-  const contextMenuItems = useCallback((_key: string, hour: number, meta?: unknown) => [
-    ...(onOpen && meta ? [{ label: 'Show contract', run: () => onOpen(meta as LedgerItem, hour) }] : []),
-    jumpItem(runtime, track.id, hour),
-  ], [onOpen, runtime, track.id]);
+  const contextMenuItems = useCallback((_key: string, hour: number, meta?: unknown) => {
+    const item = meta as LedgerItem | undefined;
+    const canOpen = !!onOpen && !!item && ledgerSelection(item) !== null;
+    return [
+      ...(canOpen ? [{ label: 'Show contract', run: () => onOpen(item, hour) }] : []),
+      jumpItem(runtime, track.id, hour),
+    ];
+  }, [onOpen, runtime, track.id]);
 
-  const blockedState = followPlan.refused
-    ? <WidgetState kind="unavailable" message={followPlan.refused} />
-    : !follow && staticReply.error
-      ? <WidgetState kind="error" failure={staticReply.error} onRetry={staticReply.retry} />
-      : null;
+  const blockedState = !kinds.length
+    ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
+    : followPlan.refused
+      ? <WidgetState kind="unavailable" message={followPlan.refused} />
+      : !follow && staticReply.error
+        ? <WidgetState kind="error" failure={staticReply.error} onRetry={staticReply.retry} />
+        : null;
 
   const bounds = useMemo(
     () => (spanFirst !== null && spanLast !== null ? [spanFirst, spanLast] as const : null),

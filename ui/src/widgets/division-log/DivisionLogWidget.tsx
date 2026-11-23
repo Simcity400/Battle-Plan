@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
-import { logSettings } from '../../charts/log/logOptions';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { countryMatchFilter } from '../../dashboard/groups';
@@ -17,11 +16,13 @@ import type { FamilySources } from '../../families/contract.ts';
 import FamilyLogHost from '../../families/log/FamilyLogHost.tsx';
 import type { LogControlsSpec, LogSourceSubscription } from '../../families/log/declaration.ts';
 import { LOG_MIN_TAIL_LIMIT } from '../../families/log/layout.ts';
+import { logFamilySettings } from '../../families/log/options.ts';
 import { isLogTailReply, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from '../../families/log/tailReply.ts';
 import { useLogLooks } from '../../families/log/useLogLooks.ts';
 import type { DivisionLogManifestReply, LogPageReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
 import {
+  boundMembershipScope,
   divisionFacets,
   KINDS,
   selectedTemplates,
@@ -29,6 +30,7 @@ import {
   templateToken,
   validateDivisionManifest,
   VANISHED_KIND,
+  type CountryScopeFilter,
 } from './divisionLogData.ts';
 import { divisionLogProjection, type DivisionLogProjectionOptions } from './divisionLogProjection.ts';
 
@@ -39,7 +41,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const gate = useGate(runtime, widget, SPEC, active);
   const options = resolveOptions(OPTIONS, widget.options);
-  const log = logSettings(options);
+  const log = logFamilySettings(options);
   const follow = widget.time.mode === 'follow';
   const window = track && !follow ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const first = widget.time.mode === 'range' && window ? Math.floor(window.firstHour) : track?.branch.firstHour ?? 0;
@@ -71,20 +73,25 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   const events = String(options.events);
   const needsGroups = widget.countries.kind === 'group' || widget.countries.kind === 'factions';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
-  const tags = useMemo<string[] | null>(() => {
+  const countryScope = useMemo<CountryScopeFilter | null | undefined>(() => {
     if (widget.countries.kind === 'all') return null;
-    if (!needsGroups) return selectedCountryKeys(widget.countries, track);
-    if (!groups.data) return null;
+    if (!needsGroups) return { kind: 'countries', tags: selectedCountryKeys(widget.countries, track) };
+    if (!groups.data) return undefined;
     const filter = countryMatchFilter(widget.countries, [], groups.data, last, undefined, track?.branch.firstHour);
-    return [...new Set(filter.membership?.map(run => run.tag) ?? [])].sort();
-  }, [widget.countries, needsGroups, track, groups.data, last]);
-  const waiting = tags === null && widget.countries.kind !== 'all';
+    return boundMembershipScope(filter.membership ?? [], filter.unobserved, gate.span);
+  }, [widget.countries, needsGroups, track, groups.data, last, gate.span]);
+  const waiting = countryScope === undefined && widget.countries.kind !== 'all';
+  const emptyScope = countryScope !== null && countryScope !== undefined && (
+    countryScope.kind === 'countries'
+      ? countryScope.tags.length === 0
+      : countryScope.membership.length === 0 && countryScope.unobserved.length === 0
+  );
 
   const kinds = useMemo(() => shownKinds(events), [events]);
   const losses = manifest.data?.lossesAvailable === true;
   const facets = useMemo(
-    () => divisionFacets(losses ? kinds : kinds.filter(kind => kind === 'created'), templates, tags),
-    [kinds, losses, templates, tags],
+    () => divisionFacets(losses ? kinds : kinds.filter(kind => kind === 'created'), templates, emptyScope ? null : (countryScope ?? null)),
+    [kinds, losses, templates, emptyScope, countryScope],
   );
   const showTotals = options.totals === true;
   const countFacets = useMemo(() => {
@@ -106,7 +113,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
   const looks = useLogLooks(runtime, track, track?.branch.firstHour ?? 0, last, active && !!manifest.data?.available);
 
   const tailParams = useMemo(() => {
-    if (!track || !manifest.data?.available || waiting || !facets[0]?.values.length) return null;
+    if (!track || !manifest.data?.available || waiting || emptyScope || !facets[0]?.values.length) return null;
     return {
       branchId: track.branch.id,
       facets,
@@ -208,10 +215,11 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
     events,
     showTotals,
     lossesAvailable: losses,
+    fromHour: fromParam ?? track?.branch.firstHour,
     looks,
     manifestWarnings: manifest.data?.warnings ?? [],
     manifestGaps: manifest.data?.gaps ?? [],
-  }), [events, showTotals, losses, looks, manifest.data?.warnings, manifest.data?.gaps]);
+  }), [events, showTotals, losses, fromParam, track?.branch.firstHour, looks, manifest.data?.warnings, manifest.data?.gaps]);
 
   const controls = useMemo<LogControlsSpec | null>(() => {
     if (!log.chips) return null;
@@ -252,6 +260,7 @@ export default function DivisionLogWidget({ widget, runtime, active, onDiagnosti
     : manifest.error ? <WidgetState kind="error" failure={manifest.error} onRetry={manifest.retry} />
     : needsGroups && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : !manifest.data || waiting ? <WidgetState kind="loading" label="Loading division log…" />
+    : emptyScope ? <WidgetState kind="unavailable" message={needsGroups ? 'This group has no members in this campaign.' : 'Choose a country in the widget settings.'} />
     : !manifest.data.available || (events === 'lost' && !losses) ? <WidgetState kind="unavailable" message="Not in this recording" />
     : followPlan.refused ? <WidgetState kind="unavailable" message={followPlan.refused} />
     : !follow && staticReply.error ? <WidgetState kind="error" failure={staticReply.error} onRetry={staticReply.retry} />

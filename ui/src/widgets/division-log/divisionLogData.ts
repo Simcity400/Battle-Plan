@@ -10,6 +10,7 @@ import type { LogPage, LogRow } from '../../charts/log/logData';
 import type { LogCounts, LogReplyRow } from '../../charts/log/logSource';
 import type { TooltipContent } from '../../charts/tooltip';
 import type { CountryLabel } from '../../dashboard/countryFlagsAt';
+import type { BoundHour, BoundWindow } from '../../dashboard/regionTime';
 import type { CountryRef, DivisionLogManifestReply, LogCell, PlaceName } from '../../generated/dashboard';
 
 export const KINDS = { created: 0, lost: 1, transfer: 2 } as const;
@@ -73,12 +74,76 @@ export function selectedTemplates(value: string, campaign: string, branch: strin
 
 export const shownKinds = (events: string): DivisionKind[] => events === 'created' ? ['created'] : events === 'lost' ? ['lost', 'transfer'] : ['created', 'lost', 'transfer'];
 
-export interface DivisionFacet { name: string; values: number[]; countries: CountryRef[] }
+export type DivisionFacet<H extends number = BoundHour> = {
+  name: string;
+  values: number[];
+  countries: CountryRef[];
+  membership?: { country: CountryRef; firstHour: H; lastHour: H }[];
+  unobserved?: { firstHour: H; lastHour: H }[];
+};
 
-export function divisionFacets(kinds: readonly DivisionKind[], templates: readonly string[] | null, tags: readonly string[] | null): DivisionFacet[] {
-  const facets: DivisionFacet[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
+export type CountryScopeFilter<H extends number = BoundHour> =
+  | { readonly kind: 'countries'; readonly tags: readonly string[] }
+  | {
+    readonly kind: 'membership';
+    readonly membership: readonly { readonly tag: string; readonly firstHour: H; readonly lastHour: H }[];
+    readonly unobserved: readonly { readonly firstHour: H; readonly lastHour: H }[];
+  };
+
+export function boundMembershipScope(
+  membership: readonly { readonly tag: string; readonly firstHour: number; readonly lastHour: number }[],
+  unobserved: readonly { readonly firstHour: number; readonly lastHour: number }[],
+  clamp: (firstHour: number, lastHour: number) => BoundWindow | null,
+): CountryScopeFilter<BoundHour> {
+  const boundRuns: { readonly tag: string; readonly firstHour: BoundHour; readonly lastHour: BoundHour }[] = [];
+  for (const run of membership) {
+    const span = clamp(run.firstHour, run.lastHour);
+    if (span) boundRuns.push({ tag: run.tag, firstHour: span.firstHour, lastHour: span.lastHour });
+  }
+  const boundUnobserved: { readonly firstHour: BoundHour; readonly lastHour: BoundHour }[] = [];
+  for (const gap of unobserved) {
+    const span = clamp(gap.firstHour, gap.lastHour);
+    if (span) boundUnobserved.push({ firstHour: span.firstHour, lastHour: span.lastHour });
+  }
+  return { kind: 'membership', membership: boundRuns, unobserved: boundUnobserved };
+}
+
+export function countryScopeFacet<H extends number = BoundHour>(
+  name: string,
+  scope: readonly string[] | CountryScopeFilter<H> | null,
+): DivisionFacet<H> | null {
+  if (scope === null) return null;
+  if (Array.isArray(scope)) {
+    return { name, values: [], countries: scope.map(countryFromKey) };
+  }
+  const typed = scope as CountryScopeFilter<H>;
+  if (typed.kind === 'countries') {
+    return { name, values: [], countries: typed.tags.map(countryFromKey) };
+  }
+  return {
+    name,
+    values: [],
+    countries: [],
+    membership: typed.membership.map(run => ({
+      country: countryFromKey(run.tag),
+      firstHour: run.firstHour,
+      lastHour: run.lastHour,
+    })),
+    ...(typed.unobserved.length > 0
+      ? { unobserved: typed.unobserved.map(span => ({ firstHour: span.firstHour, lastHour: span.lastHour })) }
+      : {}),
+  };
+}
+
+export function divisionFacets<H extends number = BoundHour>(
+  kinds: readonly DivisionKind[],
+  templates: readonly string[] | null,
+  scope: readonly string[] | CountryScopeFilter<H> | null,
+): DivisionFacet<H>[] {
+  const facets: DivisionFacet<H>[] = [{ name: 'kind', values: kinds.map(kind => KINDS[kind]), countries: [] }];
   if (templates !== null) facets.push({ name: 'template', values: templates.map(Number), countries: [] });
-  if (tags !== null) facets.push({ name: 'slot', values: [], countries: tags.map(countryFromKey) });
+  const countryFacet = countryScopeFacet('slot', scope);
+  if (countryFacet) facets.push(countryFacet);
   return facets;
 }
 

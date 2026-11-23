@@ -95,6 +95,7 @@ export interface LogEmptyState {
 
 export interface LogModel {
   readonly hour: number;
+  readonly fromHour?: number;
   readonly total: number;
   readonly baseOrdinal: number;
   readonly firstOrdinal: number;
@@ -115,14 +116,20 @@ export type FlatLogItem =
   | { readonly kind: 'gap'; readonly key: string; readonly span: MissingSpan; readonly label: string; readonly top: number; readonly height: number }
   | { readonly kind: 'row'; readonly key: string; readonly row: LogRowSpec; readonly index: number; readonly top: number; readonly height: number };
 
+const auditRowCache = new WeakMap<LogRowSpec, string>();
+
 export function canonicalLogRowAudit(row: LogRowSpec): string {
+  const cached = auditRowCache.get(row);
+  if (cached !== undefined) return cached;
   const keys = Object.keys(row.auditCells).sort();
   const pairs: [string, string][] = new Array(keys.length);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i]!;
     pairs[i] = [key, canonicalAuditValue(row.auditCells[key]!)];
   }
-  return JSON.stringify([row.hour, row.by === true ? 1 : 0, pairs]);
+  const encoded = JSON.stringify([row.hour, row.by === true ? 1 : 0, pairs]);
+  auditRowCache.set(row, encoded);
+  return encoded;
 }
 
 export function deriveLogAudit(model: LogModel, maxRows?: number): { readonly ordered: true; readonly values: Map<string, string> } {
@@ -180,7 +187,7 @@ export function deriveLogTooltip(row: LogRowSpec): TooltipContent | null {
       : undefined;
     return {
       label: field.label,
-      value: detail && formatted.kind === 'notRecorded' ? `${text} — ${detail}` : text,
+      value: detail && (formatted.kind === 'notRecorded' || formatted.kind === 'partial') ? `${text} — ${detail}` : text,
       tone: field.tone ?? (formatted.kind === 'notRecorded' || formatted.kind === 'notApplicable' ? 'muted' : undefined),
       strong: field.strong,
       divider: field.divider,

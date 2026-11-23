@@ -1,6 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { LOG_OPTIONS } from '../../charts/log/logOptions.ts';
+import { LOG_FAMILY_OPTIONS } from '../../families/log/options.ts';
 import { DRILL_OPTION } from '../../charts/drill/drillState.ts';
 import { KINDS } from '../../dashboard/marketLedger.ts';
 
@@ -8,7 +8,7 @@ export const DETAILS = { id: 'contract', label: 'Contract' };
 
 export const OPTIONS: readonly OptionField[] = [
   ...KINDS.map((kind): OptionField => ({ key: kind.key, section: 'options', label: kind.label, kind: 'toggle', default: true })),
-  ...LOG_OPTIONS, DRILL_OPTION,
+  ...LOG_FAMILY_OPTIONS, DRILL_OPTION,
 ];
 
 export const definition = {

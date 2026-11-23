@@ -27,10 +27,21 @@ export interface LogTheme extends ValueCanvasTheme {
   readonly categories: readonly string[];
 }
 
+export interface PaintedSlice {
+  readonly geomKey: string;
+  readonly sticky: string | null;
+  readonly stickyH: number;
+  readonly keys: readonly string[];
+  readonly tops: readonly number[];
+  readonly heights: readonly number[];
+  readonly sigs: readonly string[];
+}
+
 export interface LogPicture {
   readonly measures: Map<string, number>;
   readonly fitted: Map<string, string>;
   signature: string | null;
+  lastSlice: PaintedSlice | null;
 }
 
 export function createLogPicture(): LogPicture {
@@ -38,6 +49,7 @@ export function createLogPicture(): LogPicture {
     measures: new Map(),
     fitted: new Map(),
     signature: null,
+    lastSlice: null,
   };
 }
 
@@ -55,10 +67,13 @@ export interface DrawLogInput {
   readonly selectedKey: string | null;
   readonly icons: ReadonlyMap<string, ImageBitmap | null>;
   readonly dpr: number;
+  readonly prevCanvas?: CanvasImageSource | null;
+  readonly wantAudit?: boolean;
 }
 
 export interface DrawLogResult {
   readonly drew: boolean;
+  readonly incremental: boolean;
   readonly auditRows: AuditRow[];
   readonly paintedRows: number;
   readonly visibleStart: number;
@@ -324,6 +339,14 @@ function drawBand(
         }
         const partText = formatted.kind === 'notApplicable' ? formatted.label : formatted.text;
         if (!partText) continue;
+        if (formatted.kind === 'partial') {
+          if (x + 6 > right) break;
+          ctx.fillStyle = theme.warning;
+          ctx.beginPath();
+          ctx.arc(x + 2.5, middleY, 2.5, 0, Math.PI * 2);
+          ctx.fill();
+          x += 7;
+        }
         const font = fontOf(theme, size, part.weight === 'bold' ? VALUE_WEIGHT : LABEL_WEIGHT);
         const avail = right - x;
         const text = fit(partText, font, avail);
@@ -363,36 +386,252 @@ export function collectLogIcons(_model: LogModel, start: number, end: number, it
   return [...urls];
 }
 
+function itemIconSig(item: FlatLogItem, icons: ReadonlyMap<string, ImageBitmap | null>): string {
+  if (item.kind !== 'row') return '';
+  let sig = '';
+  const row = item.row;
+  if (row.art?.icon) sig += icons.get(row.art.icon) ? '1' : '0';
+  for (let s = 0; s < row.slots.length; s++) {
+    const band = row.slots[s]!;
+    if (band.kind === 'flags') {
+      for (const look of band.looks) if (look?.flag) sig += icons.get(look.flag) ? '1' : '0';
+    } else if (band.kind === 'rich') {
+      for (const part of band.parts) if (part.flag?.flag) sig += icons.get(part.flag.flag) ? '1' : '0';
+    }
+  }
+  if (row.subline?.kind === 'rich') {
+    for (const part of row.subline.parts) if (part.flag?.flag) sig += icons.get(part.flag.flag) ? '1' : '0';
+  }
+  return sig;
+}
+
+function paintItem(
+  ctx: ValueCanvasContext,
+  picture: LogPicture,
+  item: FlatLogItem,
+  y: number,
+  width: number,
+  twoLine: boolean,
+  dateCol: ResolvedLogColumn | undefined,
+  artCol: ResolvedLogColumn | undefined,
+  contentCols: readonly ResolvedLogColumn[],
+  theme: LogTheme,
+  inspectedKey: string | null,
+  focusedKey: string | null,
+  selectedKey: string | null,
+  icons: ReadonlyMap<string, ImageBitmap | null>,
+): void {
+  const h = item.height;
+  if (item.kind === 'month') {
+    ctx.fillStyle = theme.surfaceAlt;
+    ctx.fillRect(0, y, width, h);
+    ctx.font = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
+    ctx.fillStyle = theme.muted;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText(item.label, 10, y + h / 2);
+    ctx.strokeStyle = theme.lineSoft;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, y + h - 0.5);
+    ctx.lineTo(width, y + h - 0.5);
+    ctx.stroke();
+    return;
+  }
+
+  if (item.kind === 'gap') {
+    const inspected = inspectedKey === item.key;
+    const focused = focusedKey === item.key;
+    drawHatchRect(ctx, 4, y + 2, Math.max(0, width - 8), Math.max(0, h - 4), 4, theme);
+    if (inspected) {
+      ctx.fillStyle = theme.hover;
+      ctx.fillRect(0, y, width, h);
+      ctx.fillStyle = theme.muted;
+      ctx.fillRect(0, y, 2, h);
+    }
+    if (focused) {
+      ctx.strokeStyle = theme.accent;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(1, y + 1, width - 2, h - 2);
+    }
+    const gapFont = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
+    const label = fitText(ctx, picture, item.label, gapFont, Math.max(0, width - 24));
+    ctx.font = gapFont;
+    ctx.fillStyle = theme.muted;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 12, y + h / 2);
+    return;
+  }
+
+  const row = item.row;
+  const inspected = inspectedKey === row.key;
+  const selected = selectedKey === row.key;
+  const focused = focusedKey === row.key;
+
+  if (selected) {
+    ctx.fillStyle = theme.selected;
+    ctx.fillRect(0, y, width, h);
+  } else if (inspected) {
+    ctx.fillStyle = theme.hover;
+    ctx.fillRect(0, y, width, h);
+  }
+  if (inspected) {
+    ctx.fillStyle = theme.muted;
+    ctx.fillRect(0, y, 2, h);
+  }
+  if (focused) {
+    ctx.strokeStyle = theme.accent;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(1, y + 1, width - 2, h - 2);
+  }
+
+  ctx.strokeStyle = theme.lineSoft;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, y + h - 0.5);
+  ctx.lineTo(width, y + h - 0.5);
+  ctx.stroke();
+
+  const middleY = y + h / 2;
+  if (dateCol) {
+    const parts = shortDateParts(row.hour);
+    const dayText = row.by ? `by ${parts.day}` : parts.day;
+    const dayFont = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
+    const yearFont = fontOf(theme, Math.max(10, theme.fontSize.small - 1), LABEL_WEIGHT);
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    if (twoLine) {
+      ctx.font = dayFont;
+      ctx.fillStyle = theme.text;
+      ctx.fillText(fitText(ctx, picture, dayText, dayFont, dateCol.width), dateCol.left, y + h * 0.34);
+      ctx.font = yearFont;
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(parts.year, dateCol.left, y + h * 0.68);
+    } else {
+      const line = `${dayText} ${parts.year}`;
+      ctx.font = dayFont;
+      ctx.fillStyle = theme.muted;
+      ctx.fillText(fitText(ctx, picture, line, dayFont, dateCol.width), dateCol.left, middleY);
+    }
+  }
+
+  if (artCol && width >= 360) {
+    drawArt(ctx, row, artCol, middleY, theme, icons);
+  }
+
+  for (let s = 0; s < contentCols.length && s < row.slots.length; s++) {
+    const col = contentCols[s]!;
+    const band = row.slots[s]!;
+    if (s === 0 && twoLine && row.subline) {
+      drawBand(ctx, picture, band, col.left, col.width, y + h * 0.33, col.align, false, theme, icons);
+      drawBand(ctx, picture, row.subline, col.left, col.width, y + h * 0.7, col.align, true, theme, icons);
+    } else {
+      drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, false, theme, icons);
+    }
+  }
+}
+
+function paintStickyMonth(ctx: ValueCanvasContext, sticky: string, width: number, stickyH: number, theme: LogTheme): void {
+  ctx.fillStyle = theme.surfaceAlt;
+  ctx.fillRect(0, 0, width, stickyH);
+  ctx.font = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
+  ctx.fillStyle = theme.muted;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillText(sticky, 10, stickyH / 2);
+  ctx.strokeStyle = theme.line;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, stickyH - 0.5);
+  ctx.lineTo(width, stickyH - 0.5);
+  ctx.stroke();
+}
+
 export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: DrawLogInput): DrawLogResult {
-  const { model, layout, density, showMonths, width, height, scrollTop, theme, inspectedKey, focusedKey, selectedKey, icons, dpr } = input;
+  const { model, layout, density, showMonths, width, height, scrollTop, theme, inspectedKey, focusedKey, selectedKey, icons, dpr, prevCanvas, wantAudit = true } = input;
   const [start, end] = visibleItemRange(layout.items, scrollTop, height);
   const sticky = showMonths ? stickyMonthAt(layout, scrollTop) : null;
   const stickyH = sticky ? LOG_MONTH_HEIGHT[density] : 0;
 
   const auditRows: AuditRow[] = [];
+  const visKeys: string[] = [];
+  const visTops: number[] = [];
+  const visHeights: number[] = [];
+  const visSigs: string[] = [];
+
   for (let i = start; i < end; i++) {
     const item = layout.items[i]!;
-    if (item.kind !== 'row') continue;
-    auditRows.push({
-      row: item.row.key,
-      key: item.row.key,
-      value: canonicalLogRowAudit(item.row),
-    });
+    const y = Math.round(item.top - scrollTop);
+    const h = item.height;
+    if (item.kind === 'row' && wantAudit) {
+      auditRows.push({
+        row: item.row.key,
+        key: item.row.key,
+        value: canonicalLogRowAudit(item.row),
+      });
+    }
+    if (y + h <= stickyH || y >= height) continue;
+    visKeys.push(item.key);
+    visTops.push(y);
+    visHeights.push(h);
+    const hl = (inspectedKey === item.key ? 1 : 0) | (focusedKey === item.key ? 2 : 0) | (selectedKey === item.key ? 4 : 0);
+    const base = item.kind === 'row'
+      ? `${canonicalLogRowAudit(item.row)}#${hl}#${itemIconSig(item, icons)}`
+      : item.kind === 'month'
+        ? `m:${item.label}`
+        : `g:${item.label}#${hl}`;
+    visSigs.push(base);
   }
 
-  const iconKey = collectLogIcons(model, start, end, layout.items).map(url => `${url}:${icons.get(url) ? 1 : 0}`).join('|');
-  const sig = `${width}x${height}@${dpr}|${Math.round(scrollTop)}|${density}|${showMonths ? 1 : 0}|${inspectedKey ?? ''}|${focusedKey ?? ''}|${selectedKey ?? ''}|${model.hour}|${model.total}|${model.offset}|${start}:${end}|${sticky ?? ''}|${auditRows.map(r => `${r.key}=${r.value}`).join(';')}|${iconKey}`;
+  const geomKey = `${width}x${height}@${dpr}|${density}|${showMonths ? 1 : 0}|${model.twoLine ? 1 : 0}`;
+  const sig = `${geomKey}|${sticky ?? ''}|${visKeys.length}|${visTops.join(',')}|${visKeys.join(',')}|${visSigs.join(';')}`;
 
   if (picture.signature === sig) {
-    return { drew: false, auditRows, paintedRows: auditRows.length, visibleStart: start, visibleEnd: end };
+    return { drew: false, incremental: false, auditRows, paintedRows: 0, visibleStart: start, visibleEnd: end };
   }
-  picture.signature = sig;
 
-  ctx.save();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = theme.surface;
-  ctx.fillRect(0, 0, width, height);
+  const prev = picture.lastSlice;
+  let shiftPrefix = -1;
+  let shiftPrevAnchor = 0;
+  if (prev && prevCanvas && prev.geomKey === geomKey && prev.stickyH === stickyH && prev.keys.length > 0 && visKeys.length > 1) {
+    const maxAnchor = Math.min(2, prev.keys.length);
+    for (let p = 0; p < maxAnchor && shiftPrefix < 0; p++) {
+      const anchorKey = prev.keys[p]!;
+      const anchorSig = prev.sigs[p]!;
+      const anchorTop = prev.tops[p]!;
+      const anchorHeight = prev.heights[p]!;
+      if (anchorTop < stickyH) continue;
+      for (let k = p + 1; k < visKeys.length; k++) {
+        if (visKeys[k] === anchorKey && visSigs[k] === anchorSig && visHeights[k] === anchorHeight) {
+          const delta = visTops[k]! - anchorTop;
+          if (delta > 0 && visTops[k]! >= stickyH && visTops[k]! < height) {
+            let match = true;
+            const tailCount = visKeys.length - k;
+            if (p + tailCount > prev.keys.length) {
+              match = false;
+            } else {
+              for (let j = 0; j < tailCount; j++) {
+                if (
+                  visKeys[k + j] !== prev.keys[p + j]
+                  || visSigs[k + j] !== prev.sigs[p + j]
+                  || visHeights[k + j] !== prev.heights[p + j]
+                  || visTops[k + j]! - prev.tops[p + j]! !== delta
+                ) {
+                  match = false;
+                  break;
+                }
+              }
+            }
+            if (match) {
+              shiftPrefix = k;
+              shiftPrevAnchor = p;
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
 
   const columns = resolveLogColumns(model.columns, width);
   const colById = new Map<string, ResolvedLogColumn>();
@@ -402,139 +641,74 @@ export function drawLog(ctx: ValueCanvasContext, picture: LogPicture, input: Dra
   const contentCols = columns.filter(col => col.id !== 'date' && col.id !== 'art');
   const twoLine = model.twoLine === true && width >= 300;
 
-  for (let i = start; i < end; i++) {
-    const item = layout.items[i]!;
-    const y = Math.round(item.top - scrollTop);
-    const h = item.height;
-    if (y + h <= stickyH || y >= height) continue;
+  let paintedRows = 0;
+  let incremental = false;
 
-    if (item.kind === 'month') {
-      ctx.fillStyle = theme.surfaceAlt;
-      ctx.fillRect(0, y, width, h);
-      ctx.font = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
-      ctx.fillStyle = theme.muted;
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      ctx.fillText(item.label, 10, y + h / 2);
-      ctx.strokeStyle = theme.lineSoft;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, y + h - 0.5);
-      ctx.lineTo(width, y + h - 0.5);
-      ctx.stroke();
-      continue;
-    }
+  ctx.save();
+  if (shiftPrefix > 0 && prevCanvas && prev) {
+    const copyStartLogical = prev.tops[shiftPrevAnchor]!;
+    const dstStartLogical = visTops[shiftPrefix]!;
+    const srcY = Math.round(copyStartLogical * dpr);
+    const dstY = Math.round(dstStartLogical * dpr);
+    const physW = Math.round(width * dpr);
+    const physH = Math.round(height * dpr);
+    const copyH = physH - dstY;
+    if (srcY >= 0 && dstY > srcY && copyH > 0 && srcY + copyH <= physH) {
+      incremental = true;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = theme.surface;
+      ctx.fillRect(0, 0, physW, dstY);
+      ctx.drawImage(prevCanvas, 0, srcY, physW, copyH, 0, dstY, physW, copyH);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    if (item.kind === 'gap') {
-      const inspected = inspectedKey === item.key;
-      const focused = focusedKey === item.key;
-      drawHatchRect(ctx, 4, y + 2, Math.max(0, width - 8), Math.max(0, h - 4), 4, theme);
-      if (inspected) {
-        ctx.fillStyle = theme.hover;
-        ctx.fillRect(0, y, width, h);
-        ctx.fillStyle = theme.muted;
-        ctx.fillRect(0, y, 2, h);
+      let visIdx = 0;
+      for (let i = start; i < end && visIdx < shiftPrefix; i++) {
+        const item = layout.items[i]!;
+        const y = Math.round(item.top - scrollTop);
+        if (y + item.height <= stickyH || y >= height) continue;
+        paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons);
+        if (item.kind === 'row') paintedRows++;
+        visIdx++;
       }
-      if (focused) {
-        ctx.strokeStyle = theme.accent;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(1, y + 1, width - 2, h - 2);
-      }
-      const gapFont = fontOf(theme, theme.fontSize.small, LABEL_WEIGHT);
-      const label = fitText(ctx, picture, item.label, gapFont, Math.max(0, width - 24));
-      ctx.font = gapFont;
-      ctx.fillStyle = theme.muted;
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, 12, y + h / 2);
-      continue;
-    }
 
-    const row = item.row;
-    const inspected = inspectedKey === row.key;
-    const selected = selectedKey === row.key;
-    const focused = focusedKey === row.key;
-
-    if (selected) {
-      ctx.fillStyle = theme.selected;
-      ctx.fillRect(0, y, width, h);
-    } else if (inspected) {
-      ctx.fillStyle = theme.hover;
-      ctx.fillRect(0, y, width, h);
-    }
-    if (inspected) {
-      ctx.fillStyle = theme.muted;
-      ctx.fillRect(0, y, 2, h);
-    }
-    if (focused) {
-      ctx.strokeStyle = theme.accent;
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(1, y + 1, width - 2, h - 2);
-    }
-
-    ctx.strokeStyle = theme.lineSoft;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, y + h - 0.5);
-    ctx.lineTo(width, y + h - 0.5);
-    ctx.stroke();
-
-    const middleY = y + h / 2;
-    if (dateCol) {
-      const parts = shortDateParts(row.hour);
-      const dayText = row.by ? `by ${parts.day}` : parts.day;
-      const dayFont = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
-      const yearFont = fontOf(theme, Math.max(10, theme.fontSize.small - 1), LABEL_WEIGHT);
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      if (twoLine) {
-        ctx.font = dayFont;
-        ctx.fillStyle = theme.text;
-        ctx.fillText(fitText(ctx, picture, dayText, dayFont, dateCol.width), dateCol.left, y + h * 0.34);
-        ctx.font = yearFont;
-        ctx.fillStyle = theme.muted;
-        ctx.fillText(parts.year, dateCol.left, y + h * 0.68);
-      } else {
-        const line = `${dayText} ${parts.year}`;
-        ctx.font = dayFont;
-        ctx.fillStyle = theme.muted;
-        ctx.fillText(fitText(ctx, picture, line, dayFont, dateCol.width), dateCol.left, middleY);
-      }
-    }
-
-    if (artCol && width >= 360) {
-      drawArt(ctx, row, artCol, middleY, theme, icons);
-    }
-
-    for (let s = 0; s < contentCols.length && s < row.slots.length; s++) {
-      const col = contentCols[s]!;
-      const band = row.slots[s]!;
-      if (s === 0 && twoLine && row.subline) {
-        drawBand(ctx, picture, band, col.left, col.width, y + h * 0.33, col.align, false, theme, icons);
-        drawBand(ctx, picture, row.subline, col.left, col.width, y + h * 0.7, col.align, true, theme, icons);
-      } else {
-        drawBand(ctx, picture, band, col.left, col.width, middleY, col.align, false, theme, icons);
+      if (sticky && stickyH > 0) {
+        paintStickyMonth(ctx, sticky, width, stickyH, theme);
       }
     }
   }
 
-  if (sticky && stickyH > 0) {
-    ctx.fillStyle = theme.surfaceAlt;
-    ctx.fillRect(0, 0, width, stickyH);
-    ctx.font = fontOf(theme, theme.fontSize.small, VALUE_WEIGHT);
-    ctx.fillStyle = theme.muted;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.fillText(sticky, 10, stickyH / 2);
-    ctx.strokeStyle = theme.line;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, stickyH - 0.5);
-    ctx.lineTo(width, stickyH - 0.5);
-    ctx.stroke();
+  if (!incremental) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = theme.surface;
+    ctx.fillRect(0, 0, width, height);
+
+    for (let i = start; i < end; i++) {
+      const item = layout.items[i]!;
+      const y = Math.round(item.top - scrollTop);
+      const h = item.height;
+      if (y + h <= stickyH || y >= height) continue;
+      paintItem(ctx, picture, item, y, width, twoLine, dateCol, artCol, contentCols, theme, inspectedKey, focusedKey, selectedKey, icons);
+      if (item.kind === 'row') paintedRows++;
+    }
+
+    if (sticky && stickyH > 0) {
+      paintStickyMonth(ctx, sticky, width, stickyH, theme);
+    }
   }
 
   ctx.restore();
-  return { drew: true, auditRows, paintedRows: auditRows.length, visibleStart: start, visibleEnd: end };
+  picture.signature = sig;
+  picture.lastSlice = {
+    geomKey,
+    sticky,
+    stickyH,
+    keys: visKeys,
+    tops: visTops,
+    heights: visHeights,
+    sigs: visSigs,
+  };
+  return { drew: true, incremental, auditRows, paintedRows, visibleStart: start, visibleEnd: end };
 }
 
 export function hitLogItem(layout: LogLayout, scrollTop: number, y: number, stickyHeight: number): FlatLogItem | null {

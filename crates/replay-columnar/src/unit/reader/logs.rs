@@ -340,11 +340,12 @@ fn read_block<'a>(
             if failed.is_some() || !keep(hour) {
                 return;
             }
-            if let Some((ordinal, rows, at)) = row_of(&event)
-                && let Err(error) = names.hand(ordinal, rows, at, &mut |named| each(hour, named))
-            {
-                failed = Some(error);
-                return;
+            if let Some((ordinal, rows, at)) = row_of(&event) {
+                super::record_log_span_row(columns.len());
+                if let Err(error) = names.hand(ordinal, rows, at, &mut |named| each(hour, named)) {
+                    failed = Some(error);
+                    return;
+                }
             }
             each(hour, event);
         })?;
@@ -539,6 +540,7 @@ fn part_rows(part: &mut Part, kinds: &[Kind], columns: &[usize], ordinal: u64, a
             passed = index + 1;
         }
     }
+    super::record_log_rows_at(found.len(), columns.len());
     Ok(rows)
 }
 

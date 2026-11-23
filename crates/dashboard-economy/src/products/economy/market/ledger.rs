@@ -1,12 +1,12 @@
 
-use dashboard_base::{Source, catalogue::Catalogue, products::{LoadContext, Product, log_page::{self as logs, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel}}, queries::country_ids::Names};
+use dashboard_base::{Source, catalogue::Catalogue, products::{LoadContext, Product, log_page::{self as logs, LogCaches, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel}}, queries::country_ids::Names};
 use dashboard_follow::panel::Panel;
 use dashboard_world::products::equipment_names as names;
 use dashboard_query::{Query, log::{Cell, FacetFilter}};
 use replay_data::rows::{MarketEventRow, TableId};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
@@ -157,19 +157,38 @@ fn links_by_run(source: &Source, query: &Query<'_>) -> io::Result<BTreeMap<u32, 
     Ok(out)
 }
 
-#[derive(Default)]
+const VARIANT_CACHE_CAPACITY: usize = 4_096;
+
 struct VariantNameCache {
-    entries: Option<(Arc<Catalogue>, HashMap<(u32, i32, u64), Option<String>>)>,
+    capacity: usize,
+    entries: Option<(Arc<Catalogue>, VecDeque<(u32, i32, u64)>, HashMap<(u32, i32, u64), Option<String>>)>,
+}
+
+impl Default for VariantNameCache {
+    fn default() -> Self {
+        Self::with_capacity(VARIANT_CACHE_CAPACITY)
+    }
 }
 
 impl VariantNameCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self { capacity: capacity.max(1), entries: None }
+    }
+
     fn clear(cache: &Mutex<Self>) {
         cache.lock().unwrap_or_else(PoisonError::into_inner).entries = None;
     }
 
-    fn resolve(
+    #[cfg(test)]
+    fn len(cache: &Mutex<Self>) -> usize {
+        cache.lock().unwrap_or_else(PoisonError::into_inner).entries.as_ref().map_or(0, |(_, _, map)| map.len())
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "variant resolution names its cache, seeker, run, hour, variant ids and content")]
+    fn resolve<'a>(
         cache: &Mutex<Self>,
-        recording: &replay_recording::columnar_frames::Recording,
+        recording: &'a replay_recording::columnar_frames::Recording,
+        seeker: &mut Option<replay_lanes::at::Seeker<'a>>,
         run: u32,
         hour: i32,
         variants: &[u64],
@@ -180,7 +199,7 @@ impl VariantNameCache {
         let mut missing = Vec::new();
         {
             let guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((cat, map)) = guard.entries.as_ref()
+            if let Some((cat, _, map)) = guard.entries.as_ref()
                 && Arc::ptr_eq(cat, &content.catalogue)
             {
                 for &variant in variants {
@@ -195,17 +214,25 @@ impl VariantNameCache {
             }
         }
         if !missing.is_empty() {
-            let resolved = plain_names(recording, run, hour, &missing, context)?;
+            let resolved = plain_names_with_seeker(recording, seeker, run, hour, &missing, context)?;
             {
                 let mut guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
-                let reuse = guard.entries.as_ref().is_some_and(|(cat, _)| Arc::ptr_eq(cat, &content.catalogue));
+                let cap = guard.capacity;
+                let reuse = guard.entries.as_ref().is_some_and(|(cat, _, _)| Arc::ptr_eq(cat, &content.catalogue));
                 if !reuse {
-                    guard.entries = Some((Arc::clone(&content.catalogue), HashMap::new()));
+                    guard.entries = Some((Arc::clone(&content.catalogue), VecDeque::new(), HashMap::new()));
                 }
-                let (_, map) = guard.entries.as_mut().unwrap();
+                let (_, order, map) = guard.entries.as_mut().unwrap();
                 for &variant in &missing {
                     let value = resolved.get(&variant).cloned().flatten();
-                    map.insert((run, hour, variant), value.clone());
+                    let key = (run, hour, variant);
+                    if map.insert(key, value.clone()).is_none() {
+                        order.push_back(key);
+                        while map.len() > cap {
+                            let Some(evicted) = order.pop_front() else { break };
+                            map.remove(&evicted);
+                        }
+                    }
                     out.insert(variant, value);
                 }
             }
@@ -229,7 +256,7 @@ fn enrich_rows(
 ) -> io::Result<(Vec<LogPageRow>, Vec<String>)> {
     let columns = Columns::read()?;
     let tags = Names::new(&query.holders);
-    let mut by_run: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    let mut by_run_hour: BTreeMap<(u32, i32), Vec<usize>> = BTreeMap::new();
     let mut mapped = Vec::with_capacity(rows.len());
     for (at, (row, ..)) in rows.iter().enumerate() {
         dashboard_text::metadata::check_cancel(cancelled)?;
@@ -239,7 +266,7 @@ fn enrich_rows(
         };
         let run_links = links.get(&stretch.run);
         mapped.push(map(row.key, &row.cells, &columns, |raw| run_links.and_then(|held| tags.tag_at(held, raw, row.hour)).map(str::to_owned)));
-        by_run.entry(stretch.run).or_default().push(at);
+        by_run_hour.entry((stretch.run, row.hour)).or_default().push(at);
     }
     let mut warnings = Vec::new();
     match context {
@@ -253,27 +280,20 @@ fn enrich_rows(
         }
         Ok(content) => {
             let recording = query.replay.recording();
-            for (run, ats) in by_run {
-                let variants: BTreeSet<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect();
+            let mut seeker: Option<replay_lanes::at::Seeker<'_>> = None;
+            for ((run, hour), ats) in by_run_hour {
+                dashboard_text::metadata::check_cancel(cancelled)?;
+                let variants: Vec<u64> = ats.iter().map(|&at| mapped[at].variant).filter(|&variant| variant != 0).collect::<BTreeSet<_>>().into_iter().collect();
                 if variants.is_empty() {
                     continue;
                 }
-                let hours: BTreeSet<i32> = ats.iter().map(|&at| rows[at].0.hour).collect();
-                let mut resolved: BTreeMap<u64, String> = BTreeMap::new();
-                for hour in [hours.last(), hours.first()].into_iter().flatten() {
-                    let wanted: Vec<u64> = variants.iter().copied().filter(|variant| !resolved.contains_key(variant)).collect();
-                    if wanted.is_empty() {
-                        break;
-                    }
-                    let batch = match name_cache {
-                        Some(cache) => VariantNameCache::resolve(cache, recording, run, *hour, &wanted, content, context)?,
-                        None => plain_names(recording, run, *hour, &wanted, context)?,
-                    };
-                    resolved.extend(batch.into_iter().filter_map(|(id, name)| Some((id, name?))));
-                }
+                let batch = match name_cache {
+                    Some(cache) => VariantNameCache::resolve(cache, recording, &mut seeker, run, hour, &variants, content, context)?,
+                    None => plain_names_with_seeker(recording, &mut seeker, run, hour, &variants, context)?,
+                };
                 for &at in &ats {
                     let row = &mut mapped[at];
-                    match resolved.get(&row.variant) {
+                    match batch.get(&row.variant).and_then(|name| name.as_ref()) {
                         Some(name) => {
                             row.cells[EQUIPMENT] = LogCell::Text { value: name.clone() };
                             row.cells[EQUIPMENT + 1] = LogCell::Missing;
@@ -308,7 +328,20 @@ impl Product for MarketLedger {
     const KEY: &'static str = "market-ledger";
     const CONTENT_DEPENDENT: bool = true;
     type Params = MarketLedgerParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -335,8 +368,9 @@ impl Product for MarketLedger {
             page_size: params.page_size,
             columns: None,
         };
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
+        let caches = dashboard_base::queries::log_caches(source);
+        let (page, rows, missing) = logs::page_with(&query, &asked, Some(&caches), |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let links = links_by_run(source, &query)?;
         let context = names::context(source, load)?;
         let cache = source.state::<VariantNameCache>();
@@ -372,18 +406,20 @@ pub struct MarketLedgerTailParams {
     pub count_facets: Vec<LogFacetCountAsk>,
 }
 
+#[allow(clippy::too_many_arguments, reason = "loading a dated market tail passes its query, caches, context, params and hour")]
 fn load_tail_at(
     query: &Query<'_>,
     links: &BTreeMap<u32, Arc<dashboard_base::queries::country_ids::RunLinks>>,
     context: &names::Context,
     name_cache: Option<&Mutex<VariantNameCache>>,
+    log_caches: Option<&LogCaches>,
     params: &MarketLedgerTailParams,
     hour: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<LogTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-    let (page, rows, facet_totals, missing) = logs::tail(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| {
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
+    let (page, rows, facet_totals, missing) = logs::tail_with(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, log_caches, |paged, tag| {
         (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())
     })?;
     let (reply_rows, warnings) = enrich_rows(query, links, context, name_cache, rows, tagged, cancelled)?;
@@ -417,8 +453,16 @@ impl Product for MarketLedgerTail {
         countFacets,
         "facets[].countries[]",
         "facets[].values[]",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End,
         "countFacets[].facets[].countries[]",
-        "countFacets[].facets[].values[]"
+        "countFacets[].facets[].values[]",
+        "countFacets[].facets[].membership[].firstHour": Start,
+        "countFacets[].facets[].membership[].lastHour": End,
+        "countFacets[].facets[].unobserved[].firstHour": Start,
+        "countFacets[].facets[].unobserved[].lastHour": End
     ];
     type Reply = LogTailReply;
 
@@ -439,7 +483,8 @@ impl Product for MarketLedgerTail {
         let links = links_by_run(source, &query)?;
         let context = names::context(source, load)?;
         let cache = source.state::<VariantNameCache>();
-        load_tail_at(&query, &links, &context, Some(&cache), params, hour, cancelled)
+        let log_caches = dashboard_base::queries::log_caches(source);
+        load_tail_at(&query, &links, &context, Some(&cache), Some(&log_caches), params, hour, cancelled)
     }
 }
 
@@ -453,22 +498,34 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let links = Arc::new(links_by_run(source, &query).map_err(|error| error.to_string())?);
     let context = Arc::new(names::context(source, load).map_err(|error| error.to_string())?);
     let cache = source.state::<VariantNameCache>();
+    let log_caches = dashboard_base::queries::log_caches(source);
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
     Ok(dated_tail_panel(executable, move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        load_tail_at(&query, &links, &context, Some(&cache), &params, hour, cancelled)
+        load_tail_at(&query, &links, &context, Some(&cache), Some(&log_caches), &params, hour, cancelled)
     }))
 }
 
-fn plain_names(recording: &replay_recording::columnar_frames::Recording, run: u32, hour: i32, variants: &[u64], context: &names::Context) -> io::Result<BTreeMap<u64, Option<String>>> {
+fn plain_names_with_seeker<'r>(
+    recording: &'r replay_recording::columnar_frames::Recording,
+    seeker: &mut Option<replay_lanes::at::Seeker<'r>>,
+    run: u32,
+    hour: i32,
+    variants: &[u64],
+    context: &names::Context,
+) -> io::Result<BTreeMap<u64, Option<String>>> {
+    let held_seeker = match seeker.as_mut() {
+        Some(held) => held,
+        None => seeker.insert(replay_lanes::at::Seeker::new(recording)?),
+    };
     let keys: Vec<u128> = variants.iter().map(|&id| u128::from(id)).collect();
     let mut reads: Vec<replay_lanes::at::Read<'_>> = [TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance].into_iter().map(replay_lanes::at::Read::all).collect();
     reads.push(replay_lanes::at::Read { table: TableId::VariantDefinitions, columns: None, keys: replay_lanes::at::Keys::These(&keys) });
-    let mut frame = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &reads))?;
+    let mut frame = dashboard_query::cost::storage(|| held_seeker.frame(run, hour, &reads))?;
     let tokens: Vec<u128> = names::variant_tokens(&frame).collect::<BTreeSet<_>>().into_iter().map(u128::from).collect();
     let token_read = [replay_lanes::at::Read { table: TableId::LexicalTokens, columns: None, keys: replay_lanes::at::Keys::These(&tokens) }];
-    let lexical = dashboard_query::cost::storage(|| replay_lanes::at::frame(recording, run, hour, &token_read))?;
+    let lexical = dashboard_query::cost::storage(|| held_seeker.frame(run, hour, &token_read))?;
     frame.tables[TableId::LexicalTokens.index()] = lexical.tables[TableId::LexicalTokens.index()].clone();
     Ok(names::plain_names(&frame, variants, context))
 }
@@ -550,7 +607,7 @@ mod tests {
         )
         .unwrap();
         let load = LoadContext { content: None };
-        let facets = vec![FacetFilter { name: "kind".into(), values: vec![20], countries: Vec::new() }];
+        let facets = vec![FacetFilter { name: "kind".into(), values: vec![20], ..Default::default() }];
         let page = MarketLedger::load(
             &source,
             &MarketLedgerParams { branch_id: "1".into(), facets: facets.clone(), from: None, to: 110.0, cursor: None, page_size: 64 },
@@ -579,11 +636,108 @@ mod tests {
         let links = links_by_run(&source, &query).unwrap();
         let context = names::context(&source, &load).unwrap();
         let cache = source.state::<VariantNameCache>();
+        let log_caches = dashboard_base::queries::log_caches(&source);
         let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets, from: None, hour: None, limit: 64, count_facets: Vec::new() };
         for hour in [110, 104, 112, 110] {
-            let cached = load_tail_at(&query, &links, &context, Some(&cache), &tail_params, hour, &AtomicBool::new(false)).unwrap();
-            let uncached = load_tail_at(&query, &links, &context, None, &tail_params, hour, &AtomicBool::new(false)).unwrap();
+            let cached = load_tail_at(&query, &links, &context, Some(&cache), Some(&log_caches), &tail_params, hour, &AtomicBool::new(false)).unwrap();
+            let uncached = load_tail_at(&query, &links, &context, None, None, &tail_params, hour, &AtomicBool::new(false)).unwrap();
             assert_eq!(cached, uncached, "cached vs uncached at {hour}");
         }
+    }
+
+    #[test]
+    fn variant_names_resolve_per_row_hour_across_rename_and_bounded_cache_matches_uncached() {
+        use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
+        use replay::campaign::Replay;
+        use replay_data::rows::{LexicalTokenRow, TableRows, VariantDefinitionRow};
+        use replay_frame::frame::TableView;
+
+        let (cat, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[
+            ("hoi4.exe", "test"),
+            ("user/settings.txt", "language=l_english force_pow2_textures=no"),
+            ("user/dlc_load.json", r#"{"enabled_mods":[],"disabled_dlcs":[]}"#),
+            ("common/defines/00_defines.lua", "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 }, NBuildings = { MAX_BUILDING_LEVELS = 15 } }"),
+            ("localisation/mod_l_english.yml", "\u{feff}l_english:\n rifle_0:0 \"Default Rifle\"\n cannon_0:0 \"Field Gun\"\n"),
+        ]);
+        let context: names::Context = Ok(names::Content::from_catalogue(Arc::new(cat)));
+        let frames = (100..=110)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let rifle_name = if hour < 106 { b"Mk I Rifle".to_vec() } else { b"Mk II Rifle".to_vec() };
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(vec![
+                    LexicalTokenRow { token: 1, literal: b"rifle_0".to_vec() },
+                    LexicalTokenRow { token: 2, literal: b"cannon_0".to_vec() },
+                ]));
+                *frame.tables[TableId::VariantDefinitions.index()] = TableView::Complete(TableRows::VariantDefinitions(vec![
+                    VariantDefinitionRow { id: 6, equipment_token: 1, display_name: rifle_name, ..Default::default() },
+                    VariantDefinitionRow { id: 7, equipment_token: 2, display_name: b"Artillery A".to_vec(), ..Default::default() },
+                ]));
+                let events = match hour {
+                    100 => vec![MarketEventRow { id: 1, occurrence: 1, hour, country: 9001, kind: 20, agreement: 1, variant: 6, amount_raw: 10_000, ..MarketEventRow::default() }],
+                    104 => vec![MarketEventRow { id: 2, occurrence: 2, hour, country: 9001, kind: 20, agreement: 2, variant: 7, amount_raw: 20_000, ..MarketEventRow::default() }],
+                    108 => vec![MarketEventRow { id: 3, occurrence: 3, hour, country: 9001, kind: 20, agreement: 3, variant: 6, amount_raw: 30_000, ..MarketEventRow::default() }],
+                    _ => Vec::new(),
+                };
+                *frame.tables[TableId::MarketEvents.index()] = TableView::Complete(TableRows::MarketEvents(events));
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)])
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let source = Source::from_replay(
+            dashboard_base::SourceKey { source_id: "mkt-rename".into(), revision: "1".into() },
+            "synthetic.battleplan".into(),
+            Arc::new(replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let links = links_by_run(&source, &query).unwrap();
+        let facets = vec![FacetFilter { name: "kind".into(), values: vec![20], ..Default::default() }];
+        let tail_params = MarketLedgerTailParams { branch_id: "1".into(), facets: facets.clone(), from: None, hour: None, limit: 64, count_facets: Vec::new() };
+        let source_cache = source.state::<VariantNameCache>();
+
+        let whole_tail = load_tail_at(&query, &links, &context, Some(&source_cache), None, &tail_params, 110, &AtomicBool::new(false)).unwrap();
+        let uncached_tail = load_tail_at(&query, &links, &context, None, None, &tail_params, 110, &AtomicBool::new(false)).unwrap();
+        assert_eq!(whole_tail, uncached_tail);
+        let equip_by_hour: Vec<(i32, LogCell)> = whole_tail.rows.iter().map(|r| (r.hour, r.cells[EQUIPMENT].clone())).collect();
+        assert_eq!(
+            equip_by_hour,
+            vec![
+                (108, LogCell::Text { value: "Mk II Rifle".into() }),
+                (104, LogCell::Text { value: "Artillery A".into() }),
+                (100, LogCell::Text { value: "Mk I Rifle".into() }),
+            ],
+            "each row resolves its variant name at its own hour"
+        );
+
+        let small_tail_params = MarketLedgerTailParams { limit: 2, ..tail_params.clone() };
+        let small_tail = load_tail_at(&query, &links, &context, Some(&source_cache), None, &small_tail_params, 105, &AtomicBool::new(false)).unwrap();
+        assert_eq!(small_tail.rows[1], whole_tail.rows[2], "overlapping smaller tail gives the exact same row at hour 100");
+
+        let asked_page = LogPageParams { branch_id: "1".into(), log: LOG.to_owned(), facets, from: None, to: 110.0, cursor: Some("0".into()), page_size: 2, columns: None };
+        let (_, page_raw, _) = logs::page(&query, &asked_page, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())).unwrap();
+        let (page_rows, _) = enrich_rows(&query, &links, &context, Some(&source_cache), page_raw, false, &AtomicBool::new(false)).unwrap();
+        assert_eq!(page_rows[0], whole_tail.rows[2], "overlapping page and tail across a rename produce the identical row");
+        assert_eq!(page_rows[1], whole_tail.rows[1]);
+
+        assert_eq!(VariantNameCache::len(&source_cache), 3, "cache holds all 3 (run, hour, variant) keys");
+        let warm = load_tail_at(&query, &links, &context, Some(&source_cache), None, &tail_params, 110, &AtomicBool::new(false)).unwrap();
+        assert_eq!(warm, uncached_tail, "warm cache hit matches uncached");
+
+        let bounded = Mutex::new(VariantNameCache::with_capacity(2));
+        for hour in [104, 110, 100, 110] {
+            let got = load_tail_at(&query, &links, &context, Some(&bounded), None, &tail_params, hour, &AtomicBool::new(false)).unwrap();
+            let want = load_tail_at(&query, &links, &context, None, None, &tail_params, hour, &AtomicBool::new(false)).unwrap();
+            assert_eq!(got, want, "bounded cache with eviction matches uncached at {hour}");
+            assert!(VariantNameCache::len(&bounded) <= 2, "bounded cache never exceeds capacity");
+        }
+
+        forget(&source);
+        assert_eq!(VariantNameCache::len(&source_cache), 0, "source invalidation clears VariantNameCache");
+        let after_forget = load_tail_at(&query, &links, &context, Some(&source_cache), None, &tail_params, 110, &AtomicBool::new(false)).unwrap();
+        assert_eq!(after_forget, uncached_tail, "re-resolution after forget matches uncached");
     }
 }

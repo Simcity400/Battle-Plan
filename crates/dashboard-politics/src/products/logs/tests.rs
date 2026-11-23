@@ -77,7 +77,7 @@ fn log_tail_and_dated_panel_match_page_in_reverse_with_exact_facet_totals() {
         hour: Some(136),
         limit: 3,
         columns: None,
-        count_facets: vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], countries: Vec::new() }] }],
+        count_facets: vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], ..Default::default() }] }],
     };
     let reply = LogTail::load(&source, &params, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
     assert_eq!(reply.total, "5");
@@ -98,4 +98,56 @@ fn log_tail_and_dated_panel_match_page_in_reverse_with_exact_facet_totals() {
     let cold = (exact.cold)(136, &AtomicBool::new(false));
     assert_eq!(*stepped.value, cold);
     assert_eq!(stepped.value.as_ref().as_ref().unwrap(), &serde_json::to_value(&reply).unwrap());
+}
+
+#[test]
+fn tail_coverage_cost_does_not_grow_with_elapsed_campaign() {
+    let first = 100;
+    let last = first + 2_500;
+    let frames = (first..=last)
+        .map(|hour| {
+            let mut frame = source(1, hour, Some(1));
+            *frame.tables[TableId::MarketEvents.index()] = if (200..=220).contains(&hour) || (2_400..=2_410).contains(&hour) {
+                TableView::Unavailable { reason: WHY.into() }
+            } else {
+                let events = if hour % 10 == 0 {
+                    vec![MarketEventRow { id: hour as u64, occurrence: hour as u64, hour, country: 9001, kind: 1, amount_raw: 1000, ..MarketEventRow::default() }]
+                } else {
+                    Vec::new()
+                };
+                TableView::Complete(TableRows::MarketEvents(events))
+            };
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "logs-cov".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+    let load = LoadContext { content: None };
+    let ask = |hour: i32, count_facets: Vec<LogFacetCountAsk>| LogTailParams {
+        branch_id: "1".into(),
+        log: "market-events".into(),
+        facets: Vec::new(),
+        from: None,
+        hour: Some(hour),
+        limit: 8,
+        columns: None,
+        count_facets,
+    };
+
+    let (first_reply, first_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 150, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    assert!(first_counts.status_blocks > 0, "cold call indexes the branch coverage once");
+    assert_eq!(first_reply.missing, Vec::<MissingSpan>::new());
+
+    let (early_reply, early_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(first + 300, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    assert_eq!(early_counts.status_blocks, 0, "indexed coverage reads zero status blocks on subsequent early steps");
+    assert!(early_reply.missing.is_empty(), "tail slice without counts omits gaps before the slice");
+
+    let (late_reply, late_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, Vec::new()), &load, &AtomicBool::new(false)).unwrap());
+    assert_eq!(late_counts.status_blocks, 0, "indexed coverage reads zero status blocks late in the campaign");
+    assert_eq!(spans(&late_reply.missing), [(2_400, 2_410, true)], "late tail slice carries only the gap inside its slice");
+
+    let count_asks = vec![LogFacetCountAsk { key: "kind1".into(), facets: vec![FacetFilter { name: "kind".into(), values: vec![1], ..Default::default() }] }];
+    let (counted_reply, counted_counts) = replay_columnar::unit::reader::count_decodes(|| LogTail::load(&source, &ask(last, count_asks), &load, &AtomicBool::new(false)).unwrap());
+    assert_eq!(counted_counts.status_blocks, 0, "counted tail also reuses the branch coverage index");
+    assert_eq!(spans(&counted_reply.missing), [(200, 220, true), (2_400, 2_410, true)], "counted tail carries all gaps over the counted range");
 }

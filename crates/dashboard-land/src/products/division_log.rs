@@ -4,7 +4,7 @@ use dashboard_base::{
     catalogue::Catalogue,
     products::{
         LoadContext, Product,
-        log_page::{self as logs, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel},
+        log_page::{self as logs, LogCaches, LogCell, LogFacetCountAsk, LogPageParams, LogPageReply, LogPageRow, LogTailReply, dated_tail_panel},
     },
     queries::country_ids::{Names, RunLinks},
 };
@@ -21,7 +21,7 @@ use replay_data::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io,
     sync::{Arc, Mutex, PoisonError, atomic::AtomicBool},
 };
@@ -257,14 +257,31 @@ impl Refused {
     }
 }
 
-#[derive(Default)]
+const PLACE_CACHE_CAPACITY: usize = 4_096;
+
 struct PlaceCache {
-    entries: Option<(Arc<Catalogue>, HashMap<(u64, u32, i32), PlaceName>)>,
+    capacity: usize,
+    entries: Option<(Arc<Catalogue>, VecDeque<(u64, u32, i32)>, HashMap<(u64, u32, i32), PlaceName>)>,
+}
+
+impl Default for PlaceCache {
+    fn default() -> Self {
+        Self::with_capacity(PLACE_CACHE_CAPACITY)
+    }
 }
 
 impl PlaceCache {
+    fn with_capacity(capacity: usize) -> Self {
+        Self { capacity: capacity.max(1), entries: None }
+    }
+
     fn clear(cache: &Mutex<Self>) {
         cache.lock().unwrap_or_else(PoisonError::into_inner).entries = None;
+    }
+
+    #[cfg(test)]
+    fn len(cache: &Mutex<Self>) -> usize {
+        cache.lock().unwrap_or_else(PoisonError::into_inner).entries.as_ref().map_or(0, |(_, _, map)| map.len())
     }
 
     fn resolve(
@@ -279,7 +296,7 @@ impl PlaceCache {
         let mut missing = Vec::new();
         {
             let guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some((cat, map)) = guard.entries.as_ref()
+            if let Some((cat, _, map)) = guard.entries.as_ref()
                 && Arc::ptr_eq(cat, &content.cat)
             {
                 for &ask in asks {
@@ -299,13 +316,21 @@ impl PlaceCache {
             let resolved = place_names::resolve_provinces(query, content, &missing, true, cancelled)?;
             {
                 let mut guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
-                let reuse = guard.entries.as_ref().is_some_and(|(cat, _)| Arc::ptr_eq(cat, &content.cat));
+                let cap = guard.capacity;
+                let reuse = guard.entries.as_ref().is_some_and(|(cat, _, _)| Arc::ptr_eq(cat, &content.cat));
                 if !reuse {
-                    guard.entries = Some((Arc::clone(&content.cat), HashMap::new()));
+                    guard.entries = Some((Arc::clone(&content.cat), VecDeque::new(), HashMap::new()));
                 }
-                let (_, map) = guard.entries.as_mut().unwrap();
+                let (_, order, map) = guard.entries.as_mut().unwrap();
                 for (&ask, name) in &resolved {
-                    map.insert((branch_id, ask.0, ask.1), name.clone());
+                    let key = (branch_id, ask.0, ask.1);
+                    if map.insert(key, name.clone()).is_none() {
+                        order.push_back(key);
+                        while map.len() > cap {
+                            let Some(evicted) = order.pop_front() else { break };
+                            map.remove(&evicted);
+                        }
+                    }
                 }
             }
             out.extend(resolved);
@@ -417,7 +442,20 @@ impl Product for DivisionLog {
     const KEY: &'static str = "division-log";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DivisionLogParams;
-    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "facets[].countries[]", "facets[].values[]"];
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![
+        branchId,
+        facets,
+        from: Start,
+        to: End,
+        cursor,
+        pageSize,
+        "facets[].countries[]",
+        "facets[].values[]",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End
+    ];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -443,8 +481,9 @@ impl Product for DivisionLog {
             page_size: params.page_size,
             columns: None,
         };
-        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-        let (page, rows, missing) = logs::page(&query, &asked, |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
+        let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
+        let caches = dashboard_base::queries::log_caches(source);
+        let (page, rows, missing) = logs::page_with(&query, &asked, Some(&caches), |paged, tag| (paged.row.clone(), paged.ordinal, paged.own, tag.cloned()))?;
         let art = Content::load(source, context);
         let links = links_by_run(source, &query)?;
         let places = PlaceContent::read(source, context).map_err(|error| error.to_string());
@@ -481,19 +520,21 @@ pub struct DivisionLogTailParams {
     pub count_facets: Vec<LogFacetCountAsk>,
 }
 
+#[allow(clippy::too_many_arguments, reason = "loading a dated division tail passes its query, caches, content, params and hour")]
 fn load_tail_at(
     query: &Query<'_>,
     links: &HashMap<u32, Arc<RunLinks>>,
     art: &Content,
     places: Result<&PlaceContent, &str>,
     place_cache: Option<&Mutex<PlaceCache>>,
+    log_caches: Option<&LogCaches>,
     params: &DivisionLogTailParams,
     hour: i32,
     cancelled: &AtomicBool,
 ) -> io::Result<LogTailReply> {
     dashboard_text::metadata::check_cancel(cancelled)?;
-    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty());
-    let (page, rows, facet_totals, missing) = logs::tail(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, |paged, tag| {
+    let tagged = params.facets.iter().any(|filter| !filter.countries.is_empty() || !filter.membership.is_empty());
+    let (page, rows, facet_totals, missing) = logs::tail_with(query, LOG, &params.facets, params.from, hour, params.limit, &params.count_facets, log_caches, |paged, tag| {
         (paged.row.clone(), paged.ordinal, paged.own, tag.cloned())
     })?;
     let (reply_rows, warnings) = enrich_rows(query, links, art, places, place_cache, rows, tagged, cancelled)?;
@@ -527,8 +568,16 @@ impl Product for DivisionLogTail {
         countFacets,
         "facets[].countries[]",
         "facets[].values[]",
+        "facets[].membership[].firstHour": Start,
+        "facets[].membership[].lastHour": End,
+        "facets[].unobserved[].firstHour": Start,
+        "facets[].unobserved[].lastHour": End,
         "countFacets[].facets[].countries[]",
-        "countFacets[].facets[].values[]"
+        "countFacets[].facets[].values[]",
+        "countFacets[].facets[].membership[].firstHour": Start,
+        "countFacets[].facets[].membership[].lastHour": End,
+        "countFacets[].facets[].unobserved[].firstHour": Start,
+        "countFacets[].facets[].unobserved[].lastHour": End
     ];
     type Reply = LogTailReply;
 
@@ -549,7 +598,8 @@ impl Product for DivisionLogTail {
         let links = links_by_run(source, &query)?;
         let places = PlaceContent::read(source, context).map_err(|error| error.to_string());
         let cache = source.state::<PlaceCache>();
-        load_tail_at(&query, &links, &art, places.as_deref().map_err(String::as_str), Some(&cache), params, hour, cancelled)
+        let log_caches = dashboard_base::queries::log_caches(source);
+        load_tail_at(&query, &links, &art, places.as_deref().map_err(String::as_str), Some(&cache), Some(&log_caches), params, hour, cancelled)
     }
 }
 
@@ -563,11 +613,12 @@ pub fn dated_panel(source: &Source, load: &LoadContext, asked: &serde_json::Valu
     let art = Arc::new(Content::load(source, load));
     let places = Arc::new(PlaceContent::read(source, load).map_err(|error| error.to_string()));
     let cache = source.state::<PlaceCache>();
+    let log_caches = dashboard_base::queries::log_caches(source);
     let (replay, timeline, holders, executable) = (source.replay(), query.timeline, query.holders, source.tables());
     let params = Arc::new(params);
     Ok(dated_tail_panel(executable, move |hour, cancelled| {
         let query = Query { replay: &replay, timeline: timeline.clone(), holders: holders.clone() };
-        load_tail_at(&query, &links, &art, places.as_ref().as_deref().map_err(String::as_str), Some(&cache), &params, hour, cancelled)
+        load_tail_at(&query, &links, &art, places.as_ref().as_deref().map_err(String::as_str), Some(&cache), Some(&log_caches), &params, hour, cancelled)
     }))
 }
 

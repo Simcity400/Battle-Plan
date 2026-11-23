@@ -8,13 +8,22 @@ import {
   buildLogLayout,
   LOG_MIN_TAIL_LIMIT,
   logicalScrollFromPhysical,
+  logicalYForRowIndex,
   physicalScrollFromLogical,
+  rowIndexAtLogicalY,
+  scrollGeometryOf,
   tailLimitForViewport,
   visibleItemRange,
 } from './layout.ts';
+import { logLookAt } from './declaration.ts';
+import { LOG_FAMILY_OPTIONS, logFamilySettings } from './options.ts';
 import { canonicalLogRowAudit, deriveLogAudit, deriveLogTooltip } from './model.ts';
 import { createLogPicture, drawLog, type LogTheme } from './painter.ts';
-import { pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from './tailReply.ts';
+import { mergeFrozenPageIntoTail, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from './tailReply.ts';
+import { ledgerFacets, ledgerSelection, ledgerTitle, type LedgerItem } from '../../dashboard/marketLedger.ts';
+import { divisionFacets } from '../../widgets/division-log/divisionLogData.ts';
+import { OPTIONS as DIVISION_OPTIONS } from '../../widgets/division-log/definition.ts';
+import { OPTIONS as MARKET_OPTIONS } from '../../widgets/market-ledger/definition.ts';
 import { divisionLogProjection, type DivisionLogProjectionOptions } from '../../widgets/division-log/divisionLogProjection.ts';
 import { marketLedgerProjection, type MarketLedgerProjectionOptions } from '../../widgets/market-ledger/marketLedgerProjection.ts';
 
@@ -124,7 +133,7 @@ function makeTailSources(reply: LogTailReplyWire, offset = 0): FamilySources {
 }
 
 function countingCanvasContext() {
-  const counts = { fillRect: 0, fillText: 0, measureText: 0, stroke: 0 };
+  const counts = { fillRect: 0, fillText: 0, measureText: 0, stroke: 0, drawImage: 0 };
   const ctx = {
     font: '',
     fillStyle: '',
@@ -149,7 +158,7 @@ function countingCanvasContext() {
     strokeRect() { counts.stroke++; },
     fillRect() { counts.fillRect++; },
     fillText() { counts.fillText++; },
-    drawImage() {},
+    drawImage() { counts.drawImage++; },
     measureText(text: string) {
       counts.measureText++;
       return { width: text.length * 7 };
@@ -411,4 +420,415 @@ test('visibleItemRange returns only the viewport slice in O(log N + visible)', (
   assert.equal(start, 0);
   assert.equal(end, 5);
   assert.ok(notRecorded('missing').kind === 'notRecorded' && notApplicable('none').kind === 'notApplicable');
+});
+
+test('entering one new row at the top shifts via drawImage and paints only the new row; quiet hours skip repaint', () => {
+  const baseHour = HOUR_EPOCH + 1939 * 365 * 24 + 200;
+  const opts: DivisionLogProjectionOptions = {
+    events: 'both',
+    showTotals: false,
+    lossesAvailable: true,
+    looks: { GER: [{ from: 0, name: 'Germany' }] },
+    manifestWarnings: [],
+    manifestGaps: [],
+  };
+  const reply1: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '30',
+    rows: Array.from({ length: 30 }, (_, i) => makeDivisionRow(29 - i, baseHour - i)),
+    facetTotals: [],
+    missing: [],
+    warnings: [],
+  };
+  const picture = createLogPicture();
+  const fakePrev = {} as CanvasImageSource;
+
+  const model1 = divisionLogProjection.project(makeTailSources(reply1), baseHour, opts);
+  const layout1 = buildLogLayout(model1, 'comfortable', false);
+  const full = countingCanvasContext();
+  const res1 = drawLog(full.ctx, picture, {
+    model: model1,
+    layout: layout1,
+    density: 'comfortable',
+    showMonths: false,
+    width: 640,
+    height: 360,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas: fakePrev,
+  });
+  assert.equal(res1.drew, true);
+  assert.equal(res1.incremental, false);
+  assert.ok(res1.paintedRows >= 12);
+
+  const quiet = countingCanvasContext();
+  const modelQuiet = divisionLogProjection.project(makeTailSources(reply1), baseHour + 1, opts);
+  const layoutQuiet = buildLogLayout(modelQuiet, 'comfortable', false);
+  const resQuiet = drawLog(quiet.ctx, picture, {
+    model: modelQuiet,
+    layout: layoutQuiet,
+    density: 'comfortable',
+    showMonths: false,
+    width: 640,
+    height: 360,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas: fakePrev,
+  });
+  assert.equal(resQuiet.drew, false);
+  assert.equal(quiet.counts.fillText, 0);
+  assert.equal(quiet.counts.drawImage, 0);
+
+  const reply2: LogTailReplyWire = {
+    ...reply1,
+    total: '31',
+    rows: [makeDivisionRow(30, baseHour + 2), ...reply1.rows.slice(0, 29)],
+  };
+  const model2 = divisionLogProjection.project(makeTailSources(reply2), baseHour + 2, opts);
+  const layout2 = buildLogLayout(model2, 'comfortable', false);
+  const inc = countingCanvasContext();
+  const res2 = drawLog(inc.ctx, picture, {
+    model: model2,
+    layout: layout2,
+    density: 'comfortable',
+    showMonths: false,
+    width: 640,
+    height: 360,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas: fakePrev,
+  });
+  assert.equal(res2.drew, true);
+  assert.equal(res2.incremental, true);
+  assert.equal(res2.paintedRows, 1);
+  assert.equal(inc.counts.drawImage, 1);
+  assert.ok(inc.counts.fillText * 5 < full.counts.fillText, `incremental fillText=${inc.counts.fillText} vs full=${full.counts.fillText}`);
+
+  const monthPic = createLogPicture();
+  const m1 = buildLogLayout(model1, 'comfortable', true);
+  const fullMonth = countingCanvasContext();
+  drawLog(fullMonth.ctx, monthPic, {
+    model: model1,
+    layout: m1,
+    density: 'comfortable',
+    showMonths: true,
+    width: 640,
+    height: 360,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas: fakePrev,
+  });
+  const m2 = buildLogLayout(model2, 'comfortable', true);
+  const incMonth = countingCanvasContext();
+  const resMonth = drawLog(incMonth.ctx, monthPic, {
+    model: model2,
+    layout: m2,
+    density: 'comfortable',
+    showMonths: true,
+    width: 640,
+    height: 360,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas: fakePrev,
+  });
+  assert.equal(resMonth.incremental, true, 'same-month entering row shifts via drawImage under unchanged month header');
+  assert.equal(resMonth.paintedRows, 1);
+  assert.equal(incMonth.counts.drawImage, 1);
+});
+
+test('S5: divisionFacets and ledgerFacets preserve dated membership runs and unobserved spans', () => {
+  const scope = {
+    kind: 'membership' as const,
+    membership: [
+      { tag: 'GER', firstHour: 100, lastHour: 250 },
+      { tag: 'ITA', firstHour: 180, lastHour: 300 },
+    ],
+    unobserved: [{ firstHour: 120, lastHour: 140 }],
+  };
+  const divFacets = divisionFacets(['created', 'lost'], null, scope);
+  const slotFacet = divFacets.find(f => f.name === 'slot');
+  assert.ok(slotFacet);
+  assert.deepEqual(slotFacet.countries, []);
+  assert.equal(slotFacet.membership?.length, 2);
+  assert.equal(slotFacet.membership?.[0]?.firstHour, 100);
+  assert.deepEqual(slotFacet.unobserved, [{ firstHour: 120, lastHour: 140 }]);
+
+  const mktFacets = ledgerFacets([20, 34], scope);
+  const partyFacet = mktFacets.find(f => f.name === 'country|receiver');
+  assert.ok(partyFacet);
+  assert.deepEqual(partyFacet.countries, []);
+  assert.equal(partyFacet.membership?.length, 2);
+  assert.deepEqual(partyFacet.unobserved, [{ firstHour: 120, lastHour: 140 }]);
+});
+
+test('S8: logLookAt returns null before first dated appearance and unresolved country names stay notRecorded with tag kept separately', () => {
+  const looks = {
+    GER: [{ from: 200, name: 'Germany' }],
+    FRA: [{ from: 100, name: null, status: 'Country name unavailable' }],
+  };
+  assert.equal(logLookAt(looks, 'GER', 150), null, 'before first appearance returns null');
+  assert.equal(logLookAt(looks, 'GER', 200)?.name, 'Germany');
+
+  const divReply: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '1',
+    rows: [makeDivisionRow(0, 150, { tag: txtCell('GER') })],
+    facetTotals: [],
+    missing: [],
+    warnings: [],
+  };
+  const divModel = divisionLogProjection.project(makeTailSources(divReply), 150, {
+    events: 'both',
+    showTotals: false,
+    lossesAvailable: true,
+    looks,
+    manifestWarnings: [],
+    manifestGaps: [],
+  });
+  assert.equal(divModel.rows[0]!.auditCells.country.kind, 'notRecorded');
+  assert.deepEqual(divModel.rows[0]!.auditCells.countryTag, knownValue('GER'));
+
+  const mktReply: LogTailReplyWire = {
+    branchId: '1',
+    log: 'market-events',
+    columns: MARKET_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '1',
+    rows: [makeMarketRow(0, 150, { seller: txtCell('GER'), buyer: txtCell('FRA') })],
+    facetTotals: [],
+    missing: [],
+    warnings: [],
+  };
+  const mktModel = marketLedgerProjection.project(makeTailSources(mktReply), 150, { looks });
+  assert.equal(mktModel.rows[0]!.auditCells.seller.kind, 'notRecorded');
+  assert.deepEqual(mktModel.rows[0]!.auditCells.sellerTag, knownValue('GER'));
+  assert.equal(mktModel.rows[0]!.auditCells.buyer.kind, 'notRecorded');
+  assert.deepEqual(mktModel.rows[0]!.auditCells.buyerTag, knownValue('FRA'));
+});
+
+test('S9: fallback state place name with missing reason is partial across row, tooltip, mirror, and audit', () => {
+  const hour = HOUR_EPOCH + 1940 * 365 * 24;
+  const reply: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '1',
+    rows: [makeDivisionRow(0, hour, {
+      placeName: txtCell('Brandenburg'),
+      placeMissing: txtCell('Province rename table not recorded'),
+    })],
+    facetTotals: [],
+    missing: [],
+    warnings: [],
+  };
+  const model = divisionLogProjection.project(makeTailSources(reply), hour, {
+    events: 'both',
+    showTotals: false,
+    lossesAvailable: true,
+    looks: { GER: [{ from: 0, name: 'Germany' }] },
+    manifestWarnings: [],
+    manifestGaps: [],
+  });
+  const row = model.rows[0]!;
+  assert.equal(row.auditCells.place.kind, 'partial');
+  if (row.auditCells.place.kind === 'partial') {
+    assert.equal(row.auditCells.place.value, 'Brandenburg');
+    assert.equal(row.auditCells.place.reason, 'Province rename table not recorded');
+  }
+  assert.ok(row.spoken.includes('Brandenburg') && row.spoken.includes('Province rename table not recorded'));
+  const tip = deriveLogTooltip(row);
+  const locRow = tip?.rows.find(r => r.label === 'Location');
+  assert.ok(locRow?.value?.includes('Brandenburg') && locRow.value.includes('Province rename table not recorded'));
+});
+
+test('S10: division-log facet pills derive notRecorded or partial from interval coverage', () => {
+  const fromHour = 100;
+  const hour = 200;
+  const reply: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '0',
+    rows: [],
+    facetTotals: [
+      { key: 'created', total: '5' },
+      { key: 'lost', total: '0' },
+      { key: 'transfer', total: '0' },
+    ],
+    missing: [],
+    warnings: [],
+  };
+  const noRemovals = divisionLogProjection.project(makeTailSources(reply), hour, {
+    events: 'both',
+    showTotals: true,
+    lossesAvailable: true,
+    fromHour,
+    looks: {},
+    manifestWarnings: [],
+    manifestGaps: [{ firstHour: 100, lastHour: 200, reason: 'division equipment deletions unavailable; removal causes and totals incomplete' }],
+  });
+  assert.equal(noRemovals.facetPills?.find(p => p.key === 'created')?.count.kind, 'known');
+  assert.equal(noRemovals.facetPills?.find(p => p.key === 'lost')?.count.kind, 'notRecorded');
+  assert.equal(noRemovals.facetPills?.find(p => p.key === 'transfer')?.count.kind, 'notRecorded');
+
+  const mixedRemovals = divisionLogProjection.project(makeTailSources(reply), hour, {
+    events: 'both',
+    showTotals: true,
+    lossesAvailable: true,
+    fromHour,
+    looks: {},
+    manifestWarnings: [],
+    manifestGaps: [{ firstHour: 100, lastHour: 150, reason: 'division equipment deletions unavailable; removal causes and totals incomplete' }],
+  });
+  const lostMixed = mixedRemovals.facetPills?.find(p => p.key === 'lost')?.count;
+  assert.equal(lostMixed?.kind, 'partial');
+  if (lostMixed?.kind === 'partial') {
+    assert.equal(lostMixed.value, 0);
+    assert.equal(lostMixed.atLeast, true);
+  }
+});
+
+test('S11: kind-34 delivery with unknown mode stays unknown and cannot open a drill target', () => {
+  const unknownMode: LedgerItem = {
+    id: '1',
+    kind: 34,
+    mode: null,
+    contract: '0000000000000012',
+    seller: 'GER',
+    buyer: 'ITA',
+    variant: '6',
+    equipment: 'Rifle',
+    equipmentMissing: null,
+    amountRaw: null,
+    auxiliaryRaw: null,
+    totalRaw: null,
+    reason: 'Delivery amount unavailable',
+  };
+  assert.ok(!ledgerTitle(unknownMode, t => t ?? '').toLowerCase().includes('lend-lease'));
+  assert.equal(ledgerSelection(unknownMode), null);
+  assert.equal(ledgerSelection({ ...unknownMode, mode: 20 }), 'contract:false:0000000000000012');
+  assert.equal(ledgerSelection({ ...unknownMode, mode: 3 }), 'agreement:0000000000000012');
+  assert.equal(ledgerSelection({ ...unknownMode, mode: 20, contract: null }), null);
+});
+
+test('S18: mergeFrozenPageIntoTail preserves frozen facetTotals and warnings when paging older slices', () => {
+  const frozen: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '100',
+    total: '164',
+    rows: [],
+    facetTotals: [{ key: 'created', total: '120' }, { key: 'vanished', total: '4' }],
+    missing: [],
+    warnings: ['Frozen warning'],
+  };
+  const page: LogTailReplyWire = {
+    ...frozen,
+    firstOrdinal: '0',
+    facetTotals: [],
+    warnings: ['Page warning'],
+  };
+  const merged = mergeFrozenPageIntoTail(frozen, page);
+  assert.deepEqual(merged.facetTotals, frozen.facetTotals);
+  assert.deepEqual(merged.warnings, ['Frozen warning', 'Page warning']);
+});
+
+test('S19 & S20: layout clips gaps to both bounds on every page, aligns row/scroll positions across headers and gaps, and nextChange advertises manifest gap boundaries', () => {
+  const hour = HOUR_EPOCH + 1940 * 365 * 24 + 200;
+  const fromHour = hour - 100;
+  const reply: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '200',
+    rows: [
+      makeDivisionRow(135, hour - 20),
+      makeDivisionRow(134, hour - 80),
+    ],
+    facetTotals: [],
+    missing: [
+      { firstHour: fromHour - 50, lastHour: fromHour - 10, reason: 'Before range' },
+      { firstHour: hour - 50, lastHour: hour - 40, reason: 'Inside page 2' },
+    ],
+    warnings: [],
+  };
+  const sources = { answers: new Map(), panels: new Map<string, unknown>([['tail', reply], ['__offset', 64]]), live: new Map() };
+  const opts: DivisionLogProjectionOptions = {
+    events: 'both',
+    showTotals: false,
+    lossesAvailable: true,
+    fromHour,
+    looks: { GER: [{ from: 0, name: 'Germany' }] },
+    manifestWarnings: [],
+    manifestGaps: [{ firstHour: hour + 10, lastHour: hour + 20, reason: 'Upcoming gap' }],
+  };
+  const model = divisionLogProjection.project(sources, hour, opts);
+  const layout = buildLogLayout(model, 'comfortable', true);
+  assert.ok(layout.items.some(i => i.kind === 'gap' && i.span.reason === 'Inside page 2'), 'non-zero page offset renders its gaps');
+  assert.ok(!layout.items.some(i => i.kind === 'gap' && i.span.reason === 'Before range'), 'gaps before fromHour are clipped out');
+
+  const geom = scrollGeometryOf(layout);
+  const row0Y = logicalYForRowIndex(geom, 64);
+  const row1Y = logicalYForRowIndex(geom, 65);
+  assert.ok(row1Y - row0Y > geom.rowHeight, 'month header and gap sit between row 64 and row 65');
+  assert.equal(rowIndexAtLogicalY(geom, row0Y), 64);
+  assert.equal(rowIndexAtLogicalY(geom, row1Y), 65);
+
+  assert.equal(divisionLogProjection.nextChange?.(sources, hour, opts), hour + 10);
+  assert.equal(divisionLogProjection.nextChange?.(sources, hour + 10, opts), hour + 11);
+  assert.equal(divisionLogProjection.nextChange?.(sources, hour + 20, opts), hour + 21);
+  assert.equal(divisionLogProjection.nextChange?.(sources, hour + 21, opts), Infinity);
+});
+
+test('S29: log family options omit the removed rowAnimation setting', () => {
+  assert.ok(!LOG_FAMILY_OPTIONS.some(o => o.key === 'rowAnimation'));
+  assert.ok(!DIVISION_OPTIONS.some(o => o.key === 'rowAnimation'));
+  assert.ok(!MARKET_OPTIONS.some(o => o.key === 'rowAnimation'));
+  assert.deepEqual(logFamilySettings({ density: 'compact', months: true, chips: false }), {
+    density: 'compact',
+    months: true,
+    chips: false,
+  });
 });

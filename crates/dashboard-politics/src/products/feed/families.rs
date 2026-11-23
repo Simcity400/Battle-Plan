@@ -90,7 +90,7 @@ pub(crate) fn coverage(source: &Source, query: &Query<'_>, branch: u64, from: i3
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let at = declared.facets.iter().position(|facet| facet.name == "incomplete").ok_or_else(|| invalid("The feed's log has no incomplete facet"))?;
-    let filters = [FacetFilter { name: "kind".into(), values: vec![i64::from(FeedEventRow::READ_INCOMPLETE)], countries: Vec::new() }];
+    let filters = [FacetFilter { name: "kind".into(), values: vec![i64::from(FeedEventRow::READ_INCOMPLETE)], ..Default::default() }];
     let selection = reader.select(&filters, query.timeline.first, to)?;
     let patterns = notice_patterns(&selection.patterns, facet_shift(at));
     let bin = bin_for(i64::from(to) - i64::from(from) + 1, 1);
@@ -254,7 +254,7 @@ fn native_war_ends(query: &Query<'_>, ends: &[(i32, String, String)], cancelled:
     let declared = dashboard_declare::log(LOG).ok_or_else(|| invalid("The feed's log is not declared"))?;
     let reader = Reader::new(query, declared)?;
     let ended = EventFeedKind::WarEnded.code().map(i64::from).ok_or_else(|| invalid("A war end has no feed code"))?;
-    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![ended], countries: Vec::new() }], query.timeline.first, query.timeline.last)?;
+    let selection = reader.select(&[FacetFilter { name: "kind".into(), values: vec![ended], ..Default::default() }], query.timeline.first, query.timeline.last)?;
     let columns = Columns::new()?;
     let names = Names::new(&query.holders);
     let mut runs: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();

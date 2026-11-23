@@ -30,6 +30,64 @@ use std::{
 
 static READER_ZSTD: Holder = Holder::new("unit reader");
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DecodeCounts {
+    pub log_span_rows: u64,
+    pub log_rows_at_rows: u64,
+    pub column_cells: u64,
+    pub status_blocks: u64,
+}
+
+thread_local! {
+    static DECODE_COUNTS: RefCell<Option<DecodeCounts>> = const { RefCell::new(None) };
+}
+
+pub fn counting_decodes() -> bool {
+    DECODE_COUNTS.with(|cell| cell.borrow().is_some())
+}
+
+pub fn count_decodes<T>(run: impl FnOnce() -> T) -> (T, DecodeCounts) {
+    let previous = DECODE_COUNTS.with(|cell| cell.borrow_mut().replace(DecodeCounts::default()));
+    struct Reset(Option<DecodeCounts>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            DECODE_COUNTS.with(|cell| {
+                *cell.borrow_mut() = self.0;
+            });
+        }
+    }
+    let _reset = Reset(previous);
+    let out = run();
+    let counts = DECODE_COUNTS.with(|cell| cell.borrow().unwrap_or_default());
+    (out, counts)
+}
+
+pub(super) fn record_log_span_row(columns: usize) {
+    DECODE_COUNTS.with(|cell| {
+        if let Some(counts) = cell.borrow_mut().as_mut() {
+            counts.log_span_rows += 1;
+            counts.column_cells += columns as u64;
+        }
+    });
+}
+
+pub(super) fn record_log_rows_at(rows: usize, columns: usize) {
+    DECODE_COUNTS.with(|cell| {
+        if let Some(counts) = cell.borrow_mut().as_mut() {
+            counts.log_rows_at_rows += rows as u64;
+            counts.column_cells += (rows * columns) as u64;
+        }
+    });
+}
+
+fn record_status_block() {
+    DECODE_COUNTS.with(|cell| {
+        if let Some(counts) = cell.borrow_mut().as_mut() {
+            counts.status_blocks += 1;
+        }
+    });
+}
+
 const PAD: usize = 16;
 
 pub const SPARE_BYTES: usize = 32 << 20;
@@ -1317,6 +1375,7 @@ pub fn reads(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnM
 }
 
 pub fn statuses(entry: &TableEntry, hours: u16, first_hour: i32, each: &mut dyn FnMut(i32, i32, Status)) -> io::Result<()> {
+    record_status_block();
     let mut emit = |from: u16, until: u16, status: Status| {
         let until = until.min(hours);
         if from < until {

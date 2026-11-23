@@ -3,21 +3,21 @@ import test from 'node:test';
 import { withNativePage } from '../../../../tools/native-page.ts';
 
 test('log family plays live with zero React commits, zero layout reads on install, honest shownHour, pause flush without fetch, and scroll-back jump pill', async t => {
-  await withNativePage('log-family', '/ui/src/families/log/logFamily.dom.fixture.tsx', page => page.stage('log-family', async () => {
+  await withNativePage('log-family', '/ui/src/families/log/logFamily.dom.fixture.tsx', async page => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.logFamilyDom.${expression}`);
-    const mounted = await act<{
+    const mounted = await page.stage('mount', () => act<{
       painted: boolean;
       initialHour: number | null;
       afterFirstHour: number | null;
       expectedFirstHour: number;
       pillsText: string;
-    }>('mount()');
+    }>('mount()'), 10_000);
     assert.equal(mounted.painted, true, 'initial log frame painted');
     assert.equal(mounted.initialHour, null, 'model hour is null before first paint');
     assert.equal(mounted.afterFirstHour, mounted.expectedFirstHour, 'model hour matches painted hour');
     assert.ok(mounted.pillsText.includes('Created 60'), `facet pills painted via DOM: ${mounted.pillsText}`);
 
-    const played = await act<{
+    const played = await page.stage('playLive', () => act<{
       playingDuringAdvance: boolean;
       playingBeforePause: boolean;
       playCommits: number;
@@ -31,7 +31,7 @@ test('log family plays live with zero React commits, zero layout reads on instal
       expectedTopKey: string;
       finalHour: number | null;
       pausedHour: number;
-    }>('playLive(12)');
+    }>('playLive(12)'), 10_000);
     t.diagnostic(`log playback: ${played.playCommits} commits, ${played.playReads} play reads, ${played.pauseReads} pause reads, ${played.playInstalls} installs, scrollFetches=${played.scrollPageFetches}`);
     assert.equal(played.playingDuringAdvance, true, 'clock.playing was true during advance');
     assert.equal(played.playingBeforePause, true, 'clock.playing stayed true until pause');
@@ -44,13 +44,13 @@ test('log family plays live with zero React commits, zero layout reads on instal
     assert.equal(played.flushedOnPause, true, `mirror flushed on pause (top=${played.mirrorTopKey}, want=${played.expectedTopKey})`);
     assert.equal(played.finalHour, played.pausedHour, 'final painted hour matches paused clock hour');
 
-    const scroll = await act<{
+    const scroll = await page.stage('scrollBack', () => act<{
       jumpBefore: string;
       jumpAfter: string;
       scrollAfterJump: number;
-    }>('testScrollBackAndJump()');
+    }>('testScrollBackAndJump()'), 10_000);
     assert.equal(scroll.jumpBefore, 'Jump to latest');
     assert.ok(scroll.jumpAfter.includes('new · Jump to latest'), `new count pill shown while scrolled away: ${scroll.jumpAfter}`);
     assert.equal(scroll.scrollAfterJump, 0, 'Jump to latest resets scrollTop to top');
-  }));
+  });
 });

@@ -75,15 +75,73 @@ function gapLabelOf(span: MissingSpan): string {
   return a === b ? `Not recorded · ${a}` : `Not recorded · ${a} – ${b}`;
 }
 
-export interface LogLayout {
-  readonly items: readonly FlatLogItem[];
+export interface LogScrollGeometry {
+  readonly offset: number;
+  readonly loadedCount: number;
+  readonly total: number;
+  readonly rowHeight: number;
+  readonly offsetTop: number;
   readonly localHeight: number;
   readonly logicalHeight: number;
   readonly physicalHeight: number;
   readonly compressed: boolean;
-  readonly rowHeight: number;
-  readonly offsetTop: number;
+  readonly rowTops: readonly number[];
+}
+
+export interface LogLayout extends LogScrollGeometry {
+  readonly items: readonly FlatLogItem[];
   readonly monthStarts: readonly { readonly top: number; readonly label: string }[];
+}
+
+export function scrollGeometryOf(layout: LogLayout): LogScrollGeometry {
+  return {
+    offset: layout.offset,
+    loadedCount: layout.loadedCount,
+    total: layout.total,
+    rowHeight: layout.rowHeight,
+    offsetTop: layout.offsetTop,
+    localHeight: layout.localHeight,
+    logicalHeight: layout.logicalHeight,
+    physicalHeight: layout.physicalHeight,
+    compressed: layout.compressed,
+    rowTops: layout.rowTops,
+  };
+}
+
+export function rowIndexAtLogicalY(geometry: LogScrollGeometry, logicalY: number): number {
+  const y = Math.max(0, logicalY);
+  const maxIndex = Math.max(0, geometry.total - 1);
+  const rowH = Math.max(1, geometry.rowHeight);
+  if (y < geometry.offsetTop || geometry.rowTops.length === 0) {
+    return Math.min(maxIndex, Math.floor(y / rowH));
+  }
+  const localEnd = geometry.offsetTop + geometry.localHeight;
+  if (y < localEnd) {
+    let low = 0;
+    let high = geometry.rowTops.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (geometry.rowTops[mid]! + rowH <= y) low = mid + 1;
+      else high = mid;
+    }
+    const clamped = Math.min(geometry.rowTops.length - 1, low);
+    return Math.min(maxIndex, geometry.offset + clamped);
+  }
+  const after = Math.floor((y - localEnd) / rowH);
+  return Math.min(maxIndex, geometry.offset + geometry.loadedCount + after);
+}
+
+export function logicalYForRowIndex(geometry: LogScrollGeometry, rowIndex: number): number {
+  const idx = Math.max(0, Math.min(Math.max(0, geometry.total - 1), Math.floor(rowIndex)));
+  const rowH = Math.max(1, geometry.rowHeight);
+  if (idx < geometry.offset) {
+    return idx * rowH;
+  }
+  const local = idx - geometry.offset;
+  if (local < geometry.rowTops.length) {
+    return geometry.rowTops[local]!;
+  }
+  return geometry.offsetTop + geometry.localHeight + (idx - (geometry.offset + geometry.loadedCount)) * rowH;
 }
 
 export function buildLogLayout(model: LogModel, density: LogDensity, showMonths: boolean): LogLayout {
@@ -95,20 +153,28 @@ export function buildLogLayout(model: LogModel, density: LogDensity, showMonths:
 
   const items: FlatLogItem[] = [];
   const monthStarts: { top: number; label: string }[] = [];
+  const rowTops: number[] = [];
 
   const relevantGaps: MissingSpan[] = [];
-  if (model.gaps.length > 0 && model.offset === 0) {
+  if (model.gaps.length > 0) {
+    const rangeMin = model.fromHour ?? -Infinity;
+    const rangeMax = model.hour;
+    const hasMoreNewer = model.offset > 0;
     const hasMoreOlder = model.offset + model.rows.length < model.total;
-    const oldestShown = hasMoreOlder && model.rows.length > 0 ? model.rows[model.rows.length - 1]!.hour : -Infinity;
+    const sliceNewest = hasMoreNewer && model.rows.length > 0 ? model.rows[0]!.hour : rangeMax;
+    const sliceOldest = hasMoreOlder && model.rows.length > 0 ? model.rows[model.rows.length - 1]!.hour : rangeMin;
     for (let i = model.gaps.length - 1; i >= 0; i--) {
       const span = model.gaps[i]!;
-      if (span.firstHour <= model.hour && span.lastHour >= oldestShown) {
-        relevantGaps.push({
-          firstHour: span.firstHour,
-          lastHour: Math.min(span.lastHour, model.hour),
-          reason: span.reason,
-        });
-      }
+      const firstHour = Math.max(span.firstHour, rangeMin);
+      const lastHour = Math.min(span.lastHour, rangeMax);
+      if (firstHour > lastHour) continue;
+      if (hasMoreNewer && lastHour > sliceNewest) continue;
+      if (hasMoreOlder && lastHour < sliceOldest) continue;
+      relevantGaps.push({
+        firstHour,
+        lastHour,
+        reason: span.reason,
+      });
     }
   }
 
@@ -148,6 +214,7 @@ export function buildLogLayout(model: LogModel, density: LogDensity, showMonths:
       gapIdx++;
     }
     pushMonth(row.hour);
+    rowTops.push(cursorY);
     items.push({
       kind: 'row',
       key: row.key,
@@ -171,6 +238,9 @@ export function buildLogLayout(model: LogModel, density: LogDensity, showMonths:
   const physicalHeight = compressed ? MAX_PHYSICAL_SCROLL_HEIGHT : logicalHeight;
 
   return {
+    offset: model.offset,
+    loadedCount: model.rows.length,
+    total: model.total,
     items,
     localHeight,
     logicalHeight,
@@ -178,6 +248,7 @@ export function buildLogLayout(model: LogModel, density: LogDensity, showMonths:
     compressed,
     rowHeight,
     offsetTop,
+    rowTops,
     monthStarts,
   };
 }
@@ -195,17 +266,17 @@ export function stickyMonthAt(layout: LogLayout, scrollTop: number): string | nu
   return low > 0 ? starts[low - 1]!.label : null;
 }
 
-export function logicalScrollFromPhysical(layout: LogLayout, viewportHeight: number, physicalTop: number): number {
-  if (!layout.compressed) return Math.max(0, physicalTop);
-  const physRange = Math.max(1, layout.physicalHeight - viewportHeight);
-  const logRange = Math.max(0, layout.logicalHeight - viewportHeight);
+export function logicalScrollFromPhysical(geometry: Pick<LogScrollGeometry, 'compressed' | 'physicalHeight' | 'logicalHeight'>, viewportHeight: number, physicalTop: number): number {
+  if (!geometry.compressed) return Math.max(0, physicalTop);
+  const physRange = Math.max(1, geometry.physicalHeight - viewportHeight);
+  const logRange = Math.max(0, geometry.logicalHeight - viewportHeight);
   return Math.max(0, Math.min(logRange, (physicalTop / physRange) * logRange));
 }
 
-export function physicalScrollFromLogical(layout: LogLayout, viewportHeight: number, logicalTop: number): number {
-  if (!layout.compressed) return Math.max(0, logicalTop);
-  const physRange = Math.max(1, layout.physicalHeight - viewportHeight);
-  const logRange = Math.max(1, layout.logicalHeight - viewportHeight);
+export function physicalScrollFromLogical(geometry: Pick<LogScrollGeometry, 'compressed' | 'physicalHeight' | 'logicalHeight'>, viewportHeight: number, logicalTop: number): number {
+  if (!geometry.compressed) return Math.max(0, logicalTop);
+  const physRange = Math.max(1, geometry.physicalHeight - viewportHeight);
+  const logRange = Math.max(0, geometry.logicalHeight - viewportHeight);
   return Math.max(0, Math.min(physRange, (logicalTop / logRange) * physRange));
 }
 
