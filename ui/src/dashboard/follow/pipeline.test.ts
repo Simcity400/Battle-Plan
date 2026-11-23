@@ -405,3 +405,74 @@ test('lane placement balances measured widget cost rather than widget count and 
     assert.equal(pipeline.lane(remountedHeavy), heavyLane, 'remounting after load drops re-places onto the now-lighter lane');
   } finally { close(); }
 });
+
+test('sticky subscription fault fails affected widgets immediately across seeks and surface remounts while isolating siblings', async () => {
+  const { pipeline, clock, send, source, asked, settle, close } = inProcess();
+  try {
+    const w1 = pipeline.acquire('w1|0', { offset: 0, pin: null });
+    const w2 = pipeline.acquire('w2|0', { offset: 0, pin: null });
+    const s1 = pipeline.subscribe(w1, {}, source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    const s1b = pipeline.subscribe(w1, {}, source, '1', 0, { product: 'series-state', params: { k: 2 } }, 'followed')!;
+    const s2 = pipeline.subscribe(w2, {}, source, '1', 0, { product: 'series-state', params: { k: 3 } }, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(s1).status === 'followed' && pipeline.status(s1b).status === 'followed' && pipeline.status(s2).status === 'followed');
+    const seek0 = clock.getSnapshot().seekSequence;
+    send(message(10, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [10n] } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [20n] } },
+    ], false, NATIVE, seek0));
+    assert.ok(await settle(() => pipeline.view(w2)?.mode === 'picture'));
+    assert.equal(pipeline.view(w1)?.mode, 'reading', 'w1 still waiting on s1b');
+    send(message(15, [
+      { id: s1, answer: { keys: [99n], columns: 1, values: [999n], changed: true } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [25n], changed: true } },
+    ], false, NATIVE, seek0));
+    assert.ok(await settle(() => pipeline.view(w1)?.mode === 'failed'), 'fault on s1 fails multi-sub w1 immediately even while s1b is pending');
+    assert.equal(pipeline.status(s1).status, 'refused');
+    assert.ok(await settle(() => asked.some(a => a.product === 'unfollow' && a.params.id === s1)), 'faulted sub unfollows natively');
+    assert.equal(pipeline.view(w2)?.mode, 'picture', 'sibling w2 stays healthy');
+    pipeline.bind(w1, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] });
+    pipeline.bind(w1, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    assert.equal(pipeline.view(w1)?.mode, 'failed', 'surface remount does not clear a sticky subscription fault');
+    clock.seek(20);
+    const seek1 = clock.getSnapshot().seekSequence;
+    send(message(20, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [100n] } },
+      { id: s1b, answer: { keys: [1n], columns: 1, values: [101n] } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [200n] } },
+    ], true, NATIVE, seek1));
+    assert.ok(await settle(() => pipeline.view(w2)?.mode === 'picture' && pipeline.view(w2)?.h === 20));
+    assert.equal(pipeline.view(w1)?.mode, 'failed', 'sticky subscription fault persists across seeks until re-subscription');
+  } finally { close(); }
+});
+
+test('widget drawing fault reports via widget-failed without failing siblings and clears on surface remount', async () => {
+  let shouldThrow = true;
+  const flaky: LaneView = {
+    paint: input => {
+      if (shouldThrow) throw new Error('boom');
+      return { surfaces: input.binding.surfaces.map(() => ({ source: { width: 1, height: 1 }, content: `ok:${input.hour}` })), fields: {}, motion: false };
+    },
+  };
+  const { pipeline, clock, send, source, settle, close } = inProcess({ views: kind => kind === 'flaky' ? flaky : undefined });
+  try {
+    const w1 = pipeline.acquire('flaky|0', { offset: 0, pin: null, view: 'flaky' });
+    const w2 = pipeline.acquire('ok|0', { offset: 0, pin: null });
+    const s1 = pipeline.subscribe(w1, {}, source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    const s2 = pipeline.subscribe(w2, {}, source, '1', 0, { product: 'series-state', params: { k: 2 } }, 'followed')!;
+    pipeline.bind(w1, [surface()], { surfaces: [{ width: 1, height: 1, dpr: 1 }] });
+    clock.seek(10);
+    await settle(() => pipeline.status(s1).status === 'followed' && pipeline.status(s2).status === 'followed');
+    const seek = clock.getSnapshot().seekSequence;
+    send(message(10, [
+      { id: s1, answer: { keys: [1n], columns: 1, values: [1n] } },
+      { id: s2, answer: { keys: [1n], columns: 1, values: [2n] } },
+    ], false, NATIVE, seek));
+    assert.ok(await settle(() => pipeline.view(w1)?.mode === 'failed' && pipeline.view(w2)?.mode === 'picture'));
+    assert.match(pipeline.view(w1)?.reason ?? '', /drawing failed: boom/);
+    assert.equal(pipeline.status(s1).status, 'followed', 'a widget drawing fault does not fail the subscription');
+    shouldThrow = false;
+    pipeline.bind(w1, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    assert.ok(await settle(() => pipeline.view(w1)?.mode === 'picture'), 'surface remount clears a widget drawing fault');
+  } finally { close(); }
+});

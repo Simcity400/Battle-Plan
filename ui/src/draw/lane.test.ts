@@ -37,6 +37,8 @@ interface Timing { offset?: number; pin?: number | null; dated?: { h: number; c:
 function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; crop?: LaneHost<Fake>['crop']; clock?: () => number; earlyBuffer?: number } = {}) {
   const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { posted.push(m); if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
   const posted: PageMessage[] = [], released: number[] = [], failures: string[] = [], later: (() => void)[] = [], hits: (string | null)[] = [];
+  const subFailures: [number, string][] = [], widgetFailures: [number, string][] = [];
+  const widgetSubs = new Map<number, number[]>();
   const presented: Presented<Fake>[] = [];
   const shown = new Map<number, (string | null)[]>();
   const lane: Lane<Fake> = new Lane<Fake>({
@@ -47,11 +49,14 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; cro
     present: presentation => { presented.push(presentation); page.offer(presentation); },
     release: bytes => released.push(bytes),
     fail: reason => failures.push(reason),
+    failSub: (sub, reason) => { subFailures.push([sub, reason]); for (const [w, list] of widgetSubs) if (list.includes(sub)) page.name(w, 'failed', reason); },
+    failWidget: (widget, reason) => { widgetFailures.push([widget, reason]); page.name(widget, 'failed', reason); },
     later: run => later.push(run),
     hit: (_widget, key) => hits.push(key),
   });
   const mount = (widget: number, subs: { id: number; channel: 'panel' | 'followed'; product?: string }[], view = 'fields', surfaces = 0, timing: Timing = {}) => {
     for (const sub of subs) lane.follow(sub.id, sub.channel, sub.product);
+    widgetSubs.set(widget, subs.map(sub => sub.id));
     lane.mount(widget, subs.map(sub => sub.id), view);
     const list: (string | null)[] = [];
     shown.set(widget, list);
@@ -61,7 +66,7 @@ function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; cro
       ...timing.dated ? { dated: timing.dated } : {} });
   };
   const step = async (T: number, options: Parameters<Page<Fake>['publish']>[1] = {}) => { page.publish(T, options); await flush(); await flush(); page.frame(); await flush(); };
-  return { page, lane, posted, released, failures, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
+  return { page, lane, posted, released, failures, subFailures, widgetFailures, later, hits, presented, shown, mount, step, frames: () => posted.filter((m): m is FrameRequest => m.type === 'frame') };
 }
 
 const rows = (keys: bigint[], values: bigint[], extra: { changed?: boolean } = {}) => ({ keys, columns: 1, values, ...extra });
@@ -409,16 +414,17 @@ test('review 5 finding 3: the facts of an entry sent but not yet acknowledged st
   assert.ok(total() >= 200 * 16, 'once the page refuses it, its facts come back');
 });
 
-test('review 5 finding 3: an entry whose crop failed is retired and shown as a named failure, never left in flight', async () => {
+test('review 5 finding 3: an entry whose crop failed is retired and reported via failWidget without emitting a failure entry', async () => {
   const view: LaneView = { paint: (): Painted => ({ surfaces: [{ source: { width: 1, height: 1, content: 'p' } as never, content: 'p' }], fields: {}, motion: false }) };
-  const { page, lane, mount, step, failures, presented } = rig({ view }, { crop: async () => { throw new Error('canvas lost'); } });
+  const { page, lane, mount, step, failures, widgetFailures, presented } = rig({ view }, { crop: async () => { throw new Error('canvas lost'); } });
   mount(1, [{ id: 3, channel: 'panel' }], 'view', 1);
   lane.bindRoute(3, ROUTE, NATIVE);
   lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: {} }, { id: 0, hour: 20, kind: 'completed' }]));
   await step(12, { playing: false });
   assert.deepEqual(failures, [], 'the lane keeps serving');
+  assert.deepEqual(widgetFailures, [[1, 'drawing failed: canvas lost']]);
   assert.deepEqual([page.view(1).mode, page.view(1).reason], ['failed', 'drawing failed: canvas lost']);
-  assert.deepEqual(presented.flatMap(p => p.entries.map(e => e.mode)), ['failed']);
+  assert.deepEqual(presented.flatMap(p => p.entries), [], 'no failure picture entry is emitted');
 });
 
 test('review 5 finding 5: a limit buffered before its route was bound gives its header back when it lands', () => {
@@ -575,8 +581,8 @@ test('a seek that reuses a panel cell group receives its reset table before the 
   assert.equal(live?.get('r0\u0000k'), 205);
 });
 
-test('a protocol fault on one subscription fails only widgets using it while sibling widgets on the same lane keep serving', async () => {
-  const { page, lane, mount, step, failures } = rig();
+test('a protocol fault on one subscription fails only widgets using it, sticks across seeks, and leaves sibling widgets serving', async () => {
+  const { page, lane, mount, step, failures, subFailures, released } = rig();
   mount(1, [{ id: 5, channel: 'followed' }]);
   mount(2, [{ id: 7, channel: 'followed' }]);
   lane.bindRoute(5, ROUTE, NATIVE);
@@ -587,16 +593,22 @@ test('a protocol fault on one subscription fails only widgets using it while sib
   lane.receive('follow', message(20, [{ id: 5, answer: rows([9n], [99n], { changed: true }) }, { id: 7, answer: rows([1n], [75n], { changed: true }) }], false, NATIVE));
   await step(20, { playing: false });
   assert.deepEqual(failures, [], 'the lane keeps serving when one subscription faults');
+  assert.equal(subFailures.length, 1);
+  assert.equal(subFailures[0]![0], 5);
   assert.equal(page.view(1).mode, 'failed');
   assert.match(page.view(1).reason ?? '', /does not hold/);
   assert.deepEqual([page.view(2).mode, valueOf(page.view(2), 7)], ['picture', 75n]);
+  const before = released.reduce((sum, b) => sum + b, 0);
   lane.receive('follow', message(30, [{ id: 5, answer: rows([1n, 2n], [30n, 40n]) }], true, NATIVE));
+  assert.ok(released.reduce((sum, b) => sum + b, 0) > before, 'later records for a failed subscription return credit immediately');
+  assert.equal(subFailures.length, 1, 'failSub is posted only once per subscription');
   await step(30, { playing: false });
-  assert.equal(page.view(1).mode, 'failed', 'a decode or merge fault is terminal for the seek until a new seek or retry');
+  assert.equal(page.view(1).mode, 'failed', 'a decode or merge fault stays failed on the same seek');
   await step(30, { playing: false, seek: 1 });
-  lane.receive('follow', message(30, [{ id: 5, answer: rows([1n, 2n], [30n, 40n]) }], true, NATIVE, 1));
+  lane.receive('follow', message(30, [{ id: 5, answer: rows([1n, 2n], [30n, 40n]) }, { id: 7, answer: rows([1n], [80n]) }], true, NATIVE, 1));
   await step(30, { playing: false });
-  assert.deepEqual([page.view(1).mode, valueOf(page.view(1), 5)], ['picture', 30n], 'a new seek with a fresh table clears the isolated subscription fault');
+  assert.equal(page.view(1).mode, 'failed', 'a subscription fault is sticky across seeks until unfollow/resubscription');
+  assert.deepEqual([page.view(2).mode, valueOf(page.view(2), 7)], ['picture', 80n]);
 });
 
 test('quiet frames visit zero unchanged widgets in serve and prune across 114 widgets, and K changed visits O(K)', async () => {
@@ -733,58 +745,75 @@ test('S6: a malformed answer body inside a well-framed follow packet fails only 
   assert.deepEqual([page.view(2).mode, valueOf(page.view(2), 7)], ['picture', 75n]);
 });
 
-test('S7: a failed panel decode is not cleared by STANDS and stale-seek panels cannot mutate current state', async () => {
-  const { page, lane, failures, mount, step } = rig();
+test('S7: a failed panel decode stays sticky across STANDS, replacements, and seeks while stale-seek corrupt records never fault healthy subs', async () => {
+  const { page, lane, failures, subFailures, mount, step } = rig();
   mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  mount(2, [{ id: 5, channel: 'panel', product: 'demo' }]);
   lane.bindRoute(3, ROUTE, NATIVE);
-  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 10, kind: 'completed' }], 0));
+  lane.bindRoute(5, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 5, hour: 10, kind: 'data', stepped: true, data: { shape: 'S' } }, { id: 0, hour: 10, kind: 'completed' }], 0));
   await step(10, { playing: false });
-  assert.equal(page.view(1).mode, 'picture');
+  assert.deepEqual([page.view(1).mode, page.view(2).mode], ['picture', 'picture']);
   const corrupt = panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'B' } }, { id: 0, hour: 20, kind: 'completed' }], 0);
   corrupt[24 + 16] = 0xc1;
   lane.receive('panels', corrupt);
   await step(20, { playing: false });
   assert.deepEqual(failures, []);
+  assert.deepEqual(subFailures.map(([id]) => id), [3]);
   assert.equal(page.view(1).mode, 'failed');
   lane.receive('panels', panels([{ id: 3, hour: 25, kind: 'stands', stepped: true }, { id: 0, hour: 25, kind: 'completed' }], 0));
   await step(25, { playing: false });
   assert.equal(page.view(1).mode, 'failed', 'STANDS must not clear a panel decode fault or revert to the old panel');
   lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'C' } }, { id: 0, hour: 30, kind: 'completed' }], 0));
   await step(30, { playing: false });
-  assert.equal(page.view(1).mode, 'failed', 'a same-seek panel record must not clear a terminal panel decode fault');
+  assert.equal(page.view(1).mode, 'failed', 'a same-seek panel record must not clear a sticky panel decode fault');
   await step(40, { playing: false, seek: 1 });
-  lane.receive('panels', panels([{ id: 3, hour: 40, kind: 'data', stepped: true, data: { shape: 'D' } }, { id: 0, hour: 40, kind: 'completed' }], 1));
+  lane.receive('panels', panels([{ id: 3, hour: 40, kind: 'data', stepped: true, data: { shape: 'D' } }, { id: 5, hour: 40, kind: 'data', stepped: true, data: { shape: 'S1' } }, { id: 0, hour: 40, kind: 'completed' }], 1));
   await step(40, { playing: false });
   page.frame();
-  assert.equal(page.view(1).mode, 'picture', 'a new seek clears the terminal panel fault');
-  const staleCorrupt = panels([{ id: 3, hour: 45, kind: 'data', stepped: true, data: { shape: 'Z' } }], 0);
+  assert.equal(page.view(1).mode, 'failed', 'sticky panel fault stays failed across seeks until re-subscription');
+  assert.equal(page.view(2).mode, 'picture', 'healthy sibling panel keeps serving across seeks');
+  const staleCorrupt = panels([{ id: 5, hour: 45, kind: 'data', stepped: true, data: { shape: 'Z' } }], 0);
   staleCorrupt[24 + 16] = 0xc1;
   lane.receive('panels', staleCorrupt);
   await step(40, { playing: false });
-  assert.equal(page.view(1).mode, 'picture', 'a stale-seek corrupt panel must not fault the current seek');
+  assert.equal(page.view(2).mode, 'picture', 'a stale-seek corrupt panel must not fault a healthy subscription on the current seek');
 });
 
-test('S8: a fault in an older fallback cell group does not fail a widget whose active panel uses a healthy cell group', async () => {
+test('P2/P3: a shared cell-group fault fails every owning subscription immediately, and a released cell never faults later', async () => {
   const CELL_A = 0x8000_0001, CELL_B = 0x8000_0002;
   const panelWith = (cell: number) => ({
     shape: `cell-${cell}`,
     live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
   });
-  const { page, lane, mount, step } = rig();
+  const { page, lane, subFailures, mount, step } = rig();
   mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
-  lane.bindRoute(3, ROUTE, NATIVE);
-  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A) }, { id: 0, hour: 10, kind: 'completed' }]));
+  mount(2, [{ id: 5, channel: 'panel', product: 'demo' }]);
+  mount(3, [{ id: 7, channel: 'panel', product: 'demo' }, { id: 9, channel: 'followed' }]);
+  for (const sub of [3, 5, 7, 9]) lane.bindRoute(sub, ROUTE, NATIVE);
+  lane.receive('panels', panels([
+    { id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A) },
+    { id: 5, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A) },
+    { id: 7, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A) },
+    { id: 0, hour: 10, kind: 'completed' },
+  ]));
   lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE));
   await step(10, { playing: false });
   assert.equal(page.view(1).mode, 'picture');
+  assert.equal(page.view(2).mode, 'picture');
+  assert.equal(page.view(3).mode, 'reading', 'widget 3 still waits on sub 9');
   lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: panelWith(CELL_B) }, { id: 0, hour: 20, kind: 'completed' }]));
-  lane.receive('follow', message(20, [{ id: CELL_B, answer: rows([1n], [20n]) }], false, NATIVE));
-  await step(20, { playing: false });
-  assert.equal(page.view(1).mode, 'picture');
-  lane.receive('follow', message(25, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }, { id: CELL_B, answer: rows([1n], [25n], { changed: true }) }], false, NATIVE));
-  lane.receive('panels', panels([{ id: 0, hour: 25, kind: 'completed' }]));
-  await step(25, { playing: false });
-  assert.equal(page.view(1).mode, 'picture', 'a fault in retired fallback cell group A must not fail active panel using healthy cell group B');
+  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: panelWith(CELL_B) }, { id: 0, hour: 30, kind: 'completed' }]));
+  lane.receive('follow', message(30, [{ id: CELL_B, hour: 20, answer: rows([1n], [20n]) }], false, NATIVE));
+  await step(30, { playing: false });
+  await step(30, { playing: false });
+  lane.receive('follow', message(35, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }, { id: CELL_B, answer: rows([1n], [35n], { changed: true }) }], false, NATIVE));
+  lane.receive('panels', panels([{ id: 0, hour: 35, kind: 'completed' }]));
+  await step(35, { playing: false });
+  assert.deepEqual(subFailures.map(([id]) => id).sort((a, b) => a - b), [5, 7], 'cell fault fails every current owner sub (5 and 7), never retired sub 3');
+  assert.equal(page.view(1).mode, 'picture', 'sub 3 released CELL_A after pruning and stays healthy on CELL_B');
+  assert.equal(page.view(2).mode, 'failed');
+  assert.equal(page.view(3).mode, 'failed', 'multi-sub widget 3 fails immediately on sub 7 fault even while sub 9 is pending');
 });
 
 test('S9: a subscription fault arriving while a normal picture is inflight is not lost after ack while paused', async () => {
@@ -884,7 +913,7 @@ test('S14: a cheap data widget changing every frame does not starve an oversized
   assert.ok(cheapPaints >= 14, `cheap widget painted ${cheapPaints} times`);
 });
 
-test('S7b: COMPLETED never extends pre-fault panel data across a decode fault interval, even after a later replacement', async () => {
+test('S7b: COMPLETED never extends pre-fault panel data across a decode fault, and the fault stays sticky across seeks', async () => {
   const { page, lane, mount, step } = rig();
   mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
   lane.bindRoute(3, ROUTE, NATIVE);
@@ -898,33 +927,9 @@ test('S7b: COMPLETED never extends pre-fault panel data across a decode fault in
   lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'H30' } }, { id: 0, hour: 30, kind: 'completed' }], 0));
   await step(25, { playing: false });
   page.frame();
-  assert.equal(page.view(1).mode, 'failed', 'paused at 25 must show the terminal decode fault, never hour-10 data certified through 25');
+  assert.equal(page.view(1).mode, 'failed', 'paused at 25 must show the sticky decode fault, never hour-10 data certified through 25');
   await step(24, { playing: false, seek: 1 });
-  assert.equal(page.view(1).mode, 'reading', 'seeking to 24 drops the old seek failure and starts clean in reading');
-});
-
-test('S8b: a speculative cell-group fault at target 36 for a panel starting at 30 never replaces a healthy panel at page hour 12', async () => {
-  const CELL_A = 0x8000_0011, CELL_B = 0x8000_0012;
-  const panelWith = (cell: number, shape: string) => ({
-    shape,
-    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
-  });
-  const { page, lane, mount, step } = rig();
-  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
-  lane.bindRoute(3, ROUTE, NATIVE);
-  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A, 'A') }, { id: 0, hour: 29, kind: 'completed' }]));
-  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE));
-  lane.receive('follow', message(29, [], false, NATIVE));
-  await step(12, { playing: false });
-  assert.equal(page.view(1).mode, 'picture');
-  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: panelWith(CELL_B, 'B') }, { id: 0, hour: 36, kind: 'completed' }]));
-  lane.receive('follow', message(36, [{ id: CELL_B, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE));
-  await step(12, { playing: true, step: 24, speed: 1440 });
-  assert.equal(page.view(1).mode, 'picture', 'healthy panel A at page hour 12 must stay shown until the clock reaches panel B at 30');
-  await step(13, { playing: true, step: 24, speed: 1440 });
-  assert.equal(page.view(1).mode, 'picture', 'speculative target 37 must park panel B fault as early while clock is at 13');
-  await step(30, { playing: true, step: 24, speed: 1440 });
-  assert.equal(page.view(1).mode, 'failed', 'failure installs once the clock reaches hour 30');
+  assert.equal(page.view(1).mode, 'failed', 'seeking to 24 keeps the sticky subscription failure and never carries pre-fault data');
 });
 
 test('S12b: a lane widget outside its active window does not force O(N) scans of all windowed widgets on quiet frames', async () => {
@@ -1117,30 +1122,7 @@ test('N7: completion-only panel packets on quiet frames visit zero unchanged ste
   assert.equal(page.view(1).dim, false, 'shared panel confirmation keeps stepped panels undimmed on pause');
 });
 
-test('S8c: a speculative decode fault at hour 36 on the SAME cell id never replaces a healthy picture covering page hour 12', async () => {
-  const CELL_A = 0x8000_0041;
-  const panelData = {
-    shape: 'same-cell',
-    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_A }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
-  };
-  const { page, lane, mount, step } = rig();
-  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
-  lane.bindRoute(3, ROUTE, NATIVE);
-  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelData }, { id: 0, hour: 35, kind: 'completed' }]));
-  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE));
-  lane.receive('follow', message(35, [], false, NATIVE));
-  await step(12, { playing: false });
-  assert.equal(page.view(1).mode, 'picture');
-  lane.receive('follow', message(36, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE));
-  await step(12, { playing: true, step: 24, speed: 1440 });
-  assert.equal(page.view(1).mode, 'picture', 'healthy picture covering page hour 12 must remain shown when same cell faults at speculative hour 36');
-  await step(13, { playing: true, step: 24, speed: 1440 });
-  assert.equal(page.view(1).mode, 'picture', 'still healthy at page hour 13 before fault hour 36');
-  await step(36, { playing: true, step: 24, speed: 1440 });
-  assert.equal(page.view(1).mode, 'failed', 'failure installs once page reaches the fault hour 36');
-});
-
-test('M1: corrupt followed delta followed by quiet update and non-reset replacement stays failed and never carries pre-fault values across a seek', async () => {
+test('M1: corrupt followed delta followed by quiet update, non-reset replacement, and seek stays failed and never carries pre-fault values', async () => {
   const { page, lane, mount, step } = rig();
   mount(1, [{ id: 5, channel: 'followed' }]);
   lane.bindRoute(5, ROUTE, NATIVE);
@@ -1151,11 +1133,11 @@ test('M1: corrupt followed delta followed by quiet update and non-reset replacem
   lane.receive('follow', message(25, [], false, NATIVE, 0));
   lane.receive('follow', message(30, [{ id: 5, answer: rows([1n], [300n]) }], false, NATIVE, 0));
   await step(25, { playing: false });
-  assert.equal(page.view(1).mode, 'failed', 'corrupt delta is terminal; quiet update and same-seek replacement must not clear it');
+  assert.equal(page.view(1).mode, 'failed', 'corrupt delta is sticky; quiet update and same-seek replacement must not clear it');
   await step(30, { playing: false });
-  assert.equal(page.view(1).mode, 'failed', 'same-seek full replacement must not clear terminal merge fault');
+  assert.equal(page.view(1).mode, 'failed', 'same-seek full replacement must not clear sticky merge fault');
   await step(25, { playing: false, seek: 1 });
-  assert.equal(page.view(1).mode, 'reading', 'seeking to 25 after fault must drop old failure and never carry pre-fault hour-10 values');
+  assert.equal(page.view(1).mode, 'failed', 'seeking after fault keeps sticky failure and never carries pre-fault hour-10 values');
 });
 
 test('M2: future-seek panel replay preserves completion order relative to data records while coalescing adjacent completions', async () => {
@@ -1176,21 +1158,6 @@ test('M2: future-seek panel replay preserves completion order relative to data r
   const view20 = page.view(1);
   assert.deepEqual([view20.mode, view20.h, view20.through, (view20.fields?.['model:3'] as { structure?: string }).structure],
     ['picture', 20, 20, 'B']);
-});
-
-test('M4: remounting a failed widget re-delivers the failure to the new binding while paused', async () => {
-  const { page, lane, mount, step } = rig();
-  mount(1, [{ id: 5, channel: 'followed' }], 'fields', 1);
-  lane.bindRoute(5, ROUTE, NATIVE);
-  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE));
-  await step(10, { playing: false });
-  lane.receive('follow', message(10, [{ id: 5, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE));
-  await step(10, { playing: false });
-  assert.equal(page.view(1).mode, 'failed');
-  page.remount(1, [{ install() {}, clear() {} }]);
-  lane.bind(1, { generation: page.widgets.get(1)!.binding, surfaces: [{ width: 1, height: 1, dpr: 1 }], offset: 0, pin: null });
-  await flush(); await flush(); page.frame(); await flush();
-  assert.equal(page.view(1).mode, 'failed', 'remounted failed widget must receive failure on its new binding instead of staying reading');
 });
 
 test('M6: a pinned animated widget never invalidates finite-window safe bounds for other widgets', async () => {
@@ -1260,4 +1227,69 @@ test('N7b: completion-only panel packets skip non-stepped panels and do zero fac
   await step(178, { playing: false });
   assert.equal(page.view(1).dim, false, 'stepped panel stays confirmed through 178');
   assert.equal(page.view(20).h, 10, 'non-stepped panel stays intact');
+});
+
+test('P8: replacement stepped panel followed by equal completion-only packet replaces paused panel A undimmed at 50', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 50, kind: 'completed' }], 0));
+  await step(50, { playing: false });
+  assert.deepEqual([page.view(1).mode, page.view(1).h, page.view(1).dim, (page.view(1).fields?.['model:3'] as { structure?: string }).structure], ['picture', 10, false, 'A']);
+  lane.receive('panels', panels([{ id: 3, hour: 40, kind: 'data', stepped: true, data: { shape: 'B' } }], 0));
+  await step(50, { playing: false });
+  lane.receive('panels', panels([{ id: 0, hour: 50, kind: 'completed' }], 0));
+  await step(50, { playing: false });
+  page.frame();
+  assert.deepEqual([page.view(1).mode, page.view(1).h, page.view(1).dim, (page.view(1).fields?.['model:3'] as { structure?: string }).structure], ['picture', 40, false, 'B']);
+});
+
+test('P9: overflowing seeks 1 and 2 before entering 1 drops seek 1 silently and fails on entering seek 2', async () => {
+  const { page, lane, subFailures, mount, step } = rig({}, { earlyBuffer: 256 });
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  await step(10, { playing: false, seek: 0 });
+  for (let i = 0; i < 4; i++) lane.receive('panels', panels([{ id: 3, hour: 100 + i, kind: 'data', stepped: true, data: { shape: 'big1', pad: 'x'.repeat(120) } }], 1));
+  for (let i = 0; i < 4; i++) lane.receive('panels', panels([{ id: 3, hour: 200 + i, kind: 'data', stepped: true, data: { shape: 'big2', pad: 'x'.repeat(120) } }], 2));
+  await step(100, { playing: false, seek: 1 });
+  assert.deepEqual(subFailures, [], 'superseded seek 1 must pass through silently without failing');
+  assert.notEqual(page.view(1).mode, 'failed');
+  await step(200, { playing: false, seek: 2 });
+  assert.equal(subFailures.length, 1, 'entering overflowed newest future seek 2 fails the subscription once');
+  assert.equal(subFailures[0]![0], 3);
+  assert.equal(page.view(1).mode, 'failed');
+  assert.match(page.view(1).reason ?? '', /overflowed/i);
+});
+
+test('P10: malformed live section or group in panel data fails the subscription instead of being swallowed', () => {
+  const { page, lane, subFailures, mount } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { live: { groups: 'not-an-array', rows: [], kinds: [], cells: [] } } }], 0));
+  assert.equal(subFailures.length, 1);
+  assert.equal(subFailures[0]![0], 3);
+  assert.equal(page.view(1).mode, 'failed');
+});
+
+test('P6: cell-group fault fails owner subscriptions only, never keyed by cell id so a healthy subscription reusing that cell id succeeds', async () => {
+  const CELL_A = 0x8000_0077;
+  const panelData = {
+    shape: 'reuse',
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_A }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  };
+  const { page, lane, subFailures, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelData }, { id: 0, hour: 10, kind: 'completed' }], 0));
+  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(20, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE, 0));
+  assert.deepEqual(subFailures.map(([id]) => id), [3], 'fault reported against owner subscription 3, never cell id');
+  assert.equal(page.view(1).mode, 'failed');
+  mount(2, [{ id: 5, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  lane.receive('panels', panels([{ id: 5, hour: 30, kind: 'data', stepped: true, data: panelData }, { id: 0, hour: 30, kind: 'completed' }], 0));
+  lane.receive('follow', message(30, [{ id: CELL_A, answer: rows([1n], [300n]) }], false, NATIVE, 0));
+  await step(30, { playing: false, seek: 0 });
+  assert.equal(page.view(2).mode, 'picture', 'healthy subscription 5 reusing CELL_A must not inherit sub 3 fault');
+  assert.equal((page.view(2).fields?.['live:5'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 300);
 });

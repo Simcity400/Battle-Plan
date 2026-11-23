@@ -203,6 +203,29 @@ export class Pipeline {
       this.flush();
       return;
     }
+    if (message.type === 'sub-failed') {
+      const held = this.byId.get(message.sub);
+      if (held && held.status !== 'refused') {
+        if (held.channel !== 'pinned' && held.status === 'followed') {
+          void this.ask('unfollow', { id: held.id }, held.route).catch(() => {});
+        }
+        this.refuse(held, message.reason);
+        if (!this.holds(held.route)) {
+          held.route.told = null;
+          const page = this.nextRoute++;
+          this.page.carry(held.route.page, page);
+          held.route.page = page;
+        }
+      }
+      return;
+    }
+    if (message.type === 'widget-failed') {
+      if (this.widgets.has(message.widget)) {
+        this.page.name(message.widget, 'failed', message.reason);
+        this.flush();
+      }
+      return;
+    }
     if (message.type === 'hit') {
       const told = this.hits.get(message.widget)?.shift();
       this.page.inspect(message.widget, message.key); this.flush();
@@ -399,6 +422,10 @@ export class Pipeline {
     const same = surfaces.length === widget.surfaces.length && surfaces.every((surface, at) => surface === widget.surfaces[at]);
     if (!same) { widget.surfaces = surfaces; this.page.remount(id, surfaces); }
     else this.page.rebind(id, change);
+    if (!same || change.subscription) {
+      const refused = [...widget.subs.values()].map(sub => this.byId.get(sub)).find(sub => sub?.status === 'refused');
+      if (refused) this.page.name(id, 'failed', refused.reason);
+    }
     if (model !== undefined) widget.model = model;
     widget.binding = this.timed(widget, binding);
     this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: id, binding: widget.binding, ...model !== undefined ? { model } : {} });

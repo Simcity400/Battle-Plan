@@ -343,7 +343,7 @@ test('differential: panels with reused live cells survive seeks, pauses, speed c
   }
 });
 
-test('differential: ordering hazards (batched resets, deferred crop, speculative early open entries, inflight faults, panel decode faults + STANDS + stale seeks)', async () => {
+test('differential: ordering hazards (batched resets, deferred crop, speculative early open entries, sticky faults, panel decode faults + STANDS + stale seeks)', async () => {
   const started = performance.now();
   const faults: Fault[] = [];
   let checked = 0;
@@ -356,6 +356,7 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
     const deferredPresentations: Parameters<Page<Fake>['offer']>[0][] = [];
     const lanes: Lane<Fake>[] = [];
     const laneFailures: string[] = [];
+    const subFailedCounts = new Map<number, number>();
     const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => {
       if (m.type === 'frame') lanes[0]!.frame(m);
       else if (m.type === 'stream') lanes[0]!.stream(m.route, m.seek, m.target);
@@ -382,6 +383,11 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       },
       release: () => {}, later: () => {},
       fail: reason => laneFailures.push(`seed ${seed}: ${reason}`),
+      failSub: (sub, reason) => {
+        subFailedCounts.set(sub, (subFailedCounts.get(sub) ?? 0) + 1);
+        for (const w of widgets) if (w.subs.includes(sub)) page.name(w.id, 'failed', reason);
+      },
+      failWidget: (widget, reason) => page.name(widget, 'failed', reason),
     }));
     for (const w of widgets) {
       for (const sub of w.subs) { lanes[0]!.follow(sub, 'followed'); lanes[0]!.bindRoute(sub, ROUTE, NATIVE); }
@@ -391,10 +397,9 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
     }
     let seek = 0, clock = 0, playing = true, speed = 720, step = 12, nativeHead = 0;
     const sent = new Map<number, string | bigint[]>();
-    const faulted = new Map<number, number>();
+    const faulted = new Set<number>();
     const makeAnswers = (hour: number, whole: boolean) => subs.flatMap(sub => {
       const reason = truth.reason(sub, hour), rows = truth.rows(sub, hour), last = sent.get(sub);
-      if (faulted.has(sub)) return [];
       if (reason !== null) {
         if (!whole && last === reason) return [];
         sent.set(sub, reason);
@@ -415,7 +420,7 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
     for (let tick = 0; tick < 80; tick++) {
       const action = rnd(14);
       if (action === 0) {
-        seek++; clock = rnd(HOURS - 200); playing = false; nativeHead = clock; sent.clear(); faulted.clear();
+        seek++; clock = rnd(HOURS - 200); playing = false; nativeHead = clock; sent.clear();
         lanes[0]!.receive('follow', message(clock, seek, true, makeAnswers(clock, true)));
       } else if (action === 1) {
         playing = !playing;
@@ -424,7 +429,7 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
         sent.clear();
         lanes[0]!.receive('follow', message(nativeHead, seek, true, makeAnswers(nativeHead, true)));
       } else if (action === 3 && !faulted.has(3)) {
-        faulted.set(3, nativeHead);
+        faulted.add(3);
         lanes[0]!.receive('follow', message(nativeHead, seek, false, [{ id: 3, hour: nativeHead, body: answerBody({ keys: [999n], columns: 1, values: [1n], changed: true }) }]));
       }
       if (playing) {
@@ -450,11 +455,12 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       }
       for (const w of widgets) {
         const view = page.view(w.id), sub = w.subs[0]!;
-        const faultHour = faulted.get(sub);
-        if (!playing && faultHour !== undefined && clock >= faultHour) {
-          if (view.mode !== 'failed') faults.push({ property: 'inflight-fault', detail: `seed ${seed} tick ${tick} w${w.id} mode ${view.mode} while sub ${sub} faulted at ${faultHour}` });
+        if (faulted.has(sub)) {
+          if (view.mode !== 'failed') faults.push({ property: 'sticky-fault', detail: `seed ${seed} tick ${tick} w${w.id} mode ${view.mode} after sub ${sub} faulted` });
+          if ((subFailedCounts.get(sub) ?? 0) !== 1) faults.push({ property: 'fault-once', detail: `seed ${seed} tick ${tick} sub ${sub} failSub called ${subFailedCounts.get(sub) ?? 0} times` });
           continue;
         }
+        if (view.mode === 'failed') faults.push({ property: 'sibling-isolated', detail: `seed ${seed} tick ${tick} healthy sibling w${w.id} failed: ${view.reason}` });
         if (view.mode === 'picture') {
           checked++;
           const h = view.h!, c = page.widgets.get(w.id)!.installed!.c;
@@ -479,13 +485,18 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       lane: 0, lanes: 1, views: () => fieldsView(() => undefined),
       crop: async () => [], present: p => page.offer(p), release: () => {}, later: () => {},
       fail: reason => laneFailures.push(`panel seed ${seed}: ${reason}`),
+      failSub: (sub, reason) => page.name(sub === 3 ? 1 : 2, 'failed', reason),
+      failWidget: (widget, reason) => page.name(widget, 'failed', reason),
     });
     lane.follow(3, 'panel', 'demo'); lane.bindRoute(3, ROUTE, NATIVE, 0);
     lane.mount(1, [3], 'fields'); lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
     page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+    lane.follow(5, 'panel', 'demo'); lane.bindRoute(5, ROUTE, NATIVE, 0);
+    lane.mount(2, [5], 'fields'); lane.bind(2, { generation: 1, surfaces: [], offset: 0, pin: null });
+    page.mount(2, { route: ROUTE, lane: 0, surfaces: [] });
     let seek = 0, hour = 0, expectFailed = false;
-    const corruptPanel = (atHour: number, atSeek: number) => {
-      const p = panelPacket([{ id: 3, hour: atHour, kind: 'data', stepped: true, data: { shape: `H${atHour}` } }, { id: 0, hour: atHour, kind: 'completed' }], atSeek);
+    const corruptPanel = (id: number, atHour: number, atSeek: number) => {
+      const p = panelPacket([{ id, hour: atHour, kind: 'data', stepped: true, data: { shape: `H${atHour}` } }, { id: 0, hour: atHour, kind: 'completed' }], atSeek);
       p[24 + 16] = 0xc1;
       return p;
     };
@@ -498,29 +509,42 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
       return out;
     };
     page.publish(0, { playing: false, seek: 0 });
-    lane.receive('panels', panelPacket([{ id: 3, hour: 0, kind: 'data', stepped: true, data: { shape: 'H0' } }, { id: 0, hour: 0, kind: 'completed' }], 0));
+    lane.receive('panels', panelPacket([
+      { id: 3, hour: 0, kind: 'data', stepped: true, data: { shape: 'H0' } },
+      { id: 5, hour: 0, kind: 'data', stepped: true, data: { shape: 'S0' } },
+      { id: 0, hour: 0, kind: 'completed' },
+    ], 0));
     await flush(); page.frame(); await flush();
     for (let step = 1; step <= 40; step++) {
       hour += 5;
       const op = rnd(5);
       if (op === 0) {
-        seek++; expectFailed = false;
+        seek++;
         page.publish(hour, { playing: false, seek }); await flush();
-        lane.receive('panels', panelPacket([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], seek));
+        lane.receive('panels', panelPacket([
+          { id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } },
+          { id: 5, hour, kind: 'data', stepped: true, data: { shape: `S${hour}` } },
+          { id: 0, hour, kind: 'completed' },
+        ], seek));
       } else if (op === 1) {
         expectFailed = true;
-        lane.receive('panels', corruptPanel(hour, seek));
+        lane.receive('panels', corruptPanel(3, hour, seek));
       } else if (op === 2) {
         lane.receive('panels', standsPanel(hour, seek));
       } else if (op === 3 && seek > 0) {
-        lane.receive('panels', corruptPanel(hour, seek - 1));
+        lane.receive('panels', corruptPanel(5, hour, seek - 1));
       } else {
-        lane.receive('panels', panelPacket([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], seek));
+        lane.receive('panels', panelPacket([
+          { id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } },
+          { id: 5, hour, kind: 'data', stepped: true, data: { shape: `S${hour}` } },
+          { id: 0, hour, kind: 'completed' },
+        ], seek));
       }
       page.publish(hour, { playing: false, seek }); await flush(); await flush(); page.frame(); await flush(); page.frame();
-      const view = page.view(1);
-      if (expectFailed && view.mode !== 'failed') faults.push({ property: 'panel-fault', detail: `panel seed ${seed} step ${step} mode ${view.mode}, expected failed` });
+      const view = page.view(1), sibling = page.view(2);
+      if (expectFailed && view.mode !== 'failed') faults.push({ property: 'panel-fault', detail: `panel seed ${seed} step ${step} mode ${view.mode}, expected sticky failed` });
       if (!expectFailed && view.mode === 'failed') faults.push({ property: 'panel-stale', detail: `panel seed ${seed} step ${step} unexpectedly failed: ${view.reason}` });
+      if (sibling.mode === 'failed') faults.push({ property: 'panel-sibling', detail: `panel seed ${seed} step ${step} healthy sibling failed: ${sibling.reason}` });
     }
     assert.deepEqual(laneFailures, []);
   }
@@ -633,8 +657,14 @@ test('differential: M2 future-seek panel replay preserves exact panel coverage a
     let hour = 10;
     packets.push(rawPanel([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], 1));
     for (let step = 0; step < 25; step++) {
+      const op = rnd(6);
+      if (op === 5 && hour >= 14) {
+        const prev = hour - 2;
+        packets.push(rawPanel([{ id: 3, hour: prev, kind: 'data', stepped: true, data: { shape: `R${step}` } }], 1));
+        packets.push(rawPanel([{ id: 0, hour, kind: 'completed' }], 1));
+        continue;
+      }
       hour += 1 + rnd(4);
-      const op = rnd(5);
       if (op <= 1) packets.push(rawPanel([{ id: 0, hour, kind: 'completed' }], 1));
       else if (op === 2) packets.push(rawPanel([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], 1));
       else if (op === 3) packets.push(rawPanel([{ id: 3, hour, kind: 'stands', stepped: true }], 1));

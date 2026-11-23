@@ -20,6 +20,8 @@ export type ToLane =
 export type FromLane =
   | ({ type: 'presentation' } & Presented<ImageBitmap>)
   | { type: 'failure'; lane: number; reason: string }
+  | { type: 'sub-failed'; lane: number; sub: number; reason: string }
+  | { type: 'widget-failed'; lane: number; widget: number; reason: string }
   | { type: 'hit'; widget: number; key: string | null }
   | { type: 'served'; seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] };
 

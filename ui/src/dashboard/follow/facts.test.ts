@@ -589,3 +589,16 @@ test('S10: nextStart includes future cell-group starts when a panel covers targe
   assert.equal(f.select(1, 15), null);
   assert.equal(f.nextStart(1, 15), 20, 'nextStart sees the unseeded cell group becoming available at hour 20');
 });
+
+test('P8: equal completion confirms a replacement stepped panel opened since the preceding completion and skips redundant equal completions', () => {
+  const f = facts([1, 'panel']);
+  f.panels(R, 0, [data(1, 10, { stepped: true })], 50);
+  assert.deepEqual(hc(f.select(1, 50)), [10, 50]);
+  f.panels(R, 0, [data(1, 40, { stepped: true })]);
+  assert.deepEqual(hc(f.select(1, 50)), [40, 40]);
+  f.panels(R, 0, [], 50);
+  assert.deepEqual(hc(f.select(1, 50)), [40, 50], 'completion-only packet equal to prior completedPanel must confirm replacement panel B');
+  const before = f.stats.completionVisits;
+  f.panels(R, 0, [], 50);
+  assert.equal(f.stats.completionVisits - before, 0, 'redundant equal completion with no newly opened panels does zero visits');
+});

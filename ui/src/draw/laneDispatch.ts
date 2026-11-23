@@ -24,6 +24,8 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
       hit: (widget, key) => post({ type: 'hit', widget, key }),
       served: frame => post({ type: 'served', ...frame }),
       fail: reason => post({ type: 'failure', lane: index, reason }),
+      failSub: (sub, reason) => post({ type: 'sub-failed', lane: index, sub, reason }),
+      failWidget: (widget, reason) => post({ type: 'widget-failed', lane: index, widget, reason }),
       ...side.stretch ? { stretch: (ms: number) => side.stretch!(ms, rate) } : {},
     });
     port.onmessage = ({ data }: MessageEvent<FromPull>) => {

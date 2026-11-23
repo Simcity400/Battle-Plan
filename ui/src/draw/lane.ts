@@ -58,6 +58,8 @@ export interface LaneHost<B extends Bitmap> {
   present(presentation: Presented<B>, transfer: B[]): void;
   release(bytes: number): void;
   fail(reason: string): void;
+  failSub?(sub: number, reason: string): void;
+  failWidget?(widget: number, reason: string): void;
   later(run: () => void): void;
   hit?(widget: number, key: string | null): void;
   served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] }): void;
@@ -129,7 +131,6 @@ const LOST = 'Answers that arrived before this reading was registered overflowed
 const EARLY_OVERFLOW = 'Early packets for a future seek overflowed the lane buffer and were lost';
 
 type Selected = { pictures: Picture<Value>[]; window: Window; h: number; c: number };
-type Selection = Selected | 'lost' | { failed: string; hour: number } | null;
 
 const now = () => performance.now();
 
@@ -163,7 +164,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly prunableAt = new Map<number, number>();
   private minPruneHour = Infinity;
   private readonly limitedSubs = new Set<number>();
-  private readonly subFailed = new Map<number, { reason: string; hour: number }>();
+  private readonly failedSubs = new Set<number>();
   private readonly routes = new Map<number, number>();
   private readonly natives = new Map<number, number>();
   private readonly offsets = new Map<number, number>();
@@ -181,6 +182,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private early: { native: number; seek: number; bytes: Uint8Array; stamp?: number }[] = [];
   private earlyPanels: { native: number; seek: number; bytes: Uint8Array; completedOnly?: number }[] = [];
   private earlyBytes = 0;
+  private readonly newestFutureSeek = new Map<number, number>();
   private readonly earlyOverflow = new Map<number, number>();
   private heldBytes = 0;
   private readonly heldIds = new Map<number, number>();
@@ -294,11 +296,51 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     else this.nonOpenPanel.delete(widget.id);
   }
 
-  private failSub(id: number, reason: string, hour: number) {
-    if (this.subFailed.has(id)) return;
-    this.subFailed.set(id, { reason, hour });
+  private failSub(id: number, reason: string) {
+    if (id >= CELL) {
+      this.failCell(id, reason);
+      return;
+    }
+    if (this.failedSubs.has(id)) return;
+    this.failedSubs.add(id);
+    this.limitedSubs.delete(id);
+    this.lost.delete(id);
+    this.forget(id);
     this.facts.fail(id);
-    this.markSub(id, true);
+    for (const cell of this.facts.drain()) {
+      this.gone.add(cell);
+      this.limitedSubs.delete(cell);
+      this.forget(cell);
+    }
+    const widgets = this.subWidgets.get(id);
+    if (widgets) for (const wid of widgets) {
+      const widget = this.widgets.get(wid);
+      if (widget) {
+        widget.inflight = null;
+        widget.parked = null;
+        this.dirtyWidgets.delete(wid);
+        this.motionWidgets.delete(wid);
+        this.syncWindowTracking(widget);
+      }
+    }
+    this.host.failSub?.(id, reason);
+  }
+
+  private failCell(cell: number, reason: string) {
+    const users = this.facts.usersOf(cell);
+    if (!users || !users.size) return;
+    for (const owner of [...users]) this.failSub(owner, reason);
+  }
+
+  private failWidget(widget: Widget, reason: string) {
+    widget.halted = widget.binding.generation;
+    widget.motion = false;
+    widget.inflight = null;
+    widget.parked = null;
+    this.motionWidgets.delete(widget.id);
+    this.dirtyWidgets.delete(widget.id);
+    this.syncWindowTracking(widget);
+    this.host.failWidget?.(widget.id, reason);
   }
 
   private markSub(id: number, closeOpen = false) {
@@ -382,13 +424,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.subs.delete(sub);
     this.lost.delete(sub);
     this.limitedSubs.delete(sub);
-    this.subFailed.delete(sub);
+    this.failedSubs.delete(sub);
     this.prunableNow.delete(sub);
     this.prunableAt.delete(sub);
     this.forget(sub);
     for (const cell of this.facts.unfollow(sub)) {
       this.gone.add(cell);
-      this.subFailed.delete(cell);
       this.limitedSubs.delete(cell);
       this.forget(cell);
     }
@@ -447,7 +488,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   exact(sub: number, hour: number, data: unknown, refused: string | null) {
-    this.subFailed.delete(sub);
+    if (this.failedSubs.has(sub)) return;
     this.facts.exact(sub, hour, { kind: 'panel', bytes: null, data, refused }, refused);
     this.markSub(sub);
     this.wake();
@@ -460,13 +501,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.routeConfirmedPanel.delete(route);
     this.toldConfirmedPanel.delete(route);
     for (const [subId, sub] of this.subs) if (sub.route === route) {
-      this.subFailed.delete(subId);
       this.limitedSubs.delete(subId);
-      for (const cell of this.facts.usesOf(subId) ?? []) {
-        this.subFailed.delete(cell);
-        this.limitedSubs.delete(cell);
-      }
-      this.schedulePrune(subId);
+      for (const cell of this.facts.usesOf(subId) ?? []) this.limitedSubs.delete(cell);
+      if (!this.failedSubs.has(subId)) this.schedulePrune(subId);
     }
     const native = this.natives.get(route);
     if (native !== undefined) for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
@@ -533,13 +570,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private hold(item: Held) {
-    if (item.id >= CELL && this.gone.has(item.id) || this.lost.has(item.id)) { this.freed += item.size; return; }
+    if (item.id >= CELL && this.gone.has(item.id) || this.failedSubs.has(item.id) || this.lost.has(item.id)) { this.freed += item.size; return; }
     if (this.heldBytes + item.size + HELD_COST > BUFFER) {
       this.freed += item.size;
       this.forget(item.id);
-      this.lost.set(item.id, item.native);
-      if (item.id >= CELL) this.failSub(item.id, LOST, -Infinity);
-      else this.markSub(item.id, true);
+      if (item.id < CELL) this.failSub(item.id, LOST);
+      else this.lost.set(item.id, item.native);
       return;
     }
     this.heldBytes += item.size + HELD_COST;
@@ -616,14 +652,46 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private earlyLimit() { return this.host.earlyBuffer ?? BUFFER; }
 
-  private isEarlyOverflowed(native: number, seek: number) {
-    const overflowed = this.earlyOverflow.get(native);
-    return overflowed !== undefined && seek <= overflowed;
+  private dropEarlyBefore(native: number, seek: number) {
+    const keepFollow: typeof this.early = [];
+    for (const item of this.early) {
+      if (item.native === native && item.seek < seek) {
+        this.earlyBytes -= item.bytes.byteLength + HELD_COST;
+        this.freed += recordsCharge(item.bytes);
+      } else keepFollow.push(item);
+    }
+    this.early = keepFollow;
+    const keepPanels: typeof this.earlyPanels = [];
+    for (const item of this.earlyPanels) {
+      if (item.native === native && item.seek < seek) {
+        this.earlyBytes -= item.bytes.byteLength + HELD_COST;
+        this.freed += panelRecordsCharge(item.bytes);
+      } else keepPanels.push(item);
+    }
+    this.earlyPanels = keepPanels;
+  }
+
+  private acceptFutureSeek(native: number, seek: number, charge: number): boolean {
+    const newest = this.newestFutureSeek.get(native);
+    if (newest !== undefined && seek < newest) {
+      this.freed += charge;
+      return false;
+    }
+    if (newest === undefined || seek > newest) {
+      this.newestFutureSeek.set(native, seek);
+      this.dropEarlyBefore(native, seek);
+      const overflowed = this.earlyOverflow.get(native);
+      if (overflowed !== undefined && overflowed < seek) this.earlyOverflow.delete(native);
+    }
+    if (this.earlyOverflow.get(native) === seek) {
+      this.freed += charge;
+      return false;
+    }
+    return true;
   }
 
   private overflowEarly(native: number, seek: number) {
-    const prev = this.earlyOverflow.get(native);
-    if (prev === undefined || seek > prev) this.earlyOverflow.set(native, seek);
+    this.earlyOverflow.set(native, seek);
     const keepFollow: typeof this.early = [];
     for (const item of this.early) {
       if (item.native === native && item.seek === seek) {
@@ -643,10 +711,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private queueEarlyFollow(native: number, seek: number, bytes: Uint8Array, stamp?: number) {
-    if (this.isEarlyOverflowed(native, seek)) { this.freed += recordsCharge(bytes); return; }
+    const charge = recordsCharge(bytes);
+    if (!this.acceptFutureSeek(native, seek, charge)) return;
     const cost = bytes.byteLength + HELD_COST;
     if (this.earlyBytes + cost > this.earlyLimit()) {
-      this.freed += recordsCharge(bytes);
+      this.freed += charge;
       this.overflowEarly(native, seek);
       return;
     }
@@ -655,7 +724,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private queueEarlyPanel(native: number, seek: number, bytes: Uint8Array) {
-    if (this.isEarlyOverflowed(native, seek)) { this.freed += panelRecordsCharge(bytes); return; }
+    const charge = panelRecordsCharge(bytes);
+    if (!this.acceptFutureSeek(native, seek, charge)) return;
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = bytes.byteLength >= 24 ? data.getUint32(8, true) : 0;
     const isCompletedOnly = count === 1 && bytes.byteLength >= 40 && data.getUint8(24 + 8) === 4;
@@ -682,7 +752,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     const cost = bytes.byteLength + HELD_COST;
     if (this.earlyBytes + cost > this.earlyLimit()) {
-      this.freed += panelRecordsCharge(bytes);
+      this.freed += charge;
       this.overflowEarly(native, seek);
       return;
     }
@@ -691,6 +761,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private replayEarly() {
+    for (const [native, newest] of [...this.newestFutureSeek]) {
+      const route = this.routes.get(native);
+      if (route !== undefined && this.facts.generation(route).seek >= newest) this.newestFutureSeek.delete(native);
+    }
     for (const [native, seek] of [...this.earlyOverflow]) {
       const route = this.routes.get(native);
       if (route === undefined) continue;
@@ -699,7 +773,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       else if (seek === current) {
         this.earlyOverflow.delete(native);
         for (const [subId, sub] of this.subs) if (sub.route === route) {
-          this.failSub(subId, EARLY_OVERFLOW, -Infinity);
+          this.failSub(subId, EARLY_OVERFLOW);
         }
       }
     }
@@ -731,6 +805,10 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (const item of ready) this.heldBytes -= item.size + HELD_COST;
     this.reindex();
     for (const item of ready) {
+      if (this.failedSubs.has(item.id) || (item.id >= CELL && !this.facts.owns(item.id))) {
+        this.freed += item.size;
+        continue;
+      }
       const route = this.routes.get(item.native)!, only = new Set([item.id]);
       if (item.kind === 'follow') {
         const limited = new Map<number, number>(), answers: FollowAnswer<Value>[] = [], latest = new Map<number, AnswerValue>();
@@ -739,10 +817,12 @@ export class Lane<B extends { readonly width: number; close(): void }> {
           if (!view.getUint32(8, true)) { limited.set(item.id, view.getInt32(4, true)); this.freed += charged(record); this.limitedSubs.add(item.id); }
           else { const answer = this.answer(item.id, record, charged(record), false, latest); if (answer) answers.push(answer); }
         }
+        if (this.failedSubs.has(item.id) || (item.id >= CELL && !this.facts.owns(item.id))) continue;
         this.facts.followed(route, item.seek, { hour: item.hour, answers, limited }, only);
         this.markSub(item.id, true);
       } else {
         const parsed = item.records.flatMap(record => this.panel(record) ?? []);
+        if (this.failedSubs.has(item.id)) continue;
         this.facts.panels(route, item.seek, parsed, item.completed, only);
         this.markSub(item.id);
       }
@@ -751,7 +831,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private answer(id: number, record: Uint8Array, bytes: number, reset: boolean, latest: Map<number, AnswerValue>): FollowAnswer<Value> | null {
-    if (this.subFailed.has(id)) {
+    if (this.failedSubs.has(id) || (id >= CELL && !this.facts.owns(id))) {
       this.freed += bytes;
       return null;
     }
@@ -770,7 +850,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
     } catch (error) {
       this.freed += bytes;
-      this.failSub(id, error instanceof Error ? error.message : String(error), at);
+      this.failSub(id, error instanceof Error ? error.message : String(error));
       return null;
     }
     latest.set(id, value);
@@ -801,13 +881,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     for (let i = 0; i < count; i++) {
       const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), length = data.getUint32(at + 8, true), record = bytes.subarray(at, at + 16 + length);
       const size = charged(record);
-      if (route === undefined || !this.known(id)) {
+      if (this.failedSubs.has(id)) { this.freed += size; }
+      else if (route === undefined || !this.known(id)) {
         if (this.subs.has(id) || id >= CELL) {
           let own = unbound.get(id);
           if (!own) unbound.set(id, own = { records: [], size: 0 });
           own.records.push(record.slice()); own.size += size;
         } else this.freed += size;
-      } else if (this.subFailed.has(id)) { this.freed += size; }
+      }
       else if (!length) { limited.set(id, hour); this.freed += size; }
       else mine.push([id, at, length]);
       at += 16 + length;
@@ -852,19 +933,20 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private panel(record: Uint8Array): PanelRecord<Value> | null {
     const size = 2 * record.length;
     const rawId = record.byteLength >= 4 ? new DataView(record.buffer, record.byteOffset, 4).getUint32(0, true) : -1;
-    if (rawId >= 0 && this.subFailed.has(rawId)) {
+    if (rawId >= 0 && this.failedSubs.has(rawId)) {
       this.freed += size;
       return null;
     }
     let panel: ReturnType<typeof parseDatedPanelRecord>;
-    try { panel = parseDatedPanelRecord(record); }
-    catch (error) {
+    let cells: ReturnType<typeof cellsOf> = [];
+    try {
+      panel = parseDatedPanelRecord(record);
+      if (panel.panel && panel.panel.refused === null) cells = cellsOf(panel.panel.data);
+    } catch (error) {
       this.freed += size;
       const reason = error instanceof Error ? error.message : String(error);
-      if (this.subs.has(rawId)) {
-        const hour = record.byteLength >= 8 ? new DataView(record.buffer, record.byteOffset, 8).getInt32(4, true) : -Infinity;
-        this.failSub(rawId, reason, hour);
-      } else this.host.fail(reason);
+      if (this.subs.has(rawId)) this.failSub(rawId, reason);
+      else this.host.fail(reason);
       return null;
     }
     if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
@@ -874,9 +956,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
       value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
-    let cells: ReturnType<typeof cellsOf> = [];
-    try { cells = cellsOf(panel.panel.data); } catch { cells = []; }
-    for (const cell of cells) this.gone.delete(cell.id);
+    for (const cell of cells) {
+      if (this.lost.has(cell.id)) {
+        this.freed += size;
+        this.failSub(panel.id, LOST);
+        return null;
+      }
+      this.gone.delete(cell.id);
+    }
     return { kind: 'data', id: panel.id, hour: panel.hour, stepped: panel.stepped, bytes: size, cells,
       value: { kind: 'panel', bytes: panel.panel.bytes ? panel.panel.bytes.slice() : null, data: panel.panel.data, refused: null } };
   }
@@ -894,6 +981,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const id = data.getUint32(at, true), kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true);
       const size = ((16 + length + 7) & ~7);
       if (kind === 4) completed = data.getInt32(at + 4, true);
+      else if (this.failedSubs.has(id)) { this.freed += 2 * size; }
       else if (route === undefined || !this.known(id)) {
         if (this.subs.has(id)) {
           let own = unbound.get(id);
@@ -981,7 +1069,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private targetOf(widget: Widget, hour: number) { return widget.binding.pin ?? hour + widget.binding.offset; }
 
-  private select(widget: Widget, target: number): Selection {
+  private select(widget: Widget, target: number): Selected | null {
     const pictures: Picture<Value>[] = [];
     let joined: { h: number; c: number; window: Window } | null;
     if (!widget.subs.length) {
@@ -991,35 +1079,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     } else {
       const components: { picture: Picture<Value>; window: Window }[] = [];
       for (const id of widget.subs) {
-        const failed = this.subFailed.get(id);
-        if (failed !== undefined) return { failed: failed.reason, hour: failed.hour };
-        if (this.lost.has(id)) return 'lost';
-        for (const cell of this.facts.activeCells(id, target)) {
-          const cellFailed = this.subFailed.get(cell);
-          if (cellFailed !== undefined) return { failed: cellFailed.reason, hour: cellFailed.hour };
-          if (this.lost.has(cell)) return 'lost';
-        }
+        if (this.failedSubs.has(id)) return null;
         const sub = this.subs.get(id);
         if (!sub || sub.route !== null && this.failed.has(sub.route)) return null;
         const picture = this.facts.select(id, target);
         if (!picture) return null;
-        for (const cell of picture.parts[0]!.cells) {
-          const cellFailed = this.subFailed.get(cell);
-          if (cellFailed !== undefined) return { failed: cellFailed.reason, hour: cellFailed.hour };
-          if (this.lost.has(cell)) return 'lost';
-        }
         const window = this.facts.window(id, target, picture);
         if (!window) return null;
-        let capped = window;
-        for (const cell of this.facts.usesOf(id) ?? []) {
-          const cellFailed = this.subFailed.get(cell);
-          if (cellFailed !== undefined || this.lost.has(cell)) {
-            const until = Math.min(cellFailed?.hour ?? Infinity, this.facts.nextStart(id, target)) - 1;
-            if (until < capped[1]) capped = [capped[0], until];
-          }
-        }
         pictures.push(picture);
-        components.push({ picture, window: capped });
+        components.push({ picture, window });
       }
       joined = joinComponents(components);
     }
@@ -1075,7 +1143,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private canRedate(sent: Sent | null, selected: Selected, binding: number, inspect: string | null) {
-    return !!sent && sent.mode !== 'failed' && sent.binding === binding && sent.inspect === inspect
+    return !!sent && sent.binding === binding && sent.inspect === inspect
       && sent.pictures.length === selected.pictures.length
       && sent.pictures.every((picture, at) => samePicture(picture, selected.pictures[at]))
       && sent.lo === selected.window[0];
@@ -1134,7 +1202,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.windowSafeHi = hi;
       this.windowSafeDirty = false;
     }
-    const due: { widget: Widget; selected: Exclude<Selection, null>; motion: boolean; target: number; failWindow?: Window }[] = [];
+    const due: { widget: Widget; selected: Selected; motion: boolean; target: number }[] = [];
     for (const wid of candidates) {
       const widget = this.widgets.get(wid);
       if (!widget || widget.halted === widget.binding.generation) continue;
@@ -1147,7 +1215,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         let next = Infinity;
         if (!widget.subs.length) {
           if (widget.binding.dated && widget.binding.dated.h > target) next = widget.binding.dated.h;
-        } else {
+        } else if (!widget.subs.some(id => this.failedSubs.has(id))) {
           for (const id of widget.subs) {
             const h = this.facts.nextStart(id, target);
             if (h < next) next = h;
@@ -1157,31 +1225,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.syncWindowTracking(widget);
         widget.inspect = key;
         if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
-        continue;
-      }
-      if (selected === 'lost' || 'failed' in selected) {
-        const currentTarget = this.targetOf(widget, request.now);
-        let failWindow: Window = [-Infinity, Infinity];
-        if (selected !== 'lost' && Number.isFinite(selected.hour) && currentTarget < selected.hour) {
-          const inst = widget.installed;
-          if (inst && inst.mode === 'picture' && inst.binding === widget.binding.generation) {
-            const instC = inst.open === 'followed' && route !== null
-              ? Math.max(inst.c, this.routeConfirmedFollowed.get(route) ?? -Infinity)
-              : inst.open === 'panel' && route !== null
-              ? Math.max(inst.c, this.routeConfirmedPanel.get(route) ?? -Infinity)
-              : inst.c;
-            if (inst.h <= currentTarget && currentTarget <= instC && inst.lo <= currentTarget && currentTarget <= inst.hi) {
-              failWindow = [Math.min(selected.hour, instC + 1), Infinity];
-            }
-          }
-        }
-        widget.validWindow = failWindow;
-        this.syncWindowTracking(widget);
-        const reason = selected === 'lost' ? LOST : selected.failed;
-        const sameFail = (s: Sent | null) => !!s && s.mode === 'failed' && s.binding === widget.binding.generation
-          && s.contents.failed === reason && s.lo === failWindow[0] && s.hi === failWindow[1];
-        if (sameFail(widget.inflight) || (!widget.inflight && sameFail(widget.installed))) continue;
-        due.push({ widget, selected, motion: false, target, failWindow });
         continue;
       }
       widget.validWindow = selected.window;
@@ -1211,7 +1254,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const shared = new Map<string, number>();
     let tried = 0;
     for (let i = 0; i < due.length; i++) {
-      const { widget, selected, motion, target, failWindow } = due[i]!;
+      const { widget, selected, motion } = due[i]!;
       const elapsed = this.time() - began;
       if (tried > 0 && elapsed + widget.cost > budget) {
         widget.deferrals++;
@@ -1229,16 +1272,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       widget.deferrals = 0;
       const start = this.time();
       widget.served = this.requests;
-      if (selected === 'lost' || 'failed' in selected) {
-        const reason = selected === 'lost' ? LOST : selected.failed;
-        const window: Window = failWindow ?? [-Infinity, Infinity];
-        const h = Number.isFinite(window[0]) ? window[0] : target;
-        const failed = { pictures: [], window, h, c: Math.max(target, h) };
-        entries.push(this.entry(widget, failed, { surfaces: [], fields: {}, motion: false }, 'failed', reason, [], request.seek));
-        made.push({ widget, selected: failed });
-        surfaces.push([]);
-        continue;
-      }
       const open = this.isOpenFollowed(widget, selected) ? 'followed' : this.isOpenPanel(widget, selected) ? 'panel' : undefined;
       if (!motion && !widget.motion && widget.installed && this.canRedate(widget.installed, selected, widget.binding.generation, widget.inspect)) {
         const redated = this.redateEntry(widget, widget.installed, selected, request.seek, open);
@@ -1258,8 +1291,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         else if (mode === 'picture' && refusals.some(refusal => refusal !== null))
           painted = { ...painted, fields: { ...painted.fields, ...Object.fromEntries(refusals.flatMap((refusal, at) => refusal === null ? [] : [[`refused:${widget.subs[at]}`, { content: refusal, value: refusal }]])) } };
       } catch (error) {
-        painted = { surfaces: [], fields: {}, motion: false };
-        mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
+        this.failWidget(widget, 'drawing failed: ' + (error instanceof Error ? error.message : String(error)));
+        continue;
       }
       const paintMs = this.time() - start;
       widget.motion = painted.motion;
@@ -1310,42 +1343,29 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const closed = this.pendingClosed.size ? [...this.pendingClosed] : undefined;
     if (closed) { this.pendingClosed.clear(); moved = true; }
     let crops: B[] = [];
+    let failedEntries: Set<number> | null = null;
     try { crops = slots.length ? await this.host.crop(slots.map(([, , source]) => sources[source]!)) : []; }
     catch (error) {
       const reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));
-      for (const e of new Set(slots.map(([e]) => e))) {
+      failedEntries = new Set(slots.map(([e]) => e));
+      for (const e of failedEntries) {
         const { widget } = made[e]!;
         const orig = entries[e]!;
         this.presented.delete(orig.id);
-        const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++;
-        const contents: Record<string, string> = { hour: String(orig.lo), failed: reason };
         const route = this.routeOf(widget);
-        const stillCurrent = widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
-        if (stillCurrent) {
-          const sent: Sent = {
-            id, request: this.requests, pictures: [], h: orig.h, c: orig.c, lo: orig.lo, hi: orig.hi,
-            binding: orig.binding, contents, fieldKeys: [], surfaceCount: 0, mode: 'failed', reason, inspect: widget.inspect,
-          };
-          widget.sent = { ...contents };
-          widget.inflight = sent;
-          this.presented.set(id, { widget: widget.id, sent });
-          this.syncWindowTracking(widget);
-        }
-        entries[e] = Object.freeze({
-          widget: widget.id, binding: orig.binding, id, h: orig.h, c: orig.c, lo: orig.lo, hi: orig.hi,
-          gen: orig.gen, follows: orig.follows, mode: 'failed', reason,
-          surfaces: [], content: Object.freeze(contents), fields: Object.freeze({}), ms: 0,
-        });
-        surfaces[e] = [];
+        const stillCurrent = this.widgets.get(widget.id) === widget && widget.binding.generation === orig.binding && (route === null || this.facts.generation(route).seek === orig.gen.seek);
+        if (stillCurrent) this.failWidget(widget, reason);
+        else if (widget.inflight?.id === orig.id) { widget.inflight = null; this.syncWindowTracking(widget); }
       }
       slots.length = 0;
     }
     this.stats.crops += crops.length;
     slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
-    if (entries.length || moved) {
-      this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...confirmed.length ? { confirmed } : {}, entries }, crops);
+    const presentEntries = failedEntries ? entries.filter((_, e) => !failedEntries.has(e)) : entries;
+    if (presentEntries.length || moved) {
+      this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...confirmed.length ? { confirmed } : {}, entries: presentEntries }, crops);
     }
-    this.stats.entries += entries.length;
+    this.stats.entries += presentEntries.length;
     this.prune(request.now);
     for (const id of this.facts.drain()) this.gone.add(id);
     const bytes = this.freed + this.releasedFacts();
@@ -1377,7 +1397,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private entry(widget: Widget, selected: Selected, painted: Painted, mode: Entry['mode'], reason: string | undefined, parts: (B | typeof SAME | null)[], seek: number, ms = 0, open?: 'followed' | 'panel'): Entry<B> {
     const id = this.host.lane + 1 + this.host.lanes * this.nextEntry++, contents: Record<string, string> = { hour: String(selected.window[0]) };
-    if (mode === 'failed' && reason !== undefined) contents.failed = reason;
     const fields: Record<string, unknown> = {};
     painted.surfaces.forEach((surface, k) => {
       if (!surface) { parts[k] = null; return; }

@@ -38,7 +38,7 @@ export interface Generation { seek: number; reset: number }
 interface Owner<V> { id: number; route: number; channel: Channel; facts: Fact<V>[]; open: boolean }
 interface Sub<V> extends Owner<V> { stepped: boolean; openSeq: number; carried: Picture<V> | null; uses: Set<number>; nativeCells: Set<number> }
 interface Group<V> extends Owner<V> { users: Set<number> }
-interface Route { seek: number; reset: number; completedPanel: number; completedSeq: number; openStepped: Set<number>; early: [number, () => void][] }
+interface Route { seek: number; reset: number; completedPanel: number; completedSeq: number; openStepped: Set<number>; pendingConfirm: Set<number>; early: [number, () => void][] }
 
 export type Window = readonly [lo: number, hi: number];
 
@@ -63,7 +63,7 @@ export class Facts<V> {
 
   private route(id: number): Route {
     let route = this.routes.get(id);
-    if (!route) this.routes.set(id, route = { seek: 0, reset: 0, completedPanel: -Infinity, completedSeq: 0, openStepped: new Set(), early: [] });
+    if (!route) this.routes.set(id, route = { seek: 0, reset: 0, completedPanel: -Infinity, completedSeq: 0, openStepped: new Set(), pendingConfirm: new Set(), early: [] });
     return route;
   }
 
@@ -86,16 +86,6 @@ export class Facts<V> {
 
   latest(id: number): V | undefined { return (this.subs.get(id) ?? this.groups.get(id))?.facts.at(-1)?.value; }
 
-  activeCells(id: number, target: number): readonly number[] {
-    const sub = this.subs.get(id);
-    if (!sub) return [];
-    for (let at = sub.facts.length - 1; at >= 0; at--) {
-      const fact = sub.facts[at]!;
-      if (fact.h <= target) return fact.cells;
-    }
-    return sub.carried && sub.carried.h <= target ? sub.carried.parts[0]?.cells ?? [] : [];
-  }
-
   isOpenSteppedPanel(id: number): boolean {
     const sub = this.subs.get(id);
     return !!sub && sub.channel === 'panel' && sub.stepped && sub.open && sub.facts.length > 0;
@@ -103,27 +93,17 @@ export class Facts<V> {
 
   fail(id: number) {
     const sub = this.subs.get(id);
-    if (sub) {
-      this.removed.push(...sub.facts);
-      sub.facts = [];
-      sub.open = false;
-      sub.stepped = false;
-      sub.carried = null;
-      sub.nativeCells.clear();
-      this.routes.get(sub.route)?.openStepped.delete(id);
-      this.retain(sub, new Set());
-      return;
-    }
-    const group = this.groups.get(id);
-    if (group) {
-      this.removed.push(...group.facts);
-      group.facts = [];
-      group.open = false;
-      for (const userId of group.users) {
-        const owner = this.subs.get(userId);
-        if (owner?.carried && owner.carried.parts[0]?.cells.includes(id)) owner.carried = null;
-      }
-    }
+    if (!sub) return;
+    this.removed.push(...sub.facts);
+    sub.facts = [];
+    sub.open = false;
+    sub.stepped = false;
+    sub.carried = null;
+    sub.nativeCells.clear();
+    const at = this.routes.get(sub.route);
+    at?.openStepped.delete(id);
+    at?.pendingConfirm.delete(id);
+    this.retain(sub, new Set());
   }
 
   nextStart(id: number, target: number): number {
@@ -166,7 +146,9 @@ export class Facts<V> {
     const sub = this.subs.get(id);
     if (!sub) return [];
     this.subs.delete(id);
-    this.routes.get(sub.route)?.openStepped.delete(id);
+    const at = this.routes.get(sub.route);
+    at?.openStepped.delete(id);
+    at?.pendingConfirm.delete(id);
     sub.nativeCells.clear();
     this.removed.push(...sub.facts);
     this.retain(sub, new Set());
@@ -231,6 +213,7 @@ export class Facts<V> {
     at.completedPanel = -Infinity;
     at.completedSeq++;
     at.openStepped.clear();
+    at.pendingConfirm.clear();
     for (const sub of this.subs.values()) if (sub.route === route && sub.channel !== 'pinned') sub.openSeq = at.completedSeq;
     at.seek = seek;
     const due = at.early.filter(([stamp]) => stamp <= seek);
@@ -273,7 +256,6 @@ export class Facts<V> {
       return;
     }
     const at = this.route(route);
-    const touched: Sub<V>[] = [];
     for (const record of records) {
       const sub = this.subs.get(record.id);
       if (!sub || sub.route !== route || sub.channel !== 'panel') { if ('bytes' in record) this.freed += record.bytes ?? 0; continue; }
@@ -292,22 +274,22 @@ export class Facts<V> {
         this.add(sub, this.fact(record.hour, record.hour, record.value, record.kind === 'refused' ? record.reason : null, 'panel', record.bytes ?? 0,
           cells.map(cell => cell.id), seeds));
         sub.openSeq = at.completedSeq;
-        if (sub.stepped) at.openStepped.add(sub.id);
+        if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
       } else if (record.kind === 'stands') {
         const last = sub.facts.at(-1);
         if (last) {
           last.c = Math.max(last.c, record.hour);
           sub.open = true;
           sub.openSeq = at.completedSeq;
-          if (sub.stepped) at.openStepped.add(sub.id);
+          if (sub.stepped) { at.openStepped.add(sub.id); at.pendingConfirm.add(sub.id); }
         }
       } else {
         const last = sub.facts.at(-1);
         if (last && sub.open) last.c = Math.max(last.c, record.hour - 1);
         sub.open = false;
         at.openStepped.delete(sub.id);
+        at.pendingConfirm.delete(sub.id);
       }
-      touched.push(sub);
     }
     if (completed !== undefined) {
       if (only) {
@@ -318,16 +300,21 @@ export class Facts<V> {
           this.materializePanel(sub);
           const last = sub.facts.at(-1);
           if (last && last.c < completed) last.c = completed;
+          if (completed >= at.completedPanel) at.pendingConfirm.delete(id);
         }
       } else if (completed > at.completedPanel) {
         at.completedPanel = completed;
         at.completedSeq++;
+        at.pendingConfirm.clear();
       } else if (completed === at.completedPanel) {
-        for (const sub of touched) {
-          if (!sub.stepped || !sub.open) continue;
+        for (const id of at.pendingConfirm) {
+          const sub = this.subs.get(id);
+          if (!sub || sub.route !== route || !sub.stepped || !sub.open) continue;
+          this.stats.completionVisits++;
           const last = sub.facts.at(-1);
           if (last && last.c < completed) last.c = completed;
         }
+        at.pendingConfirm.clear();
       } else {
         for (const id of at.openStepped) {
           const sub = this.subs.get(id);
