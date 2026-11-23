@@ -1663,3 +1663,37 @@ fn complete_witness_cache_write_does_not_admit_unwritten_alias_tag() {
     );
     assert_eq!(history.side(62, 0), Engaged::No);
 }
+
+#[test]
+fn gap_preserves_directly_witnessed_cache_write_for_next_hour() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)]);
+    let shares_with_three = Relations::factions_for_tests(&[(2, 3)]);
+    let mut history = History::default();
+    history.advance(
+        Sample {
+            viewer: Some(3),
+            viewer_raw: Some(3),
+            recording: true,
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![4],
+                cache_written_viewers: vec![4],
+            },
+            ..sample(&links, &shares_with_three, &[7], &[2])
+        },
+        Continuity::Gap,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Unknown);
+    history.advance(
+        Sample {
+            viewer: Some(3),
+            viewer_raw: Some(3),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links, &shares_with_three, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+}

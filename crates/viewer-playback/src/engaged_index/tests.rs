@@ -1305,6 +1305,46 @@ fn playing_country_switch_sweep_without_cache_write_keeps_prior_cached_viewer() 
 }
 
 #[test]
+fn unreadable_hour_gap_preserves_cache_written_viewer_for_next_unavailable_hour() {
+    use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let allied: &[(u32, u32)] = &[(2, 3)];
+    let observer_frame = |observer: u32| {
+        let mut frame = naval_frame(6, &[1], allied, 0, [0, 0]);
+        *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
+            vec![LocalPlayerRow {
+                country: 0,
+                observer_country: observer,
+            }],
+        ));
+        frame
+    };
+    let mut pass = Pass::new(Arc::default(), Country::Tag("C3".into()));
+    let mut frame10 = observer_frame(3);
+    *frame10.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+        TableRows::CombatEngagementRefreshes(vec![CombatEngagementRefreshRow {
+            kind: CombatEngagementRefreshRow::LOCAL_ALL_SIDES,
+            target: 4,
+            side: 0,
+            viewer: 0,
+            triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED
+                | CombatEngagementRefreshRow::TRIGGER_CACHE_WRITE,
+        }]),
+    );
+    let mut frame11 = observer_frame(3);
+    *frame11.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Unavailable {
+        reason: "witness unavailable".into(),
+    };
+    pass.fold_hour(3, 9, None, None, false);
+    pass.fold_hour(3, 10, Some(&frame10), None, false);
+    pass.fold_hour(3, 11, Some(&frame11), None, false);
+
+    let idx = index(&pass);
+    assert_eq!(flags(&idx, &mut frame10, 10, 3).land[&100], Engaged::Unknown);
+    assert_eq!(flags(&idx, &mut frame11, 11, 3).land[&100], Engaged::Yes);
+}
+
+#[test]
 fn unidentified_hourly_viewer_keeps_independently_witnessed_side_refresh() {
     use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
     use replay_frame::frame::TableView;

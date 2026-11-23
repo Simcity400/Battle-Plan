@@ -1066,20 +1066,29 @@ impl History {
         }
         let complete_recording =
             sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. });
+        let cache_written = || {
+            let mut known = Vec::new();
+            for &raw in cache_written_viewers {
+                push_unique(&mut known, CandidateViewer::RawLocal(raw));
+            }
+            known
+        };
         let manager_viewers = match continuity {
             Continuity::Load => primary_viewer.map(|v| vec![v]),
-            Continuity::Gap => (!sample.recording)
-                .then_some(primary_viewer)
-                .flatten()
-                .map(|v| vec![v]),
+            Continuity::Gap => {
+                if complete_recording && !cache_written_viewers.is_empty() {
+                    Some(cache_written())
+                } else {
+                    (!sample.recording)
+                        .then_some(primary_viewer)
+                        .flatten()
+                        .map(|v| vec![v])
+                }
+            }
             Continuity::Next => next.and_then(|prev_state| {
                 if complete_recording {
                     if !cache_written_viewers.is_empty() {
-                        let mut known = Vec::new();
-                        for &raw in cache_written_viewers {
-                            push_unique(&mut known, CandidateViewer::RawLocal(raw));
-                        }
-                        return Some(known);
+                        return Some(cache_written());
                     }
                     return match (prev_state.manager_viewers.as_deref(), primary_viewer) {
                         (Some(prev), Some(pv)) => {
