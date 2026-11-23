@@ -76,12 +76,15 @@ pub struct SubjectReply {
 
 dashboard_base::reply_warnings!(SubjectReply);
 
-fn relation(cells: &dyn Cells, slot: u32) -> Option<i64> {
-    if cells.number(CANCEL, slot)? != 0 {
-        return None;
-    }
-    let (start, end) = (cells.number(START, slot)?, cells.number(END, slot)?);
-    Some(start << 32 | i64::from(end as u32))
+fn relation(cells: &dyn Cells, slot: u32) -> replay_columnar::summary::Computed {
+    let value = (|| {
+        if cells.number(CANCEL, slot)? != 0 {
+            return None;
+        }
+        let (start, end) = (cells.number(START, slot)?, cells.number(END, slot)?);
+        Some(start << 32 | i64::from(end as u32))
+    })();
+    replay_columnar::summary::Computed::of(value)
 }
 
 fn relation_column() -> Column {

@@ -22,7 +22,8 @@ export function validateMeasureStates(value: unknown): MeasureStates {
   if (!object(value) || typeof value.branchId !== 'string' || typeof value.measure !== 'string' || !decimals(value.decimals)
     || !Array.isArray(value.states) || !value.states.every(state => object(state) && (typeof state.country === 'string' || typeof state.country === 'number') && hour(state.hour)
       && (state.run === null || run(state.run)) && (state.drop === null || drop(state.drop))
-      && (state.missing === null || typeof state.missing === 'string')))
+      && (state.missing === null || typeof state.missing === 'string')
+      && (state.notApplicable === undefined || typeof state.notApplicable === 'boolean')))
     throw new Error('The balance hour reply is malformed.');
   return value as unknown as MeasureStates;
 }
@@ -41,6 +42,7 @@ export interface ReachedLine {
   runs: SeriesRun[];
   drops: SeriesDrop[];
   missing: Map<number, string>;
+  notApplicable: Set<number>;
 }
 
 export function reachedLines(tags: readonly string[], states: MeasureStates | undefined): ReachedLine[] {
@@ -50,6 +52,7 @@ export function reachedLines(tags: readonly string[], states: MeasureStates | un
     for (const state of reached) if (state.run) unique.set(JSON.stringify([state.run.firstHour, state.run.lastHour, state.run.valueRaw, state.run.countryId]), state.run);
     return { tag, runs: [...unique.values()].sort((a, b) => a.firstHour - b.firstHour),
       drops: reached.flatMap(state => state.drop ? [state.drop] : []),
-      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])) };
+      missing: new Map(reached.flatMap(state => state.missing === null ? [] : [[state.hour, state.missing] as const])),
+      notApplicable: new Set(reached.flatMap(state => state.notApplicable === true ? [state.hour] : [])) };
   });
 }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { autonomyLanes, formatProgress, formatScore, headKey, holderSince, laneIdentity, laneLabel, levelAt, levelOrder } from './autonomyData.ts';
+import { autonomyLanes, formatProgress, formatScore, headKey, holderSince, laneIdentity, laneLabel, levelAt, levelOrder, progressText } from './autonomyData.ts';
+import { reachedLines } from '../country-measure/measureSeriesData.ts';
 import type { SubjectReply } from '../../generated/dashboard';
 
 const levels = [
@@ -48,6 +49,18 @@ test('an unrecorded level, an unobserved hour and a released subject are said, n
   assert.deepEqual(order.get('autonomy_mod_unordered'), { index: 2, lowest: false, highest: false });
   assert.equal(formatProgress('34960'), '35.0%');
   assert.equal(formatProgress(null), 'Not recorded');
+  assert.equal(formatProgress(null, 'No autonomy range'), 'No autonomy range');
+  const [line] = reachedLines(['GER'], {
+    branchId: '1', measure: 'progress', decimals: 5,
+    states: [
+      { country: 'GER', hour: 100, run: null, drop: null, missing: 'No autonomy range', notApplicable: true },
+      { country: 'GER', hour: 101, run: null, drop: null, missing: "GER's progress was not recorded at this hour", notApplicable: false },
+      { country: 'GER', hour: 102, run: null, drop: null, missing: "GER's progress was not recorded at this hour" },
+    ],
+  });
+  assert.equal(progressText(line, 100), 'No autonomy range');
+  assert.equal(progressText(line, 101), 'Not recorded', 'unrecorded complete hour keeps main Not recorded wording');
+  assert.equal(progressText(line, 102), 'Not recorded', 'truncated or older-host hour without notApplicable keeps main Not recorded wording');
 });
 
 test('a score is the game’s one decimal, and a missing one says why', () => {
