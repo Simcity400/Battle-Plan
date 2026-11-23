@@ -47,6 +47,7 @@ export class ArsenalPicture {
   private notice?: string;
   private closed = false;
   private geometry = '';
+  private named = '';
   changed = false;
 
   private point?: { x: number; y: number };
@@ -104,6 +105,8 @@ export class ArsenalPicture {
     const { tokens, width, height, dpr } = model, ctx = this.ctx;
     const geometry = `${width}|${height}|${dpr}|${model.scroll}|${model.slots}`;
     if (geometry !== this.geometry) { this.geometry = geometry; this.invalid = true; }
+    const named = [...model.looks].map(([tag, look]) => `${tag}\u0000${look.name}\u0000${look.flag ?? ''}`).join('\u0001');
+    if (named !== this.named) { this.named = named; this.invalid = true; }
     const previous = this.state, oldLayout = this.layout;
     const items = arsenalRows(reply, position, model).map(row => countryRaceItem(row, model.colours, tag => model.looks.get(tag)?.color ?? tokens.accent, tokens.muted));
     this.hour = position; this.position = position - model.offset;

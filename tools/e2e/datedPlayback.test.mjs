@@ -523,3 +523,29 @@ test('an empty window list fails with nothing measured', () => {
   assert.equal(result.pass, false);
   assert.deepEqual(result.reasons, ['nothing measured']);
 });
+
+test('review 7 F: a paused placement may keep its shown entry dimmed until the covering one lands; a different uncovered one is stale', () => {
+  const shown = [{ at: 0, shown: [[1, null, 'active']] }];
+  const tick = { t: 'tick', at: 0, hour: 120, playing: false, seek: 3 };
+  const held = { t: 'picture', at: 0, hour: 110, since: 100, through: 110, seek: 3, placement: 1, dim: true, entry: 7 };
+  const landed = { ...held, at: 2, hour: 120, through: 120, dim: false, entry: 8 };
+  assert.deepEqual([inputPictures([0, 1, 2, 3], shown, [tick, held, landed]).pass, inputPictures([0, 1, 2, 3], shown, [tick, held, landed]).stale], [true, 0], 'the held picture then its replacement');
+  const other = { ...held, at: 1, entry: 9 };
+  assert.equal(inputPictures([0, 1, 2, 3], shown, [tick, held, other, landed]).stale > 0, true, 'a different uncovered picture is caught');
+});
+
+test('review 7 F: every lane is held to both rate bounds', () => {
+  const presented = Array.from({ length: 61 }, (_, i) => i * 1000 / 60);
+  const records = [
+    { t: 'tick', at: 0, hour: 0, speed: 1440, playing: true },
+    { t: 'tick', at: 1000, hour: 1440, speed: 1440, playing: true },
+    ...presented.map(at => ({ t: 'picture', at, widget: 'w', surface: 'surface', placement: 1, hour: Math.floor(at * 1.44), head: Math.floor(at * 1.44), eligibleHour: Math.floor(at * 1.44), renderer: 'page' })),
+    ...presented.map(at => ({ t: 'workerFrame', at, lane: 0, lanes: 2, playing: true, changed: 1, workMs: 0.1 })),
+    ...presented.flatMap(at => [at, at + 8].map(when => ({ t: 'workerFrame', at: when, lane: 1, lanes: 2, playing: true, changed: 1, workMs: 0.1 }))).filter(r => r.at <= 1000),
+    ...presented.map(at => ({ t: 'frame', at, playing: true, commits: 0, commitSequence: 0 })),
+  ];
+  const window = { page: 'Synthetic', complete: true, from: 0, to: 1000, seconds: 1, presented, pressureMerges: 0,
+    widgets: [{ id: 'w', kind: 'synthetic', visible: true, surfaces: ['surface'] }], audit: [{ widget: 'w', surface: 'surface', placement: 1, error: null }],
+    inputs: { actions: ['rewind', 'scrub', 'pin', 'speed', 'scroll', 'pause'].map(kind => ({ kind, notApplicable: 'synthetic window has no input controls' })), to: 1000, presented: [] } };
+  assert.equal(datedPlaybackVerdict([window], records).pass, false, 'a lane at 120/s on a 60 FPS display fails though the other is at 60');
+});

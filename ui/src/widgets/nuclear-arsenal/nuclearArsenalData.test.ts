@@ -116,3 +116,15 @@ test('review 5 finding 15: a paused race draws a new selection or weapon-type sp
   picture.draw({ ...model, tags: ['MOD'], split: true }, read, 100);
   assert.deepEqual(picture.rows()!.map(row => row.key), ['total', '0'], 'the split by weapon type is drawn');
 });
+
+test('review 7 B: a paused race repaints when a country name or flag lands, with nothing else changed', () => {
+  const ctx = new Proxy({ measureText: (text: string) => ({ width: text.length * 8 }) }, { get: (target, name) => Reflect.get(target, name) ?? (() => {}) });
+  const picture = new ArsenalPicture({ getContext: () => ctx, width: 1, height: 1 } as unknown as OffscreenCanvas, () => {});
+  const model = { colours: new Map(), looks: new Map(), top: 10, tags: [], offset: 0, scroll: 0, overlay: false, split: false,
+    width: 500, height: 180, slots: 10, dpr: 1, tokens: { fontSize: { body: 14, small: 12 }, lineWidth: { grid: 1 } } } as unknown as ArsenalModel;
+  picture.draw(model, REPLY, 100);
+  picture.draw(model, REPLY, 100);
+  assert.equal(picture.changed, false);
+  picture.draw({ ...model, looks: new Map([['USA', { name: 'United States', color: '#00f' }]]) }, REPLY, 100);
+  assert.equal(picture.changed, true, 'the looked-up name is drawn');
+});

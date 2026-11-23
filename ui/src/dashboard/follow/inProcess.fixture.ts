@@ -34,7 +34,7 @@ function lane(views: (kind: string) => LaneView | undefined): LaneWorker {
 }
 
 export function inProcess({ lanes = 1, views = () => undefined, follow }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
-  follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string } } = {}) {
+  follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string; route?: number } } = {}) {
   let ports: readonly MessagePort[] = [];
   const asked: { product: string; params: Record<string, unknown> }[] = [];
   const followers = new Set<unknown>();
@@ -46,7 +46,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow }: { lane
       if (request.product === 'follow') {
         const told = follow?.(request.params.id as number, request.params.query as Record<string, unknown>) ?? { available: true };
         if (told.available) followers.add(request.params.id);
-        return { data: told.available ? { available: true, route: NATIVE } : told };
+        return { data: told.available ? { available: true, route: told.route ?? NATIVE } : told };
       }
       if (request.product === 'unfollow') followers.delete(request.params.id);
       if (request.product === 'follow-clock') return { data: { available: followers.size > 0 } };

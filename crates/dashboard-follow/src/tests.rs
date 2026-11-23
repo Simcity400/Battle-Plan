@@ -910,7 +910,7 @@ fn push_queues_charge_one_budget_and_count_only_pressure_merges() {
     let first = Push::with_budget(budget.clone());
     let second = Push::with_budget(budget.clone());
     first.offer(packet.clone());
-    second.head(0, 100);
+    second.head(0, 0, 100);
     second.offer(packet.clone());
     second.offer(packet);
     assert_eq!(second.counters().pressure_merges, 0);
@@ -1474,7 +1474,7 @@ fn a_replacement_the_clock_has_reached_goes_while_the_lanes_still_hold_the_pictu
     push.offer(one(7, 30, 3));
     assert!(push.try_take().is_some() && push.try_take().is_some());
     assert!(push.try_take().is_none(), "ahead of the clock, a message waits for credit");
-    push.head(0, 30);
+    push.head(0, 0, 30);
     assert!(push.try_take().is_some(), "the lanes keep their current picture until its replacement arrives: a reached hour always goes");
     let session = push.restart();
     assert_eq!((push.in_flight(), budget.used()), (0, 0), "a closed page's held bytes are forgotten once, by the one queue that charged them");
@@ -1510,7 +1510,7 @@ fn a_changed_answer_reserves_the_table_it_lands_on_when_queued_so_sending_it_nev
     let push = Push::with_budget(budget.clone());
     push.offer(small.clone());
     assert!(push.try_take().is_some());
-    push.head(0, 100);
+    push.head(0, 0, 100);
     push.offer(routed(0, 10, 2, (small.len() * 12) as u32));
     assert!(push.failed().is_some_and(|reason| reason.contains("byte payload limit")), "a table past the budget is refused by name when it is queued");
     assert!(push.try_take().is_some(), "the drain thread takes the failure notice and never panics");
@@ -1531,11 +1531,11 @@ fn a_reached_update_goes_past_a_future_one_of_another_route_but_never_past_its_o
     push.offer(routed(1, 50, 2, (small.len() * 8) as u32));
     assert!(push.try_take().is_none(), "the future update of route 1 waits for credit");
     push.offer(routed(2, 10, 3, 0));
-    push.head(2, 10);
+    push.head(2, 0, 10);
     let (_, sent, ..) = push.try_take().expect("route 2's reached update goes past it");
     assert_eq!(crate::answer::decode(&sent).unwrap().route, 2);
     push.offer(routed(1, 11, 4, 0));
-    push.head(1, 11);
+    push.head(1, 0, 11);
     assert!(push.try_take().is_none(), "route 1's later update never overtakes route 1's waiting one");
 }
 
@@ -1564,9 +1564,9 @@ fn only_hours_the_clock_has_passed_merge_into_one_answer() {
     let push = Push::default();
     push.offer(rows_message(20, false, &[(1, 1)]));
     push.offer(rows_message(30, false, &[(1, 2)]));
-    push.head(0, 10);
+    push.head(0, 0, 10);
     assert_eq!(push.counters().merges, 0, "never merged ahead of the clock");
-    push.head(0, 35);
+    push.head(0, 0, 35);
     assert_eq!(push.counters().merges, 1, "both passed: one complete answer at the later hour");
     let (_, bytes, ..) = push.try_take().unwrap();
     let decoded = decode(&bytes).unwrap();
@@ -1579,7 +1579,7 @@ fn pressure_never_merges_ahead_of_the_clock() {
     let packet = rows_message(20, false, &[(1, 1)]);
     let budget = playhead::ByteBudget::new(crate::answer::charge(&packet) * 2);
     let push = Push::with_budget(budget);
-    push.head(0, 0);
+    push.head(0, 0, 0);
     push.offer(rows_message(20, false, &[(1, 1)]));
     push.offer(rows_message(30, false, &[(1, 2)]));
     push.offer(rows_message(40, false, &[(1, 3)]));
@@ -1607,3 +1607,44 @@ fn a_follow_names_lanes_its_id_belongs_to() {
     assert_eq!(right["available"], false, "no playhead here, but the lane class is accepted");
 }
 
+fn at_seek(route: u32, seek: u32, hour: Hour, value: i64) -> Vec<u8> {
+    let mut message = Vec::new();
+    crate::answer::begin(&mut message, route, 0, hour, seek, false);
+    crate::answer::push(&mut message, 7, hour, &body(7, value));
+    message
+}
+
+#[test]
+fn review_7_e_native_work_is_bound_to_its_session_and_seek() {
+    use crate::push::{FOLLOW, PANEL, Push};
+    let registry = crate::registry::Registry::new(None);
+    registry.restart("new page");
+    let ask = |session: &str| registry.answer(std::path::Path::new("x"), "follow", &serde_json::json!({ "id": 7, "branchId": "1", "clock": 0, "session": session }),
+        |_| Ok(nobody()), Box::new(|_| None)).unwrap();
+    assert_eq!(ask("old page")["reason"], "This page was replaced by a newer one; its follows ended with it", "a follow of the retired page changes nothing");
+    assert_ne!(ask("new page")["reason"], ask("old page")["reason"], "the current page's follow goes on");
+
+    let push = Push::default();
+    push.head(0, 0, 1000);
+    push.offer(at_seek(0, 1, 100, 1));
+    push.offer(at_seek(0, 1, 124, 2));
+    let (_, first, ..) = push.try_take().expect("the rewind's first answer");
+    assert_eq!(crate::answer::decode(&first).unwrap().hour, 100, "a head of the old seek never merges away the new seek's destination answer");
+
+    let push = Push::default();
+    push.offer_kind(PANEL, crate::panel::dated::encoded(0, 0, 1, 3, 50, crate::panel::dated::STANDS, &[]));
+    push.offer(at_seek(0, 2, 10, 3));
+    let (kind, ..) = push.try_take().expect("the new seek's answer");
+    assert!(kind == FOLLOW && push.try_take().is_none(), "an older seek's panel packet is retired with the follow answers of that seek");
+
+    let small = at_seek(0, 0, 5, 1);
+    let push = Push::with_budget(playhead::ByteBudget::new(crate::answer::charge(&small) * 2));
+    let mut huge = Vec::new();
+    crate::answer::begin(&mut huge, 0, 0, 6, 0, false);
+    crate::answer::push_held(&mut huge, 7, 6, &body(7, 1), 1 << 20);
+    push.offer(huge);
+    assert!(push.failed().is_some() && push.try_take().is_some(), "past the budget the stream fails by name");
+    push.restart();
+    push.offer(small);
+    assert!(push.failed().is_none() && push.try_take().is_some(), "a new page after an overflow plays again, with its drain still taking messages");
+}

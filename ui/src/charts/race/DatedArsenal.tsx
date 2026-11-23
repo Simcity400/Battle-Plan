@@ -14,6 +14,8 @@ import { perfLog } from '../../shell/perf.ts';
 import { validateNuclearArsenal, arsenalNotice, arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
 import { countryRaceItem } from './countryRace.ts';
 
+const RACE_AUDIT = -2;
+
 type ExactRead = (hour: number) => Promise<unknown>;
 type Model = Omit<ArsenalModel, 'width' | 'height' | 'dpr' | 'scroll'> & { exactRead?: undefined };
 
@@ -37,11 +39,14 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const { canvas, surface } = drawn;
     canvas.setAttribute('aria-describedby', owner + '-ranking');
     scroller.prepend(canvas);
-    let point: { x: number; y: number } | undefined, action: { x: number; y: number; key: string } | undefined, selected = -1;
+    let point: { x: number; y: number } | undefined, action: { x: number; y: number; key: string } | undefined, selected = -1, bound = '';
     const items = (): readonly RaceItem[] => (pipeline.view(pipe)?.fields?.items as readonly RaceItem[] | undefined) ?? [];
     const send = () => {
       const model = latest.current.model, { width, height } = canvas.getBoundingClientRect();
       if (!width || !height) return;
+      const key = JSON.stringify([width, height, devicePixelRatio, scroller.scrollTop, model], (_, value: unknown) => value instanceof Map ? [...value] : value instanceof Set ? [...value] : value);
+      if (key === bound) return;
+      bound = key;
       pipeline.present(pipe, 'race');
       pipeline.bind(pipe, [surface], { surfaces: [{ width, height, dpr: devicePixelRatio }],
         ...model.follow === undefined && model.fixed !== undefined ? { dated: { h: model.fixed + model.offset, c: model.fixed + model.offset } } : {} },
@@ -57,7 +62,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       if (ranking.current) ranking.current.textContent = raceText(listed, p.name) || p.empty || '';
       if (extent.current) extent.current.style.height = `calc(${raceHeight(listed.length)}px - 100%)`;
       const inspected = shown?.tooltip as RaceInspection | null | undefined, item = inspected?.item;
-      if (!item || shown?.dim) { if (!point) hideTooltip(owner); return; }
+      if (!item || shown?.dim) { hideTooltip(owner); if (description.current) description.current.textContent = ''; return; }
       selected = listed.findIndex(each => each.key === item.key);
       const asked = action?.key === `race:${item.key}` ? action : undefined;
       if (asked) action = undefined;
@@ -69,7 +74,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
     const perform = (kind: string, item: RaceItem, x: number, y: number) => {
       const shown = pipeline.view(pipe);
       if (shown?.mode !== 'picture') return;
-      const at = { ...item, hour: shown.h ?? item.hour };
+      const at = { ...item, hour: shown.through ?? shown.h ?? item.hour };
       if (kind === 'pick') latest.current.onPick?.(at.key, at);
       else latest.current.onContextMenu?.(at.key, x, y, at);
     };
@@ -121,8 +126,8 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   const auditable = !!props.exactRead;
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    pipeline.audit(pipe, fields => fields.audit as readonly { row: string; key: string; value?: string }[] | undefined);
-    perfLog.reader(pipe, 0, async hour => {
+    pipeline.audit(pipe, RACE_AUDIT, fields => fields.audit as readonly { row: string; key: string; value?: string }[] | undefined);
+    perfLog.reader(pipe, RACE_AUDIT, async hour => {
       const read = latest.current.exactRead, model = latest.current.model;
       if (!read) return null;
       const reply = validateNuclearArsenal(await read(hour)), values = new Map<string, string>();
@@ -134,7 +139,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
       if (!values.size) values.set('empty:notice', arsenalNotice(reply, hour));
       return { values, ranked: true };
     });
-    return () => pipeline.audit(pipe, null);
+    return () => pipeline.audit(pipe, RACE_AUDIT, null);
   }, [pipeline, pipe, auditable]);
   return <div ref={root} className="race-chart"><div ref={container} className="race-scroll themed-scrollbar">
     <div ref={extent} className="race-extent" style={{ height: `calc(${raceHeight(props.items.length)}px - 100%)` }} /></div>

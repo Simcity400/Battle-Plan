@@ -381,7 +381,12 @@ const DASHBOARD_INVENTORY = `(() => {
     const kind = [...a.classList].find(c => c.startsWith('kind-'))?.slice(5);
     const placeholder = a.querySelector('.dash-empty[role="status"]');
     const notMigrated = !!placeholder && /isn't playing back yet$/i.test(placeholder.textContent.trim());
-    const surfaces = [...new Set([...a.querySelectorAll('[data-surface]')].map(c => c.dataset.surface).filter(Boolean))];
+    const byPlacement = new Map();
+    for (const c of a.querySelectorAll('[data-surface]')) {
+      const id = c.dataset.placement ?? c.dataset.surface, held = byPlacement.get(id);
+      if (!held || held === 'page') byPlacement.set(id, c.dataset.surface);
+    }
+    const surfaces = [...new Set([...byPlacement.values()].filter(Boolean))];
     return { id: a.dataset.widget, title: a.getAttribute('aria-label'), kind, visible: visible(a), surfaces, notMigrated };
   });
 })()`;

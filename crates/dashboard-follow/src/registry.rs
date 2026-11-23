@@ -67,8 +67,22 @@ pub type PanelOf<'a> = dyn FnOnce(&Value) -> Option<Result<Box<dyn Panel>, Strin
 
 pub struct Registry {
     playheads: Option<Arc<dyn Playheads>>,
-    followed: Mutex<HashMap<u32, Followed>>,
+    followed: Mutex<Registered>,
 }
+
+#[derive(Default)]
+struct Registered {
+    session: Option<String>,
+    held: HashMap<u32, Followed>,
+}
+
+impl Registered {
+    fn current(&self, params: &Value) -> bool {
+        params.get("session").and_then(Value::as_str).is_none_or(|asked| self.session.as_deref() == Some(asked))
+    }
+}
+
+const RETIRED: &str = "This page was replaced by a newer one; its follows ended with it";
 
 fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
     held.lock().unwrap_or_else(PoisonError::into_inner)
@@ -103,6 +117,7 @@ impl Registry {
         head: Box<HeadOf<'_>>) -> io::Result<Value> {
         match product {
             "follow" => {
+                if !lock(&self.followed).current(params) { return Ok(unavailable(RETIRED)); }
                 let id = id(params)?;
                 let branch = branch(params)?;
                 let clock = clock(params)?;
@@ -143,7 +158,13 @@ impl Registry {
                 }
                 {
                     let mut followed = lock(&self.followed);
-                    let old = followed.insert(id, Followed { path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel });
+                    let made = Followed { path: path.to_path_buf(), branch, clock, host: Arc::clone(&host), panel: is_panel };
+                    if !followed.current(params) {
+                        drop(followed);
+                        made.release(id)?;
+                        return Ok(unavailable(RETIRED));
+                    }
+                    let old = followed.held.insert(id, made);
                     if let Some(old) = old && (!Arc::ptr_eq(&old.host, &host) || old.panel != is_panel) {
                         old.release(id)?;
                     }
@@ -153,7 +174,8 @@ impl Registry {
             "unfollow" => {
                 let id = id(params)?;
                 let mut followed = lock(&self.followed);
-                if let Some(held) = followed.remove(&id) {
+                if !followed.current(params) { return Ok(json!({ "available": true })); }
+                if let Some(held) = followed.held.remove(&id) {
                     held.release(id)?;
                 }
                 Ok(json!({ "available": true }))
@@ -172,7 +194,7 @@ impl Registry {
                     speed: number("speed")?,
                     sought: params.get("sought").and_then(Value::as_bool).unwrap_or(false),
                 };
-                let host = lock(&self.followed).values().find(|held| held.path == path && held.branch == branch && held.clock == clock).map(|held| Arc::clone(&held.host));
+                let host = lock(&self.followed).held.values().find(|held| held.path == path && held.branch == branch && held.clock == clock).map(|held| Arc::clone(&held.host));
                 let Some(host) = host else { return Ok(json!({"available":false})); };
                 host.anchor(anchor);
                 Ok(json!({"available":true}))
@@ -189,8 +211,12 @@ impl Registry {
         if let Some(playheads) = &self.playheads { playheads.credit(session, released); }
     }
 
-    pub fn restart(&self) -> u64 {
-        let gone: Vec<(u32, Followed)> = lock(&self.followed).drain().collect();
+    pub fn restart(&self, session: &str) -> u64 {
+        let gone: Vec<(u32, Followed)> = {
+            let mut followed = lock(&self.followed);
+            followed.session = Some(session.to_owned());
+            followed.held.drain().collect()
+        };
         for (id, held) in gone {
             let _ = held.release(id);
         }
@@ -200,8 +226,8 @@ impl Registry {
     pub fn close(&self, path: &Path) {
         let gone: Vec<(u32, Followed)> = {
             let mut followed = lock(&self.followed);
-            let ids: Vec<u32> = followed.iter().filter(|(_, held)| held.path == path).map(|(id, _)| *id).collect();
-            ids.into_iter().filter_map(|id| followed.remove(&id).map(|held| (id, held))).collect()
+            let ids: Vec<u32> = followed.held.iter().filter(|(_, held)| held.path == path).map(|(id, _)| *id).collect();
+            ids.into_iter().filter_map(|id| followed.held.remove(&id).map(|held| (id, held))).collect()
         };
         for (id, held) in gone {
             let _ = held.release(id);
@@ -209,7 +235,7 @@ impl Registry {
     }
 
     pub fn followed(&self) -> usize {
-        lock(&self.followed).len()
+        lock(&self.followed).held.len()
     }
 }
 

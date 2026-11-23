@@ -105,8 +105,8 @@ function strengthText(row: OccupiedRow, values: LiveValues<number>, strengthMiss
 
 export const NOT_NAMED = 'Not a live cell of this reply';
 
-export const occupationTooltipKeys = (row: string) =>
-  ['resistance', 'resistanceSpeed', 'compliance', 'complianceSpeed', 'requiredManpower', 'assignedManpower', 'garrison', STRENGTH].map(column => liveKey(row, column));
+export const OCCUPATION_TOOLTIP_COLUMNS = ['resistance', 'resistanceSpeed', 'compliance', 'complianceSpeed', 'requiredManpower', 'assignedManpower', 'garrison', STRENGTH] as const;
+export const occupationTooltipKeys = (row: string) => OCCUPATION_TOOLTIP_COLUMNS.map(column => liveKey(row, column));
 
 export function occupationTooltip(row: OccupiedRow, values: LiveValues<number>, countryName: (tag: string) => string, strengthMissing: string,
   lawName: (token: string) => string): TooltipContent {

@@ -325,7 +325,7 @@ test('changed rows still in flight from before a rewind never merge onto the new
   lane.receive('follow', message(8, [{ id: 5, answer: rows([1n, 2n], [80n, 90n]) }], true, NATIVE, 2));
   lane.receive('follow', message(9, [{ id: 5, answer: rows([2n], [91n], { changed: true }) }], false, NATIVE, 2));
   await step(4);
-  assert.deepEqual([failures, page.view(1).mode], [[], 'picture'], 'the old stream\'s change is dropped, not merged onto a not-recorded answer');
+  assert.deepEqual([failures, page.view(1).mode], [[], 'refused'], 'the old stream\'s change is dropped, not merged onto a not-recorded answer, which stays a named refusal');
   await step(9, { playing: false, seek: true });
   assert.deepEqual([page.view(1).h, valueOf(page.view(1), 5, 0), valueOf(page.view(1), 5, 1)], [9, 80n, 91n], 'the early stream merges onto its own table once its seek is current');
 });
@@ -437,4 +437,25 @@ test('review 6 A: a changed row naming a key its base lacks gives its whole char
   const charge = 16 + 2 * Math.max(new DataView(record.buffer, record.byteOffset).getUint32(8, true), new DataView(record.buffer, record.byteOffset).getUint32(12, true));
   assert.equal(total() - before, charge, 'the refused record is released, never left charged');
   assert.match(failures.at(-1) ?? '', /does not hold/);
+});
+
+test('review 7 C: a whole-answer refusal installs as a named refusal; one refused component of a join stays inside its picture', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  mount(2, [{ id: 5, channel: 'followed' }, { id: 7, channel: 'followed' }]);
+  for (const sub of [5, 7]) lane.bindRoute(sub, ROUTE, NATIVE);
+  lane.receive('follow', message(10, [{ id: 5, answer: { notRecorded: 'The ranking was not recorded' } }, { id: 7, answer: rows([1n], [2n]) }], false, NATIVE));
+  await step(10, { playing: false });
+  assert.deepEqual([page.view(1).mode, page.view(1).reason], ['refused', 'The ranking was not recorded']);
+  assert.equal(page.view(2).mode, 'picture', 'the joined widget shows its other column with the refused one inside');
+});
+
+test('review 7 E: a followed message that fails to decode releases its charge at once, even at an idle paused lane', () => {
+  const { lane, mount, released } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  const bad = message(10, [{ id: 5, answer: rows([1n], [2n]) }], false, NATIVE);
+  bad[24 + 16] = 9;
+  assert.throws(() => lane.receive('follow', bad));
+  assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > 0, 'the refused record was handed back without waiting for another frame');
 });

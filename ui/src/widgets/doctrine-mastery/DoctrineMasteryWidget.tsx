@@ -77,7 +77,7 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     const inspected = painted.inspected();
     if (inspected === null) return null;
     const numbers = trackNumbers(inspected ? paintedValues(inspected.live) : live.read(), rest[0]);
-    const date = dayLabel(inspected ? inspected.date.through + offset : hourShown());
+    const date = dayLabel(inspected ? inspected.date.through : hourShown());
     if (kind === 'mark') {
       const index = Number(rest[1]);
       const next = item.rewards[index];
@@ -94,7 +94,11 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     return trackTooltip(folder, item, numbers, date);
   }, [tracks, described.data, head.hour, live, painted, offset]);
   const spoken = (key: string) => { const shown = content(key); return shown ? tooltipText(shown) : ''; };
-  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, revision: `${head.hour}:${described.data ? 'described' : ''}`,
+  const refresh = useMemo(() => {
+    const pipeline = head.pipeline, pipe = head.followedWidget;
+    return pipeline && pipe !== undefined ? (changed: () => void) => { const installed = pipeline.onInstall(pipe, changed), dated = pipeline.onDate(pipe, changed); return () => { installed(); dated(); }; } : undefined;
+  }, [head.pipeline, head.followedWidget]);
+  const tips = useRowTooltips<string>({ owner: `doctrine-mastery:${widget.id}`, active, content, refresh, revision: `${head.hour}:${described.data ? 'described' : ''}`,
     onMenu: (_, x, y) => { if (track) menu.open(x, y, [jumpItem(runtime, track.id, hourShown())]); } });
   useEffect(() => {
     const [kind, key] = tips.hovered?.split('#') ?? [];

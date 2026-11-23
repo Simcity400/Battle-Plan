@@ -106,7 +106,7 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
   return null;
 }
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
-interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead }
+interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead; placement?: number }
 type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
 type PictureAuditResult = { widget: string; surface: string; placement: number; hour: number; error: string | null };
 
@@ -120,9 +120,9 @@ export class PerfRecorder {
   private rowChanges: RowChange[] = [];
   private pictureAudit?: { readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
 
-  structure(widget: string, source: string, previous: StructureRead, current: StructureRead) {
+  structure(widget: string, source: string, previous: StructureRead, current: StructureRead, placement?: number) {
     if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
-      this.rowChanges.push({ widget, source, previous, current });
+      this.rowChanges.push({ widget, source, previous, current, ...placement !== undefined ? { placement } : {} });
   }
 
   reader(id: number, owner: number, exact: ExactPicture) {
@@ -173,7 +173,7 @@ export class PerfRecorder {
         return checked;
       };
       for (const { changes, ...commit } of commits) {
-        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => ({ widget: c.widget, source: c.source, hour: c.current.hour, previousHour: c.previous.hour,
+        const verified = await auditInBatches(changes, AUDIT_CONCURRENCY, async c => ({ widget: c.widget, source: c.source, ...c.placement !== undefined ? { placement: c.placement } : {}, hour: c.current.hour, previousHour: c.previous.hour,
           before: c.previous.rows(), after: c.current.rows(), verified: await verify(c.previous) && await verify(c.current) }));
         this.push({ t: 'commit', ...commit, changes: verified });
       }

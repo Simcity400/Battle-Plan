@@ -85,6 +85,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const { follows, hourAt } = useMemo(() => headRead(widget, track, runtime.tracks, hoverHour), [widget, track, runtime.tracks, hoverHour]);
   const prepared = useContext(PreparingPage);
   const following = active && follows && !prepared && !!track && !!params;
+  const hour = follows || !track || !params ? null : hourAt(runtime.clock.getHour());
+  const pinned = active && !follows && !prepared && hour !== null;
   const paramsKey = params ? JSON.stringify(params) : null;
   const [node, setNode] = useState<Element | null>(null);
   const root = useCallback((next: Element | null) => { if (next) setNode(next); }, []);
@@ -92,8 +94,8 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const bounds = useMemo(() => track ? [track.branch.firstHour, track.branch.lastHour] as const : null,
     [track?.branch.firstHour, track?.branch.lastHour]);
   const widgetKey = useWidgetKey();
-  const pipe = useFollowedWidget(pipeline, following && track ? `${widgetKey}|${track.axisOffset}` : null,
-    { offset: track?.axisOffset ?? 0, pin: null, bounds, key: `${widget.kind}|${product}|${paramsKey}` });
+  const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? `${widgetKey}|${track.axisOffset}` : null,
+    { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, key: `${widget.kind}|${product}|${paramsKey}` });
   const query = useMemo(() => following ? { ...params, panel: product, branchId: track!.branch.id } : null,
     [following, product, paramsKey, track?.branch.id]);
   const follow = useMemo(() => track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null, [track?.source, track?.branch.id, track?.axisOffset]);
@@ -106,7 +108,6 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const named = following && (view?.mode === 'failed' || view?.mode === 'refused') ? view.reason ?? 'The followed stream failed' : undefined;
   const followFailure = useMemo(() => named === undefined ? undefined : asFailure(new Error(named)), [named]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
-  const hour = follows || !track || !params ? null : hourAt(runtime.clock.getHour());
   const outside = following ? view?.mode === 'outside' : !follows && !!track && !!params && hour === null;
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : { sourceId: track!.source.id, revision: track!.source.revision,
     product, params: { ...params, branchId: track!.branch.id, hour } }, [], active, validate, track?.source);
@@ -119,7 +120,7 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const error: Failure | undefined = outside ? undefined : following ? followFailure ?? fromPanel.error : asked.error;
   const askedLive = useMemo(() => repliedCells(following ? undefined : data), [following, data]);
   const shownLive = following && live ? live : askedLive;
-  const at = outside ? null : following ? (pushed ? view!.h ?? null : null) : shown?.hour ?? null;
+  const at = outside ? null : following ? (pushed ? view!.painted ?? view!.h ?? null : null) : shown?.hour ?? null;
   const latest = useRef(paint);
   latest.current = paint;
   useLayoutEffect(() => { if (data !== undefined) latest.current?.(data); }, [data]);
@@ -128,28 +129,42 @@ export function useHeadProduct<T>(runtime: WidgetRuntime, widget: WidgetSpec, pr
   const exactNow = useRef(exactRead);
   exactNow.current = exactRead;
   const auditable = !!exactRead;
-  useSurfaceLabel(node, following && auditable, pipe);
+  useSurfaceLabel(node, (following || pinned) && auditable, pipe);
+  useLayoutEffect(() => {
+    if (!pipeline || pipe === null || !pinned) return;
+    pipeline.answer(pipe, data === undefined || at === null ? null : { hour: at, rows: () => auditable ? panelAuditRows(product, data, exactLive(data)) : undefined });
+    return () => pipeline.answer(pipe, null);
+  }, [pipeline, pipe, pinned, data, at, product, auditable]);
+  useLayoutEffect(() => {
+    if (!perfLog || pipe === null || !pinned || !auditable) return;
+    perfLog.reader(pipe, 0, async hour => {
+      const read = exactNow.current;
+      if (!read) return null;
+      const raw = await read(hour);
+      return { values: new Map(panelAuditRows(product, raw, exactLive(raw)).map(row => [row.key, row.value])) };
+    });
+  }, [pipe, pinned, product, auditable]);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
     let texted = false;
-    pipeline.audit(pipe, fields => {
+    pipeline.audit(pipe, sub, fields => {
       const texts = fields[`texts:${sub}`] as ReadonlyMap<string, string> | null | undefined, panel = installedPanel(fields[`model:${sub}`] as ModelField | undefined);
       texted = texts !== undefined;
       if (texts) return [...texts].map(([key, value]) => ({ row: key, key, value }));
       return panel?.data === undefined ? undefined : panelAuditRows(product, panel.data, fields[`live:${sub}`] as ReadonlyMap<string, unknown> | null | undefined);
     });
-    perfLog.reader(pipe, 0, async hour => {
+    perfLog.reader(pipe, sub, async hour => {
       const read = exactNow.current;
       if (!read) return null;
       const raw = await read(hour), live = exactLive(raw);
       const rows = texted ? [...panelTexts(product, raw, live, hour) ?? []].map(([key, value]) => ({ row: key, key, value })) : panelAuditRows(product, raw, live);
       return { values: new Map(rows.map(row => [row.key, row.value])) };
     });
-    return () => pipeline.audit(pipe, null);
+    return () => pipeline.audit(pipe, sub, null);
   }, [pipeline, pipe, sub, product, auditable]);
   useRecordedRows(product, pushed && data !== undefined && at !== null && exactRead ? {
     hour: at, rows: () => recordedPanelRows(product, data), exact: async () => recordedPanelRows(product, await exactRead(at)),
-  } : undefined);
+  } : undefined, pipe ?? undefined);
   const shownThrough = () => following ? (pipe === null || !pipeline ? null : pipeline.view(pipe)?.through ?? null) : data === undefined ? null : at;
   return {
     data, error, retry: asked.retry, root, hour, live: shownLive, outside,

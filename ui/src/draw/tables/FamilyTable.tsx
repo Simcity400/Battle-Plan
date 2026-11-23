@@ -21,6 +21,8 @@ import { updateTableSettings, type TableColumnDefaults } from './settings.ts';
 import { layoutTable, ROW_HEIGHT, type TableColumnLayout, type TableFormat, type TableSettings } from './logic.ts';
 import { columnWidthVar, DISPLAY_LABELS, TableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 
+const TABLE_AUDIT = -1;
+
 export interface FamilyColumn extends TableColumnDefaults {
   priority: number;
   numeric?: boolean;
@@ -52,6 +54,7 @@ export interface FamilyTableProps {
   fixed?: number;
   build?: TableBuild;
   tooltipKeys?: (row: string) => readonly string[];
+  tooltipColumns?: readonly string[];
   onHover: (row: string | null, at?: { x: number; y: number }, drawn?: TableReading) => void;
   exactRows?: ExactRows;
   headerSlot: HTMLElement | null;
@@ -71,7 +74,7 @@ function themeOf(countryColours?: ReadonlyMap<string, string>): TableTheme | und
 }
 
 export default function FamilyTable({ label, className, clock, offset, columns: specs, rows, settings, onSettings, live, reply, follow, sources,
-  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, onHover, exactRows, headerSlot }: FamilyTableProps) {
+  shownAt, countryColours, rank, members, empty, build, fixed, tooltipKeys, tooltipColumns, onHover, exactRows, headerSlot }: FamilyTableProps) {
   const body = useRef<HTMLDivElement>(null), widget = measuredWidget() ?? undefined;
   const [width, setWidth] = useState(0), [scrollLeft, setScrollLeft] = useState(0);
   const [resizing, setResizing] = useState<{ key: string; width: number } | null>(null);
@@ -154,8 +157,8 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
 
   const hoverAt = useRef<{ x: number; y: number } | null>(null);
   const totalWidth = layoutAt(drawnWidths.current, width).totalWidth;
-  const latest = useRef({ model, onHover, tooltipKeys, exactRows, totalWidth, layoutAt, width });
-  latest.current = { model, onHover, tooltipKeys, exactRows, totalWidth, layoutAt, width };
+  const latest = useRef({ model, onHover, tooltipKeys, tooltipColumns, exactRows, totalWidth, layoutAt, width });
+  latest.current = { model, onHover, tooltipKeys, tooltipColumns, exactRows, totalWidth, layoutAt, width };
   const widgetKey = useWidgetKey();
   const pipeline = pipelineOf(pageClock(clock));
   const pipe = useFollowedWidget(pipeline, pipeline ? `${widgetKey}|${offset}` : null, { offset, pin: fixed === undefined ? null : fixed + offset });
@@ -172,7 +175,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
     const tips = keys ? Object.fromEntries(made.rows.map(row => [row.key, keys(row.key)])) : undefined;
     pipeline.present(pipe, 'table');
     pipeline.bind(pipe, [held.surface], { surfaces: [{ width: w, height: h, dpr: devicePixelRatio }], ...followed ? {} : { dated: { h: shownAt, c: shownAt } } },
-      {}, { model: made, ...tips ? { tooltipKeys: tips } : {}, window: view.current, ...perfLog ? { audit: true } : {} });
+      {}, { model: made, ...tips ? { tooltipKeys: tips } : {}, ...latest.current.tooltipColumns ? { tooltipColumns: latest.current.tooltipColumns } : {}, window: view.current, ...perfLog ? { audit: true } : {} });
   }, [pipeline, pipe, followed, shownAt, offset]);
   useLayoutEffect(() => {
     const node = body.current;
@@ -192,7 +195,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       holdElement(frameNode, !!shown?.dim);
       const visible = shown?.mode === 'picture';
       node.toggleAttribute('data-table-visible', visible); node.toggleAttribute('data-table-pending', !visible);
-      if (!visible || !shown.fields) { paintMirror(null); return; }
+      if (!visible || !shown.fields) { paintMirror(null); latest.current.onHover(null); return; }
       const rows = shown.fields.rows as { count: number; empty?: string } | undefined;
       if (rows) {
         drawnCount.current = rows.count;
@@ -214,7 +217,7 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
       if (tip && at && typeof shown.fields.tooltip === 'object') {
         const key = (shown.fields.tooltip as { key: string }).key;
         latest.current.onHover(key.split(':')[1]!, at, tip);
-      }
+      } else latest.current.onHover(null);
     };
     install();
     const stop = pipeline.onInstall(pipe, install);
@@ -241,15 +244,15 @@ export default function FamilyTable({ label, className, clock, offset, columns: 
   shownColumns.current = layout.columns.map(column => column.key);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || !auditable) return;
-    pipeline.audit(pipe, fields => fields.audit as readonly AuditRow[] | undefined);
-    perfLog.reader(pipe, 0, async hour => {
+    pipeline.audit(pipe, TABLE_AUDIT, fields => fields.audit as readonly AuditRow[] | undefined);
+    perfLog.reader(pipe, TABLE_AUDIT, async hour => {
       const exact = await latest.current.exactRows?.(hour);
       if (!exact) return null;
       const sorted = sortRowsAtHour(exact.rows, latest.current.model(pipe, 0, 1, 1).settings, exact.values, hour);
       const rows = auditRows(sorted, shownColumns.current, exact.values, hour, exact.empty);
       return { values: new Map(rows.map(row => [row.key, row.value])), ordered: true };
     });
-    return () => pipeline.audit(pipe, null);
+    return () => pipeline.audit(pipe, TABLE_AUDIT, null);
   }, [pipeline, pipe, auditable]);
   useEffect(() => followed ? undefined : live.subscribe(bind), [live, followed, bind]);
   useLayoutEffect(() => {

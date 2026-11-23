@@ -59,7 +59,7 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       const fixed = pin != null || !anchor.playing;
       const key = [anchor.seek, pin, fixed ? target : 'playing'].join('/');
       const previous = states.get(id);
-      const state = previous?.key === key ? previous : { key, pin, fixed, settled: false, invalid: false, reportedInvalid: false };
+      const state = previous?.key === key ? previous : { key, pin, fixed, settled: false, invalid: false, reportedInvalid: false, held: r?.entry };
       states.set(id, state);
       const ink = Number.isFinite(r?.hour);
       if (ink) {
@@ -70,8 +70,9 @@ export function inputPictures(frames, visibility, records, pinWidget) {
       if (hidden.has(id)) continue;
       const valid = ink && r.seek === anchor.seek && Number.isFinite(r.seek) && (r.fixedHour ?? null) === pin &&
         r.since <= r.hour && r.hour <= r.through && (fixed ? r.hour === target : r.hour <= target);
-      if (settledBeforeSeek.has(id) && fixed && ink && !valid) { stale++; settledBeforeSeek.delete(id); }
-      if (fixed && ink && !valid) state.invalid = true;
+      const held = fixed && ink && !valid && r.dim === true && r.hour <= target && state.held !== undefined && r.entry === state.held;
+      if (settledBeforeSeek.has(id) && fixed && ink && !valid && !held) { stale++; settledBeforeSeek.delete(id); }
+      if (fixed && ink && !valid && !held) state.invalid = true;
       if (fixed && state.settled && ink && !valid) stale++;
       if (fixed && state.settled && !valid) lost++;
       if (!valid && examples.length < 10) examples.push({ at, id, widget, target, hour: r?.hour, seek: r?.seek, expectedSeek: anchor.seek });
@@ -113,7 +114,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     if (!pace.pass) reasons.push('clock did not advance at 1,440 h/s');
     if (fps === null || fps < 60) reasons.push('presented FPS ' + fps);
     if (pageFps === null) reasons.push('missing page frame measurements');
-    if (presents === null || Math.round(presents) < 60 || Math.round(presents) > Math.max(60, Math.round(fps ?? 0))) reasons.push('worker presents/s ' + presents);
+    const outOfBounds = lanes.filter(lane => lane === null || Math.round(lane) < 60 || Math.round(lane) > Math.max(60, Math.round(fps ?? 0)));
+    if (!lanes.length || outOfBounds.length) reasons.push('worker presents/s ' + lanes.map(lane => lane === null ? 'none' : lane.toFixed(1)).join(', '));
     if (w.pressureMerges !== 0) reasons.push('pressure merges ' + w.pressureMerges);
     const pageCount = page.reduce((sum, r) => sum + r.commits, 0);
     const firstCommit = page[0]?.commitSequence - page[0]?.commits + 1;
@@ -121,6 +123,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const commits = sorted.filter(r => r.t === 'commit' && timed(r));
     const commitCount = commits.length;
     const verified = c => c.verified && Number.isFinite(c.hour) && JSON.stringify(c.before) !== JSON.stringify(c.after);
+    const boundariesByPlacement = new Map();
     const picturesByWidget = new Map(), boundariesByWidget = new Map(), visibilityByWidget = new Map(), auditByWidget = new Map();
     for (const event of w.visibility ?? []) {
       if (!visibilityByWidget.has(event.id)) visibilityByWidget.set(event.id, []);
@@ -138,6 +141,11 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       if (r.t !== 'commit' || r.at < w.from || r.at > w.to) continue;
       for (const c of r.changes ?? []) {
         if (!verified(c)) continue;
+        if (Number.isFinite(c.placement)) {
+          if (!boundariesByPlacement.has(c.placement)) boundariesByPlacement.set(c.placement, []);
+          boundariesByPlacement.get(c.placement).push({ hour: c.hour, previousHour: c.previousHour });
+          continue;
+        }
         if (!boundariesByWidget.has(c.widget)) boundariesByWidget.set(c.widget, new Map());
         const boundaries = boundariesByWidget.get(c.widget);
         if (!boundaries.has(c.source)) boundaries.set(c.source, []);
@@ -256,7 +264,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
           const samples = byPlacement.get(r.placement); samples.drawn.push(Number.isFinite(hour) ? target - hour : Infinity); samples.eligible.push(eligibleAge);
           let crossedPlacement = false;
           if (Number.isFinite(hour) && target - hour > MAX_PLAYBACK_AGE_HOURS)
-            crossedPlacement = boundariesBySurface.get(r.surface)?.some(boundary => {
+            crossedPlacement = (boundariesByPlacement.get(r.placement) ?? boundariesBySurface.get(r.surface))?.some(boundary => {
               const displayed = hour + (r.offset ?? 0), upper = boundary.hour + (r.offset ?? 0);
               if (Number.isFinite(boundary.previousHour)) return boundary.previousHour + (r.offset ?? 0) < displayed && displayed <= upper;
               return eligibleAge <= MAX_PLAYBACK_AGE_HOURS && displayed < upper && upper <= r.eligibleHour + (r.offset ?? 0);

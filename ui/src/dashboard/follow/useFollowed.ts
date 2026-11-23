@@ -95,29 +95,34 @@ export function useFollowedSub(pipeline: Pipeline | null, widget: number | null,
 }
 
 const viewKey = (view: WidgetView | null) => view
-  ? `${view.mode}|${view.reason ?? ''}|${view.id ?? ''}|${view.h ?? ''}|${view.dim}|${String(view.tooltip ?? '')}`
+  ? `${view.mode}|${view.reason ?? ''}|${view.structure ?? ''}|${view.dim}|${String(view.tooltip ?? '')}`
   : 'none';
 
 export type Reading =
   | { state: 'pending' }
   | { state: 'outside' }
   | { state: 'refused'; reason: string }
-  | { state: 'covered'; hour: number; through: number; dim: boolean };
+  | { state: 'covered'; hour: number; dim: boolean };
 
 export function readingOf(view: WidgetView | null | undefined): Reading {
   if (!view || view.mode === 'reading') return { state: 'pending' };
   if (view.mode === 'outside') return { state: 'outside' };
   if (view.mode === 'failed' || view.mode === 'refused') return { state: 'refused', reason: view.reason ?? 'The followed reading stopped without a reason' };
-  return { state: 'covered', hour: view.h!, through: view.through!, dim: view.dim };
+  return { state: 'covered', hour: view.painted ?? view.h!, dim: view.dim };
 }
 
 export function joinReadings(readings: readonly (Reading | null)[]): Reading {
   const held = readings.filter((reading): reading is Reading => reading !== null);
   return held.find(reading => reading.state === 'refused') ?? held.find(reading => reading.state === 'outside') ?? held.find(reading => reading.state === 'pending')
     ?? held.reduce<Reading>((joined, reading) => joined.state !== 'covered' || reading.state !== 'covered' ? reading
-      : { state: 'covered', hour: Math.max(joined.hour, reading.hour), through: Math.min(joined.through, reading.through), dim: joined.dim || reading.dim },
+      : { state: 'covered', hour: Math.max(joined.hour, reading.hour), dim: joined.dim || reading.dim },
     held[0] ?? { state: 'pending' });
 }
+
+export const branchBounds = (source: DashboardSource, branch: unknown): readonly [number, number] | undefined => {
+  const held = source.metadata.branches?.find(each => String(each.id) === String(branch));
+  return held ? [held.firstHour, held.lastHour] : undefined;
+};
 
 export function useInstalled(pipeline: Pipeline | null, widget: number | null): WidgetView | null {
   const subscribe = useMemo(() => (changed: () => void) => widget === null || !pipeline ? () => {} : pipeline.onInstall(widget, changed), [pipeline, widget]);

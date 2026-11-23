@@ -55,7 +55,7 @@ test('whole widget: an omitted part names the content it keeps; omitting content
 test('whole widget: a transfer that fails part-way leaves one named status, never half a picture', () => {
   const { p, shown, offer, view } = page();
   offer(entry({ id: 1, content: 'red' })); p.publish(0);
-  const e = entry({ id: 2, content: 'blue' });
+  const e = entry({ id: 2, content: 'blue', c: 10 });
   (e.surfaces[1] as Fake).fail = true;
   offer(e); p.publish(1);
   assert.deepEqual([view().mode, view().reason, shown()], ['failed', 'drawing failed', [null, null]]);
@@ -122,7 +122,7 @@ test('review 3: rebinding a widget showing hour 96 to a pin at 20 shows "Reading
   q.rebind(1, { pin: 20 });
   assert.deepEqual([viewQ().id, viewQ().through, viewQ().dim], [1, 20, true], 'a picture valid at the new pin stays, dimmed until its binding installs');
   q.rebind(1, { subscription: true });
-  assert.equal(viewQ().mode, 'reading', 'a new subscription never shows the old one');
+  assert.deepEqual([viewQ().id, viewQ().dim], [1, true], 'review 7 A: a joined subscription keeps the shown picture, dimmed, until its joined picture installs');
 });
 
 test('review 3: an empty same-seek reset withdraws a follow picture in that commit; a panel picture stays', () => {
@@ -457,4 +457,16 @@ test('review 6 B: pausing tells the widget it dims, and a paused step keeps the 
   assert.equal(p.view(1).h, 10, 'a picture confirmed only through 15 does not replace the shown one at 21');
   p.offer({ lane: 0, serial: 3, entries: [entry({ id: 3, n: 0, h: 21, c: 21, lo: 21, hi: Infinity })] }); p.frame();
   assert.deepEqual([p.view(1).h, p.view(1).dim], [21, false], 'a picture that covers the target installs');
+});
+
+test('review 7 B: a numeric-only install keeps the structure React reads; a structural one changes it', () => {
+  const p = new Page<Fake>({ lanes: 1 });
+  p.mount(1, { route: 9, lane: 0, surfaces: [] });
+  const install = (id: number, content: Record<string, string>) => ({ ...entry({ id, n: 0, c: 10 }), fields: Object.fromEntries(Object.keys(content).map(key => [key, key])), content });
+  p.offer({ lane: 0, serial: 1, entries: [install(1, { 'model:3': 'structure:A', 'live:3': 'l1', hour: '1' })] }); p.publish(5);
+  const first = p.view(1).structure;
+  p.offer({ lane: 0, serial: 2, entries: [install(2, { 'model:3': 'structure:A', 'live:3': 'l2', hour: '2' })] }); p.frame();
+  assert.equal(p.view(1).structure, first, 'a countdown that only changes live values is painted, not committed');
+  p.offer({ lane: 0, serial: 3, entries: [install(3, { 'model:3': 'structure:B', 'live:3': 'l2', hour: '3' })] }); p.frame();
+  assert.notEqual(p.view(1).structure, first);
 });

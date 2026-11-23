@@ -140,7 +140,7 @@ struct State {
     released: u64,
     credit: usize,
     session: u64,
-    heads: std::collections::HashMap<u32, i32>,
+    heads: std::collections::HashMap<u32, (u32, i32)>,
     next: u32,
     stopped: bool,
     failed: Option<String>,
@@ -168,14 +168,14 @@ impl State {
 
     fn passed(&self, stream: Stream) -> bool {
         match stream {
-            Stream::Steps { route, due, .. } => self.heads.get(&route).is_some_and(|&head| due <= head),
+            Stream::Steps { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
             Stream::Panels { .. } | Stream::Notice => false,
         }
     }
 
     fn reached(&self, stream: Stream) -> bool {
         match stream {
-            Stream::Steps { route, due, .. } | Stream::Panels { route, due, .. } => self.heads.get(&route).is_some_and(|&head| due <= head),
+            Stream::Steps { route, seek, due } | Stream::Panels { route, seek, due } => self.heads.get(&route).is_some_and(|&(at, head)| at == seek && due <= head),
             Stream::Notice => false,
         }
     }
@@ -218,7 +218,6 @@ impl State {
         self.bytes = bytes.len();
         self.queue.push_back(Queued { stream: Stream::Notice, kind: FOLLOW, bytes, sequence, offered: Instant::now(), kept: false, session: self.session });
         self.failed = Some(reason.to_owned());
-        self.stopped = true;
     }
 
     fn merge_passed(&mut self) {
@@ -273,7 +272,7 @@ impl State {
         while self.charged().is_err() {
             let pair = {
                 let mut ours = self.queue.iter().enumerate()
-                    .filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version) && !q.kept && self.passed(q.stream)).map(|(at, _)| at);
+                    .filter(|(_, q)| q.kind == kind && q.stream.version() == Some(version) && !q.kept && self.reached(q.stream)).map(|(at, _)| at);
                 (ours.next(), ours.next())
             };
             let (Some(at), Some(later)) = pair else { break };
@@ -295,7 +294,7 @@ impl Push {
 
     pub fn offer_kind(&self, kind: u8, bytes: Vec<u8>) {
         let mut state = lock(&self.state);
-        if state.stopped {
+        if state.stopped || state.failed.is_some() {
             return;
         }
         let sequence = state.next;
@@ -303,12 +302,12 @@ impl Push {
         state.counters.offered += 1;
         let stream = Stream::of(kind, &bytes);
         if let Some((route, stamp)) = stream.version() {
-            if state.queue.iter().any(|q| q.kind == kind && q.stream.version().is_some_and(|(r, held)| r == route && held.wrapping_sub(stamp) as i32 > 0)) {
+            if state.queue.iter().any(|q| q.stream.version().is_some_and(|(r, held)| r == route && held.wrapping_sub(stamp) as i32 > 0)) {
                 return;
             }
             let mut removed = 0;
             state.queue.retain(|q| {
-                let keep = q.kind != kind || q.stream.version().is_none_or(|(r, old)| r != route || stamp.wrapping_sub(old) as i32 <= 0);
+                let keep = q.stream.version().is_none_or(|(r, old)| r != route || stamp.wrapping_sub(old) as i32 <= 0);
                 if !keep { removed += answer::charge(&q.bytes); }
                 keep
             });
@@ -350,6 +349,8 @@ impl Push {
         state.counters.unwritten += state.queue.len() as u64;
         state.queue.clear();
         state.bytes = 0;
+        state.failed = None;
+        state.heads.clear();
         let session = state.session;
         state.settle();
         drop(state);
@@ -370,9 +371,9 @@ impl Push {
         }
     }
 
-    pub fn head(&self, route: u32, hour: i32) {
+    pub fn head(&self, route: u32, seek: u32, hour: i32) {
         let mut state = lock(&self.state);
-        if state.heads.insert(route, hour) == Some(hour) { return; }
+        if state.heads.insert(route, (seek, hour)) == Some((seek, hour)) { return; }
         state.merge_passed();
         drop(state);
         self.ready.notify_all();

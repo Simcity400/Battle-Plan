@@ -16,7 +16,7 @@ export interface LaneWorker { postMessage(message: ToLane, transfer?: Transferab
 
 export interface PipelineHost {
   lanes: readonly LaneWorker[];
-  open(ports: readonly MessagePort[]): Promise<void>;
+  open(ports: readonly MessagePort[]): Promise<string | void>;
   channel(): { port1: MessagePort; port2: MessagePort };
   frameRate(): number;
   rate(): number;
@@ -91,8 +91,15 @@ export class Pipeline {
   }
 
   private open(): Promise<void> {
-    this.opened ??= this.host.open(this.ports);
+    this.opened ??= this.host.open(this.ports).then(session => { if (typeof session === 'string') this.session = session; });
     return this.opened;
+  }
+
+  private session: string | undefined;
+
+  private holds(route: RouteState) {
+    for (const sub of this.subs.values()) if (sub.route === route && sub.status === 'followed' && sub.channel !== 'pinned') return true;
+    return false;
   }
 
   private published(previous: PlaybackSnapshot, next: PlaybackSnapshot) {
@@ -106,10 +113,20 @@ export class Pipeline {
     if (auditing()) this.sample(next.seekSequence);
   }
 
-  private readonly audits = new Map<number, (fields: Readonly<Record<string, unknown>>) => readonly AuditRow[] | undefined>();
+  private readonly audits = new Map<number, Map<number, (fields: Readonly<Record<string, unknown>>) => readonly AuditRow[] | undefined>>();
 
-  audit(id: number, rows: ((fields: Readonly<Record<string, unknown>>) => readonly AuditRow[] | undefined) | null) {
-    if (rows) this.audits.set(id, rows); else this.audits.delete(id);
+  audit(id: number, owner: number, rows: ((fields: Readonly<Record<string, unknown>>) => readonly AuditRow[] | undefined) | null) {
+    let owners = this.audits.get(id);
+    if (rows) { if (!owners) this.audits.set(id, owners = new Map()); owners.set(owner, rows); }
+    else { owners?.delete(owner); if (owners && !owners.size) this.audits.delete(id); }
+  }
+
+  private readonly answered = new Map<number, { hour: number; entry: number; rows: () => readonly AuditRow[] | undefined }>();
+  private answers = 0;
+
+  answer(id: number, shown: { hour: number; rows: () => readonly AuditRow[] | undefined } | null) {
+    if (shown) this.answered.set(id, { ...shown, entry: -++this.answers });
+    else this.answered.delete(id);
   }
 
   private sample(seek: number) {
@@ -118,10 +135,21 @@ export class Pipeline {
       const view = this.page.view(held.id), widget = this.widgets.get(held.id), shown = this.page.widgets.get(held.id);
       if (!widget || !shown) continue;
       const offset = shown.offset, clock = (hour: number) => hour - offset;
+      const answer = this.answered.get(held.id);
+      if (answer) {
+        const hour = clock(answer.hour), rows = answer.rows();
+        recordPicture({ t: 'picture', at, shownAt: at, seek, widget: key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key,
+          surface: 'page', placement: held.id, owner: 0, renderer: 'page', head: clock(view.target), hour, offset, fixedHour: hour,
+          since: hour, through: hour, eligibleHour: hour, entry: answer.entry, parts: [], drawMs: 0, ...rows ? { rows } : {},
+          mode: 'picture', dim: false, reset: 0, binding: shown.binding, inspect: shown.inspect, tooltip: false });
+        continue;
+      }
       const hour = view.mode === 'picture' && view.through !== undefined ? clock(view.through) : null;
-      const rows = view.mode === 'picture' && view.fields ? this.audits.get(held.id)?.(view.fields) : undefined;
+      const owners = [...this.audits.get(held.id) ?? []];
+      for (const [owner, audit] of owners.length ? owners : [[0, undefined] as const]) {
+      const rows = view.mode === 'picture' && view.fields ? audit?.(view.fields) : undefined;
       recordPicture({ t: 'picture', at, shownAt: at, seek, widget: key.includes('|') ? key.slice(0, key.lastIndexOf('|')) : key,
-        surface: widget.view === 'table' || widget.view === 'race' ? widget.view : 'page', placement: held.id, owner: 0, renderer: 'page',
+        surface: widget.view === 'table' || widget.view === 'race' ? widget.view : 'page', placement: held.id, owner, renderer: 'page',
         head: clock(view.target), hour, offset, ...shown.pin !== null ? { fixedHour: clock(shown.pin) } : {},
         ...view.h !== undefined ? { since: clock(view.h) } : {}, ...shown.installed ? { through: clock(shown.installed.c) } : {},
         eligibleHour: shown.installed && view.mode === 'picture' ? clock(Math.min(view.target, shown.installed.c)) : null,
@@ -129,6 +157,7 @@ export class Pipeline {
         drawMs: shown.installed?.ms ?? 0, ...rows ? { rows } : {},
         mode: view.mode, ...view.reason !== undefined ? { reason: view.reason } : {}, dim: view.dim, reset: shown.installed?.gen.reset ?? 0, binding: shown.installed?.binding ?? shown.binding,
         inspect: shown.inspect, tooltip: view.tooltip !== null });
+      }
     }
   }
 
@@ -285,7 +314,8 @@ export class Pipeline {
     this.subs.delete(sub.key); this.byId.delete(id);
     sub.released = true;
     this.host.lanes[sub.lane]!.postMessage({ type: 'unfollow', sub: id });
-    if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }).catch(() => {});
+    if (sub.channel !== 'pinned' && sub.status === 'followed') void this.ask('unfollow', { id }, sub.route).catch(() => {});
+    if (!this.holds(sub.route)) sub.route.told = null;
   }
 
   private remount(widget: WidgetState) {
@@ -367,10 +397,9 @@ export class Pipeline {
     if (held) this.host.lanes[held.lane]!.postMessage({ type: 'exact', sub, hour, data, refused });
   }
 
-  private ask(product: string, params: Record<string, unknown>, route?: RouteState) {
-    const source = route?.source ?? this.routes.values().next().value?.source;
-    if (!source) return Promise.resolve(null);
-    return this.client.product({ sourceId: source.id, revision: source.revision, product, params }, new AbortController().signal).then(reply => reply.data);
+  private ask(product: string, params: Record<string, unknown>, route: RouteState) {
+    const sessioned = product === 'follow' || product === 'unfollow' ? { ...params, ...this.session ? { session: this.session } : {} } : params;
+    return this.client.product({ sourceId: route.source.id, revision: route.source.revision, product, params: sessioned }, new AbortController().signal).then(reply => reply.data);
   }
 
   private register(sub: SubState, query: FollowQuery, product?: string) {
@@ -381,13 +410,15 @@ export class Pipeline {
       : this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes }, sub.route))
       .then(reply => {
         const data = reply as { available?: boolean; reason?: string; route?: number } | null;
-        if (sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }).catch(() => {}); return; }
+        if (sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route).catch(() => {}); return; }
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
+        const first = !this.holds(sub.route), moved = sub.route.native !== null && sub.route.native !== data.route;
+        if (moved) sub.route.page = this.nextRoute++;
         sub.status = 'followed';
         sub.route.native = data.route!;
         this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek, offset: sub.route.offset });
         for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
-        sub.route.told = null;
+        if (first || moved) sub.route.told = null;
         this.anchor();
       }, error => this.refuse(sub, error instanceof Error ? error.message : String(error)));
   }
@@ -409,15 +440,17 @@ export class Pipeline {
       route.told = told;
       const command = this.page.command(route.page);
       const composedAt = performance.timeOrigin + (s.composedAt ?? performance.now());
-      route.serial = route.serial.then(() => this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset,
-        playing: s.playing, speed: s.hoursPerSecond, frameRate: this.host.frameRate(), seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route))
-        .then(reply => {
-          const data = reply as { available?: boolean; reason?: string } | null;
-          if (data?.available !== true && this.page.fail(route.page, command, data?.reason ?? 'The followed stream is no longer available')) this.flush();
-        }, error => {
-          route.told = null;
-          if (this.page.fail(route.page, command, error instanceof Error ? error.message : String(error))) this.flush();
-        });
+      const page = route.page;
+      route.serial = route.serial.then(async () => {
+        if (!this.holds(route) || route.page !== page) return;
+        let reason: string | null = null;
+        try {
+          const data = await this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
+            frameRate: this.host.frameRate(), seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
+          if (data?.available !== true) reason = data?.reason ?? 'The followed stream is no longer available';
+        } catch (error) { route.told = null; reason = error instanceof Error ? error.message : String(error); }
+        if (reason !== null && this.holds(route) && route.page === page && this.page.fail(page, command, reason)) this.flush();
+      });
     }
   }
 }

@@ -73,7 +73,7 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
     const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];
     return { firstHour, lastHour };
   }, [product.moment]);
-  const head = track && (!resolved || (!resolved.reason && !resolved.unobserved.length)) ? {
+  const head = track && (!resolved || (!resolved.reason && !membershipGap)) ? {
     branchId: track.branch.id, group: options.group === 'player' ? 'player' as const : 'country' as const, tags: asked?.tags ?? null,
     membership: asked?.membership ? [...asked.membership.values()].flat() : null, players: contentSet(options.players).map(contentKey),
   } : null;

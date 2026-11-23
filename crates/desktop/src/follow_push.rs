@@ -24,7 +24,7 @@ impl Relay {
 impl crate::pull::Outbox for Relay {
     fn take(&mut self) -> Vec<Vec<u8>> { std::mem::take(&mut self.held) }
     fn restart(&mut self, session: &str) {
-        let epoch = dashboard_follow::registry::registry().restart();
+        let epoch = dashboard_follow::registry::registry().restart(session);
         self.begin(session, epoch);
     }
 }

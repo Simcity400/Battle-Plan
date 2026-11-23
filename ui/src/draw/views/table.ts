@@ -1,3 +1,5 @@
+import { repliedCells } from '../../dashboard/follow/liveCells.ts';
+import { liveKey } from '../../charts/live.ts';
 import type { LaneView, Painted, PaintInput, Scene, Value } from '../lane.ts';
 import { advanceTableState, cellIcons, cellText, drawTable, fitState, nextChange, rankMarkers, tablePicture, tableReading, tableState,
   type RankMarker, type TablePicture, type TableReading, type TableRowModel, type TableSurfaceModel, type TableSurfaceState, type TableValues } from '../tables/surface.ts';
@@ -8,7 +10,7 @@ import { liveValues, fieldsOf, type Structure } from './fields.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { TableBuild } from '../tables/builders';
 
-export interface TableBinding { model: TableSurfaceModel; tooltipKeys?: Readonly<Record<string, readonly string[]>>; window?: { first: number; count: number }; audit?: boolean }
+export interface TableBinding { model: TableSurfaceModel; tooltipKeys?: Readonly<Record<string, readonly string[]>>; tooltipColumns?: readonly string[]; window?: { first: number; count: number }; audit?: boolean }
 
 interface Held {
   canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D; picture: TablePicture; state?: TableSurfaceState; content: string;
@@ -46,6 +48,7 @@ function valuesOf(scene: Scene, model: TableSurfaceModel): TableValues | null {
     const live = liveValues(picture);
     return live && { get: key => { const v = live.get(key); return typeof v === 'number' || typeof v === 'bigint' ? v : undefined; }, missing: key => { const v = live.get(key); return typeof v === 'string' ? v : 'Not recorded'; } };
   }
+  if (model.build && model.reply !== undefined) return repliedCells(model.reply).read();
   if (!model.values) return null;
   const values = model.values, missing = model.missingValues ?? {};
   return { get: key => values[key], missing: key => missing[key] ?? 'Not recorded' };
@@ -168,7 +171,7 @@ export function tableView(structureOf: (product: string | undefined) => Structur
       }
       if (input.inspect?.startsWith('row:')) {
         const row = input.inspect.split(':')[1]!;
-        const reading: TableReading = { ...tableReading(next, bound.tooltipKeys?.[row] ?? [], undefined),
+        const reading: TableReading = { ...tableReading(next, bound.tooltipKeys?.[row] ?? bound.tooltipColumns?.map(column => liveKey(row, column)) ?? [], undefined),
           ...model.build && reply !== undefined ? { detail: buildDetail(model.build, reply, row) } : {} };
         const text = JSON.stringify(reading, (_key, value: unknown) => typeof value === 'bigint' ? `${value}n` : value);
         held.tooltip = kept(held.tooltip, `${input.inspect}\u0000${text}`, content);

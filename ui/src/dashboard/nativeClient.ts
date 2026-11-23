@@ -123,15 +123,15 @@ export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
   ...(desktopAvailable ? {
     openFollow(ports: readonly MessagePort[]) {
-      return new Promise<void>((resolve, reject) => {
-        const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' });
+      return new Promise<string>((resolve, reject) => {
+        const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' }), session = crypto.randomUUID();
         const fail = (reason: string) => { reader.terminate(); reject(new Error(reason)); };
         reader.onmessage = ({ data }) => {
-          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(); }
+          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(session); }
           else if (data.reason) fail(data.reason);
         };
         reader.onerror = event => fail(event.message);
-        reader.postMessage({ ports, session: crypto.randomUUID() }, [...ports]);
+        reader.postMessage({ ports, session }, [...ports]);
       });
     },
     replayLibrary: () => invoke<ReplayLibrary>('replay_library'),

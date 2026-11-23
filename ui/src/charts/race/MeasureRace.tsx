@@ -223,7 +223,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
     if (!entry || !track) return null;
     return live.current = liveRace(runtime.clock, axisOffset, hour => decorate(followedRace(entry, top != null ? null : tags, member, hour, slots, decimals, format).entries,
       partsRead && raceHead ? raceHead.values(followedTags) : undefined),
-    () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null, hour => followedRace(entry, null, null, hour, 0, decimals, format).shown);
+    () => entry.version * 1_000_000 + (raceHead?.version() ?? 0), member !== null, hour => Math.min(hour, entry.through));
   }, [entry, track, runtime.clock, axisOffset, top, tags, member, slots, decimals, format, decorate, partsRead, raceHead, followedTags]);
   useEffect(() => raceHead?.subscribe(() => live.current?.wake()), [raceHead]);
   const rankRequest = !arsenal && racing && track && !following && (top != null || asked) ? {

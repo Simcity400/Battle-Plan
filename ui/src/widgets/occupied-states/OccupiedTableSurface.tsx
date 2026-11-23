@@ -13,7 +13,7 @@ import { buildTable } from '../../draw/tables/builders.ts';
 import { repliedCells } from '../../dashboard/follow/liveCells.ts';
 import type { TableSettings } from '../../draw/tables/logic.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
-import { occupationTooltipKeys, type OccupiedStatesReply } from './occupiedStatesData.ts';
+import { OCCUPATION_TOOLTIP_COLUMNS, type OccupiedStatesReply } from './occupiedStatesData.ts';
 import { FORMAT, type OccupiedTableContext } from './occupiedTable.ts';
 import { COLUMNS, OPTIONS, TABLE_BASE } from './definition.ts';
 
@@ -53,5 +53,5 @@ export default function OccupiedTableSurface({ widget, runtime, clock, data, con
   return <FamilyTable label="Occupied states" className="occupied-table-surface" clock={clock} offset={track?.axisOffset ?? 0}
     columns={SPECS} rows={NO_ROWS} reply={follow === undefined ? data : undefined} build={build} fixed={fixed} settings={settings} onSettings={setOption ? onSettings : undefined}
     live={live} follow={follow} shownAt={shownAt} countryColours={countryColours} headerSlot={headerSlot} exactRows={exactRows}
-    tooltipKeys={occupationTooltipKeys} onHover={(key, at, drawn) => { if (key !== null && at && drawn) onHover(key, at, drawn); else onHover(null); }} />;
+    tooltipColumns={OCCUPATION_TOOLTIP_COLUMNS} onHover={(key, at, drawn) => { if (key !== null && at && drawn) onHover(key, at, drawn); else onHover(null); }} />;
 }

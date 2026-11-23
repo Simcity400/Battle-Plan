@@ -166,5 +166,58 @@ test('review 6 B: widgets read one reading state from the installed entries, and
   assert.deepEqual(joinReadings([covered, refused, pending]), { state: 'refused', reason: 'Casualties dealt are not recorded' });
   assert.deepEqual(joinReadings([covered, pending]), { state: 'pending' });
   assert.deepEqual(joinReadings([covered, readingOf({ mode: 'picture', h: 11, through: 11, target: 12, dim: true, tooltip: null }), null]),
-    { state: 'covered', hour: 11, through: 11, dim: true }, 'the joined picture is dated at its latest hour and covered only as far as all are');
+    { state: 'covered', hour: 11, dim: true }, 'the joined picture is dated at its latest hour and dimmed if any part is');
+});
+
+test('review 7 A: a component joining a shown widget keeps its picture, dimmed, until the joined picture installs', async () => {
+  const { pipeline, clock, send, source, settle, close } = inProcess();
+  try {
+    const id = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const first = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state', params: { n: 1 } }, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(first).status === 'followed');
+    send(message(10, [{ id: first, answer: { keys: [1n], columns: 1, values: [7n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture'));
+    const second = pipeline.subscribe(id, {}, source, '1', 0, { product: 'series-state', params: { n: 2 } }, 'followed')!;
+    assert.deepEqual([pipeline.view(id)?.mode, pipeline.view(id)?.dim], ['picture', true], 'the shown picture stays, dimmed, while the join is pending');
+    await settle(() => pipeline.status(second).status === 'followed');
+    send(message(10, [{ id: second, answer: { keys: [1n], columns: 1, values: [8n] } }], false, NATIVE, clock.getSnapshot().seekSequence));
+    assert.ok(await settle(() => pipeline.view(id)?.mode === 'picture' && pipeline.view(id)?.dim === false), JSON.stringify(pipeline.view(id)));
+  } finally { close(); }
+});
+
+test('review 7 D: a widget rejoining a route that native serves from a new host installs on the same seek', async () => {
+  let route = NATIVE;
+  const { pipeline, clock, send, source, settle, close } = inProcess({ follow: () => ({ available: true, route }) });
+  try {
+    const query = { product: 'series-state' };
+    const first = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const sub = pipeline.subscribe(first, {}, source, '1', 0, query, 'followed')!;
+    clock.seek(10);
+    await settle(() => pipeline.status(sub).status === 'followed');
+    const seek = clock.getSnapshot().seekSequence;
+    for (const hour of [9, 10]) send(message(hour, [{ id: sub, answer: { keys: [1n], columns: 1, values: [BigInt(hour)] } }], true, NATIVE, seek));
+    assert.ok(await settle(() => pipeline.view(first)?.mode === 'picture' && pipeline.view(first)?.h === 10));
+    pipeline.drop('widget|0');
+    route = NATIVE + 1;
+    const again = pipeline.acquire('widget|0', { offset: 0, pin: null });
+    const back = pipeline.subscribe(again, {}, source, '1', 0, query, 'followed')!;
+    await settle(() => pipeline.status(back).status === 'followed');
+    send(message(10, [{ id: back, answer: { keys: [1n], columns: 1, values: [3n] } }], false, route, seek));
+    assert.ok(await settle(() => pipeline.view(again)?.mode === 'picture'), JSON.stringify(pipeline.view(again)));
+  } finally { close(); }
+});
+
+test('review 7 F: a pinned placement that shows an asked answer stays sampled with the hour and rows it shows', async () => {
+  const { capturePictures } = await import('../pulled.ts');
+  const { pipeline, clock, close } = inProcess();
+  try {
+    await capturePictures(true);
+    const id = pipeline.acquire('pinned|0', { offset: 0, pin: 40 });
+    pipeline.answer(id, { hour: 40, rows: () => [{ row: 'a', key: 'a', value: '7' }] });
+    clock.seek(50);
+    const records = await capturePictures(false) as { t: string; placement?: number; hour?: number | null; fixedHour?: number; mode?: string; rows?: unknown[] }[];
+    const sampled = records.filter(record => record.t === 'picture' && record.placement === id);
+    assert.ok(sampled.length > 0 && sampled.every(record => record.hour === 40 && record.fixedHour === 40 && record.mode === 'picture' && record.rows?.length === 1), JSON.stringify(sampled.slice(-2)));
+  } finally { close(); }
 });

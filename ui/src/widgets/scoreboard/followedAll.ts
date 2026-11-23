@@ -4,7 +4,7 @@ import { canonical } from '../../dashboard/follow/canonical.ts';
 import { FollowedCard, installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from '../../dashboard/follow/store.ts';
 import { observeOnScreen, useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import type { OnScreen } from '../../dashboard/follow/useFollow';
-import { useElement, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from '../../dashboard/follow/useFollowed.ts';
+import { branchBounds, useElement, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from '../../dashboard/follow/useFollowed.ts';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { Live } from '../../charts/live';
 
@@ -12,6 +12,7 @@ export interface FollowedAll {
   entries: readonly (FollowEntry | null)[];
   reason?: string;
   failure?: string;
+  outside?: boolean;
   current: (at: number) => FollowEntry | null;
   subscribe: (changed: () => void) => () => void;
 }
@@ -24,7 +25,8 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   const element = useElement(target), card = useContext(FollowedCard);
   const wanted = !prepared && !!store && queries.some(Boolean);
   const visible = useOnScreen(wanted ? card ?? element : null, onScreen);
-  const pipe = useFollowedWidget(pipeline, wanted && store ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null });
+  const first = queries.find(Boolean), branch = first ? first.branchId ?? (first.params as { branchId?: unknown } | undefined)?.branchId : undefined;
+  const pipe = useFollowedWidget(pipeline, wanted && store ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null, bounds: store ? branchBounds(store.source, branch) : undefined });
   const key = JSON.stringify(queries.map(query => query ? canonical(query) : null));
   const asked = useRef(queries); asked.current = queries;
   const [subs, setSubs] = useState<{ key: string; subs: (number | null)[] }>({ key: '', subs: [] });
@@ -51,7 +53,7 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   return useMemo(() => {
     const unavailable = entries.find((entry, at) => queries[at] && entry?.status === 'unavailable');
     const failed = entries.find((entry, at) => queries[at] && entry?.status === 'failed');
-    return { entries, reason: unavailable?.reason, ...(failed && { failure: failed.reason ?? 'The followed stream failed' }), current, subscribe };
+    return { entries, reason: unavailable?.reason, ...(failed && { failure: failed.reason ?? 'The followed stream failed' }), outside: view?.mode === 'outside', current, subscribe };
   }, [entries, view, current, subscribe]);
 }
 

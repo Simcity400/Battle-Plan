@@ -215,7 +215,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
 
   const error = followedHead ? null : rank.error ?? states.find(state => state.error)?.error ?? null;
   const retry = () => { rank.retry(); states.forEach(state => state.retry()); };
-  const loading = following ? reading.state === 'pending' || !followedHead : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
+  const loading = following ? reading.state === 'pending' : (top != null && !rank.data) || states.some((state, at) => askedTags.length > 0 && stateRequests[at] && !state.data);
   const content = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see casualties." />;
     if (refused) return <WidgetState kind="unavailable" message={refused} />;

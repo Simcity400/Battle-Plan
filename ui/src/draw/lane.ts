@@ -84,6 +84,12 @@ const recordsCharge = (bytes: Uint8Array) => {
   return total;
 };
 
+const refusalOf = (picture: Picture<Value>): string | null => {
+  const value = picture.parts[0]!.value;
+  if (value.kind === 'answer') return value.answer.kind === 'notRecorded' ? value.answer.reason : null;
+  return value.kind === 'panel' ? value.refused : null;
+};
+
 const BUFFER = 8 << 20;
 const HELD_COST = 32;
 const STALE = 120;
@@ -159,7 +165,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.subs.delete(sub);
     this.lost.delete(sub);
     this.forget(sub);
-    this.facts.unfollow(sub);
+    for (const cell of this.facts.unfollow(sub)) { this.gone.add(cell); this.forget(cell); }
     this.after();
   }
 
@@ -224,10 +230,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   receive(kind: 'follow' | 'panels', bytes: Uint8Array) {
-    if (kind === 'follow') this.follows(bytes);
-    else this.panels(bytes);
-    this.replay();
-    this.after();
+    try {
+      if (kind === 'follow') this.follows(bytes);
+      else this.panels(bytes);
+      this.replay();
+    } finally { this.after(); }
   }
 
   private after() {
@@ -315,7 +322,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const due = this.early.filter(item => (this.current(item) ?? 1) <= 0);
     if (!due.length) return;
     this.early = this.early.filter(item => !due.includes(item));
-    for (const item of due) this.follows(item.bytes, true);
+    for (const item of due) this.follows(item.bytes);
   }
 
   private replay() {
@@ -365,19 +372,19 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     return { id, hour: at, value, bytes };
   }
 
-  private follows(bytes: Uint8Array, replayed = false) {
+  private follows(bytes: Uint8Array) {
     let message: ReturnType<typeof parseFollowed>;
     try { message = parseFollowed(bytes); }
     catch (error) { this.freed += recordsCharge(bytes); throw error; }
-    if (message.reset && !replayed) {
-      this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
-      this.drop(message.route);
-    }
     const order = this.current({ native: message.route, seek: message.seek });
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = data.getUint32(12, true);
     if (order === -1) { this.freed += recordsCharge(bytes); return; }
     if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes }); return; }
+    if (message.reset) {
+      this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
+      this.drop(message.route);
+    }
     const route = this.routes.get(message.route);
     const limited = new Map<number, number>(), unbound = new Map<number, { records: Uint8Array[]; size: number }>();
     const mine: [number, number, number][] = [];
@@ -587,6 +594,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         painted = view.paint({ widget: widget.id, subs: widget.subs.map(id => this.subs.get(id)!), pictures: selected.pictures, model: widget.model,
           hour: selected.window[0], speed: request.speed, binding: widget.binding, inspect: widget.inspect, now: start }, widget.state, this.content);
         mode = painted.mode ?? 'picture'; reason = painted.reason;
+        const refusals = selected.pictures.map(refusalOf);
+        if (mode === 'picture' && refusals.length && refusals.every(refusal => refusal !== null)) { mode = 'refused'; reason = refusals[0]!; }
       } catch (error) {
         painted = { surfaces: [], fields: {}, motion: false };
         mode = 'failed'; reason = 'drawing failed: ' + (error instanceof Error ? error.message : String(error));

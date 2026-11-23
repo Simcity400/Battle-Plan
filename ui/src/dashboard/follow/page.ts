@@ -70,6 +70,8 @@ export interface WidgetView {
   id?: number;
   h?: number;
   through?: number;
+  painted?: number;
+  structure?: string;
   dim: boolean;
   fields?: Readonly<Record<string, unknown>>;
   tooltip: unknown;
@@ -96,6 +98,14 @@ interface Widget<B extends Bitmap> {
 interface RouteState { reset: number; command: number; failed: { seek: number; reason: string } | null }
 
 export interface RebindChange { pin?: number | null; offset?: number; subscription?: boolean; bounds?: readonly [number, number] | null }
+
+const structureOf = (content: Readonly<Record<string, string>>) => Object.entries(content)
+  .filter(([key]) => key !== 'hour' && !key.startsWith('live:') && !key.startsWith('texts:') && !/^\d+$/.test(key)).map(([key, id]) => `${key}=${id}`).join('|');
+
+const sameContent = (a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>) => {
+  const keys = Object.keys(a).filter(key => key !== 'hour');
+  return keys.length === Object.keys(b).filter(key => key !== 'hour').length && keys.every(key => a[key] === b[key]);
+};
 
 const closeParts = <B extends Bitmap>(entry: Entry<B>) => {
   for (const part of entry.surfaces) if (part && part !== SAME) part.close();
@@ -205,6 +215,8 @@ export class Page<B extends Bitmap = Bitmap> {
     this.touched.add(widget);
   }
 
+  private failedRoute(widget: Widget<B>) { return widget.pin === null && this.route(widget.route).failed !== null; }
+
   private reading(widget: Widget<B>) {
     const failed = widget.pin === null ? this.route(widget.route).failed : null;
     this.clear(widget, failed ? 'failed' : 'reading', failed?.reason);
@@ -288,7 +300,7 @@ export class Page<B extends Bitmap = Bitmap> {
       if (part === SAME ? widget.content[k] !== entry.content[k] : !part || part.width === 0) return 'kept content';
     }
     for (const [key, value] of Object.entries(entry.fields)) if (value === SAME && (!shown || widget.content[key] !== entry.content[key])) return 'kept content';
-    if (!this.playing && shown && at > entry.c && entry.h !== shown.h) return 'uncovered';
+    if (!this.playing && shown && at > entry.c && entry.binding === shown.binding && !sameContent(entry.content, widget.content)) return 'uncovered';
     return null;
   }
 
@@ -381,7 +393,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (!shown) return { mode: widget.status, reason: widget.reason, target: at, dim: false, tooltip: null };
     const tip = shown.fields.tooltip as { key: string; text: unknown } | undefined;
     const until = Math.min(shown.c, shown.hi);
-    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), target: at,
+    return { mode: shown.mode, reason: shown.reason, id: shown.id, h: shown.h, through: Math.min(at, until), painted: Math.min(Math.max(shown.h, shown.lo), at, until), structure: structureOf(widget.content), target: at,
       dim: (!this.playing && at > until) || shown.binding !== widget.binding, fields: shown.fields,
       tooltip: tip && widget.inspect !== null && tip.key === widget.inspect ? tip.text : null };
   }
@@ -394,7 +406,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (change.offset !== undefined) widget.offset = change.offset;
     if (change.bounds !== undefined) widget.bounds = change.bounds;
     if (widget.early) { this.refuse(widget, widget.early, 'binding'); widget.early = null; }
-    if (change.subscription) { widget.failed = false; this.reading(widget); }
+    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget)) this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);
     this.touched.add(widget);
     this.tell();

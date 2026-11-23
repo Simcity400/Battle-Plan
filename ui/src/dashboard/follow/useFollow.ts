@@ -5,7 +5,7 @@ import { PreparingPage } from '../preparing.ts';
 import type { FollowedAnswer } from './message.ts';
 import { FollowedCard, FollowedWidgetKey, installedEntry, type FollowEntry, type FollowQuery, type FollowStore } from './store.ts';
 import { observeOnScreen, type OnScreen } from './onScreen.ts';
-import { readingOf, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from './useFollowed.ts';
+import { branchBounds, readingOf, useElement, useFollowedSub, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from './useFollowed.ts';
 import type { Reading } from './useFollowed';
 
 export { observeOnScreen, screenHolder, NEAR_SCREEN, DASHBOARD_SCROLL } from './onScreen.ts';
@@ -50,8 +50,8 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
   const query = prepared || !store ? null : asked;
   const element = useElement(target), card = useContext(FollowedCard);
   const visible = useOnScreen(query ? card ?? element : null, onScreen);
-  const pipe = useFollowedWidget(pipeline, store && query ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null, bounds: undefined });
   const branch = query ? (query.branchId ?? (query.params as { branchId?: unknown } | undefined)?.branchId) : undefined;
+  const pipe = useFollowedWidget(pipeline, store && query ? `${widgetKey}|${store.offset}` : null, { offset: store?.offset ?? 0, pin: null, bounds: store ? branchBounds(store.source, branch) : undefined });
   const follow = useMemo(() => store && typeof branch === 'string' ? { source: store.source, branch, offset: store.offset } : null, [store, branch]);
   const channel = query && typeof query.panel === 'string' ? 'panel' : 'followed';
   const sub = useFollowedSub(pipeline, pipe, follow, query && visible ? query : null, channel, typeof query?.panel === 'string' ? query.panel : undefined);

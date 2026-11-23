@@ -480,9 +480,9 @@ impl<E: Send + Sync + 'static> PlayheadHost<E> {
                 let head = playhead.head(Instant::now());
                 let told = {
                     let held = waiting.lock().unwrap_or_else(PoisonError::into_inner);
-                    held.push.clone().map(|push| (push, held.stamp.1))
+                    held.push.clone().map(|push| (push, held.stamp.1, held.stamp.3))
                 };
-                if let Some((push, route)) = told { push.head(route, head); }
+                if let Some((push, route, seek)) = told { push.head(route, seek, head); }
                 consumer.advance(head);
                 consumer.take(head, &mut taken);
                 taken.clear();

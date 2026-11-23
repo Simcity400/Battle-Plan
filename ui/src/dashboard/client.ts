@@ -113,7 +113,7 @@ export interface DashboardClient {
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
   onMapObserve?(callback: (event: MapObserveEvent) => void): Promise<() => void>;
-  openFollow?(ports: readonly MessagePort[]): Promise<void>;
+  openFollow?(ports: readonly MessagePort[]): Promise<string | void>;
 }
 
 export interface MapOptionsEvent { viewId: string; options: MapOptions }
