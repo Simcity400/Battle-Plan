@@ -10,6 +10,7 @@ import { nearest, stepHours, validateLossesReply, withEdges } from './lossesData
 import type { LossWindow } from './lossesData';
 import type { LossSource, LossesParams, LossesReply, NavigationKey } from '../../generated/dashboard';
 import { productRequest } from '../../dashboard/request.ts';
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 
 const SERIES = { kind: 'equipment-losses', measure: 'total' };
 const PART_BITS = 41n;
@@ -26,7 +27,7 @@ export const leafPart = (key: string) => (BigInt(key) & ((1n << PART_BITS) - 1n)
 
 export interface LossSelection { branchId: string; country: LossesParams['country']; landSource: LossesParams['landSource']; identity?: LossesParams['identity'] }
 
-export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within' | 'recorded'>, track: BoundTrack | undefined, selection: LossSelection | null,
+export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within' | 'recorded' | 'country' | 'span'>, track: BoundTrack | undefined, selection: LossSelection | null,
   view: LossWindow | null, exact: readonly number[], active: boolean, open: boolean) {
   const key = JSON.stringify([track?.source.id, track?.source.revision, selection, view?.first, view?.end, view?.from]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
@@ -85,10 +86,12 @@ export function useLossHistory(client: DashboardClient, gate: Pick<Gate, 'within
       if (!controller.signal.aborted && alive.current === owner) setKeyboard(before => ({ owner, hour, revision: (before?.revision ?? 0) + 1 }));
     };
     if (!leaves.length) { land(ships); return; }
+    const held = gate.country?.history ?? null;
     const firstAt = gate.within(firstHour), lastAt = gate.within(lastHour);
     if (firstAt === null || lastAt === null) { land(ships); return; }
     void loadTransientProduct<{ hour: unknown }>(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'series-next-change',
-      params: { branchId: selection.branchId, family: SERIES, lines: leaves.map(([, leaf]) => ({ country: selection.country, part: leafPart(leaf) })),
+      params: { branchId: selection.branchId, family: SERIES, lines: leaves.map(([, leaf]) => ({ country: held ? countryFromKey(held.key) : selection.country, part: leafPart(leaf) })),
+        ...(held ? { within: [[countryFromKey(held.key), held.spans.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? [])] as const] } : {}),
         key, from: gate.within(origin), firstHour: firstAt, lastHour: lastAt } }), controller.signal).then(reply => {
       if (reply.hour !== null && !Number.isSafeInteger(reply.hour)) throw new Error('The equipment-loss navigation is malformed.');
       land(nearest(key, reply.hour as number | null, ships));
