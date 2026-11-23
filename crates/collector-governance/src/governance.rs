@@ -256,6 +256,8 @@ pub struct Captured {
     technology_changed: crate::slicing::Changed,
     focus_selection: SliceSelection,
     focus_changed: crate::slicing::Changed,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 
 pub struct Slices<'a> {
@@ -688,6 +690,8 @@ impl Captured {
             technology_changed: crate::slicing::Changed::default(),
             focus_selection: SliceSelection::new(),
             focus_changed: crate::slicing::Changed::default(),
+            daily_released: false,
+            last_capacity: *capacity,
         }
     }
 
@@ -1007,7 +1011,110 @@ impl Captured {
                 .map(|row| row.token.allocated_bytes())
                 .sum::<usize>()
     }
+    pub fn release_transient(&mut self) {
+        const STEADY_TECHNOLOGY_CAP: usize = 4_096;
+        const STEADY_COMPLETED_CAP: usize = 2_048;
+        const STEADY_FOCUS_TEXT_CAP: usize = 65_536;
+        const STEADY_RESEARCH_INPUTS_CAP: usize = 2_048;
+        const STEADY_RESEARCH_BONUSES_CAP: usize = 4_096;
+        const STEADY_RESEARCH_MODIFIERS_CAP: usize = 8_192;
+        self.last_capacity.rows[3] = self.last_capacity.rows[3].max(self.slots.rows.len());
+        self.last_capacity.rows[8] = self.last_capacity.rows[8].max(self.counts.rows.len());
+        self.last_capacity.rows[9] = self.last_capacity.rows[9].max(self.decisions.rows.len());
+        self.last_capacity.rows[11] = self.last_capacity.rows[11].max(self.tactics.rows.len());
+        self.last_capacity.rows[12] = self.last_capacity.rows[12].max(self.sharing.rows.len());
+        self.last_capacity.rows[13] = self
+            .last_capacity
+            .rows[13]
+            .max(self.sharing_members.rows.len());
+        self.last_capacity.rows[24] = self
+            .last_capacity
+            .rows[24]
+            .max(self.random_items.rows.len());
+        self.last_capacity.decision_text = self
+            .last_capacity
+            .decision_text
+            .max(self.decision_text.first.len());
+        self.last_capacity.decision_countries = self
+            .last_capacity
+            .decision_countries
+            .max(self.decision_countries.first.len());
+        self.last_capacity.tactic_text = self
+            .last_capacity
+            .tactic_text
+            .max(self.tactic_text.first.len());
+        self.last_capacity.random_item_text = self
+            .last_capacity
+            .random_item_text
+            .max(self.random_item_text.first.len());
+        self.last_capacity.effect_tokens = self
+            .last_capacity
+            .effect_tokens
+            .max(self.effect_tokens.first.len());
+        self.last_capacity.effect_frames = self
+            .last_capacity
+            .effect_frames
+            .max(self.effect_frames.first.len());
+        self.last_capacity.effect_names = self
+            .last_capacity
+            .effect_names
+            .max(self.effect_names.first.len());
+        self.last_capacity.effect_bytes = self
+            .last_capacity
+            .effect_bytes
+            .max(self.effect_bytes.first.len());
+        self.last_capacity.effect_events = self
+            .last_capacity
+            .effect_events
+            .max(self.effect_events.first.len());
+        self.slots.release();
+        self.counts.release();
+        self.decisions.release();
+        self.tactics.release();
+        self.sharing.release();
+        self.sharing_members.release();
+        self.random_items.release();
+        self.decision_text.release();
+        self.decision_countries.release();
+        self.tactic_text.release();
+        self.random_item_text.release();
+        self.effect_tokens.release();
+        self.effect_frames.release();
+        self.effect_names.release();
+        self.effect_bytes.release();
+        self.effect_events.release();
+        if self.technologies.rows.capacity() > STEADY_TECHNOLOGY_CAP
+            || self.technology_pointers.capacity() > STEADY_TECHNOLOGY_CAP
+        {
+            self.technologies.release();
+            self.technology_pointers = Vec::new();
+        }
+        if self.completed.rows.capacity() > STEADY_COMPLETED_CAP {
+            self.completed.release();
+        }
+        if self.focus_text.first.capacity() > STEADY_FOCUS_TEXT_CAP {
+            self.focus_text.release();
+        }
+        if self.research_inputs.rows.capacity() > STEADY_RESEARCH_INPUTS_CAP {
+            self.research_inputs.release();
+        }
+        if self.research_bonuses.rows.capacity() > STEADY_RESEARCH_BONUSES_CAP {
+            self.research_bonuses.release();
+        }
+        if self.research_modifiers.rows.capacity() > STEADY_RESEARCH_MODIFIERS_CAP {
+            self.research_modifiers.release();
+        }
+        self.nested_bytes.take();
+        self.daily_released = true;
+    }
+
     pub fn grow(&mut self, capacity: &mut Capacities) {
+        const STEADY_TECHNOLOGY_CAP: usize = 4_096;
+        const STEADY_COMPLETED_CAP: usize = 2_048;
+        const STEADY_FOCUS_TEXT_CAP: usize = 65_536;
+        const STEADY_RESEARCH_INPUTS_CAP: usize = 2_048;
+        const STEADY_RESEARCH_BONUSES_CAP: usize = 4_096;
+        const STEADY_RESEARCH_MODIFIERS_CAP: usize = 8_192;
         capacity.rows[6] = capacity.rows[6].max(self.parties.rows.len());
         capacity.rows[10] = capacity.rows[10].max(self.modifiers.rows.len());
         capacity.party_text = capacity.party_text.max(self.party_text.first.len());
@@ -1018,58 +1125,126 @@ impl Captured {
         capacity.party_countries = capacity
             .party_countries
             .max(self.party_countries.first.len());
-        capacity.rows[2] = capacity.rows[2].max(self.technologies.rows.len());
+        if !self.technology_selection.force_full {
+            capacity.rows[2] = capacity.rows[2]
+                .max(self.technologies.rows.len())
+                .min(STEADY_TECHNOLOGY_CAP);
+        }
         capacity.rows[4] = capacity.rows[4].max(self.definitions.rows.len());
         self.focus.grow(&mut capacity.rows[0]);
-        self.completed.grow(&mut capacity.rows[1]);
-        grow_large(&mut self.technologies, &mut capacity.rows[2]);
-        grow_vec(&mut self.technology_pointers, capacity.rows[2]);
-        self.slots.grow(&mut capacity.rows[3]);
+        if self.daily_released {
+            self.completed.record_demand(&mut capacity.rows[1]);
+            grow_vec(
+                &mut self.completed.rows,
+                capacity.rows[1].min(STEADY_COMPLETED_CAP),
+            );
+        } else {
+            self.completed.grow(&mut capacity.rows[1]);
+        }
+        let mut tech_cap = capacity.rows[2].min(STEADY_TECHNOLOGY_CAP);
+        if self.technologies.rows.len() <= tech_cap && self.technology_pointers.len() <= tech_cap {
+            grow_vec(&mut self.technologies.rows, tech_cap);
+            grow_vec(&mut self.technology_pointers, self.technologies.rows.len());
+        } else {
+            tech_cap = self.technologies.rows.len();
+            grow_vec(&mut self.technology_pointers, tech_cap);
+        }
         self.definitions.grow(&mut capacity.rows[4]);
         self.politics.grow(&mut capacity.rows[5]);
         self.parties.grow(&mut capacity.rows[6]);
         self.ideas.grow(&mut capacity.rows[7]);
         self.timed_ideas.grow(&mut capacity.rows[23]);
-        self.random_items.grow(&mut capacity.rows[24]);
-        self.counts.grow(&mut capacity.rows[8]);
-        self.decisions.grow(&mut capacity.rows[9]);
-        self.effect_tokens.grow(&mut capacity.effect_tokens);
-        self.effect_frames.grow(&mut capacity.effect_frames);
-        self.effect_names.grow(&mut capacity.effect_names);
-        self.effect_bytes.grow(&mut capacity.effect_bytes);
-        self.effect_events.grow(&mut capacity.effect_events);
         self.modifiers.grow(&mut capacity.rows[10]);
-        self.tactics.grow(&mut capacity.rows[11]);
-        self.sharing.grow(&mut capacity.rows[12]);
-        self.sharing_members.grow(&mut capacity.rows[13]);
         self.balances.grow(&mut capacity.rows[14]);
         self.balance_members.grow(&mut capacity.rows[15]);
         self.ranges.grow(&mut capacity.rows[16]);
-        self.research_inputs.grow(&mut capacity.rows[18]);
-        self.research_bonuses.grow(&mut capacity.rows[19]);
-        self.research_modifiers.grow(&mut capacity.rows[20]);
         self.party_leaders.grow(&mut capacity.rows[21]);
         self.overrides.grow(&mut capacity.rows[17]);
+        if self.daily_released {
+            self.slots.record_demand(&mut capacity.rows[3]);
+            self.random_items.record_demand(&mut capacity.rows[24]);
+            self.counts.record_demand(&mut capacity.rows[8]);
+            self.decisions.record_demand(&mut capacity.rows[9]);
+            self.effect_tokens
+                .record_demand(&mut capacity.effect_tokens);
+            self.effect_frames
+                .record_demand(&mut capacity.effect_frames);
+            self.effect_names.record_demand(&mut capacity.effect_names);
+            self.effect_bytes.record_demand(&mut capacity.effect_bytes);
+            self.effect_events
+                .record_demand(&mut capacity.effect_events);
+            self.tactics.record_demand(&mut capacity.rows[11]);
+            self.sharing.record_demand(&mut capacity.rows[12]);
+            self.sharing_members.record_demand(&mut capacity.rows[13]);
+            self.research_inputs.record_demand(&mut capacity.rows[18]);
+            self.research_bonuses.record_demand(&mut capacity.rows[19]);
+            self.research_modifiers
+                .record_demand(&mut capacity.rows[20]);
+            grow_vec(
+                &mut self.research_inputs.rows,
+                capacity.rows[18].min(STEADY_RESEARCH_INPUTS_CAP),
+            );
+            grow_vec(
+                &mut self.research_bonuses.rows,
+                capacity.rows[19].min(STEADY_RESEARCH_BONUSES_CAP),
+            );
+            grow_vec(
+                &mut self.research_modifiers.rows,
+                capacity.rows[20].min(STEADY_RESEARCH_MODIFIERS_CAP),
+            );
+        } else {
+            self.slots.grow(&mut capacity.rows[3]);
+            self.random_items.grow(&mut capacity.rows[24]);
+            self.counts.grow(&mut capacity.rows[8]);
+            self.decisions.grow(&mut capacity.rows[9]);
+            self.effect_tokens.grow(&mut capacity.effect_tokens);
+            self.effect_frames.grow(&mut capacity.effect_frames);
+            self.effect_names.grow(&mut capacity.effect_names);
+            self.effect_bytes.grow(&mut capacity.effect_bytes);
+            self.effect_events.grow(&mut capacity.effect_events);
+            self.tactics.grow(&mut capacity.rows[11]);
+            self.sharing.grow(&mut capacity.rows[12]);
+            self.sharing_members.grow(&mut capacity.rows[13]);
+            self.research_inputs.grow(&mut capacity.rows[18]);
+            self.research_bonuses.grow(&mut capacity.rows[19]);
+            self.research_modifiers.grow(&mut capacity.rows[20]);
+        }
         capacity.party_countries = capacity.party_countries.max(capacity.rows[6]);
         capacity.idea_countries = capacity.rows[7];
         capacity.decision_countries = capacity.rows[9];
-        self.focus_text.grow(&mut capacity.focus_text);
+        if self.daily_released {
+            self.focus_text.record_demand(&mut capacity.focus_text);
+            grow_vec(
+                &mut self.focus_text.first,
+                capacity.focus_text.min(STEADY_FOCUS_TEXT_CAP),
+            );
+            self.random_item_text
+                .record_demand(&mut capacity.random_item_text);
+            self.decision_text
+                .record_demand(&mut capacity.decision_text);
+            self.tactic_text.record_demand(&mut capacity.tactic_text);
+            self.decision_countries
+                .record_demand(&mut capacity.decision_countries);
+        } else {
+            self.focus_text.grow(&mut capacity.focus_text);
+            self.random_item_text.grow(&mut capacity.random_item_text);
+            self.decision_text.grow(&mut capacity.decision_text);
+            self.tactic_text.grow(&mut capacity.tactic_text);
+            self.decision_countries
+                .grow(&mut capacity.decision_countries);
+        }
         self.definition_text.grow(&mut capacity.definition_text);
         self.party_text.grow(&mut capacity.party_text);
         self.idea_text.grow(&mut capacity.idea_text);
         self.timed_idea_text.grow(&mut capacity.timed_idea_text);
-        self.random_item_text.grow(&mut capacity.random_item_text);
-        self.decision_text.grow(&mut capacity.decision_text);
         self.modifier_text.grow(&mut capacity.modifier_text);
         self.modifier_values.grow(&mut capacity.modifier_values);
-        self.tactic_text.grow(&mut capacity.tactic_text);
         self.balance_text.grow(&mut capacity.balance_text);
         self.party_countries.grow(&mut capacity.party_countries);
         self.idea_countries.grow(&mut capacity.idea_countries);
-        self.decision_countries
-            .grow(&mut capacity.decision_countries);
         grow_capacity(&mut capacity.dictionary, self.dictionary_required);
         grow_vec(&mut self.dictionary, capacity.dictionary);
+        self.last_capacity = *capacity;
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
@@ -1214,6 +1389,33 @@ impl Captured {
         }
         for (walk, &left_out) in walk.iter_mut().zip(&self.left_out) {
             *walk &= !left_out;
+        }
+        if self.daily_released {
+            if walk[9] {
+                grow_vec(
+                    &mut self.effect_tokens.first,
+                    self.last_capacity.effect_tokens,
+                );
+                grow_vec(
+                    &mut self.effect_frames.first,
+                    self.last_capacity.effect_frames,
+                );
+                grow_vec(
+                    &mut self.effect_events.first,
+                    self.last_capacity.effect_events,
+                );
+            }
+            if walk[12] {
+                grow_vec(&mut self.sharing.rows, self.last_capacity.rows[12]);
+                grow_vec(&mut self.sharing_members.rows, self.last_capacity.rows[13]);
+            }
+            if walk[24] {
+                grow_vec(&mut self.random_items.rows, self.last_capacity.rows[24]);
+                grow_vec(
+                    &mut self.random_item_text.first,
+                    self.last_capacity.random_item_text,
+                );
+            }
         }
         self.definitions_pending = defer_definitions && walk[2];
         let first = acquire_partitioned(
@@ -1388,17 +1590,6 @@ fn elapsed(start: i64) -> u64 {
     u64::try_from(qpc().saturating_sub(start)).unwrap_or(0)
 }
 
-fn grow_large<R: Default + Clone>(rows: &mut CaptureRows<R>, capacity: &mut usize) {
-    let required = match rows.outcome {
-        Outcome::Rows { len } => len,
-        Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
-        Outcome::Unavailable { .. } => 0,
-    };
-    if required > capacity.saturating_sub(*capacity / 4) {
-        *capacity = (*capacity).max(required.saturating_add(required.div_ceil(3)));
-    }
-    grow_vec(&mut rows.rows, *capacity);
-}
 fn written<R>(rows: &[R], start: usize, outcome: Outcome) -> &[R] {
     start
         .checked_add(outcome.len())

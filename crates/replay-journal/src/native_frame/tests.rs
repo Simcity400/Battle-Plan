@@ -1676,3 +1676,33 @@ fn slice_updates_without_row_changes_match_recorded_changes() {
     }
     same_restarts(&mut [&mut expected_writer, &mut diff_writer]);
 }
+
+#[test]
+fn compact_owners_merge_narrow_and_wide_slices_in_key_order() {
+    let mut narrow = Owners::from_keys(
+        TableId::ResearchInputs,
+        3,
+        [
+            (1_u128 << 32) | 1,
+            (1_u128 << 32) | 2,
+            (2_u128 << 32) | 5,
+        ]
+        .into_iter(),
+    )
+    .unwrap();
+    assert!(matches!(narrow, Owners::U64(_)));
+    let slice = Slice {
+        owners: vec![1, 3],
+        keys: Owners::from_keys(
+            TableId::ResearchInputs,
+            2,
+            [(1_u128 << 32) | 9, (3_u128 << 32) | 4].into_iter(),
+        )
+        .unwrap(),
+    };
+    hold_slice(&mut narrow, &slice, TableId::ResearchInputs).unwrap();
+    let Owners::U64(keys) = narrow else {
+        panic!("expected narrow u64 owners");
+    };
+    assert_eq!(keys, [(1 << 32) | 9, (2 << 32) | 5, (3 << 32) | 4]);
+}

@@ -141,6 +141,15 @@ impl Observations {
             + crate::raw_memory::vector_bytes(&self.hints)
     }
 
+    pub fn release_buffers(&mut self) {
+        self.controls = Vec::new();
+        self.expected = Vec::new();
+        self.hints = Vec::new();
+        self.required_controls = 0;
+        self.required_bytes = 0;
+        self.after_reads = 0;
+    }
+
     pub fn grow_for_next(&mut self) {
         engine_allocation::advisory(|| self.grow_hints());
     }
@@ -403,11 +412,16 @@ impl<const N: usize> CapturePlan<N> {
             self.compiled = None;
             self.retire = false;
         }
-        if observations.after_reads > self.requests.capacity() {
-            let additional = observations.after_reads - self.requests.len();
-            engine_allocation::reserve_exact(&mut self.requests, additional)?;
+        if self.compiled.is_some() {
+            self.requests = Vec::new();
+            observations.release_buffers();
+        } else {
+            if observations.after_reads > self.requests.capacity() {
+                let additional = observations.after_reads - self.requests.len();
+                engine_allocation::reserve_exact(&mut self.requests, additional)?;
+            }
+            observations.grow_for_next();
         }
-        observations.grow_for_next();
         self.sealed = false;
         PREPARE_NS.fetch_add(
             started.elapsed().as_nanos().min(u64::MAX as u128) as u64,

@@ -467,8 +467,31 @@ impl Captured {
         map_capacities: &MapCapacities,
         extended_capacities: &extended::Capacities,
     ) -> std::io::Result<Self> {
+        // SAFETY: Caller guarantees live observer storage and exclusive frame preparation.
+        unsafe { Self::with_capacities_mode(capacities, map_capacities, extended_capacities, false) }
+    }
+
+    /// # Safety
+    /// Allocate only in the session's attach, sizing or capture sequence, or in an isolated
+    /// fixture. Keep live observer stores active and exclude conflicting sizing or teardown while
+    /// creating packs.
+    pub unsafe fn with_capacities_mode(
+        capacities: &[usize; 12],
+        map_capacities: &MapCapacities,
+        extended_capacities: &extended::Capacities,
+        parked: bool,
+    ) -> std::io::Result<Self> {
         let unavailable = Outcome::Unavailable {
             reason: "clock unavailable",
+        };
+        let extended = if parked {
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { extended::Captured::frame_parked(extended_capacities) }
+        } else {
+            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
+            // consuming it.
+            unsafe { extended::Captured::frame(extended_capacities) }
         };
         let frame = Self {
             world_generation: collector_lifetime::world_lifetime::generation(),
@@ -478,10 +501,7 @@ impl Captured {
             // SAFETY: These are session-measured map capacities or capacities owned by an isolated
             // fixture.
             unsafe { MapCaptured::with_capacities(map_capacities) },
-            extended:
-            // SAFETY: This frame or slot belongs to the current admitted capture or the sole spool
-            // consuming it.
-            unsafe { extended::Captured::frame(extended_capacities) },
+            extended,
             country_cache_status: SeedStatus::Unavailable {
                 reason: "clock unavailable",
             },
@@ -920,6 +940,10 @@ pub struct Shared {
     pub(crate) template_home: collector_division_templates::extended::division_templates::Home,
     pub(crate) naval_combat_home: collector_naval_details::naval_combat_sources::Home,
     pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
+    parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
+    parked_packs_bytes: AtomicU64,
+    retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
+    retired_parked_pending: AtomicBool,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(test)]
     pub(crate) clock_frame_seam: OnceLock<Box<dyn Fn() + Send + Sync>>,
@@ -1167,8 +1191,12 @@ impl Shared {
     }
 
     pub(crate) fn publish_steady_frames(&self) -> std::io::Result<()> {
-        for _ in 0..crate::frame_pool::STEADY {
-            let frame = self.new_frame()?;
+        for index in 0..crate::frame_pool::STEADY {
+            let frame = if index + 1 < crate::frame_pool::STEADY {
+                self.new_frame_parked()?
+            } else {
+                self.new_frame()?
+            };
             self.publish_frame(frame, false)?;
         }
         Ok(())
@@ -1498,6 +1526,10 @@ impl Shared {
             template_home,
             naval_combat_home,
             weather_temperature: Mutex::new(Default::default()),
+            parked_packs: Mutex::new(Vec::new()),
+            parked_packs_bytes: AtomicU64::new(0),
+            retired_parked: Mutex::new(Vec::new()),
+            retired_parked_pending: AtomicBool::new(false),
             builder_waker: OnceLock::new(),
                     #[cfg(test)]
             clock_frame_seam: OnceLock::new(),
@@ -1564,19 +1596,31 @@ impl Shared {
 
     #[inline(never)]
     pub(crate) fn new_frame(&self) -> std::io::Result<Box<Captured>> {
-        self.frame_for(&self.frame_capacities.published())
+        self.frame_for(&self.frame_capacities.published(), false)
     }
 
-    fn frame_for(&self, capacities: &FrameCapacities) -> std::io::Result<Box<Captured>> {
+    #[inline(never)]
+    pub(crate) fn new_frame_parked(&self) -> std::io::Result<Box<Captured>> {
+        self.frame_for(&self.frame_capacities.published(), true)
+    }
+
+    fn frame_for(&self, capacities: &FrameCapacities, parked: bool) -> std::io::Result<Box<Captured>> {
         let mut frame = engine_allocation::boxed(
             // SAFETY: The session or isolated fixture owns this frame's observer allocations and
             // excludes teardown.
             unsafe {
-                Captured::with_capacities(&capacities.core, &capacities.map, &capacities.extended)
+                Captured::with_capacities_mode(
+                    &capacities.core,
+                    &capacities.map,
+                    &capacities.extended,
+                    parked,
+                )
             }?,
         )?;
-        frame.extended.share_country_intel(&self.country_intel);
-        frame.extended.share_template_home(&self.template_home);
+        if !parked {
+            frame.extended.share_country_intel(&self.country_intel);
+            frame.extended.share_template_home(&self.template_home);
+        }
         frame
             .extended
             .share_naval_combat_home(&self.naval_combat_home);
@@ -1594,7 +1638,7 @@ impl Shared {
         if self.frames.spool_stalled() || self.frames.at_limit() {
             return Ok(());
         }
-        let frame = self.new_frame()?;
+        let frame = self.new_frame_parked()?;
         self.publish_frame(frame, true)
     }
 
@@ -1666,6 +1710,7 @@ impl Shared {
                     self.return_frame(index, Return::Idle);
                     return None;
                 }
+                self.ensure_parked_packs(index);
                 return Some(index);
             }
             HourFrame::Drop => {
@@ -1677,7 +1722,7 @@ impl Shared {
         self.wake_builder();
         let started = qpc();
         let index = self.frames.vacant().ok()?;
-        match self.new_frame() {
+        match self.new_frame_parked() {
             Ok(frame) => self.frames.install(index, frame),
             Err(_) => {
                 self.frames.abandon(index);
@@ -1693,8 +1738,114 @@ impl Shared {
         *grow_ns = elapsed;
         // SAFETY: This stage owns the installed frame slot.
         unsafe { self.frame_stage(index, FrameStage::Callback) };
+        self.ensure_parked_packs(index);
         self.frame_priority.refresh();
         Some(index)
+    }
+
+    fn set_parked_packs_bytes(&self, bytes: u64) {
+        let previous = self.parked_packs_bytes.swap(bytes, Ordering::Relaxed);
+        self.pool_bytes
+            .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+    }
+
+    fn park_pack(&self, parked: Box<extended::ParkedPacks>) {
+        let retired = if let Ok(mut slots) = self.parked_packs.lock() {
+            if slots.is_empty() && engine_allocation::reserve(&mut slots, 1).is_ok() {
+                let bytes = parked.allocated_bytes() as u64;
+                slots.push(parked);
+                self.set_parked_packs_bytes(bytes);
+                None
+            } else {
+                let current: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
+                self.set_parked_packs_bytes(current as u64);
+                Some(parked)
+            }
+        } else {
+            Some(parked)
+        };
+        if let Some(retired) = retired {
+            self.retire_parked_pack(retired);
+        }
+    }
+
+    fn retire_parked_pack(&self, retired: Box<extended::ParkedPacks>) {
+        let bytes = retired.allocated_bytes() as u64;
+        if let Ok(mut queue) = self.retired_parked.lock()
+            && engine_allocation::reserve(&mut queue, 1).is_ok()
+        {
+            queue.push(retired);
+            self.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
+            self.retired_parked_pending.store(true, Ordering::Release);
+        }
+    }
+
+    pub fn has_retired_parked(&self) -> bool {
+        self.retired_parked_pending.load(Ordering::Acquire)
+    }
+
+    pub fn drain_retired_parked(&self) -> bool {
+        let drained = match self.retired_parked.lock() {
+            Ok(mut queue) => {
+                self.retired_parked_pending.store(false, Ordering::Release);
+                std::mem::take(&mut *queue)
+            }
+            Err(_) => return false,
+        };
+        if drained.is_empty() {
+            return false;
+        }
+        let bytes: u64 = drained
+            .iter()
+            .map(|entry| entry.allocated_bytes() as u64)
+            .sum();
+        drop(drained);
+        self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        true
+    }
+
+    fn ensure_parked_packs(&self, index: usize) {
+        // SAFETY: caller exclusively owns the frame slot just taken for capture.
+        let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        if !frame.extended.is_parked() {
+            return;
+        }
+        let taken = self.parked_packs.lock().ok().and_then(|mut slots| {
+            let parked = slots.pop()?;
+            let remaining: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
+            self.set_parked_packs_bytes(remaining as u64);
+            Some(parked)
+        });
+        if let Some(parked) = taken {
+            frame.extended.install_parked_packs(parked);
+        } else {
+            let capacities = self.frame_capacities.published();
+            frame.extended.hydrate_parked_packs(&capacities.extended);
+            frame.extended.share_country_intel(&self.country_intel);
+            frame.extended.share_template_home(&self.template_home);
+        }
+        self.measure_frame(index);
+    }
+
+    pub fn grow_parked_packs(&self, capacities: &mut extended::Capacities) {
+        let mut grown = 0usize;
+        loop {
+            let mut parked = match self.parked_packs.lock() {
+                Ok(mut slots) => {
+                    if grown >= slots.len() {
+                        break;
+                    }
+                    let parked = slots.remove(0);
+                    let remaining: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
+                    self.set_parked_packs_bytes(remaining as u64);
+                    parked
+                }
+                Err(_) => break,
+            };
+            parked.grow(capacities);
+            self.park_pack(parked);
+            grown += 1;
+        }
     }
 
     /// # Safety
@@ -1786,15 +1937,21 @@ impl Shared {
     /// spool, sizing or helper borrow, and give up that claim on return to the pool.
     pub unsafe fn prepare_frame_for_reuse(&self, index: usize) {
         let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
+        let before = frame.allocated_bytes();
         frame.reset_verdicts();
         frame.verdicts_reset = true;
-        let before = frame.clock_bytes();
+        frame.extended.release_transient();
+        if let Some(parked) = frame.extended.take_parked_packs() {
+            self.park_pack(parked);
+        }
         let result = frame.prepare_clock(self.clock_required());
-        if frame.clock_bytes() != before
+        if frame.allocated_bytes() != before
             || self.frames.slot(index).bytes.load(Ordering::Relaxed) == 0
         {
             self.measure_frame(index);
         }
+        collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
+        collector_workers::private_heap::PRIVATE_HEAP.trim_large_if_needed();
         if result.is_err() {
             self.recording.store(false, Ordering::Release);
         }

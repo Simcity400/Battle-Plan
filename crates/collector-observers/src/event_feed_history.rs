@@ -471,17 +471,41 @@ impl Store {
     pub fn capacity(&self) -> usize {
         self.entries.capacity()
     }
-    pub fn capacity_demand(&self) -> usize {
+    pub fn entry_capacity_demand(&self) -> usize {
         self.entries
             .len()
             .saturating_add(self.owner_controls)
             .saturating_add(1)
             .max(self.delayed.demand)
             .max(self.delayed.capacity())
+            .max(self.entry_demand)
+    }
+    pub(crate) fn staged_demand(&self) -> usize {
+        self.staged_demand
+    }
+    pub fn decision_capacity_demand(&self) -> usize {
+        self.decisions.demand.max(self.decisions.capacity())
+    }
+    pub fn decision_owner_demand(&self) -> usize {
+        self.decisions
+            .owner_demand
+            .max(self.decisions.owner_capacity())
+    }
+    pub fn decision_capacity(&self) -> usize {
+        self.decisions.capacity()
+    }
+    pub fn decision_owner_capacity(&self) -> usize {
+        self.decisions.owner_capacity()
+    }
+    pub fn prepare_decisions_sized(&mut self, slots: usize, owners: usize) -> io::Result<()> {
+        self.decisions.prepare_sized(slots, owners)?;
+        self.charge_storage();
+        Ok(())
+    }
+    pub fn capacity_demand(&self) -> usize {
+        self.entry_capacity_demand()
             .max(self.decisions.demand)
             .max(self.decisions.capacity())
-            .max(self.staged_demand)
-            .max(self.entry_demand)
     }
 
     pub(crate) fn prepare_staged(&mut self, capacity: usize) -> io::Result<()> {

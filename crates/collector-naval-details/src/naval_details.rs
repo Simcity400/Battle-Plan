@@ -6,7 +6,7 @@ use crate::{
 use engine_allocation::{collect_vec, copy_vec, filled, owned_vec, resize_default};
 use engine_native_naval::naval_air_efficiency_inputs;
 use engine_native_memory::{Memory, walk::Outcome};
-use engine_native::{cfex_air, cfex_damage_entry, cfex_member, cnaval_combat};
+use engine_native::cfex_damage_entry;
 use engine_native_naval::{
     naval_combat_air_hit,
     naval_combat_hit,

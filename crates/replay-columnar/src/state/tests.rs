@@ -302,3 +302,59 @@ fn runs_the_grammar_forbids_are_refused_by_name() {
     );
     assert_matches(&table, &model);
 }
+
+#[test]
+fn uniform_pages_narrow_keys_and_empty_list_pages_roundtrip_and_widen() {
+    let mut table = Table::new(&KINDS).unwrap();
+    let mut model = BTreeMap::new();
+    let slots: Vec<(u32, Row)> = (0..300)
+        .map(|slot| (slot, row(u128::from(slot + 1), 7, None, &[])))
+        .collect();
+    insert(&mut table, &mut model, &slots);
+    let weak = table.downgrade();
+    assert!(weak.alive());
+    assert_matches(&table, &model);
+
+    table.set(0, &[10], Values::U32(&[99])).unwrap();
+    model.get_mut(&10).unwrap().a = 99;
+    assert_matches(&table, &model);
+
+    table.set(0, &[10], Values::U32(&[7])).unwrap();
+    model.get_mut(&10).unwrap().a = 7;
+    assert_matches(&table, &model);
+
+    table
+        .set(
+            2,
+            &[260],
+            Values::U32List {
+                ends: &[2],
+                items: &[5, 6],
+            },
+        )
+        .unwrap();
+    model.get_mut(&260).unwrap().c = vec![5, 6];
+    assert_matches(&table, &model);
+
+    table
+        .set(
+            2,
+            &[260],
+            Values::U32List {
+                ends: &[0],
+                items: &[],
+            },
+        )
+        .unwrap();
+    model.get_mut(&260).unwrap().c.clear();
+    assert_matches(&table, &model);
+
+    let wide_key = u128::from(u64::MAX) + 7;
+    insert(&mut table, &mut model, &[(300, row(wide_key, 42, Some(-3), &[9]))]);
+    assert_eq!(table.slot(wide_key), Some(300));
+    assert_eq!(table.key(300), Some(wide_key));
+    assert_matches(&table, &model);
+
+    let upgraded = weak.upgrade().unwrap();
+    assert_matches(&upgraded, &model);
+}

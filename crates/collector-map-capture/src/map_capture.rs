@@ -800,7 +800,6 @@ fn copy_player_roster(
 ) {
     use engine_native::cgame_state;
     use engine_native_memory::cpdx_array::Array;
-    use engine_native_politics::chuman;
     log.has_bulk = true;
     let roster_start = match pspan(
         log,

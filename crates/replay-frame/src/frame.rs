@@ -54,7 +54,9 @@ pub use self::{
     decoder::{FrameAdvance, FrameDecoder, Spare, Spares},
 };
 #[cfg(any(test, feature = "capture", feature = "test-support"))]
-pub use encoder::{FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment};
+pub use encoder::{
+    BaselineRetention, FrameContext, FrameEncoder, PreparedFrame, Retired, TableSegment,
+};
 use engine_allocation as allocation;
 
 #[cfg(test)]
@@ -736,6 +738,7 @@ pub struct BaselineToken {
     hour: Hour,
     baseline: Hour,
     row_updates: bool,
+    untracked: bool,
 }
 
 impl BaselineToken {

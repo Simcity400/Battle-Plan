@@ -394,12 +394,23 @@ impl Captured {
                 .map(|part| size_of::<Part>() + part.allocated_bytes())
                 .sum::<usize>()
     }
+    pub fn release_daily(&mut self) {
+        self.first = Part::vacant();
+        self.extra = [const { None }; MAX_PARTS - 1];
+        self.unsplit();
+    }
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        self.first.grow(capacity);
-        for extra in &mut self.extra {
-            if extra.is_none() && !crate::allocation::failed() {
-                *extra = Some(Box::new(Part::vacant()));
-            }
+        let has_required = self.first.countries.required > 0
+            || self.first.lines.required > 0
+            || self.first.efficiencies.required > 0
+            || self.first.requests.required > 0
+            || self.first.roots.required > 0
+            || self.first.nodes.required > 0
+            || self.first.text.required > 0
+            || self.first.stack.required > 0
+            || self.first.archetypes.required > 0;
+        if has_required {
+            self.first.grow(capacity);
         }
     }
     pub fn fail_capture(&mut self, hour: i32, full: bool, reason: &'static str) {

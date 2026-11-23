@@ -168,6 +168,7 @@ impl Captured {
             }
         };
         if self.other_active {
+            self.rehydrate_daily();
             let started = qpc();
             self.capture_fuel_buffers(&recorded, base, job.game_state);
             decode_ticks[0] += elapsed(started);

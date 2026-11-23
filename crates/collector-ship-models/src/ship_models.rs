@@ -184,7 +184,7 @@ struct Held {
     certificate: Certificate,
     slots: Slots,
     fields: cship::HeldShip,
-    accumulators: [(usize, Vec<[u8; 16]>); 2],
+    accumulators: [(usize, u32, u32); 2],
     row: Option<(cship::ModelRow, Terms)>,
     organisation: Option<cship::OrganisationOperands>,
     terms_identity: u64,
@@ -271,10 +271,12 @@ struct ShipStore {
     index: Vec<(usize, usize)>,
     tasks: Vec<HeldTask>,
     variants: Vec<Variant>,
+    accumulators: Vec<[u8; 16]>,
     next: Vec<Option<Box<Held>>>,
     next_hot: Vec<Hot>,
     next_tasks: Vec<HeldTask>,
     next_variants: Vec<Variant>,
+    next_accumulators: Vec<[u8; 16]>,
     next_variant_head: std::collections::HashMap<usize, usize>,
     quiet: Option<(u64, u64)>,
     variant_quiet: Option<(u64, u64)>,
@@ -554,31 +556,82 @@ impl ShipStore {
         true
     }
 
-    fn keep(&mut self, mut held: Box<Held>, arrays: [&[[u8; 16]]; 2]) -> bool {
-        for ((_, entries), array) in held.accumulators.iter_mut().zip(arrays) {
-            entries.clear();
-            if reserve(entries, array.len()).is_err() {
-                return false;
-            }
-            entries.extend_from_slice(array);
-        }
-        self.keep_held(held)
+    fn accumulator(&self, (_, start, len): (usize, u32, u32)) -> &[[u8; 16]] {
+        let start = start as usize;
+        &self.accumulators[start..start + len as usize]
     }
 
-    fn keep_held(&mut self, held: Box<Held>) -> bool {
-        let Some(hot) = self.hot(&held) else {
+    fn push_accumulators(&mut self, held: &mut Held, arrays: [&[[u8; 16]]; 2]) -> bool {
+        let total = arrays[0].len().saturating_add(arrays[1].len());
+        if reserve(&mut self.next_accumulators, total).is_err() {
             return false;
-        };
-        self.keep_hot(held, hot)
+        }
+        for (slot, array) in held.accumulators.iter_mut().zip(arrays) {
+            let Ok(start) = u32::try_from(self.next_accumulators.len()) else {
+                return false;
+            };
+            let Ok(len) = u32::try_from(array.len()) else {
+                return false;
+            };
+            self.next_accumulators.extend_from_slice(array);
+            slot.1 = start;
+            slot.2 = len;
+        }
+        true
     }
 
-    fn keep_hot(&mut self, held: Box<Held>, hot: Hot) -> bool {
+    fn carry_accumulators(&mut self, held: &mut Held) -> bool {
+        let total = (held.accumulators[0].2 as usize).saturating_add(held.accumulators[1].2 as usize);
+        if reserve(&mut self.next_accumulators, total).is_err() {
+            return false;
+        }
+        for slot in &mut held.accumulators {
+            let old_start = slot.1 as usize;
+            let old_len = slot.2 as usize;
+            let Ok(new_start) = u32::try_from(self.next_accumulators.len()) else {
+                return false;
+            };
+            self.next_accumulators
+                .extend_from_slice(&self.accumulators[old_start..old_start + old_len]);
+            slot.1 = new_start;
+        }
+        true
+    }
+
+    fn push_next(&mut self, held: Box<Held>, hot: Hot) -> bool {
         if reserve(&mut self.next, 1).is_err() || reserve(&mut self.next_hot, 1).is_err() {
             return false;
         }
         self.next.push(Some(held));
         self.next_hot.push(hot);
         true
+    }
+
+    fn keep(&mut self, mut held: Box<Held>, arrays: [&[[u8; 16]]; 2]) -> bool {
+        if !self.push_accumulators(&mut held, arrays) {
+            return false;
+        }
+        let Some(hot) = self.hot(&held) else {
+            return false;
+        };
+        self.push_next(held, hot)
+    }
+
+    fn keep_held(&mut self, mut held: Box<Held>) -> bool {
+        if !self.carry_accumulators(&mut held) {
+            return false;
+        }
+        let Some(hot) = self.hot(&held) else {
+            return false;
+        };
+        self.push_next(held, hot)
+    }
+
+    fn keep_hot(&mut self, mut held: Box<Held>, hot: Hot) -> bool {
+        if !self.carry_accumulators(&mut held) {
+            return false;
+        }
+        self.push_next(held, hot)
     }
 
     fn hold(&mut self) -> bool {
@@ -593,10 +646,12 @@ impl ShipStore {
         std::mem::swap(&mut self.hot, &mut self.next_hot);
         std::mem::swap(&mut self.tasks, &mut self.next_tasks);
         std::mem::swap(&mut self.variants, &mut self.next_variants);
+        std::mem::swap(&mut self.accumulators, &mut self.next_accumulators);
         self.next.clear();
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
+        self.next_accumulators.clear();
         self.next_variant_head.clear();
         if same_order {
             return true;
@@ -622,10 +677,12 @@ impl ShipStore {
         self.index.clear();
         self.tasks.clear();
         self.variants.clear();
+        self.accumulators.clear();
         self.next.clear();
         self.next_hot.clear();
         self.next_tasks.clear();
         self.next_variants.clear();
+        self.next_accumulators.clear();
         self.next_variant_head.clear();
         self.quiet = None;
         self.variant_quiet = None;
@@ -641,15 +698,9 @@ impl ShipStore {
                 .iter()
                 .chain(&self.next)
                 .flatten()
-                .map(|held| {
-                    std::mem::size_of::<Held>()
-                        + held
-                            .accumulators
-                            .iter()
-                            .map(|(_, entries)| entries.capacity() * 16)
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
+                .count()
+                * std::mem::size_of::<Held>()
+            + (self.accumulators.capacity() + self.next_accumulators.capacity()) * 16
             + (self.hot.capacity() + self.next_hot.capacity()) * std::mem::size_of::<Hot>()
             + (self.index.capacity() + self.next_variant_head.capacity())
                 * std::mem::size_of::<(usize, usize)>()
@@ -1651,8 +1702,9 @@ impl Captured {
             if read.same(&moved.fields) {
                 let gathered = fields.memory(memory);
                 let mut arena = self.modifiers.borrow_mut();
-                let arrays_held = moved.accumulators.iter().all(|(address, entries)| {
-                    *address == 0 || arena.observe(&gathered, *address) == Some(&entries[..])
+                let arrays_held = moved.accumulators.iter().all(|&slot| {
+                    slot.0 == 0
+                        || arena.observe(&gathered, slot.0) == Some(self.store.accumulator(slot))
                 });
                 drop(arena);
                 if arrays_held {
@@ -1963,8 +2015,8 @@ impl Captured {
                     spare.certificate = certificate;
                     spare.slots = slots;
                     spare.fields = read;
-                    spare.accumulators[0].0 = experience_at;
-                    spare.accumulators[1].0 = medals_at;
+                    spare.accumulators[0] = (experience_at, 0, 0);
+                    spare.accumulators[1] = (medals_at, 0, 0);
                     spare.row = made;
                     spare.organisation = self.doctrine.organisation_operands(pointer);
                     spare.terms_identity = carrying.terms_identity;
@@ -1978,7 +2030,7 @@ impl Captured {
                     certificate,
                     slots,
                     fields: read,
-                    accumulators: [(experience_at, Vec::new()), (medals_at, Vec::new())],
+                    accumulators: [(experience_at, 0, 0), (medals_at, 0, 0)],
                     row: made,
                     organisation: self.doctrine.organisation_operands(pointer),
                     terms_identity: carrying.terms_identity,
@@ -2012,9 +2064,9 @@ impl Captured {
                         fields.visit_held(memory, &held.fields);
                     }
                     let mut modifiers = this.modifiers.borrow_mut();
-                    for (address, entries) in &held.accumulators {
-                        if *address != 0 {
-                            modifiers.hold(*address, entries);
+                    for &slot in &held.accumulators {
+                        if slot.0 != 0 {
+                            modifiers.hold(slot.0, this.store.accumulator(slot));
                         }
                     }
                 }

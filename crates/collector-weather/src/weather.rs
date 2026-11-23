@@ -99,6 +99,13 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            display_bytes: 0,
+        })
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             regions: CaptureRows::new(capacity.rows[0]),

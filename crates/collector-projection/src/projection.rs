@@ -177,10 +177,10 @@ impl<'a> Projection<'a> {
         {
             return None;
         }
-        let (token, _) =
+        let (token, committed_hour) =
             self.encoder
-                .comparison_baseline::<S>(self.branch, self.hour, self.force)?;
-        if self.encoder.committed::<S>()?.0 != held.hour {
+                .republish_token(S::ID, self.branch, self.hour, self.force)?;
+        if committed_hour != held.hour {
             return None;
         }
         held.hour = self.hour;
@@ -256,8 +256,8 @@ impl<'a> Projection<'a> {
         let mut scratch = self.scratch.table(S::ID);
         let baseline = self
             .encoder
-            .slice_baseline(S::ID, self.branch, self.hour, self.force);
-        let previous = self.encoder.committed::<S>().map(|(hour, _)| hour);
+            .slice_meta(S::ID, self.branch, self.hour, self.force);
+        let previous = self.encoder.committed_hour(S::ID);
         let input = if let (Some((token, _)), Some((branch, hour, revision))) =
             (baseline, scratch.certified)
             && branch == self.branch
@@ -802,7 +802,7 @@ impl Projection<'_> {
             .take()
             .and_then(|ledger| ledger.downcast().ok());
         let encoder = self.encoder;
-        let shared = encoder.slice_baseline(S::ID, self.branch, self.hour, self.force);
+        let shared = encoder.slice_meta(S::ID, self.branch, self.hour, self.force);
         let complete = matches!(outcome, Outcome::Rows { .. })
             && !replay_data::cadence::is_staggered(S::ID)
             && source.len() >= outcome.len();
@@ -830,9 +830,9 @@ impl Projection<'_> {
         };
         let aligned_eligible = matches!(
             shared,
-            Some((token, previous))
+            Some((token, previous_len))
                 if ledgers.held.stamp == Some(token.baseline())
-                    && previous.len() == ledgers.held.keys.len()
+                    && previous_len.is_none_or(|len| len == ledgers.held.keys.len())
         );
         let Ledgers {
             held,
@@ -896,8 +896,9 @@ impl Projection<'_> {
             next.ends.push(end);
         }
         let input = match shared {
-            Some((token, previous))
-                if held.stamp == Some(token.baseline()) && previous.len() == held.keys.len() =>
+            Some((token, previous_len))
+                if held.stamp == Some(token.baseline())
+                    && previous_len.is_none_or(|len| len == held.keys.len()) =>
             {
                 let result = if aligned {
                     if source.len() < held.keys.len() {
@@ -945,9 +946,32 @@ impl Projection<'_> {
                 | TableInput::SliceUpdate { .. }
                 | TableInput::SharedComplete(_)
         ) {
-            let Ledgers { held, next, .. } = &mut *ledgers;
+            let Ledgers {
+                held,
+                next,
+                seen,
+                edits,
+                index,
+            } = &mut *ledgers;
             std::mem::swap(held, next);
             held.stamp = Some((encoder.identity(), self.branch, self.hour));
+            if next.keys.capacity() * size_of::<u128>()
+                + next.fixed.capacity() * size_of::<Option<C>>()
+                + next.ends.capacity() * size_of::<usize>()
+                + next.bytes.capacity()
+                > 65_536
+            {
+                *next = Ledger::default();
+            }
+            if seen.capacity() > 4096 {
+                *seen = Vec::new();
+            }
+            if edits.capacity() > 1024 {
+                *edits = Vec::new();
+            }
+            if index.capacity() > 1024 {
+                *index = std::collections::HashMap::with_hasher(foldhash::fast::FixedState::default());
+            }
             let mut order = self.scratch.table(S::ID);
             match &input {
                 TableInput::ComparedEqual(_) => {

@@ -621,6 +621,11 @@ fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
             TableInput::Sampled(TableView::Unavailable { .. })
         ));
     }
+    captured.release_transient();
+    assert_eq!(captured.rows.capacity(), 0);
+    assert!(captured.dictionary.is_none());
+    assert!(captured.context.is_none());
+    assert!(captured.templates.is_none());
 }
 
 #[test]

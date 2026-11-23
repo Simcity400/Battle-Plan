@@ -13,30 +13,69 @@ pub use preparation::{AttackPart, PreparationPart, PreparedDivision};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scalars {
-    panel: [Option<i64>; 23],
-    suppression: Option<i64>,
+    panel: [i64; 23],
+    panel_mask: u32,
+    flags: u8,
+    suppression: i64,
     river: [i64; 2],
     fort: [i64; 2],
     snow: i64,
     night: i64,
-    movement: Option<[i64; 3]>,
+    movement: [i64; 3],
     fuel_rate: i64,
     air_defense: i64,
 }
 
 impl Scalars {
     fn of(stats: &stats::AttackStats) -> Self {
+        let mut panel = [0_i64; 23];
+        let mut panel_mask = 0_u32;
+        for (index, slot) in stats.panel.iter().enumerate() {
+            if let Some(value) = slot {
+                panel[index] = *value;
+                panel_mask |= 1_u32 << index;
+            }
+        }
+        let mut flags = 0_u8;
+        let suppression = match stats.suppression {
+            Some(value) => {
+                flags |= 1;
+                value
+            }
+            None => 0,
+        };
+        let movement = match stats.movement {
+            Some(value) => {
+                flags |= 2;
+                value
+            }
+            None => [0; 3],
+        };
         Self {
-            panel: stats.panel,
-            suppression: stats.suppression,
+            panel,
+            panel_mask,
+            flags,
+            suppression,
             river: stats.river,
             fort: stats.fort,
             snow: stats.snow,
             night: stats.night,
-            movement: stats.movement,
+            movement,
             fuel_rate: stats.fuel_rate,
             air_defense: stats.air_defense,
         }
+    }
+
+    fn panel_at(&self, index: usize) -> Option<i64> {
+        ((self.panel_mask & (1_u32 << index)) != 0).then_some(self.panel[index])
+    }
+
+    fn suppression(&self) -> Option<i64> {
+        ((self.flags & 1) != 0).then_some(self.suppression)
+    }
+
+    fn movement(&self) -> Option<[i64; 3]> {
+        ((self.flags & 2) != 0).then_some(self.movement)
     }
 }
 
@@ -1488,8 +1527,8 @@ impl RowView<'_> {
             .and_then(|row| row.scalars)
             .map_or([None; 23], |scalars| {
                 std::array::from_fn(|index| match index {
-                    22 => scalars.suppression,
-                    _ => scalars.panel[index + usize::from(index >= 11)],
+                    22 => scalars.suppression(),
+                    _ => scalars.panel_at(index + usize::from(index >= 11)),
                 })
             })
     }
@@ -1503,8 +1542,8 @@ impl RowView<'_> {
     pub fn panel_stat(&self, index: usize) -> Option<i64> {
         let scalars = self.row?.scalars?;
         match index {
-            22 => scalars.suppression,
-            index if index < 22 => scalars.panel[index + usize::from(index >= 11)],
+            22 => scalars.suppression(),
+            index if index < 22 => scalars.panel_at(index + usize::from(index >= 11)),
             _ => None,
         }
     }
@@ -1532,7 +1571,7 @@ impl RowView<'_> {
             terrain: engine_allocation::owned_vec(engine_allocation::copy_vec(
                 self.captured.movement_slice(row)?,
             )),
-            scalars: scalars.movement,
+            scalars: scalars.movement(),
             fuel_rate: scalars.fuel_rate,
             air_defense: scalars.air_defense,
         })
@@ -1548,7 +1587,7 @@ impl RowView<'_> {
             return;
         }
         record.word(0);
-        let movement = scalars.movement.unwrap_or_default();
+        let movement = scalars.movement().unwrap_or_default();
         let words = [
             scalars.river[0],
             scalars.river[1],
@@ -1556,7 +1595,7 @@ impl RowView<'_> {
             scalars.fort[1],
             scalars.snow,
             scalars.night,
-            i64::from(scalars.movement.is_some()),
+            i64::from(scalars.movement().is_some()),
             movement[0],
             movement[1],
             movement[2],
@@ -1582,7 +1621,7 @@ impl RowView<'_> {
             (None, None) => true,
             (Some((scalars, terrain)), Some(previous)) => {
                 terrain == previous.terrain.as_slice()
-                    && scalars.movement == previous.scalars
+                    && scalars.movement() == previous.scalars
                     && scalars.fuel_rate == previous.fuel_rate
                     && scalars.air_defense == previous.air_defense
             }

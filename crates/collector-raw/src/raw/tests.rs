@@ -2889,3 +2889,41 @@ fn a_refused_index_allocation_is_named_not_an_empty_log() {
     assert!(Recorded::build(&log).unwrap().copy(0x1000, &mut word));
     assert_eq!(word, [7; 8]);
 }
+
+#[test]
+fn trim_if_quiet_shrinks_idle_buffers_and_keeps_active_compiled_plans() {
+    let bytes = [0x42_u8; 64];
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut log = RawLog::<1>::new(100_000, 2 * 1024 * 1024);
+    log.initialize_read_plan(65_536, 16_384, 512 * 1024);
+    for _ in 0..3 {
+        assert!(log.trim_if_quiet());
+    }
+    assert!(log.bytes.capacity() >= 2 * 1024 * 1024);
+    assert!(log.trim_if_quiet());
+    assert!(log.spans.capacity() <= 32_768);
+    assert!(log.bytes.capacity() <= 512 * 1024);
+    assert_eq!(log.plan.requests.capacity(), 0);
+    assert_eq!(
+        log.bytes.observations.as_ref().unwrap().borrow().capacity_bytes(),
+        0
+    );
+
+    let mut active = RawLog::<1>::new(64, 1024);
+    active.initialize_read_plan(64, 64, 1024);
+    assert!(!active.begin_planned_capture(&memory, [1, 2, 3, 4]));
+    assert!(active.take(&memory, 0x1000, 8, 1).is_some());
+    active.finish_planned_capture();
+    active.prepare_read_plan();
+    assert!(active.plan.compiled.is_some());
+    for _ in 0..4 {
+        active.clear();
+        assert!(active.begin_planned_capture(&memory, [1, 2, 3, 4]));
+        assert!(!active.trim_if_quiet());
+    }
+    assert!(active.plan.compiled.is_some());
+    assert!(active.plan.requests.capacity() > 0);
+}

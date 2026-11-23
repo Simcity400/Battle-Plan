@@ -7,7 +7,7 @@ use engine_native_memory::{
     read_slice,
     walk::{Buffer, Outcome},
 };
-use engine_native::{cequipment_variant::{self, pool as pool}, cgame_state, corders_group};
+use engine_native::{cequipment_variant::pool, cgame_state, corders_group};
 use engine_native_parts::equipment_entry;
 use crate::{ncombat_log_cequipment_loss as loss, ncombat_log_corders_group_logs as logs};
 use engine_sites::Rva;

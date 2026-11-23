@@ -109,12 +109,8 @@ impl PreparationPart {
         self.maxima.clear();
         self.maxima_pointers.clear();
         self.maxima_reads.clear();
-        if engine_allocation::advisory(|| {
-            engine_allocation::reserve(&mut self.maxima, seeds.len())?;
-            engine_allocation::reserve(&mut self.maxima_pointers, seeds.len())?;
-            engine_allocation::reserve(&mut self.maxima_reads, seeds.len())
-        })
-        .is_err()
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.maxima, seeds.len()))
+            .is_err()
         {
             return;
         }
@@ -129,13 +125,26 @@ impl PreparationPart {
                     && seed.division != 0
                     && !store.may_carry_maxima(&mut shift, self.range.start + offset, seed)
             });
-            if let Some(pointer) = pointer {
+            let staged = pointer.and_then(|pointer| {
+                engine_allocation::advisory(|| {
+                    engine_allocation::reserve(&mut self.maxima_pointers, 1)
+                })
+                .ok()?;
                 self.maxima_pointers.push(pointer);
-            }
-            self.maxima
-                .push(pointer.map(|_| Err("division maxima unstaged")));
+                Some(Err("division maxima unstaged"))
+            });
+            self.maxima.push(staged);
         }
         if !self.maxima_pointers.is_empty() {
+            if engine_allocation::advisory(|| {
+                engine_allocation::reserve(&mut self.maxima_reads, self.maxima_pointers.len())
+            })
+            .is_err()
+            {
+                self.maxima.clear();
+                self.maxima_pointers.clear();
+                return;
+            }
             self.maxima_reads
                 .resize(self.maxima_pointers.len(), Err("division maxima unstaged"));
             engine_native_parts::csub_unit_definition::stage_division_maxima(
@@ -147,6 +156,12 @@ impl PreparationPart {
             for (slot, read) in self.maxima.iter_mut().flatten().zip(&self.maxima_reads) {
                 *slot = *read;
             }
+        }
+        if self.maxima_pointers.len() <= 32 && self.maxima_pointers.capacity() > 64 {
+            self.maxima_pointers = Vec::new();
+        }
+        if self.maxima_reads.len() <= 32 && self.maxima_reads.capacity() > 64 {
+            self.maxima_reads = Vec::new();
         }
     }
     pub fn capture(
@@ -185,12 +200,6 @@ impl PreparationPart {
                 engine_allocation::reserve(&mut self.supply, seeds.len())
             })
             .is_ok();
-        let history_latest_ready = engine_allocation::advisory(|| {
-            engine_allocation::reserve(&mut self.history_latest_rows, seeds.len())?;
-            engine_allocation::reserve(&mut self.history_latest_pointers, seeds.len())?;
-            engine_allocation::reserve(&mut self.history_latest_reads, seeds.len())
-        })
-        .is_ok();
         let read_dirty = self.range.start == 0;
         let source_reads = self.sources.begin_part(seeds.len(), read_dirty);
         let countries = source_reads
@@ -343,8 +352,12 @@ impl PreparationPart {
                         .prefetch_certificates(index, seed, &mut self.orders[4])
                 });
             let history = history.map(|(certs, latest)| {
-                if history_latest_ready
-                    && let Some(address) = latest
+                if let Some(address) = latest
+                    && engine_allocation::advisory(|| {
+                        engine_allocation::reserve(&mut self.history_latest_rows, 1)?;
+                        engine_allocation::reserve(&mut self.history_latest_pointers, 1)
+                    })
+                    .is_ok()
                 {
                     self.history_latest_rows.push(self.rows.len());
                     self.history_latest_pointers.push(address);
@@ -370,7 +383,15 @@ impl PreparationPart {
                 history,
             });
         }
-        if !self.history_latest_pointers.is_empty() {
+        if !self.history_latest_pointers.is_empty()
+            && engine_allocation::advisory(|| {
+                engine_allocation::reserve(
+                    &mut self.history_latest_reads,
+                    self.history_latest_pointers.len(),
+                )
+            })
+            .is_ok()
+        {
             self.history_latest_reads.resize(
                 self.history_latest_pointers.len(),
                 Err("unit history province vector invalid"),
@@ -542,22 +563,29 @@ mod tests {
 #[derive(Default)]
 pub struct AttackPart {
     pub range: Range<usize>,
-    rows: Vec<AttackEntry>,
+    rows: Vec<AttackSlot>,
+    results: Vec<AttackResult>,
     len: usize,
+    active_len: usize,
 }
-#[derive(Default)]
-struct AttackEntry {
+#[derive(Clone, Copy, Default)]
+struct AttackSlot {
     pointer: Option<usize>,
     maxima: Option<DivisionMaxima>,
+    result_index: u32,
+}
+#[derive(Default)]
+struct AttackResult {
     value: Option<Result<stats::AttackStats, &'static str>>,
     terrain: Vec<i64>,
     movement: Vec<i64>,
 }
 impl AttackPart {
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.capacity() * std::mem::size_of::<AttackEntry>()
+        self.rows.capacity() * std::mem::size_of::<AttackSlot>()
+            + self.results.capacity() * std::mem::size_of::<AttackResult>()
             + self
-                .rows
+                .results
                 .iter()
                 .map(|row| {
                     (row.terrain.capacity()
@@ -582,6 +610,7 @@ impl AttackPart {
         maxima: impl Fn(usize) -> Option<DivisionMaxima>,
     ) {
         self.len = 0;
+        self.active_len = 0;
         let Some(seeds) = seeds.get(self.range.clone()) else {
             return;
         };
@@ -592,14 +621,17 @@ impl AttackPart {
             return;
         }
         self.rows
-            .resize_with(self.rows.len().max(seeds.len()), AttackEntry::default);
+            .resize_with(self.rows.len().max(seeds.len()), AttackSlot::default);
+        for result in &mut self.results {
+            if let Some(Ok(value)) = result.value.take() {
+                result.terrain = value.terrain;
+                result.movement = value.movement_terrain;
+            }
+        }
+        let mut active = 0usize;
         for (offset, seed) in seeds.iter().enumerate() {
             let index = self.range.start + offset;
             let row = &mut self.rows[offset];
-            if let Some(Ok(value)) = row.value.take() {
-                row.terrain = value.terrain;
-                row.movement = value.movement_terrain;
-            }
             let held = store
                 .and_then(|store| {
                     held_index
@@ -612,18 +644,40 @@ impl AttackPart {
             let carried = held.is_some() && !witnessed(hour, seed.division >> 32);
             row.pointer = seed.stat_block.filter(|_| seed.division != 0 && !carried);
             row.maxima = maxima(index);
+            if row.pointer.is_some() {
+                row.result_index = active as u32;
+                active += 1;
+            } else {
+                row.result_index = u32::MAX;
+            }
         }
+        let extra = active.saturating_sub(self.results.len());
+        if extra > 0
+            && engine_allocation::advisory(|| engine_allocation::reserve(&mut self.results, extra))
+                .is_err()
+        {
+            return;
+        }
+        if active > self.results.len() {
+            self.results.resize_with(active, AttackResult::default);
+        } else if self.results.len() > active.saturating_mul(2).max(16) {
+            self.results.truncate(active.max(16));
+            self.results.shrink_to_fit();
+        }
+        self.active_len = active;
         self.len = seeds.len();
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
-        for row in &mut self.rows[..self.len] {
-            if let Some(pointer) = row.pointer {
-                row.value = Some(stats::capture_attack_stats_holding(
+        for row in &self.rows[..self.len] {
+            if let Some(pointer) = row.pointer
+                && let Some(slot) = self.results.get_mut(row.result_index as usize)
+            {
+                slot.value = Some(stats::capture_attack_stats_holding(
                     memory,
                     base,
                     pointer,
-                    &mut row.terrain,
-                    &mut row.movement,
+                    &mut slot.terrain,
+                    &mut slot.movement,
                     row.maxima,
                 ));
             }
@@ -634,14 +688,19 @@ impl AttackPart {
     }
     pub fn clear(&mut self) {
         self.len = 0;
+        self.active_len = 0;
     }
     pub fn get(&self, index: usize) -> Option<Result<&stats::AttackStats, &'static str>> {
         let index = index.checked_sub(self.range.start)?;
         if index >= self.len {
             return None;
         }
-        self.rows
-            .get(index)?
+        let result_index = self.rows.get(index)?.result_index;
+        if result_index == u32::MAX {
+            return None;
+        }
+        self.results
+            .get(result_index as usize)?
             .value
             .as_ref()
             .map(|value| value.as_ref().map_err(|&reason| reason))

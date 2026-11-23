@@ -74,7 +74,7 @@ pub struct FrameWriter {
     absent: Vec<Option<String>>,
     starting: bool,
     poisoned: bool,
-    since_restart: Vec<Box<[u8]>>,
+    since_restart_from: u32,
     pending: bool,
     table_ns: Vec<u64>,
     shared: Vec<Option<Arc<TableRows>>>,
@@ -87,13 +87,60 @@ pub struct FrameWriter {
     last: Option<(BranchId, i32)>,
     dense: Vec<AtomicI32>,
     intern_until: Vec<i32>,
+    quiet_hours: Vec<u8>,
 }
 
-type Owners = Vec<(u32, Vec<u128>)>;
+enum Owners {
+    U64(Vec<u64>),
+    U128(Vec<u128>),
+}
+
+impl Owners {
+    fn from_keys(id: TableId, count: usize, keys: impl Iterator<Item = u128>) -> io::Result<Self> {
+        if id.key_bits() <= 64 {
+            let mut narrow = engine_allocation::vec(count)?;
+            let mut wide = None;
+            for key in keys {
+                if let Some(wide) = wide.as_mut() {
+                    engine_allocation::reserve(wide, 1)?;
+                    wide.push(key);
+                } else if let Ok(small) = u64::try_from(key) {
+                    engine_allocation::reserve(&mut narrow, 1)?;
+                    narrow.push(small);
+                } else {
+                    let mut promoted = engine_allocation::vec(count.max(narrow.len() + 1))?;
+                    promoted.extend(narrow.iter().copied().map(u128::from));
+                    promoted.push(key);
+                    narrow = Vec::new();
+                    wide = Some(promoted);
+                }
+            }
+            if let Some(wide) = wide {
+                Ok(Self::U128(wide))
+            } else {
+                Ok(Self::U64(narrow))
+            }
+        } else {
+            let mut wide = engine_allocation::vec(count)?;
+            for key in keys {
+                engine_allocation::reserve(&mut wide, 1)?;
+                wide.push(key);
+            }
+            Ok(Self::U128(wide))
+        }
+    }
+
+    fn sort_unstable(&mut self) {
+        match self {
+            Self::U64(keys) => keys.sort_unstable(),
+            Self::U128(keys) => keys.sort_unstable(),
+        }
+    }
+}
 
 struct Slice {
     owners: Vec<u32>,
-    keys: Vec<u128>,
+    keys: Owners,
 }
 
 pub struct FrameHour {
@@ -104,7 +151,6 @@ pub struct FrameHour {
     slices: Vec<Option<Slice>>,
     statuses: Vec<Status>,
     read: Vec<u64>,
-    appends: Vec<Box<[u8]>>,
     pub manifest: Vec<u8>,
 }
 
@@ -190,7 +236,7 @@ impl FrameWriter {
             absent,
             starting: true,
             poisoned: false,
-            since_restart: Vec::new(),
+            since_restart_from: 0,
             pending: false,
             table_ns: engine_allocation::filled(TABLE_COUNT, 0)?,
             shared: engine_allocation::default_vec(TABLE_COUNT)?,
@@ -205,6 +251,7 @@ impl FrameWriter {
                 (0..TABLE_COUNT).map(|_| AtomicI32::new(i32::MIN)),
             )?,
             intern_until: engine_allocation::filled(TABLE_COUNT, i32::MIN)?,
+            quiet_hours: engine_allocation::filled(TABLE_COUNT, 0)?,
         })
     }
 
@@ -356,16 +403,21 @@ impl FrameWriter {
             }
             tables.push(prepared);
             shared.push(match table {
-                TableInput::SharedComplete(rows) => Some(Arc::clone(rows)),
+                TableInput::SharedComplete(rows) if Arc::strong_count(rows) > 1 => {
+                    Some(Arc::clone(rows))
+                }
                 _ => None,
             });
             slices.push(match table {
                 TableInput::SliceUpdate { update, .. }
                     if owner_slice(update) && previous.get(index).copied().flatten().is_none() =>
                 {
+                    let id = TableId::ALL[index];
                     Some(Slice {
                         owners: engine_allocation::copy_vec(update.owners())?,
-                        keys: engine_allocation::collect_vec(
+                        keys: Owners::from_keys(
+                            id,
+                            update.rows().len(),
                             update.rows().iter().map(|row| row.key()),
                         )?,
                     })
@@ -376,7 +428,7 @@ impl FrameWriter {
             costs[index] = wall;
             table_ns[index] += wall;
         }
-        let appends = dictionary.take_appended();
+        let appended = dictionary.take_appended_range();
         let held_statuses = engine_allocation::copy_vec(&statuses)?;
         let held_read = engine_allocation::copy_vec(&read)?;
         let Metrics {
@@ -396,7 +448,9 @@ impl FrameWriter {
             total_ns,
             pool_bytes,
             dropped_frames,
-            appends: engine_allocation::collect_vec(appends.iter().map(|bytes| &**bytes))?,
+            appends: engine_allocation::collect_vec(
+                appended.filter_map(|id| dictionary.get(id)),
+            )?,
             statuses,
             read,
             samples,
@@ -411,7 +465,6 @@ impl FrameWriter {
             slices,
             statuses: held_statuses,
             read: held_read,
-            appends,
             manifest,
         })
     }
@@ -522,17 +575,12 @@ impl FrameWriter {
         if self.poisoned {
             return Err(invalid("A failed hour ended this columnar run"));
         }
-        if let Err(error) = engine_allocation::reserve(&mut self.since_restart, hour.appends.len()) {
-            self.poisoned = true;
-            return Err(error);
-        }
         let FrameHour {
             branch,
             hour: at,
             tables: hours,
             shared,
             slices,
-            appends,
             ..
         } = hour;
         if let Err(error) = self.apply(at, hours, shared, slices, lanes) {
@@ -540,7 +588,6 @@ impl FrameWriter {
             return Err(error);
         }
         self.last = Some((branch, at));
-        self.since_restart.extend(appends);
         self.starting = false;
         self.pending = false;
         for lane in &mut self.lanes {
@@ -573,6 +620,7 @@ impl FrameWriter {
             order,
             costs,
             table_ns,
+            quiet_hours,
             ..
         } = self;
         let failed = Mutex::new(None);
@@ -581,6 +629,7 @@ impl FrameWriter {
             let held = Disjoint::new(held);
             let owners = Disjoint::new(owners);
             let wall_slots = Disjoint::new(walls);
+            let quiet_slots = Disjoint::new(quiet_hours);
             let hours = Disjoint::new(&mut hours);
             let shared = Disjoint::new(&mut shared);
             let slices = Disjoint::new(&mut slices);
@@ -588,12 +637,13 @@ impl FrameWriter {
             let order = &**order;
             let commit = |index: usize| {
                 // SAFETY: `order` is a permutation of `0..TABLE_COUNT`, so each `index` is claimed once.
-                let (writer, held, owners, wall, hour, shared, slice) = unsafe {
+                let (writer, held, owners, wall, quiet, hour, shared, slice) = unsafe {
                     (
                         writers.get_mut(index),
                         held.get_mut(index),
                         owners.get_mut(index),
                         wall_slots.get_mut(index),
+                        quiet_slots.get_mut(index),
                         hours.get_mut(index),
                         shared.get_mut(index),
                         slices.get_mut(index),
@@ -602,6 +652,9 @@ impl FrameWriter {
                 let prepared = hour.prepared.take();
                 let evidence = hour.evidence;
                 let timed = prepared.is_some();
+                let sectioned = prepared
+                    .as_ref()
+                    .is_some_and(|prepared| prepared.section.is_some());
                 let started = timed.then(Instant::now);
                 let kept = !timed && evidence.status == Status::Complete;
                 let committed = writer.commit(prepared, evidence, at).and_then(|()| {
@@ -615,6 +668,15 @@ impl FrameWriter {
                         (Some(_), None) => Some(held_owners(&*writer, id)?),
                         (None, known) => known.filter(|_| kept),
                     };
+                    if sectioned {
+                        *quiet = 0;
+                    } else {
+                        let streak = quiet.saturating_add(1);
+                        *quiet = streak;
+                        if streak == 2 {
+                            writer.drop_scratch();
+                        }
+                    }
                     Ok(())
                 });
                 if let Err(error) = committed {
@@ -667,7 +729,9 @@ impl FrameWriter {
                 ids,
             });
         }
-        Ok((std::mem::take(&mut self.since_restart), tables))
+        let appends = self.dictionary.slice_from(self.since_restart_from)?;
+        self.since_restart_from = self.dictionary.len() as u32;
+        Ok((appends, tables))
     }
 
     pub fn hour_with(
@@ -992,43 +1056,77 @@ fn owner_of(id: TableId, key: u128) -> u32 {
     (key >> id.key_bits().saturating_sub(32)) as u32
 }
 
+fn owner_of_u64(id: TableId, key: u64) -> u32 {
+    (key >> id.key_bits().saturating_sub(32)) as u32
+}
+
 fn held_owners(writer: &TableWriter, id: TableId) -> io::Result<Owners> {
     let table = writer.table();
-    let mut keys = Vec::new();
-    for slot in 0..table.slots() as u32 {
-        if let Some(key) = table.key(slot) {
-            engine_allocation::reserve(&mut keys, 1)?;
-            keys.push(key);
-        }
-    }
+    let mut keys = Owners::from_keys(
+        id,
+        table.live().count(),
+        table.live().ones().filter_map(|slot| table.key(slot)),
+    )?;
     keys.sort_unstable();
-    let mut owners = Vec::new();
-    for run in keys.chunk_by(|a, b| owner_of(id, *a) == owner_of(id, *b)) {
-        engine_allocation::reserve(&mut owners, 1)?;
-        owners.push((owner_of(id, run[0]), engine_allocation::copy_vec(run)?));
+    Ok(keys)
+}
+
+fn merge_slice_keys<T: Copy>(
+    owners: &mut Vec<T>,
+    slice_owners: &[u32],
+    slice_keys: &[T],
+    owner_of_key: impl Fn(T) -> u32,
+) -> io::Result<()> {
+    let mut old_at = 0usize;
+    let mut replaced_old = 0usize;
+    for &owner in slice_owners {
+        let start = owners[old_at..].partition_point(|&key| owner_of_key(key) < owner) + old_at;
+        let end = owners[start..].partition_point(|&key| owner_of_key(key) <= owner) + start;
+        replaced_old += end - start;
+        old_at = end;
     }
-    Ok(owners)
+    let final_len = owners.len() - replaced_old + slice_keys.len();
+    let mut out = engine_allocation::vec(final_len)?;
+    old_at = 0;
+    let mut keys = slice_keys;
+    for &owner in slice_owners {
+        let start = owners[old_at..].partition_point(|&key| owner_of_key(key) < owner) + old_at;
+        let end = owners[start..].partition_point(|&key| owner_of_key(key) <= owner) + start;
+        out.extend_from_slice(&owners[old_at..start]);
+        let (own, rest) = keys.split_at(keys.partition_point(|&key| owner_of_key(key) <= owner));
+        keys = rest;
+        out.extend_from_slice(own);
+        old_at = end;
+    }
+    out.extend_from_slice(&owners[old_at..]);
+    *owners = out;
+    Ok(())
 }
 
 fn hold_slice(owners: &mut Owners, slice: &Slice, id: TableId) -> io::Result<()> {
-    let mut keys = &slice.keys[..];
-    for &owner in &slice.owners {
-        let (own, rest) = keys.split_at(keys.partition_point(|&key| owner_of(id, key) <= owner));
-        keys = rest;
-        match owners.binary_search_by_key(&owner, |(held, _)| *held) {
-            Ok(at) => {
-                let held = &mut owners[at].1;
-                held.clear();
-                engine_allocation::reserve(held, own.len())?;
-                held.extend_from_slice(own);
-            }
-            Err(at) => {
-                engine_allocation::reserve(owners, 1)?;
-                owners.insert(at, (owner, engine_allocation::copy_vec(own)?));
-            }
+    match (owners, &slice.keys) {
+        (Owners::U64(known), Owners::U64(incoming)) => {
+            merge_slice_keys(known, &slice.owners, incoming, |key| owner_of_u64(id, key))
+        }
+        (Owners::U128(known), Owners::U128(incoming)) => {
+            merge_slice_keys(known, &slice.owners, incoming, |key| owner_of(id, key))
+        }
+        (Owners::U128(known), Owners::U64(incoming)) => {
+            let widened = engine_allocation::collect_vec(incoming.iter().copied().map(u128::from))?;
+            merge_slice_keys(known, &slice.owners, &widened, |key| owner_of(id, key))
+        }
+        (slot @ Owners::U64(_), Owners::U128(incoming)) => {
+            let Owners::U64(old) = std::mem::replace(slot, Owners::U128(Vec::new())) else {
+                unreachable!();
+            };
+            let mut widened = engine_allocation::collect_vec(old.into_iter().map(u128::from))?;
+            merge_slice_keys(&mut widened, &slice.owners, incoming, |key| {
+                owner_of(id, key)
+            })?;
+            *slot = Owners::U128(widened);
+            Ok(())
         }
     }
-    Ok(())
 }
 
 fn removed(
@@ -1039,15 +1137,48 @@ fn removed(
     out: &mut Vec<u128>,
 ) -> io::Result<()> {
     out.clear();
+    if update.owners.is_empty() && update.keys.is_empty() && update.ranges.is_empty() {
+        return Ok(());
+    }
+    if !update.keys.is_empty() && update.owners.is_empty() && update.ranges.is_empty() {
+        let table = writer.table();
+        for &key in &update.keys {
+            if !update.rows.contains_key(key) && table.slot(key).is_some() {
+                engine_allocation::reserve(out, 1)?;
+                out.push(key);
+            }
+        }
+        return Ok(());
+    }
     if let Some(owners) = owners.filter(|_| owner_slice(update)) {
-        for &owner in update.owners() {
-            let Ok(at) = owners.binary_search_by_key(&owner, |(held, _)| *held) else {
-                continue;
-            };
-            for &key in &owners[at].1 {
-                if !update.rows.contains_key(key) {
-                    engine_allocation::reserve(out, 1)?;
-                    out.push(key);
+        match owners {
+            Owners::U64(keys) => {
+                for &owner in update.owners() {
+                    let start = keys.partition_point(|&key| owner_of_u64(id, key) < owner);
+                    for &key in &keys[start..] {
+                        if owner_of_u64(id, key) != owner {
+                            break;
+                        }
+                        let wide = u128::from(key);
+                        if !update.rows.contains_key(wide) {
+                            engine_allocation::reserve(out, 1)?;
+                            out.push(wide);
+                        }
+                    }
+                }
+            }
+            Owners::U128(keys) => {
+                for &owner in update.owners() {
+                    let start = keys.partition_point(|&key| owner_of(id, key) < owner);
+                    for &key in &keys[start..] {
+                        if owner_of(id, key) != owner {
+                            break;
+                        }
+                        if !update.rows.contains_key(key) {
+                            engine_allocation::reserve(out, 1)?;
+                            out.push(key);
+                        }
+                    }
                 }
             }
         }

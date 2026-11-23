@@ -28,9 +28,9 @@ const FILL_MINIMUM: usize = 16;
 
 const NEW: u32 = u32::MAX;
 const EMPTY: u32 = u32::MAX;
-const INSERT_SCRATCH_LIMIT: usize = 4 * 1024;
-const HOUR_SCRATCH_LIMIT: usize = 16 * 1024;
-const SECTION_SCRATCH_LIMIT: usize = 32 * 1024;
+const INSERT_SCRATCH_LIMIT: usize = 0;
+const HOUR_SCRATCH_LIMIT: usize = 2 * 1024;
+const SECTION_SCRATCH_LIMIT: usize = 0;
 
 fn drop_over<T>(values: &mut Vec<T>, limit_bytes: usize) {
     values.clear();
@@ -44,7 +44,7 @@ pub struct Dictionary {
     table: Vec<u32>,
     hasher: Hasher,
     len: u32,
-    appended: Vec<Box<[u8]>>,
+    appended_from: u32,
     bytes: Vec<u8>,
     ends: Vec<usize>,
 }
@@ -117,25 +117,44 @@ impl Dictionary {
         } else {
             None
         };
-        let mut copy = engine_allocation::vec(bytes.len())?;
-        copy.extend_from_slice(bytes);
-        let copy = engine_allocation::boxed_slice(copy)?;
-        engine_allocation::reserve(&mut self.appended, 1)?;
         engine_allocation::reserve(&mut self.bytes, bytes.len())?;
         engine_allocation::reserve(&mut self.ends, 1)?;
         if let Some(table) = grown.take() {
             self.table = table;
         }
         Self::place(&mut self.table, &self.hasher, bytes, id);
-        self.appended.push(copy);
         self.bytes.extend_from_slice(bytes);
         self.ends.push(self.bytes.len());
         self.len = next;
         Ok(id)
     }
 
+    pub fn take_appended_range(&mut self) -> std::ops::Range<u32> {
+        let from = self.appended_from;
+        self.appended_from = self.len;
+        from..self.len
+    }
+
+    pub fn slice_from(&self, from: u32) -> io::Result<Vec<Box<[u8]>>> {
+        let count = self.len.saturating_sub(from) as usize;
+        let mut out = engine_allocation::vec(count)?;
+        for id in from..self.len {
+            let bytes = self.get(id).unwrap_or(&[]);
+            let copy = engine_allocation::copy_vec(bytes)?;
+            out.push(engine_allocation::boxed_slice(copy)?);
+        }
+        Ok(out)
+    }
+
     pub fn take_appended(&mut self) -> Vec<Box<[u8]>> {
-        std::mem::take(&mut self.appended)
+        let range = self.take_appended_range();
+        let mut out = Vec::with_capacity(range.len());
+        for id in range {
+            if let Some(bytes) = self.get(id) {
+                out.push(bytes.to_vec().into_boxed_slice());
+            }
+        }
+        out
     }
 }
 
@@ -1153,13 +1172,19 @@ fn hunks<T: Items>(
     if added > MATCH_FLOOR {
         MATCHER.with(|matcher| {
             let mut matcher = matcher.borrow_mut();
-            let found = matcher.find(held, new, (prefix, suffix), &items)?;
-            if found < cost && found * 2 <= whole {
-                edits.truncate(start);
-                extend(edits, &matcher.edits)?;
-                cost = found;
-            }
-            Ok::<_, io::Error>(())
+            let result = (|| {
+                let found = matcher.find(held, new, (prefix, suffix), &items)?;
+                if found < cost && found * 2 <= whole {
+                    edits.truncate(start);
+                    extend(edits, &matcher.edits)?;
+                    cost = found;
+                }
+                Ok::<_, io::Error>(())
+            })();
+            drop_over(&mut matcher.heads, 64 << 10);
+            drop_over(&mut matcher.next, 64 << 10);
+            drop_over(&mut matcher.edits, 64 << 10);
+            result
         })?;
     }
     Ok(cost < whole)
@@ -1754,6 +1779,33 @@ fn see(seen: &mut [u64], visited: &mut Vec<u32>, slot: u32) -> io::Result<()> {
     Ok(())
 }
 
+struct ColumnScratch {
+    updates: Vec<Pending>,
+    unrecord: Vec<Vec<u32>>,
+    noops: Vec<Vec<u32>>,
+    inserts: Vec<Pending>,
+    insert_unrecorded: Vec<Vec<u32>>,
+    runs: Vec<Runs>,
+    insert_outs: Vec<Out>,
+    unrecorded: Vec<Vec<u32>>,
+}
+
+impl ColumnScratch {
+    fn new(columns: usize) -> io::Result<Box<Self>> {
+        let many = |count: usize| engine_allocation::collect_vec((0..count).map(|_| Vec::new()));
+        engine_allocation::boxed(Self {
+            updates: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
+            unrecord: many(columns)?,
+            noops: many(columns)?,
+            inserts: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
+            insert_unrecorded: many(columns)?,
+            runs: engine_allocation::collect_vec((0..columns).map(|_| Runs::default()))?,
+            insert_outs: engine_allocation::collect_vec((0..columns).map(|_| Out::default()))?,
+            unrecorded: many(columns)?,
+        })
+    }
+}
+
 pub struct TableWriter {
     kinds: Box<[Kind]>,
     table: Table,
@@ -1769,16 +1821,10 @@ pub struct TableWriter {
     poisoned: bool,
     seen: Vec<u64>,
     visited: Vec<u32>,
-    updates: Vec<Pending>,
-    unrecord: Vec<Vec<u32>>,
-    noops: Vec<Vec<u32>>,
+    columns: Option<Box<ColumnScratch>>,
     touched: Vec<u32>,
     removed: Vec<u128>,
     new_keys: Vec<u128>,
-    inserts: Vec<Pending>,
-    insert_unrecorded: Vec<Vec<u32>>,
-    runs: Vec<Runs>,
-    insert_outs: Vec<Out>,
     #[cfg(test)]
     changes: Changes,
     #[cfg(test)]
@@ -1799,8 +1845,9 @@ pub struct TableWriter {
 
 #[derive(Default)]
 struct Order {
-    keys: Vec<u128>,
     slots: Vec<u32>,
+    len: usize,
+    identity: bool,
     held: bool,
 }
 
@@ -1817,7 +1864,6 @@ struct Parts {
     insert_order: Vec<u32>,
     changed: Vec<u32>,
     apply_slots: Vec<u32>,
-    unrecorded: Vec<Vec<u32>>,
     runs: Vec<Run<'static>>,
     inserts: Vec<Values<'static>>,
     unrecorded_runs: Vec<(usize, &'static [u32])>,
@@ -1844,6 +1890,10 @@ impl Parts {
         drop_over(&mut self.columns, INSERT_SCRATCH_LIMIT);
         drop_over(&mut self.section, SECTION_SCRATCH_LIMIT);
     }
+
+    fn drop_all(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl TableWriter {
@@ -1853,7 +1903,6 @@ impl TableWriter {
 
     fn with_table(kinds: &[Kind], table: Table) -> io::Result<Self> {
         let columns = kinds.len();
-        let many = |count: usize| engine_allocation::collect_vec((0..count).map(|_| Vec::new()));
         let texts = engine_allocation::collect_vec(
             (0..columns).filter(|&column| kinds[column] == Kind::Bytes),
         )?;
@@ -1874,16 +1923,10 @@ impl TableWriter {
             poisoned: false,
             seen: Vec::new(),
             visited: Vec::new(),
-            updates: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
-            unrecord: many(columns)?,
-            noops: many(columns)?,
+            columns: None,
             touched: Vec::new(),
             removed: Vec::new(),
             new_keys: Vec::new(),
-            inserts: engine_allocation::collect_vec((0..columns).map(|_| Pending::default()))?,
-            insert_unrecorded: many(columns)?,
-            runs: engine_allocation::collect_vec((0..columns).map(|_| Runs::default()))?,
-            insert_outs: engine_allocation::collect_vec((0..columns).map(|_| Out::default()))?,
             #[cfg(test)]
             changes: Changes::default(),
             #[cfg(test)]
@@ -1895,10 +1938,7 @@ impl TableWriter {
             insert_rows: Vec::new(),
             cursors: Vec::new(),
             order: Order::default(),
-            parts: Parts {
-                unrecorded: many(columns)?,
-                ..Parts::default()
-            },
+            parts: Parts::default(),
             dirty: engine_allocation::filled(columns.div_ceil(64), 0_u64)?,
             sweep: Sweep::Touched,
             work: Work::default(),
@@ -2004,32 +2044,29 @@ impl TableWriter {
         self.visited.clear();
         engine_allocation::resize_default(&mut self.seen, self.table.slots().div_ceil(64))?;
         let columns = self.kinds.len();
-        if unfinished || self.sweep == Sweep::Every {
+        if self.columns.is_none() {
+            self.columns = Some(ColumnScratch::new(columns)?);
+            self.dirty.fill(0);
+        } else if unfinished || self.sweep == Sweep::Every {
             mark_all_dirty(&mut self.dirty, columns);
         }
         let Self {
             dirty,
-            updates,
-            inserts,
-            unrecord,
-            noops,
-            insert_unrecorded,
-            runs,
-            insert_outs,
-            parts,
+            columns: scratch,
             work,
             ..
         } = &mut *self;
+        let scratch = scratch.as_mut().expect("column scratch initialized");
         work.columns += dirty_count(dirty.as_slice());
         for column in dirty_columns(dirty.as_slice()) {
-            updates[column].clear();
-            inserts[column].clear();
-            unrecord[column].clear();
-            noops[column].clear();
-            insert_unrecorded[column].clear();
-            runs[column].clear();
-            insert_outs[column].clear();
-            parts.unrecorded[column].clear();
+            scratch.updates[column].clear();
+            scratch.inserts[column].clear();
+            scratch.unrecord[column].clear();
+            scratch.noops[column].clear();
+            scratch.insert_unrecorded[column].clear();
+            scratch.runs[column].clear();
+            scratch.insert_outs[column].clear();
+            scratch.unrecorded[column].clear();
         }
         dirty.fill(0);
         if self.sweep == Sweep::Every {
@@ -2080,25 +2117,46 @@ impl TableWriter {
             ..
         } = self;
         order.held = false;
-        order.slots.clear();
-        engine_allocation::reserve(&mut order.slots, slots.len())?;
-        let mut inserted = parts.by_index.iter().copied();
-        for &slot in slots.iter() {
-            order.slots.push(match slot {
-                NEW => inserted
-                    .next()
-                    .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
-                slot => slot,
-            });
+        order.identity = false;
+        order.len = 0;
+        let len = slots.len();
+        let mut identity = true;
+        {
+            let mut inserted = parts.by_index.iter().copied();
+            for (expected, &slot) in (0u32..).zip(slots.iter()) {
+                let resolved = match slot {
+                    NEW => inserted
+                        .next()
+                        .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
+                    slot => slot,
+                };
+                if table.key(resolved).is_none() {
+                    return Err(invalid_static("A batch's row is not held"));
+                }
+                if resolved != expected {
+                    identity = false;
+                }
+            }
         }
-        order.keys.clear();
-        engine_allocation::reserve(&mut order.keys, order.slots.len())?;
-        for &slot in &order.slots {
-            let key = table
-                .key(slot)
-                .ok_or_else(|| invalid_static("A batch's row is not held"))?;
-            order.keys.push(key);
+        if identity {
+            order.slots = Vec::new();
+            order.identity = true;
+        } else {
+            order.slots.clear();
+            if order.slots.capacity() < len {
+                engine_allocation::reserve_exact(&mut order.slots, len)?;
+            }
+            let mut inserted = parts.by_index.iter().copied();
+            for &slot in slots.iter() {
+                order.slots.push(match slot {
+                    NEW => inserted
+                        .next()
+                        .ok_or_else(|| invalid_static("A batch's new row has no slot"))?,
+                    slot => slot,
+                });
+            }
         }
+        order.len = len;
         order.held = true;
         Ok(())
     }
@@ -2108,8 +2166,7 @@ impl TableWriter {
             kinds,
             table,
             free,
-            runs,
-            insert_outs,
+            columns,
             parts,
             dirty,
             #[cfg(test)]
@@ -2120,6 +2177,12 @@ impl TableWriter {
             fill_merge_masks,
             ..
         } = self;
+        let ColumnScratch {
+            runs,
+            insert_outs,
+            unrecorded,
+            ..
+        } = &**columns.as_ref().expect("column scratch prepared");
         #[cfg(test)]
         {
             changes.fill_slots.clear();
@@ -2212,8 +2275,8 @@ impl TableWriter {
             }
         }
         for column in dirty_columns(dirty.as_slice()) {
-            if !parts.unrecorded[column].is_empty() {
-                table.unrecord(column, &parts.unrecorded[column])?;
+            if !unrecorded[column].is_empty() {
+                table.unrecord(column, &unrecorded[column])?;
             }
         }
         for &slot in &parts.inserted {
@@ -2357,6 +2420,23 @@ impl TableWriter {
         Ok(())
     }
 
+    pub fn drop_scratch(&mut self) {
+        if self.finished != self.generation {
+            return;
+        }
+        self.columns = None;
+        self.dirty.fill(0);
+        self.seen = Vec::new();
+        self.visited = Vec::new();
+        self.touched = Vec::new();
+        self.removed = Vec::new();
+        self.new_keys = Vec::new();
+        self.slots = Vec::new();
+        self.insert_rows = Vec::new();
+        self.cursors = Vec::new();
+        self.parts.drop_all();
+    }
+
     fn release_scratch(&mut self) {
         for &slot in &self.visited {
             self.seen[slot as usize / 64] &= !(1 << (slot % 64));
@@ -2368,30 +2448,23 @@ impl TableWriter {
         drop_over(&mut self.slots, HOUR_SCRATCH_LIMIT);
         drop_over(&mut self.insert_rows, INSERT_SCRATCH_LIMIT);
         drop_over(&mut self.cursors, INSERT_SCRATCH_LIMIT);
-        if !self.parts.inserted.is_empty() {
-            for column in 0..self.kinds.len() {
-                self.inserts[column].release_scratch(INSERT_SCRATCH_LIMIT);
-                self.insert_outs[column].release_scratch(INSERT_SCRATCH_LIMIT);
-                drop_over(&mut self.insert_unrecorded[column], INSERT_SCRATCH_LIMIT);
+        if let Some(scratch) = self.columns.as_deref_mut() {
+            if !self.parts.inserted.is_empty() {
+                for column in 0..self.kinds.len() {
+                    scratch.inserts[column].release_scratch(INSERT_SCRATCH_LIMIT);
+                    scratch.insert_outs[column].release_scratch(INSERT_SCRATCH_LIMIT);
+                    drop_over(&mut scratch.insert_unrecorded[column], INSERT_SCRATCH_LIMIT);
+                }
+            }
+            for column in dirty_columns(self.dirty.as_slice()) {
+                scratch.updates[column].release_scratch(HOUR_SCRATCH_LIMIT);
+                scratch.runs[column].release_scratch(HOUR_SCRATCH_LIMIT);
+                drop_over(&mut scratch.unrecord[column], HOUR_SCRATCH_LIMIT);
+                drop_over(&mut scratch.noops[column], HOUR_SCRATCH_LIMIT);
+                drop_over(&mut scratch.unrecorded[column], HOUR_SCRATCH_LIMIT);
             }
         }
-        let Self {
-            dirty,
-            updates,
-            runs,
-            unrecord,
-            noops,
-            parts,
-            ..
-        } = self;
-        for column in dirty_columns(dirty.as_slice()) {
-            updates[column].release_scratch(HOUR_SCRATCH_LIMIT);
-            runs[column].release_scratch(HOUR_SCRATCH_LIMIT);
-            drop_over(&mut unrecord[column], HOUR_SCRATCH_LIMIT);
-            drop_over(&mut noops[column], HOUR_SCRATCH_LIMIT);
-            drop_over(&mut parts.unrecorded[column], HOUR_SCRATCH_LIMIT);
-        }
-        parts.release_scratch();
+        self.parts.release_scratch();
     }
 }
 
@@ -2485,7 +2558,12 @@ impl Hour<'_> {
                     match cell {
                         None if recorded => {
                             mark_dirty(&mut self.writer.dirty, column);
-                            push(&mut self.writer.unrecord[column], slot)?;
+                            let scratch = self
+                                .writer
+                                .columns
+                                .as_deref_mut()
+                                .expect("column scratch prepared");
+                            push(&mut scratch.unrecord[column], slot)?;
                         }
                         None => {}
                         Some(cell) => {
@@ -2497,7 +2575,12 @@ impl Hour<'_> {
                             if !recorded || held != Some(cell) {
                                 let held = held.filter(|_| recorded);
                                 mark_dirty(&mut self.writer.dirty, column);
-                                self.writer.updates[column].change(slot, cell, held)?;
+                                let scratch = self
+                                    .writer
+                                    .columns
+                                    .as_deref_mut()
+                                    .expect("column scratch prepared");
+                                scratch.updates[column].change(slot, cell, held)?;
                             }
                         }
                     }
@@ -2508,14 +2591,21 @@ impl Hour<'_> {
                 push(&mut self.writer.new_keys, key)?;
                 mark_all_dirty(&mut self.writer.dirty, cells.len());
                 for (column, &input) in cells.iter().enumerate() {
-                    let cell = match self.resolve(column, input)? {
+                    let resolved = self.resolve(column, input)?;
+                    let kind = self.writer.kinds[column];
+                    let scratch = self
+                        .writer
+                        .columns
+                        .as_deref_mut()
+                        .expect("column scratch prepared");
+                    let cell = match resolved {
                         Some(cell) => cell,
                         None => {
-                            push(&mut self.writer.insert_unrecorded[column], index)?;
-                            placeholder(self.writer.kinds[column])
+                            push(&mut scratch.insert_unrecorded[column], index)?;
+                            placeholder(kind)
                         }
                     };
-                    self.writer.inserts[column].push(index, cell)?;
+                    scratch.inserts[column].push(index, cell)?;
                 }
                 self.inserted = index
                     .checked_add(1)
@@ -2533,12 +2623,9 @@ impl Hour<'_> {
             table,
             seen,
             visited,
-            updates,
-            unrecord,
+            columns: scratch,
             removed,
             new_keys,
-            inserts,
-            insert_unrecorded,
             texts,
             slots,
             insert_rows,
@@ -2548,6 +2635,13 @@ impl Hour<'_> {
             uniform_optional_i32,
             ..
         } = &mut *self.writer;
+        let ColumnScratch {
+            updates,
+            unrecord,
+            inserts,
+            insert_unrecorded,
+            ..
+        } = scratch.as_deref_mut().expect("column scratch prepared");
         let rows = batch.keys.len();
         if batch.kinds.as_slice() != &**kinds {
             return Err(invalid_static("A batch's columns differ from its table's"));
@@ -2579,8 +2673,25 @@ impl Hour<'_> {
         }
         slots.clear();
         insert_rows.clear();
-        if complete && order.held && order.keys == batch.keys {
-            extend(slots, &order.slots)?;
+        if complete
+            && order.held
+            && order.len == rows
+            && if order.identity {
+                table.keys_match_prefix(&batch.keys)
+            } else {
+                order
+                    .slots
+                    .iter()
+                    .zip(&batch.keys)
+                    .all(|(&slot, &key)| table.key(slot) == Some(key))
+            }
+        {
+            if order.identity {
+                reserve(slots, rows)?;
+                slots.extend(0..rows as u32);
+            } else {
+                extend(slots, &order.slots)?;
+            }
             self.ordered = true;
         } else {
             reserve(slots, rows)?;
@@ -2871,7 +2982,12 @@ impl Hour<'_> {
             return Err(invalid_static("NOOP names a column past the schema"));
         }
         mark_dirty(&mut self.writer.dirty, column);
-        push(&mut self.writer.noops[column], slot)
+        let scratch = self
+            .writer
+            .columns
+            .as_deref_mut()
+            .expect("column scratch prepared");
+        push(&mut scratch.noops[column], slot)
     }
 
     pub fn touch(&mut self, key: u128) -> io::Result<()> {
@@ -2915,7 +3031,6 @@ impl Hour<'_> {
             keys,
             insert_order,
             changed,
-            unrecorded: unrecorded_slots,
             runs: run_list,
             inserts: insert_list,
             unrecorded_runs,
@@ -2923,6 +3038,10 @@ impl Hour<'_> {
             section: spare_section,
             ..
         } = &mut writer.parts;
+        let scratch = writer
+            .columns
+            .as_deref_mut()
+            .expect("column scratch prepared");
         deleted.clear();
         match coverage {
             Coverage::Complete if !ordered => {
@@ -3023,7 +3142,7 @@ impl Hour<'_> {
             let live = *live_after.get_or_insert_with(|| {
                 writer.table.live().count() - deleted.len() + inserted_slots.len()
             });
-            let runs = &mut writer.runs[col];
+            let runs = &mut scratch.runs[col];
             runs.clear();
             if live > 0 {
                 let Some(Column::OptionalI32(held_vals, held_presence)) = writer.table.column(col)
@@ -3097,7 +3216,7 @@ impl Hour<'_> {
                         if writer.seen[kept as usize / 64] >> (kept % 64) & 1 == 0 {
                             see(&mut writer.seen, &mut writer.visited, kept)?;
                         }
-                        writer.updates[col].change(
+                        scratch.updates[col].change(
                             kept,
                             Cell::OptionalI32(value),
                             was.then_some(Cell::OptionalI32(old)),
@@ -3110,8 +3229,8 @@ impl Hour<'_> {
             if direct_fill.is_some_and(|(col, _, _)| col == column) {
                 continue;
             }
-            let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
-            let noops = &mut writer.noops[column];
+            let (pending, runs) = (&scratch.updates[column], &mut scratch.runs[column]);
+            let noops = &mut scratch.noops[column];
             runs.clear();
             if pending.len() == 0 && noops.is_empty() {
                 continue;
@@ -3147,18 +3266,18 @@ impl Hour<'_> {
         }
         changed.clear();
         for column in dirty_columns(&writer.dirty) {
-            let set = if writer.runs[column].fill {
+            let set = if scratch.runs[column].fill {
                 &[][..]
             } else {
-                &writer.updates[column].at[..]
+                &scratch.updates[column].at[..]
             };
             reserve(
                 changed,
-                set.len() + writer.unrecord[column].len() + writer.noops[column].len(),
+                set.len() + scratch.unrecord[column].len() + scratch.noops[column].len(),
             )?;
             changed.extend_from_slice(set);
-            changed.extend_from_slice(&writer.unrecord[column]);
-            changed.extend_from_slice(&writer.noops[column]);
+            changed.extend_from_slice(&scratch.unrecord[column]);
+            changed.extend_from_slice(&scratch.noops[column]);
         }
         if !changed.windows(2).all(|pair| pair[0] < pair[1]) {
             changed.sort_unstable();
@@ -3208,7 +3327,7 @@ impl Hour<'_> {
         let mut census = Census::default();
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
-            let (pending, runs) = (&writer.updates[column], &mut writer.runs[column]);
+            let (pending, runs) = (&scratch.updates[column], &mut scratch.runs[column]);
             if runs.fill {
                 if let Some((_, value, changing)) =
                     direct_fill.filter(|&(col, _, _)| col == column)
@@ -3256,7 +3375,7 @@ impl Hour<'_> {
                 census.add += runs.add_positions.len() as u64;
                 census.patch += runs.patch_positions.len() as u64;
             }
-            let noops = &writer.noops[column];
+            let noops = &scratch.noops[column];
             if !noops.is_empty() {
                 reserve(&mut runs.noop_positions, noops.len())?;
                 let mut noop_pos = 0usize;
@@ -3264,12 +3383,12 @@ impl Hour<'_> {
                     .extend(noops.iter().map(|&slot| next_position(&mut noop_pos, slot)));
             }
             let order = insert_order.as_slice();
-            writer.insert_outs[column].fill(kind, &writer.inserts[column], order)?;
+            scratch.insert_outs[column].fill(kind, &scratch.inserts[column], order)?;
         }
         let mut runs: Vec<Run<'_>> = recycle(std::mem::take(run_list));
         for column in dirty_columns(&writer.dirty) {
             let kind = writer.kinds[column];
-            let column_runs = &writer.runs[column];
+            let column_runs = &scratch.runs[column];
             reserve(&mut runs, 5)?;
             if column_runs.fill {
                 runs.push(Run {
@@ -3330,26 +3449,26 @@ impl Hour<'_> {
         if !inserted_slots.is_empty() {
             reserve(&mut inserts, columns)?;
             inserts.extend(
-                (0..columns).map(|column| writer.insert_outs[column].values(writer.kinds[column])),
+                (0..columns).map(|column| scratch.insert_outs[column].values(writer.kinds[column])),
             );
         }
         for column in dirty_columns(&writer.dirty) {
-            let slots = &mut unrecorded_slots[column];
+            let slots = &mut scratch.unrecorded[column];
             slots.clear();
-            let needed = writer.unrecord[column].len() + writer.insert_unrecorded[column].len();
+            let needed = scratch.unrecord[column].len() + scratch.insert_unrecorded[column].len();
             if needed == 0 {
                 continue;
             }
             reserve(slots, needed)?;
-            slots.extend_from_slice(&writer.unrecord[column]);
+            slots.extend_from_slice(&scratch.unrecord[column]);
             slots.extend(
-                writer.insert_unrecorded[column]
+                scratch.insert_unrecorded[column]
                     .iter()
                     .map(|&index| by_index[index as usize]),
             );
             slots.sort_unstable();
         }
-        let unrecorded_slots = &*unrecorded_slots;
+        let unrecorded_slots = &scratch.unrecorded;
         let mut unrecorded: Vec<(usize, &[u32])> = recycle(std::mem::take(unrecorded_runs));
         let marked = dirty_columns(&writer.dirty)
             .filter(|&column| !unrecorded_slots[column].is_empty())

@@ -152,21 +152,8 @@ impl NamingPart {
         self.keeps.clear();
         self.lookups = 0;
         self.failed = false;
-        if self.groups.capacities() != carry.groups
-            && let Ok(groups) = GroupKeys::try_with_capacity(carry.groups[0], carry.groups[1])
-                .map_err(collector_memory::terminal::io)
-        {
-            self.groups = groups;
-        }
-        self.groups.reset();
         let first = self.range.start.min(seeds.len());
         let seeds = &seeds[first..self.range.end.clamp(first, seeds.len())];
-        if !grow_vec(&mut self.rows, seeds.len())
-            || engine_allocation::reserve(&mut self.keeps, seeds.len()).is_err()
-        {
-            self.failed = true;
-            return;
-        }
         let share = |total: usize| {
             total
                 .saturating_mul(2)
@@ -174,6 +161,31 @@ impl NamingPart {
                 .div_ceil(carry.seeds.max(1))
                 .min(total)
         };
+        let group_target = |total: usize| {
+            if total == 0 {
+                0
+            } else {
+                share(total)
+                    .max(64)
+                    .min(total)
+                    .checked_next_power_of_two()
+                    .unwrap_or(total)
+            }
+        };
+        let target_groups = [group_target(carry.groups[0]), group_target(carry.groups[1])];
+        if self.groups.capacities() != target_groups
+            && let Ok(groups) = GroupKeys::try_with_capacity(target_groups[0], target_groups[1])
+                .map_err(collector_memory::terminal::io)
+        {
+            self.groups = groups;
+        }
+        self.groups.reset();
+        if !grow_vec(&mut self.rows, seeds.len())
+            || engine_allocation::reserve(&mut self.keeps, seeds.len()).is_err()
+        {
+            self.failed = true;
+            return;
+        }
         engine_allocation::advisory(|| {
             grow_vec(&mut self.names.first, share(carry.bytes[0]));
             grow_vec(&mut self.cached.first, share(carry.bytes[1]));

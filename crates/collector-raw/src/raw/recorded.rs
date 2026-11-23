@@ -3,6 +3,8 @@ use super::{RawLog, Span, is_canonical_range};
 use engine_native_memory::Memory;
 use std::cell::RefCell;
 
+const EMPTY: u32 = u32::MAX;
+
 pub struct Recorded<'a> {
     pub(super) index: RecordedIndex,
     recycle: &'a RefCell<Option<RecordedIndex>>,
@@ -21,12 +23,12 @@ pub struct RecordedCache {
 pub(super) struct RecordedIndex {
     has_bulk: bool,
     pub(super) exact_lengths: [u64; 4],
-    pub(super) slots: Vec<std::cell::Cell<usize>>,
+    pub(super) slots: Vec<std::cell::Cell<u32>>,
     pub(super) distinct: usize,
-    pub(super) next: Vec<usize>,
-    pub(super) repeated: Vec<(usize, usize)>,
+    pub(super) next: Vec<u32>,
+    pub(super) repeated: Vec<(u32, u32)>,
     pub(super) shape: Vec<(usize, u32, bool, bool)>,
-    pub(super) bulk: Vec<(usize, usize, usize, usize)>,
+    pub(super) bulk: Vec<(usize, usize, u32, usize)>,
     capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -58,10 +60,10 @@ impl RecordedIndex {
         let mut slot = Self::hash(address, len) & mask;
         for _ in 0..self.slots.len() {
             let current = self.slots[slot].get();
-            if current == usize::MAX {
+            if current == EMPTY {
                 return Some(slot);
             }
-            let span = &spans[current];
+            let span = &spans[current as usize];
             if span.addr == address && span.len == len {
                 return Some(slot);
             }
@@ -76,9 +78,9 @@ impl RecordedIndex {
         spans: &[Span],
         address: usize,
         len: u32,
-    ) -> Option<&std::cell::Cell<usize>> {
+    ) -> Option<&std::cell::Cell<u32>> {
         let cursor = &self.slots[self.slot(spans, address, len)?];
-        (cursor.get() != usize::MAX).then_some(cursor)
+        (cursor.get() != EMPTY).then_some(cursor)
     }
 
     fn grow_slots(&mut self, spans: &[Span]) -> std::io::Result<()> {
@@ -89,12 +91,12 @@ impl RecordedIndex {
         };
         let mut slots = Vec::new();
         crate::allocation::reserve_raw(&mut slots, size, "raw index buckets")?;
-        slots.resize(size, std::cell::Cell::new(usize::MAX));
+        slots.resize(size, std::cell::Cell::new(EMPTY));
         let old = std::mem::replace(&mut self.slots, slots);
         for cursor in old {
             let current = cursor.get();
-            if current != usize::MAX {
-                let span = &spans[current];
+            if current != EMPTY {
+                let span = &spans[current as usize];
                 let slot = self
                     .slot(spans, span.addr, span.len)
                     .expect("grown raw index must have an empty bucket");
@@ -104,19 +106,26 @@ impl RecordedIndex {
         Ok(())
     }
 
+    fn vector_bytes(&self) -> u64 {
+        use crate::raw_memory::vector_bytes;
+        vector_bytes(&self.slots)
+            + vector_bytes(&self.next)
+            + vector_bytes(&self.repeated)
+            + vector_bytes(&self.shape)
+            + vector_bytes(&self.bulk)
+    }
+
     fn update_capacity_charge(&mut self) {
-        use crate::raw_memory::{Capacity, vector_bytes};
-        self.capacity_charge.set(Capacity {
-            index_vectors: vector_bytes(&self.slots)
-                + vector_bytes(&self.next)
-                + vector_bytes(&self.repeated)
-                + vector_bytes(&self.shape)
-                + vector_bytes(&self.bulk),
+        self.capacity_charge.set(crate::raw_memory::Capacity {
+            index_vectors: self.vector_bytes(),
             ..Default::default()
         });
     }
 
     pub(super) fn prepare(&mut self, spans: &[Span], has_bulk: bool) -> std::io::Result<bool> {
+        if spans.len() >= EMPTY as usize {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
         if self.has_bulk == has_bulk
             && self.shape.len() == spans.len()
             && self
@@ -126,15 +135,22 @@ impl RecordedIndex {
                 .all(|(shape, span)| *shape == (span.addr, span.len, span.ok, span.bulk))
         {
             for &(slot, first) in &self.repeated {
-                self.slots[slot].set(first);
+                self.slots[slot as usize].set(first);
             }
             return Ok(true);
         }
         crate::allocation::reserve_raw(&mut self.next, spans.len(), "raw index next")?;
-        crate::allocation::reserve_raw(&mut self.repeated, spans.len(), "raw index repeated")?;
         crate::allocation::reserve_raw(&mut self.shape, spans.len(), "raw index shape")?;
-        if has_bulk {
-            crate::allocation::reserve_raw(&mut self.bulk, spans.len(), "raw index bulk")?;
+        let bulk_count = if has_bulk {
+            spans
+                .iter()
+                .filter(|span| span.ok && span.bulk && span.len > 0)
+                .count()
+        } else {
+            0
+        };
+        if bulk_count > 0 {
+            crate::allocation::reserve_raw(&mut self.bulk, bulk_count, "raw index bulk")?;
         }
         let target = spans
             .len()
@@ -145,17 +161,18 @@ impl RecordedIndex {
         if self.slots.len() > target {
             self.slots.truncate(target);
         }
-        self.slots.fill(std::cell::Cell::new(usize::MAX));
+        self.slots.fill(std::cell::Cell::new(EMPTY));
         self.distinct = 0;
         self.has_bulk = has_bulk;
         self.exact_lengths = [0; 4];
         self.next.clear();
-        self.next.resize(spans.len(), usize::MAX);
+        self.next.resize(spans.len(), EMPTY);
         self.repeated.clear();
         self.bulk.clear();
         self.shape.clear();
         let mut grew_after_repeat = false;
         for (index, span) in spans.iter().enumerate() {
+            let index_u32 = index as u32;
             self.shape.push((span.addr, span.len, span.ok, span.bulk));
             self.mark_exact_length(span.len);
             if self.slots.is_empty() {
@@ -165,7 +182,7 @@ impl RecordedIndex {
                 .slot(spans, span.addr, span.len)
                 .expect("raw index must have an empty bucket");
             let previous = self.slots[slot].get();
-            if previous == usize::MAX {
+            if previous == EMPTY {
                 if self.distinct == self.slots.len() / 2 {
                     self.grow_slots(spans)?;
                     if !self.repeated.is_empty() {
@@ -175,34 +192,35 @@ impl RecordedIndex {
                         .slot(spans, span.addr, span.len)
                         .expect("grown raw index must have an empty bucket");
                 }
-                self.slots[slot].set(index);
+                self.slots[slot].set(index_u32);
                 self.distinct += 1;
             } else {
-                if self.next[previous] == usize::MAX {
-                    self.repeated.push((slot, previous));
+                if self.next[previous as usize] == EMPTY {
+                    crate::allocation::reserve_raw(&mut self.repeated, 1, "raw index repeated")?;
+                    self.repeated.push((slot as u32, previous));
                 }
-                self.next[previous] = index;
-                self.next[index] = index;
-                self.slots[slot].set(index);
+                self.next[previous as usize] = index_u32;
+                self.next[index] = index_u32;
+                self.slots[slot].set(index_u32);
             }
             if span.ok && self.has_bulk && span.bulk && span.len > 0 {
                 self.bulk
-                    .push((span.addr, span.addr + span.len as usize, index, 0));
+                    .push((span.addr, span.addr + span.len as usize, index_u32, 0));
             }
         }
         if grew_after_repeat {
             for root in 0..self.repeated.len() {
                 let first = self.repeated[root].1;
-                let span = &spans[first];
+                let span = &spans[first as usize];
                 let slot = self
                     .slot(spans, span.addr, span.len)
                     .expect("raw index must retain every repeated key");
-                self.repeated[root].0 = slot;
+                self.repeated[root].0 = slot as u32;
                 self.slots[slot].set(first);
             }
         } else {
             for &(slot, first) in &self.repeated {
-                self.slots[slot].set(first);
+                self.slots[slot as usize].set(first);
             }
         }
         if !self.bulk.is_empty() {
@@ -245,21 +263,10 @@ impl<'a> Recorded<'a> {
     ) -> Result<Self, &'static str> {
         let source_spans = log.spans.get(range).ok_or("recorded span range invalid")?;
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
-        let mut index = recycle
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| RecordedIndex {
-                capacity_charge: crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker()),
-                ..Default::default()
-            });
-        if !std::ptr::eq(
-            index.capacity_charge.tracker(),
-            log.capacity_charge.tracker(),
-        ) {
-            index.capacity_charge =
-                crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker());
-            index.update_capacity_charge();
-        }
+        let mut index = recycle.borrow_mut().take().unwrap_or_else(|| RecordedIndex {
+            capacity_charge: crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker()),
+            ..Default::default()
+        });
         let has_bulk = log.has_bulk && source_spans.iter().any(|span| span.bulk);
         if index.prepare(source_spans, has_bulk).is_err() {
             return Err("recorded span index allocation failed");
@@ -276,8 +283,8 @@ impl<'a> Recorded<'a> {
 
     pub fn unique_observation(&self, address: usize, len: usize) -> Option<(&Span, Option<&Span>)> {
         let len = u32::try_from(len).ok()?;
-        let index = self.index.cursor(self.spans, address, len)?.get();
-        if self.index.next.get(index) != Some(&usize::MAX) {
+        let index = self.index.cursor(self.spans, address, len)?.get() as usize;
+        if self.index.next.get(index) != Some(&EMPTY) {
             return None;
         }
         Some((
@@ -293,7 +300,7 @@ impl<'a> Recorded<'a> {
         let hint = self.next_exact.get();
         let len = destination.len() as u32;
         let exact = if self.spans.get(hint).is_some_and(|span| {
-            span.addr == address && span.len == len && self.index.next[hint] == usize::MAX
+            span.addr == address && span.len == len && self.index.next[hint] == EMPTY
         }) {
             Some(hint)
         } else if self.index.has_bulk && !self.index.may_have_exact_length(len) {
@@ -301,11 +308,11 @@ impl<'a> Recorded<'a> {
         } else {
             self.index.cursor(self.spans, address, len).map(|cursor| {
                 let current = cursor.get();
-                let next = self.index.next[current];
-                if next != usize::MAX {
+                let next = self.index.next[current as usize];
+                if next != EMPTY {
                     cursor.set(next);
                 }
-                current
+                current as usize
             })
         };
         if let Some(index) = exact {
@@ -355,7 +362,7 @@ impl<'a> Recorded<'a> {
             selected
         };
         let (start, _, source_index, _) = self.index.bulk[selected];
-        let offset = self.spans[source_index].start as usize + (address - start);
+        let offset = self.spans[source_index as usize].start as usize + (address - start);
         let Some(source) = self.bytes.get(offset..offset + destination.len()) else {
             return false;
         };

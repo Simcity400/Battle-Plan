@@ -1963,6 +1963,9 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
                 }
             }
             shared.burst_peers.store(0, Ordering::Release);
+            if shared.active.load(Ordering::Acquire) == 0 {
+                crate::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
+            }
             shared.observer.waiting_for_job();
             state = shared.wait_for_work(state);
         }

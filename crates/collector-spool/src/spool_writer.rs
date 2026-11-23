@@ -1250,6 +1250,7 @@ fn serve<B: SegmentBackend>(
             }
         };
         let Some(job) = job else {
+            collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
             if shared.lock().stop {
                 break;
             }

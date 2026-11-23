@@ -253,6 +253,7 @@ fn serve(
             // SAFETY: `join` keeps the job alive until `running` clears.
             let job = unsafe { &*job.0 };
             let panicked = catch_unwind(AssertUnwindSafe(job)).is_err();
+            crate::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
             state = shared.lock();
             state.job = None;
             state.running = false;

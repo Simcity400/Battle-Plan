@@ -29,7 +29,7 @@ struct Entry {
     rows: std::ops::Range<usize>,
     bytes: std::ops::Range<usize>,
 }
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Owned {
     rows: Vec<cadvisor::Row>,
     bytes: Vec<u8>,
@@ -87,7 +87,7 @@ impl Section {
             #[cfg(feature = "advisor_profile")]
             diagnostic: [0; DIAGNOSTIC_SLOTS],
             current: Owned::new(rows, bytes, characters),
-            previous: Owned::new(rows, bytes, characters),
+            previous: Owned::default(),
             valid: false,
             scope: (0, 0),
             observation: None,
@@ -126,15 +126,15 @@ impl Section {
             ),
             _ => (self.current.rows.len(), self.current.bytes.len()),
         };
-        for owned in [&mut self.current, &mut self.previous] {
-            let additional = self.characters.saturating_sub(owned.entries.len());
-            if resize(&mut owned.rows, rows, cadvisor::Row::default()).is_err()
-                || resize(&mut owned.bytes, bytes, 0).is_err()
-                || reserve(&mut owned.entries, additional).is_err()
-            {
-                return;
-            }
+        let owned = &mut self.current;
+        let additional = self.characters.saturating_sub(owned.entries.len());
+        if resize(&mut owned.rows, rows, cadvisor::Row::default()).is_err()
+            || resize(&mut owned.bytes, bytes, 0).is_err()
+            || reserve(&mut owned.entries, additional).is_err()
+        {
+            return;
         }
+        self.previous = Owned::default();
         self.update_charge();
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -568,6 +568,7 @@ impl Section {
             && before.is_some()
             && self.current.entries.len() == self.characters;
         self.observation = before;
+        self.previous = Owned::default();
     }
 }
 
@@ -834,12 +835,7 @@ impl Modifiers {
         {
             return;
         }
-        if !self.held.spans.is_empty()
-            && (resize(&mut self.held.spans, rows, ModifierSpan::default()).is_err()
-                || resize(&mut self.held.bytes, bytes, 0).is_err())
-        {
-            return;
-        }
+        self.held = HeldModifiers::default();
         self.update_charge();
     }
 
@@ -986,6 +982,7 @@ impl Modifiers {
             self.failure.get_or_insert(reason);
         }
         self.complete = self.failure.is_none();
+        self.held = HeldModifiers::default();
         collector_observers::character_changes::record(
             collector_observers::character_changes::Table::AdvisorRoles,
             &self.role_counts,
@@ -1046,20 +1043,18 @@ impl Cache {
         let mut value = Self::with_modifier_demand(live_modifier_demand());
         for (section, demand) in value.sections.iter_mut().zip(&LIVE_DEFINITIONS) {
             use std::sync::atomic::Ordering::Relaxed;
-            for storage in [&mut section.current, &mut section.previous] {
-                let characters = demand[0]
-                    .load(Relaxed)
-                    .saturating_sub(storage.entries.len());
-                if engine_native_memory::walk::Buffer::Growing(&mut storage.rows)
-                    .ensure(demand[1].load(Relaxed))
-                    .is_err()
-                    || engine_native_memory::walk::Buffer::Growing(&mut storage.bytes)
-                        .ensure(demand[2].load(Relaxed))
-                        .is_err()
-                    || reserve(&mut storage.entries, characters).is_err()
-                {
-                    break;
-                }
+            let storage = &mut section.current;
+            let characters = demand[0]
+                .load(Relaxed)
+                .saturating_sub(storage.entries.len());
+            if engine_native_memory::walk::Buffer::Growing(&mut storage.rows)
+                .ensure(demand[1].load(Relaxed))
+                .is_ok()
+                && engine_native_memory::walk::Buffer::Growing(&mut storage.bytes)
+                    .ensure(demand[2].load(Relaxed))
+                    .is_ok()
+            {
+                let _ = reserve(&mut storage.entries, characters);
             }
             section.update_charge();
         }

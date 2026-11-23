@@ -147,6 +147,8 @@ pub struct Captured {
     pub rest_raw_mode: bool,
     resources_active: bool,
     other_active: bool,
+    daily_released: bool,
+    last_capacity: Capacities,
 }
 
 impl Captured {
@@ -184,6 +186,8 @@ impl Captured {
             rest_raw_mode: false,
             resources_active: false,
             other_active: false,
+            daily_released: false,
+            last_capacity: *capacity,
         }
     }
 
@@ -221,22 +225,79 @@ impl Captured {
             + self.purchase_scratch.capacity() * size_of::<cpurchase_contract::Membership>()
     }
 
+    pub fn release_daily(&mut self) {
+        self.last_capacity.rows[0] = self.last_capacity.rows[0].max(self.fuel.rows.len());
+        self.last_capacity.rows[1] = self.last_capacity.rows[1].max(self.experience.rows.len());
+        self.last_capacity.rows[3] = self.last_capacity.rows[3].max(self.hubs.rows.len());
+        self.last_capacity.rows[4] = self.last_capacity.rows[4].max(self.disrupted.rows.len());
+        self.last_capacity.rows[5] = self.last_capacity.rows[5].max(self.foreign.rows.len());
+        self.last_capacity.rows[9] = self.last_capacity.rows[9].max(self.purchases.rows.len());
+        self.last_capacity.rows[10] = self
+            .last_capacity
+            .rows[10]
+            .max(self.fuel_consumers.rows.len());
+        self.last_capacity.foreign_sources = self
+            .last_capacity
+            .foreign_sources
+            .max(self.sources.first.len());
+        self.demand.release_daily();
+        self.fuel.release();
+        self.experience.release();
+        self.hubs.release();
+        self.disrupted.release();
+        self.foreign.release();
+        self.purchases.release();
+        self.fuel_consumers.release();
+        self.sources.release();
+        self.purchase_scratch = Vec::new();
+        self.daily_released = true;
+    }
+
+    pub(super) fn rehydrate_daily(&mut self) {
+        if !self.daily_released {
+            return;
+        }
+        self.daily_released = false;
+        self.demand.rehydrate_daily();
+        grow_vec(&mut self.fuel.rows, self.last_capacity.rows[0]);
+        grow_vec(&mut self.experience.rows, self.last_capacity.rows[1]);
+        grow_vec(&mut self.hubs.rows, self.last_capacity.rows[3]);
+        grow_vec(&mut self.disrupted.rows, self.last_capacity.rows[4]);
+        grow_vec(&mut self.foreign.rows, self.last_capacity.rows[5]);
+        grow_vec(&mut self.purchases.rows, self.last_capacity.rows[9]);
+        grow_vec(&mut self.fuel_consumers.rows, self.last_capacity.rows[10]);
+        grow_vec(&mut self.sources.first, self.last_capacity.foreign_sources);
+        grow_vec(&mut self.purchase_scratch, self.last_capacity.rows[9]);
+    }
+
     pub fn grow(&mut self, capacity: &mut Capacities) {
-        self.fuel.grow(&mut capacity.rows[0]);
         self.demand.grow(&mut capacity.demand);
-        self.experience.grow(&mut capacity.rows[1]);
         self.supply.grow(&mut capacity.rows[2]);
-        self.hubs.grow(&mut capacity.rows[3]);
-        self.disrupted.grow(&mut capacity.rows[4]);
-        self.foreign.grow(&mut capacity.rows[5]);
         self.definitions.grow(&mut capacity.rows[6]);
         self.resources.grow(&mut capacity.rows[7]);
         self.exchanges.grow(&mut capacity.rows[8]);
-        self.purchases.grow(&mut capacity.rows[9]);
-        self.fuel_consumers.grow(&mut capacity.rows[10]);
-        self.sources.grow(&mut capacity.foreign_sources);
         grow_vec(&mut self.exchange_scratch, capacity.rows[8]);
-        grow_vec(&mut self.purchase_scratch, capacity.rows[9]);
+        if self.daily_released {
+            self.fuel.record_demand(&mut capacity.rows[0]);
+            self.experience.record_demand(&mut capacity.rows[1]);
+            self.hubs.record_demand(&mut capacity.rows[3]);
+            self.disrupted.record_demand(&mut capacity.rows[4]);
+            self.foreign.record_demand(&mut capacity.rows[5]);
+            self.purchases.record_demand(&mut capacity.rows[9]);
+            self.fuel_consumers.record_demand(&mut capacity.rows[10]);
+            self.sources.record_demand(&mut capacity.foreign_sources);
+        } else {
+            self.fuel.grow(&mut capacity.rows[0]);
+            self.experience.grow(&mut capacity.rows[1]);
+            self.hubs.grow(&mut capacity.rows[3]);
+            self.disrupted.grow(&mut capacity.rows[4]);
+            self.foreign.grow(&mut capacity.rows[5]);
+            self.purchases.grow(&mut capacity.rows[9]);
+            self.fuel_consumers.grow(&mut capacity.rows[10]);
+            self.sources.grow(&mut capacity.foreign_sources);
+            grow_vec(&mut self.purchase_scratch, capacity.rows[9]);
+        }
+        self.last_capacity = *capacity;
     }
 
     pub fn capture(
@@ -270,6 +331,7 @@ impl Captured {
         self.set_schedule(hour, force_full);
         let mut ticks = [0; N];
         if self.other_active {
+            self.rehydrate_daily();
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
             self.demand.capture(memory, base, game_state, hour);

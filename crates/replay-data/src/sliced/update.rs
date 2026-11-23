@@ -185,6 +185,31 @@ fn merge_owners<R: SlicedRow>(
     Ok(owners)
 }
 
+fn merge_owner_lists(
+    previous: &[u32],
+    fresh: &[u32],
+    keep: impl Fn(u32) -> bool,
+) -> io::Result<Vec<u32>> {
+    let mut owners = allocation::vec(fresh.len())?;
+    let mut old = previous.iter().copied().filter(|&owner| keep(owner)).peekable();
+    for &owner in fresh {
+        while let Some(kept) = old.next_if(|&kept| kept < owner) {
+            allocation::reserve_push_batch(&mut owners, 1)?;
+            owners.push(kept);
+        }
+        if old.peek() == Some(&owner) {
+            old.next();
+        }
+        allocation::reserve_push_batch(&mut owners, 1)?;
+        owners.push(owner);
+    }
+    for kept in old {
+        allocation::reserve_push_batch(&mut owners, 1)?;
+        owners.push(kept);
+    }
+    Ok(owners)
+}
+
 fn take_owner<R: SlicedRow>(rows: &[R], next: &mut usize, owner: u32) -> Range<usize> {
     let start = *next;
     if rows.get(start).is_some_and(|row| row.owner() == owner) {
@@ -364,6 +389,134 @@ impl SliceUpdate {
             keys,
             rows,
         })
+    }
+
+    pub fn for_owners(
+        previous_owners: &[u32],
+        fresh: TableRows,
+        read: impl Fn(u32) -> bool,
+        live: impl Fn(u32) -> bool,
+    ) -> io::Result<(Self, Vec<u32>)> {
+        fn validate<R: SlicedRow>(fresh: &[R], read: impl Fn(u32) -> bool) -> io::Result<Vec<u32>> {
+            let mut prev_key: Option<u128> = None;
+            let mut last_owner: Option<u32> = None;
+            let mut fresh_owners = Vec::new();
+            for row in fresh {
+                let key = row.key();
+                if prev_key.is_some_and(|prev| prev >= key) {
+                    return Err(invalid(
+                        "sliced read holds an unread owner's row or is not in key order",
+                    ));
+                }
+                prev_key = Some(key);
+                let owner = row.owner();
+                if last_owner != Some(owner) {
+                    if !read(owner) {
+                        return Err(invalid(
+                            "sliced read holds an unread owner's row or is not in key order",
+                        ));
+                    }
+                    last_owner = Some(owner);
+                    allocation::reserve_push_batch(&mut fresh_owners, 1)?;
+                    fresh_owners.push(owner);
+                }
+            }
+            Ok(fresh_owners)
+        }
+        let fresh_owners = sliced_pair!(
+            &fresh,
+            &fresh,
+            |rows, _other, _wrap| validate(rows, &read)?,
+            return Err(invalid("table does not support owner slice updates"))
+        );
+        let replaced = merge_owner_lists(previous_owners, &fresh_owners, |owner| {
+            read(owner) || !live(owner)
+        })?;
+        let next = merge_owner_lists(previous_owners, &fresh_owners, |owner| {
+            !read(owner) && live(owner)
+        })?;
+        Ok((
+            Self {
+                owners: replaced,
+                ranges: Vec::new(),
+                keys: Vec::new(),
+                rows: fresh,
+            },
+            next,
+        ))
+    }
+
+    pub fn fits_untracked(&self, table: TableId) -> bool {
+        if self.rows.table() != table || !self.ranges.is_empty() || !self.keys.is_empty() {
+            return false;
+        }
+        if self.owners.is_empty() && self.rows.is_empty() {
+            return true;
+        }
+        fn fits<R: SlicedRow>(fresh: &[R], listed: &[u32]) -> bool {
+            fresh.windows(2).all(|pair| pair[0].key() < pair[1].key())
+                && owner_ranges(fresh).all(|(owner, _)| listed.binary_search(&owner).is_ok())
+        }
+        self.owners.windows(2).all(|pair| pair[0] < pair[1])
+            && sliced_pair!(
+                &self.rows,
+                &self.rows,
+                |new, _other, _wrap| fits(new, &self.owners),
+                false
+            )
+    }
+
+    pub fn fits_meta(&self, table: TableId) -> bool {
+        if self.rows.table() != table {
+            return false;
+        }
+        if !self.ranges.is_empty() {
+            if !self.owners.is_empty() || !self.keys.is_empty() {
+                return false;
+            }
+            if !self.ranges.iter().all(|range| range.start < range.end)
+                || !self
+                    .ranges
+                    .windows(2)
+                    .all(|pair| pair[0].end <= pair[1].start)
+            {
+                return false;
+            }
+            struct Check<'a>(&'a [Range<u128>]);
+            impl crate::rows::RowsVisit for Check<'_> {
+                type Output = bool;
+                fn rows<R: crate::rows::RowCodec>(self, rows: &[R]) -> bool {
+                    let mut at = 0;
+                    let mut previous = None;
+                    for row in rows {
+                        let key = row.key();
+                        if previous.is_some_and(|prev| prev >= key) {
+                            return false;
+                        }
+                        previous = Some(key);
+                        while self.0.get(at).is_some_and(|range| range.end <= key) {
+                            at += 1;
+                        }
+                        if !self.0.get(at).is_some_and(|range| range.contains(&key)) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+            }
+            return self.rows.visit(Check(&self.ranges));
+        }
+        if !self.keys.is_empty() {
+            return self.owners.is_empty()
+                && self.keys.windows(2).all(|pair| pair[0] < pair[1])
+                && keyed_pair!(
+                    &self.rows,
+                    &self.rows,
+                    |_old, new, _wrap| key_fits(new, &self.keys),
+                    false
+                );
+        }
+        self.fits_untracked(table)
     }
 
     pub fn owners(&self) -> &[u32] {

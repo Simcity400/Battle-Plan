@@ -2119,7 +2119,7 @@ impl SpeedTerms {
             result
         });
         if ready.is_some() {
-            crossings.clear();
+            crossings = cprovince::GeometryPacket::default();
         }
         self.crossings = crossings;
         result
@@ -2898,7 +2898,7 @@ fn capture_rivers_into(
         result
     });
     if ready.is_some() {
-        parts.crossings.clear();
+        *parts.crossings = cprovince::GeometryPacket::default();
     }
     match result {
         Ok(len) => Outcome::Rows { len },

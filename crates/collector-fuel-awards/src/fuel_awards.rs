@@ -79,6 +79,172 @@ pub struct Entry {
     pub name: Option<(usize, usize)>,
     pub name_reason: Option<&'static str>,
 }
+
+pub(crate) const NO_NAME: u32 = u32::MAX;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RootData {
+    pub started: native::Started,
+    pub settled: native::Settled,
+    pub amount: i64,
+    pub name: Option<(usize, usize)>,
+    pub name_reason: Option<&'static str>,
+    pub refused: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CompactPayload {
+    Recipient {
+        reference: u64,
+        host: u64,
+        amount: i64,
+        name_reason: Option<&'static str>,
+        country: u32,
+        owner: u32,
+        kind: u32,
+        name_start: u32,
+        name_len: u32,
+    },
+    Root {
+        country: u32,
+        index: u32,
+    },
+    Reset {
+        status: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CompactEntry {
+    pub root: u64,
+    pub payload: CompactPayload,
+}
+
+impl Default for CompactEntry {
+    fn default() -> Self {
+        Self {
+            root: 0,
+            payload: CompactPayload::Reset { status: 0 },
+        }
+    }
+}
+
+impl CompactEntry {
+    pub(crate) fn from_entry(entry: Entry, roots: &mut Vec<RootData>) -> std::io::Result<Self> {
+        if entry.reset {
+            return Ok(Self {
+                root: entry.root,
+                payload: CompactPayload::Reset {
+                    status: entry.started.status,
+                },
+            });
+        }
+        if let Some(recipient) = entry.recipient {
+            let (name_start, name_len) = match entry.name {
+                Some((start, len)) => (
+                    u32::try_from(start).unwrap_or(NO_NAME),
+                    u32::try_from(len).unwrap_or(0),
+                ),
+                None => (NO_NAME, 0),
+            };
+            return Ok(Self {
+                root: entry.root,
+                payload: CompactPayload::Recipient {
+                    reference: recipient.reference,
+                    amount: entry.amount,
+                    name_reason: entry.name_reason,
+                    country: entry.country,
+                    owner: recipient.owner,
+                    host: recipient.host,
+                    name_start,
+                    name_len,
+                    kind: recipient.kind,
+                },
+            });
+        }
+        let index = u32::try_from(roots.len()).map_err(|_| engine_allocation::oom())?;
+        engine_allocation::reserve(roots, 1)?;
+        roots.push(RootData {
+            started: entry.started,
+            settled: entry.settled,
+            amount: entry.amount,
+            name: entry.name,
+            name_reason: entry.name_reason,
+            refused: entry.refused,
+        });
+        Ok(Self {
+            root: entry.root,
+            payload: CompactPayload::Root {
+                country: entry.country,
+                index,
+            },
+        })
+    }
+
+    fn name_span(&self, root_data: Option<&RootData>) -> Option<(usize, usize)> {
+        match self.payload {
+            CompactPayload::Recipient {
+                name_start,
+                name_len,
+                ..
+            } => (name_start != NO_NAME).then_some((name_start as usize, name_len as usize)),
+            CompactPayload::Root { .. } => root_data.and_then(|root| root.name),
+            CompactPayload::Reset { .. } => None,
+        }
+    }
+
+    fn into_entry(self, root_data: Option<RootData>) -> Entry {
+        match self.payload {
+            CompactPayload::Reset { status } => Entry {
+                root: self.root,
+                reset: true,
+                started: native::Started {
+                    status,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            CompactPayload::Recipient {
+                reference,
+                amount,
+                name_reason,
+                country,
+                owner,
+                host,
+                name_start,
+                name_len,
+                kind,
+            } => Entry {
+                root: self.root,
+                country,
+                recipient: Some(native::Recipient {
+                    kind,
+                    reference,
+                    owner,
+                    host,
+                }),
+                amount,
+                name: (name_start != NO_NAME).then_some((name_start as usize, name_len as usize)),
+                name_reason,
+                ..Default::default()
+            },
+            CompactPayload::Root { country, .. } => {
+                let data = root_data.unwrap_or_default();
+                Entry {
+                    root: self.root,
+                    country,
+                    amount: data.amount,
+                    started: data.started,
+                    settled: data.settled,
+                    refused: data.refused,
+                    name: data.name,
+                    name_reason: data.name_reason,
+                    ..Default::default()
+                }
+            }
+        }
+    }
+}
 struct Spill {
     pushed: SpillStack<Pushed>,
     held: Mutex<Spilled>,
@@ -187,13 +353,14 @@ impl Spill {
 const STORAGE_FAILED: &str = "fuel receipt storage allocation failed";
 
 struct Slot {
-    entry: UnsafeCell<Entry>,
-    name_required: UnsafeCell<usize>,
+    entry: UnsafeCell<CompactEntry>,
+    name_required: UnsafeCell<u32>,
     published: AtomicU64,
 }
 unsafe impl Sync for Slot {}
 struct Buffer {
     entries: Vec<Slot>,
+    roots: Vec<UnsafeCell<RootData>>,
     names: Vec<UnsafeCell<u8>>,
     stride: usize,
     publishers: AtomicUsize,
@@ -201,6 +368,8 @@ struct Buffer {
     disposed: AtomicPtr<Buffer>,
     base: AtomicU64,
     cursor: AtomicU64,
+    root_cursor: AtomicU64,
+    root_consumed: AtomicU64,
     names_demand: AtomicUsize,
     entries_required: AtomicUsize,
     _charge: crate::raw_memory::Charge,
@@ -223,10 +392,13 @@ impl Buffer {
     ) -> std::io::Result<Self> {
         let mut slots = engine_allocation::vec(entries)?;
         slots.resize_with(entries, || Slot {
-            entry: UnsafeCell::new(Entry::default()),
+            entry: UnsafeCell::new(CompactEntry::default()),
             name_required: UnsafeCell::new(0),
             published: AtomicU64::new(0),
         });
+        let root_count = entries.div_ceil(8).max(entries.min(64)).max(1);
+        let mut roots = engine_allocation::vec(root_count)?;
+        roots.resize_with(root_count, || UnsafeCell::new(RootData::default()));
         let stride = stride.max(names.div_ceil(entries.max(1)));
         let count = entries
             .checked_mul(stride)
@@ -234,7 +406,8 @@ impl Buffer {
         let mut names = engine_allocation::vec(count)?;
         names.resize_with(count, || UnsafeCell::new(0));
         let bytes = crate::raw_memory::vector_bytes(&slots)
-            .checked_add(crate::raw_memory::vector_bytes(&names))
+            .checked_add(crate::raw_memory::vector_bytes(&roots))
+            .and_then(|n| n.checked_add(crate::raw_memory::vector_bytes(&names)))
             .ok_or_else(engine_allocation::oom)?;
         charge.set(crate::raw_memory::Capacity {
             payload_vectors: bytes,
@@ -242,6 +415,7 @@ impl Buffer {
         });
         Ok(Self {
             entries: slots,
+            roots,
             names,
             stride,
             publishers: AtomicUsize::new(0),
@@ -249,6 +423,8 @@ impl Buffer {
             disposed: AtomicPtr::new(std::ptr::null_mut()),
             base: AtomicU64::new(0),
             cursor: AtomicU64::new(0),
+            root_cursor: AtomicU64::new(0),
+            root_consumed: AtomicU64::new(0),
             names_demand: AtomicUsize::new(0),
             entries_required: AtomicUsize::new(0),
             _charge: charge,
@@ -353,11 +529,15 @@ fn presize_storage(memory: &impl Memory, base: usize) {
         }
     };
     NAME_STRIDE.fetch_max(demand.name_stride, Ordering::Release);
-    let Some(entries) = demand.entries.checked_mul(2).map(|n| n.max(1)) else {
+    let Some(entries) = demand
+        .entries
+        .checked_add(demand.entries / 4)
+        .map(|n| n.max(1))
+    else {
         refuse_census("fuel census entry size overflow");
         return;
     };
-    let Some(names) = demand.names.checked_mul(2) else {
+    let Some(names) = demand.names.checked_add(demand.names / 4) else {
         refuse_census("fuel census name size overflow");
         return;
     };
@@ -672,28 +852,105 @@ fn append_buffer(
     }
     let slot = index as usize % buffer.entries.len();
     let name_required = name.as_ref().map_or(0, native::StoredName::byte_len);
-    if let Some(name) = name {
-        let start = slot * buffer.stride;
-        let bytes = unsafe {
-            std::slice::from_raw_parts_mut(
-                buffer.names.as_ptr().add(start).cast::<u8>().cast_mut(),
-                name.byte_len(),
-            )
-        };
-        match name.copy(memory, bytes) {
-            Ok(()) => {
-                entry.name = Some((start, name.byte_len()));
-            }
-            Err(reason) => entry.name_reason = Some(reason),
-        }
+    let Ok(name_required_u32) = u32::try_from(name_required) else {
+        return spill.push(index, entry, name, memory);
+    };
+    let start = slot * buffer.stride;
+    if name.is_some()
+        && (u32::try_from(start).is_err() || start == NO_NAME as usize)
+    {
+        return spill.push(index, entry, name, memory);
     }
+    let compact = if entry.reset {
+        CompactEntry {
+            root: entry.root,
+            payload: CompactPayload::Reset {
+                status: entry.started.status,
+            },
+        }
+    } else if let Some(recipient) = entry.recipient {
+        let mut name_start = NO_NAME;
+        let mut name_len = 0_u32;
+        if let Some(name) = name {
+            let bytes = unsafe {
+                std::slice::from_raw_parts_mut(
+                    buffer.names.as_ptr().add(start).cast::<u8>().cast_mut(),
+                    name.byte_len(),
+                )
+            };
+            match name.copy(memory, bytes) {
+                Ok(()) => {
+                    name_start = start as u32;
+                    name_len = name_required_u32;
+                }
+                Err(reason) => entry.name_reason = Some(reason),
+            }
+        }
+        CompactEntry {
+            root: entry.root,
+            payload: CompactPayload::Recipient {
+                reference: recipient.reference,
+                amount: entry.amount,
+                name_reason: entry.name_reason,
+                country: entry.country,
+                owner: recipient.owner,
+                host: recipient.host,
+                name_start,
+                name_len,
+                kind: recipient.kind,
+            },
+        }
+    } else {
+        let root_slot = buffer.root_cursor.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |cur| {
+                let used = cur.wrapping_sub(buffer.root_consumed.load(Ordering::Acquire));
+                (used < buffer.roots.len() as u64).then_some(cur.wrapping_add(1))
+            },
+        );
+        let Ok(root_index) = root_slot else {
+            return spill.push(index, entry, name, memory);
+        };
+        if let Some(name) = name {
+            let bytes = unsafe {
+                std::slice::from_raw_parts_mut(
+                    buffer.names.as_ptr().add(start).cast::<u8>().cast_mut(),
+                    name.byte_len(),
+                )
+            };
+            match name.copy(memory, bytes) {
+                Ok(()) => entry.name = Some((start, name.byte_len())),
+                Err(reason) => entry.name_reason = Some(reason),
+            }
+        }
+        let root_pos = (root_index as usize) % buffer.roots.len();
+        // SAFETY: `root_index` was exclusively claimed within `buffer.roots.len()` unconsumed slots.
+        unsafe {
+            *buffer.roots[root_pos].get() = RootData {
+                started: entry.started,
+                settled: entry.settled,
+                amount: entry.amount,
+                name: entry.name,
+                name_reason: entry.name_reason,
+                refused: entry.refused,
+            };
+        }
+        CompactEntry {
+            root: entry.root,
+            payload: CompactPayload::Root {
+                country: entry.country,
+                index: root_pos as u32,
+            },
+        }
+    };
     if let Some(reason) = entry.name_reason {
         REFUSAL.record(reason);
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
     }
     unsafe {
-        *buffer.entries[slot].entry.get() = entry;
-        *buffer.entries[slot].name_required.get() = name_required;
+        *buffer.entries[slot].entry.get() = compact;
+        *buffer.entries[slot].name_required.get() = name_required_u32;
     }
     buffer.entries[slot]
         .published
@@ -958,6 +1215,22 @@ pub fn drain(
         engine_native_memory::walk::Buffer::Growing(names),
     )
 }
+pub(crate) fn drain_compact(
+    entries: &mut Vec<CompactEntry>,
+    roots: &mut Vec<RootData>,
+    names: &mut Vec<u8>,
+) -> Result<(Drained, usize, usize), &'static str> {
+    let result = drain_domains_compact(
+        engine_native_memory::walk::Buffer::Growing(entries),
+        roots,
+        engine_native_memory::walk::Buffer::Growing(names),
+    );
+    if let Err(reason) = result {
+        let _ = FIRST_DRAIN_REFUSAL.set(reason);
+        DRAIN_REFUSALS.fetch_add(1, Ordering::Relaxed);
+    }
+    result
+}
 pub fn lost_drain() {
     LOST_DRAINS.fetch_add(1, Ordering::Relaxed);
     LOG.invalidate();
@@ -972,6 +1245,57 @@ fn drain_buffers(
         DRAIN_REFUSALS.fetch_add(1, Ordering::Relaxed);
     }
     result
+}
+fn drain_domains_compact(
+    entries: engine_native_memory::walk::Buffer<'_, CompactEntry>,
+    roots: &mut Vec<RootData>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
+) -> Result<(Drained, usize, usize), &'static str> {
+    let Ok(domains) = CURRENT.try_lock() else {
+        COUNTERS[6].fetch_add(1, Ordering::Relaxed);
+        return Err("fuel observation storage busy");
+    };
+    let Some(buffer) = domains.current.as_deref() else {
+        return Err("fuel observation storage absent");
+    };
+    let name_cursor = NAME_ATTEMPTS.load(Ordering::SeqCst);
+    let names_required = attempted_since(name_cursor, &NAME_CONSUMED);
+    let result = handover_compact(
+        &LOG,
+        &SPILL,
+        buffer,
+        domains.retired.as_deref(),
+        entries,
+        roots,
+        names,
+        UNHOOKED.get().copied().or_else(|| {
+            (!LOG.enabled.load(Ordering::SeqCst)).then_some("fuel award hooks disabled")
+        }),
+    );
+    ENTRY_DEMAND.fetch_max(
+        buffer.entries_required.load(Ordering::Relaxed),
+        Ordering::Release,
+    );
+    NAME_DEMAND.fetch_max(
+        buffer.names_demand.load(Ordering::Relaxed),
+        Ordering::Release,
+    );
+    result.map(|(drained, len, required)| {
+        let entry_cursor = ENTRY_ATTEMPTS.load(Ordering::SeqCst);
+        let name_cursor = NAME_ATTEMPTS.load(Ordering::SeqCst);
+        if LOG.active() == 0
+            && LOG.cursor.load(Ordering::SeqCst) == drained.cursor
+            && LOG.epoch.load(Ordering::SeqCst) == drained.epoch
+            && drained.first + drained.copied as u64 == drained.cursor
+        {
+            ENTRY_CONSUMED.store(entry_cursor, Ordering::Relaxed);
+            NAME_CONSUMED.store(name_cursor, Ordering::Relaxed);
+        } else {
+            ENTRY_CONSUMED.fetch_add(drained.copied as u64, Ordering::Relaxed);
+            NAME_CONSUMED.fetch_add(len as u64, Ordering::Relaxed);
+        }
+        (drained, len, required.max(names_required))
+    })
 }
 fn drain_domains(
     entries: engine_native_memory::walk::Buffer<'_, Entry>,
@@ -1037,6 +1361,13 @@ fn handover_buffers(
     let epoch = log.epoch.load(Ordering::SeqCst);
     if let Some(reason) = unavailable {
         log.consumed.store(cursor, Ordering::Release);
+        buffer
+            .root_consumed
+            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        if let Some(old) = older {
+            old.root_consumed
+                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        }
         spill.held().discard_before(cursor);
         return Err(reason);
     }
@@ -1061,6 +1392,13 @@ fn handover_buffers(
             });
         COUNTERS[10].fetch_add(1, Ordering::Relaxed);
         log.consumed.store(cursor, Ordering::Release);
+        buffer
+            .root_consumed
+            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        if let Some(old) = older {
+            old.root_consumed
+                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        }
         held.discard_before(cursor);
         drained.first = cursor;
         return Ok((drained, 0, 0));
@@ -1092,17 +1430,26 @@ fn handover_buffers(
     let mut required = 0usize;
     let mut at = 0;
     for index in first..cursor {
-        let (entry, name_required) = match spilled_at(&mut at, index) {
-            Some(held) => held,
+        let (entry_name, name_required) = match spilled_at(&mut at, index) {
+            Some((entry, name_required)) => (entry.name, name_required),
             None => {
-                let (_, slot) = slot(index)?;
-                unsafe { (*slot.entry.get(), *slot.name_required.get()) }
+                let (domain, slot) = slot(index)?;
+                // SAFETY: `slot.published == index + 1` establishes visibility of the written slot and root.
+                let (compact, name_required) =
+                    unsafe { (*slot.entry.get(), *slot.name_required.get() as usize) };
+                let root_data = match compact.payload {
+                    CompactPayload::Root { index, .. } => {
+                        Some(unsafe { *domain.roots[index as usize].get() })
+                    }
+                    _ => None,
+                };
+                (compact.name_span(root_data.as_ref()), name_required)
             }
         };
         required = required.saturating_add(name_required);
         if index - first < copied as u64 {
             name_bytes = name_bytes
-                .checked_add(entry.name.map_or(0, |(_, len)| len))
+                .checked_add(entry_name.map_or(0, |(_, len)| len))
                 .ok_or("fuel name handover size overflow")?;
         }
     }
@@ -1116,6 +1463,8 @@ fn handover_buffers(
     }
     let mut len = 0usize;
     let mut at = 0;
+    let mut current_roots = 0u64;
+    let mut older_roots = 0u64;
     for (offset, target) in entries[..copied].iter_mut().enumerate() {
         let index = first + offset as u64;
         let entry = match spilled_at(&mut at, index) {
@@ -1132,7 +1481,20 @@ fn handover_buffers(
             }
             None => {
                 let (domain, slot) = slot(index)?;
-                let mut entry = unsafe { *slot.entry.get() };
+                // SAFETY: `slot.published == index + 1` establishes visibility of the written slot and root.
+                let compact = unsafe { *slot.entry.get() };
+                let root_data = match compact.payload {
+                    CompactPayload::Root { index, .. } => {
+                        if std::ptr::eq(domain, buffer) {
+                            current_roots += 1;
+                        } else {
+                            older_roots += 1;
+                        }
+                        Some(unsafe { *domain.roots[index as usize].get() })
+                    }
+                    _ => None,
+                };
+                let mut entry = compact.into_entry(root_data);
                 if let Some((start, name_len)) = entry.name {
                     let bytes = names
                         .get_mut(len..len.saturating_add(name_len))
@@ -1153,6 +1515,232 @@ fn handover_buffers(
         return Err("fuel award observation restarted");
     }
     log.consumed.store(first + copied as u64, Ordering::Release);
+    if current_roots != 0 {
+        buffer.root_consumed.fetch_add(current_roots, Ordering::Release);
+    }
+    if older_roots != 0
+        && let Some(old) = older
+    {
+        old.root_consumed.fetch_add(older_roots, Ordering::Release);
+    }
+    held.discard_before(first + copied as u64);
+    drained.copied = copied;
+    COUNTERS[7].fetch_add(copied as u64, Ordering::Relaxed);
+    Ok((drained, len, required))
+}
+
+#[allow(clippy::too_many_arguments, reason = "mirrors handover_buffers with separate root arena")]
+fn handover_compact(
+    log: &Log,
+    spill: &Spill,
+    buffer: &Buffer,
+    older: Option<&Buffer>,
+    mut entries: engine_native_memory::walk::Buffer<'_, CompactEntry>,
+    roots: &mut Vec<RootData>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
+    unavailable: Option<&'static str>,
+) -> Result<(Drained, usize, usize), &'static str> {
+    roots.clear();
+    COUNTERS[4].fetch_add(1, Ordering::Relaxed);
+    let first = log.consumed.load(Ordering::Acquire);
+    let cursor = log.cursor.load(Ordering::SeqCst);
+    let epoch = log.epoch.load(Ordering::SeqCst);
+    if let Some(reason) = unavailable {
+        log.consumed.store(cursor, Ordering::Release);
+        buffer
+            .root_consumed
+            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        if let Some(old) = older {
+            old.root_consumed
+                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        }
+        spill.held().discard_before(cursor);
+        return Err(reason);
+    }
+    let pending = usize::try_from(cursor.wrapping_sub(first))
+        .map_err(|_| "fuel observation interval size exceeds address space")?;
+    let mut drained = Drained {
+        epoch,
+        first,
+        cursor,
+        copied: 0,
+        pending,
+    };
+    if log.active() != 0 {
+        return Ok((drained, 0, 0));
+    }
+    let mut held = spill.held();
+    if spill.lost.load(Ordering::Acquire) < cursor {
+        let _ = spill
+            .lost
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |lost| {
+                (lost < cursor).then_some(u64::MAX)
+            });
+        COUNTERS[10].fetch_add(1, Ordering::Relaxed);
+        log.consumed.store(cursor, Ordering::Release);
+        buffer
+            .root_consumed
+            .store(buffer.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        if let Some(old) = older {
+            old.root_consumed
+                .store(old.root_cursor.load(Ordering::Acquire), Ordering::Release);
+        }
+        held.discard_before(cursor);
+        drained.first = cursor;
+        return Ok((drained, 0, 0));
+    }
+    let boundary = older.map_or(first, |old| old.cursor.load(Ordering::Acquire));
+    let source = |index: u64| older.filter(|_| index < boundary).unwrap_or(buffer);
+    let slot = |index: u64| {
+        let domain = source(index);
+        let slot = (index as usize)
+            .checked_rem(domain.entries.len())
+            .map(|slot| &domain.entries[slot])
+            .filter(|slot| slot.published.load(Ordering::Acquire) == index + 1)
+            .ok_or("fuel receipt publication incomplete")?;
+        Ok::<_, &'static str>((domain, slot))
+    };
+    entries.ensure(pending)?;
+    let copied = pending.min(entries.len());
+    held.entries.sort_unstable_by_key(|&(index, ..)| index);
+    let stale = held.entries.partition_point(|&(index, ..)| index < first);
+    let spilled = &held.entries[stale..];
+    let spilled_at = |at: &mut usize, index: u64| match spilled.get(*at) {
+        Some(&(held, entry, required)) if held == index => {
+            *at += 1;
+            Some((entry, required))
+        }
+        _ => None,
+    };
+    let mut name_bytes = 0usize;
+    let mut required = 0usize;
+    let mut root_count = 0usize;
+    let mut at = 0;
+    for index in first..cursor {
+        let (entry_name, name_required, is_root) = match spilled_at(&mut at, index) {
+            Some((entry, name_required)) => {
+                (entry.name, name_required, !entry.reset && entry.recipient.is_none())
+            }
+            None => {
+                let (domain, slot) = slot(index)?;
+                // SAFETY: `slot.published == index + 1` establishes visibility of the written slot and root.
+                let (compact, name_required) =
+                    unsafe { (*slot.entry.get(), *slot.name_required.get() as usize) };
+                let (root_data, is_root) = match compact.payload {
+                    CompactPayload::Root { index, .. } => {
+                        (Some(unsafe { *domain.roots[index as usize].get() }), true)
+                    }
+                    _ => (None, false),
+                };
+                (compact.name_span(root_data.as_ref()), name_required, is_root)
+            }
+        };
+        required = required.saturating_add(name_required);
+        if index - first < copied as u64 {
+            root_count += usize::from(is_root);
+            name_bytes = name_bytes
+                .checked_add(entry_name.map_or(0, |(_, len)| len))
+                .ok_or("fuel name handover size overflow")?;
+        }
+    }
+    buffer.names_demand.fetch_max(required, Ordering::Relaxed);
+    if !names.ensure(if names.is_growing() {
+        required
+    } else {
+        name_bytes
+    })? {
+        return Err("fuel name handover does not fit");
+    }
+    engine_allocation::reserve(roots, root_count)
+        .map_err(|_| "fuel root handover allocation failed")?;
+    let mut len = 0usize;
+    let mut at = 0;
+    let mut current_roots = 0u64;
+    let mut older_roots = 0u64;
+    for (offset, target) in entries[..copied].iter_mut().enumerate() {
+        let index = first + offset as u64;
+        let compact = match spilled_at(&mut at, index) {
+            Some((mut entry, _)) => {
+                if let Some((start, name_len)) = entry.name {
+                    names
+                        .get_mut(len..len.saturating_add(name_len))
+                        .ok_or("fuel name handover does not fit")?
+                        .copy_from_slice(&held.names[start..start + name_len]);
+                    entry.name = Some((len, name_len));
+                    len += name_len;
+                }
+                CompactEntry::from_entry(entry, roots)
+                    .map_err(|_| "fuel root handover allocation failed")?
+            }
+            None => {
+                let (domain, slot) = slot(index)?;
+                // SAFETY: `slot.published == index + 1` establishes visibility of the written slot and root.
+                let mut compact = unsafe { *slot.entry.get() };
+                match &mut compact.payload {
+                    CompactPayload::Recipient {
+                        name_start,
+                        name_len,
+                        ..
+                    } => {
+                        if *name_start != NO_NAME {
+                            let start = *name_start as usize;
+                            let nlen = *name_len as usize;
+                            let bytes = names
+                                .get_mut(len..len.saturating_add(nlen))
+                                .ok_or("fuel name handover does not fit")?;
+                            for (out, byte) in
+                                bytes.iter_mut().zip(&domain.names[start..start + nlen])
+                            {
+                                *out = unsafe { *byte.get() };
+                            }
+                            *name_start = u32::try_from(len)
+                                .map_err(|_| "fuel name handover size overflow")?;
+                            len += nlen;
+                        }
+                    }
+                    CompactPayload::Root { index, .. } => {
+                        if std::ptr::eq(domain, buffer) {
+                            current_roots += 1;
+                        } else {
+                            older_roots += 1;
+                        }
+                        let mut data = unsafe { *domain.roots[*index as usize].get() };
+                        if let Some((start, nlen)) = data.name {
+                            let bytes = names
+                                .get_mut(len..len.saturating_add(nlen))
+                                .ok_or("fuel name handover does not fit")?;
+                            for (out, byte) in
+                                bytes.iter_mut().zip(&domain.names[start..start + nlen])
+                            {
+                                *out = unsafe { *byte.get() };
+                            }
+                            data.name = Some((len, nlen));
+                            len += nlen;
+                        }
+                        let out_index = u32::try_from(roots.len())
+                            .map_err(|_| "fuel root handover allocation failed")?;
+                        roots.push(data);
+                        *index = out_index;
+                    }
+                    CompactPayload::Reset { .. } => {}
+                }
+                compact
+            }
+        };
+        *target = compact;
+    }
+    if log.epoch.load(Ordering::SeqCst) != epoch {
+        return Err("fuel award observation restarted");
+    }
+    log.consumed.store(first + copied as u64, Ordering::Release);
+    if current_roots != 0 {
+        buffer.root_consumed.fetch_add(current_roots, Ordering::Release);
+    }
+    if older_roots != 0
+        && let Some(old) = older
+    {
+        old.root_consumed.fetch_add(older_roots, Ordering::Release);
+    }
     held.discard_before(first + copied as u64);
     drained.copied = copied;
     COUNTERS[7].fetch_add(copied as u64, Ordering::Relaxed);

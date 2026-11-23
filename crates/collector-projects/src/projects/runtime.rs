@@ -3,16 +3,29 @@ use collector_observers::project_variable_changes;
 use std::collections::HashMap;
 
 #[derive(Default)]
-struct Held {
-    pointer: usize,
-    stamp: Option<(u64, u64)>,
+struct PendingRaw {
     entries: Vec<engine_scripts::cvariables::Row>,
     names: Vec<u8>,
     entries_len: usize,
     seed: Option<u32>,
-    variables_known: bool,
+}
+
+impl PendingRaw {
+    fn allocated_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.entries.capacity() * size_of::<engine_scripts::cvariables::Row>()
+            + self.names.capacity()
+    }
+}
+
+#[derive(Default)]
+struct Held {
+    pointer: usize,
+    stamp: Option<(u64, u64)>,
+    pending_raw: Option<Box<PendingRaw>>,
     recorded_variables: Option<std::sync::Arc<rows::ProjectVariableStore>>,
-    recorded_bytes: usize,
+    recorded_bytes: u32,
+    variables_known: bool,
     freeze_pending: bool,
     queued: bool,
     pending_known: bool,
@@ -27,14 +40,18 @@ impl Held {
         if !std::mem::take(&mut self.freeze_pending) {
             return;
         }
+        let Some(raw) = self.pending_raw.take() else {
+            self.variables_known = false;
+            return;
+        };
         let value = freeze_project_variables(
-            &self.entries[..self.entries_len],
-            &self.names,
-            self.seed.unwrap(),
+            &raw.entries[..raw.entries_len],
+            &raw.names,
+            raw.seed.unwrap(),
         );
         match value {
             Ok(value) => {
-                self.recorded_bytes = size_of::<rows::ProjectVariableStore>()
+                let bytes = size_of::<rows::ProjectVariableStore>()
                     + 2 * size_of::<usize>()
                     + value.entries.capacity() * size_of::<rows::ProjectVariable>()
                     + value
@@ -42,6 +59,7 @@ impl Held {
                         .iter()
                         .map(|entry| entry.name.capacity())
                         .sum::<usize>();
+                self.recorded_bytes = u32::try_from(bytes).unwrap_or(u32::MAX);
                 self.recorded_variables = Some(value);
             }
             Err(_) => self.variables_known = false,
@@ -49,9 +67,10 @@ impl Held {
     }
 
     fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * size_of::<engine_scripts::cvariables::Row>()
-            + self.names.capacity()
-            + self.recorded_bytes
+        self.pending_raw
+            .as_ref()
+            .map_or(0, |raw| raw.allocated_bytes())
+            + self.recorded_bytes as usize
     }
 }
 
@@ -246,20 +265,28 @@ impl Runtime {
                 reader = None;
                 held.variables_known = false;
                 held.freeze_pending = false;
+                if held.pending_raw.is_none() {
+                    let Ok(raw) = engine_allocation::boxed(PendingRaw::default()) else {
+                        PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
+                        return;
+                    };
+                    held.pending_raw = Some(raw);
+                }
+                let raw = held.pending_raw.as_mut().unwrap();
                 let read = engine_scripts::cvariables::read_store_carried(
                     memory,
                     base,
                     engine_scripts::cvariables::Scope::Global,
                     store,
-                    engine_native_memory::walk::Buffer::Growing(&mut held.entries),
-                    engine_native_memory::walk::Buffer::Growing(&mut held.names),
+                    engine_native_memory::walk::Buffer::Growing(&mut raw.entries),
+                    engine_native_memory::walk::Buffer::Growing(&mut raw.names),
                     &mut engine_scripts::cvariables::Fresh,
                 );
                 if let Ok((read, seed)) = read
                     && let Outcome::Rows { len } = read.outcome
                 {
-                    held.entries_len = len;
-                    held.seed = seed;
+                    raw.entries_len = len;
+                    raw.seed = seed;
                     held.variables_known = seed.is_some()
                         && stamp.is_some()
                         && stamp
@@ -270,6 +297,7 @@ impl Runtime {
                             if engine_allocation::reserve_push_batch(&mut self.pending, 1).is_err()
                             {
                                 held.variables_known = false;
+                                held.pending_raw = None;
                                 PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                                 return;
                             }
@@ -283,6 +311,7 @@ impl Runtime {
                     }
                 }
                 if !held.variables_known {
+                    held.pending_raw = None;
                     PROJECT_VARIABLE_REFUSALS.fetch_add(1, Relaxed);
                 }
             })();
@@ -345,14 +374,16 @@ impl Runtime {
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn allocation_failure_fixture() -> Self {
         let held = Held {
-            entries: vec![engine_scripts::cvariables::Row {
-                name_start: 0,
-                name_len: 1,
-                value_raw: -1,
-            }],
-            names: vec![b'x'],
-            entries_len: 1,
-            seed: Some(7),
+            pending_raw: Some(Box::new(PendingRaw {
+                entries: vec![engine_scripts::cvariables::Row {
+                    name_start: 0,
+                    name_len: 1,
+                    value_raw: -1,
+                }],
+                names: vec![b'x'],
+                entries_len: 1,
+                seed: Some(7),
+            })),
             variables_known: true,
             freeze_pending: true,
             queued: true,
@@ -401,21 +432,23 @@ mod tests {
         };
         let make = || Held {
             pointer: row.source_pointer,
-            entries: vec![
-                engine_scripts::cvariables::Row {
-                    name_start: 0,
-                    name_len: 3,
-                    value_raw: i64::MIN,
-                },
-                engine_scripts::cvariables::Row {
-                    name_start: 3,
-                    name_len: 2,
-                    value_raw: i64::MAX,
-                },
-            ],
-            names: vec![b'a', 0, 255, b'b', b'c'],
-            entries_len: 2,
-            seed: Some(u32::MAX),
+            pending_raw: Some(Box::new(PendingRaw {
+                entries: vec![
+                    engine_scripts::cvariables::Row {
+                        name_start: 0,
+                        name_len: 3,
+                        value_raw: i64::MIN,
+                    },
+                    engine_scripts::cvariables::Row {
+                        name_start: 3,
+                        name_len: 2,
+                        value_raw: i64::MAX,
+                    },
+                ],
+                names: vec![b'a', 0, 255, b'b', b'c'],
+                entries_len: 2,
+                seed: Some(u32::MAX),
+            })),
             variables_known: true,
             freeze_pending: true,
             pending_known: true,
@@ -474,14 +507,16 @@ mod tests {
                 };
                 let held = Held {
                     pointer: row.source_pointer,
-                    entries: vec![engine_scripts::cvariables::Row {
-                        name_start: 0,
-                        name_len: 3,
-                        value_raw: -9,
-                    }],
-                    names: b"new".to_vec(),
-                    entries_len: 1,
-                    seed: Some(9),
+                    pending_raw: Some(Box::new(PendingRaw {
+                        entries: vec![engine_scripts::cvariables::Row {
+                            name_start: 0,
+                            name_len: 3,
+                            value_raw: -9,
+                        }],
+                        names: b"new".to_vec(),
+                        entries_len: 1,
+                        seed: Some(9),
+                    })),
                     variables_known: true,
                     freeze_pending: true,
                     pending_known: true,

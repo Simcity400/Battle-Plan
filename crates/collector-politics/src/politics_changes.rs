@@ -74,6 +74,11 @@ static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
+#[allow(
+    clippy::vec_box,
+    reason = "superseded logs stay boxed until dropped off the capture path"
+)]
+static RETIRED_LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
 static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
 const FAILURE_NAMES: [&str; 41] = [
@@ -374,6 +379,7 @@ struct Log {
     cursor: Padded<AtomicU64>,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
+    drained: AtomicBool,
 }
 unsafe impl Sync for Log {}
 impl Log {
@@ -403,8 +409,9 @@ impl Log {
     ) -> io::Result<Self> {
         let entries = entries.max(1);
         let keys = keys.max(1);
-        let secondary = entries.div_ceil(lanes.max(1)).min(64);
-        let shared = SharedLane::new(secondary.max(shared), keys)?;
+        let secondary = entries.div_ceil(lanes.max(1)).min(8);
+        let shared_initial = entries.div_ceil(lanes.max(1)).min(32);
+        let shared = SharedLane::new(shared_initial.max(shared), keys)?;
         let mut storage = allocation::vec(lanes)?;
         for n in 0..lanes {
             storage.push(Lane::new(
@@ -428,6 +435,7 @@ impl Log {
             cursor: Padded(AtomicU64::new(0)),
             consumed: AtomicU64::new(0),
             consumed_epoch: AtomicU64::new(EPOCH.load(Ordering::Acquire)),
+            drained: AtomicBool::new(false),
         })
     }
     fn frontier(&self) -> u64 {
@@ -644,12 +652,32 @@ fn resize_storage(entries: usize, keys: usize) {
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
+    let retired = {
+        let mut retired = RETIRED_LOGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *retired)
+    };
+    drop(retired);
     let mut logs = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let offered = OFFERED.load(Ordering::Acquire) as *const Log;
+    let current_ptr = LOG.load(Ordering::Acquire);
+    let offered_ptr = OFFERED.load(Ordering::Acquire);
+    if active() == 0 {
+        logs.retain(|entry| {
+            let ptr = entry.as_ptr() as usize;
+            if ptr == current_ptr || ptr == offered_ptr {
+                return true;
+            }
+            let log = &entry[0];
+            !(log.publishers.load(Ordering::Acquire) == usize::MAX
+                && log.drained.load(Ordering::Acquire))
+        });
+    }
+    let offered = offered_ptr as *const Log;
     let offered = (!offered.is_null()).then(|| unsafe { &*offered });
-    let current = log();
+    let current = (current_ptr != 0).then(|| unsafe { &*(current_ptr as *const Log) });
     let sources = [current, offered];
     let entries = entries
         .max(
@@ -751,6 +779,10 @@ pub unsafe fn release() {
     LOG.store(0, Ordering::Release);
     OFFERED.store(0, Ordering::Release);
     LOGS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    RETIRED_LOGS
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     CONSERVATION
@@ -1098,6 +1130,7 @@ pub struct Handoff {
     cursor: u64,
     lanes: usize,
     shared_rejected: u64,
+    final_for_log: bool,
 }
 pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     handoff_buffer(engine_native_memory::walk::Buffer::Growing(cursors))
@@ -1110,24 +1143,25 @@ fn handoff_buffer(
     }
     let log = log().ok_or("politics staging unavailable")?;
     if active() != 0 {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
+    retire_drained_logs();
     if !cursors.ensure(log.lanes.len())? {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     let offered = OFFERED.load(Ordering::Acquire) as *const Log;
     if offered.is_null() {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     let offered = unsafe { &*offered };
     if !cursors.ensure(offered.lanes.len())? {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     if !close_for_handoff(log, offered) {
-        return handoff_from_buffer(log, cursors);
+        return handoff_from_buffer(log, cursors, false);
     }
     offered.base_cursor.store(log.frontier(), Ordering::Release);
-    let sealed = handoff_from_buffer(log, cursors);
+    let sealed = handoff_from_buffer(log, cursors, true);
     LOG.store(offered as *const Log as usize, Ordering::Release);
     let _ = OFFERED.compare_exchange(
         offered as *const Log as usize,
@@ -1137,6 +1171,34 @@ fn handoff_buffer(
     );
     sealed
 }
+fn retire_drained_logs() {
+    let Ok(mut logs) = LOGS.try_lock() else {
+        return;
+    };
+    if logs.len() <= 1 {
+        return;
+    }
+    let Ok(mut retired) = RETIRED_LOGS.try_lock() else {
+        return;
+    };
+    let current_ptr = LOG.load(Ordering::Acquire);
+    let offered_ptr = OFFERED.load(Ordering::Acquire);
+    let mut index = 0;
+    while index < logs.len() {
+        let ptr = logs[index].as_ptr() as usize;
+        let done = ptr != current_ptr
+            && ptr != offered_ptr
+            && logs[index][0].publishers.load(Ordering::Acquire) == usize::MAX
+            && logs[index][0].drained.load(Ordering::Acquire);
+        if done && retired.try_reserve(1).is_ok() {
+            let entry = logs.swap_remove(index);
+            retired.push(entry);
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn close_for_handoff(log: &Log, offered: &Log) -> bool {
     offered
         .consumed_epoch
@@ -1150,6 +1212,7 @@ fn close_for_handoff(log: &Log, offered: &Log) -> bool {
 fn handoff_from_buffer(
     log: &Log,
     mut cursors: engine_native_memory::walk::Buffer<'_, LaneCursor>,
+    final_for_log: bool,
 ) -> Result<Handoff, &'static str> {
     let count = log.registered.load(Ordering::Acquire).min(log.lanes.len());
     if !cursors.ensure(count)? {
@@ -1167,6 +1230,7 @@ fn handoff_from_buffer(
         cursor: log.frontier(),
         lanes: count,
         shared_rejected,
+        final_for_log,
     })
 }
 impl Handoff {
@@ -1197,7 +1261,7 @@ impl Handoff {
         bytes: &mut [u8],
     ) -> Result<Drained, &'static str> {
         let log = unsafe { &*(self.log as *const Log) };
-        drain_until(
+        let drained = drain_until(
             log,
             Bound {
                 epoch: self.epoch,
@@ -1207,7 +1271,11 @@ impl Handoff {
             &cursors[..self.lanes],
             output,
             bytes,
-        )
+        );
+        if self.final_for_log {
+            log.drained.store(true, Ordering::Release);
+        }
+        drained
     }
 }
 
@@ -3272,7 +3340,11 @@ impl StagingFixture {
     /// Keep `self` alive and unmoved at its current address for every subsequent call on the
     /// returned [`Handoff`].
     pub unsafe fn handoff(&self, cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
-        handoff_from_buffer(&self.0, engine_native_memory::walk::Buffer::Growing(cursors))
+        handoff_from_buffer(
+            &self.0,
+            engine_native_memory::walk::Buffer::Growing(cursors),
+            false,
+        )
     }
     pub fn registered_lanes(&self) -> usize {
         self.0.registered.load(Ordering::Acquire)
@@ -4698,7 +4770,12 @@ mod tests {
         assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 5);
         let mut cursors = vec![LaneCursor::default(); 2];
-        let handoff = handoff_from_buffer(&log, engine_native_memory::walk::Buffer::Growing(&mut cursors)).unwrap();
+        let handoff = handoff_from_buffer(
+            &log,
+            engine_native_memory::walk::Buffer::Growing(&mut cursors),
+            false,
+        )
+        .unwrap();
         assert_eq!(handoff.pending(), 20);
         let mut output = [Event::default(); 20];
         let mut bytes = [0; 20 * 16];

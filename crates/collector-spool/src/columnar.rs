@@ -283,6 +283,10 @@ impl Columnar {
         }
     }
 
+    pub(crate) fn is_live(&self) -> bool {
+        matches!(self, Self::Live(_))
+    }
+
     pub(crate) fn interrupt(&mut self) {
         if let Self::Live(live) = self {
             engine_allocation::advisory(|| live.interrupt());

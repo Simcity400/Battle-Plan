@@ -1,4 +1,5 @@
 use super::*;
+use crate::fuel_awards::Entry;
 use engine_fuel::{fuel_awards::Recipient, fuel_awards::Settled, fuel_awards::Started};
 use replay_data::rows::CountryFuelRow;
 
@@ -21,8 +22,14 @@ fn input(count: u32) -> Vec<TableInput> {
 }
 fn capture(first: u64, entries: Vec<Entry>) -> Captured {
     let copied = entries.len();
+    let mut roots = Vec::new();
+    let entries = entries
+        .into_iter()
+        .map(|entry| CompactEntry::from_entry(entry, &mut roots).unwrap())
+        .collect();
     Captured {
         entries,
+        roots,
         names: b"retained".to_vec(),
         drained: Some(Ok((
             Drained {

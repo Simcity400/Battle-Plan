@@ -61,7 +61,7 @@ impl<R: Default> CaptureRows<R> {
         self.rows.capacity() * size_of::<R>()
     }
 
-    pub fn grow(&mut self, capacity: &mut usize) {
+    pub fn record_demand(&self, capacity: &mut usize) {
         grow_capacity(capacity, self.failed_len);
         grow_capacity(capacity, self.outcome.len());
         let margin = |cap: usize| if cap > 256 { cap / 8 } else { cap / 4 };
@@ -82,7 +82,15 @@ impl<R: Default> CaptureRows<R> {
             }
             _ => {}
         }
+    }
+
+    pub fn grow(&mut self, capacity: &mut usize) {
+        self.record_demand(capacity);
         grow_vec(&mut self.rows, *capacity);
+    }
+
+    pub fn release(&mut self) {
+        self.rows = Vec::new();
     }
 }
 
@@ -145,7 +153,7 @@ impl<T: Default> Arena<T> {
         self.required = 0;
     }
 
-    pub fn grow(&mut self, capacity: &mut usize) {
+    pub fn record_demand(&self, capacity: &mut usize) {
         grow_capacity(capacity, self.required.max(self.len));
         let margin = if *capacity > 256 {
             *capacity / 8
@@ -155,7 +163,15 @@ impl<T: Default> Arena<T> {
         if self.len > 0 && self.len >= capacity.saturating_sub(margin) {
             grow_capacity(capacity, capacity.saturating_add(1));
         }
+    }
+
+    pub fn grow(&mut self, capacity: &mut usize) {
+        self.record_demand(capacity);
         grow_vec(&mut self.first, *capacity);
+    }
+
+    pub fn release(&mut self) {
+        self.first = Vec::new();
     }
 
     pub fn allocated_bytes(&self) -> usize {

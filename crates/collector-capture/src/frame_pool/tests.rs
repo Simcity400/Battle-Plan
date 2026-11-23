@@ -19,12 +19,12 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     assert_eq!(free.len(), STEADY);
     assert!(free.take(1, 1));
     assert!(!free.take(1, 0));
-    assert!(!free.take(2, STEADY - 1));
+    assert!(!free.take(0, STEADY - 1));
     assert_eq!(free.len(), STEADY - 1);
     let newest =
     // SAFETY: This consumer owns the queue removal for the named pool.
     unsafe { free.pop() }.unwrap();
-    assert_eq!(newest, STEADY - 1);
+    assert_eq!(newest, 0);
     free.push(newest).unwrap();
     free.restore(1).unwrap();
     assert_eq!(free.restore(1), Err(1));
@@ -37,7 +37,7 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
     assert_eq!(newest_first, (0..STEADY).rev().collect::<Vec<_>>());
     assert_eq!(free.len(), 0);
     assert!(!free.take(0, 0));
-    free.push(2).unwrap();
+    free.push(1).unwrap();
     free.push(0).unwrap();
     assert_eq!(
         // SAFETY: This consumer owns the queue removal for the named pool.
@@ -50,8 +50,8 @@ fn free_frames_hand_out_the_newest_and_idle_leases_keep_their_age() {
         unsafe { free.pop() },
         Some(0)
     );
-    assert!(!free.take(2, 1));
-    assert!(free.take(2, 0));
+    assert!(!free.take(1, 1));
+    assert!(free.take(1, 0));
     assert_eq!(free.len(), 0);
     for index in 0..STEADY {
         free.push(index).unwrap();
@@ -212,9 +212,13 @@ fn surplus_waits_for_a_sustained_idle_streak_and_resets_when_popped() {
     assert_eq!(pool.len(), STEADY);
     assert!(!pool.surplus_after(4));
     assert!(!pool.surplus_after(4));
-    let popped = unsafe { pool.pop() }.unwrap();
+    let popped: Vec<_> = (0..=(STEADY - AHEAD))
+        .map(|_| unsafe { pool.pop() }.unwrap())
+        .collect();
     assert!(!pool.surplus_after(4));
-    pool.push(popped).unwrap();
+    for slot in popped {
+        pool.push(slot).unwrap();
+    }
     for _ in 0..3 {
         assert!(!pool.surplus_after(4));
     }
@@ -267,8 +271,12 @@ fn byte_and_frame_limits_stop_pool_growth_and_resume_when_frames_vacate() {
     held.push(extra);
     for slot in held {
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { shared.recycle_frame(slot) };
+        unsafe { shared.recycle_frame_prepared(slot) };
     }
     assert_eq!(pool.live(), STEADY);
     assert_eq!(pool.live_bytes(), pool.gauge().live_bytes);
+    assert!(shared.has_retired_parked());
+    assert!(shared.drain_retired_parked());
+    assert!(!shared.has_retired_parked());
+    assert!(!shared.drain_retired_parked());
 }

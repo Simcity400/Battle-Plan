@@ -384,6 +384,122 @@ fn spooled(table: TableId) -> bool {
     SPOOL_TABLES.contains(&table) || crate::history::reads(table)
 }
 
+fn baseline_retention(
+    table: TableId,
+    live_columnar: bool,
+) -> replay_frame::frame::BaselineRetention {
+    use replay_data::cadence::Cadence;
+    use replay_frame::frame::BaselineRetention;
+    if !live_columnar {
+        return if retains_baseline(table) {
+            BaselineRetention::Full
+        } else {
+            BaselineRetention::Drop
+        };
+    }
+    if matches!(
+        table,
+        TableId::DivisionTemplateIcons
+            | TableId::CountryTemplateState
+            | TableId::CharacterPortraits
+            | TableId::HiredAdvisors
+            | TableId::CountryCharacters
+            | TableId::CountryRetiredCharacters
+            | TableId::ShipModels
+            | TableId::RailEdges
+            | TableId::DivisionPanelStats
+            | TableId::DivisionHistory
+            | TableId::CharacterRoleTraits
+            | TableId::StateResistance
+    ) {
+        return BaselineRetention::Meta;
+    }
+    if spooled(table)
+        || table == TableId::SliceReads
+        || collector_characters::extended::characters::SHADOW_TABLES.contains(&table)
+        || matches!(
+            table,
+            TableId::CountryMarket
+                | TableId::MarketContractTerms
+                | TableId::LendLeaseAgreements
+                | TableId::AdvisorTokens
+                | TableId::DivisionTemplates
+                | TableId::CombatLogObservers
+                | TableId::RailCooldowns
+                | TableId::VariantDefinitions
+                | TableId::VariantModules
+                | TableId::VariantStats
+                | TableId::VariantUpgrades
+                | TableId::WeatherProvinces
+                | TableId::ScriptVariables
+                | TableId::Provinces
+                | TableId::States
+        )
+    {
+        return BaselineRetention::Full;
+    }
+    if matches!(
+        table,
+        TableId::EventFeedHistory
+            | TableId::LandCombatResults
+            | TableId::NavalResults
+            | TableId::AirLossEvents
+            | TableId::BuildingBombingDamage
+            | TableId::CountryPowerChanges
+            | TableId::GovernmentChanges
+            | TableId::MarketEvents
+            | TableId::EquipmentDestruction
+            | TableId::OperationCompletions
+            | TableId::NuclearStrikes
+            | TableId::CombatEngagementRefreshes
+            | TableId::CountryExperienceGains
+            | TableId::DivisionEquipmentDeletions
+            | TableId::PeaceBids
+            | TableId::PeaceSettlements
+            | TableId::VariantChanges
+            | TableId::VariantBonusSnapshots
+            | TableId::DesignCountryModifiers
+            | TableId::DesignCountryTemplates
+            | TableId::DesignObserverContext
+            | TableId::DesignOrganisationLiveness
+            | TableId::MapEvents
+            | TableId::CountryPowerDaily
+            | TableId::CountryPowerDailyCosts
+    ) {
+        return BaselineRetention::Drop;
+    }
+    if replay_data::cadence::cadence(table) == Cadence::Hourly {
+        BaselineRetention::Full
+    } else {
+        BaselineRetention::Drop
+    }
+}
+
+fn retains_baseline(table: TableId) -> bool {
+    spooled(table)
+        || matches!(
+            replay_data::cadence::cadence(table),
+            replay_data::cadence::Cadence::Hourly | replay_data::cadence::Cadence::Sliced
+        )
+        || table == TableId::SliceReads
+        || collector_characters::extended::characters::SHADOW_TABLES.contains(&table)
+        || matches!(
+            table,
+            TableId::AdvisorTokens
+                | TableId::CharacterRoleTraits
+                | TableId::DivisionTemplates
+                | TableId::DivisionStatus
+                | TableId::DivisionPanelStats
+                | TableId::CombatLogObservers
+                | TableId::RailCooldowns
+                | TableId::VariantDefinitions
+                | TableId::VariantModules
+                | TableId::VariantStats
+                | TableId::VariantUpgrades
+                | TableId::WeatherProvinces
+        )
+}
+
 #[cfg(test)]
 thread_local! {
     static KEEP_EVERY_TABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -491,6 +607,7 @@ struct Campaign<B: SegmentBackend = FileBackend, S: Schedule = Unrestricted> {
     country_intel_sample: Option<replay_data::rows::ReservedCountryIntelSample>,
     country_intel_hour: Option<i32>,
     sliced_cache: TableCache<Arc<TableRows>>,
+    sliced_owners: [Option<Vec<u32>>; TABLE_COUNT],
     sliced_reads: ReadHours,
     sliced_branch: Option<BranchId>,
     pending_slices: Vec<(TableId, Arc<replay_data::sliced::SliceUpdate>)>,
@@ -559,6 +676,7 @@ impl<S: Schedule> Campaign<FileBackend, S> {
             country_intel_sample: None,
             country_intel_hour: None,
             sliced_cache: TableCache::new(),
+            sliced_owners: std::array::from_fn(|_| None),
             sliced_reads: ReadHours::new(),
             sliced_branch: None,
             pending_slices: Vec::new(),
@@ -590,6 +708,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         self.staggered_cache.clear();
         self.staggered_branch = None;
         self.sliced_cache.clear();
+        self.sliced_owners.fill(None);
         self.sliced_reads.clear();
         self.sliced_branch = None;
         self.country_intel_sample = None;
@@ -675,6 +794,13 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         Ok(observation.branch)
     }
 
+    fn owner_sliced(&self, table: TableId) -> bool {
+        replay_data::cadence::is_sliced(table)
+            && !replay_data::sliced::is_keyed(table)
+            && !spooled(table)
+            && self.columnar.is_live()
+    }
+
     fn try_merge_sliced_inputs<'a>(
         &mut self,
         source: &mut FrameInput,
@@ -684,6 +810,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         self.settle_failed_slices();
         if self.sliced_branch != Some(source.branch) {
             self.sliced_cache.clear();
+            self.sliced_owners.fill(None);
             self.sliced_reads.clear();
             self.sliced_branch = Some(source.branch);
         }
@@ -711,6 +838,55 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
             let captured = |owner| selection.contains(owner);
             let live = |owner| selection.live(owner);
             match input {
+                TableInput::Sampled(TableView::Complete(rows)) if self.owner_sliced(table) => {
+                    let fresh = std::mem::replace(rows, TableRows::empty(table));
+                    if selection.force_full || replay_data::sliced::replaces_whole(&fresh) {
+                        let owners = replay_data::sliced::try_owners(&fresh)?;
+                        self.sliced_reads.merge(table, &owners, selection, hour)?;
+                        self.sliced_owners[table.index()] = Some(owners);
+                        *input = TableInput::SharedComplete(Arc::new(fresh));
+                    } else if let (Some(previous_owners), Some(token)) = (
+                        self.sliced_owners[table.index()].as_deref(),
+                        self.encoder
+                            .untracked_slice_token(table, source.branch, hour, force),
+                    ) {
+                        let fresh_owners = replay_data::sliced::try_owners(&fresh)?;
+                        match replay_data::sliced::SliceUpdate::for_owners(
+                            previous_owners,
+                            fresh,
+                            captured,
+                            live,
+                        ) {
+                            Ok((update, next_owners)) => {
+                                self.sliced_reads
+                                    .merge(table, &fresh_owners, selection, hour)?;
+                                self.sliced_owners[table.index()] = Some(next_owners);
+                                *input = TableInput::SliceUpdate {
+                                    token,
+                                    update: Arc::new(update),
+                                };
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                                return Err(error);
+                            }
+                            Err(_) => {
+                                *input =
+                                    TableInput::Sampled(unavailable("sliced table merge failed"));
+                                if let Some(family) =
+                                    collector_certificates::slicing::family_of(table)
+                                {
+                                    unpublished |= 1 << family;
+                                }
+                                retry = true;
+                            }
+                        }
+                    } else {
+                        *input = TableInput::Sampled(unavailable(
+                            "sliced table has no earlier complete rows on this branch; full refresh requested",
+                        ));
+                        retry = true;
+                    }
+                }
                 TableInput::Sampled(TableView::Complete(rows)) => {
                     let fresh = std::mem::replace(rows, TableRows::empty(table));
                     let update = (!selection.force_full
@@ -859,6 +1035,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     .is_some_and(|family| unpublished & (1 << family) != 0)
                 {
                     self.sliced_cache.remove(&table);
+                    self.sliced_owners[table.index()] = None;
                     self.pending_slices.retain(|(pending, _)| *pending != table);
                     let previous = std::mem::take(&mut self.sliced_reads.0[table.index()]);
                     if frame_reads[table.index()].is_none() {
@@ -965,6 +1142,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 TableInput::Sampled(TableView::Unavailable { reason })
                 if reason == replay_data::cadence::SKIPPED_REASON
             );
+            let cache_staggered = spooled(table) || conversion_cache;
             if is_skip {
                 skipped[index] = true;
                 if !may_carry {
@@ -975,6 +1153,9 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                             reason: engine_allocation::string("hourly table was not acquired")?,
                         },
                     );
+                    continue;
+                }
+                if !cache_staggered {
                     continue;
                 }
                 let restarting = !self.spool.is_open();
@@ -1003,6 +1184,24 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     });
                 }
             } else {
+                if !cache_staggered {
+                    if table == TableId::CountryIntel {
+                        let complete = matches!(
+                            input,
+                            TableInput::Sampled(TableView::Complete(_))
+                                | TableInput::SharedComplete(_)
+                        );
+                        self.country_intel_hour = complete.then_some(source.hour);
+                        self.country_intel_sample = if complete {
+                            intel_sample
+                                .and_then(Result::ok)
+                                .filter(|sample| sample.sample_hour == source.hour)
+                        } else {
+                            None
+                        };
+                    }
+                    continue;
+                }
                 let cached = match input {
                     TableInput::Sampled(TableView::Complete(rows)) => {
                         let rows = Arc::new(std::mem::replace(rows, TableRows::empty(table)));
@@ -1071,6 +1270,14 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
         &mut self,
         source: &mut replay_frame::frame::DecodedFrame,
     ) -> [bool; TABLE_COUNT] {
+        let previous = KEEP_EVERY_TABLE.with(|keep| keep.replace(true));
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                KEEP_EVERY_TABLE.with(|keep| keep.set(self.0));
+            }
+        }
+        let _restore = Restore(previous);
         let mut input = source.clone().into();
         let skipped = self.apply_staggered_inputs(&mut input);
         *source = sampled_frame(input);
@@ -1222,6 +1429,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                 .span(collector_workers::spool_phases::Phase::Write) };
             let _ = self.spool.finish_segment();
             self.disk_branch = None;
+            self.sliced_owners.fill(None);
             if !self.spool.is_queued()
                 && error.kind() != io::ErrorKind::OutOfMemory
                 && !collector_memory::terminal::failed()
@@ -1291,6 +1499,7 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
                     )?;
                     self.staggered_cache.remove(&table);
                     self.sliced_cache.remove(&table);
+                    self.sliced_owners[table.index()] = None;
                     self.projection_scratch.forget(table);
                     self.intel_shadow.forget(table);
                     self.pending_slices.retain(|(id, _)| *id != table);
@@ -1387,7 +1596,10 @@ impl<B: SegmentBackend, S: Schedule> Campaign<B, S> {
     fn commit_baseline(&mut self, prepared: replay_frame::frame::PreparedFrame) -> io::Result<()> {
         engine_allocation::reserve(&mut self.retired, 1)?;
         let released = self.release_slices();
-        let retired = self.encoder.commit_retiring(prepared)?;
+        let live_columnar = self.columnar.is_live();
+        let retired = self
+            .encoder
+            .commit_retiring_mode(prepared, |table| baseline_retention(table, live_columnar))?;
         self.adopt_slices(released);
         self.retired.push(retired);
         Ok(())
@@ -4386,6 +4598,7 @@ fn convert_with_helper(
         costs.thread(started);
         span.finish();
         take_in(&converted, map, &mut packs, Some(&costs));
+        collector_workers::private_heap::PRIVATE_HEAP.maybe_flush_thread_cache();
     };
     let own = || {
         let started = std::time::Instant::now();
@@ -6967,6 +7180,7 @@ mod tests {
                 country_intel_sample: None,
                 country_intel_hour: None,
                 sliced_cache: TableCache::new(),
+                sliced_owners: std::array::from_fn(|_| None),
                 sliced_reads: ReadHours::new(),
                 sliced_branch: None,
                 pending_slices: Vec::new(),
@@ -9759,5 +9973,44 @@ mod tests {
             "post-truncation refresh must be a snapshot, not delta/unchanged"
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
+    }
+
+    #[test]
+    fn non_spooled_daily_tables_skip_staggered_cache_and_encoder_baselines() {
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut first: FrameInput = staggered_frame(branch, 0, false).into();
+        campaign.apply_staggered_inputs(&mut first);
+        assert!(campaign.staggered_cache.get(&DAILY).is_none());
+        campaign
+            .write(first, 1000, Some(1), 0, &mut WorkSample::default())
+            .unwrap();
+        assert!(campaign.encoder.committed_rows(DAILY).is_none());
+        assert!(campaign.encoder.committed_rows(TableId::Clock).is_some());
+        for table in [
+            TableId::DivisionPanelStats,
+            TableId::DivisionHistory,
+            TableId::CharacterRoleTraits,
+            TableId::StateResistance,
+        ] {
+            assert_eq!(
+                baseline_retention(table, true),
+                replay_frame::frame::BaselineRetention::Meta,
+                "{table:?}"
+            );
+        }
+        for table in [
+            TableId::DivisionStatus,
+            TableId::DivisionPanelSources,
+            TableId::WeatherProvinces,
+            TableId::RailCooldowns,
+            TableId::DivisionTemplates,
+        ] {
+            assert_eq!(
+                baseline_retention(table, true),
+                replay_frame::frame::BaselineRetention::Full,
+                "{table:?}"
+            );
+        }
     }
 }

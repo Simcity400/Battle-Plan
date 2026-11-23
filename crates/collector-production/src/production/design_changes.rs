@@ -2261,6 +2261,20 @@ impl Captured {
             reason: "variant changes not acquired",
         };
     }
+    pub(super) fn release_transient(&mut self) {
+        self.rows = Vec::new();
+        self.snapshots = snapshots::Shared::default();
+        self.heap_bytes = 0;
+        self.dictionary = None;
+        self.context = None;
+        self.templates = None;
+        self.fog = super::design_fog::Observation::default();
+        self.liveness = liveness::Observation::default();
+        self.context_acquired = false;
+        self.outcome = Outcome::Unavailable {
+            reason: "variant changes not acquired",
+        };
+    }
     pub(super) fn dictionary(&self) -> &super::bonus_snapshots::Snapshot {
         if matches!(self.outcome, Outcome::Rows { .. }) {
             &self.dictionary
@@ -2622,7 +2636,8 @@ fn decode_events(
                 output,
             )?,
             Kind::Source | Kind::Provider(_) => {
-                let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
+                let memory =
+                    crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
                 sources::decode(event, &memory, base, output)?;
             }
             Kind::Design if event.removed => {
@@ -2926,8 +2941,42 @@ fn complete_decoded(
     walk: &RawWalk,
     decoded: snapshots::Decoded,
 ) -> Result<snapshots::Decoded, &'static str> {
+    complete_decoded_parts(
+        memory,
+        base,
+        fresh,
+        walk.details,
+        walk.stats.outcome.len(),
+        &walk.modules.rows[..walk.modules.outcome.len()],
+        walk.upgrades.rows[..walk.upgrades.outcome.len()].first(),
+        decoded,
+    )
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "summary fields mirror RawWalk without retaining its scratch arenas"
+)]
+fn complete_decoded_parts(
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+    details: bool,
+    stats_len: usize,
+    modules: &[engine_equipment::equipment_module_container::Row],
+    first_upgrade: Option<&engine_equipment::cequipment_upgrades_instance::Row>,
+    decoded: snapshots::Decoded,
+) -> Result<snapshots::Decoded, &'static str> {
     let begin = std::time::Instant::now();
-    let result = observe_walk(memory, base, fresh, walk, &decoded.definition);
+    let result = observe_walk_parts(
+        memory,
+        base,
+        fresh,
+        details,
+        stats_len,
+        modules,
+        first_upgrade,
+        &decoded.definition,
+    );
     drain_profile_mut().complete_ns[1] += elapsed_ns(begin);
     result.map(|()| decoded)
 }
@@ -2942,15 +2991,22 @@ fn decode_snapshot(
     walk_snapshot(memory, base, hour, pointer, &mut walk)?;
     complete_snapshot(memory, base, fresh, &mut walk)
 }
-fn observe_walk(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "summary fields mirror RawWalk without retaining its scratch arenas"
+)]
+fn observe_walk_parts(
     memory: &impl Memory,
     base: usize,
     fresh: bool,
-    walk: &RawWalk,
+    details: bool,
+    stats_len: usize,
+    modules: &[engine_equipment::equipment_module_container::Row],
+    first_upgrade: Option<&engine_equipment::cequipment_upgrades_instance::Row>,
     definition: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
 ) -> Result<(), &'static str> {
-    if walk.details {
-        for _ in 0..walk.stats.outcome.len() {
+    if details {
+        for _ in 0..stats_len {
             collector_observers::world_input_changes::record_daily(
                 collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
                 false,
@@ -2970,13 +3026,7 @@ fn observe_walk(
         sources::track(definition)?;
     }
     liveness::sample(definition)?;
-    super::design_context::event(
-        memory,
-        base,
-        definition,
-        &walk.modules.rows[..walk.modules.outcome.len()],
-        walk.upgrades.rows[..walk.upgrades.outcome.len()].first(),
-    )
+    super::design_context::event(memory, base, definition, modules, first_upgrade)
 }
 
 #[cfg(test)]

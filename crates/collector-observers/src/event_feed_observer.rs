@@ -52,6 +52,11 @@ fn ledger(owner: &Owner) -> std::sync::MutexGuard<'static, Ledger> {
 }
 static DEMAND: AtomicUsize = AtomicUsize::new(0);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static DECISION_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static DECISION_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static DECISION_OWNER_DEMAND: AtomicUsize = AtomicUsize::new(0);
+static DECISION_OWNER_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static WITNESS_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static WITNESS_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static SCRIPT_TOKEN_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static SCRIPT_SCOPE_DEMAND: AtomicUsize = AtomicUsize::new(0);
@@ -68,13 +73,18 @@ fn raise_relaxed(slot: &AtomicUsize, value: usize) {
 }
 
 fn script_demands(store: &Store) {
-    raise_relaxed(&DEMAND, store.capacity_demand());
+    raise_relaxed(&DEMAND, store.entry_capacity_demand());
+    raise_relaxed(&DECISION_DEMAND, store.decision_capacity_demand());
+    raise_relaxed(&DECISION_OWNER_DEMAND, store.decision_owner_demand());
+    raise_relaxed(&WITNESS_DEMAND, store.staged_demand());
     raise_relaxed(&SCRIPT_TOKEN_DEMAND, store.token_demand);
     raise_relaxed(&SCRIPT_SCOPE_DEMAND, store.scope_demand);
     raise_relaxed(&SCRIPT_GRAPH_DEMAND, store.graph_demand);
 }
 fn script_capacities(store: &Store) {
     CAPACITY.store(store.capacity(), Ordering::Release);
+    DECISION_CAPACITY.store(store.decision_capacity(), Ordering::Release);
+    DECISION_OWNER_CAPACITY.store(store.decision_owner_capacity(), Ordering::Release);
     WITNESS_CAPACITY.store(store.witness_capacity(), Ordering::Release);
     for (capacity, value) in SCRIPT_CAPACITY.iter().zip(store.script_capacity()) {
         capacity.store(value, Ordering::Release);
@@ -873,7 +883,7 @@ unsafe fn before(frame: &mut Frame) -> Result<bool, &'static str> {
             ),
             _ => Err(store.reject("Event feed CALL owner differs")),
         };
-        raise_relaxed(&DEMAND, store.capacity_demand());
+        script_demands(store);
         let ticket = ticket?;
         frame.ticket.write(ticket);
         frame.generation = generation;
@@ -910,7 +920,7 @@ pub fn record(
                 store.reject(reason);
             }
         }
-        raise_relaxed(&DEMAND, store.capacity_demand());
+        script_demands(store);
     });
 }
 
@@ -1151,17 +1161,18 @@ impl Hooks {
         let mut store = Store::new(last_sequence)?;
         store.restore_counts(counts);
         let capacity = slots.saturating_mul(2).max(1024);
+        let script_tokens = slots.saturating_mul(8).max(2048);
         store
             .prepare_capacity(capacity)
             .map_err(|_| "Event feed staging allocation failed")?;
         store
-            .prepare_scripts(capacity.saturating_mul(32), capacity, slots.max(1))
+            .prepare_scripts(script_tokens, slots.max(64), slots.max(1))
             .map_err(|_| "Event feed script staging allocation failed")?;
         store
             .prepare_delayed(capacity)
             .map_err(|_| "Event feed delayed-event certificate allocation failed")?;
         store
-            .prepare_decisions(capacity)
+            .prepare_decisions_sized(capacity, slots.max(256))
             .map_err(|_| "Event feed decision certificate allocation failed")?;
         script_capacities(&store);
         let owner = Owner::new(base, store);
@@ -1559,12 +1570,24 @@ fn presize_storage(slots: usize) {
             .max(1024)
             .max(DEMAND.load(Ordering::Relaxed)),
     );
+    let decision_capacity = staging_capacity(
+        DECISION_CAPACITY.load(Ordering::Acquire),
+        capacity.max(DECISION_DEMAND.load(Ordering::Relaxed)),
+    );
+    let owner_capacity = staging_capacity(
+        DECISION_OWNER_CAPACITY.load(Ordering::Acquire),
+        slots
+            .max(256)
+            .max(DECISION_OWNER_DEMAND.load(Ordering::Relaxed)),
+    );
     let script_demand = [
-        capacity
-            .saturating_mul(32)
+        slots
+            .saturating_mul(8)
+            .max(2048)
             .max(SCRIPT_CAPACITY[0].load(Ordering::Acquire))
             .max(SCRIPT_TOKEN_DEMAND.load(Ordering::Relaxed)),
-        capacity
+        slots
+            .max(64)
             .max(SCRIPT_CAPACITY[1].load(Ordering::Acquire))
             .max(SCRIPT_SCOPE_DEMAND.load(Ordering::Relaxed)),
         slots
@@ -1572,8 +1595,10 @@ fn presize_storage(slots: usize) {
             .max(SCRIPT_CAPACITY[2].load(Ordering::Acquire))
             .max(SCRIPT_GRAPH_DEMAND.load(Ordering::Relaxed)),
     ];
-    let witness_demand = DEMAND.load(Ordering::Relaxed);
+    let witness_demand = WITNESS_DEMAND.load(Ordering::Relaxed);
     if capacity <= CAPACITY.load(Ordering::Acquire)
+        && decision_capacity <= DECISION_CAPACITY.load(Ordering::Acquire)
+        && owner_capacity <= DECISION_OWNER_CAPACITY.load(Ordering::Acquire)
         && witness_demand <= WITNESS_CAPACITY.load(Ordering::Acquire)
         && script_demand
             .iter()
@@ -1585,6 +1610,8 @@ fn presize_storage(slots: usize) {
     if let Ok(mut spare) = SPARE.lock() {
         if spare.as_ref().is_some_and(|store| {
             store.capacity() >= capacity
+                && store.decision_capacity() >= decision_capacity
+                && store.decision_owner_capacity() >= owner_capacity
                 && store.witness_capacity() >= witness_demand
                 && store
                     .script_capacity()
@@ -1596,11 +1623,14 @@ fn presize_storage(slots: usize) {
         }
         if let Ok(mut store) = Store::new(None)
             && store.prepare_capacity(capacity).is_ok()
+            && store.prepare_staged(witness_demand).is_ok()
             && store
                 .prepare_scripts(script_demand[0], script_demand[1], script_demand[2])
                 .is_ok()
             && store.prepare_delayed(capacity).is_ok()
-            && store.prepare_decisions(capacity).is_ok()
+            && store
+                .prepare_decisions_sized(decision_capacity, owner_capacity)
+                .is_ok()
         {
             *spare = Some(store);
         }
@@ -1636,6 +1666,11 @@ pub(crate) fn test_globals() -> TestGlobals {
     for value in [
         &DEMAND,
         &CAPACITY,
+        &DECISION_DEMAND,
+        &DECISION_CAPACITY,
+        &DECISION_OWNER_DEMAND,
+        &DECISION_OWNER_CAPACITY,
+        &WITNESS_DEMAND,
         &WITNESS_CAPACITY,
         &SCRIPT_TOKEN_DEMAND,
         &SCRIPT_SCOPE_DEMAND,

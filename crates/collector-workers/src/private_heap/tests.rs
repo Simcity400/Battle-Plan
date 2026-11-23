@@ -507,11 +507,14 @@ fn every_refused_page_call_returns_null_and_keeps_what_it_had() {
     assert!(!pointer.is_null());
     unsafe { pointer.write_bytes(0x6d, 70_000) };
     let record = PrivateHeap::record(pointer);
-    let committed = unsafe { (*record).committed };
+    let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
     refuse(1);
     assert!(unsafe { heap.realloc(pointer, layout(70_000), 120_000) }.is_null());
     assert!(refused());
-    assert_eq!(unsafe { (*record).committed }, committed);
+    assert_eq!(
+        unsafe { (*record).committed.load(Ordering::Relaxed) },
+        committed
+    );
     assert!(
         unsafe { std::slice::from_raw_parts(pointer, 70_000) }
             .iter()
@@ -554,7 +557,7 @@ fn a_freed_large_body_past_the_bound_is_decommitted_off_the_hold_path_and_kept_o
             unsafe { heap.dealloc(reused, layout) };
             let body = (reused as usize / GRANULARITY * GRANULARITY + PAGE) as *const u8;
             assert_eq!(region(body).State, MEM_RESERVE);
-            assert_eq!(heap.pages.kept.load(Ordering::Relaxed), KEPT_BYTES + PAGE);
+            assert_eq!(heap.pages.kept.load(Ordering::Relaxed), KEPT_BYTES);
         });
     });
     let reused = unsafe { heap.alloc_zeroed(layout) };
@@ -564,7 +567,24 @@ fn a_freed_large_body_past_the_bound_is_decommitted_off_the_hold_path_and_kept_o
             .iter()
             .all(|&byte| byte == 0)
     );
-    unsafe { heap.dealloc(reused, layout) };
+    let warm = unsafe { heap.alloc(layout) };
+    assert!(!warm.is_null());
+    heap.pages.kept.store(0, Ordering::Relaxed);
+    unsafe { heap.dealloc(warm, layout) };
+    let warm_address = warm as usize;
+    let cold_address = reused as usize;
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            off_hold_path();
+            heap.pages.kept.store(KEPT_BYTES, Ordering::Relaxed);
+            unsafe { heap.dealloc(cold_address as *mut u8, layout) };
+        });
+    });
+    let before_warm = heap.hold().pages.calls;
+    let picked = unsafe { heap.alloc(layout) };
+    assert_eq!(picked as usize, warm_address);
+    assert_eq!(heap.hold().pages.calls, before_warm);
+    unsafe { heap.dealloc(picked, layout) };
 }
 
 #[test]
@@ -713,11 +733,198 @@ fn reusing_a_large_reservation_off_hold_trims_excess_committed_tail() {
             let reused = unsafe { heap.alloc(small) };
             assert_eq!(reused, first);
             let record = PrivateHeap::record(reused);
-            let committed = unsafe { (*record).committed };
+            let committed = unsafe { (*record).committed.load(Ordering::Relaxed) };
             assert!(committed < big.size());
             let tail = unsafe { record.cast::<u8>().add(committed) };
             assert_eq!(region(tail).State, MEM_RESERVE);
             unsafe { heap.dealloc(reused, small) };
         });
     });
+}
+
+#[test]
+fn reclaim_empty_slabs_decommits_idle_slabs_and_reuses_reservations() {
+    let heap = Heap::new();
+    let heap = &heap.0;
+    let layout = Layout::from_size_align(SMALL_LIMIT, 16).unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            off_hold_path();
+            let blocks: Vec<*mut u8> = (0..128)
+                .map(|_| {
+                    let block = unsafe { heap.alloc(layout) };
+                    assert!(!block.is_null());
+                    unsafe { block.write_bytes(0x5a, layout.size()) };
+                    block
+                })
+                .collect();
+            for block in blocks {
+                unsafe { heap.dealloc(block, layout) };
+            }
+            unsafe { heap.thread_exit() };
+        });
+    });
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            off_hold_path();
+            let reclaimed = heap.reclaim_empty_slabs();
+            assert!(reclaimed >= 12 * (GRANULARITY - PAGE));
+            let blocks: Vec<*mut u8> = (0..32)
+                .map(|_| {
+                    let block = unsafe { heap.alloc(layout) };
+                    assert!(!block.is_null());
+                    unsafe { block.write_bytes(0x3c, layout.size()) };
+                    block
+                })
+                .collect();
+            for block in blocks {
+                unsafe { heap.dealloc(block, layout) };
+            }
+            unsafe { heap.thread_exit() };
+        });
+    });
+}
+
+#[test]
+fn reclaim_empty_slabs_decommits_free_page_blocks_in_partially_live_slabs() {
+    let heap = Heap::new();
+    let heap = &heap.0;
+    for size in [4096, SMALL_LIMIT] {
+        let layout = Layout::from_size_align(size, 16).unwrap();
+        let per_slab = slab_count(super::class(size).unwrap());
+        let total = per_slab * 6;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                off_hold_path();
+                let blocks: Vec<*mut u8> = (0..total)
+                    .map(|_| {
+                        let block = unsafe { heap.alloc(layout) };
+                        assert!(!block.is_null());
+                        assert_eq!(block as usize % PAGE, 0);
+                        unsafe { block.write_bytes(0x6b, size) };
+                        block
+                    })
+                    .collect();
+                let mut pinned = Vec::new();
+                let mut freed = Vec::new();
+                for (index, &block) in blocks.iter().enumerate() {
+                    if index % per_slab == 0 {
+                        pinned.push(block);
+                    } else {
+                        freed.push(block);
+                        unsafe { heap.dealloc(block, layout) };
+                    }
+                }
+                let reclaimed = heap.reclaim_empty_slabs();
+                assert!(reclaimed >= (freed.len() - WARM_PAGE_BLOCKS) * size);
+                for &block in &pinned {
+                    assert!(
+                        unsafe { std::slice::from_raw_parts(block, size) }
+                            .iter()
+                            .all(|&b| b == 0x6b)
+                    );
+                }
+                assert!(
+                    freed
+                        .iter()
+                        .any(|&block| region(block).State == MEM_RESERVE)
+                );
+                let reused: Vec<*mut u8> = (0..freed.len())
+                    .map(|_| {
+                        let block = unsafe { heap.alloc_zeroed(layout) };
+                        assert!(!block.is_null());
+                        assert!(
+                            unsafe { std::slice::from_raw_parts(block, size) }
+                                .iter()
+                                .all(|&b| b == 0)
+                        );
+                        unsafe { block.write_bytes(0x2d, size) };
+                        block
+                    })
+                    .collect();
+                for block in pinned.into_iter().chain(reused) {
+                    unsafe { heap.dealloc(block, layout) };
+                }
+                let full_reclaimed = heap.reclaim_empty_slabs();
+                assert!(full_reclaimed >= 4 * (GRANULARITY - PAGE));
+                unsafe { heap.thread_exit() };
+            });
+        });
+    }
+}
+
+#[test]
+fn reclaim_empty_slabs_decommits_subpage_4k_pages_and_zeroes_reused_allocations() {
+    let heap = Heap::new();
+    let heap = &heap.0;
+    for size in [32, 48, 2048] {
+        let layout = Layout::from_size_align(size, 16).unwrap();
+        let per_slab = slab_count(super::class(size).unwrap());
+        let total = per_slab * 3;
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                off_hold_path();
+                let blocks: Vec<*mut u8> = (0..total)
+                    .map(|_| {
+                        let block = unsafe { heap.alloc(layout) };
+                        assert!(!block.is_null());
+                        unsafe { block.write_bytes(0x5d, size) };
+                        block
+                    })
+                    .collect();
+                let mut pinned = Vec::new();
+                let mut freed = Vec::new();
+                for (index, &block) in blocks.iter().enumerate() {
+                    let offset = block as usize & (GRANULARITY - 1);
+                    if offset < PAGE && index % per_slab == 0 {
+                        pinned.push(block);
+                    } else {
+                        freed.push(block);
+                        unsafe { heap.dealloc(block, layout) };
+                    }
+                }
+                let reclaimed = heap.reclaim_empty_slabs();
+                assert!(reclaimed >= 10 * PAGE, "size={size} reclaimed={reclaimed}");
+                for &block in &pinned {
+                    assert!(
+                        unsafe { std::slice::from_raw_parts(block, size) }
+                            .iter()
+                            .all(|&b| b == 0x5d)
+                    );
+                }
+                assert!(
+                    freed
+                        .iter()
+                        .any(|&block| region(block).State == MEM_RESERVE)
+                );
+                let reused: Vec<*mut u8> = (0..freed.len())
+                    .map(|_| {
+                        let block = unsafe { heap.alloc_zeroed(layout) };
+                        assert!(!block.is_null());
+                        assert!(
+                            unsafe { std::slice::from_raw_parts(block, size) }
+                                .iter()
+                                .all(|&b| b == 0)
+                        );
+                        unsafe { block.write_bytes(0x3a, size) };
+                        block
+                    })
+                    .collect();
+                for block in pinned.into_iter().chain(reused) {
+                    unsafe { heap.dealloc(block, layout) };
+                }
+                let full_reclaimed = heap.reclaim_empty_slabs();
+                assert!(full_reclaimed >= GRANULARITY - PAGE);
+                let fresh_zeroed = unsafe { heap.alloc_zeroed(layout) };
+                assert!(!fresh_zeroed.is_null());
+                assert!(
+                    unsafe { std::slice::from_raw_parts(fresh_zeroed, size) }
+                        .iter()
+                        .all(|&b| b == 0)
+                );
+                unsafe { heap.dealloc(fresh_zeroed, layout) };
+                unsafe { heap.thread_exit() };
+            });
+        });
+    }
 }

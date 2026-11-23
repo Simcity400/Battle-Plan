@@ -79,7 +79,16 @@ impl Captured {
         self.rows.allocated_bytes() + self.text.allocated_bytes()
     }
 
+    pub fn release_static(&mut self) {
+        self.rows.rows = Vec::new();
+        self.text.first = Vec::new();
+        self.reset();
+    }
+
     pub fn grow(&mut self, capacity: &mut Capacities) {
+        if self.raw_mode {
+            return;
+        }
         grow_capacity(&mut capacity.rows, self.rows.rows.len());
         self.rows.grow(&mut capacity.rows);
         capacity.text = capacity

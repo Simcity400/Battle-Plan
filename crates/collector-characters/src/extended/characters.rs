@@ -1477,12 +1477,12 @@ fn walk_family_carrying<M: Memory>(
     family.results()
 }
 
-fn walk_census<M: Memory>(
+fn walk_census<M: Memory, E: census::CensusEntry>(
     memory: &M,
     base: usize,
     mut family: Family<'_>,
     owned_traits: Option<&TraitCapture>,
-    visited: impl IntoIterator<Item = census::Occurrence>,
+    visited: impl IntoIterator<Item = E>,
     historical: usize,
     carried: Carried<'_>,
 ) -> [ReadResult; N] {
@@ -1496,8 +1496,8 @@ fn walk_census<M: Memory>(
         if !family.alive() {
             break;
         }
-        let identity = occurrence.identity(historical);
-        match ccharacter::View::acquired(memory, base, identity, occurrence.fields(required)) {
+        let identity = E::identity(&occurrence, historical);
+        match ccharacter::View::acquired(memory, base, identity, E::fields(&occurrence, required)) {
             Ok(view) => family.visit(
                 memory,
                 base,

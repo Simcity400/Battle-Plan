@@ -17,16 +17,16 @@ use std::{
 
 pub const STEADY: usize = BUFFERS;
 
-pub const AHEAD: usize = 2;
+pub const AHEAD: usize = 1;
 
-pub const MAX_LIVE_FRAMES: usize = 32;
+pub const MAX_LIVE_FRAMES: usize = 5;
 
-pub const MAX_LIVE_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_LIVE_BYTES: u64 = 384 * 1024 * 1024;
 
-const SURPLUS_CAP: usize = STEADY + 6;
+const SURPLUS_CAP: usize = STEADY + 2;
 
 #[cfg(not(test))]
-const SURPLUS_STREAK: u32 = 256;
+const SURPLUS_STREAK: u32 = 48;
 #[cfg(test)]
 const SURPLUS_STREAK: u32 = 1;
 
@@ -279,7 +279,7 @@ impl FramePool {
                 free.checked_sub(1)
             })
             .ok()?;
-        if previous <= STEADY {
+        if previous <= AHEAD {
             self.surplus_streak.store(0, Ordering::Relaxed);
         }
         loop {
@@ -444,7 +444,7 @@ impl FramePool {
 
     fn surplus_after(&self, threshold: u32) -> bool {
         let live = self.live();
-        if live <= STEADY || self.len() < STEADY {
+        if live <= STEADY || self.len() < AHEAD {
             self.surplus_streak.store(0, Ordering::Relaxed);
             return false;
         }

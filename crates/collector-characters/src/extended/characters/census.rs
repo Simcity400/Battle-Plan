@@ -372,6 +372,79 @@ impl Occurrence {
             ordinal: ordinal as u32,
         }
     }
+
+    pub fn visited(&self) -> Visited {
+        Visited {
+            pointer: self.pointer,
+            leaders: self.leaders(),
+            unit: self.unit(),
+            index: self.index,
+            id: self.id(),
+            country: self.country(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Visited {
+    pub pointer: usize,
+    pub leaders: [u8; 16],
+    pub unit: [u8; 8],
+    pub index: u32,
+    pub id: u32,
+    pub country: [u8; 4],
+}
+
+pub(super) trait CensusEntry {
+    fn fields(&self, required: [bool; 4]) -> ccharacter::AcquiredFields;
+    fn identity(&self, historical: usize) -> ccharacter::Occurrence;
+}
+
+impl CensusEntry for Occurrence {
+    fn fields(&self, required: [bool; 4]) -> ccharacter::AcquiredFields {
+        Occurrence::fields(self, required)
+    }
+
+    fn identity(&self, historical: usize) -> ccharacter::Occurrence {
+        Occurrence::identity(self, historical)
+    }
+}
+
+impl Visited {
+    pub fn fields(&self, required: [bool; 4]) -> ccharacter::AcquiredFields {
+        debug_assert!(!required[3], "census::Visited carries no advisor fields");
+        ccharacter::AcquiredFields {
+            country: (required[0] || required[1]).then_some(self.country),
+            leaders: required[1].then_some(self.leaders),
+            unit: required[2].then_some(self.unit),
+            advisors: None,
+        }
+    }
+
+    pub fn identity(&self, historical: usize) -> ccharacter::Occurrence {
+        let index = self.index as usize;
+        let (roster, ordinal) = if index < historical {
+            (0, index)
+        } else {
+            (1, index - historical)
+        };
+        ccharacter::Occurrence {
+            pointer: self.pointer,
+            id: self.id,
+            roster,
+            ordinal: ordinal as u32,
+        }
+    }
+}
+
+impl CensusEntry for Visited {
+    fn fields(&self, required: [bool; 4]) -> ccharacter::AcquiredFields {
+        Visited::fields(self, required)
+    }
+
+    fn identity(&self, historical: usize) -> ccharacter::Occurrence {
+        Visited::identity(self, historical)
+    }
 }
 
 pub fn map_head(header: [u8; 16]) -> Option<(usize, u32)> {

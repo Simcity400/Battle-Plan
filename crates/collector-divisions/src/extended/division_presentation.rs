@@ -34,7 +34,7 @@ pub use naming::{NamingCarry, NamingPart};
 pub use status_work::StatusWork;
 
 pub const MAX_STATUS_PARTS: usize = collector_workers::acquisition::MAX_WORKERS;
-const STATUS_PART_ENTRIES: usize = 256;
+const STATUS_PART_ENTRIES: usize = 512;
 
 pub fn status_parts_for(divisions: usize, workers: usize) -> usize {
     divisions

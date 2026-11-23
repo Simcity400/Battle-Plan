@@ -1162,6 +1162,12 @@ impl Captured {
         self.country_intel.release();
     }
 
+    pub fn release_daily_idle(&self) {
+        if let Some(home) = self.country_intel.home() {
+            home.release_idle();
+        }
+    }
+
     fn build(capacity: &Capacities, country_intel: Loan) -> Self {
         Self {
             capitulation: CaptureRows::new(capacity.rows[0]),

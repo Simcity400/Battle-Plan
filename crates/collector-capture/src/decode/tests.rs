@@ -327,6 +327,11 @@ fn advisor_payload_storage_survives_pool_preparation_and_recycling() {
         );
         release_characters_job(job);
     }
+    let mut vacant = CharactersJob::vacant(2);
+    vacant.log = collector_raw::raw::RawLog::new(4, 64);
+    assert!(!vacant.has_storage());
+    release_characters_job(vacant);
+    assert_eq!(CHARACTERS_JOB_POOL.lock().unwrap()[2].len(), 1);
     CHARACTERS_JOB_POOL.lock().unwrap()[2] = saved;
 }
 

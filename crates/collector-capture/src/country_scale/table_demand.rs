@@ -118,9 +118,10 @@ pub unsafe fn presize_periodic(
     );
     size!(census, extended.weather.presize(memory, base, state));
     size!(census, extended.combat_progress.presize(memory, base));
+    let equipment = extended.production.rows[2];
     extended
         .new_divisions
-        .raise_for_equipment(extended.production.rows[2]);
+        .raise_for_equipment((equipment / 8).clamp(512, 4096).min(equipment));
     size!(census, extended.map_names.presize(memory, base, state));
     size!(
         census,

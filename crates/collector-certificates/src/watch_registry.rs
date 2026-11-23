@@ -49,10 +49,10 @@ const fn revision(state: u64) -> u64 {
 #[repr(align(64))]
 struct Hot(AtomicU64);
 
-const PROBES: usize = 16;
+const PROBES: usize = 32;
 static REFUSED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static PEAK_LOAD: AtomicU64 = AtomicU64::new(0);
-const SLOTS_PER_WATCH: usize = 4;
+const SLOTS_PER_WATCH: usize = 2;
 const MIN_SLOTS: usize = 1024;
 
 #[derive(Default)]
