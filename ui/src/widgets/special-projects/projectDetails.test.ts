@@ -16,7 +16,7 @@ const reply = {
     facility: { speedRaw: '87654', unavailable: null, sources: [{ kind: 'Scientist trait', unit: 'factor', label, modifier: label, assignment: 1, scientistReference: '30064771145', valueRaw: '123456' }] },
     assignments: [{ ordinal: 0, reference: '30064771145', person, target: 5, current: -2, timed: 1 }, { ordinal: 1, reference: '30064771145', person, target: 5, current: 2, timed: 0 }] }],
   projects: [{ owner: 5, id: 1, label, readHour: 24, pendingKnown: true, pending: { label, ordinal: 0, description: null, options: [{ label }], unavailable: null },
-    choices: [{ ordinal: 0, date: 23, reward: label, option: label, province: -1, progress: 12345, characterReference: '18446744073709551615', country: 5, scientist: 7, state: null }],
+    choices: [{ ordinal: 0, date: 23, earlier: false, reward: label, option: label, province: -1, progress: 12345, characterReference: '18446744073709551615', country: 5, scientist: 7, state: null }],
     seed: 4294967295, variables: [{ name: 'mod_array^0', valueRaw: '-9223372036854775808' }], historyReadHour: 23 }],
 } satisfies SpecialProjectDetails;
 

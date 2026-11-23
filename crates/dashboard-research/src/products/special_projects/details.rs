@@ -1,12 +1,12 @@
 
 use dashboard_base::products::Country;
-use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, country_key, needs_scope, scoped_at};
+use super::{CHARACTER_REFERENCE, Naming, PROGRAM_REFERENCE, ProjectContent, ProjectPerson, RunLinks, country_key, needs_scope, scoped_at};
 use dashboard_base::{Source, catalogue::View, products::{LoadContext, at_hour::{At, AtHour, Keys, Owner, Read}, game_text::{GameRun, runs}}};
 use dashboard_query::{Index, Query, cost};
 use replay::{campaign::Replay, lanes};
 use replay_data::{
     cadence::STAGGER_PERIOD,
-    rows::{CharacterRoleTraitRow, ProjectRow, ProjectRuntime, Recorded, ScientistDailyRow, SliceReadRow, TableId, tables},
+    rows::{CharacterRoleTraitRow, ProjectHistoryRow, ProjectRow, ProjectRuntime, Recorded, ScientistDailyRow, SliceReadRow, TableId, tables},
 };
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};
@@ -141,6 +141,8 @@ pub struct ProjectVariableValue {
 pub struct ProjectChoice {
     pub ordinal: u32,
     pub date: i32,
+    #[doc = " A completion follows it in the history read: an earlier attempt's choice."]
+    pub earlier: bool,
     pub reward: ProjectLabel,
     pub option: ProjectLabel,
     pub province: i32,
@@ -257,8 +259,10 @@ pub struct Context {
     visibility: visibility::Cache,
     scoped_details: std::sync::atomic::AtomicBool,
     coverage: std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
-    links: std::sync::Mutex<HashMap<(u32, u32, u32), (i32, Result<(), String>)>>,
+    links: Links,
 }
+
+type Links = std::sync::Mutex<HashMap<u32, Arc<RunLinks>>>;
 
 fn context(source: &Source, load: &LoadContext) -> Context {
     Context {
@@ -286,12 +290,22 @@ fn spelled(frame: &DecodedFrame, id: u32) -> Result<String, String> {
 struct Coverage {
     block: u32,
     reads: Vec<(i32, i32)>,
+    whole_reads: Vec<(i32, i32)>,
+    whole: Vec<(i32, i32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Withheld {
+    Unread,
+    Partial,
+    Tag,
+    Owner,
 }
 
 struct Reads<'r, 'q> {
     query: &'r Query<'q>,
     coverage: &'r std::sync::Mutex<HashMap<(u32, TableId), Coverage>>,
-    links: &'r std::sync::Mutex<HashMap<(u32, u32, u32), (i32, Result<(), String>)>>,
+    links: &'r Links,
     tag: &'r Country,
     holder: Owner,
     run: u32,
@@ -299,21 +313,36 @@ struct Reads<'r, 'q> {
 }
 
 impl Reads<'_, '_> {
-    fn last(&self, table: TableId, what: &str) -> Result<i32, String> {
+    fn spans<T>(&self, table: TableId, what: &str, of: impl FnOnce(&Coverage) -> T) -> Result<T, String> {
         let recording = self.query.replay.recording();
         let run = recording.run(self.run).map_err(|e| e.to_string())?;
         let block = run.ordinal(self.hour).ok_or_else(|| format!("{what}: hour not recorded"))? / replay_columnar::unit::BLOCK;
         let mut cache = self.coverage.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = (self.run, table);
         if cache.get(&key).is_none_or(|c| c.block != block) {
-            let first = run.block_first_hour(block);
-            let last = first.saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(run.last_hour());
-            let reads = cost::storage(|| lanes::available_reads(recording, self.run, table, first.saturating_sub(STAGGER_PERIOD - 1), last)).map_err(|e| format!("{what}: {e}"))?;
-            cache.insert(key, Coverage { block, reads });
+            let first = run.block_first_hour(block).saturating_sub(STAGGER_PERIOD - 1);
+            let last = run.block_first_hour(block).saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(run.last_hour());
+            let reads = cost::storage(|| lanes::available_reads(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
+            let whole_reads = cost::storage(|| lanes::complete_reads(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
+            let whole = cost::storage(|| lanes::statuses(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
+            let whole = whole.into_iter().filter(|run| run.status == replay_columnar::manifest::Status::Complete).map(|run| (run.first, run.last)).collect();
+            cache.insert(key, Coverage { block, reads, whole_reads, whole });
         }
-        let spans = &cache[&key].reads;
+        Ok(of(&cache[&key]))
+    }
+
+    fn latest(&self, spans: &[(i32, i32)]) -> Option<i32> {
         let at = spans.partition_point(|s| s.0 <= self.hour);
-        let read = at.checked_sub(1).map(|i| spans[i].1.min(self.hour)).filter(|&h| super::current(h, self.hour)).ok_or_else(|| format!("{what} were not read in the day up to this hour"))?;
+        at.checked_sub(1).map(|i| spans[i].1.min(self.hour)).filter(|&h| super::current(h, self.hour))
+    }
+
+    fn last(&self, table: TableId, what: &str) -> Result<i32, String> {
+        let read = self.spans(table, what, |coverage| self.latest(&coverage.reads))?.ok_or_else(|| format!("{what} were not read in the day up to this hour"))?;
+        self.supplies(read).then_some(read).ok_or_else(|| format!("{what} were last read before this country held the tag"))
+    }
+
+    fn last_complete(&self, table: TableId, what: &str) -> Result<i32, String> {
+        let read = self.spans(table, what, |coverage| self.latest(&coverage.whole_reads))?.ok_or_else(|| format!("{what} were not read whole in the day up to this hour"))?;
         self.supplies(read).then_some(read).ok_or_else(|| format!("{what} were last read before this country held the tag"))
     }
 
@@ -321,19 +350,30 @@ impl Reads<'_, '_> {
         super::current(read, self.hour) && super::held_from(self.query, self.tag, self.holder.slot, self.holder.id, self.hour).is_some_and(|since| since <= read)
     }
 
-    fn owned(&self, owner: u32, read: i32) -> Result<(), String> {
-        let key = (self.run, self.holder.slot, owner);
-        if let Some((at, known)) = self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key)
-            && *at == read
-        {
-            return known.clone();
+    fn held_since(&self, owner: u32, from: i32) -> Result<(), Withheld> {
+        let held_from = super::held_from(self.query, self.tag, self.holder.slot, self.holder.id, self.hour).filter(|&since| since <= from).ok_or(Withheld::Tag)?;
+        let links = {
+            let mut cache = self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match cache.get(&self.run) {
+                Some(links) => links.clone(),
+                None => {
+                    let links = Arc::new(cost::storage(|| super::country_ids::run_links(self.query.replay.recording(), self.run)).map_err(|_| Withheld::Owner)?);
+                    cache.insert(self.run, links.clone());
+                    links
+                }
+            }
+        };
+        super::Custody::new(&links, self.holder.slot, held_from, self.hour).held(owner, from, self.hour).then_some(()).ok_or(Withheld::Owner)
+    }
+
+    fn usable(&self, table: TableId, owner: u32, read: i32) -> Result<(), Withheld> {
+        if !super::current(read, self.hour) {
+            return Err(Withheld::Unread);
         }
-        let known = dashboard_base::products::at_hour::frame(self.query, read, &[Read::all(TableId::CountryLinks)], "Project owners")
-            .map_err(|why| why.to_string())
-            .and_then(|frame| owners_of(&frame, self.holder.slot).map_err(|why| format!("Country links are unavailable: {why}")))
-            .and_then(|owners| if owners.contains(&owner) { Ok(()) } else { Err(OTHER_OWNER.into()) });
-        self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key, (read, known.clone()));
-        known
+        if !self.spans(table, "Project reads", |coverage| super::within(&coverage.whole, read)).map_err(|_| Withheld::Partial)? {
+            return Err(Withheld::Partial);
+        }
+        self.held_since(owner, read)
     }
 
     fn continued(&self, previous: i32, table: TableId, what: &str) -> Option<Option<i32>> {
@@ -440,13 +480,24 @@ fn owner_read(frame: &DecodedFrame, table: TableId, owner: u32) -> Result<i32, S
     replay_data::sliced::read_hour(slices, table, owner).ok_or_else(|| PROJECTS_UNREAD.to_owned())
 }
 
-const OTHER_OWNER: &str = "The project was read while its owner belonged to another country";
+const OTHER_OWNER: &str = "The project's owner was not this country's from its read to this hour";
 const PROJECTS_UNREAD: &str = "Projects were not read in the day up to this hour while this country held the tag";
+const PROJECTS_PARTIAL: &str = "Projects were read only in part";
+const HISTORY_UNREAD: &str = "Project choice history was not read in the day up to this hour while this country held the tag";
+const HISTORY_PARTIAL: &str = "Project choice history was read only in part";
+
+fn projects_read(reads: &Reads<'_, '_>, owner: u32, read: Option<i32>) -> Result<i32, String> {
+    let read = read.ok_or(PROJECTS_UNREAD)?;
+    reads.usable(TableId::Projects, owner, read).map_err(|why| match why {
+        Withheld::Unread | Withheld::Tag => PROJECTS_UNREAD,
+        Withheld::Partial => PROJECTS_PARTIAL,
+        Withheld::Owner => OTHER_OWNER,
+    })?;
+    Ok(read)
+}
 
 fn supplied_project<'f>(frame: &'f DecodedFrame, reads: &Reads<'_, '_>, owner: u32, id: u32) -> Result<(&'f ProjectRow, i32), String> {
-    let read = owner_read(frame, TableId::Projects, owner).ok().filter(|&read| reads.supplies(read));
-    let read = read.ok_or(PROJECTS_UNREAD)?;
-    reads.owned(owner, read)?;
+    let read = projects_read(reads, owner, owner_read(frame, TableId::Projects, owner).ok())?;
     let rows = frame.complete::<tables::Projects>().map_err(|why| format!("Projects are unavailable: {why}"))?;
     rows.binary_search_by_key(&(owner, id), |row| (row.owner, row.local_id)).ok().map(|at| (&rows[at], read)).ok_or_else(|| "The project is not recorded at this hour".to_owned())
 }
@@ -902,13 +953,13 @@ pub(super) fn option_name(options: &[content_reader_core::special_projects::Prot
     Ok(first.name.clone())
 }
 
-fn history_read(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32, projects: i32) -> Result<i32, String> {
-    let read = replay_data::sliced::read_hour(slices, TableId::ProjectHistory, owner)
-        .filter(|&read| reads.supplies(read))
-        .ok_or("Project choice history was not read in the day up to this hour while this country held the tag")?;
-    if read != projects {
-        reads.owned(owner, read)?;
-    }
+fn history_read(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32) -> Result<i32, String> {
+    let read = replay_data::sliced::read_hour(slices, TableId::ProjectHistory, owner).ok_or(HISTORY_UNREAD)?;
+    reads.usable(TableId::ProjectHistory, owner, read).map_err(|why| match why {
+        Withheld::Unread | Withheld::Tag => HISTORY_UNREAD,
+        Withheld::Partial => HISTORY_PARTIAL,
+        Withheld::Owner => OTHER_OWNER,
+    })?;
     Ok(read)
 }
 
@@ -919,9 +970,9 @@ enum OwnerRead {
 
 impl OwnerRead {
     fn of(slices: &[SliceReadRow], reads: &Reads<'_, '_>, owner: u32, has_rows: bool) -> Self {
-        match replay_data::sliced::read_hour(slices, TableId::Projects, owner).filter(|&read| reads.supplies(read)) {
-            Some(read) if reads.owned(owner, read).is_ok() => Self::Read(read, has_rows.then(|| history_read(slices, reads, owner, read))),
-            _ => Self::Withheld,
+        match projects_read(reads, owner, replay_data::sliced::read_hour(slices, TableId::Projects, owner)) {
+            Ok(read) => Self::Read(read, has_rows.then(|| history_read(slices, reads, owner))),
+            Err(_) => Self::Withheld,
         }
     }
 
@@ -933,26 +984,55 @@ impl OwnerRead {
     }
 }
 
-fn history_spellings(query: &Query<'_>, frame: &DecodedFrame, owner: u32, read: i32) -> Result<DecodedFrame, String> {
-    let mut ids: BTreeSet<u32> = prefixed(frame.complete::<tables::Projects>().unwrap_or(&[]), owner, |row| row.owner).iter().map(|row| row.definition_id).collect();
-    ids.extend(prefixed(frame.complete::<tables::ProjectHistory>().unwrap_or(&[]), owner, |row| row.owner).iter().flat_map(|row| [row.prototype_reward_handle, row.option_handle]));
-    dashboard_base::products::at_hour::frame(query, read, &[Read::these(TableId::LexicalTokens, ids.into_iter().map(u128::from))], SpecialProjectDetailsAt::TITLE)
-        .map_err(|why| format!("Choice spellings at the history read are unavailable: {why}"))
+const UNREAD_WITH_HISTORY: &str = "The project was not read with its choice history, so the definition its choices belong to is not recorded";
+
+struct Listed {
+    lexical: DecodedFrame,
+    definitions: BTreeMap<u32, u32>,
 }
 
-fn choices(frame: &DecodedFrame, lexical: &DecodedFrame, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProjectChoice>> {
+fn history_spellings(query: &Query<'_>, frame: &DecodedFrame, owner: u32, projects: i32, history: i32) -> Result<Listed, String> {
+    let held;
+    let rows: &[ProjectRow] = if projects == history {
+        prefixed(frame.complete::<tables::Projects>().unwrap_or(&[]), owner, |row| row.owner)
+    } else {
+        held = dashboard_base::products::at_hour::frame(query, history, &[Read { table: TableId::Projects, keys: owner_ranges(&BTreeSet::from([owner]), 32) }, project_slices(owner)], SpecialProjectDetailsAt::TITLE)
+            .map_err(|why| format!("The project read with the choice history is unavailable: {why}"))?;
+        if owner_read(&held, TableId::Projects, owner).ok() != Some(history) {
+            return Err(UNREAD_WITH_HISTORY.into());
+        }
+        held.complete::<tables::Projects>().map_err(|why| format!("The project read with the choice history is unavailable: {why}"))?
+    };
+    let definitions: BTreeMap<u32, u32> = rows.iter().map(|row| (row.local_id, row.definition_id)).collect();
+    let mut ids: BTreeSet<u32> = definitions.values().copied().collect();
+    ids.extend(prefixed(frame.complete::<tables::ProjectHistory>().unwrap_or(&[]), owner, |row| row.owner).iter().flat_map(|row| [row.prototype_reward_handle, row.option_handle]));
+    let lexical = dashboard_base::products::at_hour::frame(query, history, &[Read::these(TableId::LexicalTokens, ids.into_iter().map(u128::from))], SpecialProjectDetailsAt::TITLE)
+        .map_err(|why| format!("Choice spellings at the history read are unavailable: {why}"))?;
+    Ok(Listed { lexical, definitions })
+}
+
+fn choices(frame: &DecodedFrame, listed: &Listed, project: &ProjectRow, namer: &mut Namer<'_, '_, '_>, unavailable: &mut Vec<String>) -> Option<Vec<ProjectChoice>> {
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| unavailable.push(format!("Project choice history is unavailable: {why}"))).ok()?;
     let first = rows.partition_point(|row| (row.owner, row.project) < (project.owner, project.local_id));
     let last = first + rows[first..].partition_point(|row| (row.owner, row.project) == (project.owner, project.local_id));
-    let project_token = spelled(lexical, project.definition_id);
+    let Some(&definition) = listed.definitions.get(&project.local_id) else {
+        unavailable.push(UNREAD_WITH_HISTORY.into());
+        return None;
+    };
+    let lexical = &listed.lexical;
+    let project_token = spelled(lexical, definition);
     if let Err(why) = &project_token {
         unavailable.push(why.clone());
     }
+    let marker = |row: &ProjectHistoryRow| row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER;
+    let current = rows[first..last].iter().rposition(marker).map_or(0, |at| at + 1);
     Some(
         rows[first..last]
             .iter()
-            .filter(|row| !(row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER))
-            .map(|row| {
+            .enumerate()
+            .filter(|(_, row)| !marker(row))
+            .map(|(at, row)| (at < current, row))
+            .map(|(earlier, row)| {
                 let reward = spelled(lexical, row.prototype_reward_handle).map_err(|why| unavailable.push(why)).ok();
                 let option = spelled(lexical, row.option_handle).map_err(|why| unavailable.push(why)).ok();
                 let authored = match (namer.content(), &project_token, reward.as_deref()) {
@@ -960,11 +1040,12 @@ fn choices(frame: &DecodedFrame, lexical: &DecodedFrame, project: &ProjectRow, n
                     _ => None,
                 };
                 let option_key = authored.zip(option.as_deref()).and_then(|(found, option)| option_name(&found.options, option).map_err(|why| unavailable.push(why)).ok());
-                (row, namer.named(reward, row.prototype_reward_handle, authored.map(|found| found.name.clone())), namer.named(option, row.option_handle, option_key))
+                (earlier, row, namer.named(reward, row.prototype_reward_handle, authored.map(|found| found.name.clone())), namer.named(option, row.option_handle, option_key))
             })
-            .map(|(row, reward, option)| ProjectChoice {
+            .map(|(earlier, row, reward, option)| ProjectChoice {
                 ordinal: row.ordinal,
                 date: row.date,
+                earlier,
                 reward,
                 option,
                 province: row.context.province,
@@ -991,18 +1072,12 @@ fn projects(
     let mut read_of: BTreeMap<u32, i32> = BTreeMap::new();
     let mut withheld = Vec::new();
     for &owner in owners {
-        let why = match replay_data::sliced::read_hour(slices, TableId::Projects, owner) {
-            Some(read) if reads.supplies(read) => match reads.owned(owner, read) {
-                Ok(()) => {
-                    read_of.insert(owner, read);
-                    continue;
-                }
-                Err(why) => why,
-            },
-            _ => PROJECTS_UNREAD.to_owned(),
-        };
-        if !withheld.contains(&why) {
-            withheld.push(why);
+        match projects_read(reads, owner, replay_data::sliced::read_hour(slices, TableId::Projects, owner)) {
+            Ok(read) => {
+                read_of.insert(owner, read);
+            }
+            Err(why) if !withheld.contains(&why) => withheld.push(why),
+            Err(_) => {}
         }
     }
     if !withheld.is_empty() {
@@ -1012,9 +1087,9 @@ fn projects(
     let mut out = Vec::new();
     for (&owner, &read) in &read_of {
         let owned = prefixed(rows, owner, |row| row.owner);
-        let history = history_read(slices, reads, owner, read).and_then(|history| {
+        let history = history_read(slices, reads, owner).and_then(|history| {
             if owned.is_empty() { return Ok((history, None)); }
-            history_spellings(reads.query, frame, owner, history).map(|lexical| (history, Some(lexical)))
+            history_spellings(reads.query, frame, owner, read, history).map(|listed| (history, Some(listed)))
         });
         if let Err(why) = &history
             && !owned.is_empty()
@@ -1043,7 +1118,7 @@ fn projects(
                     .ok()
             });
             let choices = match &history {
-                Ok((_, Some(lexical))) => choices(frame, lexical, project, namer, unavailable),
+                Ok((_, Some(listed))) => choices(frame, listed, project, namer, unavailable),
                 _ => None,
             };
             out.push(ProjectRuntimeDetails {
@@ -1061,6 +1136,21 @@ fn projects(
         }
     }
     Some(out)
+}
+
+fn assigned(reads: &Reads<'_, '_>, project: &ProjectRow) -> super::Program {
+    let id = (project.program_reference >> 32) as u32;
+    let read = (project.program_reference as u32 == PROGRAM_REFERENCE)
+        .then(|| reads.last_complete(TableId::ProjectPrograms, "Program assignments").ok())
+        .flatten()
+        .filter(|&read| reads.held_since(project.owner, read).is_ok());
+    let cells = read.map(|read| {
+        let row = dashboard_base::products::at_hour::frame(reads.query, read, &[Read::these(TableId::ProjectPrograms, [u128::from(id)])], SpecialProjectEffectsAt::TITLE)
+            .ok()
+            .and_then(|frame| frame.complete::<tables::ProjectPrograms>().ok().and_then(|rows| rows.iter().find(|row| row.id == id).cloned()));
+        (read, row.map(|row| super::Assignment { owner: Some(row.owner), active: row.active_project, scientist: Some(row.scientist) }))
+    });
+    super::assignment(project.owner, project.local_id, project.program_reference, cells)
 }
 
 fn effect_tables() -> Vec<TableId> {
@@ -1179,23 +1269,7 @@ impl AtHour for SpecialProjectEffectsAt {
             out.unavailable = Some(format!("Definition {token} is absent from content"));
             return Ok(out);
         };
-        let scientist = (|| {
-            if project.program_reference as u32 != PROGRAM_REFERENCE {
-                return Err("Scientist assignment has no supplying read at this hour".to_owned());
-            }
-            let id = (project.program_reference >> 32) as u32;
-            let read = reads.last(TableId::ProjectPrograms, "Program assignments")?;
-            if read != at.hour {
-                return Err("Scientist assignment has no supplying read at this hour".to_owned());
-            }
-            let programs = frame.complete::<tables::ProjectPrograms>().map_err(|why| why.to_string())?;
-            let program = programs.binary_search_by_key(&id, |row| row.id).ok().map(|at| &programs[at]).ok_or("Scientist assignment has no supplying read at this hour")?;
-            match program.scientist {
-                0 => Ok(None),
-                reference if reference as u32 == CHARACTER_REFERENCE => Ok(Some((reference >> 32) as u32)),
-                _ => Err("Unknown scientist reference type".to_owned()),
-            }
-        })();
+        let scientist = assigned(&reads, project).scientist();
         out.output = Some(effects(content, frame, owner.slot, project, &found.output, &scientist));
         if let Recorded::Value(runtime) = &project.runtime
             && let Some(id) = runtime.pending_reward

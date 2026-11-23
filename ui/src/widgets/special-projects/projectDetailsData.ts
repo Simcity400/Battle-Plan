@@ -44,7 +44,7 @@ export function validateProjectDetails(value: unknown): SpecialProjectDetails {
     || !(project.historyReadHour === null ? project.choices === null : readBy(project.historyReadHour, hour) && project.choices !== null)
     || typeof project.pendingKnown !== 'boolean' || !(project.pending === null || project.pendingKnown && reward(project.pending)) || !(project.seed === null || uint(project.seed))
     || !(project.variables === null || Array.isArray(project.variables) && project.variables.every(variable => object(variable) && typeof variable.name === 'string' && raw(variable.valueRaw)))
-    || !(project.choices === null || Array.isArray(project.choices) && project.choices.every(choice => object(choice) && uint(choice.ordinal) && integer(choice.date) && label(choice.reward) && label(choice.option)
+    || !(project.choices === null || Array.isArray(project.choices) && project.choices.every(choice => object(choice) && uint(choice.ordinal) && integer(choice.date) && typeof choice.earlier === 'boolean' && label(choice.reward) && label(choice.option)
       && signed(choice.province) && signed(choice.progress) && reference(choice.characterReference)
       && (choice.country === null || uint(choice.country)) && (choice.scientist === null || uint(choice.scientist)) && (choice.state === null || uint(choice.state))))) return bad();
   return value as unknown as SpecialProjectDetails;

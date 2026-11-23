@@ -181,6 +181,41 @@ fn a_module_stat_with_an_unreadable_term_is_withheld_whole() {
     assert_eq!(sheet.refusals, BTreeMap::from([(why.to_owned(), 1)]));
 }
 
+#[test]
+fn an_unreadable_module_multiplier_withholds_only_the_stats_a_module_scales_with_it() {
+    let (database, _) = content_reader_core::equipment::fixture::load(&[(
+        "common/units/equipment/convoys.txt",
+        "equipment_modules = { gun = { add_stats = { lg_attack = 2 } } motor = { add_stats = { torpedo_attack = 1 } } }
+         equipments = {
+            hull = { is_archetype = yes type = convoy lg_attack = 2
+                module_add_stats_multiplier = { lg_attack = unknown_amount }
+                module_slots = { main = { allowed_module_categories = { any } } } }
+            hull_1 = { archetype = hull module_slots = inherit }
+            hull_2 = { archetype = hull module_slots = inherit default_modules = { main = gun } }
+            hull_3 = { archetype = hull module_slots = inherit default_modules = { main = motor } }
+         }",
+    )]);
+    let metadata = content_reader_core::equipment::stat_metadata();
+    let lg_attack = content_reader_core::equipment::stat_index(b"lg_attack").unwrap();
+    let names = localisation();
+    let totals = |token: &str| equipment_totals(&database, metadata, &names, token).unwrap();
+    assert!(totals("hull_1").withheld.is_empty(), "X-S10: with no module adding light attack, the unread multiplier scales nothing, so the known base attack stays: {:?}", totals("hull_1").withheld);
+    assert_eq!(totals("hull_1").stats[lg_attack], 200_000);
+    assert!(totals("hull_2").withheld.get(&lg_attack).is_some_and(|why| why.contains("unknown_amount")), "a module adding light attack is scaled by it, so the total is withheld");
+    assert!(totals("hull_3").withheld.is_empty(), "a module scaling another stat is not");
+}
+
+#[test]
+fn a_buildings_sheet_shows_its_recorded_maximum_level_and_names_what_it_leaves_out() {
+    let localisation = localisation();
+    let mut sheet = Sheet::new(&localisation);
+    let building = content_reader_core::buildings::BuildingType { name: "mod_bunker".into(), province_max: Some(5), local_resources: vec![("steel".into(), 1)], ..Default::default() };
+    sheet.building(&building, &content_reader_core::defines::Defines::new().unwrap());
+    assert_eq!(lines(&sheet), ["Maximum level|5"], "O-S2, X-S11: the sheet is the building's recorded facts, never empty");
+    assert_eq!(sheet.stats[0].source.as_deref(), Some("Per province"));
+    assert!(sheet.refusals.keys().any(|why| why.contains("local resources")), "{:?}", sheet.refusals);
+}
+
 fn shown_value(sheet: &Sheet<'_>, at: usize) -> String {
     shown(&sheet.stats[at].value)
 }

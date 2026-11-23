@@ -40,7 +40,7 @@ const daily = (from: number, start: number, perDay: number): ProjectStatus[] => 
   for (let day = 0; from + day * 24 < HOURS; day++) {
     const progress = Math.min(100, start + Math.floor(day * perDay));
     runs.push({ firstHour: from + day * 24, lastHour: Math.min(HOURS - 1, from + day * 24 + 23), readHour: from + day * 24, presentation: 0, progress, state: 'running',
-      iterations: Math.floor(progress / 25) });
+      iterations: Math.floor(progress / 25), scientistRead: null, lastScientistRead: null, completion: null });
   }
   return runs;
 };
@@ -50,7 +50,7 @@ const merge = (runs: ProjectStatus[]) => runs.reduce<ProjectStatus[]>((out, run)
   return out;
 }, []);
 export const reply: SpecialProjectsReply = { branchId: '1', tag: 'GER', identities, available: [{ firstHour: 0, lastHour: HOURS - 1 }], partial: [], unresolved: [],
-  presentations: [{ name: 'Rocket engines', specialization: null, specializationName: null, icon: null, iconMissing: 'none', scientist: 0, scientistRead: null, lastScientist: null, lastScientistRead: null }],
+  presentations: [{ name: 'Rocket engines', specialization: null, specializationName: null, icon: null, iconMissing: 'none', scientist: 0, lastScientist: null }], reads: [],
   people: [{ assigned: false, id: null, name: null, portrait: null, missing: 'No scientist assigned.' }],
   iterationTexts: { 0: '0', 1: '1', 2: '2', 3: '3', 4: '4' }, unavailable: null, warnings: [],
   projects: [

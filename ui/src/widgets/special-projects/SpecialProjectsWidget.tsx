@@ -36,7 +36,7 @@ import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
-  observedAt, completedLabel, completionDate, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, scientistName, shownCard,
+  observedAt, completedLabel, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
@@ -77,6 +77,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
     <div className="special-project-rows">
       {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
         const { run, info } = card;
+        const read = readLabel(statusRead(reply, card.project, at), at);
         return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
           style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
           <ProjectTile icon={info.icon} onClick={event => open(card, event)} />
@@ -84,7 +85,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
           <span className="special-project-who">
             {run.state === 'paused' && <b className="special-project-state is-paused">Paused</b>}
             {run.state === 'unknown' && <b className="special-project-state">State unknown</b>}
-            <Scientist reply={reply} info={info} /></span>
+            <Scientist reply={reply} info={info} />{read && <small className="special-project-read">{read}</small>}</span>
           <span className="special-project-progress" aria-hidden="true"><span /></span>
           <strong className="special-project-percent" id={`${valueId}-${card.project.id}-progress`} data-paint="progress">{run.progress}%</strong>
           <small className="special-project-iterations" id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationMark(run.iterations)}</small>
@@ -95,7 +96,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
           <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} />
           <strong className="special-project-name is-open" data-panel-label={card.project.id} onClick={event => open(card, event)}>{card.info.name}</strong>
           <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
-          <span className="special-project-when">{completedLabel(card.project)}</span>
+          <span className="special-project-when">{completedLabel(card.run)}</span>
         </div>)}
         {earlier.length > 0 && <details className="special-project-earlier">
           <summary className="special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>
@@ -211,7 +212,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const openMenu = (card: ProjectCard, x: number, y: number) => {
     if (!track) return;
     const start = jumpItem(runtime, track.id, card.project.firstRead);
-    const completion = completionDate(card.project);
+    const completion = card.run.completion;
     menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(card.project.firstRead)}` },
       ...(completion !== null ? [{ ...jumpItem(runtime, track.id, completion), label: `Jump to completion · ${dayLabel(completion)}` }] : [])]);
   };
@@ -221,8 +222,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
       return run ? { ...card, run, info: reply.presentations[run.presentation] } : card;
     };
     const show = (x: number, y: number, target: EventTarget | null) => showTooltip(owner, fitTooltip([target instanceof Element && target.closest('.special-project-iterations')
-      ? iterationTooltip(reply, atNow()) : projectTooltip(reply, atNow())], viewport), x, y);
-    return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(projectTooltip(reply, card)),
+      ? iterationTooltip(reply, atNow()) : projectTooltip(reply, atNow(), now())], viewport), x, y);
+    return { tabIndex: 0, role: 'group', 'aria-label': tooltipText(projectTooltip(reply, card, at)),
       onPointerMove: event => show(event.clientX, event.clientY, event.target), onPointerLeave: () => hideTooltip(owner),
       onFocus: event => { const box = event.currentTarget.getBoundingClientRect(); show(box.right, box.top, null); }, onBlur: () => hideTooltip(owner),
       onContextMenu: event => { event.preventDefault(); openMenu(atNow(), event.clientX, event.clientY); },
@@ -251,6 +252,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
   else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
+  else if (view === 'history' && bounded.error) body = <WidgetState kind="error" failure={bounded.error} onRetry={bounded.retry} />;
+  else if (view === 'history' && !notes) body = <WidgetState kind="loading" label="Loading special projects…" />;
   else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={data.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
@@ -278,13 +281,14 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     barHeight={18} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} labelMenu
     tooltip={(lane, span, hour) => {
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      return id === null ? null : historyTooltip(data[country], id, span, hour, now(), resolved.memberships.get(data[country].tag));
+      const reply = notes?.[country];
+      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, Math.min(now(), at), resolved.memberships.get(reply.tag));
     }}
     onContextMenu={(_hour, x, y, lane) => {
       if (!lane) return;
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = data[country];
-      const card = id === null ? null : historyCard(reply, id, now(), resolved.memberships.get(reply.tag));
+      const reply = notes?.[country];
+      const card = id === null || !reply ? null : historyCard(reply, id, Math.min(now(), at), resolved.memberships.get(reply.tag));
       if (card) openMenu(card, x, y);
     }} />;
   return <div className="special-projects" ref={view === 'live' ? live.root : undefined}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;

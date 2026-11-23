@@ -5,6 +5,7 @@ import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout.ts
 import { withoutHours } from '../../charts/timeline/runState.ts';
 import { clipToSpans, runAt, spansCovered } from '../../charts/series.ts';
 import { dayLabel } from '../../charts/draw.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 import { usNumber } from '../../charts/numberFormat.ts';
 import type { TooltipContent } from '../../charts/tooltip.ts';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
@@ -26,7 +27,7 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     || !Array.isArray(input.available) || !input.available.every(span) || !Array.isArray(input.partial) || !input.partial.every(span)
     || !Array.isArray(input.unresolved) || !input.unresolved.every(span)
     || !object(input.iterationTexts) || !Object.entries(input.iterationTexts).every(([count, text]) => /^-?(0|[1-9][0-9]*)$/.test(count) && integer(Number(count)) && nullableString(text))
-    || !Array.isArray(input.projects) || !Array.isArray(input.presentations) || !Array.isArray(input.people)
+    || !Array.isArray(input.projects) || !Array.isArray(input.presentations) || !Array.isArray(input.people) || !Array.isArray(input.reads)
     || !Array.isArray(input.warnings) || !input.warnings.every(item => typeof item === 'string')) return bad();
   const ordered = (values: readonly { firstHour: number; lastHour: number }[]) => values.every((value, i) => !i || values[i - 1].lastHour < value.firstHour);
   if (!ordered(input.available as HourSpan[]) || !spansCovered(input.available as HourSpan[], input.identities as CountryIdentityRun[]) || !ordered(input.unresolved as HourSpan[])
@@ -37,10 +38,14 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
   const people = (input.people as unknown[]).length;
   for (const info of input.presentations) if (!object(info) || typeof info.name !== 'string'
     || !nullableString(info.specialization) || !nullableString(info.specializationName) || !nullableString(info.icon) || !nullableString(info.iconMissing)
-    || !nullableInteger(info.scientistRead) || !nullableInteger(info.lastScientistRead) || (info.lastScientist === null) !== (info.lastScientistRead === null)
     || !integer(info.scientist) || info.scientist < 0 || info.scientist >= people
     || !(info.lastScientist === null || integer(info.lastScientist) && info.lastScientist >= 0 && info.lastScientist < people)) return bad();
   const presentation = (value: unknown) => integer(value) && value >= 0 && value < (input.presentations as unknown[]).length;
+  for (const [at, read] of (input.reads as unknown[]).entries()) {
+    const before = at ? (input.reads as Record<string, number>[])[at - 1] : null;
+    if (!span(read) || !object(read) || !integer(read.owner) || read.owner < 0 || !integer(read.readHour) || read.readHour > (read.firstHour as number)
+      || before && (before.owner > read.owner || before.owner === read.owner && before.lastHour >= (read.firstHour as number))) return bad();
+  }
   const ids = new Set<string>();
   for (const project of input.projects) {
     if (!object(project) || typeof project.id !== 'string' || ids.has(project.id) || !integer(project.owner) || project.owner < 0 || !integer(project.local) || project.local < 0
@@ -50,6 +55,9 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
     for (const run of project.statuses) if (!span(run) || !object(run) || !presentation(run.presentation) || !integer(run.readHour) || run.readHour > (run.firstHour as number)
       || !integer(run.progress) || run.progress < -100 || run.progress > 100 || !STATES.includes(run.state as string) || run.state === 'completed' && run.progress !== 100
       || !nullableInteger(run.iterations) || run.iterations !== null && !(String(run.iterations) in input.iterationTexts)
+      || !nullableInteger(run.scientistRead) || !nullableInteger(run.lastScientistRead)
+      || (run.lastScientistRead === null) !== ((input.presentations as ProjectPresentation[])[run.presentation as number].lastScientist === null)
+      || !nullableInteger(run.completion) || run.completion !== null && (run.state !== 'completed' || (run.completion as number) > (run.readHour as number))
       || (run.firstHour as number) < (project.firstRead as number)) return bad();
     if (!ordered(project.statuses as ProjectStatus[]) || !spansCovered(project.statuses as ProjectStatus[], input.available as HourSpan[])) return bad();
     for (const entry of project.entries) if (!object(entry) || !integer(entry.ordinal) || !integer(entry.date) || typeof entry.completion !== 'boolean' || !integer(entry.readHour)
@@ -60,12 +68,10 @@ export function validateSpecialProjectsReply(input: unknown): SpecialProjectsRep
   return input as unknown as SpecialProjectsReply;
 }
 
-export const completionDate = (project: ProjectRecord): number | null =>
-  project.entries.reduce<number | null>((latest, entry) => entry.counted && (latest === null || entry.date > latest) ? entry.date : latest, null);
-export const completedLabel = (project: ProjectRecord) => {
-  const date = completionDate(project);
-  return date === null ? 'date not recorded' : dayLabel(date);
-};
+export const completedLabel = (run: ProjectStatus) => run.completion === null ? 'date not recorded' : dayLabel(run.completion);
+export const statusRead = (data: SpecialProjectsReply, project: ProjectRecord, hour: number): number | null =>
+  data.reads.find(read => read.owner === project.owner && read.firstHour <= hour && hour <= read.lastHour)?.readHour ?? null;
+export const readLabel = (read: number | null, hour: number) => read !== null && read < hour ? `read ${formatDateTime(read)}` : null;
 export const observedAt = (data: SpecialProjectsReply, hour: number) => runAt(data.available, hour) !== null;
 export const unobservedReason = (data: SpecialProjectsReply, hour: number) =>
   runAt(data.partial, hour) !== null ? 'Projects were read only in part at this time.' : 'Projects were not recorded at this time.';
@@ -138,8 +144,8 @@ export const scientistName = (data: SpecialProjectsReply, info: ProjectPresentat
   const scientist = data.people[info.scientist];
   return scientist.name ?? (scientist.assigned === false ? 'No scientist assigned' : 'Scientist not recorded');
 };
-export const lastScientist = (data: SpecialProjectsReply, info: ProjectPresentation) =>
-  info.lastScientist === null || info.lastScientistRead === null ? null : `${data.people[info.lastScientist].name ?? 'Name unavailable'} (read ${dayLabel(info.lastScientistRead)})`;
+export const lastScientist = (data: SpecialProjectsReply, info: ProjectPresentation, run: ProjectStatus) =>
+  info.lastScientist === null || run.lastScientistRead === null ? null : `${data.people[info.lastScientist].name ?? 'Name unavailable'} (read ${formatDateTime(run.lastScientistRead)})`;
 export const iterationCount = (iterations: number | null) =>
   iterations === null ? 'Iterations not recorded' : `${usNumber.format(iterations)} ${iterations === 1 ? 'iteration' : 'iterations'}`;
 export const endedCount = (run: ProjectStatus) => iterationCount(run.iterations);
@@ -171,6 +177,7 @@ const joined = (details: SpecialProjectDetails, card: ProjectCard) =>
   details.projects?.find(project => project.owner === card.project.owner && project.id === card.project.local);
 const listStale = (found: ProjectRuntimeDetails | undefined, bound: EpisodeBound) => !!found && bound.open && found.readHour > bound.through;
 const inStatuses = (project: ProjectRecord, bound: EpisodeBound, read: number) => runAt(project.statuses, read) !== null
+  || project.statuses.some(run => run.readHour === read)
   || bound.open && read > project.statuses[project.statuses.length - 1].lastHour && read <= bound.through;
 
 export interface RuntimeMatch { project: ProjectRuntimeDetails; choices: ProjectRuntimeDetails['choices'] | string }
@@ -228,7 +235,7 @@ export function currentProjects(data: SpecialProjectsReply, hour: number): Curre
     else if (run.state !== 'cancelled') groups.running.push(card);
   }
   groups.running.sort((a, b) => b.run.progress - a.run.progress || a.project.firstRead - b.project.firstRead || byName(a, b));
-  groups.completed.sort((a, b) => (completionDate(b.project) ?? b.run.firstHour) - (completionDate(a.project) ?? a.run.firstHour) || byName(a, b));
+  groups.completed.sort((a, b) => (b.run.completion ?? b.run.firstHour) - (a.run.completion ?? a.run.firstHour) || byName(a, b));
   groups.earlier.sort(byName);
   return groups;
 }
@@ -238,7 +245,8 @@ export function currentKey(data: SpecialProjectsReply, hour: number): string {
   const { running, completed, earlier } = currentProjects(data, hour);
   const part = (cards: readonly ProjectCard[], extra: (card: ProjectCard) => string) =>
     JSON.stringify(cards.map(card => [card.project.id, card.info, data.people[card.info.scientist], extra(card)]));
-  return [part(running, card => card.run.state), part(completed, card => String(completionDate(card.project))), part(earlier, () => '')].join('\u0003');
+  const read = (card: ProjectCard) => `${card.run.state}\u0001${statusRead(data, card.project, hour)}\u0001${card.run.scientistRead}\u0001${card.run.lastScientistRead}`;
+  return [part(running, read), part(completed, card => `${card.run.completion}\u0001${read(card)}`), part(earlier, read)].join('\u0003');
 }
 
 export function projectStructure(reply: SpecialProjectsReply, hour: number) {
@@ -292,9 +300,10 @@ export function historyKey(data: SpecialProjectsReply, hour: number, membership?
   const parts: string[] = [];
   for (const project of data.projects) {
     const latest = shownRuns(project, hour, membership).at(-1);
-    if (latest) parts.push(`${project.id}\u0001${latest.presentation}\u0001${latest.state}\u0001${completionDate(project) ?? ''}`);
+    if (latest) parts.push(`${project.id}\u0001${latest.firstHour}\u0001${latest.presentation}\u0001${latest.state}\u0001${latest.completion ?? ''}`);
   }
-  return parts.length ? parts.join('\u0002') : `\u0003${historyUnrecorded([data], from, hour, () => membership) ?? ''}`;
+  const coverage = runAt(data.available, hour)?.firstHour ?? null;
+  return parts.length ? `${coverage}\u0002${parts.join('\u0002')}` : `\u0003${historyUnrecorded([data], from, hour, () => membership) ?? ''}`;
 }
 
 export function closedLane(id: string, history: ProjectHistory): TimelineLane | null {
@@ -303,15 +312,18 @@ export function closedLane(id: string, history: ProjectHistory): TimelineLane | 
   return { id, label: `${parts.filter(Boolean).join(', ')} by ${dayLabel(history.by)}`, compact: true, spans: [] };
 }
 
-export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard): TooltipContent {
+export function projectTooltip(data: SpecialProjectsReply, card: ProjectCard, hour: number): TooltipContent {
   const { project, run, info } = card;
-  const rows = [{ label: 'Scientist', value: scientistName(data, info) }];
-  const last = lastScientist(data, info);
+  const scientistRead = readLabel(run.scientistRead, hour);
+  const rows = [{ label: 'Scientist', value: scientistRead ? `${scientistName(data, info)} (${scientistRead})` : scientistName(data, info) }];
+  const last = lastScientist(data, info, run);
   if (last) rows.push({ label: 'Last observed', value: last });
   rows.push({ label: 'First recorded', value: dayLabel(project.firstRead) });
-  rows.push(run.state === 'completed' ? { label: 'Completed', value: completedLabel(project) } : { label: 'Progress', value: `${run.progress}%` });
+  rows.push(run.state === 'completed' ? { label: 'Completed', value: completedLabel(run) } : { label: 'Progress', value: `${run.progress}%` });
   if (run.state === 'paused' || run.state === 'unknown') rows.push({ label: 'State', value: run.state === 'paused' ? 'Paused' : 'Unknown' });
-  if (run.state === 'cancelled') rows.push({ label: 'Cancelled', value: `read ${dayLabel(run.readHour)}` });
+  if (run.state === 'cancelled') rows.push({ label: 'State', value: 'Cancelled' });
+  const read = readLabel(statusRead(data, project, hour), hour);
+  if (read) rows.push({ label: 'Status', value: read });
   const text = run.iterations === null ? null : data.iterationTexts[run.iterations] ?? null;
   return { title: info.name, subtitle: contentTitle(info.specializationName, info.specialization, 'Type name unavailable'), icon: info.icon ?? undefined, rows,
     ...(text ? { description: text } : {}) };
@@ -322,7 +334,8 @@ export function historyTooltip(data: SpecialProjectsReply, id: string, span: Tim
   if (!project) return null;
   const runs = shownRuns(project, playhead, membership);
   const latest = runs.at(-1);
-  const run = runAt(runs, Math.min(hour, playhead, span?.lastHour ?? Infinity));
+  const at = Math.min(hour, playhead, span?.lastHour ?? Infinity);
+  const run = runAt(runs, at);
   if (!run) return { title: latest ? data.presentations[latest.presentation].name : 'Special project', rows: [{ label: 'First recorded', value: dayLabel(project.firstRead) }], note: 'This project was not recorded at this hour.' };
-  return projectTooltip(data, { project, run, info: data.presentations[run.presentation] });
+  return projectTooltip(data, { project, run, info: data.presentations[run.presentation] }, at);
 }

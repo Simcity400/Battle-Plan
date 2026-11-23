@@ -3344,13 +3344,9 @@ export type ProjectPresentation = { name: string, specialization: string | null,
  */
 scientist: number,
 /**
- * The program read the scientist comes from.
+ * Where the program is not read now or names no one: the last scientist observed, its index in `people`.
  */
-scientistRead: number | null,
-/**
- * Where the program is not read now or names no one: the last scientist observed, its index in `people`, and the program read that named it.
- */
-lastScientist: number | null, lastScientistRead: number | null, };
+lastScientist: number | null, };
 export type ProjectState = "running" | "paused" | "cancelled" | "completed" | "unknown";
 export type ProjectStatus = {
 /**
@@ -3372,7 +3368,24 @@ progress: number, state: ProjectState,
 /**
  * Choices after the last completion in the history read current at these hours; none where that read is not usable, or lists fewer entries than an earlier one.
  */
-iterations: number | null, };
+iterations: number | null,
+/**
+ * The program read the scientist comes from; none where no program read names the assignment.
+ */
+scientistRead: number | null,
+/**
+ * The program read that last named `lastScientist`.
+ */
+lastScientistRead: number | null,
+/**
+ * A completed status's completion date: the latest counted completion dated at or before its read with no proven new attempt between; none where no completion is attributed to it.
+ */
+completion: number | null, };
+export type OwnerRead = {
+/**
+ * The Projects read of a raw owner that supplied the list at these hours.
+ */
+owner: number, firstHour: number, lastHour: number, readHour: number, };
 export type ProjectEntry = { ordinal: number,
 /**
  * The game's date of the choice or completion.
@@ -3420,7 +3433,11 @@ available: Array<HourSpan>,
 /**
  * The hours the holders' projects were read only in part: no list is shown for them.
  */
-partial: Array<HourSpan>, projects: Array<ProjectRecord>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
+partial: Array<HourSpan>, projects: Array<ProjectRecord>,
+/**
+ * Each owner's Projects read at the published hours, by owner then hour.
+ */
+reads: Array<OwnerRead>, presentations: Array<ProjectPresentation>, people: Array<ProjectPerson>,
 /**
  * The game's text for each iteration count shown, none where it cannot be made.
  */
@@ -5834,7 +5851,11 @@ export type PendingProjectReward = { label: ProjectLabel,
  */
 ordinal: number | null, description: string | null, options: Array<ProjectRewardOption>, unavailable: string | null, };
 export type ProjectVariableValue = { name: string, valueRaw: string, };
-export type ProjectChoice = { ordinal: number, date: number, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
+export type ProjectChoice = { ordinal: number, date: number,
+/**
+ * A completion follows it in the history read: an earlier attempt's choice.
+ */
+earlier: boolean, reward: ProjectLabel, option: ProjectLabel, province: number, progress: number, characterReference: string, country: number | null, scientist: number | null, state: number | null, };
 export type SpecializationProgress = { specialization: ProjectLabel, points: number, readHour: number, };
 export type ProjectRuntimeDetails = { owner: number, id: number, label: ProjectLabel, readHour: number, pendingKnown: boolean, pending: PendingProjectReward | null, seed: number | null, variables: Array<ProjectVariableValue> | null, choices: Array<ProjectChoice> | null,
 /**
@@ -5929,7 +5950,7 @@ export type EntityStats = { kind: EntityKind, token: string, stats: Array<Entity
 refusals: { [key in string]?: number }, unavailable: string | null, warnings: Array<string>, };
 export type EntityStat = {
 /**
- * The game's label for the stat.
+ * The game's label for the stat; a plain one where the game labels it only in a state's own tooltip.
  */
 label: Array<GameRun>,
 /**

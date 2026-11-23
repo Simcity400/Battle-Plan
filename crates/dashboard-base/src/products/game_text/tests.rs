@@ -22,6 +22,18 @@ fn game_text_keeps_lines_tones_icons_and_unlock_links() {
             text("\n", None),
         ]
     );
+    assert_eq!(
+        runs("Unlocks \u{1}etank_a\u{2}\u{13}GFX_tank Light\u{12}GER\u{3}\nSoft:\u{11}G1\u{11}!").unwrap(),
+        [
+            text("Unlocks ", None),
+            GameRun::Icon { sprite: "GFX_tank".into() },
+            GameRun::Link { entity: EntityKind::Equipment, token: "tank_a".into(), database_index: None, text: "Light".into(), tone: None },
+            GameRun::Flag { tag: "GER".into() },
+            text("\nSoft:", None),
+            text("1", Some("G")),
+        ],
+        "O-S4: an icon or flag inside a name stays a run, the link holds the text around it, and the rest of the text is kept"
+    );
 }
 
 #[test]

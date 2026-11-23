@@ -6,6 +6,7 @@ import type { FloatingAnchor } from '../../components/FloatingPanel';
 import WidgetState from '../../components/WidgetState';
 import '../../components/Dossier.css';
 import { dayLabel } from '../../charts/draw';
+import { formatDateTime } from '../../dashboard/calendar';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { useHeadProduct, whenDue } from '../../dashboard/headProduct';
@@ -19,7 +20,7 @@ import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { REWARDS_PANEL, detailTexts, effectsRead, effectsStructure, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
-import { completedLabel, episodeBound, joinDue, lastScientist, runtimeProject, scientistName } from './specialProjectsData';
+import { completedLabel, episodeBound, iterationCount, joinDue, lastScientist, readLabel, runtimeProject, scientistName, statusRead } from './specialProjectsData';
 import type { ProjectCard, RuntimeMatch } from './specialProjectsData';
 import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
 
@@ -32,19 +33,21 @@ type WindowProps = Asked & { reply: SpecialProjectsReply; card: ProjectCard | nu
 export default function ProjectWindow({ reply, card, hour, through, missing, feed, anchor, onClose, ...asked }: WindowProps) {
   return <FloatingPanel title="Special project" label="special project details" anchor={anchor} onClose={onClose} className="project-window">
     <GameArtFor runtime={asked.runtime} widget={asked.widget} active={asked.active}>{card ? <div className="dossier is-blueprint">
-      <Summary reply={reply} card={card} feed={feed} active={asked.active} clock={asked.runtime.clock} />
+      <Summary reply={reply} card={card} hour={hour} feed={feed} active={asked.active} clock={asked.runtime.clock} />
       <Runtime {...asked} reply={reply} card={card} hour={hour} through={through} />
     </div> : <div className="dossier-body"><WidgetState kind="unavailable" message={missing} /></div>}</GameArtFor>
   </FloatingPanel>;
 }
 
-function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsReply; card: ProjectCard; feed: PanelFeed | null; active: boolean; clock: Asked['runtime']['clock'] }) {
+function Summary({ reply, card, hour, feed, active, clock }: { reply: SpecialProjectsReply; card: ProjectCard; hour: number; feed: PanelFeed | null; active: boolean; clock: Asked['runtime']['clock'] }) {
   const facts = useRef<HTMLDivElement>(null);
   const { project, run, info } = card;
   const done = run.state === 'completed';
   useDrawnPanel(facts, clock, done ? null : feed, active);
   const person = reply.people[info.scientist];
-  const assigned = lastScientist(reply, info);
+  const assigned = lastScientist(reply, info, run);
+  const scientistRead = readLabel(run.scientistRead, hour);
+  const read = readLabel(statusRead(reply, project, hour), hour);
   return <>
     <header className="dossier-hero">
       <span className="dossier-art is-blueprint">{info.icon ? <img src={info.icon} alt="" /> : <ArtFallback icon="flask" />}</span>
@@ -53,13 +56,14 @@ function Summary({ reply, card, feed, active, clock }: { reply: SpecialProjectsR
         <div className="dossier-chips">
           {(run.state === 'paused' || run.state === 'unknown') && <span className={`dossier-chip is-state${STATE_TONES[run.state]}`}>{STATES[run.state]}</span>}
           <span className="dossier-chip" title={assigned ?? undefined}>{person.name && (person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" />)}
-            <span>{scientistName(reply, info)}</span></span>
+            <span>{scientistName(reply, info)}</span>{scientistRead && <small>{scientistRead}</small>}</span>
         </div>
+        {read && <p className="dossier-note">{`Status ${read}`}</p>}
       </div>
     </header>
     <div className={`dossier-progress${done ? ' is-done' : ''}`} ref={facts} data-project={done ? undefined : project.id}
       style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties}>
-      {done ? <strong className="dossier-progress-value">{`Completed ${completedLabel(project)}`}</strong> : <>
+      {done ? <strong className="dossier-progress-value">{`Completed ${completedLabel(run)}`}</strong> : <>
         <strong className="dossier-progress-value" data-paint="progress">{run.progress}%</strong>
         <span className="special-project-progress" aria-hidden="true"><span /></span>
       </>}
@@ -144,18 +148,19 @@ function Rewards({ runtime, widget, tag, active, hour, match, run }: Asked & { h
 function Iterations({ runtime, widget, tag, active, project, choices, run, onOpen }: Asked & { project: ProjectRuntimeDetails; choices: RuntimeMatch['choices']; run: ProjectStatus;
   onOpen: (link: EntityLink) => void }) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const ended = run.state !== 'running' && run.state !== 'paused';
-  const final = Array.isArray(choices) && run.iterations === choices.length;
-  const asOf = ended && !final && project.historyReadHour !== null ? ` as of ${dayLabel(project.historyReadHour)}` : '';
+  const listed = (shown: readonly ProjectChoice[]) => <ol className="project-window-timeline">{shown.map(choice => <li key={choice.ordinal}>
+    <time>{dayLabel(choice.date)}</time>
+    <p className="project-window-choice-name"><Name label={choice.reward} /><span className="project-window-option"> · <Name label={choice.option} /></span></p>
+    <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={onOpen} />
+  </li>)}</ol>;
+  const current = Array.isArray(choices) ? choices.filter(choice => !choice.earlier) : [];
+  const earlier = Array.isArray(choices) ? choices.filter(choice => choice.earlier) : [];
+  const read = project.historyReadHour === null ? '' : ` · read ${formatDateTime(project.historyReadHour)}`;
   return <section className="dossier-section">
-    <h4>Iterations{Array.isArray(choices) && choices.length > 0 && <span className="project-window-count">{choices.length}{asOf}</span>}</h4>
+    <h4>Iterations<span className="project-window-count">{`${iterationCount(run.iterations)}${read}`}</span></h4>
     {choices === null ? <p className="dossier-missing">Iterations not recorded.</p> : typeof choices === 'string' ? <p className="dossier-missing">{choices}</p>
-      : choices.length === 0 ? <p className="dossier-note">{asOf ? `0 iterations${asOf}` : 'No iterations yet.'}</p>
-      : <ol className="project-window-timeline">{choices.map(choice => <li key={choice.ordinal}>
-        <time>{dayLabel(choice.date)}</time>
-        <p className="project-window-choice-name"><Name label={choice.reward} /><span className="project-window-option"> · <Name label={choice.option} /></span></p>
-        <IterationOutput runtime={runtime} track={track} tag={tag} active={active} project={project} choice={choice} onOpen={onOpen} />
-      </li>)}</ol>}
+      : current.length === 0 ? <p className="dossier-note">No iterations listed in this attempt.</p> : listed(current)}
+    {earlier.length > 0 && <details className="project-window-earlier"><summary>{`Earlier attempts · ${earlier.length} listed`}</summary>{listed(earlier)}</details>}
   </section>;
 }
 

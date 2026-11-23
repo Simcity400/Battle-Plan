@@ -98,10 +98,22 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
                 )
             })
             .collect::<Vec<_>>();
-        let text = self.bound_formatted(&node.key, &plain, scopes, scoped)?;
         if linked.is_empty() {
-            return Ok(text);
+            return self.bound_formatted(&node.key, &plain, scopes, scoped);
         }
+        let unmarked: Vec<Option<String>> = arguments
+            .iter()
+            .map(|(_, value)| match value {
+                BoundResult::Text(text) => Some(crate::effect_description::entity_links::unmark(text)),
+                BoundResult::Token(_) => None,
+            })
+            .collect();
+        let unmarked: Vec<(&str, Argument<'_>)> = plain
+            .iter()
+            .zip(&unmarked)
+            .map(|((name, argument), text)| (*name, text.as_deref().map_or(*argument, Argument::Text)))
+            .collect();
+        let text = self.bound_formatted(&node.key, &unmarked, scopes, scoped)?;
         let mut marked = plain.clone();
         for (at, name) in &linked {
             marked[*at].1 = Argument::Text(name);

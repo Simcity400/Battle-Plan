@@ -1,4 +1,4 @@
-use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, ProjectContent, Reads, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, spelled, supplied_project};
+use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, spelled, supplied_project};
 use dashboard_base::{
     Source,
     products::{
@@ -90,8 +90,10 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
     }
     let run = query.timeline.at(read).ok_or_else(|| dashboard_core::refused("The read listing this iteration is not recorded"))?.run;
     let reads = Reads { query, coverage: &at.context.coverage, links: &at.context.links, tag: &params.country, holder, run, hour: read };
-    if !super::super::held_from(query, &params.country, holder.slot, holder.id, read).is_some_and(|since| since <= at.hour) {
-        return Ok(Err("This iteration's choice was listed after this country stopped holding the tag".into()));
+    match reads.held_since(params.owner, at.hour) {
+        Err(Withheld::Owner) => return Ok(Err(OTHER_OWNER.into())),
+        Err(_) => return Ok(Err("This iteration's choice was listed after this country stopped holding the tag".into())),
+        Ok(()) => {}
     }
     let project = u128::from(params.owner) << 32 | u128::from(params.project);
     let frame = dashboard_base::products::at_hour::frame(query, read, &[history_range(params.owner, params.project), Read::these(TableId::Projects, [project]), project_slices(params.owner)], SpecialProjectIterationAt::TITLE)?;
@@ -99,8 +101,10 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
         if owner_read(&frame, TableId::ProjectHistory, params.owner)? != read {
             return Err("This iteration's choices were not read at the hour that lists them".to_owned());
         }
-        reads.owned(params.owner, read)?;
         let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
+        if reads.usable(TableId::ProjectHistory, params.owner, read).is_err() {
+            return Err("Project choice history is unavailable: the listing read was read only in part".to_owned());
+        }
         let history = project_history(rows, params.owner, params.project);
         let row = history.iter().find(|row| row.ordinal == params.ordinal).ok_or("The read listing this iteration does not hold it")?;
         if row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER {
@@ -132,10 +136,11 @@ pub(super) fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing:
         return Err(UNPROVEN_PROJECT.to_owned());
     }
     let rows = frame.complete::<tables::ProjectHistory>().map_err(|why| format!("Project choice history is unavailable: {why}"))?;
-    let then = project_history(rows, owner, id);
-    let after = listing.history.get(then.len()..).unwrap_or_default();
-    let restarted = after.iter().take_while(|row| row.ordinal < listing.row.ordinal).any(|row| row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER);
-    if listing.history.starts_with(then) && !restarted { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
+    let then = project_history(rows, owner, id).len();
+    let clicked = listing.history.iter().position(|row| row.ordinal == listing.row.ordinal).ok_or(UNPROVEN_PROJECT)?;
+    let between = if clicked < then { clicked + 1..then } else { then..clicked };
+    let restarted = listing.history.get(between).unwrap_or_default().iter().any(|row| row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER);
+    if listing.history.starts_with(project_history(rows, owner, id)) && !restarted { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
 }
 
 fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
@@ -175,15 +180,11 @@ fn shown(text: &str, refusals: &mut BTreeMap<String, usize>) -> Option<Vec<GameR
     runs(text).map_err(|why| *refusals.entry(why).or_default() += 1).ok()
 }
 
-fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, operands: Result<(), String>, out: &mut SpecialProjectIteration) -> Result<(), String> {
+fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, out: &mut SpecialProjectIteration) -> Result<(), String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
     let project = &listing.project;
     let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot);
-    let text = match operands {
-        Ok(()) => text,
-        Err(why) => text.withholding_project(project.owner, project.local_id, why),
-    };
     let cache = scripted.effects()?;
     let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project iteration", cache.view(None)).with_entity_links();
     let description = dashboard_text::effect_description::project_iteration_description(&option.output, &context, project.owner, project.local_id, scopes(frame, &listing.row));
@@ -227,8 +228,10 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     if definition(content, &listing.definition).is_none() {
         return Ok(Err(format!("Definition {} is absent from content", listing.definition)));
     }
-    let operands = same_project(frame, &reads, &listing);
-    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, operands, out)))
+    if let Err(why) = same_project(frame, &reads, &listing) {
+        return Ok(Err(why));
+    }
+    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, out)))
 }
 
 impl AtHour for SpecialProjectIterationAt {

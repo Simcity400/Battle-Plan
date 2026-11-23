@@ -39,7 +39,7 @@ pub struct EntityStatsParams {
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
 pub struct EntityStat {
-    #[doc = " The game's label for the stat."]
+    #[doc = " The game's label for the stat; a plain one where the game labels it only in a state's own tooltip."]
     pub label: Vec<GameRun>,
     #[doc = " The value as the game formats it, coloured as the game colours it."]
     pub value: Vec<GameRun>,
@@ -194,6 +194,19 @@ impl<'l> Sheet<'l> {
         }
     }
 
+    fn building(&mut self, building: &content_reader_core::buildings::BuildingType, defines: &content_reader_core::defines::Defines) {
+        let scope = if building.provincial() { "Per province" } else { "Per state" };
+        let maximum = building.base_maximum(defines).map(|level| level.to_string()).map_err(|why| format!("The building's maximum level is unavailable: {why}"));
+        self.from(Some(scope.into())).push(Ok("Maximum level".into()), maximum);
+        self.from(None);
+        if !building.state_modifiers.is_empty() {
+            self.refuse(format!("The state modifiers of {} are not shown", building.name));
+        }
+        if !building.local_resources.is_empty() {
+            self.refuse(format!("The local resources of {} are not shown", building.name));
+        }
+    }
+
     fn sub_unit(&mut self, metadata: &Metadata, sheet: &dashboard_text::subunit_requirements::Sheet) {
         let refused = |field: &str| sheet.refused.iter().find(|refusal| refusal.field == field).map(|refusal| refusal.why.clone());
         let width = match refused("combat_width") {
@@ -283,8 +296,8 @@ fn equipment_totals<'d>(database: &'d Database, metadata: &Metadata, localisatio
         let source = format!("Default module {} in {}", named(localisation, &shown, &shown), named(localisation, &format!("EQ_MOD_SLOT_{slot}_TITLE"), &slot));
         if let Some(group) = database.module_stats(module) {
             components.apply_module(group, equipment)?;
-            for (index, why) in &group.unread {
-                withheld.entry(*index).or_insert_with(|| format!("{source}: {why}"));
+            for (index, why) in group.unread.iter().map(|(index, why)| (*index, why.as_str())).chain(equipment.unread_multipliers_for(group)) {
+                withheld.entry(index).or_insert_with(|| format!("{source}: {why}"));
             }
         }
         modules.push((source, design));
@@ -374,14 +387,15 @@ impl AtHour for EntityStatsAt {
             let effects = catalogue.scripted_content()?.effects()?;
             let view = effects.view(None);
             let technologies = || view.doctrines.and_then(|doctrines| doctrines.technologies.as_ref()).ok_or_else(|| "The recorded technology content was not read".to_owned());
+            let equipment = || view.equipment.ok_or_else(|| "The recorded equipment content was not read".to_owned());
             match params.kind {
                 EntityKind::Equipment => {
                     let metadata = stat_metadata()?;
-                    let totals = equipment_totals(&technologies()?.equipment, metadata, localisation, token)?;
+                    let totals = equipment_totals(equipment()?, metadata, localisation, token)?;
                     equipment_sheet(&mut sheet, metadata, &totals);
                 }
                 EntityKind::Module => {
-                    let (database, metadata) = (&technologies()?.equipment, stat_metadata()?);
+                    let (database, metadata) = (equipment()?, stat_metadata()?);
                     let missing = || format!("Module {token} is not in the recorded content");
                     let (stats, design) = (database.module_stats(token).ok_or_else(missing)?, database.module_design(token).ok_or_else(missing)?);
                     sheet.module(metadata, stats);
@@ -401,7 +415,9 @@ impl AtHour for EntityStatsAt {
                     sheet.sub_unit(stat_metadata()?, &unit.sheet);
                 }
                 EntityKind::Building => {
-                    return Err("Building stats are not read from the recorded content".into());
+                    let buildings = view.buildings.ok_or("The recorded building content was not read")?;
+                    let building = buildings.by_token(token).map_err(|why| why.to_string())?.ok_or_else(|| format!("Building {token} is not in the recorded content"))?;
+                    sheet.building(building, catalogue.defines()?);
                 }
                 EntityKind::Technology => {
                     return Err("A technology has no stats sheet; its effects describe it".into());

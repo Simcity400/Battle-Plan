@@ -187,4 +187,13 @@ fn any_scientist_counts_the_countrys_rostered_scientists() {
             );
         }
     });
+    let mut frame = scientist_frame();
+    let TableView::Complete(TableRows::Scientists(rows)) = &mut *frame.tables[TableId::Scientists.index()] else { unreachable!() };
+    rows.push(ScientistRow { character: 9, country: 999, ordinal: 0, skill_count: 1, ..Default::default() });
+    with_scientists(&frame, |world| {
+        assert!(
+            matches!(world.evaluate(&items("any_scientist = { has_scientist_level = { level > 3 specialization = specialization_land } }"), Scopes::of(Scope::Country(1))), Eval::Unknown(_)),
+            "O-S3: a scientist whose owner has no recorded country link may be this country's, so the count is unknown, never false"
+        );
+    });
 }

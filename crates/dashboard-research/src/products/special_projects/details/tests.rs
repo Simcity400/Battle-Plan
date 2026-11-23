@@ -403,7 +403,7 @@ fn effects_withhold_a_project_last_read_before_the_holder_took_the_tag() {
 #[test]
 fn a_project_read_while_its_raw_owner_belonged_to_another_country_is_not_this_countrys() {
     let source = recording();
-    let other = "The project was read while its owner belonged to another country";
+    let other = OTHER_OWNER;
     let at = MOVED_HELD.start;
     let effects = asked::<SpecialProjectEffectsAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": MOVED_OWNER, "project": 5, "hour": at })).unwrap();
     assert_eq!(effects["unavailable"], json!(other), "the retained read predates the owner's move to this country: {effects}");
@@ -523,9 +523,8 @@ fn a_replacements_choice_renders_with_the_listings_spelling_and_never_its_predec
     assert_eq!(own["unavailable"], Value::Null, "{own}");
     assert!(own["sections"].to_string().contains("Variable 2"), "a choice made by the project the listing names shows its own values: {own}");
     let before = iteration(0, BEFORE);
-    assert_eq!(before["unavailable"], Value::Null, "the listing read spells the choice and its project, though no other read does: {before}");
-    assert!(!before["sections"].to_string().contains("Variable 1"), "the predecessor's value is never shown as the replacement's: {before}");
-    assert!(before["refusals"].as_object().unwrap().keys().any(|why| why.contains("not proven to be this one")), "{before}");
+    assert!(before["unavailable"].as_str().is_some_and(|why| why.contains("not proven to be this one")), "a choice whose project the choice-hour read does not prove is withheld whole, before anything is rendered: {before}");
+    assert_eq!(before["sections"], json!([]), "nothing of it is shown, not even effects that read no project value: {before}");
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -581,4 +580,57 @@ fn an_iterations_project_values_open_from_compatible_reads_and_are_withheld_wher
     assert!(operands(changed, |hour| hour, 21, 0, 22).is_err(), "T15b: another entry at the same ordinal proves another attempt");
     let restarted = |hour: i32| if hour >= 22 { vec![(0, 41, 20), (1, COMPLETION_MARKER, 21), (2, 41, 21)] } else { vec![(0, 41, 20)] };
     assert!(operands(restarted, |hour| hour, 21, 2, 22).is_err(), "a completion between the choice-hour history and the choice proves the choice another attempt's");
+    let within = |hour: i32| if hour >= 21 { vec![(0, 41, 21), (1, COMPLETION_MARKER, 21), (2, 41, 21)] } else { Vec::new() };
+    assert!(operands(within, |hour| hour, 21, 0, 22).is_err(), "P-S10: a completion after the choice inside the choice-hour history proves that read another attempt's");
+}
+
+fn owned_frame(hour: i32, linked: impl Fn(i32) -> bool, definition: impl Fn(i32) -> u32, read: impl Fn(i32) -> (Option<i32>, Option<i32>)) -> DecodedFrame {
+    let mut frame = source(1, hour, None);
+    for &table in DETAIL_TABLES.iter().filter(|&&table| table != TableId::CountryLinks) {
+        set(&mut frame, table, TableRows::empty(table));
+    }
+    if !linked(hour) {
+        let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
+        links.retain(|link| link.id != 9001);
+    }
+    set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: 9001, local_id: 3, definition_id: definition(hour), ..Default::default() }]));
+    set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(vec![ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: 30, ..Default::default() }]));
+    let spelled = [(41, "mod_reward"), (42, "mod_option"), (77, "project"), (78, "replacement")].into_iter().filter(|&(token, _)| token != 78 || hour >= 35);
+    set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect()));
+    let (projects, history) = read(hour);
+    let mut slices: Vec<SliceReadRow> = [11, 9001]
+        .into_iter()
+        .flat_map(|owner| [(TableId::Projects, projects), (TableId::ProjectHistory, history)].map(|(table, read)| read.map(|sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
+        .flatten()
+        .collect();
+    slices.sort_by_key(|row| (row.table, row.owner));
+    set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
+    frame
+}
+
+fn owned_source(id: &str, frame: impl Fn(i32) -> DecodedFrame) -> Source {
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    Source::from_replay(dashboard_base::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
+}
+
+#[test]
+fn details_withhold_a_read_from_before_its_owner_left_and_came_back() {
+    let read = |hour: i32| {
+        let read = [30, 36].into_iter().filter(|&at| at <= hour).max();
+        (read, read)
+    };
+    let source = owned_source("special-project-returned", |hour| owned_frame(hour, |at| at != 33, |_| 77, read));
+    let returned = details(&source, 34);
+    assert_eq!(returned["projects"], Value::Null, "P-S3, X-S4: the owner left this country after the read, so the read is not this country's now: {returned}");
+    assert!(has(&returned, OTHER_OWNER), "{returned}");
+    assert!(details(&source, 36)["projects"][0]["choices"].is_array(), "a read after the return is");
+}
+
+#[test]
+fn details_label_choices_by_the_definition_read_with_their_history() {
+    let read = |hour: i32| (Some(hour), [30].into_iter().find(|&at| at <= hour));
+    let source = owned_source("special-project-history-definition", |hour| owned_frame(hour, |_| true, |at| if at >= 35 { 78 } else { 77 }, read));
+    let reply = details(&source, 40);
+    assert!(reply["projects"][0]["choices"].is_array(), "{reply}");
+    assert!(!has(&reply, "lacks token 78"), "P-S8, X-S5: choices read at 30 belong to the definition read with them at 30, never the one the project holds at 40: {reply}");
 }

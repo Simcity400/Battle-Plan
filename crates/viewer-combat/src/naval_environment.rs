@@ -417,7 +417,13 @@ pub(super) fn convoy_weapon_bound_from_database(
             .flat_map(|held| &held.upgrades)
             .filter_map(|upgrade| database.upgrade_stats(upgrade))
             .flat_map(|group| &group.unread);
-        if let Some((_, why)) = equipment.unread_terms.iter().chain(unread_default).chain(unread_upgrades).find(|(index, _)| feeding.contains(index)) {
+        let unread_scaling = equipment
+            .default_modules
+            .iter()
+            .filter_map(|(_, module)| database.module_stats(module))
+            .flat_map(|group| equipment.unread_multipliers_for(group));
+        let unread = equipment.unread_terms.iter().chain(unread_default).chain(unread_upgrades).map(|(index, why)| (*index, why.as_str())).chain(unread_scaling);
+        if let Some((_, why)) = unread.into_iter().find(|(index, _)| feeding.contains(index)) {
             return (
                 Err(format!("convoy equipment {}: {why}", String::from_utf8_lossy(&equipment.name))),
                 misreads,
@@ -1574,9 +1580,6 @@ fn convoy_weapon_bound_for_frame(
         let unread_weapon_term = |group: &StatGroup| {
             group.unread.iter().find(|(index, _)| feeding.contains(index)).map(|(_, why)| why.clone())
         };
-        if let Some((_, why)) = kind.unread_terms.iter().find(|(index, _)| feeding.contains(index)) {
-            return Ok(Err(format!("convoy variant {}: {why}", definition.id)));
-        }
         let state = match definition.design.require("VariantDefinitions.design") {
             Ok(state) => state,
             Err(error) => {
@@ -1612,6 +1615,9 @@ fn convoy_weapon_bound_for_frame(
                 range = [range[0].min(cached[stat]), range[1].max(cached[stat])];
             }
             continue;
+        }
+        if let Some((_, why)) = kind.unread_terms.iter().find(|(index, _)| feeding.contains(index)) {
+            return Ok(Err(format!("convoy variant {}: {why}", definition.id)));
         }
         if upgrades_by_variant.is_none() {
             let upgrades = rows::<tables::VariantUpgrades>(frame)?;
@@ -1767,7 +1773,7 @@ fn convoy_weapon_bound_for_frame(
                         String::from_utf8_lossy(name)
                     )));
                 };
-                if let Some(why) = unread_weapon_term(group) {
+                if let Some(why) = unread_weapon_term(group).or_else(|| kind.unread_multipliers_for(group).find(|(index, _)| feeding.contains(index)).map(|(_, why)| why.to_owned())) {
                     return Ok(Err(format!(
                         "convoy variant {} module {}: {why}",
                         definition.id,

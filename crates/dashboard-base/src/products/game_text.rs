@@ -80,16 +80,25 @@ fn unshowable(piece: Piece<'_>) -> String {
     format!("{}, which plain text cannot show", piece.describe())
 }
 
+type OpenLink<'t> = (EntityKind, &'t str, Option<i32>, String, Option<String>);
+
+fn flush(out: &mut Vec<GameRun>, link: &mut OpenLink<'_>) {
+    let (entity, token, database_index, text, tone) = link;
+    if !text.is_empty() {
+        out.push(GameRun::Link { entity: *entity, token: (*token).to_owned(), database_index: *database_index, text: std::mem::take(text), tone: tone.take() });
+    }
+}
+
 pub fn runs(text: &str) -> Result<Vec<GameRun>, String> {
     let mut out = Vec::new();
     let mut tones = Tones::default();
-    let mut link: Option<(EntityKind, &str, Option<i32>, String, Option<String>)> = None;
+    let mut link: Option<OpenLink<'_>> = None;
     for span in spans(text)? {
         match span {
             Span::Open { kind, token, index } => link = Some((kind.into(), token, index, String::new(), None)),
             Span::Close => {
-                let (entity, token, database_index, text, tone) = link.take().ok_or("an entity link closes without opening")?;
-                out.push(GameRun::Link { entity, token: token.to_owned(), database_index, text, tone });
+                let mut held = link.take().ok_or("an entity link closes without opening")?;
+                flush(&mut out, &mut held);
             }
             Span::Piece(Piece::Colour(code)) => tones.apply(code),
             Span::Piece(Piece::Text(piece)) => match &mut link {
@@ -101,11 +110,18 @@ pub fn runs(text: &str) -> Result<Vec<GameRun>, String> {
                 }
                 None => push_text(&mut out, piece, tones.current()),
             },
-            Span::Piece(piece @ (Piece::Icon(_) | Piece::Flag(_))) if link.is_some() => {
-                return Err(format!("{} inside an unlocked name", piece.describe()));
+            Span::Piece(Piece::Icon(sprite)) => {
+                if let Some(held) = &mut link {
+                    flush(&mut out, held);
+                }
+                out.push(GameRun::Icon { sprite: sprite.to_owned() });
             }
-            Span::Piece(Piece::Icon(sprite)) => out.push(GameRun::Icon { sprite: sprite.to_owned() }),
-            Span::Piece(Piece::Flag(tag)) => out.push(GameRun::Flag { tag: tag.to_owned() }),
+            Span::Piece(Piece::Flag(tag)) => {
+                if let Some(held) = &mut link {
+                    flush(&mut out, held);
+                }
+                out.push(GameRun::Flag { tag: tag.to_owned() });
+            }
             Span::Piece(piece @ (Piece::Control14 | Piece::Control1A(_))) => return Err(unshowable(piece)),
         }
     }

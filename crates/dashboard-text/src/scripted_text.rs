@@ -560,7 +560,6 @@ pub struct ScriptedText<'a> {
     viewer: Option<u32>,
     pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
-    withheld_project: Option<(u32, u32, String)>,
 }
 
 fn named(segment: &str, name: &str) -> bool {
@@ -795,7 +794,6 @@ impl<'a> ScriptedText<'a> {
             viewer: None,
             nato_counters: content_reader_settings::settings::MapOptions::DEFAULT.nato_counters,
             world: std::sync::OnceLock::new(),
-            withheld_project: None,
         };
         if crate::triggers::inputs::recording() {
             text.names
@@ -835,13 +833,7 @@ impl<'a> ScriptedText<'a> {
             viewer: self.viewer,
             nato_counters: self.nato_counters,
             world: std::sync::OnceLock::new(),
-            withheld_project: self.withheld_project.clone(),
         }
-    }
-
-    pub fn withholding_project(mut self, owner: u32, id: u32, why: String) -> Self {
-        self.withheld_project = Some((owner, id, why));
-        self
     }
 
 
