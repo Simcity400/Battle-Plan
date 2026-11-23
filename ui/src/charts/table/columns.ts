@@ -84,7 +84,7 @@ export function hiddenText<T>(column: TableColumn<T>, row: T, key: string, value
     if (value == null || isMissing(value)) {
       const reason = values.missing(cellKey);
       const shown = column.missingText?.(cellKey, reason) ?? '—';
-      return reason && reason !== shown ? { value: shown, detail: reason } : { value: shown };
+      return reason && reason !== shown ? { value: reason, detail: reason } : { value: shown };
     }
     return { value: column.paint(value, cellKey) };
   }

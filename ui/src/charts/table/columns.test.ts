@@ -93,16 +93,18 @@ test('hidden columns hide largest priority first and give the tooltip their cell
     missing: (key: string) => key.startsWith('unread') ? 'Fuel lost not recorded at this hour' : 'Not in this agreement',
   };
   const unreadTip = withHidden(null, row, [lostColumn], [columns[0]], 'unread', 800, liveValues)!;
-  assert.deepEqual(unreadTip.rows, [{ label: 'Lost', value: 'Not recorded', detail: 'Fuel lost not recorded at this hour', tone: 'muted', divider: false }]);
+  assert.deepEqual(unreadTip.rows, [{ label: 'Lost', value: 'Fuel lost not recorded at this hour', detail: 'Fuel lost not recorded at this hour', tone: 'muted', divider: false }]);
   const absentTip = withHidden(null, row, [lostColumn], [columns[0]], 'absent', 800, liveValues)!;
-  assert.deepEqual(absentTip.rows, [{ label: 'Lost', value: '—', detail: 'Not in this agreement', tone: 'muted', divider: false }]);
+  assert.deepEqual(absentTip.rows, [{ label: 'Lost', value: 'Not in this agreement', detail: 'Not in this agreement', tone: 'muted', divider: false }]);
 
   const defaultDashColumn: TableColumn<{ name: string; amount: number | null }> = {
     key: 'deliveries', header: 'Deliveries', label: 'Completed deliveries', numeric: true, priority: 2, value: () => null,
     paint: value => String(value),
   };
   const dashUnreadTip = withHidden(null, row, [defaultDashColumn], [columns[0]], 'unread', 800, liveValues)!;
-  assert.deepEqual(dashUnreadTip.rows, [{ label: 'Completed deliveries', value: '—', detail: 'Fuel lost not recorded at this hour', tone: 'muted', divider: false }]);
+  assert.deepEqual(dashUnreadTip.rows, [{ label: 'Completed deliveries', value: 'Fuel lost not recorded at this hour', detail: 'Fuel lost not recorded at this hour', tone: 'muted', divider: false }]);
+  const spokenTip = withHidden({ title: 'Recorded', rows: [], spoken: 'Recorded' }, row, [defaultDashColumn], [columns[0]], 'unread', 800, liveValues)!;
+  assert.equal(spokenTip.spoken, 'Recorded; Completed deliveries Fuel lost not recorded at this hour', 'the reason is spoken, not a dash');
   const noReasonTip = withHidden(null, row, [defaultDashColumn], [columns[0]], 'none', 800, { get: () => undefined, missing: () => '' })!;
   assert.deepEqual(noReasonTip.rows, [{ label: 'Completed deliveries', value: '—', divider: false }]);
 });

@@ -8,7 +8,7 @@ BattlePlan distinguishes three outcomes for every dashboard reading:
 2. Not recorded, with a reason the user can read.
 3. Not applicable, where all inputs were recorded and the derived quantity has no meaningful value.
 
-`market-ledger` previously defaulted unrecorded `kind`, `ordinal`, `agreement`, and `variant` cells to sentinel values (`255`, `0`, `0000000000000000`, `"0"`) and collapsed unrecorded party cells to `LogCell::Missing`. In `ui/src/charts/table`, hiding a column during layout also dropped its `missing` reason callback instead of preserving it in the column map.
+`market-ledger` previously defaulted unrecorded `kind`, `ordinal`, `agreement`, and `variant` cells to sentinel values (`255`, `0`, `0000000000000000`, `"0"`) and collapsed unrecorded party cells to `LogCell::Missing`. In `ui/src/charts/table`, a hidden column's tooltip entry was formatted as a dash for an absent value without consulting the live values' missing reason.
 
 ## Decision
 
@@ -23,4 +23,4 @@ Keep the recording format unchanged and express missing states directly in the e
 ## Consequences
 
 - No recording-format, collector, or recorder changes are required; older recordings play identically while exposing honest missing states.
-- Market ledger rows display missing values through `components/ValueState` instead of fabricated zeroes or bare dashes.
+- Market ledger rows display a missing party or amount as text carrying its own state and reason, instead of fabricated zeroes or bare dashes. A hidden column's tooltip entry shows and speaks the reason itself.
