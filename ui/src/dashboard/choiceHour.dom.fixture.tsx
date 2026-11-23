@@ -36,8 +36,10 @@ const groups: CountryGroupReply = { branchId: '1', warnings: [], humans: ['POL',
 const exiles = { exiles: [{ id: '7', tag: 'POL', host: null }], hour: PUSHED } as never;
 const balances = { balances: [{ ordinal: 0, token: 'guild', name: null, range: null, trending: null, members: [{ tag: 'MOD' }] }], hour: PUSHED } as never;
 const occupied = { states: [{ state: 1, occupier: 'GER', occupied: 'ENG' }] } as unknown as OccupiedStatesReply;
-const lease = (key: string, giver: string, receiver: string): LeaseTerms => ({ key, id: key.padStart(16, '0'), giver, receiver, revision: '0', activeSince: 10,
-  lastDelivery: 0, monthly: [{ variant: '6', name: null, amountRaw: '500000' }], percentage: [], once: [], delivered: [], sunk: [], fuelDailyRaw: '0', fuelPercentageRaw: '0', lastFuelDeliveredRaw: '0' });
+const lease = (key: string, giver: string, receiver: string): LeaseTerms => ({ key, id: key.padStart(16, '0'), giver, receiver,
+  revision: { valueRaw: '0' }, activeSince: { value: 10 }, lastDelivery: { value: 0 },
+  monthly: { items: [{ variant: '6', name: null, amountRaw: '500000' }] }, percentage: { items: [] }, once: { items: [] }, delivered: { items: [] }, sunk: { items: [] },
+  fuelDailyRaw: { valueRaw: '0' }, fuelPercentageRaw: { valueRaw: '0' }, lastFuelDeliveredRaw: { valueRaw: '0' } });
 const market: MarketAt = { ...validateMarketReply({ branchId: '1', offers: null, contracts: null, purchasesMissing: null, unattributed: 0, warnings: [], icons: [],
   variants: [{ id: '6', hour: 50, known: true, token: 'tank', name: 'Tank', typeName: null, nameUnknown: null, icon: null, iconUnknown: null }],
   agreements: [lease('1', 'GER', 'ENG')] }), hour: PUSHED };

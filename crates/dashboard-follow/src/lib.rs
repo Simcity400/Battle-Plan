@@ -19,7 +19,7 @@ mod series_tests;
 mod tests;
 
 pub use answer::{Answer, Decoded, MAGIC, Message, NO_REASON, State, charge, decode, merge};
-pub use evaluate::answer_at;
+pub use evaluate::{answer_at, unrecorded};
 pub use follow::{Counters, Follow, Held, Sink, StepStats};
 pub use parse::parse;
 pub use query::{Identity, Query, Rows};

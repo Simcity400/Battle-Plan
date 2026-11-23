@@ -2,6 +2,7 @@ import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
 import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import { MissingName, ValueState } from '../../components/ValueState';
 import DrillHost from '../../charts/drill/DrillHost';
 import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
@@ -41,7 +42,7 @@ import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly AgreementRow[] = [];
-const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributed: 0, membership: null };
+const NO_AGREEMENTS: ReturnType<typeof agreementRows> = { rows: [], unattributedActive: 0, unattributedEnded: 0, unattributed: 0, membership: null };
 const NO_WARNINGS: readonly string[] = [];
 const rowKey = (row: AgreementRow) => row.key;
 const rowOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
@@ -70,8 +71,9 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     [widget.countries, fallback, groups.data, track?.branch.lastHour, hour]);
   const unrecorded = useCallback((at: number) => membershipUnrecordedAt(widget.countries, groups.data, at), [widget.countries, groups.data]);
   const choiceAt = useChoiceHour(runtime.clock, active, () => head.atNow() ?? hour, () => head.shownAt(), countryMatchChangeHours(match.matches), head.live.subscribe);
-  const listed = useMemo(() => data && match.ready && !match.reason ? agreementRows({ ...data, hour: choiceAt }, history.data, direction, match.matches, showEnded, unrecorded)
-    : NO_AGREEMENTS, [data, history.data, match, direction, showEnded, unrecorded, choiceAt]);
+  const listed = useMemo(() => data && match.ready && !match.reason
+    ? agreementRows({ ...data, hour: choiceAt }, history.data, direction, match.matches, showEnded, unrecorded, head.live.read())
+    : NO_AGREEMENTS, [data, history.data, match, direction, showEnded, unrecorded, choiceAt, head.live]);
   const rows = listed.rows;
   const shown = useShownHour();
   const shownAt = useRef(head.shownAt);
@@ -100,27 +102,40 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
   const title = useCallback((tag: string | null, at: number) => countryLabel(tag, at).name, [countryLabel]);
   const byKey = useMemo(() => new Map(rows.map(row => [row.key, row])), [rows]);
   const columns = useMemo<readonly TableColumn<AgreementRow>[]>(() => {
-    const country = (tag: string | null, at: number) => tag === null ? 'Country name unavailable' : <CountryCell {...labelAt(at)(tag)} />;
+    const country = (tag: string | null, at: number, reason?: string | null) => tag === null
+      ? (reason ? <ValueState kind="missing" narrow reason={reason} /> : <MissingName reason="Country name unavailable" />)
+      : <CountryCell {...labelAt(at)(tag)} />;
     const header = several ? 'From → to' : direction === 'sent' ? 'Sent to' : 'Received from';
-    const amount = (value: unknown, key: string) => amountOf(byKey.get(rowOf(key)) ?? { fuel: false }, BigInt(Math.trunc(Number(value))));
+    const amount = (value: unknown, key: string) => amountOf(byKey.get(rowOf(key)) ?? { fuel: false }, typeof value === 'bigint' ? value : BigInt(Math.trunc(Number(value))));
+    const missingAmount = (_key: string, reason: string) => reason === 'Not in this agreement' ? '—' : 'Not recorded';
     return [
       { key: 'partner', header, label: header, width: 'minmax(var(--lend-lease-country-min, var(--table-name-min)), 1.4fr)', renderMissing: true,
         value: row => { const tag = several ? row.giver : row.partner; return tag === null ? null : name(tag, row.at); },
-        text: row => several ? `${title(row.giver, row.at)} → ${title(row.receiver, row.at)}` : title(row.partner, row.at),
-        render: row => several ? <span className="lend-lease-pair">{country(row.giver, row.at)}<span className="lend-lease-to">→ {country(row.receiver, row.at)}</span></span>
-          : country(row.partner, row.at) },
+        text: row => several ? `${title(row.giver, row.at)} → ${row.receiver === null && row.terms.receiverMissing ? row.terms.receiverMissing : title(row.receiver, row.at)}`
+          : row.partner === null && row.partnerMissing ? row.partnerMissing : title(row.partner, row.at),
+        render: row => several ? <span className="lend-lease-pair">{country(row.giver, row.at)}<span className="lend-lease-to">→ {country(row.receiver, row.at, row.terms.receiverMissing)}</span></span>
+          : country(row.partner, row.at, row.partnerMissing) },
       { key: 'equipment', header: 'Equipment', label: 'Equipment', width: 'minmax(calc(var(--table-name-min) + 3em), 1.4fr)', renderMissing: true,
-        value: row => row.items[0]?.name ?? null, text: row => row.items.map(item => item.name ?? 'Equipment name unavailable').join(', '),
+        value: row => row.items[0]?.name ?? null, text: row => row.items.map(item => item.name ?? item.missing ?? 'Equipment name unavailable').join(', '),
         render: row => <MarketEquipment name={row.items[0]?.name ?? null} icon={row.items[0]?.icon ?? null} missing={row.items[0]?.missing}
           detail={row.items.length > 1 ? `+${row.items.length - 1}` : null} /> },
       { key: 'schedule', header: 'Schedule', label: 'Schedule', width: 'minmax(120px, 1fr)', priority: 1, value: row => row.items[0]?.schedule || null,
-        renderMissing: true, render: row => row.items[0]?.schedule || '—' },
-      { key: 'delivered', header: 'Delivered', label: 'Delivered', numeric: true, width: 'max-content', value: () => null, paint: amount },
-      { key: 'lost', header: 'Lost', label: 'Lost', numeric: true, width: 'max-content', priority: 2, value: () => null, paint: amount },
-      { key: 'last', header: 'Last delivery', label: 'Last delivery', numeric: true, width: 'max-content', priority: 3,
-        value: row => row.last, text: row => row.last === null ? '—' : dayLabel(row.last), render: row => row.last === null ? '—' : dayLabel(row.last) },
-      { key: 'since', header: 'Since', label: 'Since', numeric: true, width: 'max-content', priority: 4,
-        value: row => row.since, text: row => row.since === null ? '—' : dayLabel(row.since), render: row => row.since === null ? '—' : dayLabel(row.since) },
+        renderMissing: true,
+        text: row => [row.items[0]?.schedule, row.items[0]?.scheduleMissing].filter(Boolean).join(' · ') || 'No active schedule',
+        render: row => {
+          const item = row.items[0];
+          if (item?.schedule && item.scheduleMissing) return <ValueState kind="partial" narrow text={item.schedule} reason={item.scheduleMissing} />;
+          if (item?.schedule) return item.schedule;
+          return item?.scheduleMissing ? <ValueState kind="missing" narrow reason={item.scheduleMissing} /> : <span title="No active schedule">None</span>;
+        } },
+      { key: 'delivered', header: 'Delivered', label: 'Delivered', numeric: true, width: 'max-content', value: () => null, paint: amount, missingText: missingAmount },
+      { key: 'lost', header: 'Lost', label: 'Lost', numeric: true, width: 'max-content', priority: 2, value: () => null, paint: amount, missingText: missingAmount },
+      { key: 'last', header: 'Last delivery', label: 'Last delivery', numeric: true, width: 'max-content', priority: 3, renderMissing: true,
+        value: row => row.last, text: row => row.last === null ? (row.lastMissing ?? 'No delivery yet') : dayLabel(row.last),
+        render: row => row.last === null ? (row.lastMissing ? <ValueState kind="missing" narrow reason={row.lastMissing} /> : <span title="No delivery yet">No delivery</span>) : dayLabel(row.last) },
+      { key: 'since', header: 'Since', label: 'Since', numeric: true, width: 'max-content', priority: 4, renderMissing: true,
+        value: row => row.since, text: row => row.since === null ? (row.sinceMissing ?? 'Start date not recorded') : dayLabel(row.since),
+        render: row => row.since === null ? <ValueState kind="missing" narrow reason={row.sinceMissing ?? 'Start date not recorded'} /> : dayLabel(row.since) },
     ];
   }, [several, direction, name, title, labelAt, byKey]);
   const tooltip = useCallback((row: AgreementRow) => agreementTooltip(row, countryLabel, viewport, live.read()), [countryLabel, viewport, live]);
@@ -170,8 +185,15 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
     </div>
     <div className="lend-lease-agreements-table">{body}</div>
   </div>;
+  const activePill = listed.unattributedActive
+    ? listed.unattributedEnded
+      ? `${active_.toLocaleString()}+ active · ${listed.unattributedActive.toLocaleString()} active, ${listed.unattributedEnded.toLocaleString()} ended unattributed`
+      : `${active_.toLocaleString()}+ active · ${listed.unattributedActive.toLocaleString()} unattributed`
+    : listed.unattributedEnded
+      ? `${active_.toLocaleString()} active · ${listed.unattributedEnded.toLocaleString()} ended unattributed`
+      : `${active_.toLocaleString()} active`;
   return <div ref={anchor} className="lend-lease-agreements-host">{parent ? null : groupFailure}
-    {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{active_.toLocaleString()}{listed.unattributed ? '+' : ''} active</span>, headerSlot)}
+    {headerSlot && data && data.agreements !== null && createPortal(<span className="pill">{activePill}</span>, headerSlot)}
     <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
       title={picked ? `${title(picked.giver, picked.at)} → ${title(picked.receiver, picked.at)}` : AGREEMENT.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={main}>
@@ -183,20 +205,31 @@ export default function LendLeaseAgreementsWidget({ widget, runtime, active, hea
 }
 
 export function agreementTooltip(row: AgreementRow, countryLabel: (tag: string | null, at: number) => ReturnType<CountryLabel>, viewport: number,
-  values: { get(key: string): number | undefined }) {
+  values: { get(key: string): number | bigint | undefined; raw?(key: string): bigint | undefined; missing?(key: string): string }) {
   const lines: TooltipRow[] = [];
-  const read = (column: string) => { const value = values.get(`${row.key}\u0000${column}`); return value === undefined ? null : BigInt(Math.trunc(value)); };
+  const read = (column: string) => {
+    const key = `${row.key}\u0000${column}`;
+    const value = values.raw?.(key) ?? values.get(key);
+    return value === undefined ? null : typeof value === 'bigint' ? value : BigInt(Math.trunc(value));
+  };
+  const missingOf = (column: string, fallback: string | null) => fallback ?? values.missing?.(`${row.key}\u0000${column}`) ?? 'Not in this agreement';
   row.items.forEach((item, index) => {
     const delivered = index === 0 ? read('delivered') : item.delivered, lost = index === 0 ? read('lost') : item.lost;
-    lines.push({ label: item.name ?? 'Equipment name unavailable', strong: true, lookupKey: item.variant ?? undefined });
+    lines.push({ label: item.name ?? item.missing ?? 'Equipment name unavailable', strong: true, lookupKey: item.variant ?? undefined });
     if (item.schedule) lines.push({ label: 'Schedule', value: item.schedule });
-    lines.push({ label: 'Delivered', value: amountOf(row, delivered) }, { label: 'Lost', value: amountOf(row, lost) });
+    if (item.scheduleMissing) lines.push({ label: item.schedule ? 'Schedule unavailable' : 'Schedule', value: item.scheduleMissing, tone: 'muted' });
+    lines.push(delivered === null ? { label: 'Delivered', value: missingOf('delivered', item.deliveredMissing), tone: 'muted' }
+      : { label: 'Delivered', value: amountOf(row, delivered) });
+    lines.push(lost === null ? { label: 'Lost', value: missingOf('lost', item.lostMissing), tone: 'muted' }
+      : { label: 'Lost', value: amountOf(row, lost) });
     if (delivered !== null && lost !== null && delivered + lost > 0n)
       lines.push({ label: 'Share lost', value: `${(Number(lost * 10000n / (delivered + lost)) / 100).toFixed(2)}%`, tone: 'muted' });
   });
   if (row.since !== null) lines.push({ label: 'Active since', value: dayLabel(row.since) });
+  else if (row.sinceMissing) lines.push({ label: 'Active since', value: row.sinceMissing, tone: 'muted' });
   if (row.last !== null) lines.push({ label: 'Last delivery', value: dayLabel(row.last) });
+  else if (row.lastMissing) lines.push({ label: 'Last delivery', value: row.lastMissing, tone: 'muted' });
   if (row.ended) lines.push({ label: `Last recorded ${dayLabel(row.at)}`, tone: 'muted' });
   const giver = countryLabel(row.giver, row.at), receiver = countryLabel(row.receiver, row.at);
-  return fitTooltip([{ title: `${giver.name} → ${receiver.name}`, ...countryNameDetails(giver, receiver), rows: lines }], viewport);
+  return fitTooltip([{ title: `${giver.name} → ${row.receiver === null && row.terms.receiverMissing ? row.terms.receiverMissing : receiver.name}`, ...countryNameDetails(giver, receiver), rows: lines }], viewport);
 }

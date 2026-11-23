@@ -62,6 +62,7 @@ pub(super) fn cells(reply: &Value) -> std::collections::BTreeMap<(String, String
 
 pub(super) fn set<T: TableSchema>(frame: &mut DecodedFrame, rows: Vec<T::Row>) {
     *frame.tables[T::ID.index()] = TableView::Complete(T::wrap(rows));
+    frame.metrics.table_ns[T::ID.index()] = 1;
 }
 
 mod fuel {
@@ -287,7 +288,7 @@ mod lend_lease {
 
 mod market {
     use super::*;
-    use crate::products::economy::market::{MarketLendLease, history::ended_spans};
+    use crate::products::economy::market::{MarketLendLease, history::{EndedSpan, ended_spans}};
     use replay_lanes::lanes::{Cell, Step};
     use replay_data::rows::{CountryLinkRow, CountryMarketRow, CountryRow, LendLeaseAgreementRow, MarketContractTermsRow, MarketEquipment, MarketPool, PurchaseContractRow, SharedMarketPool, tables};
 
@@ -364,9 +365,10 @@ mod market {
         let source = recording();
         let params = json!({ "branchId": "1", "countries": ["GER"] });
         let mut followed_panel = panel(&source, &params);
+        assert!(followed_panel.exact().is_some(), "registered market panel runs incrementally");
         for hour in FIRST..=LAST {
             let reply = asked::<MarketLendLease>(&source, params.clone(), hour).unwrap();
-            assert_eq!(followed(&source, &mut *followed_panel, hour), Ok(without_live(reply)), "hour {hour}");
+            assert_eq!(followed(&source, &mut *followed_panel, hour), Ok(reply), "hour {hour}");
         }
         let at = asked::<MarketLendLease>(&source, params.clone(), 110).unwrap();
         assert_eq!(at["offers"].as_array().unwrap().len(), 1, "FRA's listing is not GER's");
@@ -385,11 +387,19 @@ mod market {
     fn purchase_progress_moves_as_live_cells_and_unread_progress_is_named() {
         let source = recording();
         let params = json!({ "branchId": "1", "countries": ["GER"], "only": "contracts" });
-        let mut contracts = panel(&source, &params);
-        let (first, second) = (followed(&source, &mut *contracts, 110), followed(&source, &mut *contracts, 111));
-        assert!(first.is_ok());
-        assert_eq!(first, second, "collected CIC moves each hour in a live cell, never in the panel");
-        assert!(contracts.live().is_some());
+        let contracts = panel(&source, &params);
+        let exact = contracts.exact().expect("registered market panel runs incrementally");
+        let first = (exact.advance)(110, false, &AtomicBool::new(false), None);
+        let second = (exact.advance)(111, false, &AtomicBool::new(false), None);
+        assert!(first.value.is_ok());
+        assert_eq!(*first.value, *second.value, "collected CIC moves each hour in a live cell, never in the panel");
+        assert!(first.live.is_some() && second.live.is_some());
+        let at_110 = (exact.read)(110, &AtomicBool::new(false)).unwrap();
+        let at_111 = (exact.read)(111, &AtomicBool::new(false)).unwrap();
+        assert_eq!(without_live(at_110.clone()), without_live(at_111.clone()));
+        let key = at_110["contracts"][0]["key"].as_str().unwrap().to_owned();
+        assert_eq!(cells(&at_110)[&(key.clone(), "collected".into())], json!(110_000));
+        assert_eq!(cells(&at_111)[&(key, "collected".into())], json!(111_000));
         let unread = asked::<MarketLendLease>(&source, params, UNREAD).unwrap();
         assert!(unread["purchasesMissing"].as_str().unwrap().contains("purchases unreadable"));
         assert_eq!(unread["contracts"][0]["purchase"], false);
@@ -400,10 +410,382 @@ mod market {
     }
 
     #[test]
-    fn an_agreement_ends_where_its_row_leaves_for_good_or_in_a_read_hour_not_where_the_table_was_unread() {
+    fn an_agreement_ends_only_when_a_census_read_proves_it_absent() {
         let shown = |hour| Step { hour, cells: Some(vec![Cell::Number(0)].into_boxed_slice()) };
         let hidden = |hour| Step { hour, cells: None };
-        let history = vec![(1u128, vec![shown(100), hidden(110), shown(115), hidden(120)]), (2, vec![shown(100)]), (3, vec![shown(100), hidden(130)])];
-        assert_eq!(ended_spans(&history, |hour| hour != 110 && hour != 130), vec![(1, 115, 119), (3, 100, 129)], "a row gone for good ended though its hour was not read");
+        let history = vec![
+            (1u128, vec![shown(100), hidden(110), shown(115), hidden(120)]),
+            (2, vec![shown(100)]),
+            (3, vec![shown(100), hidden(130)]),
+            (4, vec![shown(100), hidden(105), shown(118)]),
+        ];
+        let reads = [(100, 104), (115, 117), (120, 129)];
+        assert_eq!(
+            ended_spans(&history, 135, &reads, &[]),
+            vec![
+                EndedSpan { key: 1, first: 100, last: 119, ended_by: 120 },
+                EndedSpan { key: 4, first: 100, last: 104, ended_by: 115 },
+            ],
+            "unread gaps without a census read keep the agreement open; an unread tail never fabricates an end; a later census read proves absence at ended_by"
+        );
+        let truncated_history = vec![
+            (5u128, vec![shown(100), hidden(110), shown(115)]),
+            (6, vec![shown(100), hidden(124)]),
+        ];
+        assert_eq!(
+            ended_spans(&truncated_history, 130, &[(100, 109), (115, 123), (125, 130)], &[(110, 110), (124, 124)]),
+            vec![EndedSpan { key: 6, first: 100, last: 123, ended_by: 124 }],
+            "a final truncated census ends at the truncated hour while a mid-life truncated hour where the agreement returns does not"
+        );
+    }
+
+    #[test]
+    fn truncated_standing_agreements_keep_exact_main_diagnostic_and_end_behavior() {
+        use crate::products::economy::market::history::LendLeaseHistory;
+        use dashboard_base::products::{BranchParams, Product};
+        use replay_data::rows::TableRows;
+        let frames = (FIRST..=LAST)
+            .map(|hour| {
+                let mut frame = source(1, hour, Some(1));
+                let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
+                countries.push(CountryRow { id: FRA, canonical_slot: 3, tag: b"FRA".to_vec(), ..CountryRow::default() });
+                countries.sort_by_key(|row| row.id);
+                set::<tables::Countries>(&mut frame, countries);
+                let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
+                links.push(CountryLinkRow { id: FRA, canonical_slot: 3 });
+                links.sort_by_key(|row| row.id);
+                set::<tables::CountryLinks>(&mut frame, links);
+                set::<tables::LexicalTokens>(&mut frame, Vec::new());
+                set::<tables::VariantDefinitions>(&mut frame, Vec::new());
+                if hour < ENDS {
+                    set::<tables::LendLeaseAgreements>(&mut frame, vec![LendLeaseAgreementRow {
+                        country: GER,
+                        id: 9,
+                        receiver: FRA,
+                        active_since: FIRST,
+                        monthly: equipment(6, 50_000),
+                        fuel_sent_raw: i64::from(hour) * 32_768,
+                        ..LendLeaseAgreementRow::default()
+                    }]);
+                } else if hour == ENDS {
+                    *frame.tables[TableId::LendLeaseAgreements.index()] = TableView::Truncated {
+                        rows: TableRows::LendLeaseAgreements(Vec::new()),
+                        missing: 2,
+                    };
+                    frame.metrics.table_ns[TableId::LendLeaseAgreements.index()] = 1;
+                } else {
+                    set::<tables::LendLeaseAgreements>(&mut frame, Vec::new());
+                }
+                frame
+            })
+            .collect();
+        let source = open(frames);
+        let reply = LendLeaseHistory::load(&source, &BranchParams { branch_id: "1".into() }, &load(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.agreements.len(), 1);
+        assert_eq!(reply.agreements[0].last_hour, ENDS - 1);
+        assert_eq!(reply.agreements[0].ended_by, ENDS, "truncated census keeps main's ending hour");
+        let standing = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["GER"], "only": "agreements" }), ENDS).unwrap();
+        assert!(standing["agreements"].is_null());
+        assert!(
+            standing["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str().unwrap().ends_with(&format!("hour {ENDS} LendLeaseAgreements is truncated (2 missing rows)"))),
+            "truncated standing agreements keep main's exact diagnostic: {standing}"
+        );
+    }
+
+    #[test]
+    fn ended_agreement_history_keeps_known_values_including_zero() {
+        use crate::products::economy::market::history::LendLeaseHistory;
+        use dashboard_base::products::{BranchParams, Product};
+        let source = recording();
+        let reply = LendLeaseHistory::load(&source, &BranchParams { branch_id: "1".into() }, &load(), &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.agreements.len(), 1);
+        let ended = &reply.agreements[0];
+        assert_eq!(ended.last_hour, ENDS - 1);
+        assert_eq!(ended.ended_by, ENDS);
+        assert_eq!(ended.terms.active_since.value, Some(FIRST));
+        assert_eq!(ended.terms.active_since.missing, None);
+        assert_eq!(ended.terms.last_delivery.value, Some(0));
+        assert_eq!(ended.terms.last_delivery.missing, None);
+        assert_eq!(ended.fuel_sent_raw.value_raw.as_deref(), Some(&((i64::from(ENDS - 1) * 32_768).to_string())[..]));
+        assert_eq!(ended.fuel_sunk_raw.value_raw.as_deref(), Some("0"));
+        assert_eq!(ended.fuel_sunk_raw.missing, None);
+        assert!(ended.terms.monthly.items.as_ref().is_some_and(|items| items.len() == 1));
+    }
+
+    #[test]
+    fn partial_standing_agreement_keeps_readable_fields_and_intact_siblings_on_both_paths() {
+        use replay_columnar::{
+            container::{SectionKey, Tags},
+            envelope::{self, Identity, Kind},
+            lane::{Clock, ClockHour},
+            manifest::Status,
+            state::Cell as StoreCell,
+            store::Store,
+            unit::{self, Encoder},
+        };
+        use replay_data::{
+            format::FormatVersion,
+            identity::{CaptureMode as Mode, Identity as Game, IdentityCodec, SampleBoundary, SessionStart, Verification},
+            rows::TABLE_COUNT,
+            value::Value as _,
+        };
+        use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+        use replay_journal::{columnar_file::{BlockEnd, FileWriter}, summaries::Summaries};
+        use replay_recording::{records::Records, schema::{keeps_last, schema}};
+        use replay_settings::compression::Settings;
+
+        let game = Game {
+            game_version: "synthetic".into(),
+            exe_hash: [1; 32],
+            exe_size: 1,
+            vanilla_hash: [2; 32],
+            dlc: Vec::new(),
+            mods: Vec::new(),
+            coverage_policy: 1,
+            language: "synthetic".into(),
+            recorder_version: "synthetic".into(),
+            collector_hash: [3; 32],
+            verification: Verification::Unchecked,
+        };
+        let full_schema = schema().unwrap();
+        let columns: Vec<usize> = full_schema.iter().map(Vec::len).collect();
+        let mut content = Vec::new();
+        game.encode(&mut content).unwrap();
+        let identity = Identity {
+            schema: envelope::schema_digest_prefix(&full_schema, &columns).unwrap(),
+            campaign: CAMPAIGN.to_vec(),
+            content,
+            capture_mode: Mode::Full.byte(),
+        };
+        let unit = unit::Settings { restore_blocks: 1, ..unit::Settings::at(3) };
+        let mut file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, TABLE_COUNT, Settings { level: unit.level }, None).unwrap();
+        let mut store = Store::new(full_schema.clone(), keeps_last().to_vec());
+        store.declare_logs(&replay_data::rows::logs()).unwrap();
+        store.attach(Encoder::new(&full_schema, unit).unwrap());
+        let mut summaries = Summaries::new(unit.level).unwrap();
+        file.start_run(1, envelope::epoch::START, 110).unwrap();
+        store.begin_run(110);
+        summaries.start_run();
+        summaries.open(&mut store, 110);
+        let mut clock = Clock::default();
+        let mut strings = Vec::new();
+        let mut string_count = 0_u64;
+        let mut intern = |store: &mut Store, text: &[u8]| -> u32 {
+            let before = store.strings().next();
+            let id = store.intern(text).unwrap();
+            if store.strings().next() > before {
+                unit::put_varint(&mut strings, text.len() as u64);
+                strings.extend_from_slice(text);
+                string_count += 1;
+            }
+            id
+        };
+        let ger_tag = intern(&mut store, b"GER");
+        let fra_tag = intern(&mut store, b"FRA");
+        let campaign_id = intern(&mut store, CAMPAIGN);
+
+        let mut pool5 = Vec::new();
+        MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 5, amount_raw: 50_000 }] }.encode(&mut pool5).unwrap();
+        let mut pool6 = Vec::new();
+        MarketPool { allow_zero: false, items: vec![MarketEquipment { variant: 6, amount_raw: 75_000 }] }.encode(&mut pool6).unwrap();
+        let mut empty_pool = Vec::new();
+        MarketPool::default().encode(&mut empty_pool).unwrap();
+
+        for (hour, fuel_sent) in [(110, 32_768_i64), (111, 65_536_i64), (112, 65_536_i64)] {
+            store.begin_hour(hour, &[]).unwrap();
+            store.status(TableId::Clock.index(), Status::Complete, true, Some(hour), true).unwrap();
+            {
+                let mut t = store.table(TableId::Clock.index()).unwrap();
+                let slot = t.slot(0).unwrap_or_else(|| t.insert(0).unwrap());
+                t.write(slot, 0, StoreCell::I32(hour)).unwrap();
+                if hour == 110 {
+                    t.write(slot, 1, StoreCell::U64(0)).unwrap();
+                    t.write(slot, 2, StoreCell::I64(0)).unwrap();
+                    t.write(slot, 3, StoreCell::I32(0)).unwrap();
+                    t.write(slot, 4, StoreCell::I32(0)).unwrap();
+                    t.write(slot, 5, StoreCell::OptionalU32(None)).unwrap();
+                    for col in 6..18 {
+                        t.write(slot, col, StoreCell::OptionalI32(None)).unwrap();
+                    }
+                }
+            }
+            store.status(TableId::Campaign.index(), Status::Complete, true, Some(hour), true).unwrap();
+            store.status(TableId::Countries.index(), Status::Complete, true, Some(hour), true).unwrap();
+            store.status(TableId::CountryLinks.index(), Status::Complete, true, Some(hour), true).unwrap();
+            store.status(TableId::TagNames.index(), Status::Complete, true, Some(hour), true).unwrap();
+            store.status(TableId::TagHolders.index(), Status::Complete, true, Some(hour), true).unwrap();
+            for empty in [TableId::LexicalTokens, TableId::VariantDefinitions, TableId::CountryMarket, TableId::MarketContractTerms, TableId::PurchaseContracts] {
+                store.status(empty.index(), Status::Complete, true, Some(hour), true).unwrap();
+            }
+            if hour == 112 {
+                store.status(TableId::LendLeaseAgreements.index(), Status::Truncated { missing: 1 }, true, None, true).unwrap();
+                let mut t = store.table(TableId::LendLeaseAgreements.index()).unwrap();
+                let partial_slot = t.slot(u128::from(GER) << 64 | 10u128).unwrap();
+                t.read_rows(&[partial_slot]).unwrap();
+            } else {
+                store.status(TableId::LendLeaseAgreements.index(), Status::Complete, true, Some(hour), true).unwrap();
+            }
+            if hour == 110 {
+                {
+                    let mut t = store.table(TableId::Campaign.index()).unwrap();
+                    let slot = t.insert(0).unwrap();
+                    t.write(slot, 0, StoreCell::Bytes(campaign_id)).unwrap();
+                }
+                {
+                    let mut t = store.table(TableId::TagNames.index()).unwrap();
+                    for (number, tag) in [(1_u32, ger_tag), (2_u32, fra_tag)] {
+                        let s = t.insert(u128::from(number)).unwrap();
+                        t.write(s, 0, StoreCell::Bytes(tag)).unwrap();
+                    }
+                }
+                {
+                    let mut t = store.table(TableId::TagHolders.index()).unwrap();
+                    for (number, epoch, canonical_slot, id, tag) in [(1_u32, 1_u32, 1_u32, GER, ger_tag), (2_u32, 2_u32, 3_u32, FRA, fra_tag)] {
+                        let key = u128::from(number) << 96 | u128::from(epoch) << 64 | u128::from(canonical_slot) << 32 | u128::from(id);
+                        let s = t.insert(key).unwrap();
+                        t.write(s, 0, StoreCell::Bytes(tag)).unwrap();
+                    }
+                }
+                {
+                    let mut t = store.table(TableId::Countries.index()).unwrap();
+                    for (id, canonical_slot, tag) in [(GER, 1_u32, ger_tag), (FRA, 3_u32, fra_tag)] {
+                        let s = t.insert(u128::from(id)).unwrap();
+                        t.write(s, 0, StoreCell::U32(canonical_slot)).unwrap();
+                        t.write(s, 1, StoreCell::Bytes(tag)).unwrap();
+                        t.write(s, 2, StoreCell::OptionalI64(None)).unwrap();
+                        t.write(s, 3, StoreCell::I64(0)).unwrap();
+                        t.write(s, 4, StoreCell::I64(0)).unwrap();
+                        t.write(s, 5, StoreCell::I64(0)).unwrap();
+                        t.write(s, 6, StoreCell::OptionalI64(None)).unwrap();
+                        t.write(s, 7, StoreCell::U8(0)).unwrap();
+                        t.write(s, 8, StoreCell::I32(0)).unwrap();
+                        t.write(s, 9, StoreCell::OptionalI32(None)).unwrap();
+                    }
+                }
+                {
+                    let mut t = store.table(TableId::CountryLinks.index()).unwrap();
+                    let s0 = t.insert(u128::from(GER)).unwrap();
+                    t.write(s0, 0, StoreCell::U32(1)).unwrap();
+                    let s1 = t.insert(u128::from(FRA)).unwrap();
+                    t.write(s1, 0, StoreCell::U32(3)).unwrap();
+                }
+                {
+                    let mut t = store.table(TableId::LendLeaseAgreements.index()).unwrap();
+                    let intact = t.insert(u128::from(GER) << 64 | 9u128).unwrap();
+                    t.write(intact, 0, StoreCell::U32(FRA)).unwrap();
+                    t.write(intact, 1, StoreCell::U64(1)).unwrap();
+                    t.write(intact, 2, StoreCell::I32(100)).unwrap();
+                    t.write(intact, 3, StoreCell::I32(105)).unwrap();
+                    t.write(intact, 4, StoreCell::Opaque(&pool5)).unwrap();
+                    t.write(intact, 5, StoreCell::Opaque(&empty_pool)).unwrap();
+                    t.write(intact, 6, StoreCell::Opaque(&empty_pool)).unwrap();
+                    t.write(intact, 7, StoreCell::Opaque(&empty_pool)).unwrap();
+                    t.write(intact, 8, StoreCell::Opaque(&empty_pool)).unwrap();
+                    t.write(intact, 9, StoreCell::I64(1_000)).unwrap();
+                    t.write(intact, 10, StoreCell::I64(0)).unwrap();
+                    t.write(intact, 11, StoreCell::I64(fuel_sent)).unwrap();
+                    t.write(intact, 12, StoreCell::I64(0)).unwrap();
+                    t.write(intact, 13, StoreCell::I64(32_768)).unwrap();
+
+                    let partial = t.insert(u128::from(GER) << 64 | 10u128).unwrap();
+                    t.write(partial, 2, StoreCell::I32(102)).unwrap();
+                    t.write(partial, 4, StoreCell::Opaque(&pool6)).unwrap();
+                }
+            } else if hour == 111 {
+                let mut t = store.table(TableId::LendLeaseAgreements.index()).unwrap();
+                let intact = t.slot(u128::from(GER) << 64 | 9u128).unwrap();
+                t.write(intact, 11, StoreCell::I64(fuel_sent)).unwrap();
+            }
+            store.settle();
+            summaries.hour(&store, hour);
+            clock.hour(&ClockHour { flags: 0, total_ns: 0, pool_bytes: 0, dropped_frames: 0 });
+            store.end_hour(&mut file).unwrap();
+        }
+        store.end_run(&mut file).unwrap();
+        let mut string_payload = Vec::new();
+        unit::put_varint(&mut string_payload, string_count);
+        string_payload.extend_from_slice(&strings);
+        let (summary_pieces, span) = summaries.finish(112, 0, 110, &mut file).unwrap();
+        let (_, span) = file.end_block(BlockEnd { clock: &clock.finish(), strings: (&string_payload, 0), summaries: summary_pieces, span }).unwrap();
+        summaries.written(&span).unwrap();
+        store.end_block();
+        let tail = summaries.tail(110, 3, &mut file).unwrap();
+        file.tail(&tail).unwrap();
+        file.finish_run().unwrap();
+
+        let records = Records {
+            sessions: vec![SessionStart { id: 1, process_id: 1, process_start_time: 1, qpc_frequency: 1, sample_boundary: SampleBoundary::EndOfHour, capture_mode: Mode::Full, identity: game }],
+            branches: vec![BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 110, parent: Parentage::Unknown, reason: BranchReason::SessionStart }],
+            ..Records::default()
+        };
+        let record_bytes = records.encode(FormatVersion::CURRENT).unwrap();
+        let extent = file.container().put_zstd(Kind::Controls, Tags::default(), &record_bytes, 3).unwrap();
+        file.container().append(SectionKey::RECORDS, extent).unwrap();
+        let bytes = file.finish_runs(&[], true, |_| Ok(())).unwrap().0.into_inner();
+        let replay = Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+        let source = Source::from_replay(dashboard_base::SourceKey { source_id: "partial-lease".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+
+        let params = json!({ "branchId": "1", "countries": ["GER"], "only": "agreements" });
+        let reply = asked::<MarketLendLease>(&source, params.clone(), 110).unwrap();
+        let mut registered = panel(&source, &params);
+        let exact = registered.exact().expect("registered market panel runs incrementally");
+        let read_110 = (exact.advance)(110, true, &AtomicBool::new(false), None);
+        assert!(read_110.lanes.iter().any(|l| l.table == TableId::LendLeaseAgreements.index()), "registered panel declares LendLeaseAgreements lane");
+        let at_110 = (*read_110.value).clone().unwrap();
+        assert_eq!(at_110, reply, "registered incremental panel matches exact request including live cells");
+        let read_111 = (exact.advance)(111, true, &AtomicBool::new(false), None);
+        let at_111 = (*read_111.value).clone().unwrap();
+        assert_eq!(without_live(at_111.clone()), without_live(reply.clone()), "live fuel update keeps unchanged terms");
+        let read_112 = (exact.advance)(112, true, &AtomicBool::new(false), None);
+        let at_112 = (*read_112.value).clone().unwrap();
+        let asked_112 = asked::<MarketLendLease>(&source, params.clone(), 112).unwrap();
+        assert_eq!(at_112, asked_112, "truncated hour with unread retained column matches on both paths");
+        assert!(asked_112["agreements"].is_null());
+        assert!(
+            asked_112["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|w| w.as_str().unwrap().ends_with("hour 112 LendLeaseAgreements is unavailable: LendLeaseAgreements.receiver is not recorded and its row cannot say so")),
+            "truncated hour with unread required column keeps main's exact diagnostic: {asked_112}"
+        );
+        assert_eq!(followed(&source, &mut *registered, 110), Ok(reply.clone()), "followed panel matches exact reply on partial agreements");
+
+        let agreements = reply["agreements"].as_array().unwrap();
+        assert_eq!(agreements.len(), 2, "both intact and partial standing agreements survive");
+        let intact = agreements.iter().find(|row| row["id"] == "0000000000000009").unwrap();
+        let partial = agreements.iter().find(|row| row["id"] == "000000000000000a").unwrap();
+        assert_eq!(intact["receiver"], "FRA");
+        assert_eq!(intact["monthly"]["items"][0]["variant"], "5");
+        assert!(partial["receiver"].is_null());
+        assert_eq!(partial["receiverMissing"], "Receiver not recorded at this hour");
+        assert!(partial["fuelDailyRaw"]["valueRaw"].is_null());
+        assert!(partial["fuelDailyRaw"]["missing"].as_str().unwrap().contains("not recorded"));
+        assert_eq!(partial["activeSince"]["value"], 102);
+        assert_eq!(partial["monthly"]["items"][0]["variant"], "6", "readable pool survives unrecorded sibling fields");
+        assert!(reply["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("unreadable or unrecorded fields")));
+
+        let live = cells(&at_110);
+        let intact_key = intact["key"].as_str().unwrap().to_owned();
+        let partial_key = partial["key"].as_str().unwrap().to_owned();
+        assert_eq!(live[&(intact_key.clone(), "fuelSent".into())], json!(32_768), "intact agreement keeps live fuelSent despite partial sibling");
+        assert_eq!(live[&(intact_key.clone(), "fuelLost".into())], json!(0));
+        assert!(live[&(partial_key.clone(), "fuelSent".into())].is_string(), "partial agreement's unrecorded live fuelSent reports a missing reason");
+        let live_111 = cells(&at_111);
+        assert_eq!(live_111[&(intact_key, "fuelSent".into())], json!(65_536), "exact panel updates live fuelSent across unchanged terms");
+        assert!(live_111[&(partial_key, "fuelSent".into())].is_string());
+
+        let fra_reply = asked::<MarketLendLease>(&source, json!({ "branchId": "1", "countries": ["FRA"], "only": "agreements" }), 110).unwrap();
+        let fra_agreements = fra_reply["agreements"].as_array().unwrap();
+        assert_eq!(fra_agreements.len(), 2, "FRA filter keeps intact FRA agreement and unattributed unread-receiver agreement");
+        let fra_partial = fra_agreements.iter().find(|row| row["id"] == "000000000000000a").unwrap();
+        assert!(fra_partial["receiver"].is_null());
+        assert_eq!(fra_partial["receiverMissing"], "Receiver not recorded at this hour");
+        assert_eq!(fra_reply["unattributed"], 1);
+        assert!(fra_reply["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("no tag at this hour")));
     }
 }

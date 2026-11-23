@@ -43,7 +43,7 @@ impl Find for Scan {
     }
 }
 
-pub(crate) fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
+pub fn unrecorded(table: usize, status: Status, reason: Option<&str>) -> Option<String> {
     let name = table_words(table);
     match status {
         Status::Complete => None,

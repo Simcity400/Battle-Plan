@@ -44,6 +44,8 @@ dashboard-text = { workspace = true, features = ["test-support"] }
 engine-heap = { workspace = true }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
+replay-journal = { workspace = true, features = ["test-support"] }
+replay-settings = { workspace = true }
 
 [lints]
 workspace = true

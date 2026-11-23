@@ -48,16 +48,22 @@ test('Trade flows market presentation keeps terms, schedules and live progress a
     const data = { ...validateMarketReply({ branchId: '1', warnings: [], purchasesMissing: null, unattributed: 0, variants: [], icons: [],
       offers: [{ country: 5000, tag: 'AAA', inventory: [item], prices: [{ variant: '31', name: 'Mod equipment', level: 2 }], subsidies: [], subsidyTotalRaw: '17', autoSendMarketAccess: true }],
       contracts: [{ key: '9', id: '0000000000000017', seller: 'AAA', buyer: 'BBB', request: false, speed: 3, equipment: [item], prices: [{ ...item, amountRaw: '12345' }], levels: [], subsidies: [], purchase: true }],
-      agreements: [{ key: '8', id: '0000000000000018', giver: 'AAA', receiver: 'BBB', revision: '3', activeSince: 1, lastDelivery: 77,
-        monthly: [item], percentage: [], once: [], delivered: [item], sunk: [], fuelDailyRaw: '32769', fuelPercentageRaw: '10001', lastFuelDeliveredRaw: '17' }] }), hour: 77 };
-    const values = { get: (key: string) => ({ '9\u0000assigned': 2, '9\u0000convoys': 3, '9\u0000collected': 150000, '9\u0000deliveries': 4, '8\u0000fuelSent': 65536 } as Record<string, number>)[key], missing: () => 'Not read yet' };
+      agreements: [{ key: '8', id: '0000000000000018', giver: 'AAA', receiver: 'BBB', revision: { valueRaw: '3' }, activeSince: { value: 1 }, lastDelivery: { value: 77 },
+        monthly: { items: [item] }, percentage: { items: [] }, once: { items: [] }, delivered: { items: [item] }, sunk: { items: [] },
+        fuelDailyRaw: { valueRaw: '32769' }, fuelPercentageRaw: { valueRaw: '10001' }, lastFuelDeliveredRaw: { valueRaw: '17' } }] }), hour: 77 };
+    const wideFuel = 9007199254740993n * 32768n;
+    const values = {
+      get: (key: string) => ({ '9\u0000assigned': 2, '9\u0000convoys': 3, '9\u0000collected': 150000, '9\u0000deliveries': 4, '8\u0000fuelSent': Number(wideFuel) } as Record<string, number>)[key],
+      raw: (key: string) => ({ '9\u0000assigned': 2n, '9\u0000convoys': 3n, '9\u0000collected': 150000n, '9\u0000deliveries': 4n, '8\u0000fuelSent': wideFuel } as Record<string, bigint>)[key],
+      missing: () => 'Not read yet',
+    };
     const render = (selected?: string) => renderToStaticMarkup(createElement(View, { data, selected, values }));
     const html = render();
     for (const title of ['International market', 'Lend-lease', 'Listed inventory', 'Asking price levels', 'Agreed prices (CIC)', 'Monthly', 'Once', 'Delivered']) assert.ok(html.includes(title), title);
     assert.match(html, /90071992547[.]40993/);
     assert.match(html, /Mod equipment/);
     assert.match(html, /Convoys 2 of 3 · collected 1[.]5 CIC · deliveries 4/);
-    assert.match(html, /Fuel sent: 2 · lost: —/, 'a live cell not held reads as missing, never zero');
+    assert.match(html, /Fuel sent: 9007199254740993 · lost: <span[^>]*data-value-state="missing"[^>]*data-tooltip="Not recorded: Not read yet"/, 'live fuel keeps exact bigint via raw() and missing cells render ValueState');
     assert.match(render('agreement:0000000000000018'), /<details open=""/);
     const unknown = renderToStaticMarkup(createElement(View, { data: { ...data, offers: null, contracts: null, agreements: null } }));
     assert.match(unknown, /not recorded/);

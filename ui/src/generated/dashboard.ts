@@ -3103,15 +3103,19 @@ rows: Array<EventFeedRow>,
  * read, refusals of their rows.
  */
 unavailable: Array<EventFeedUnavailable>, warnings: Array<string>, };
-export type EndedLease = { terms: LeaseTerms, fuelSentRaw: string, fuelSunkRaw: string,
+export type EndedLease = { terms: LeaseTerms, fuelSentRaw: LeaseAmount, fuelSunkRaw: LeaseAmount,
 /**
  * The first hour it stood in its run, within the branch.
  */
 firstHour: number,
 /**
- * Its last read.
+ * Its last witnessed hour.
  */
-lastHour: number, };
+lastHour: number,
+/**
+ * The first census hour that established the agreement absent.
+ */
+endedBy: number, };
 export type LendLeaseHistoryReply = { branchId: string,
 /**
  * By the hour each ended, then key.
@@ -5571,15 +5575,18 @@ prices: Array<MarketItem>, levels: Array<MarketLevel>, subsidies: Array<MarketGr
  * Whether a purchase contract stands for it: its progress is in the live cells.
  */
 purchase: boolean, };
+export type LeaseAmount = { valueRaw: string | null, missing?: string, };
+export type LeaseHour = { value: number | null, missing?: string, };
+export type LeaseItems = { items: Array<MarketItem> | null, missing?: string, };
 export type LeaseTerms = { key: string,
 /**
  * The handle, hexadecimal.
  */
-id: string, giver: string | null, receiver: string | null, revision: string, activeSince: number, lastDelivery: number, monthly: Array<MarketItem>,
+id: string, giver: string | null, receiver: string | null, receiverMissing?: string, revision: LeaseAmount, activeSince: LeaseHour, lastDelivery: LeaseHour, monthly: LeaseItems,
 /**
  * Production shares, /1000 percent.
  */
-percentage: Array<MarketItem>, once: Array<MarketItem>, delivered: Array<MarketItem>, sunk: Array<MarketItem>, fuelDailyRaw: string, fuelPercentageRaw: string, lastFuelDeliveredRaw: string, };
+percentage: LeaseItems, once: LeaseItems, delivered: LeaseItems, sunk: LeaseItems, fuelDailyRaw: LeaseAmount, fuelPercentageRaw: LeaseAmount, lastFuelDeliveredRaw: LeaseAmount, };
 export type MarketLendLeaseParamsAtHour = MarketLendLeaseParams & { hour: number };
 export type CountryFuelParams = { branchId: string, country: CountryRef, };
 export type CountryFuelReply = { tag: string,
