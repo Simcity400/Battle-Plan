@@ -84,7 +84,7 @@ def context(changed, tree=None, workspace=None):
     workspace = workspace or crates(core=[], mid=["core"], top=["mid"], other=[])
     pipeline = ci.load_pipeline(PIPELINE)
     definitions = {job.name: job.definition for job in pipeline.jobs}
-    return ci.Context(set(tree), set(changed), workspace, pipeline, definitions)
+    return ci.Context(set(tree), set(changed), workspace, pipeline, definitions, pipeline.frame)
 
 
 def decide(name, ctx, tier="check"):
@@ -128,6 +128,21 @@ class Gates(unittest.TestCase):
         self.assertEqual(decide("scan", ctx).state, "run")
         ctx.definitions = None
         self.assertEqual(decide("scan", ctx).state, "run")
+
+    def test_a_pipeline_edit_reaches_only_the_jobs_it_redefines(self):
+        listed = PIPELINE.replace('implementation = ["tools/ci.py"]', 'implementation = ["tools/ci.py", "tools/ci.toml"]')
+        added = ci.load_pipeline(listed + '[[job]]\nname = "new"\ngroup = "all"\ntier = "check"\ntoolchain = "rust"\nkind = "crates"\ncommand = ["new", "{packages}"]\n')
+        ctx = context(["tools/ci.toml"])
+        ctx.pipeline = added
+        ctx.definitions = {job.name: job.definition for job in ci.load_pipeline(listed).jobs}
+        ctx.frame = ci.load_pipeline(listed).frame
+        self.assertEqual(ci.decide(next(job for job in added.jobs if job.name == "new"), ctx, "check").arguments, ["--workspace"])
+        self.assertEqual(decide("clippy", ctx).state, "skipped", "a job the edit left as it was keeps its own scope")
+        self.assertEqual(decide("scan", ctx).state, "skipped")
+        ctx.frame = ci.load_pipeline(listed.replace('tiers = ["check", "main"]', 'tiers = ["check", "nightly", "main"]')).frame
+        self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"], "an edit outside the jobs reaches every job")
+        ctx.frame = None
+        self.assertEqual(decide("clippy", ctx).arguments, ["--workspace"], "so does a base whose pipeline cannot be read")
 
     def test_a_changed_group_redefines_its_jobs(self):
         changed = ci.load_pipeline(PIPELINE.replace('[group.all]\nsetup = ["python"]', '[group.all]\nsetup = ["python", "node"]'))
