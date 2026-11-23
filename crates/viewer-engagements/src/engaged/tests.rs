@@ -884,3 +884,91 @@ fn partial_previous_naval_census_with_local_sweep_uses_recorded_lists_alone() {
     );
     assert_eq!(history.side(62, 0), Engaged::Yes);
 }
+
+#[test]
+fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
+    let links = BTreeMap::from([(101, 1), (701, 1), (2, 2), (5, 5)]);
+    let (apart, allied) = (relations(false), relations(true));
+    let mut history = History::default();
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(101),
+            recording: true,
+            ..sample(&links, &allied, &[7], &[2])
+        },
+        Continuity::Load,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(101),
+            recording: true,
+            ..sample(&links, &apart, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Yes);
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(701),
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links, &apart, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+}
+
+#[test]
+fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second_sweep() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (5, 5)]);
+    let apart = relations(false);
+    let zero_yes = ZeroVisibility::for_tests([(2, Ok(true)), (5, Ok(false))]);
+    let zero_no = ZeroVisibility::for_tests([(2, Ok(false)), (5, Ok(false))]);
+    let mut history = History::default();
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(1),
+            recording: true,
+            zero_visibility: &zero_yes,
+            ..sample(&links, &apart, &[7], &[2])
+        },
+        Continuity::Load,
+    );
+    assert_eq!(history.side(62, 0), Engaged::No);
+    history.advance(
+        Sample {
+            viewer: 1,
+            viewer_raw: Some(1),
+            alternate_viewer: Some(0),
+            alternate_viewer_raw: Some(0),
+            recording: true,
+            zero_visibility: &zero_no,
+            refreshes: RefreshWitness::Complete {
+                sides: BTreeMap::new(),
+                controller_targets: Vec::new(),
+                local_viewers: vec![0],
+            },
+            ..sample(&links, &apart, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
+    history.advance(
+        Sample {
+            viewer: 0,
+            viewer_raw: Some(0),
+            recording: true,
+            zero_visibility: &zero_no,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links, &apart, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+}

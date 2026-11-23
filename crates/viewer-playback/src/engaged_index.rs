@@ -667,7 +667,8 @@ impl Pass {
             {
                 viewer.slot = slot;
                 viewer.raw = Some(raw);
-                if (slot, raw) != view {
+                let same_view = raw == view.1 || (raw != 0 && view.1 != 0 && slot == view.0);
+                if !same_view {
                     viewer.alternate_slot = Some(view.0);
                     viewer.alternate_raw = Some(view.1);
                 }
@@ -771,7 +772,7 @@ impl Pass {
             }
             let player_slot = player
                 .as_ref()
-                .and_then(|(_, (view, _))| (*view != 0).then_some(*view));
+                .and_then(|(_, (view, raw))| (*raw != 0).then_some(*view));
             if covered
                 .players
                 .last()

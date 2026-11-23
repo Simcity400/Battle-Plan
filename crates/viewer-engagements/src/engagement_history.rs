@@ -127,6 +127,18 @@ impl Provenance {
     }
 }
 
+fn recorded_raw_viewer(
+    frame: &DecodedFrame,
+    links: &BTreeMap<u32, u32>,
+    viewer: u32,
+) -> Option<u32> {
+    let [player] = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, _>(frame)? else {
+        return None;
+    };
+    let raw = player.viewing_country()?;
+    (links.get(&raw).copied() == Some(viewer)).then_some(raw)
+}
+
 pub fn combats(
     frame: &DecodedFrame,
     kind: usize,
@@ -145,11 +157,12 @@ pub fn combats(
     };
     let sides = SOURCES[kind].sides(frame)?;
     let zero_visibility = viewer_foundation::visibility::ZeroVisibility::read_tables(frame, links);
+    let viewer_raw = recorded_raw_viewer(frame, links, viewer);
     let mut history = engaged::History::default();
     history.advance(
         engaged::Sample {
             viewer,
-            viewer_raw: None,
+            viewer_raw,
             alternate_viewer: None,
             alternate_viewer_raw: None,
             recording: false,

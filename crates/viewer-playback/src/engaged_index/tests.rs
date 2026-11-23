@@ -905,6 +905,130 @@ fn side_refresh_evaluates_recorded_execution_viewpoint_on_recording_track_and_pe
 }
 
 #[test]
+fn unindexed_and_pending_load_fallback_match_indexed_load_for_zero_mapped_tag() {
+    use replay_data::rows::{
+        CountryCounterInputRow, CountryLinkRow, FactionMemberRow, LandCombatSideRow,
+        LocalPlayerRow, PacketHour, Recorded, ReservedCountryNamingRow,
+        ReservedReverseVisibilityInputs, ReverseZeroVisibilityInputs, TableRows,
+        ZeroSubjectInputs,
+    };
+    use replay_frame::frame::TableView;
+
+    let mut frame = naval_frame(6, &[1], &[], 1, [0, 0]);
+    frame.branch = 3;
+    frame.hour = 10;
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *frame.tables[TableId::CountryLinks.index()]
+    {
+        rows.push(CountryLinkRow {
+            id: 777,
+            canonical_slot: 0,
+        });
+    }
+    *frame.tables[TableId::LocalPlayer.index()] =
+        TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+            country: 0,
+            observer_country: 777,
+        }]));
+    *frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![FactionMemberRow {
+            country: 2,
+            faction: 9,
+            ordinal: 0,
+        }]));
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                faction: Recorded::Value(Some(9)),
+                reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
+                    sample_hour: PacketHour::Host,
+                    cells: vec![Some(ReverseZeroVisibilityInputs {
+                        war: Some([1, 0]),
+                        ..Default::default()
+                    })],
+                })),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(
+            (1..=6)
+                .map(|country| CountryCounterInputRow {
+                    country,
+                    forward_visibility: Recorded::Value(Some(ReverseZeroVisibilityInputs {
+                        war: Some([0, 0]),
+                        military_access: Some(0),
+                        target: Some(0),
+                        subject: Some(ZeroSubjectInputs {
+                            relation_type: None,
+                            parties: None,
+                        }),
+                    })),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let links: BTreeMap<u32, u32> = (1..=6)
+        .map(|slot| (slot, slot))
+        .chain([(777, 0)])
+        .collect();
+    let relations = Relations::read(&frame, &links).unwrap();
+    let pending = History::default();
+    let mut pass = Pass::new(Arc::default(), Country::Recorded);
+    pass.fold_hour(3, 10, Some(&frame), Some(10), false);
+    let indexed = index(&pass);
+
+    assert_eq!(
+        combats(&frame, LAND, 0, &links, Ok(&relations), None).unwrap(),
+        (BTreeMap::from([(100, Engaged::Yes)]), Provenance::Unindexed)
+    );
+    assert_eq!(
+        combats(&frame, LAND, 0, &links, Ok(&relations), Some(&pending)).unwrap(),
+        (BTreeMap::from([(100, Engaged::Yes)]), Provenance::Pending)
+    );
+    assert_eq!(
+        combats(
+            &frame,
+            LAND,
+            0,
+            &links,
+            Ok(&relations),
+            Some(indexed.shared.as_ref()),
+        )
+        .unwrap(),
+        (BTreeMap::from([(100, Engaged::Yes)]), Provenance::Indexed)
+    );
+
+    let mut war_frame = frame.clone();
+    *war_frame.tables[TableId::LandCombatSides.index()] =
+        TableView::Complete(TableRows::LandCombatSides(vec![LandCombatSideRow {
+            combat: 100,
+            attacker_primary: vec![777],
+            defender_primary: Vec::new(),
+            ..Default::default()
+        }]));
+    let mut war_pass = Pass::new(Arc::default(), Country::Recorded);
+    war_pass.fold_hour(3, 10, Some(&war_frame), Some(10), false);
+    let war_indexed = index(&war_pass);
+    assert_eq!(
+        combats(&war_frame, LAND, 0, &links, Ok(&relations), None).unwrap(),
+        (BTreeMap::from([(100, Engaged::No)]), Provenance::Unindexed)
+    );
+    assert_eq!(
+        combats(
+            &war_frame,
+            LAND,
+            0,
+            &links,
+            Ok(&relations),
+            Some(war_indexed.shared.as_ref()),
+        )
+        .unwrap(),
+        (BTreeMap::from([(100, Engaged::No)]), Provenance::Indexed)
+    );
+}
+
+#[test]
 fn complete_empty_witness_does_not_infer_all_sides_refresh_from_observer_lag() {
     use replay_data::rows::{LocalPlayerRow, TableRows};
     use replay_frame::frame::TableView;

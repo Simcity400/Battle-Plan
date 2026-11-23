@@ -228,6 +228,18 @@ pub struct Sample<'a> {
     pub removal: Removal,
 }
 
+fn viewer_change(
+    before_slot: u32,
+    before_raw: Option<u32>,
+    now_slot: u32,
+    now_raw: Option<u32>,
+) -> bool {
+    match (before_raw, now_raw) {
+        (Some(a), Some(b)) => !(a == b || (a != 0 && b != 0 && before_slot == now_slot)),
+        _ => before_slot != now_slot,
+    }
+}
+
 impl Sample<'_> {
     fn primary_viewer(&self) -> CandidateViewer {
         match self.viewer_raw {
@@ -238,7 +250,7 @@ impl Sample<'_> {
 
     fn secondary_viewer(&self) -> Option<CandidateViewer> {
         let alt_slot = self.alternate_viewer?;
-        if alt_slot == self.viewer && self.alternate_viewer_raw == self.viewer_raw {
+        if !viewer_change(self.viewer, self.viewer_raw, alt_slot, self.alternate_viewer_raw) {
             return None;
         }
         Some(match self.alternate_viewer_raw {
@@ -283,7 +295,7 @@ struct Kept {
 struct Previous {
     viewer: u32,
     viewer_raw: Option<u32>,
-    alternate_viewer_refreshed: Option<u32>,
+    alternate_viewer_refreshed: Option<CandidateViewer>,
     links: BTreeMap<u32, u32>,
     relations: Result<Relations, &'static str>,
     zero_visibility: ZeroVisibility,
@@ -326,10 +338,23 @@ impl Previous {
         let mut other_proven = false;
         let mut local_proven = false;
         let mut possible = false;
-        if (self.viewer, self.viewer_raw) != (sample.viewer, sample.viewer_raw)
+        if viewer_change(self.viewer, self.viewer_raw, sample.viewer, sample.viewer_raw)
             && !(sample.recording && matches!(sample.refreshes, RefreshWitness::Complete { .. }))
         {
-            if self.alternate_viewer_refreshed == Some(sample.viewer) {
+            let already_refreshed = self.alternate_viewer_refreshed.is_some_and(|refreshed| {
+                match (refreshed, sample.primary_viewer()) {
+                    (CandidateViewer::RawLocal(a), CandidateViewer::RawLocal(b)) => {
+                        a == b
+                            || (a != 0
+                                && b != 0
+                                && sample.links.get(&a).copied() == Some(sample.viewer)
+                                && self.links.get(&a).copied() == Some(sample.viewer))
+                    }
+                    (CandidateViewer::Slot(a), CandidateViewer::Slot(b)) => a == b,
+                    _ => false,
+                }
+            });
+            if already_refreshed {
                 possible = true;
             } else {
                 other_proven = true;
@@ -578,7 +603,6 @@ impl History {
                 } => (Some(sides), local_viewers.as_slice()),
                 RefreshWitness::Unavailable => (None, &[]),
             };
-        let alternate = sample.alternate_viewer.filter(|&alt| alt != sample.viewer);
         let primary_viewer = sample.primary_viewer();
         let secondary_viewer = sample.secondary_viewer();
         let before = next.map(|p| {
@@ -685,6 +709,12 @@ impl History {
                             };
                             if owner == 0 {
                                 match zero_visibility.reverse_shared(slot) {
+                                    Ok(true) => return Some(true),
+                                    Ok(false) => {}
+                                    Err(_) => unknown = true,
+                                }
+                            } else if slot == 0 {
+                                match zero_visibility.forward_shared(owner) {
                                     Ok(true) => return Some(true),
                                     Ok(false) => {}
                                     Err(_) => unknown = true,
@@ -842,11 +872,21 @@ impl History {
             };
             held.insert(*key, value);
         }
-        let alternate_viewer_refreshed = alternate.filter(|&alt| {
+        let alternate_viewer_refreshed = secondary_viewer.filter(|&alt| {
             every.is_some_and(|e| e.other_proven)
-                || local_viewers
-                    .iter()
-                    .any(|&raw| raw != 0 && sample.links.get(&raw).copied() == Some(alt))
+                || local_viewers.iter().any(|&raw| match alt {
+                    CandidateViewer::RawLocal(alt_raw) => {
+                        raw == alt_raw
+                            || (raw != 0
+                                && alt_raw != 0
+                                && sample.links.get(&raw).is_some_and(|&slot| {
+                                    sample.links.get(&alt_raw).copied() == Some(slot)
+                                }))
+                    }
+                    CandidateViewer::Slot(alt_slot) => {
+                        raw != 0 && sample.links.get(&raw).copied() == Some(alt_slot)
+                    }
+                })
         });
         let mut earlier = previous.map(|previous| previous.sides).unwrap_or_default();
         self.previous = Some(Previous {
