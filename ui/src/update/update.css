@@ -26,11 +26,15 @@
 .update-popover { width: 300px; }
 .update-popover-title { display: block; margin: 2px 2px 6px; font-weight: 600; }
 .update-popover-text { margin: 0 2px 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.45; }
-.update-notes { display: grid; gap: 3px; margin: 0 2px 10px; padding: 0 0 0 16px; color: var(--text); font-size: 0.75rem; line-height: 1.4; }
-.update-notes-more { color: var(--muted); list-style: none; margin-left: -16px; }
+.update-releases { display: grid; gap: 10px; max-height: min(24rem, 60vh); margin: 0 2px 10px; overflow-y: auto; overscroll-behavior: contain; }
+.update-release { display: grid; gap: 4px; }
+.update-release-heading { margin: 0; color: var(--muted); font-size: 0.6875rem; font-weight: 500; line-height: 1.3; }
+.update-notes { display: grid; gap: 3px; margin: 0; padding: 0 0 0 16px; color: var(--text); font-size: 0.75rem; line-height: 1.4; }
+.update-notes strong { font-weight: 600; }
+.update-notes-more { margin: 0; color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
 .update-popover-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .update-grow { flex: 1; }
 
 .update-confirm { align-items: flex-start; }
-.update-confirm .update-notes { margin: 6px 0 0; }
+.update-confirm .update-releases, .settings-row-text > .update-releases, .recorder-toggle-text > .update-releases { margin: 6px 0 0; }
 .update-confirm-actions { display: flex; flex: none; align-items: center; gap: 6px; }

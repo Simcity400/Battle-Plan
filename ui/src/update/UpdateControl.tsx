@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { FailureLine } from '../components/FailureLine';
 import { Icon } from '../components/Icons';
 import { Popover, PopoverBody, usePopover } from '../components/Popover';
@@ -6,7 +6,8 @@ import { errorMessage } from '../shell/errors';
 import * as api from './api';
 import type { UpdateState } from './api';
 import { actionFailure } from '../dashboard/queryError';
-import { blockedReason, confirmInstall, restartLabel, restartQuestion, shownNotes, updateAction, updateDisabled, updateFailure, updateNews, updateTooltip } from './logic';
+import { blockedReason, confirmInstall, releaseHeading, releaseView, restartLabel, restartQuestion, updateAction, updateDisabled, updateFailure, updateNews,
+  updateTooltip } from './logic';
 import './update.css';
 
 const RING_RADIUS = 14;
@@ -68,19 +69,33 @@ export function useUpdateActions() {
   };
 }
 
+const PEEK_OPEN_MS = 200;
+const PEEK_CLOSE_MS = 150;
+
 export function UpdateNotes({ state }: { state: UpdateState }) {
-  const { items, more } = shownNotes(state.notes);
-  if (!items.length) return null;
-  return <ul className="update-notes">
-    {items.map((item, index) => <li key={index}>{item}</li>)}
-    {more > 0 && <li className="update-notes-more">And {more} more</li>}
-  </ul>;
+  if (!state.releases.length && !state.unlisted) return null;
+  const now = Date.now();
+  return <div className="update-releases">
+    {state.releases.map(notes => {
+      const { items, footer } = releaseView(notes);
+      return <section key={notes.version} className="update-release">
+        <h3 className="update-release-heading">{releaseHeading(notes, now)}</h3>
+        {items.length > 0 && <ul className="update-notes">
+          {items.map((item, index) => <li key={index}>{item.label && <><strong>{item.label}.</strong>{' '}</>}{item.text}</li>)}
+        </ul>}
+        {footer && <p className="update-notes-more">{footer}</p>}
+      </section>;
+    })}
+    {state.unlisted && <p className="update-notes-more">{state.releases.length ? 'Earlier releases aren’t listed here.' : 'This update’s changes aren’t listed here.'}</p>}
+  </div>;
 }
 
 export function UpdateButton({ state }: { state: UpdateState | null }) {
   const actions = useUpdateActions();
   const menu = usePopover('start');
   const [notice, setNotice] = useState<{ kind: 'confirm' | 'downloaded'; version: string } | null>(null);
+  const [peeking, setPeeking] = useState(false);
+  const peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const action = updateAction(state);
   const disabled = updateDisabled(state) || actions.pending;
   const downloaded = state?.downloadedVersion ?? null;
@@ -92,7 +107,18 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
     setNotice(null);
     if (!actions.failure) menu.close();
   }, [stale, actions.failure, menu]);
+  useEffect(() => () => clearTimeout(peekTimer.current), []);
   if (!api.updatesAvailable || !(updateNews(state) || menu.open || actions.pending || actions.failure || notice)) return null;
+  const offered = state?.downloadedVersion ?? state?.availableVersion ?? null;
+  const peekable = !!state && offered != null && (state.releases.length > 0 || state.unlisted) && !actions.failure && !notice;
+  const peek = () => {
+    clearTimeout(peekTimer.current);
+    if (peekable && !menu.open) peekTimer.current = setTimeout(() => { setPeeking(true); open(); }, PEEK_OPEN_MS);
+  };
+  const unpeek = () => {
+    clearTimeout(peekTimer.current);
+    if (peeking && peekable) peekTimer.current = setTimeout(() => menu.popup.current?.hidePopover(), PEEK_CLOSE_MS);
+  };
   const click = () => {
     if (disabled) return;
     if (action === 'check') void actions.check();
@@ -103,10 +129,12 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
   const tooltip = updateTooltip(state);
   return <>
     <button ref={menu.trigger} type="button" className={`update-button${action === 'download' || action === 'install' || state?.status === 'downloading' ? ' is-offered' : ''}`}
-      aria-label={tooltip} aria-disabled={disabled || undefined} data-tooltip={menu.open ? undefined : tooltip} onClick={click}>
+      aria-label={tooltip} aria-disabled={disabled || undefined} data-tooltip={menu.open || peekable ? undefined : tooltip} onClick={click}
+      onPointerEnter={peek} onPointerLeave={unpeek}>
       <UpdateIcon state={state} />
     </button>
-    <Popover menu={menu} className="update-popover" aria-label="Update">
+    <Popover menu={menu} className="update-popover" aria-label="Update" onPointerEnter={() => clearTimeout(peekTimer.current)} onPointerLeave={unpeek}
+      onToggle={event => { if (event.newState !== 'open') setPeeking(false); }}>
       <PopoverBody open={menu.open}>{() => {
         if (actions.failure) {
           const { retry } = actions.failure;
@@ -118,6 +146,13 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
             </div>
           </>;
         }
+        if (state && peeking && !notice && offered) return <>
+          <strong className="update-popover-title">{tooltip}</strong>
+          <UpdateNotes state={state} />
+          {state.enabled && <div className="update-popover-actions">
+            <button type="button" className="button small quiet update-popover-link" onClick={() => void actions.openRelease(offered)}>Release notes</button>
+          </div>}
+        </>;
         if (!state || !notice || stale) return null;
         const { version } = notice;
         const blocked = state.installBlocked;

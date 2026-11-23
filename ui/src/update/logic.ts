@@ -1,5 +1,5 @@
 import { plainFailure } from '../dashboard/queryError';
-import type { UpdateChannel, UpdateState } from './api';
+import type { ReleaseNotes, UpdateChannel, UpdateState } from './api';
 
 export type UpdateAction = 'check' | 'download' | 'install' | 'none';
 
@@ -107,6 +107,34 @@ export function confirmInstall(version: string, downgrade: boolean): string {
     : `BattlePlan and BattlePlan Recorder close, update to ${version} and reopen.`;
 }
 
-export function shownNotes(notes: readonly string[], shown = 6): { items: string[]; more: number } {
-  return { items: notes.slice(0, shown), more: Math.max(0, notes.length - shown) };
+export interface ReleaseView { items: { label: string | null; text: string }[]; footer: string | null }
+
+const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+export function releaseView(notes: ReleaseNotes, shown = 6): ReleaseView {
+  if (!notes.changes) return { items: [], footer: notes.since ? 'No changes since the previous release.' : 'The first release on this channel.' };
+  if (notes.highlights) {
+    const more = notes.more ?? 0;
+    return {
+      items: notes.highlights.map(highlight => ({ label: highlight.label, text: highlight.detail })),
+      footer: more ? `Plus ${plural(more, 'more fix or improvement', 'more fixes and improvements')}.`
+        : notes.highlights.length ? null : 'Nothing you’ll notice in the app: these changes are internal.',
+    };
+  }
+  const items = notes.pulls.slice(0, shown).map(pull => ({ label: null, text: pull.title }));
+  const rest = notes.changes - items.length;
+  return { items, footer: rest > 0 ? `And ${plural(rest, 'more change', 'more changes')}.` : null };
+}
+
+export function releaseAge(date: string | null, now = Date.now()): string | null {
+  const at = date ? Date.parse(date) : Number.NaN;
+  if (Number.isNaN(at)) return null;
+  const day = (time: number) => { const local = new Date(time); return Date.UTC(local.getFullYear(), local.getMonth(), local.getDate()); };
+  const days = Math.round((day(now) - day(at)) / 86_400_000);
+  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+}
+
+export function releaseHeading(notes: ReleaseNotes, now = Date.now()): string {
+  const age = releaseAge(notes.date, now);
+  return age ? `${notes.version} · ${age}` : notes.version;
 }

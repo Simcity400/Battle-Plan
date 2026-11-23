@@ -8,6 +8,16 @@ export type UpdateStatus = 'disabled' | 'idle' | 'checking' | 'up-to-date' | 'av
 export type UpdateChannel = 'stable' | 'nightly';
 export type UpdateBuild = 'stable' | 'nightly' | 'preview' | 'development';
 
+export interface ReleaseNotes {
+  version: string;
+  since: string | null;
+  date: string | null;
+  changes: number;
+  highlights: { label: string; detail: string }[] | null;
+  more: number | null;
+  pulls: { number: number; title: string }[];
+}
+
 export interface UpdateState {
   enabled: boolean;
   status: UpdateStatus;
@@ -16,8 +26,8 @@ export interface UpdateState {
   currentVersion: string;
   availableVersion: string | null;
   downloadedVersion: string | null;
-  releasedAt: string | null;
-  notes: string[];
+  releases: ReleaseNotes[];
+  unlisted: boolean;
   downloadPercent: number | null;
   checkedAt: number | null;
   message: string | null;

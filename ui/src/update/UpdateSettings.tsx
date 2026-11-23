@@ -37,7 +37,8 @@ export default function UpdateSettings() {
     <div className="settings-row" id="updates-version"><span className="settings-row-text">
       <strong>BattlePlan {state?.currentVersion ?? ''}</strong>
       {failure ? <FailureLine message={failure.text} detail={failure.detail} onRetry={failure.retry} retryDisabled={actions.pending} />
-        : <small>{updateDescription(state)}</small>}</span>
+        : <small>{updateDescription(state)}</small>}
+      {state && !asking && (state.availableVersion || state.downloadedVersion) && <UpdateNotes state={state} />}</span>
       {!blocking && <button ref={opener} type="button" className={`button small${action === 'install' ? ' primary' : ''}`}
         disabled={updateDisabled(state) || actions.pending || asking} onClick={press}><Icon name="download" />{updateButtonLabel(state)}</button>}
     </div>
