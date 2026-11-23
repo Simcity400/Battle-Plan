@@ -1,10 +1,11 @@
 
+use collector_primitives::asymmetric;
 use std::{
     cell::Cell,
     ptr,
     sync::atomic::{
         AtomicBool, AtomicPtr, AtomicU64, AtomicUsize,
-        Ordering::{Relaxed, SeqCst},
+        Ordering::{Acquire, Relaxed, Release, SeqCst},
     },
 };
 
@@ -153,6 +154,20 @@ unsafe fn free(table: *mut Table) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Admission {
+    None,
+    Slot(u8, u8),
+    Slow,
+}
+
+impl Admission {
+    #[inline(always)]
+    fn active(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 pub struct WatchRegistry {
     table: AtomicPtr<Table>,
     offered: AtomicPtr<Table>,
@@ -164,8 +179,12 @@ pub struct WatchRegistry {
     purge: bool,
     marking: bool,
     sequences: bool,
+    synchronous: bool,
     epoch: AtomicU64,
     state: Hot,
+    dirty: AtomicBool,
+    revision: AtomicU64,
+    flushing: AtomicBool,
     enabled: AtomicBool,
     poisoned: AtomicBool,
     refused: AtomicU64,
@@ -218,6 +237,11 @@ impl WatchRegistry {
         Self::with(true, true, false)
     }
 
+    pub const fn with_synchronous(mut self) -> Self {
+        self.synchronous = true;
+        self
+    }
+
     const fn with(purge: bool, marking: bool, sequences: bool) -> Self {
         Self {
             table: AtomicPtr::new(ptr::null_mut()),
@@ -230,8 +254,12 @@ impl WatchRegistry {
             purge,
             marking,
             sequences,
+            synchronous: false,
             epoch: AtomicU64::new(1),
             state: Hot(AtomicU64::new(0)),
+            dirty: AtomicBool::new(false),
+            revision: AtomicU64::new(0),
+            flushing: AtomicBool::new(false),
             enabled: AtomicBool::new(false),
             poisoned: AtomicBool::new(false),
             refused: AtomicU64::new(0),
@@ -270,8 +298,32 @@ impl WatchRegistry {
         self.increment(&self.epoch);
     }
 
-    #[inline]
-    fn admit(&self, writer: bool) -> bool {
+    #[inline(always)]
+    fn tag(&self) -> usize {
+        self as *const Self as usize
+    }
+
+    #[inline(always)]
+    fn admit(&self, writer: bool) -> Admission {
+        if !self.synchronous
+            && self.state.0.load(Relaxed) == 0
+            && let Some((slot_idx, entry_idx)) = asymmetric::enter_slot(self.tag())
+        {
+            if writer && !self.dirty.load(Relaxed) {
+                self.dirty.store(true, Relaxed);
+            }
+            return Admission::Slot(slot_idx, entry_idx);
+        }
+        if self.admit_word(writer) {
+            Admission::Slow
+        } else {
+            Admission::None
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn admit_word(&self, writer: bool) -> bool {
         let delta = RUNNING + if writer { REVISION } else { 0 };
         let current = self.state.0.load(Relaxed);
         if current & UNTRUSTED == 0
@@ -329,33 +381,110 @@ impl WatchRegistry {
         }
     }
 
-    #[inline]
-    fn enter(&self) -> bool {
+    #[inline(always)]
+    fn enter(&self) -> Admission {
         self.admit(true)
     }
 
-    #[inline]
-    fn leave(&self, counted: bool) {
-        if counted {
-            self.state.0.fetch_sub(RUNNING, SeqCst);
+    #[inline(always)]
+    fn leave(&self, admit: Admission) {
+        match admit {
+            Admission::Slot(slot_idx, entry_idx) => asymmetric::leave_slot(slot_idx, entry_idx),
+            Admission::Slow => {
+                self.state.0.fetch_sub(RUNNING, SeqCst);
+            }
+            Admission::None => {}
         }
     }
 
+    fn lock_flush(&self) {
+        while self
+            .flushing
+            .compare_exchange_weak(false, true, Acquire, Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+    }
+
+    fn quiet_now_fast(&self) -> bool {
+        let state = self.state.0.load(SeqCst);
+        running(state) == 0
+            && state & UNTRUSTED == 0
+            && (self.synchronous || !asymmetric::any_active(self.tag()))
+    }
+
     fn quiet_now(&self) -> bool {
-        self.quiet_state().is_some()
+        if !self.quiet_now_fast() {
+            return false;
+        }
+        if !self.synchronous && asymmetric::flush_writers() {
+            self.quiet_now_fast()
+        } else {
+            true
+        }
     }
 
     fn quiet_state(&self) -> Option<u64> {
-        let state = self.state.0.load(SeqCst);
-        (running(state) == 0 && state & UNTRUSTED == 0).then_some(state)
+        let mut state = self.state.0.load(SeqCst);
+        if running(state) != 0 || state & UNTRUSTED != 0 {
+            return None;
+        }
+        if self.synchronous {
+            return Some(revision(state));
+        }
+        let tag = self.tag();
+        if asymmetric::current_thread_has(tag) || asymmetric::any_active(tag) {
+            return None;
+        }
+        if asymmetric::flush_writers() {
+            state = self.state.0.load(SeqCst);
+            if running(state) != 0 || state & UNTRUSTED != 0 || asymmetric::any_active(tag) {
+                return None;
+            }
+        }
+        if !self.dirty.load(SeqCst) {
+            return Some(revision(state).wrapping_add(self.revision.load(SeqCst)));
+        }
+        self.lock_flush();
+        let result = (|| {
+            if self.dirty.swap(false, SeqCst) {
+                self.revision.fetch_add(1, SeqCst);
+                asymmetric::flush_writers();
+            }
+            let state = self.state.0.load(SeqCst);
+            if running(state) != 0 || state & UNTRUSTED != 0 || asymmetric::any_active(tag) {
+                self.dirty.store(true, SeqCst);
+                return None;
+            }
+            Some(revision(state).wrapping_add(self.revision.load(SeqCst)))
+        })();
+        self.flushing.store(false, Release);
+        result
     }
 
     fn observing(&self) -> bool {
         self.enabled.load(SeqCst) && !self.poisoned.load(SeqCst)
     }
 
-    #[inline]
+    #[inline(always)]
     fn bump_revision(&self) {
+        if !self.synchronous
+            && self.state.0.load(Relaxed) == 0
+            && let Some((slot_idx, entry_idx)) = asymmetric::enter_slot(self.tag())
+        {
+            if !self.dirty.load(Relaxed) {
+                self.dirty.store(true, Relaxed);
+            }
+            asymmetric::leave_slot(slot_idx, entry_idx);
+            return;
+        }
+        self.bump_revision_slow();
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn bump_revision_slow(&self) {
         let current = self.state.0.load(Relaxed);
         if current & UNTRUSTED == 0 && revision(current) < LAST_REVISION - (RUNNING_LIMIT / 2) {
             let before = self.state.0.fetch_add(REVISION, SeqCst);
@@ -365,8 +494,8 @@ impl WatchRegistry {
             self.admit_overflow(REVISION);
             return;
         }
-        let counted = self.enter();
-        self.leave(counted);
+        let admit = self.enter();
+        self.leave(admit);
     }
 
     #[inline]
@@ -397,7 +526,7 @@ impl WatchRegistry {
 
     #[inline]
     pub fn notify(&self, receiver: usize) -> Notification<'_> {
-        let counted = self.enter();
+        let admit = self.enter();
         let (sequence, mark) = match (receiver != 0).then(|| self.table()).flatten() {
             Some(table) => match table.find(receiver, false) {
                 Lookup::Watched(index, sequence) => (Some(sequence), table.mark_of(index)),
@@ -417,13 +546,13 @@ impl WatchRegistry {
             registry: self,
             mark,
             every: false,
-            counted,
+            admit,
         }
     }
 
     #[inline]
     pub fn notify_pair(&self, first: usize, second: usize) -> NotificationPair<'_> {
-        let counted = self.enter();
+        let admit = self.enter();
         let mut marks = [None, None];
         if let Some(table) = self.table() {
             for (slot, receiver) in [first, second].into_iter().enumerate() {
@@ -445,26 +574,26 @@ impl WatchRegistry {
         NotificationPair {
             registry: self,
             marks,
-            counted,
+            admit,
         }
     }
 
     #[inline]
     pub fn notify_every(&self) -> Notification<'_> {
-        let counted = self.enter();
+        let admit = self.enter();
         self.new_epoch();
         Notification {
             registry: self,
             mark: None,
             every: true,
-            counted,
+            admit,
         }
     }
 
     pub fn running(&self) -> Running<'_> {
         Running {
             registry: self,
-            counted: self.admit(false),
+            admit: self.admit(false),
         }
     }
 
@@ -512,8 +641,8 @@ impl WatchRegistry {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let state = self.quiet_state()?;
-        Some((epoch, revision(state)))
+        let rev = self.quiet_state()?;
+        Some((epoch, rev))
     }
 
     pub fn sequence(&self, receiver: usize) -> Option<(u64, u64)> {
@@ -529,7 +658,7 @@ impl WatchRegistry {
             Lookup::Watched(_, sequence) => sequence.load(SeqCst),
             _ => return None,
         };
-        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now_fast()).then_some((epoch, sequence))
     }
 
     pub fn range_sequence(&self, receiver: usize) -> Option<(u64, u64)> {
@@ -537,16 +666,21 @@ impl WatchRegistry {
             return None;
         }
         let epoch = self.epoch.load(SeqCst);
-        let sequence = match self.table()?.find(receiver, true) {
-            Lookup::Watched(_, sequence) => sequence,
+        let (sequence, fresh) = match self.table()?.find(receiver, true) {
+            Lookup::Watched(_, sequence) => (sequence, false),
             Lookup::Registered(_, sequence) => {
                 self.registered.fetch_add(1, Relaxed);
-                sequence
+                (sequence, true)
             }
             Lookup::Unwatched | Lookup::Full => return None,
         };
         let sequence = sequence.load(SeqCst);
-        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some((epoch, sequence))
+        let quiet = if fresh {
+            self.quiet_now()
+        } else {
+            self.quiet_now_fast()
+        };
+        (self.epoch.load(SeqCst) == epoch && quiet).then_some((epoch, sequence))
     }
 
     pub fn observed_sequence_at(
@@ -569,7 +703,8 @@ impl WatchRegistry {
             return None;
         };
         let sequence = sequence.load(SeqCst);
-        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), index))
+        (self.epoch.load(SeqCst) == epoch && self.quiet_now_fast())
+            .then_some(((epoch, sequence), index))
     }
 
     pub fn sequence_at(&self, receiver: usize, held_slot: usize) -> Option<((u64, u64), usize)> {
@@ -584,11 +719,11 @@ impl WatchRegistry {
             .filter(|slot| receiver != 0 && slot.address.load(SeqCst) == receiver)
             .map(|slot| Lookup::Watched(held_slot, &slot.sequence))
             .unwrap_or_else(|| table.find(receiver, true));
-        let (index, sequence) = match lookup {
-            Lookup::Watched(index, sequence) => (index, sequence),
+        let (index, sequence, fresh) = match lookup {
+            Lookup::Watched(index, sequence) => (index, sequence, false),
             Lookup::Registered(index, sequence) => {
                 self.registered.fetch_add(1, Relaxed);
-                (index, sequence)
+                (index, sequence, true)
             }
             Lookup::Unwatched => return None,
             Lookup::Full => {
@@ -597,7 +732,12 @@ impl WatchRegistry {
             }
         };
         let sequence = sequence.load(SeqCst);
-        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), index))
+        let quiet = if fresh {
+            self.quiet_now()
+        } else {
+            self.quiet_now_fast()
+        };
+        (self.epoch.load(SeqCst) == epoch && quiet).then_some(((epoch, sequence), index))
     }
 
     pub fn register(&self, receiver: usize) -> Option<((u64, u64), bool)> {
@@ -618,7 +758,12 @@ impl WatchRegistry {
             }
         };
         let sequence = sequence.load(SeqCst);
-        (self.epoch.load(SeqCst) == epoch && self.quiet_now()).then_some(((epoch, sequence), fresh))
+        let quiet = if fresh {
+            self.quiet_now()
+        } else {
+            self.quiet_now_fast()
+        };
+        (self.epoch.load(SeqCst) == epoch && quiet).then_some(((epoch, sequence), fresh))
     }
 
     pub fn boundary(&self, invalidate: bool) -> Boundary {
@@ -902,12 +1047,64 @@ impl WatchRegistry {
     }
 
     pub fn active(&self) -> usize {
+        if self.synchronous {
+            let state = self.state.0.load(SeqCst);
+            return if state & UNTRUSTED != 0 {
+                UNTRUSTED_ACTIVE
+            } else {
+                running(state) as usize
+            };
+        }
+        asymmetric::flush_writers();
         let state = self.state.0.load(SeqCst);
         if state & UNTRUSTED != 0 {
             UNTRUSTED_ACTIVE
         } else {
-            running(state) as usize
+            (running(state) as usize).saturating_add(asymmetric::count_active(self.tag()))
         }
+    }
+
+    fn sole_runner_revision(&self) -> Option<u64> {
+        if self.synchronous {
+            let state = self.state.0.load(SeqCst);
+            return (state & UNTRUSTED == 0 && running(state) == 1).then_some(revision(state));
+        }
+        let state = self.state.0.load(SeqCst);
+        if state & UNTRUSTED != 0 {
+            return None;
+        }
+        let tag = self.tag();
+        if (running(state) as usize).saturating_add(asymmetric::count_active(tag)) > 1 {
+            return None;
+        }
+        asymmetric::flush_writers();
+        let state = self.state.0.load(SeqCst);
+        if state & UNTRUSTED != 0 {
+            return None;
+        }
+        let total = (running(state) as usize).saturating_add(asymmetric::count_active(tag));
+        if total != 1 {
+            return None;
+        }
+        if !self.dirty.load(SeqCst) {
+            return Some(revision(state).wrapping_add(self.revision.load(SeqCst)));
+        }
+        self.lock_flush();
+        let result = (|| {
+            if self.dirty.swap(false, SeqCst) {
+                self.revision.fetch_add(1, SeqCst);
+                asymmetric::flush_writers();
+            }
+            let state = self.state.0.load(SeqCst);
+            let total = (running(state) as usize).saturating_add(asymmetric::count_active(tag));
+            if state & UNTRUSTED != 0 || total != 1 {
+                self.dirty.store(true, SeqCst);
+                return None;
+            }
+            Some(revision(state).wrapping_add(self.revision.load(SeqCst)))
+        })();
+        self.flushing.store(false, Release);
+        result
     }
 
 }
@@ -923,7 +1120,7 @@ pub struct Notification<'a> {
     registry: &'a WatchRegistry,
     mark: Option<(&'a AtomicU64, u64)>,
     every: bool,
-    counted: bool,
+    admit: Admission,
 }
 
 impl Notification<'_> {
@@ -935,7 +1132,7 @@ impl Notification<'_> {
 pub struct NotificationPair<'a> {
     registry: &'a WatchRegistry,
     marks: [Option<(&'a AtomicU64, u64)>; 2],
-    counted: bool,
+    admit: Admission,
 }
 
 impl Drop for NotificationPair<'_> {
@@ -944,30 +1141,27 @@ impl Drop for NotificationPair<'_> {
         for mark in self.marks.into_iter().flatten() {
             mark_slot(mark.0, mark.1);
         }
-        self.registry.leave(self.counted);
+        self.registry.leave(self.admit);
     }
 }
 
 pub struct Running<'a> {
     registry: &'a WatchRegistry,
-    counted: bool,
+    admit: Admission,
 }
 
 impl Running<'_> {
     pub fn dependency_stamp(&self, receiver: usize) -> Option<(u64, u64)> {
-        if !self.counted || !self.registry.observing() {
+        if !self.admit.active() || !self.registry.observing() {
             return None;
         }
         let epoch = self.registry.epoch.load(SeqCst);
-        let before = self.registry.state.0.load(SeqCst);
-        if before & UNTRUSTED != 0 || running(before) != 1 {
-            return None;
-        }
+        let before = self.registry.sole_runner_revision()?;
         let sequence = match self.registry.table()?.find(receiver, false) {
             Lookup::Watched(_, sequence) => sequence.load(SeqCst),
             _ => return None,
         };
-        (self.registry.state.0.load(SeqCst) == before
+        (self.registry.sole_runner_revision() == Some(before)
             && self.registry.epoch.load(SeqCst) == epoch
             && self.registry.observing())
         .then_some((epoch, sequence))
@@ -976,7 +1170,7 @@ impl Running<'_> {
 
 impl Drop for Running<'_> {
     fn drop(&mut self) {
-        self.registry.leave(self.counted);
+        self.registry.leave(self.admit);
     }
 }
 
@@ -989,7 +1183,7 @@ impl Drop for Notification<'_> {
         if self.every {
             self.registry.new_epoch();
         }
-        self.registry.leave(self.counted);
+        self.registry.leave(self.admit);
     }
 }
 
@@ -1447,13 +1641,13 @@ mod tests {
             table.clear();
             registry.new_epoch();
             let running = running.unwrap_or_else(|| {
-                let counted = registry.enter();
+                let admit = registry.enter();
                 slot.fetch_add(1, SeqCst);
                 Notification {
                     registry: &registry,
                     mark: None,
                     every: false,
-                    counted,
+                    admit,
                 }
             });
             assert!(registry.sequence(8).is_none());
@@ -1586,9 +1780,11 @@ mod tests {
         drop(writer);
         assert_eq!(registry.active(), 0);
         assert_eq!(registry.sequence(8), Some((epoch, sequence + 1)));
-        assert_eq!(registry.quiet(), Some((epoch, initial_revision + 2)));
+        let (after_epoch, after_revision) = registry.quiet().unwrap();
+        assert_eq!(after_epoch, epoch);
+        assert!(after_revision > initial_revision);
         drop(registry.running());
-        assert_eq!(registry.quiet(), Some((epoch, initial_revision + 2)));
+        assert_eq!(registry.quiet(), Some((epoch, after_revision)));
         assert_eq!(std::mem::align_of::<Hot>(), 64);
         assert_eq!(std::mem::size_of::<Hot>(), 64);
         registry

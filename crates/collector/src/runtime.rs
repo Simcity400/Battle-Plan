@@ -2214,11 +2214,11 @@ impl RestoreFamily {
                 "opinion callbacks did not quiesce; collector retained",
             ),
             Self::Construction => (
-                crate::construction_ic::ACTIVE.load(Ordering::SeqCst) != 0,
+                crate::construction_ic::active() != 0,
                 "construction callbacks did not quiesce; collector retained",
             ),
             Self::LineOutput => (
-                crate::line_output::ACTIVE.load(Ordering::SeqCst) != 0
+                crate::line_output::active() != 0
                     || crate::line_output::native_retention_required(),
                 "production output callbacks did not quiesce; collector retained",
             ),
@@ -2401,7 +2401,7 @@ impl RestoreFamily {
                 "operation completion callbacks did not quiesce; collector retained",
             ),
             Self::Politics => (
-                crate::politics_changes::ACTIVE.load(Ordering::SeqCst) != 0,
+                crate::politics_changes::active() != 0,
                 "politics callbacks did not quiesce; collector retained",
             ),
             Self::Logistics => (

@@ -344,15 +344,15 @@ pub(super) fn refresh_context(
     Ok(())
 }
 struct Scope {
+    flight: collector_primitives::asymmetric::FlightGuard<'static>,
     complete: bool,
 }
 impl Drop for Scope {
     fn drop(&mut self) {
-        REVISION.fetch_add(1, Ordering::AcqRel);
+        self.flight.mark_dirty();
         if !self.complete {
             unobserved!();
         }
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 unsafe extern "system-unwind" fn callback<const SITE: usize>(
@@ -363,9 +363,10 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     if SITE == 3 {
@@ -396,9 +397,10 @@ unsafe extern "system-unwind" fn reconcile(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d, e) });

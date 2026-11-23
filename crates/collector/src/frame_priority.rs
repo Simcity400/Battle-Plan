@@ -303,10 +303,6 @@ fn background_away_from_game(processor: Option<u32>) -> Option<&'static [u32]> {
     background_sets(cores(), Some(processor))
 }
 
-pub(crate) fn physical_cores() -> Option<usize> {
-    cores().map(|cores| cores.physical_cores)
-}
-
 fn select(thread: HANDLE, sets: Option<&[u32]>) -> bool {
     let (list, count) = sets.map_or((std::ptr::null(), 0), |sets| {
         (sets.as_ptr(), sets.len() as u32)

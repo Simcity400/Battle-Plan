@@ -251,7 +251,7 @@ impl Drop for Invocation<'_> {
     }
 }
 fn writers_active() -> bool {
-    super::ACTIVE.load(Ordering::SeqCst) != 0
+    super::DESIGN_GATE.any_active()
         || super::super::design_template_changes::active() != 0
         || collector_observers::world_input_changes::design_forwarder_active() != 0
 }

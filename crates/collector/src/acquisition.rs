@@ -1114,6 +1114,15 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         if jobs == 0 {
             return;
         }
+        if jobs >= 6 {
+            self.shared.burst_peers.store(0, Ordering::Release);
+            #[cfg(test)]
+            {
+                self.shared.lock().counters.notified_one += 1;
+            }
+            self.shared.work_ready.notify_all();
+            return;
+        }
         let limit = self.shared.working().saturating_sub(1);
         let peers = jobs.saturating_sub(1).min(limit);
         if peers != 0 {
@@ -1364,6 +1373,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             }
             let observed = value.load(Ordering::SeqCst);
             if observed == word(ticket.generation, PUBLISHED) {
+                continue;
+            }
+            if observed == word(ticket.generation, PENDING) && self.run_unclaimed_child(ticket) {
                 continue;
             }
             if observed != word(ticket.generation, PENDING)

@@ -55,7 +55,7 @@ fn prepare_with(population: usize, before_growth: impl FnOnce()) -> Result<(), &
     let mut state = writers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if ACTIVE.load(Ordering::SeqCst) != 0 || !state.claims.is_empty() {
+    if DESIGN_GATE.any_active() || !state.claims.is_empty() {
         return Err("variant receiver claims have a running writer");
     }
     let required = population.max(state.required);
@@ -68,7 +68,7 @@ fn prepare_with(population: usize, before_growth: impl FnOnce()) -> Result<(), &
         state = writers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if ACTIVE.load(Ordering::SeqCst) != 0 || !state.claims.is_empty() {
+        if DESIGN_GATE.any_active() || !state.claims.is_empty() {
             drop(state);
             return Err("variant receiver claims have a running writer");
         }
@@ -329,7 +329,7 @@ mod tests {
                 })
             });
             pause.wait();
-            ACTIVE.fetch_add(1, Ordering::SeqCst);
+            let active_guard = DESIGN_GATE.enter(false);
             let flight = collector_test_support::with_allocations_denied(|| {
                 enter(1, None, Footprint::Design).unwrap()
             });
@@ -340,7 +340,7 @@ mod tests {
                 Err("variant receiver claims have a running writer")
             );
             assert!(!flight.finish_with_dependency().0);
-            ACTIVE.fetch_sub(1, Ordering::SeqCst);
+            drop(active_guard);
         });
         prepare(capacity + 1).unwrap();
         assert!(WRITERS.get().unwrap().lock().unwrap().claims.capacity() > capacity);

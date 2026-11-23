@@ -20,10 +20,17 @@ pub(crate) enum Work {
     Projects {
         part: projects::ProjectPart,
         game_state: usize,
+        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     },
     TemplateWalk(crate::extended::division_templates::WalkPart),
-    ProjectsRestPrimary(Box<projects::RestPrimary>),
-    ProjectsRestAux(Box<projects::RestAux>),
+    ProjectsRestPrimary {
+        rest: Box<projects::RestPrimary>,
+        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    },
+    ProjectsRestAux {
+        rest: Box<projects::RestAux>,
+        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    },
     Buildings(Box<super::BuildingsPart>),
     RaidStateInputs(Box<super::RaidStateInputsPart>),
     Rails(Box<super::RailsPart>),
@@ -34,7 +41,7 @@ impl Work {
             Self::Technology(_) => Role::Governance,
             Self::Projects { .. } => Role::GatedProjects,
             Self::TemplateWalk(_) => Role::Templates,
-            Self::ProjectsRestPrimary(_) | Self::ProjectsRestAux(_) => Role::GatedProjects,
+            Self::ProjectsRestPrimary { .. } | Self::ProjectsRestAux { .. } => Role::GatedProjects,
             Self::Buildings(_) => Role::Governance,
             Self::RaidStateInputs(_) => Role::RaidState,
             Self::Rails(_) => Role::ScoresRails,
@@ -57,12 +64,37 @@ impl Work {
                 });
             }
             Self::Technology(part) => part.capture(memory, base),
-            Self::Projects { part, game_state } => part.capture(memory, base, *game_state),
+            Self::Projects {
+                part,
+                game_state,
+                countries,
+            } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    part.capture(&roster, base, *game_state);
+                } else {
+                    part.capture(memory, base, *game_state);
+                }
+            }
             Self::TemplateWalk(part) => {
                 part.capture(memory, base, &crate::template_changes::Observer)
             }
-            Self::ProjectsRestPrimary(rest) => rest.capture(memory, base),
-            Self::ProjectsRestAux(rest) => rest.capture(memory, base),
+            Self::ProjectsRestPrimary { rest, countries } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    rest.capture(&roster, base);
+                } else {
+                    rest.capture(memory, base);
+                }
+            }
+            Self::ProjectsRestAux { rest, countries } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    rest.capture(&roster, base);
+                } else {
+                    rest.capture(memory, base);
+                }
+            }
             Self::Buildings(part) => part.capture(memory),
             Self::RaidStateInputs(part) => part.capture(memory, base),
             Self::Rails(part) => part.capture(memory, base),
@@ -384,12 +416,13 @@ impl Dispatch {
         memory: &impl engine_native::Memory,
         base: usize,
         game_state: usize,
+        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     ) -> Result<Vec<projects::ProjectPart>, &'static str> {
-        let parts = engine_allocation::collect_vec(
-            parts
-                .into_iter()
-                .map(|part| Work::Projects { part, game_state }),
-        )
+        let parts = engine_allocation::collect_vec(parts.into_iter().map(|part| Work::Projects {
+            part,
+            game_state,
+            countries: countries.clone(),
+        }))
         .map_err(|_| "project worker allocation failed")?;
         let parts = self.acquire_work(parts, memory, base)?;
         engine_allocation::collect_vec(parts.into_iter().map(|part| {

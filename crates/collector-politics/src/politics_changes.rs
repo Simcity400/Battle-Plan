@@ -64,7 +64,11 @@ impl<T> Deref for Padded<T> {
         &self.0
     }
 }
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
+static ACTIVE_GATE: collector_primitives::asymmetric::FlightGate =
+    collector_primitives::asymmetric::FlightGate::new(0);
+pub fn active() -> usize {
+    ACTIVE_GATE.active()
+}
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
 static OFFERED: AtomicUsize = AtomicUsize::new(0);
@@ -526,27 +530,25 @@ fn cached_lane(log: &Log) -> Option<&Lane> {
     })
 }
 
-struct Call;
+struct Call(Option<collector_primitives::asymmetric::FlightGuard<'static>>);
 impl Call {
     #[inline(always)]
     fn enter() -> Self {
-        DEPTH.with(|depth| {
-            if depth.get() == 0 {
-                ACTIVE.fetch_add(1, Ordering::SeqCst);
-            }
-            depth.set(depth.get() + 1);
+        let guard = DEPTH.with(|depth| {
+            let current = depth.get();
+            depth.set(current + 1);
+            (current == 0).then(|| ACTIVE_GATE.enter(false))
         });
-        Self
+        Self(guard)
     }
 }
 impl Drop for Call {
+    #[inline(always)]
     fn drop(&mut self) {
         DEPTH.with(|depth| {
             depth.set(depth.get() - 1);
-            if depth.get() == 0 {
-                ACTIVE.fetch_sub(1, Ordering::SeqCst);
-            }
         });
+        drop(self.0.take());
     }
 }
 pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
@@ -721,7 +723,7 @@ pub fn prepare() {
 /// The caller has disabled hooks, checked their executable ranges and ACTIVE,
 /// and joined all workers that can call drain/resize/status.
 pub unsafe fn release() {
-    if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
+    if ENABLED.load(Ordering::SeqCst) || active() != 0 {
         COUNTERS[8].fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -1086,7 +1088,7 @@ fn handoff_buffer(
         return Err("politics hooks unavailable");
     }
     let log = log().ok_or("politics staging unavailable")?;
-    if ACTIVE.load(Ordering::SeqCst) != 0 {
+    if active() != 0 {
         return handoff_from_buffer(log, cursors);
     }
     if !cursors.ensure(log.lanes.len())? {
@@ -4027,13 +4029,13 @@ mod tests {
             ..Default::default()
         };
         CONTEXT.set(previous);
-        let before = ACTIVE.load(Ordering::SeqCst);
+        let before = active();
         assert_eq!(unsafe { callback(1, 2, 3, 4, 0xabcdef00) }, 0xabcdef0a);
         assert_eq!(CONTEXT.get().government, previous.government);
         let epoch = EPOCH.load(Ordering::SeqCst);
         let result = std::panic::catch_unwind(|| unsafe { callback(usize::MAX, 0, 0, 0, 0) });
         assert!(result.is_err());
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), before);
+        assert_eq!(active(), before);
         assert_eq!(CONTEXT.get().government, previous.government);
         assert_ne!(EPOCH.load(Ordering::SeqCst), epoch);
         ENABLED.store(false, Ordering::SeqCst);

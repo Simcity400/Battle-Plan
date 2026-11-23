@@ -369,6 +369,47 @@ impl Slot {
     }
 }
 
+#[repr(align(64))]
+struct InFlight(AtomicUsize);
+
+static IN_FLIGHT: [InFlight; SLOT_COUNT] = [const { InFlight(AtomicUsize::new(0)) }; SLOT_COUNT];
+
+#[inline(always)]
+fn enter_flight(slot: usize) {
+    let counter = &IN_FLIGHT[slot].0;
+    if slot == SHARED_SLOT {
+        counter.fetch_add(1, Ordering::SeqCst);
+    } else {
+        counter.store(counter.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+    }
+}
+
+#[inline(always)]
+fn leave_flight(slot: usize) {
+    let counter = &IN_FLIGHT[slot].0;
+    if slot == SHARED_SLOT {
+        counter.fetch_sub(1, Ordering::SeqCst);
+    } else {
+        std::sync::atomic::compiler_fence(Ordering::SeqCst);
+        counter.store(counter.load(Ordering::Relaxed).wrapping_sub(1), Ordering::Relaxed);
+    }
+}
+
+pub fn any_other_in_flight() -> bool {
+    if IN_FLIGHT[SHARED_SLOT].0.load(Ordering::SeqCst) != 0 {
+        return true;
+    }
+    let own = SLOT.get();
+    let claimed = TABLE.claimed.load(Ordering::Acquire).min(OWNED_SLOTS);
+    for (index, slot) in IN_FLIGHT[..claimed].iter().enumerate() {
+        if index != own && slot.0.load(Ordering::SeqCst) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 struct Table {
     slots: [Slot; SLOT_COUNT],
     claimed: AtomicUsize,
@@ -389,9 +430,20 @@ impl Table {
     }
     #[inline(always)]
     fn enter(&'static self, slot: usize, family: Family, returning: bool) -> Span {
-        if !returning {
-            crate::capture_gate::pass(family as usize);
-        }
+        let in_flight_slot = if !returning {
+            loop {
+                enter_flight(slot);
+                if !crate::capture_gate::is_running() {
+                    break slot;
+                }
+                leave_flight(slot);
+                if !crate::capture_gate::wait_if_blocking(family as usize) {
+                    break usize::MAX;
+                }
+            }
+        } else {
+            usize::MAX
+        };
         let phase = label();
         let counters = &self.slots[slot].0[family as usize];
         let shared = slot == SHARED_SLOT;
@@ -410,6 +462,7 @@ impl Table {
             counters,
             shared,
             returning,
+            in_flight_slot,
             start,
             original: Cell::new(0),
             originals: Cell::new(0),
@@ -568,6 +621,7 @@ pub struct Span {
     counters: &'static Counters,
     shared: bool,
     returning: bool,
+    in_flight_slot: usize,
     start: u64,
     original: Cell<u64>,
     originals: Cell<u32>,
@@ -613,6 +667,9 @@ impl Drop for Span {
         if self.start != 0 {
             self.record();
         }
+        if self.in_flight_slot != usize::MAX {
+            leave_flight(self.in_flight_slot);
+        }
     }
 }
 
@@ -645,6 +702,7 @@ fn calibrate_overhead() {
                 counters: &CALIBRATION,
                 shared: false,
                 returning: false,
+                in_flight_slot: usize::MAX,
                 start: now().max(1),
                 original: Cell::new(0),
                 originals: Cell::new(0),

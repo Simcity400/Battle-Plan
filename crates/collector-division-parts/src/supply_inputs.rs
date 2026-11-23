@@ -57,8 +57,42 @@ impl Sample {
     }
 }
 
-fn displayed(value: i64) -> i64 {
+pub fn displayed(value: i64) -> i64 {
     UnitSupplyInputs::STEP.round(value)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DisplayedInputs {
+    asked: i64,
+    received: i64,
+    from_state: i64,
+    air_drops: i64,
+    disruption: i64,
+    division_demand: (i32, i64),
+    airplane_demand: (i32, i64),
+    ship_demand: (i32, i64),
+}
+
+pub fn displayed_inputs(current: Option<Inputs>) -> Option<DisplayedInputs> {
+    current.map(|current| DisplayedInputs {
+        asked: displayed(current.asked),
+        received: displayed(current.received),
+        from_state: displayed(current.from_state),
+        air_drops: displayed(current.air_drops),
+        disruption: displayed(current.disruption),
+        division_demand: (
+            current.division_demand.count,
+            displayed(current.division_demand.value),
+        ),
+        airplane_demand: (
+            current.airplane_demand.count,
+            displayed(current.airplane_demand.value),
+        ),
+        ship_demand: (
+            current.ship_demand.count,
+            displayed(current.ship_demand.value),
+        ),
+    })
 }
 
 fn demand(value: Demand) -> UnitSupplyDemand {

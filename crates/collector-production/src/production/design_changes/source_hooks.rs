@@ -19,9 +19,10 @@ unsafe fn content(
     [a, b, c, d]: [usize; 4],
     original: collector_certificates::content_changes::Original,
 ) -> usize {
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let forwarded = unsafe { forward::content_invalidation() };
     super::boundary(true);
     let result = unsafe { original(a, b, c, d) };
@@ -52,9 +53,10 @@ unsafe fn country(
     [a, b, c, d]: [usize; 4],
     original: collector_observers::country_input_changes::DesignSourceOriginal,
 ) -> usize {
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let forwarded = unsafe { forward::country_invalidation(a) };
     let result = unsafe { original(a, b, c, d) };
     if let Some(forwarded) = forwarded {
@@ -234,15 +236,15 @@ pub(super) fn reset_provider(memory: &impl Memory, base: usize, pointer: usize) 
 }
 
 struct Scope {
+    flight: collector_primitives::asymmetric::FlightGuard<'static>,
     complete: bool,
 }
 impl Drop for Scope {
     fn drop(&mut self) {
-        REVISION.fetch_add(1, Ordering::AcqRel);
+        self.flight.mark_dirty();
         if !self.complete {
             unobserved!();
         }
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
 unsafe extern "system-unwind" fn callback<const SITE: usize>(
@@ -272,9 +274,10 @@ unsafe fn around<const SITE: usize>(
 ) -> usize {
     let timing =
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
-    ACTIVE.fetch_add(1, Ordering::SeqCst);
-    REVISION.fetch_add(1, Ordering::AcqRel);
-    let mut scope = Scope { complete: false };
+    let mut scope = Scope {
+        flight: DESIGN_GATE.enter(true),
+        complete: false,
+    };
     let base = BASE.load(Ordering::Acquire);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let source = (SITE <= 1 || SITE == 3)

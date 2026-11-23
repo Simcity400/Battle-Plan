@@ -1,6 +1,6 @@
 use super::production::Sources;
 use crate::{
-    projection::{Projection, ledger_table, scalar_table},
+    projection::{Projection, ledger_table, project_table, scalar_table},
     sampling::qpc,
     spooling::unavailable,
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
@@ -28,7 +28,7 @@ pub(crate) use naming::{NamingCarry, NamingPart};
 pub(crate) use status_work::StatusWork;
 
 pub(crate) const MAX_STATUS_PARTS: usize = crate::acquisition::MAX_WORKERS;
-const STATUS_PART_ENTRIES: usize = 512;
+const STATUS_PART_ENTRIES: usize = 256;
 
 pub(crate) fn status_parts_for(divisions: usize, workers: usize) -> usize {
     divisions
@@ -164,7 +164,7 @@ struct StatusInputs {
     row: carmy::StatusRow,
     exact_supply: Option<[i64; 2]>,
     supply_grace: Option<i32>,
-    supply: Option<engine_native::cunit_supply_inputs::Inputs>,
+    supply: Option<super::supply_inputs::DisplayedInputs>,
     dig_in: Option<i64>,
     commander: Option<[Option<i64>; 6]>,
     experience: Option<i64>,
@@ -2326,8 +2326,8 @@ impl Captured {
                         record.word(origins.len() as i64);
                         for origin in origins {
                             record.word(i64::from(origin.province));
-                            record.word(origin.requested);
-                            record.word(origin.received);
+                            record.word(super::supply_inputs::displayed(origin.requested));
+                            record.word(super::supply_inputs::displayed(origin.received));
                         }
                     }
                     None => record.word(-1),
@@ -2361,7 +2361,7 @@ impl Captured {
                         r.supply_grace_remaining,
                     ),
                     supply_grace: self.supply_grace,
-                    supply: supply.0,
+                    supply: super::supply_inputs::displayed_inputs(supply.0),
                     dig_in: self.dig_in.factor(r.division, index),
                     commander: self.commander_modifiers(r.division, index),
                     experience: attack.experience(),
@@ -2415,14 +2415,26 @@ impl Captured {
                 (DivisionPanelStatsRow::maximum(words[at]) != Some(stored)).then_some(stored)
             })
         };
-        let panel = ledger_table::<tables::DivisionPanelStats, _, _>(
+        let panel = project_table::<tables::DivisionPanelStats, _>(
             projection.as_deref_mut(),
             status_outcome,
             &self.status.rows,
             |r| u128::from(r.division),
-            |at, r, _| {
+            |r, previous| {
+                let DivisionPanelStatsRow {
+                    division,
+                    panel_stats,
+                    suppression,
+                    status_maxima: prev_maxima,
+                } = previous;
+                if *division != r.division {
+                    return false;
+                }
+                let at = position(&self.status.rows, r);
                 let words = self.attack.view_at(at, r.division).panel();
-                Some((words, status_maxima(r, &words)))
+                *suppression == words[22].into()
+                    && *prev_maxima == status_maxima(r, &words)
+                    && panel_stats[..] == words[..22]
             },
             |r| {
                 let at = position(&self.status.rows, r);
@@ -2501,36 +2513,72 @@ impl Captured {
             ];
         }
         [
-            ledger_table::<tables::DivisionMovement, _, _>(
+            project_table::<tables::DivisionMovement, _>(
                 projection,
                 movement,
                 &self.movement.rows,
                 |r| u128::from(r.division),
-                |at, r, record| {
-                    record.ids(span(r.path_start, r.path_len));
-                    record.ids(span(r.alternate_start, r.alternate_len));
-                    match self.movement_packet.combat_references(r) {
-                        Some(references) => {
-                            record.word(references.len() as i64);
-                            for reference in references {
-                                record.word(reference.combat as i64);
-                                record.word(i64::from(reference.kind));
-                            }
-                        }
-                        None => record.word(-1),
+                |r, previous| {
+                    let DivisionMovementRow {
+                        division,
+                        source,
+                        target,
+                        numerator,
+                        retreat,
+                        strategic_redeployment,
+                        naval_transfer,
+                        combat_count,
+                        path_total,
+                        path,
+                        alternate_total,
+                        alternate_path,
+                        combat_role,
+                        combat_province,
+                        map_entity,
+                        strategic_action,
+                        withdrawal,
+                        movement_priority,
+                        order_transport,
+                        combat_references,
+                        fuel,
+                        transport_speed,
+                        own_base_speed: prev_own_base_speed,
+                        queued_actions,
+                    } = previous;
+                    if *division != r.division
+                        || *numerator != r.numerator
+                        || *source != r.source
+                        || *target != r.target
+                        || *path_total != r.path_total
+                        || *combat_count != r.combat_count
+                        || *fuel != Recorded::Value(r.fuel)
+                        || *retreat != r.retreat
+                        || *strategic_redeployment != r.strategic_redeployment
+                        || *naval_transfer != r.naval_transfer
+                        || *alternate_total != r.alternate_total
+                        || *combat_role != r.combat_role
+                        || *combat_province != r.combat_province
+                        || *map_entity != r.map_entity
+                        || *strategic_action != Recorded::Value(r.strategic_action)
+                        || *withdrawal != Recorded::Value(r.withdrawal)
+                        || *movement_priority != Recorded::Value(r.movement_priority)
+                        || *transport_speed != Recorded::Value(r.transport_speed)
+                        || *queued_actions != Recorded::Value(r.queued_actions)
+                    {
+                        return false;
                     }
-                    let row = carmy::MovementRow {
-                        path_start: 0,
-                        alternate_start: 0,
-                        combat_references: r.combat_references.map(|(_, count)| (0, count)),
-                        ..*r
-                    };
-                    Some((
-                        row,
-                        self.order_transport(at, r.division),
-                        request.is_some(),
-                        own_base_speed(at, r),
-                    ))
+                    let at = position(&self.movement.rows, r);
+                    *order_transport == Recorded::Value(self.order_transport(at, r.division))
+                        && *prev_own_base_speed == own_base_speed(at, r)
+                        && span(r.path_start, r.path_len) == Some(path.as_slice())
+                        && span(r.alternate_start, r.alternate_len)
+                            == Some(alternate_path.as_slice())
+                        && super::unit_combat_references::matches(
+                            request,
+                            self.movement_packet.combat_references(r),
+                            r.combat_count,
+                            combat_references,
+                        )
                 },
                 |r| {
                     let at = position(&self.movement.rows, r);

@@ -360,7 +360,7 @@ impl Domain {
         Self {
             sharing: WatchRegistry::retaining(),
             accumulator: WatchRegistry::retaining(),
-            names: WatchRegistry::new(),
+            names: WatchRegistry::new().with_synchronous(),
             sets: [const { DirtySet::new() }; SETS],
             calls: [const { AtomicU64::new(0) }; SITES],
             forwarded: [const { AtomicU64::new(0) }; Forward::ALL.len()],

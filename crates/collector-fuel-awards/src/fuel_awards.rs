@@ -304,7 +304,7 @@ thread_local! {
 
 fn stop_admission_and_drained() -> bool {
     LOG.enabled.store(false, Ordering::SeqCst);
-    LOG.active.load(Ordering::SeqCst) == 0
+    LOG.active() == 0
 }
 
 type Stamp = (u64, u64);
@@ -438,20 +438,20 @@ pub fn install_offered() {
         return;
     };
     retire_consumed(&mut domains);
-    if domains.retired.is_some()
-        || LOG.active.load(Ordering::SeqCst) != 0
+    if OFFERED.load(Ordering::Acquire).is_null()
+        || domains.retired.is_some()
         || (domains.current.is_some()
             && LOG.cursor.load(Ordering::SeqCst) != LOG.consumed.load(Ordering::Relaxed))
+        || LOG.active() != 0
     {
         return;
     }
     install_prepared(&mut domains);
 }
 fn retire_consumed(domains: &mut Domains) {
-    if LOG.active.load(Ordering::SeqCst) == 0
-        && domains.retired.as_ref().is_some_and(|buffer| {
-            LOG.consumed.load(Ordering::Acquire) >= buffer.cursor.load(Ordering::Acquire)
-        })
+    if domains.retired.as_ref().is_some_and(|buffer| {
+        LOG.consumed.load(Ordering::Acquire) >= buffer.cursor.load(Ordering::Acquire)
+    }) && LOG.active() == 0
         && let Some(retired) = domains.retired.take()
     {
         dispose(retired);
@@ -506,7 +506,7 @@ pub fn collect() {
     offer(0, 0);
 }
 pub fn active() -> usize {
-    LOG.active.load(Ordering::SeqCst)
+    LOG.active()
 }
 
 pub fn release() -> Result<(), &'static str> {
@@ -1003,7 +1003,7 @@ fn drain_domains(
     result.map(|(drained, len, required)| {
         let entry_cursor = ENTRY_ATTEMPTS.load(Ordering::SeqCst);
         let name_cursor = NAME_ATTEMPTS.load(Ordering::SeqCst);
-        if LOG.active.load(Ordering::SeqCst) == 0
+        if LOG.active() == 0
             && LOG.cursor.load(Ordering::SeqCst) == drained.cursor
             && LOG.epoch.load(Ordering::SeqCst) == drained.epoch
             && drained.first + drained.copied as u64 == drained.cursor
@@ -1044,7 +1044,7 @@ fn handover_buffers(
         copied: 0,
         pending,
     };
-    if log.active.load(Ordering::SeqCst) != 0 {
+    if log.active() != 0 {
         return Ok((drained, 0, 0));
     }
     let mut held = spill.held();

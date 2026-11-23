@@ -71,8 +71,8 @@ impl UnitInputs {
     }
 }
 
-pub(crate) const MAX_PARTS: usize = 4;
-const PART_ENTRIES: usize = 1_500;
+pub(crate) const MAX_PARTS: usize = 6;
+const PART_ENTRIES: usize = 350;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct JoinCapacity {

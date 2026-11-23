@@ -75,7 +75,7 @@ pub(crate) struct Watches {
 impl Watches {
     pub(crate) const fn new() -> Self {
         Self {
-            registry: WatchRegistry::new(),
+            registry: WatchRegistry::new().with_synchronous(),
             calls: [const { AtomicU64::new(0) }; SITES],
             unchanged_unit_type_writes: AtomicU64::new(0),
             unchanged_ai_role_rebuilds: AtomicU64::new(0),

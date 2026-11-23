@@ -621,16 +621,25 @@ impl GatedProjectsRequest {
                 .take_rest(game_state, hour, force_full)
                 .into_parts();
             let workers = &self.workers;
+            let countries = &self.countries;
             let (captured, fingerprints, ticks) =
                 (&mut self.captured, &mut self.fingerprints, &mut self.ticks);
             let (returned_primary, returned_aux) = workers.beside_pair(
-                variant_workers::Work::ProjectsRestPrimary(Box::new(rest_primary)),
-                variant_workers::Work::ProjectsRestAux(Box::new(rest_aux)),
+                variant_workers::Work::ProjectsRestPrimary {
+                    rest: Box::new(rest_primary),
+                    countries: countries.clone(),
+                },
+                variant_workers::Work::ProjectsRestAux {
+                    rest: Box::new(rest_aux),
+                    countries: countries.clone(),
+                },
                 memory,
                 base,
                 crate::hour_stages::Part::ProjectsRestWait,
                 &mut || {
-                    let mut acquire = |parts| workers.projects(parts, roster, base, game_state);
+                    let mut acquire = |parts| {
+                        workers.projects(parts, memory, base, game_state, countries.clone())
+                    };
                     *ticks = captured.acquire_selected_partitioned(
                         memory,
                         roster,
@@ -648,11 +657,11 @@ impl GatedProjectsRequest {
                 },
             );
             let primary = match returned_primary {
-                Some(variant_workers::Work::ProjectsRestPrimary(rest)) => Some(*rest),
+                Some(variant_workers::Work::ProjectsRestPrimary { rest, .. }) => Some(*rest),
                 _ => None,
             };
             let aux = match returned_aux {
-                Some(variant_workers::Work::ProjectsRestAux(rest)) => Some(*rest),
+                Some(variant_workers::Work::ProjectsRestAux { rest, .. }) => Some(*rest),
                 _ => None,
             };
             let rest = self.captured.restore_rest_split(
@@ -1205,60 +1214,60 @@ impl Role {
             | Self::PresentationPreparation
             | Self::PresentationSettle
             | Self::PresentationStatus
-            | Self::Presentation => 0,
-            Self::ObserverBoundary
-            | Self::Countries
-            | Self::Orders
+            | Self::Presentation
+            | Self::PresentationSpeedTerms
+            | Self::DivisionInputs
+            | Self::DivisionInputParts
+            | Self::Divisions
             | Self::OrderRoots
+            | Self::Orders
             | Self::OrdersPart
             | Self::OrdersStitch
-            | Self::ChildFronts
+            | Self::GatedProjects
+            | Self::AirBases
+            | Self::ShipModels
+            | Self::ShipModelDetails
+            | Self::OrdinaryNavies
+            | Self::ScoresRails
+            | Self::Templates
+            | Self::IntelResidual
             | Self::AirWing
+            | Self::Countries => 0,
+            Self::ObserverBoundary
+            | Self::ChildFronts
             | Self::Naval
             | Self::AirMissions
             | Self::Late
             | Self::Characters
-            | Self::Divisions
-            | Self::DivisionInputs
-            | Self::DivisionInputParts
-            | Self::ShipModels
-            | Self::ShipModelDetails
-            | Self::AirBases
-            | Self::Radar
             | Self::Intel
-            | Self::Players
             | Self::MapCombats
+            | Self::World
+            | Self::Economy
+            | Self::FinalInputs
+            | Self::Governance
+            | Self::PresentationMovement
+            | Self::OrdinaryCombat
+            | Self::OrdinaryTaskForces
+            | Self::OrdinaryMap => 1,
+            Self::Radar
+            | Self::Players
             | Self::AirStats
             | Self::Supremacy
             | Self::Sunk
-            | Self::World
-            | Self::Economy
-            | Self::PresentationSpeedTerms
-            | Self::FinalInputs
-            | Self::ScoresRails
             | Self::AirSupply
-            | Self::IntelResidual
             | Self::ScriptVariables
-            | Self::Templates
-            | Self::GatedProjects
             | Self::Slow
             | Self::Stability
             | Self::WarOverview
             | Self::IndustrialOrganisations
             | Self::ProductionDaily
-            | Self::ProductionModifierParts => 1,
-            Self::Governance
+            | Self::ProductionModifierParts
             | Self::Gated
             | Self::Projects
             | Self::CharacterInputs
             | Self::AdvisorRoles
-            | Self::PresentationMovement
             | Self::Ordinary
-            | Self::OrdinaryNavies
-            | Self::OrdinaryCombat
             | Self::OrdinaryNaval
-            | Self::OrdinaryTaskForces
-            | Self::OrdinaryMap
             | Self::Provinces
             | Self::Research
             | Self::DivisionModelInputs => 2,

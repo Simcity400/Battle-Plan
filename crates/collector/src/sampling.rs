@@ -1933,6 +1933,9 @@ pub(crate) unsafe fn record_lost(shared: &Shared, hours: u32) {
 /// # Safety
 /// As [`capture`], and `shared` is the published runtime state.
 unsafe fn capture_body(shared: &Shared, hook_entry: i64, placement: Placement, full: bool) {
+    let _quiescent = collector_primitives::asymmetric::begin_capture_quiescence(|| {
+        !collector_timing::hook_timing::any_other_in_flight()
+    });
     let history_capture = shared.history_frames.capture();
     let _frame_priority = shared.frame_priority.callback();
     let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);

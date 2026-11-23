@@ -14,10 +14,9 @@ use windows_sys::Win32::System::Threading::{
 };
 
 pub(crate) fn beside_readers() -> usize {
-    let cores = crate::frame_priority::physical_cores()
-        .unwrap_or_else(|| crate::acquisition::usable_cpus().div_ceil(2));
-    cores
-        .saturating_sub(1)
+    crate::acquisition::usable_cpus()
+        .saturating_mul(5)
+        .div_ceil(8)
         .clamp(3, crate::acquisition::MAX_WORKERS)
 }
 
