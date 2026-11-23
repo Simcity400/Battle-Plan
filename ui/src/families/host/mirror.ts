@@ -1,0 +1,185 @@
+import type { MirrorModel } from '../contract.ts';
+
+export interface TableMirrorSyncOptions {
+  readonly selectedKey: string | null;
+  readonly focusedKeyRef: { readonly current: string | null };
+  readonly focusInsideRef: { readonly current: boolean };
+  readonly restoringFocusRef: { current: boolean };
+  readonly lastMirrorKeyRef: { current: string };
+}
+
+export function syncTableMirror(
+  tbody: HTMLTableSectionElement | null,
+  mirror: MirrorModel | null,
+  options: TableMirrorSyncOptions,
+): void {
+  if (!tbody) return;
+  if (!mirror) {
+    if (options.lastMirrorKeyRef.current !== '') {
+      options.lastMirrorKeyRef.current = '';
+      tbody.replaceChildren();
+    }
+    return;
+  }
+  const selected = options.selectedKey ?? '';
+  const focusedKey = options.focusedKeyRef.current;
+  const hasFocused = focusedKey !== null && mirror.rows.some(r => !r.groupHeader && r.key === focusedKey);
+  const activeFocus = hasFocused ? focusedKey : (mirror.rows.find(r => !r.groupHeader)?.key ?? null);
+  const key = JSON.stringify([
+    mirror.first,
+    mirror.total,
+    activeFocus,
+    selected,
+    mirror.rows.map(r => [
+      r.rowIndex,
+      r.key,
+      r.groupHeader ? 1 : 0,
+      r.rank ?? null,
+      r.level ?? null,
+      r.group ? (r.open ? 1 : 0) : -1,
+      r.cells.map(c => c.spoken),
+    ]),
+  ]);
+  if (key === options.lastMirrorKeyRef.current) return;
+  options.lastMirrorKeyRef.current = key;
+  const wasFocused = options.focusInsideRef.current && document.activeElement instanceof HTMLElement && tbody.contains(document.activeElement);
+  const fragment = document.createDocumentFragment();
+  let restore: HTMLTableRowElement | null = null;
+  mirror.rows.forEach(row => {
+    const tr = document.createElement('tr');
+    tr.dataset.rowKey = row.key;
+    tr.setAttribute('aria-rowindex', String(row.rowIndex + 2));
+    if (row.groupHeader) {
+      tr.setAttribute('role', 'row');
+      const td = document.createElement('td');
+      td.textContent = row.name;
+      tr.append(td);
+      fragment.append(tr);
+      return;
+    }
+    tr.tabIndex = row.key === activeFocus ? 0 : -1;
+    if (row.level !== undefined) tr.setAttribute('aria-level', String(row.level));
+    if (row.group) tr.setAttribute('aria-expanded', String(row.open === true));
+    if (selected && selected === row.key) tr.setAttribute('aria-selected', 'true');
+    if (row.rank !== undefined) {
+      const rankTd = document.createElement('td');
+      rankTd.textContent = String(row.rank);
+      tr.append(rankTd);
+    }
+    for (const cell of row.cells) {
+      const td = document.createElement('td');
+      td.textContent = cell.spoken;
+      tr.append(td);
+    }
+    if (wasFocused && row.key === activeFocus) restore = tr;
+    fragment.append(tr);
+  });
+  options.restoringFocusRef.current = true;
+  try {
+    tbody.replaceChildren(fragment);
+    if (restore) (restore as HTMLTableRowElement).focus({ preventScroll: true });
+  } finally {
+    options.restoringFocusRef.current = false;
+  }
+}
+
+export interface ListboxMirrorItem {
+  readonly key: string;
+  readonly spoken: string;
+  readonly role?: 'option' | 'presentation';
+  readonly index?: number;
+  readonly selected?: boolean;
+  readonly description?: string;
+}
+
+export interface ListboxMirrorSyncOptions {
+  readonly optionIdPrefix: string;
+  readonly total: number;
+  readonly focusedKey: string | null;
+  readonly lastMirrorKeyRef: { current: string };
+}
+
+export function optionElementId(prefix: string, index: number): string {
+  return `${prefix}-opt-${index}`;
+}
+
+export function syncListboxMirror(
+  listbox: HTMLElement | null,
+  items: readonly ListboxMirrorItem[] | null,
+  options: ListboxMirrorSyncOptions,
+): { readonly activeDescendantId: string | null; readonly focusedPresent: boolean } {
+  if (!listbox) return { activeDescendantId: null, focusedPresent: false };
+  if (!items || items.length === 0) {
+    if (options.lastMirrorKeyRef.current !== '') {
+      options.lastMirrorKeyRef.current = '';
+      listbox.replaceChildren();
+    }
+    listbox.removeAttribute('aria-activedescendant');
+    return { activeDescendantId: null, focusedPresent: false };
+  }
+
+  let activeId: string | null = null;
+  let focusedPresent = false;
+  const sig = JSON.stringify([
+    options.total,
+    options.focusedKey,
+    items.map(item => [item.key, item.spoken, item.role ?? 'option', item.index ?? -1, item.selected === true ? 1 : 0, item.description ?? '']),
+  ]);
+  if (sig === options.lastMirrorKeyRef.current) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]!;
+      if ((item.role ?? 'option') === 'option' && options.focusedKey !== null && item.key === options.focusedKey) {
+        activeId = optionElementId(options.optionIdPrefix, item.index ?? i);
+        focusedPresent = true;
+        break;
+      }
+    }
+    return { activeDescendantId: activeId, focusedPresent };
+  }
+
+  options.lastMirrorKeyRef.current = sig;
+  const fragment = document.createDocumentFragment();
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
+    const role = item.role ?? 'option';
+    const el = document.createElement('div');
+    el.setAttribute('role', role);
+    el.dataset.rowKey = item.key;
+    el.textContent = item.spoken;
+    if (role === 'option') {
+      const id = optionElementId(options.optionIdPrefix, item.index ?? i);
+      el.id = id;
+      if (item.index !== undefined) {
+        el.setAttribute('aria-posinset', String(item.index + 1));
+        el.setAttribute('aria-setsize', String(options.total));
+      }
+      const isActive = options.focusedKey !== null && item.key === options.focusedKey;
+      el.setAttribute('aria-selected', String(item.selected === true || isActive));
+      if (item.description) el.setAttribute('aria-description', item.description);
+      if (isActive) {
+        activeId = id;
+        focusedPresent = true;
+      }
+    }
+    fragment.append(el);
+  }
+  listbox.replaceChildren(fragment);
+  if (activeId) listbox.setAttribute('aria-activedescendant', activeId);
+  else listbox.removeAttribute('aria-activedescendant');
+  return { activeDescendantId: activeId, focusedPresent };
+}
+
+export function reconcileFocusedKey(
+  currentKey: string | null,
+  keys: readonly string[],
+  fallbackToFirst: boolean,
+): { readonly key: string | null; readonly present: boolean; readonly index: number } {
+  if (currentKey !== null) {
+    const idx = keys.indexOf(currentKey);
+    if (idx >= 0) return { key: currentKey, present: true, index: idx };
+  }
+  if (fallbackToFirst && keys.length > 0) {
+    return { key: keys[0]!, present: false, index: 0 };
+  }
+  return { key: null, present: false, index: -1 };
+}
