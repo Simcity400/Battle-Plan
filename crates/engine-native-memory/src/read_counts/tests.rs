@@ -717,7 +717,7 @@ fn unsupported_plan_execution_is_forwarded_and_charged_only_as_a_call() {
 
 #[test]
 fn cached_capabilities_forward_arguments_and_failures_without_source_charges() {
-    use crate::{ccountry::AuthenticatedRoster, modifier_accumulator::Value};
+    use crate::{country_identity::AuthenticatedRoster, modifier_cache::Value};
 
     const VIEW: &[u8] = &[7, 8, 9];
     struct Capabilities;

@@ -122,13 +122,13 @@ impl Journal {
     pub fn reserve(&mut self, capacity: Capacity) -> std::io::Result<()> {
         if self.occurrences.capacity() < capacity.occurrences {
             let additional = capacity.occurrences.saturating_sub(self.occurrences.len());
-            crate::allocation::reserve_exact(&mut self.occurrences, additional)?;
+            engine_allocation::reserve_exact(&mut self.occurrences, additional)?;
         }
         if self.links.len() < capacity.links {
-            crate::allocation::resize(&mut self.links, capacity.links, None)?;
+            engine_allocation::resize(&mut self.links, capacity.links, None)?;
         }
         if self.bytes.len() < capacity.bytes {
-            crate::allocation::resize(&mut self.bytes, capacity.bytes, 0)?;
+            engine_allocation::resize(&mut self.bytes, capacity.bytes, 0)?;
         }
         Ok(())
     }
@@ -175,7 +175,7 @@ impl Journal {
     }
     fn occurrence(&mut self, value: Occurrence) -> Option<usize> {
         self.required.occurrences = self.required.occurrences.saturating_add(1);
-        if crate::allocation::reserve_push_batch(&mut self.occurrences, 1).is_err() {
+        if engine_allocation::reserve_push_batch(&mut self.occurrences, 1).is_err() {
             self.refuse("raw country observation allocation failed");
             return None;
         }
@@ -220,7 +220,7 @@ impl Journal {
     }
     fn grow_links(&mut self, required: usize) {
         if required > self.links.len()
-            && crate::allocation::resize(&mut self.links, required, None).is_err()
+            && engine_allocation::resize(&mut self.links, required, None).is_err()
         {
             self.refuse("raw country link allocation failed");
         }
@@ -283,7 +283,7 @@ impl Journal {
     fn grow_bytes(&mut self, required: usize) -> Field<()> {
         let capacity = required.max(self.bytes.len().saturating_mul(2));
         if required > self.bytes.len()
-            && crate::allocation::resize(&mut self.bytes, capacity, 0).is_err()
+            && engine_allocation::resize(&mut self.bytes, capacity, 0).is_err()
         {
             self.refuse("raw country byte allocation failed");
             return Err("raw country byte allocation failed");

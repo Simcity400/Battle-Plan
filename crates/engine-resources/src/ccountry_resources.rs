@@ -1,8 +1,8 @@
 
 use crate::{
     Memory,
-    batch_fallback::{Ahead, Batch, Link},
-    ccountry,
+    batch_fallback::{Batch, Link},
+    ccountry::{self, Ahead},
     cpdx_array::Array,
     cstrategic_resource, cstrategic_resource_pool,
     memory::{RecordField, RecordLayout, RecordSources},

@@ -1,0 +1,30 @@
+[package]
+name = "engine-native-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+acquisition_profile = []
+alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
+batch-fallback-test-counts = []
+test-support = ["batch-fallback-test-counts", "engine-allocation/test-support"]
+
+[dependencies]
+engine-allocation.workspace = true
+engine-sites.workspace = true
+game-model.workspace = true
+
+[dev-dependencies]
+engine-allocation = { workspace = true, features = ["test-support"] }
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }
+
+[lints]
+workspace = true

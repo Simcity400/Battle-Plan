@@ -68,7 +68,7 @@ pub fn copy_u32s(
     copy_u32_prefix(memory, source, output, unreadable)
 }
 
-pub(crate) fn copy_u32_prefix(
+pub fn copy_u32_prefix(
     memory: &impl Memory,
     source: Array,
     output: &mut [u32],

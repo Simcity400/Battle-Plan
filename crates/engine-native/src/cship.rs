@@ -46,7 +46,7 @@ pub const EXPERIENCE: usize = 0x708;
 pub const TASK_FORCE: usize = 0x728;
 pub const SIZE: usize = 0x938;
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c8_65b0);
-pub const NEXT_ID_RVA: Rva = Rva(0x030f_f228);
+pub use engine_native_memory::save_allocation_counters::NEXT_ID_RVA;
 pub const FIXED_SCALE: i64 = 100_000;
 
 fn name_member(

@@ -1,5 +1,5 @@
 
-pub(crate) const DIRECT: u32 = 1 << 16;
+pub const DIRECT: u32 = 1 << 16;
 const WORDS: usize = DIRECT as usize / 64;
 const REMEMBERED: usize = 128;
 

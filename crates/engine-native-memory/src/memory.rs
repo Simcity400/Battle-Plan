@@ -193,7 +193,7 @@ pub fn gather_records(
     }
 }
 
-pub(crate) fn gather_records_once(
+pub fn gather_records_once(
     memory: &impl Memory,
     pointers: &[usize],
     layout: &RecordLayout<'_>,
@@ -402,7 +402,7 @@ pub trait Memory {
         &self,
         _base: usize,
         _game_state: usize,
-    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<crate::country_identity::AuthenticatedRoster<'_>> {
         None
     }
 
@@ -410,7 +410,7 @@ pub trait Memory {
         &self,
         _base: usize,
         _game_state: usize,
-    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+    ) -> Option<Result<crate::country_identity::Country, &'static str>> {
         None
     }
 
@@ -418,7 +418,7 @@ pub trait Memory {
         &self,
         _base: usize,
         _game_state: usize,
-    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+    ) -> Option<crate::country_identity::ReservedCountryObservation> {
         None
     }
 
@@ -426,11 +426,11 @@ pub trait Memory {
         &self,
         _address: usize,
         _key: u32,
-    ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+    ) -> Option<Result<crate::modifier_cache::Value, &'static str>> {
         None
     }
 
-    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+    fn modifier_definitions(&self) -> Option<&crate::modifier_cache::PassDefinitions> {
         None
     }
 
@@ -608,7 +608,7 @@ pub fn read_slice(memory: &impl Memory, address: usize, destination: &mut [u8]) 
         && memory.copy(address, destination)
 }
 
-pub(crate) struct FieldBatch<const N: usize> {
+pub struct FieldBatch<const N: usize> {
     addresses: [usize; N],
     lens: [usize; N],
     bytes: [[u8; FIELD_BATCH_BYTES]; N],
@@ -619,7 +619,7 @@ const FIELD_BATCH_BYTES: usize = 24;
 
 impl<const N: usize> FieldBatch<N> {
     #[inline]
-    pub(crate) fn gather(memory: &impl Memory, fields: [(usize, usize); N]) -> Self {
+    pub fn gather(memory: &impl Memory, fields: [(usize, usize); N]) -> Self {
         let mut batch = Self {
             addresses: fields.map(|(address, _)| address),
             lens: fields.map(|(_, len)| {
@@ -641,7 +641,7 @@ impl<const N: usize> FieldBatch<N> {
     }
 
     #[inline]
-    pub(crate) fn get<T: Raw>(&self, memory: &impl Memory, index: usize) -> Option<T> {
+    pub fn get<T: Raw>(&self, memory: &impl Memory, index: usize) -> Option<T> {
         debug_assert_eq!(size_of::<T>(), self.lens[index]);
         match index.cmp(&self.completed) {
             std::cmp::Ordering::Less => scalar_from_bytes(&self.bytes[index][..size_of::<T>()]),
@@ -652,7 +652,7 @@ impl<const N: usize> FieldBatch<N> {
 }
 
 #[inline]
-pub(crate) fn read_slice_uninit<'a>(
+pub fn read_slice_uninit<'a>(
     memory: &impl Memory,
     address: usize,
     destination: &'a mut [MaybeUninit<u8>],

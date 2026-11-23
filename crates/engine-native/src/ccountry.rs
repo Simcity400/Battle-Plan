@@ -1,3 +1,4 @@
+pub use engine_native_memory::country_identity::{AuthenticatedRoster, Country, ReservedCountryObservation};
 
 use crate::{
     Memory, carmy, ccharacter, cconvoys, ccountry_leader, cgame_state,
@@ -9,6 +10,8 @@ use crate::{
 };
 use engine_sites::Rva;
 
+mod ahead;
+pub use ahead::Ahead;
 pub mod launch_sources;
 mod native_reference;
 mod rosters;
@@ -254,13 +257,6 @@ pub fn copy_links_and_roster(memory: &impl Memory, game_state: usize, out: &mut 
         }
     }
     true
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Country {
-    pub pointer: usize,
-    pub canonical_slot: u32,
-    pub id: u32,
 }
 
 const LEADER_IDEOLOGY: usize = 0x140;
@@ -669,38 +665,6 @@ pub fn read_reserved_root(
     read_reserved_observation(memory, base, game_state).result()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct ReservedCountryObservation {
-    pointer: Option<usize>,
-    result: Result<Country, &'static str>,
-}
-
-impl std::fmt::Debug for ReservedCountryObservation {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("ReservedCountryObservation")
-            .field("result", &self.result)
-            .finish_non_exhaustive()
-    }
-}
-
-impl ReservedCountryObservation {
-    pub fn result(self) -> Result<Country, &'static str> {
-        self.result
-    }
-
-    pub(crate) fn from_result(result: Result<Country, &'static str>) -> Self {
-        Self {
-            pointer: result.ok().map(|country| country.pointer),
-            result,
-        }
-    }
-
-    pub fn physical_alias(self, pointer: usize) -> Option<Result<(), &'static str>> {
-        (pointer != 0 && self.pointer == Some(pointer)).then(|| self.result.map(|_| ()))
-    }
-}
-
 pub(crate) fn cached_reserved_observation(
     memory: &impl Memory,
     base: usize,
@@ -774,10 +738,7 @@ pub(crate) fn observe_reserved_from_array(
             id: 0,
         })
     })();
-    ReservedCountryObservation {
-        pointer: pointer.ok(),
-        result,
-    }
+    ReservedCountryObservation::new(pointer.ok(), result)
 }
 
 fn reserved_naming_sources(
@@ -1661,26 +1622,6 @@ fn walk_appearance_carrying_inner<
     result.unwrap_or_else(|reason| Outcome::Unavailable { reason })
 }
 
-#[derive(Clone, Copy)]
-pub struct AuthenticatedRoster<'a> {
-    slots: &'a [Option<Country>],
-    arrays: [Array; 2],
-}
-
-impl<'a> AuthenticatedRoster<'a> {
-    pub(crate) fn new(slots: &'a [Option<Country>], arrays: [Array; 2]) -> Self {
-        Self { slots, arrays }
-    }
-
-    pub fn slots(&self) -> &'a [Option<Country>] {
-        self.slots
-    }
-
-    pub fn arrays(&self) -> [Array; 2] {
-        self.arrays
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct RosterSnapshot {
     slots: Vec<Option<Country>>,
@@ -1715,12 +1656,12 @@ impl RosterSnapshot {
         game_state: usize,
     ) -> bool {
         self.clear();
-        self.required = roster.slots.len();
-        if self.slots.capacity() < roster.slots.len() {
+        self.required = roster.slots().len();
+        if self.slots.capacity() < roster.slots().len() {
             return false;
         }
-        self.slots.extend_from_slice(roster.slots);
-        self.captured = Some((base, game_state, roster.arrays));
+        self.slots.extend_from_slice(roster.slots());
+        self.captured = Some((base, game_state, roster.arrays()));
         true
     }
 
@@ -1808,7 +1749,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn new(memory: &'a M, base: usize, game_state: usize) -> Result<Self, &'static str> {
         let authenticated = memory.authenticated_countries(base, game_state);
         let [countries, links] = if let Some(roster) = authenticated {
-            roster.arrays
+            roster.arrays()
         } else {
             [
                 game_state
@@ -1844,7 +1785,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             vtable,
             authenticated: memory
                 .authenticated_countries(base, game_state)
-                .filter(|roster| roster.slots.len() == countries.count as usize),
+                .filter(|roster| roster.slots().len() == countries.count as usize),
             base,
             game_state,
             reserved: std::cell::Cell::new(cached_reserved_observation(memory, base, game_state)),
@@ -1875,7 +1816,7 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     pub fn known(&self, slot: u32) -> Option<Country> {
         self.authenticated?
-            .slots
+            .slots()
             .get(slot as usize)
             .copied()
             .flatten()
@@ -1932,7 +1873,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("country link unreadable or outside country table")?;
         let known = self
             .authenticated
-            .and_then(|roster| roster.slots.get(raw as usize))
+            .and_then(|roster| roster.slots().get(raw as usize))
             .and_then(|country| *country)
             .map(|country| country.canonical_slot);
         let slot = match known {
@@ -1968,7 +1909,7 @@ impl<'a, M: Memory> Reader<'a, M> {
         }
         if let Some(country) = self
             .authenticated
-            .and_then(|roster| roster.slots.get(slot as usize))
+            .and_then(|roster| roster.slots().get(slot as usize))
         {
             return Ok(*country);
         }

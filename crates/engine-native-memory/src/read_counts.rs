@@ -262,7 +262,7 @@ impl<M: Memory> Memory for CountedMemory<M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
+    ) -> Option<crate::country_identity::AuthenticatedRoster<'_>> {
         self.0.authenticated_countries(base, game_state)
     }
 
@@ -270,7 +270,7 @@ impl<M: Memory> Memory for CountedMemory<M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+    ) -> Option<Result<crate::country_identity::Country, &'static str>> {
         self.0.authenticated_reserved_country(base, game_state)
     }
 
@@ -278,7 +278,7 @@ impl<M: Memory> Memory for CountedMemory<M> {
         &self,
         base: usize,
         game_state: usize,
-    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+    ) -> Option<crate::country_identity::ReservedCountryObservation> {
         self.0
             .authenticated_reserved_country_observation(base, game_state)
     }
@@ -287,11 +287,11 @@ impl<M: Memory> Memory for CountedMemory<M> {
         &self,
         address: usize,
         key: u32,
-    ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+    ) -> Option<Result<crate::modifier_cache::Value, &'static str>> {
         self.0.modifier_accumulator_value(address, key)
     }
 
-    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+    fn modifier_definitions(&self) -> Option<&crate::modifier_cache::PassDefinitions> {
         self.0.modifier_definitions()
     }
 

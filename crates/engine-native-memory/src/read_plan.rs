@@ -1,5 +1,6 @@
 
-use crate::{Memory, allocation, memory::is_canonical_range};
+use crate::{Memory, memory::is_canonical_range};
+use engine_allocation as allocation;
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-use crate::{Memory, ccountry, read};
+use crate::{Memory, country_identity::Country, read};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,12 +146,6 @@ pub fn record(batch: Batch) {
     THREAD.with(|counts| counts[batch as usize].set(counts[batch as usize].get() + 1));
 }
 
-pub struct Ahead {
-    slot: u32,
-    listed: Result<Option<ccountry::Country>, &'static str>,
-    link: Link,
-}
-
 #[derive(Clone, Copy)]
 pub enum Link {
     Unread,
@@ -159,55 +153,11 @@ pub enum Link {
     Failed,
 }
 
-impl Ahead {
-    pub fn read<M: Memory>(
-        memory: &M,
-        countries: &ccountry::Reader<'_, M>,
-        slot: u32,
-        offset: usize,
-        hint: impl FnOnce(usize),
-    ) -> Option<Self> {
-        if slot >= countries.count() {
-            return None;
-        }
-        let listed = countries.at(slot);
-        let link = match listed {
-            Ok(Some(country)) => match country
-                .pointer
-                .checked_add(offset)
-                .and_then(|at| read::<u64>(memory, at))
-            {
-                Some(link) => Link::Read(link),
-                None => Link::Failed,
-            },
-            _ => Link::Unread,
-        };
-        if let Link::Read(link) = link
-            && let Ok(target) = usize::try_from(link)
-            && target != 0
-        {
-            hint(target);
-        }
-        Some(Self { slot, listed, link })
-    }
-
-    pub fn take<M: Memory>(
-        ahead: &mut Option<Self>,
-        countries: &ccountry::Reader<'_, M>,
-        slot: u32,
-    ) -> (Result<Option<ccountry::Country>, &'static str>, Link) {
-        match ahead.take() {
-            Some(ahead) if ahead.slot == slot => (ahead.listed, ahead.link),
-            _ => (countries.at(slot), Link::Unread),
-        }
-    }
-}
-
 impl Link {
     pub fn resolve(
         self,
         memory: &impl Memory,
-        country: ccountry::Country,
+        country: Country,
         offset: usize,
         batch: Batch,
     ) -> Option<u64> {

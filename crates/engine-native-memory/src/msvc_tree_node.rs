@@ -9,7 +9,7 @@ pub const NIL: usize = 0x19;
 pub const PAYLOAD: usize = 0x20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SetError {
+pub enum SetError {
     NullLink,
     UnreadableNode,
     InvalidHead,
@@ -20,7 +20,7 @@ pub(crate) enum SetError {
     BudgetOverflow,
 }
 
-pub(crate) fn walk_set<E>(
+pub fn walk_set<E>(
     memory: &impl Memory,
     head: usize,
     size: u64,
@@ -107,7 +107,7 @@ pub struct Cursor {
 }
 
 impl Cursor {
-    pub(crate) fn read(
+    pub fn read(
         memory: &impl Memory,
         owner: usize,
         offset: usize,

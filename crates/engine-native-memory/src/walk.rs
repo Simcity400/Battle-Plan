@@ -30,7 +30,7 @@ pub fn grow<T: Default>(values: &mut Vec<T>, end: usize) -> Result<(), &'static 
         return Ok(());
     }
     let len = values.len().saturating_mul(2).max(end);
-    crate::allocation::resize_default(values, len).map_err(|_| "capture buffer allocation failed")
+    engine_allocation::resize_default(values, len).map_err(|_| "capture buffer allocation failed")
 }
 
 impl<T> Buffer<'_, T> {

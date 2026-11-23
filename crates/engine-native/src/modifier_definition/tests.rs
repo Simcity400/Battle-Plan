@@ -504,15 +504,15 @@ fn pass_metadata_memo_retains_original_keys_past_sixty_four() {
     }
     let mut memo = PassDefinitions::default();
     for key in 1..=65 {
-        assert_eq!(memo.flags(&source, BASE, key), Ok(Some(key)));
+        assert_eq!(memo.flags(BASE, key, || read_flags(&source, BASE, key)), Ok(Some(key)));
     }
-    assert_eq!(memo.slots.borrow().len(), 65);
+    assert_eq!(memo.cached_keys(), 65);
     for key in 1..=65 {
         source.put(Fixture::row(key) + FLAGS, &0_u32.to_le_bytes());
-        assert_eq!(memo.flags(&source, BASE, key), Ok(Some(key)));
+        assert_eq!(memo.flags(BASE, key, || read_flags(&source, BASE, key)), Ok(Some(key)));
     }
     memo.clear();
-    assert_eq!(memo.flags(&source, BASE, 65), Ok(Some(0)));
+    assert_eq!(memo.flags(BASE, 65, || read_flags(&source, BASE, 65)), Ok(Some(0)));
 }
 
 #[test]

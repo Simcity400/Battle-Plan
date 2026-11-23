@@ -27,8 +27,8 @@ impl<K: PartialEq, V: Copy, const N: usize> Recent<K, V, N> {
         self.next = (self.next + 1) % N;
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_empty(&self) -> bool {
         self.entries.iter().all(Option::is_none)
     }
 }

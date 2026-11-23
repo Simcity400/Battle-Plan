@@ -264,20 +264,20 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         if let Some(observation) = self.memo.reserved.get() {
             return observation;
         }
-        let mut observation =
+        let observation =
             super::cached_reserved_observation(self.memory, self.base, self.game_state)
                 .unwrap_or_else(|| {
                     super::ReservedCountryObservation::from_result(Err(
                         "native country reference lacks shared reserved source",
                     ))
                 });
-        observation.result = observation.result.and_then(|country| {
+        let observation = observation.with_result(observation.result().and_then(|country| {
             if country.pointer == 0 || country.canonical_slot != 0 || country.id != 0 {
                 Err("native country reserved source is not physical slot zero")
             } else {
                 Ok(country)
             }
-        });
+        }));
         self.memo.reserved.set(Some(observation));
         observation
     }

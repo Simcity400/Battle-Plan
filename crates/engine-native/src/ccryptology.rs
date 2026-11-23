@@ -1,8 +1,8 @@
 
 use crate::{
     Memory,
-    batch_fallback::{Ahead, Batch},
-    ccountry, ccountry_decryption_state as state, cintelligence_agency as agency,
+    batch_fallback::Batch,
+    ccountry::{self, Ahead}, ccountry_decryption_state as state, cintelligence_agency as agency,
     cpdx_array::Array,
     memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     read,

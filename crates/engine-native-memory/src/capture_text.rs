@@ -91,7 +91,7 @@ impl Owned {
     pub fn prepare(&mut self, len: usize) -> std::io::Result<()> {
         if len > self.bytes.len() {
             let additional = len - self.bytes.len();
-            crate::allocation::reserve(&mut self.bytes, additional)?;
+            engine_allocation::reserve(&mut self.bytes, additional)?;
             self.bytes.resize(len, 0);
         }
         Ok(())
@@ -105,7 +105,7 @@ impl Owned {
         self.len = bytes.len();
         Ok(())
     }
-    pub(crate) fn read_hint(
+    pub fn read_hint(
         memory: &impl Memory,
         address: usize,
         prefetched: bool,
@@ -194,7 +194,7 @@ impl Value for Owned {
     }
     fn copy_owned(&self) -> Result<Self, &'static str> {
         Ok(Self {
-            bytes: crate::allocation::copy_vec(self.as_bytes())
+            bytes: engine_allocation::copy_vec(self.as_bytes())
                 .map_err(|_| "string allocation failed")?,
             len: self.len,
         })
@@ -204,7 +204,7 @@ impl Value for Owned {
     }
     fn from_image(bytes: &[u8]) -> Result<Self, &'static str> {
         Ok(Self {
-            bytes: crate::allocation::copy_vec(bytes).map_err(|_| "string allocation failed")?,
+            bytes: engine_allocation::copy_vec(bytes).map_err(|_| "string allocation failed")?,
             len: bytes.len(),
         })
     }

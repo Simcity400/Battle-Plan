@@ -49,7 +49,7 @@ pub fn read_text_prefetched<const N: usize>(
     Some(value)
 }
 
-pub(crate) fn read_text_prefetched_into<const N: usize>(
+pub fn read_text_prefetched_into<const N: usize>(
     memory: &impl Memory,
     address: usize,
     value: &mut Text<N>,
@@ -90,7 +90,7 @@ fn read_text_inner<const N: usize, const PREFETCHED: bool>(
 }
 
 #[inline]
-pub(crate) fn read_text_with_layout_into<const N: usize>(
+pub fn read_text_with_layout_into<const N: usize>(
     memory: &impl Memory,
     address: usize,
     len: u64,
@@ -138,7 +138,7 @@ pub fn copy_growing(
     copy_with_policy::<true>(memory, source, len, output, start, unreadable, allocation)
 }
 
-pub(crate) fn copy_with_policy<const TERMINAL: bool>(
+pub fn copy_with_policy<const TERMINAL: bool>(
     memory: &impl Memory,
     source: usize,
     len: usize,
@@ -178,7 +178,7 @@ fn grow_to<const TERMINAL: bool>(
     if end > output.len() {
         let additional = end - output.len();
         if TERMINAL {
-            crate::allocation::reserve(output, additional).map_err(|_| allocation)?;
+            engine_allocation::reserve(output, additional).map_err(|_| allocation)?;
         } else {
             output.try_reserve(additional).map_err(|_| allocation)?;
         }
@@ -187,7 +187,7 @@ fn grow_to<const TERMINAL: bool>(
     Ok(())
 }
 
-pub(crate) fn place(
+pub fn place(
     bytes: &[u8],
     output: &mut Vec<u8>,
     start: usize,
@@ -218,7 +218,7 @@ pub fn append(
 
 const JOINED_PAYLOAD: usize = 256;
 
-pub(crate) fn append_with_header(
+pub fn append_with_header(
     memory: &impl Memory,
     header: &[u8; STRIDE],
     arena: &mut Vec<u8>,
@@ -241,7 +241,7 @@ pub(crate) fn append_with_header(
     let grow = |arena: &mut Vec<u8>, end: usize| {
         if end > arena.len() {
             let additional = end - arena.len();
-            crate::allocation::reserve(arena, additional)
+            engine_allocation::reserve(arena, additional)
                 .map_err(|_| "string arena allocation failed")?;
             arena.resize(end, 0);
         }
@@ -287,7 +287,7 @@ pub(crate) fn append_with_header(
     Ok((start, len))
 }
 
-pub(crate) fn heap_span(header: &[u8; STRIDE]) -> Option<(usize, usize)> {
+pub fn heap_span(header: &[u8; STRIDE]) -> Option<(usize, usize)> {
     let word = |at| u64::from_le_bytes(header[at..at + 8].try_into().unwrap());
     let (length, capacity) = (word(LENGTH), word(CAPACITY));
     if capacity <= INLINE_CAPACITY || length > capacity {
@@ -427,7 +427,7 @@ impl Descriptor {
                 .ok_or("string arena length overflow")?;
             if self.inline {
                 let len = values.len().max(end);
-                crate::allocation::resize_default(values, len)
+                engine_allocation::resize_default(values, len)
                     .map_err(|_| "string arena allocation failed")?;
             } else if end > values.len() {
                 return copy_growing(
@@ -450,7 +450,7 @@ impl Descriptor {
     }
 }
 
-pub(crate) fn read_text_observed<const N: usize, const PREFETCHED: bool>(
+pub fn read_text_observed<const N: usize, const PREFETCHED: bool>(
     memory: &impl Memory,
     address: usize,
     raw: i32,
@@ -555,7 +555,7 @@ pub(crate) fn read_text_observed<const N: usize, const PREFETCHED: bool>(
 }
 
 impl Descriptor {
-    pub(crate) fn read_observed(
+    pub fn read_observed(
         memory: &impl Memory,
         address: usize,
         raw: i32,
@@ -619,7 +619,7 @@ impl Descriptor {
         journal.finish_text(index, attempt, None);
         result
     }
-    pub(crate) fn copy_observed(
+    pub fn copy_observed(
         &self,
         memory: &impl Memory,
         output: &mut [u8],

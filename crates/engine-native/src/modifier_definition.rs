@@ -58,37 +58,7 @@ impl DefinitionMemo {
     }
 }
 
-#[derive(Default)]
-pub struct PassDefinitions {
-    slots: std::cell::RefCell<std::collections::HashMap<(usize, u32), Option<u32>>>,
-}
-
-impl PassDefinitions {
-    pub fn clear(&mut self) {
-        self.slots.get_mut().clear();
-    }
-
-    pub fn allocated_bytes(&self) -> usize {
-        self.slots.borrow().capacity() * size_of::<((usize, u32), Option<u32>)>()
-    }
-
-    fn flags(
-        &self,
-        memory: &impl Memory,
-        base: usize,
-        key: u32,
-    ) -> Result<Option<u32>, &'static str> {
-        if let Some(flags) = self.slots.borrow().get(&(base, key)) {
-            return Ok(*flags);
-        }
-        let flags = read_flags(memory, base, key)?;
-        let mut slots = self.slots.borrow_mut();
-        crate::allocation::reserve_map(&mut slots, 1)
-            .map_err(|_| "modifier pass memo allocation failed")?;
-        slots.insert((base, key), flags);
-        Ok(flags)
-    }
-}
+pub use engine_native_memory::modifier_cache::PassDefinitions;
 
 pub fn effective(
     memory: &impl Memory,
@@ -577,7 +547,7 @@ fn effective_flags(
     key: u32,
 ) -> Result<Option<u32>, &'static str> {
     match memory.modifier_definitions() {
-        Some(memo) => memo.flags(memory, base, key),
+        Some(memo) => memo.flags(base, key, || read_flags(memory, base, key)),
         None => read_flags(memory, base, key),
     }
 }

@@ -5706,14 +5706,24 @@ dependencies = [
 name = "engine-native"
 version = "0.1.0"
 dependencies = [
- "cc",
  "engine-allocation",
  "engine-executable",
  "engine-native",
+ "engine-native-memory",
  "engine-sites",
  "game-model",
  "replay-spool",
  "test-unify",
+]
+
+[[package]]
+name = "engine-native-memory"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "engine-allocation",
+ "engine-sites",
+ "game-model",
 ]
 
 [[package]]

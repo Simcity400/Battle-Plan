@@ -1,7 +1,11 @@
 
-use crate::{Memory, cgame_state, creference_registry, cship, read};
+use crate::{Memory, read};
 use engine_sites::Rva;
 
+pub const NEXT_ID_RVA: Rva = Rva(0x030f_f228);
+pub const ID_COUNTER_RVA: Rva = Rva(0x034f_ff20);
+pub const NAVY_ID: usize = 0x74c;
+pub const LAND_COMBAT_ID: usize = 0x748;
 pub const THEATER_GROUP_INDEX_RVA: Rva = Rva(0x030f_f22c);
 pub const MILITARY_DEPLOYMENT_LINE_INDEX_RVA: Rva = Rva(0x0312_93b8);
 pub const MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA: Rva = Rva(0x0312_93bc);
@@ -37,9 +41,9 @@ pub fn read_counters(memory: &impl Memory, base: usize, game_state: usize) -> Al
             .and_then(|at| read::<i32>(memory, at))
     };
     AllocationCounters {
-        debug_current_ref_id: engine_sites::at(base, creference_registry::ID_COUNTER_RVA)
+        debug_current_ref_id: engine_sites::at(base, ID_COUNTER_RVA)
             .and_then(|at| read::<u32>(memory, at)),
-        unit: global(cship::NEXT_ID_RVA),
+        unit: global(NEXT_ID_RVA),
         order_index: global(ORDER_INDEX_RVA),
         front_index: global(FRONT_INDEX_RVA),
         theatre_index: global(THEATRE_INDEX_RVA),
@@ -48,8 +52,8 @@ pub fn read_counters(memory: &impl Memory, base: usize, game_state: usize) -> Al
         military_deployment_conveyor_index: global(MILITARY_DEPLOYMENT_CONVEYOR_INDEX_RVA),
         equipment_variant_index: global(EQUIPMENT_VARIANT_INDEX_RVA),
         country_leader_index: global(COUNTRY_LEADER_INDEX_RVA),
-        navy_id: field(cgame_state::NAVY_ID),
-        land_combat_id: field(cgame_state::LAND_COMBAT_ID),
+        navy_id: field(NAVY_ID),
+        land_combat_id: field(LAND_COMBAT_ID),
         multiplayer_random_count: global(MULTIPLAYER_RANDOM_COUNT_RVA),
     }
 }
@@ -113,9 +117,9 @@ mod tests {
         let put = |bytes: &mut Vec<u8>, rva: usize, value: i32| {
             bytes[rva..rva + 4].copy_from_slice(&value.to_le_bytes());
         };
-        globals[creference_registry::ID_COUNTER_RVA.0..creference_registry::ID_COUNTER_RVA.0 + 4]
+        globals[ID_COUNTER_RVA.0..ID_COUNTER_RVA.0 + 4]
             .copy_from_slice(&u32::MAX.to_le_bytes());
-        put(&mut globals, cship::NEXT_ID_RVA.0, 4012);
+        put(&mut globals, NEXT_ID_RVA.0, 4012);
         put(&mut globals, ORDER_INDEX_RVA.0, 7693);
         put(&mut globals, FRONT_INDEX_RVA.0, 8230);
         put(&mut globals, THEATRE_INDEX_RVA.0, 112);
@@ -126,9 +130,9 @@ mod tests {
         put(&mut globals, COUNTRY_LEADER_INDEX_RVA.0, 1);
         put(&mut globals, MULTIPLAYER_RANDOM_COUNT_RVA.0, -1_333_963_091);
         let mut state = vec![0_u8; 0x800];
-        state[cgame_state::NAVY_ID..cgame_state::NAVY_ID + 4]
+        state[NAVY_ID..NAVY_ID + 4]
             .copy_from_slice(&8263_i32.to_le_bytes());
-        state[cgame_state::LAND_COMBAT_ID..cgame_state::LAND_COMBAT_ID + 4]
+        state[LAND_COMBAT_ID..LAND_COMBAT_ID + 4]
             .copy_from_slice(&15359_i32.to_le_bytes());
         (globals, state)
     }
@@ -166,9 +170,9 @@ mod tests {
     fn an_unreadable_counter_is_absent_without_disturbing_the_others() {
         let (globals, state) = fixture();
         for (index, fail) in [
-            (0, creference_registry::ID_COUNTER_RVA.0),
-            (1, cship::NEXT_ID_RVA.0),
-            (10, STATE + cgame_state::NAVY_ID),
+            (0, ID_COUNTER_RVA.0),
+            (1, NEXT_ID_RVA.0),
+            (10, STATE + NAVY_ID),
             (12, MULTIPLAYER_RANDOM_COUNT_RVA.0),
         ] {
             let memory = Globals {
