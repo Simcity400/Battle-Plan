@@ -315,7 +315,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const breakdown = <ForcePartsBreakdown runtime={runtime} widget={widget} track={track} active={active} options={chartOptions} product={config.product}
     request={track && breakdownTag ? config.request(track.branch.id, { tags: [breakdownTag] }, options) : null} manifest={manifest.data} validate={validate}
     extent={pinned ? extent : track ? [track.branch.firstHour, track.branch.lastHour] : extent}
-    playhead={breakdownFollows ? clockHour : playhead} tag={breakdownTag} originHour={originHour}
+    playhead={breakdownFollows ? clockHour : drillAt} tag={breakdownTag} originHour={originHour}
     holder={pinned ? restored?.key ?? undefined : selection?.key ?? undefined} hour={drillAt} following={breakdownFollows} pinned={pinned}
     countrySlot={pinned ? countrySlot : null} saved={!pinned || restored !== null}
     onPick={hour => { if (active) dispatchDrill({ type: 'pick', hour }); }}

@@ -72,7 +72,7 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const drillOutside = drillControl.outside !== null;
   const regionAt = drill.choices ? drill.hour : following ? liveHour : drillControl.hour;
   const hour = Math.floor(drillOpen ? regionAt ?? moment : moment);
-  const chartPlayhead = following ? hour : playhead;
+  const chartPlayhead = drillOpen || following ? hour : playhead;
   const dayLive = useMemo(() => liveTexts(runtime.clock, () => Math.floor(runtime.clock.getHour()) + offset, at => new Map([['day', dayLabel(at)]])), [runtime.clock, offset]);
   const request = track && tag ? forwardRequest(track.source, product, params(tag) as ParamsFor<DeclaredProduct>) : null;
   const reply = useProduct(runtime.client, request, active, validate, track?.source);

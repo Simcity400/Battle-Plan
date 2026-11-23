@@ -428,7 +428,7 @@ export default function MeasureRace({ arsenal, widget, runtime, active, countryS
         runtime.addWidgetBelow(widget.id, { ...pinned, countries: { kind: 'tags', tags: [pinCountry.tag] }, options: { ...pinned.options, holder: pinCountry.token } });
       } : undefined}
       main={pinnedParts ? null : race(drill.breakdown == null || options.drill === 'popout')}>
-      {drill.breakdown ? breakdownTag ? breakdownOf(breakdownTag, !pinnedParts) : <GateState gate={drillControl.gate} loading={`Loading ${label.toLowerCase()}…`} /> : null}
+      {drill.breakdown ? breakdownTag ? breakdownOf(breakdownTag, true) : <GateState gate={drillControl.gate} loading={`Loading ${label.toLowerCase()}…`} /> : null}
     </DrillHost>
     {pinnedParts && countrySlot ? createPortal(<DatedCountryChip label={breakdownTag ? headerLabels.labelAt(breakdownHour)(breakdownTag) : null}
       hour={breakdownHour} live={breakdownFollows ? headDate : undefined} reason={breakdownTag ? null : 'Choose a country in the widget settings.'} />, countrySlot) : null}
