@@ -2,7 +2,7 @@ import { gatedHour } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { aheadThrough, askedPages, binPages, countsAhead, cumulativeCounts, drawnAhead, failedPage, heldPage, logPageRequest, missingNote, missingThrough, noPages, pageFirstHour, pageInSpan, pagesOf, rowsAhead, shownPages, shownThrough, validateLogCounts, validateLogPage } from './logSource.ts';
-import type { LogRow } from './logData';
+import type { LogRow } from './logData';
 import { gatedWindow } from '../../test-support/gated.ts';
 
 const hours = [100, 101, 104, 106, 106, 110, 111, 112, 115, 117];

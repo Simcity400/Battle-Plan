@@ -57,7 +57,7 @@ import './resourceBalance.css';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import { regionFollows, SPEC, type GatedHour } from '../../dashboard/regionTime.ts';
 import { useRegion } from '../../dashboard/widgetTime.ts';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
 import { UNRECORDED_MESSAGE } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: readonly string[] = [];

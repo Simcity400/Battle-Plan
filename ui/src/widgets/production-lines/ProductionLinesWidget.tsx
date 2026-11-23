@@ -44,7 +44,7 @@ import type { LineNow, LineOrder, ProductionLineBreakdownReply, ProductionLinesA
 import { bucketEdges, bucketRead, UNRECORDED_MESSAGE, type BoundWindow } from '../../dashboard/regionTime.ts';
 import type { CountryRef } from '../../generated/dashboard';
 import { useRegion } from '../../dashboard/widgetTime.ts';
-import { productRequest } from '../../dashboard/request.ts';
+import { productRequest } from '../../dashboard/request.ts';
 import { ShownHour } from '../../dashboard/widgetPerf';
 
 const NO_WARNINGS: readonly string[] = [];

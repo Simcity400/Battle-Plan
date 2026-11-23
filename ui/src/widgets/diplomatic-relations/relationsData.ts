@@ -2,7 +2,7 @@ import type { HolderAt } from '../../dashboard/holderLooks';
 import type { CountryGroupReply, DiplomaticRelationsReply, ScoreboardReply } from '../../generated/dashboard';
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
-import { NO_ROW, NOT_READ } from '../../dashboard/follow/liveCells.ts';
+import { NO_ROW, NOT_READ } from '../../dashboard/follow/liveCells.ts';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
 import type { CountryDrillHistory } from '../../dashboard/countryIdentity';

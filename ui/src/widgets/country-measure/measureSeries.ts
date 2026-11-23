@@ -18,7 +18,7 @@ import { useTiles } from '../../dashboard/tiles/useTiles';
 import type { CoveredBranch, GatedHour } from '../../dashboard/regionTime';
 import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
-import type { ParamsFor } from '../../dashboard/regionTime';
+import type { ParamsFor } from '../../dashboard/regionTime';
 import { withinParams } from '../../dashboard/keyedSeriesData.ts';
 
 export type MeasureFamily = string;

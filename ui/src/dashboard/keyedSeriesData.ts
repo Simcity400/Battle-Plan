@@ -2,7 +2,7 @@ import { countryFromKey, countryKey } from './countryKey.ts';
 import type { CountryRef } from './countrySlots.ts';
 import type { HourSpan, SeriesDrop, SeriesRun } from '../generated/dashboard';
 import { type FollowedAnswer, rowKey, rowName } from './follow/message.ts';
-import type { TileReply } from './tiles/tile';
+import type { TileReply } from './tiles/tile';
 import type { BoundWindow } from './regionTime';
 
 export interface SeriesKey { tag: string; part: string }

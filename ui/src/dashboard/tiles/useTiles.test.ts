@@ -3,7 +3,7 @@ import test from 'node:test';
 import * as React from 'react';
 import type { SeriesTileReply } from '../../generated/dashboard';
 import { TILE_BINS } from './tile.ts';
-import { useTiles } from './useTiles.ts';
+import { useTiles } from './useTiles.ts';
 import { gatedWindow } from '../../test-support/gated.ts';
 
 function mount<T>(read: () => T) {

@@ -2,7 +2,7 @@ import type { BoundHour, BoundWindow, ParamsFor } from '../../dashboard/regionTi
 import type { Failure } from '../../dashboard/queryError';
 import type { FacetFilter, LogCell, MembershipRun, MissingSpan } from '../../generated/dashboard';
 import type { LogPage, LogRow } from './logData';
-import { AHEAD_SECONDS } from '../reveal.ts';
+import { AHEAD_SECONDS } from '../reveal.ts';
 import type { DeclaredProduct } from '../../dashboard/request';
 
 export interface LogCounts { firstHour: number; binHours: number; counts: readonly number[]; total: number; before: number; missing: readonly MissingSpan[] }

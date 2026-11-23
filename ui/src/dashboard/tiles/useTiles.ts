@@ -12,7 +12,7 @@ import { TileView, tileCache, unrecordedReason } from './view.ts';
 import { prepareGate, preparing } from '../prepare.ts';
 import type { TiledLine, TileViewport } from './view.ts';
 import { inFrame } from '../frameUpdates.ts';
-import { productRequest } from '../request.ts';
+import { productRequest } from '../request.ts';
 import type { BoundWindow } from '../regionTime';
 
 export interface TileSeries {
