@@ -100,73 +100,38 @@ impl ShownVision {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_support {
     use super::*;
 
-    struct Making {
-        shown: ShownVision,
+    pub struct Making {
+        pub shown: ShownVision,
+        now: fn() -> Instant,
         sent: std::sync::mpsc::Receiver<crate::vision::SeenCopy>,
         made: std::sync::mpsc::Sender<Arc<Vision>>,
     }
 
     impl Making {
-        fn new() -> Self {
+        pub fn new(now: fn() -> Instant) -> Self {
             let (jobs, sent) = std::sync::mpsc::channel();
             let (made, receive) = std::sync::mpsc::channel();
-            Self { shown: ShownVision { maker: Some((jobs, receive)), ..ShownVision::default() }, sent, made }
+            Self { shown: ShownVision { maker: Some((jobs, receive)), ..ShownVision::default() }, now, sent, made }
         }
 
-        fn ask(&mut self, choice: &Choice, hour: Hour, ours: u32) {
+        pub fn ask(&mut self, choice: &Choice, hour: Hour, ours: u32) {
             let key = VisionKey { applied: Some(hour), published: crate::layers::Published::Current, carried: 0, choice: choice.clone() };
             let parts = viewer_foundation::perspective::Parts { ours, ..Default::default() };
-            self.shown.make(key, Instant::now(), crate::vision::SeenCopy::of_parts(parts));
+            self.shown.make(key, (self.now)(), crate::vision::SeenCopy::of_parts(parts));
         }
 
-        fn arrive(&mut self) {
+        pub fn arrive(&mut self) {
             let copy = self.sent.try_recv().expect("a copy was sent to be made");
             self.made.send(Arc::new(copy.make())).unwrap();
             self.shown.take_made();
         }
-    }
 
-    fn country(tag: &str) -> Choice {
-        Choice { country: viewer_foundation::perspective::Country::Tag(tag.into()), fog: true }
-    }
-
-    #[test]
-    fn a_vision_made_for_one_perspective_is_never_kept_for_another() {
-        let (a, b) = (country("GER"), country("ENG"));
-        let mut making = Making::new();
-        assert!(making.shown.kept_for(&a).is_err(), "nothing made yet");
-        making.ask(&a, 5, 1);
-        making.arrive();
-        assert_eq!(making.shown.kept_for(&a).map(|vision| vision.ours()), Ok(1), "the copy made for A is A's");
-        assert!(making.shown.kept_for(&b).is_err(), "A's copy is no vision of B");
-        making.ask(&b, 5, 2);
-        assert!(making.shown.kept_for(&b).is_err(), "B's copy is still being made: A's is not shown meanwhile");
-        making.arrive();
-        assert_eq!(making.shown.kept_for(&b).map(|vision| vision.ours()), Ok(2), "the copy made for B, once it stands");
-        assert!(making.shown.kept_for(&a).is_err(), "and B's is no vision of A");
-    }
-
-    #[test]
-    fn a_forgotten_vision_is_not_kept_and_a_copy_asked_before_the_forget_is_let_go() {
-        let a = country("GER");
-        let mut making = Making::new();
-        making.ask(&a, 90, 1);
-        making.arrive();
-        assert!(making.shown.kept_for(&a).is_ok(), "the copy of hour 90 stands");
-        making.shown.forget();
-        assert!(making.shown.kept_for(&a).is_err(), "forgotten: the vision of hour 90 is not kept");
-        assert!(making.shown.kept().is_err(), "nor kept for any perspective");
-        making.ask(&a, 95, 1);
-        making.shown.forget();
-        making.arrive();
-        assert!(making.shown.kept_for(&a).is_err(), "a copy asked before the forget is let go when it arrives");
-        assert!(making.shown.making.is_none(), "and nothing is still being made");
-        making.ask(&a, 20, 3);
-        making.arrive();
-        assert_eq!(making.shown.kept_for(&a).map(|vision| vision.ours()), Ok(3), "a copy asked after the forget is kept");
+        pub fn is_making(&self) -> bool {
+            self.shown.making.is_some()
+        }
     }
 }

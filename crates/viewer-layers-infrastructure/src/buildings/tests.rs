@@ -572,13 +572,13 @@ fn buildings_a_write_to_what_the_slots_do_not_read_marks_nothing() {
     let layer = Buildings::new(catalogue());
     layer.set_vision(Choice::default(), vision(false));
     let mut side = viewer_layer_core::test_support::rail_recording::side_at_pace(pages, Box::new(layer), "buildings-unread-writes", 1.0);
-    viewer_layer_core::test_support::rail_recording::settle_at(&mut side, 3);
+    crate::rails::tests::settle_at(&mut side, 3);
     let before = buildings(&side).causes;
     let rows = buildings(&side).marked[0];
-    viewer_layer_core::test_support::rail_recording::settle_at(&mut side, 22);
+    crate::rails::tests::settle_at(&mut side, 22);
     let after = buildings(&side).causes;
     assert!(after[super::HELD] > before[super::HELD], "the partial health writes were read and held: {after:?}");
     assert_eq!((buildings(&side).marked[0], after[super::ROW], after[super::HARBOUR]), (rows, before[super::ROW], before[super::HARBOUR]), "no row, slot or harbour marked by writes nothing reads");
-    viewer_layer_core::test_support::rail_recording::settle_at(&mut side, 26);
+    crate::rails::tests::settle_at(&mut side, 26);
     assert_eq!(buildings(&side).causes[super::HARBOUR], after[super::HARBOUR] + 1, "the deployment bit marks the harbour on sea 9");
 }

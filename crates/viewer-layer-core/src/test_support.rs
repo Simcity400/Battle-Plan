@@ -5,3 +5,5 @@ pub mod sample_playback;
 pub mod sound_recording;
 pub mod vision_recording;
 pub mod host_recording;
+
+pub use crate::playhead_host::shown_vision::test_support::Making as MakingShownVision;

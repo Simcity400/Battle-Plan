@@ -200,7 +200,7 @@ pub struct Made {
 }
 
 impl SeenCopy {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn of_parts(parts: Parts) -> Self {
         Self { bytes: None, parts }
     }

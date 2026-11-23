@@ -1162,6 +1162,7 @@ impl Overlaying<Products> for Overlay {
 mod tests {
     use super::*;
     use crate::map_views::Presentation;
+    use viewer_layer_core::test_support::MakingShownVision;
 
     fn tabled() -> Tabled {
         Tabled {
@@ -1523,5 +1524,49 @@ mod tests {
         assert!(!fails(false, 3, 4, false), "a step takes whatever was answered");
         assert!(!fails(true, 4, 4, false), "strict, its own ask answered");
         assert!(fails(false, 4, 4, true), "its own ask answered without what it asked for");
+    }
+
+    fn making_vision() -> MakingShownVision {
+        MakingShownVision::new(Instant::now)
+    }
+
+    fn country(tag: &str) -> Choice {
+        Choice { country: viewer_foundation::perspective::Country::Tag(tag.into()), fog: true }
+    }
+
+    #[test]
+    fn a_vision_made_for_one_perspective_is_never_kept_for_another() {
+        let (a, b) = (country("GER"), country("ENG"));
+        let mut making = making_vision();
+        assert!(making.shown.kept_for(&a).is_err(), "nothing made yet");
+        making.ask(&a, 5, 1);
+        making.arrive();
+        assert_eq!(making.shown.kept_for(&a).map(|vision| vision.ours()), Ok(1), "the copy made for A is A's");
+        assert!(making.shown.kept_for(&b).is_err(), "A's copy is no vision of B");
+        making.ask(&b, 5, 2);
+        assert!(making.shown.kept_for(&b).is_err(), "B's copy is still being made: A's is not shown meanwhile");
+        making.arrive();
+        assert_eq!(making.shown.kept_for(&b).map(|vision| vision.ours()), Ok(2), "the copy made for B, once it stands");
+        assert!(making.shown.kept_for(&a).is_err(), "and B's is no vision of A");
+    }
+
+    #[test]
+    fn a_forgotten_vision_is_not_kept_and_a_copy_asked_before_the_forget_is_let_go() {
+        let a = country("GER");
+        let mut making = making_vision();
+        making.ask(&a, 90, 1);
+        making.arrive();
+        assert!(making.shown.kept_for(&a).is_ok(), "the copy of hour 90 stands");
+        making.shown.forget();
+        assert!(making.shown.kept_for(&a).is_err(), "forgotten: the vision of hour 90 is not kept");
+        assert!(making.shown.kept().is_err(), "nor kept for any perspective");
+        making.ask(&a, 95, 1);
+        making.shown.forget();
+        making.arrive();
+        assert!(making.shown.kept_for(&a).is_err(), "a copy asked before the forget is let go when it arrives");
+        assert!(!making.is_making(), "and nothing is still being made");
+        making.ask(&a, 20, 3);
+        making.arrive();
+        assert_eq!(making.shown.kept_for(&a).map(|vision| vision.ours()), Ok(3), "a copy asked after the forget is kept");
     }
 }

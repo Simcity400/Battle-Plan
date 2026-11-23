@@ -9,7 +9,7 @@ use replay_columnar::{
     unit::{BLOCK, BlockPage, Encoder, PartSink, Settings as Writing, reader::Extents},
 };
 use replay_data::rows::TableId;
-use std::{io, sync::Arc, time::{Duration, Instant}};
+use std::{io, sync::Arc};
 
 const RING: usize = 3;
 
@@ -113,23 +113,4 @@ pub fn frames_until(side: &mut MapSide, mut done: impl FnMut(&MapSide, &Frame) -
         }
     }
     panic!("the map side never reached what the test waits for");
-}
-
-pub fn settle_at(side: &mut MapSide, hour: i32) {
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        crate::test_support::recorded::reads_landed(side);
-        let frame = side.frame(hour).unwrap();
-        let carried: Vec<(&str, usize)> = side.parts().map(|(_, layers)| layers.iter().map(|layer| (layer.name(), layer.carried().entities)).collect()).unwrap_or_default();
-        if side.applied() == Some(hour) && !side.composing() && carried.iter().all(|&(_, entities)| entities == 0) {
-            return;
-        }
-        if Instant::now() >= deadline {
-            let (_, _, counters) = side.entry().playhead().held();
-            panic!("hour {hour} was not applied and settled within 120 s: applied {:?}, newest decoded {:?}, composing {}, carried {carried:?}, the playhead's {counters:?}", side.applied(), side.entry().playhead().newest(), side.composing());
-        }
-        if frame.steps == 0 && frame.swapped.is_none() {
-            std::thread::yield_now();
-        }
-    }
 }

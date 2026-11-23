@@ -1,5 +1,5 @@
 pub mod combat;
-mod shown_vision;
+pub(crate) mod shown_vision;
 pub mod details;
 pub mod mirror;
 pub mod piece;
@@ -729,6 +729,39 @@ impl MapSide<NoProducts> {
 }
 
 impl<P: PlaybackProducts> MapSide<P> {
+    pub fn lay_overlay_again(&mut self) -> Result<P::OverlayMade, String> {
+        let until = Instant::now() + HANDS_BACK;
+        while !self.ask_overlay_step(true, true, Arc::default()) {
+            if Instant::now() >= until {
+                let loading = self.overlay.as_deref().map(Overlaying::loading).unwrap_or_default().join("; ");
+                return Err(format!(
+                    "the overlay's maker was not asked for hour {:?}: composing {}, superseded {}, branch {:?}, an overlay {}{}",
+                    self.applied,
+                    self.composing,
+                    self.superseded,
+                    self.branch,
+                    self.overlay.is_some(),
+                    if loading.is_empty() { String::new() } else { format!("; {loading}") },
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        }
+        self.join_overlay(Settling::Whole);
+        let hour = self.applied;
+        self.take_overlay().ok_or_else(|| {
+            let overlay = self.overlay.as_deref().expect("asked above");
+            format!(
+                "the overlay's maker laid nothing out for hour {hour:?}: it stands at {:?}, missing {:?}{}",
+                overlay.hour(),
+                overlay.missed(),
+                match overlay.loading().join("; ") {
+                    loading if loading.is_empty() => String::new(),
+                    loading => format!("; {loading}"),
+                },
+            )
+        })
+    }
+
     pub fn with_products(entry: Arc<Entry>, mut layers: Vec<Box<dyn Layer>>, view: View) -> io::Result<Self> {
         let names = layers.iter().map(|layer| layer.name()).collect();
         let views = views::Store::new(&entry);
@@ -927,39 +960,6 @@ impl<P: PlaybackProducts> MapSide<P> {
     fn join_overlay(&mut self, settling: Settling) -> bool {
         let at = self.overlay_counters_at().unwrap_or(0);
         self.overlay.as_deref_mut().is_some_and(|overlay| overlay.join(&self.layers[at..], &self.view.perspective, self.branch, settling))
-    }
-
-    pub fn lay_overlay_again(&mut self) -> Result<P::OverlayMade, String> {
-        let until = Instant::now() + HANDS_BACK;
-        while !self.ask_overlay_step(true, true, Arc::default()) {
-            if Instant::now() >= until {
-                let loading = self.overlay.as_deref().map(Overlaying::loading).unwrap_or_default().join("; ");
-                return Err(format!(
-                    "the overlay's maker was not asked for hour {:?}: composing {}, superseded {}, branch {:?}, an overlay {}{}",
-                    self.applied,
-                    self.composing,
-                    self.superseded,
-                    self.branch,
-                    self.overlay.is_some(),
-                    if loading.is_empty() { String::new() } else { format!("; {loading}") },
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_micros(200));
-        }
-        self.join_overlay(Settling::Whole);
-        let hour = self.applied;
-        self.take_overlay().ok_or_else(|| {
-            let overlay = self.overlay.as_deref().expect("asked above");
-            format!(
-                "the overlay's maker laid nothing out for hour {hour:?}: it stands at {:?}, missing {:?}{}",
-                overlay.hour(),
-                overlay.missed(),
-                match overlay.loading().join("; ") {
-                    loading if loading.is_empty() => String::new(),
-                    loading => format!("; {loading}"),
-                },
-            )
-        })
     }
 
     #[cfg(any(test, feature = "test-support"))]

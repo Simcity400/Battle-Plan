@@ -1,6 +1,6 @@
 use super::test_support::Stub;
 use super::{Rails, Strips, Target};
-use viewer_layer_core::test_support::rail_recording::{frames_until, recorded, settle_at, side_of};
+use viewer_layer_core::test_support::rail_recording::{frames_until, recorded, side_of};
 use viewer_layer_core::{layers::{Layer, View}, playhead_host::{MapSide, mirror::Mirror}};
 use playhead::pages::Pages;
 use replay_columnar::{manifest::Status, state::Cell};
@@ -87,7 +87,24 @@ fn side(name: &str) -> MapSide {
     side_of(record(80), Box::new(Rails::new(Arc::new(Stub))), name)
 }
 
-
+pub(crate) fn settle_at(side: &mut MapSide, hour: i32) {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        viewer_layer_core::test_support::recorded::reads_landed(side);
+        let frame = side.frame(hour).unwrap();
+        let carried: Vec<(&str, usize)> = side.parts().map(|(_, layers)| layers.iter().map(|layer| (layer.name(), layer.carried().entities)).collect()).unwrap_or_default();
+        if side.applied() == Some(hour) && !side.composing() && carried.iter().all(|&(_, entities)| entities == 0) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let (_, _, counters) = side.entry().playhead().held();
+            panic!("hour {hour} was not applied and settled within 120 s: applied {:?}, newest decoded {:?}, composing {}, carried {carried:?}, the playhead's {counters:?}", side.applied(), side.entry().playhead().newest(), side.composing());
+        }
+        if frame.steps == 0 && frame.swapped.is_none() {
+            std::thread::yield_now();
+        }
+    }
+}
 
 fn applied_at(side: &mut MapSide, hour: i32) {
     let deadline = Instant::now() + Duration::from_secs(120);
