@@ -141,20 +141,24 @@ impl Drop for Scope {
 #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
 mod counted {
     use super::*;
+    use engine_native::read_counts::{ReadChange, ReadObserver};
 
     thread_local! {
         static COUNTS: RefCell<TableCounts> = const { RefCell::new(ZERO) };
     }
 
-    fn record(reads: ReadCounts) {
+    fn record(change: ReadChange) {
         let table = STATE.with_borrow(|state| state.current);
-        COUNTS.with_borrow_mut(|counts| counts[table] += reads);
+        COUNTS.with_borrow_mut(|counts| match change {
+            ReadChange::Add(reads) => counts[table] += reads,
+            ReadChange::Defer(reads) => counts[table] -= reads,
+        });
     }
 
     #[must_use]
     pub struct Capture {
         _scope: Scope,
-        previous: Option<(TableCounts, Option<fn(ReadCounts)>)>,
+        previous: Option<(TableCounts, Option<ReadObserver>)>,
     }
 
     impl Default for Capture {
@@ -166,6 +170,8 @@ mod counted {
     impl Capture {
         pub fn new() -> Self {
             let scope = Scope::new();
+            #[cfg(not(feature = "acquisition_profile"))]
+            let _ = ReadCounts::take_current();
             let counts = COUNTS.replace(ZERO);
             let observer = ReadCounts::replace_observer(Some(record));
             Self {
@@ -258,6 +264,26 @@ mod tests {
     use super::fixtures::{copies, read};
     use super::*;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    #[test]
+    fn deferred_plan_reads_only_count_under_the_destination_table() {
+        let capture = Capture::new();
+        let mut table = table(TableId::ArmyOrders);
+        read(3);
+        let census_reads = ReadCounts::take_current();
+        read(7);
+        let plan_reads = ReadCounts::take_deferred();
+        census_reads.restore_current();
+        read(5);
+        table.select(TableId::ArmyOrderPlans);
+        plan_reads.add_current();
+        read(11);
+        drop(table);
+        let mut expected = ZERO;
+        expected[TableId::ArmyOrders.index()] = copies(2, 8);
+        expected[TableId::ArmyOrderPlans.index()] = copies(2, 18);
+        assert_eq!(capture.finish(), expected);
+    }
 
     #[test]
     fn repeated_phase_switches_and_nested_visitors_partition_every_request_once() {

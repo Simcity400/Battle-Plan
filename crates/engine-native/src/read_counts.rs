@@ -6,7 +6,7 @@ use crate::{
 };
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 use std::ptr::NonNull;
-use std::{cell::Cell, ops::AddAssign};
+use std::{cell::Cell, ops::{AddAssign, SubAssign}};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReadCounts {
@@ -18,7 +18,12 @@ pub struct ReadCounts {
     pub bytes: u64,
 }
 
-type ReadObserver = fn(ReadCounts);
+pub enum ReadChange {
+    Add(ReadCounts),
+    Defer(ReadCounts),
+}
+
+pub type ReadObserver = fn(ReadChange);
 
 thread_local! {
     static OBSERVER: Cell<Option<ReadObserver>> = const { Cell::new(None) };
@@ -39,7 +44,19 @@ impl ReadCounts {
         COUNTS.with(|counts| counts.replace(Self::ZERO))
     }
 
-    pub fn replace_observer(observer: Option<fn(Self)>) -> Option<fn(Self)> {
+    pub fn take_deferred() -> Self {
+        let reads = Self::take_current();
+        if reads != Self::ZERO && let Some(observe) = OBSERVER.get() {
+            observe(ReadChange::Defer(reads));
+        }
+        reads
+    }
+
+    pub fn restore_current(self) {
+        COUNTS.with(|counts| self.restore(counts));
+    }
+
+    pub fn replace_observer(observer: Option<ReadObserver>) -> Option<ReadObserver> {
         OBSERVER.replace(observer)
     }
 
@@ -50,12 +67,17 @@ impl ReadCounts {
 
     #[inline]
     fn add_to(self, counts: &Cell<Self>) {
+        self.restore(counts);
+        if let Some(observe) = OBSERVER.get() {
+            observe(ReadChange::Add(self));
+        }
+    }
+
+    #[inline]
+    fn restore(self, counts: &Cell<Self>) {
         let mut value = counts.get();
         value += self;
         counts.set(value);
-        if let Some(observe) = OBSERVER.get() {
-            observe(self);
-        }
     }
 }
 
@@ -68,6 +90,18 @@ impl AddAssign for ReadCounts {
         self.plan_calls = self.plan_calls.saturating_add(rhs.plan_calls);
         self.spans = self.spans.saturating_add(rhs.spans);
         self.bytes = self.bytes.saturating_add(rhs.bytes);
+    }
+}
+
+impl SubAssign for ReadCounts {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Self) {
+        self.copy_calls = self.copy_calls.saturating_sub(rhs.copy_calls);
+        self.scattered_calls = self.scattered_calls.saturating_sub(rhs.scattered_calls);
+        self.record_calls = self.record_calls.saturating_sub(rhs.record_calls);
+        self.plan_calls = self.plan_calls.saturating_sub(rhs.plan_calls);
+        self.spans = self.spans.saturating_sub(rhs.spans);
+        self.bytes = self.bytes.saturating_sub(rhs.bytes);
     }
 }
 

@@ -1262,8 +1262,8 @@ impl PlanRecords {
                 crate::batch_fallback::Batch::OrderPlans,
             );
         }
-        self.reads += crate::memory::ReadCounts::take_current();
-        census.add_current();
+        self.reads += crate::memory::ReadCounts::take_deferred();
+        census.restore_current();
         self.gathered = end;
         self.names_gathered = names_end;
         self.ticks += crate::clock::since(begin);
