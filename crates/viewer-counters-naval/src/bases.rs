@@ -1397,7 +1397,6 @@ impl<'a, 'b> SiteContext<'a, 'b> {
     }
 
     fn lay_out(&self, kind: usize, province: u32, state: u32, anchor: Result<[f32; 3], String>) -> SiteEntry {
-        #[cfg(any(test, feature = "test-support"))]
         viewer_counter_kit::plan_probe::record(|counts| counts.site_icons += 1);
         if kind == RADAR_KIND {
             return radar_entry(self.sites, state, anchor);
