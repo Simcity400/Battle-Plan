@@ -3,7 +3,7 @@ use crate::{
     Memory, ccountry, cdiplomacy_status,
     cpdx_array::Array,
     crelation, crelation_status,
-    memory::{Raw, RecordField, RecordLayout, RecordSources},
+    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     read,
     walk::Outcome,
 };
@@ -88,6 +88,16 @@ pub fn read_casualties(memory: &impl Memory, wars: &[usize], rows: &mut [Row]) -
     true
 }
 
+const COUNTRY_DIP_FIELDS: [RecordField; 1] = packed_fields([(ccountry::DIPLOMACY_STATUS, 8)]);
+const COUNTRY_DIP_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COUNTRY_DIP_FIELDS, 8).unwrap();
+const DIP_OWNED_FIELDS: [RecordField; 3] = packed_fields([
+    (0, 8),
+    (cdiplomacy_status::COUNTRY, 8),
+    (cdiplomacy_status::OWNED_RELATIONS, 16),
+]);
+const DIP_OWNED_LAYOUT: RecordLayout<'static> = RecordLayout::new(&DIP_OWNED_FIELDS, 32).unwrap();
+
 pub fn row_demand(
     memory: &impl Memory,
     base: usize,
@@ -95,30 +105,130 @@ pub fn row_demand(
 ) -> Result<usize, &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let fields = Fields { memory, base };
+    let expected_diplomacy =
+        engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).map(|v| v as u64);
     let mut required = 0_usize;
-    for slot in 1..countries.count() {
-        let Some(country) = countries.at(slot)? else {
+    let mut country_slots = [ccountry::Country {
+        pointer: 0,
+        canonical_slot: 0,
+        id: 0,
+    }; BATCH_SIZE];
+    let mut country_ptrs = [0_usize; BATCH_SIZE];
+    let mut dip_ptr_bytes = [0_u8; BATCH_SIZE * 8];
+    let mut dip_ptrs = [0_usize; BATCH_SIZE];
+    let mut dip_map = [u8::MAX; BATCH_SIZE];
+    let mut dip_records = [0_u8; BATCH_SIZE * 32];
+    let mut next = 1_u32;
+    while next < countries.count() {
+        let end = countries.count().min(next + BATCH_SIZE as u32);
+        let mut present = 0_usize;
+        for slot in next..end {
+            if let Some(country) = countries.at(slot)? {
+                country_slots[present] = country;
+                country_ptrs[present] = country.pointer;
+                present += 1;
+            }
+        }
+        next = end;
+        if present == 0 {
             continue;
+        }
+        let ptrs_copied = memory.copy_records(
+            RecordSources::Pointers(&country_ptrs[..present]),
+            &COUNTRY_DIP_LAYOUT,
+            &mut dip_ptr_bytes[..present * 8],
+        );
+        let mut live = 0_usize;
+        dip_map[..present].fill(u8::MAX);
+        for index in 0..ptrs_copied.min(present) {
+            let ptr = u64::from_le_bytes(
+                dip_ptr_bytes[index * 8..(index + 1) * 8]
+                    .try_into()
+                    .unwrap(),
+            );
+            if let Ok(ptr) = usize::try_from(ptr)
+                && ptr != 0
+            {
+                dip_map[index] = live as u8;
+                dip_ptrs[live] = ptr;
+                live += 1;
+            }
+        }
+        let dips_copied = if live == 0 {
+            0
+        } else {
+            memory.copy_records(
+                RecordSources::Pointers(&dip_ptrs[..live]),
+                &DIP_OWNED_LAYOUT,
+                &mut dip_records[..live * 32],
+            )
         };
-        let diplomacy = fields.pointer(country.pointer, ccountry::DIPLOMACY_STATUS)?;
-        if diplomacy == 0 {
-            return Err("war demand diplomacy is null");
+        for index in 0..present {
+            let country = country_slots[index];
+            let relations = if index < ptrs_copied {
+                let diplomacy = usize::try_from(u64::from_le_bytes(
+                    dip_ptr_bytes[index * 8..(index + 1) * 8]
+                        .try_into()
+                        .unwrap(),
+                ))
+                .map_err(|_| "war relation pointer overflow")?;
+                if diplomacy == 0 {
+                    return Err("war demand diplomacy is null");
+                }
+                let slot = dip_map[index] as usize;
+                if dip_map[index] != u8::MAX && (slot + 1) * 3 <= dips_copied {
+                    let rec = &dip_records[slot * 32..(slot + 1) * 32];
+                    if expected_diplomacy
+                        .is_none_or(|e| u64::from_le_bytes(rec[0..8].try_into().unwrap()) != e)
+                    {
+                        return Err("war demand diplomacy vtable mismatch");
+                    }
+                    if u64::from_le_bytes(rec[8..16].try_into().unwrap()) != country.pointer as u64
+                    {
+                        return Err("war demand diplomacy country mismatch");
+                    }
+                    Array::from_header(rec[16..32].try_into().unwrap(), 8)
+                        .ok_or("war demand owned vector invalid")?
+                } else {
+                    fields.vtable(
+                        diplomacy,
+                        cdiplomacy_status::VTABLE_RVA,
+                        "war demand diplomacy vtable mismatch",
+                    )?;
+                    if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)?
+                        != country.pointer as u64
+                    {
+                        return Err("war demand diplomacy country mismatch");
+                    }
+                    diplomacy
+                        .checked_add(cdiplomacy_status::OWNED_RELATIONS)
+                        .and_then(|address| Array::read(memory, address, 8))
+                        .ok_or("war demand owned vector invalid")?
+                }
+            } else {
+                let diplomacy = fields.pointer(country.pointer, ccountry::DIPLOMACY_STATUS)?;
+                if diplomacy == 0 {
+                    return Err("war demand diplomacy is null");
+                }
+                fields.vtable(
+                    diplomacy,
+                    cdiplomacy_status::VTABLE_RVA,
+                    "war demand diplomacy vtable mismatch",
+                )?;
+                if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)?
+                    != country.pointer as u64
+                {
+                    return Err("war demand diplomacy country mismatch");
+                }
+                diplomacy
+                    .checked_add(cdiplomacy_status::OWNED_RELATIONS)
+                    .and_then(|address| Array::read(memory, address, 8))
+                    .ok_or("war demand owned vector invalid")?
+            };
+            required = required
+                .checked_add(relations.count as usize)
+                .ok_or("war demand row count overflow")?;
         }
-        fields.vtable(
-            diplomacy,
-            cdiplomacy_status::VTABLE_RVA,
-            "war demand diplomacy vtable mismatch",
-        )?;
-        if fields.field::<u64>(diplomacy, cdiplomacy_status::COUNTRY)? != country.pointer as u64 {
-            return Err("war demand diplomacy country mismatch");
-        }
-        let relations = diplomacy
-            .checked_add(cdiplomacy_status::OWNED_RELATIONS)
-            .and_then(|address| Array::read(memory, address, 8))
-            .ok_or("war demand owned vector invalid")?;
-        required = required
-            .checked_add(relations.count as usize)
-            .ok_or("war demand row count overflow")?;
     }
     Ok(required)
 }
@@ -591,18 +701,112 @@ fn walk_from(
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut batch = RelationBatch::default();
-        for slot in 1..reader.countries.count() {
-            let Some(country) = reader.countries.at(slot)? else {
+        let expected_diplomacy =
+            engine_sites::at(base, cdiplomacy_status::VTABLE_RVA).map(|v| v as u64);
+        let mut country_slots = [ccountry::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; BATCH_SIZE];
+        let mut country_ptrs = [0_usize; BATCH_SIZE];
+        let mut dip_ptr_bytes = [0_u8; BATCH_SIZE * 8];
+        let mut dip_ptrs = [0_usize; BATCH_SIZE];
+        let mut dip_map = [u8::MAX; BATCH_SIZE];
+        let mut dip_records = [0_u8; BATCH_SIZE * 32];
+        let mut next = 1_u32;
+        while next < reader.countries.count() {
+            let end = reader.countries.count().min(next + BATCH_SIZE as u32);
+            let mut present = 0_usize;
+            for slot in next..end {
+                if let Some(country) = reader.countries.at(slot)? {
+                    country_slots[present] = country;
+                    country_ptrs[present] = country.pointer;
+                    present += 1;
+                }
+            }
+            next = end;
+            if present == 0 {
                 continue;
-            };
+            }
             found_country = true;
-            let diplomacy = reader.diplomacy(country)?;
-            reader.current_matrix = (diplomacy, None);
-            let source = reader.array(
-                diplomacy,
-                cdiplomacy_status::OWNED_RELATIONS,
-                "owned relations unreadable or invalid",
-            )?;
+            let ptrs_copied = memory.copy_records(
+                RecordSources::Pointers(&country_ptrs[..present]),
+                &COUNTRY_DIP_LAYOUT,
+                &mut dip_ptr_bytes[..present * 8],
+            );
+            let mut live = 0_usize;
+            dip_map[..present].fill(u8::MAX);
+            for index in 0..ptrs_copied.min(present) {
+                let ptr = u64::from_le_bytes(
+                    dip_ptr_bytes[index * 8..(index + 1) * 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                if let Ok(ptr) = usize::try_from(ptr)
+                    && ptr != 0
+                {
+                    dip_map[index] = live as u8;
+                    dip_ptrs[live] = ptr;
+                    live += 1;
+                }
+            }
+            let dips_copied = if live == 0 {
+                0
+            } else {
+                memory.copy_records(
+                    RecordSources::Pointers(&dip_ptrs[..live]),
+                    &DIP_OWNED_LAYOUT,
+                    &mut dip_records[..live * 32],
+                )
+            };
+            for index in 0..present {
+                let country = country_slots[index];
+                let (diplomacy, source) = if index < ptrs_copied {
+                    let dip = usize::try_from(u64::from_le_bytes(
+                        dip_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    ))
+                    .map_err(|_| "war relation pointer overflow")?;
+                    if dip == 0 {
+                        return Err("country diplomacy is null");
+                    }
+                    let slot = dip_map[index] as usize;
+                    if dip_map[index] != u8::MAX && (slot + 1) * 3 <= dips_copied {
+                        let rec = &dip_records[slot * 32..(slot + 1) * 32];
+                        if expected_diplomacy
+                            .is_none_or(|e| u64::from_le_bytes(rec[0..8].try_into().unwrap()) != e)
+                        {
+                            return Err("diplomacy vtable mismatch");
+                        }
+                        if u64::from_le_bytes(rec[8..16].try_into().unwrap())
+                            != country.pointer as u64
+                        {
+                            return Err("diplomacy country mismatch");
+                        }
+                        reader.resolver.cache_diplomacy(country, dip);
+                        let owned = Array::from_header(rec[16..32].try_into().unwrap(), 8)
+                            .ok_or("owned relations unreadable or invalid")?;
+                        (dip, owned)
+                    } else {
+                        let diplomacy = reader.diplomacy(country)?;
+                        let source = reader.array(
+                            diplomacy,
+                            cdiplomacy_status::OWNED_RELATIONS,
+                            "owned relations unreadable or invalid",
+                        )?;
+                        (diplomacy, source)
+                    }
+                } else {
+                    let diplomacy = reader.diplomacy(country)?;
+                    let source = reader.array(
+                        diplomacy,
+                        cdiplomacy_status::OWNED_RELATIONS,
+                        "owned relations unreadable or invalid",
+                    )?;
+                    (diplomacy, source)
+                };
+                reader.current_matrix = (diplomacy, None);
             output.ensure(
                 len.checked_add(source.count as usize)
                     .ok_or("war row count overflow")?,
@@ -648,6 +852,7 @@ fn walk_from(
                         wars.push(pointer);
                     }
                 }
+            }
             }
         }
         if !found_country {

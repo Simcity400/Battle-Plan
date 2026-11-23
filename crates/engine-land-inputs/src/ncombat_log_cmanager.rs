@@ -108,11 +108,94 @@ struct Vtables {
     variant: usize,
 }
 
+const SMALL_MEMO_SLOTS: usize = 256;
+
+struct SmallVariantMemo {
+    pointers: [usize; SMALL_MEMO_SLOTS],
+    ids: [u32; SMALL_MEMO_SLOTS],
+    len: usize,
+}
+
+impl Default for SmallVariantMemo {
+    fn default() -> Self {
+        Self {
+            pointers: [0; SMALL_MEMO_SLOTS],
+            ids: [0; SMALL_MEMO_SLOTS],
+            len: 0,
+        }
+    }
+}
+
+impl SmallVariantMemo {
+    #[inline]
+    fn slot(pointer: usize) -> usize {
+        (pointer >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15) & (SMALL_MEMO_SLOTS - 1)
+    }
+
+    fn get(&self, pointer: usize) -> Option<u32> {
+        let mut slot = Self::slot(pointer);
+        loop {
+            match self.pointers[slot] {
+                0 => return None,
+                found if found == pointer => return Some(self.ids[slot]),
+                _ => slot = (slot + 1) & (SMALL_MEMO_SLOTS - 1),
+            }
+        }
+    }
+
+    fn insert(&mut self, pointer: usize, id: u32) {
+        if self.len >= SMALL_MEMO_SLOTS / 2 {
+            return;
+        }
+        let mut slot = Self::slot(pointer);
+        while self.pointers[slot] != 0 {
+            if self.pointers[slot] == pointer {
+                return;
+            }
+            slot = (slot + 1) & (SMALL_MEMO_SLOTS - 1);
+        }
+        self.pointers[slot] = pointer;
+        self.ids[slot] = id;
+        self.len += 1;
+    }
+}
+
+enum Memo<'a> {
+    None,
+    Heap(&'a mut VariantMemo),
+    Stack(&'a mut SmallVariantMemo),
+}
+
+impl Memo<'_> {
+    fn reserve(&mut self, additional: usize) -> std::io::Result<()> {
+        match self {
+            Self::Heap(memo) => memo.reserve(additional),
+            Self::None | Self::Stack(_) => Ok(()),
+        }
+    }
+
+    fn get(&self, pointer: usize) -> Option<u32> {
+        match self {
+            Self::None => None,
+            Self::Heap(memo) => memo.get(pointer),
+            Self::Stack(memo) => memo.get(pointer),
+        }
+    }
+
+    fn insert(&mut self, pointer: usize, id: u32) {
+        match self {
+            Self::None => {}
+            Self::Heap(memo) => memo.insert(pointer, id),
+            Self::Stack(memo) => memo.insert(pointer, id),
+        }
+    }
+}
+
 struct Output<'a> {
     rows: Buffer<'a, Row>,
     len: usize,
     unread_rows: u32,
-    memo: Option<&'a mut VariantMemo>,
+    memo: Memo<'a>,
 }
 
 #[derive(Default)]
@@ -307,7 +390,10 @@ fn walk_prepared_buffer<T>(
         rows,
         len: 0,
         unread_rows: 0,
-        memo,
+        memo: match memo {
+            Some(memo) => Memo::Heap(memo),
+            None => Memo::None,
+        },
     };
     let read = |state: &mut T, memory: &_, vtables: &Vtables, country, groups| {
         let Some(months) = select(state, country)? else {
@@ -636,10 +722,10 @@ fn read_pool(
             .ok_or("combat log unread row count exceeds u32")?;
         return Ok(());
     }
-    if let Some(memo) = output.memo.as_deref_mut() {
-        memo.reserve(items.count as usize)
-            .map_err(|_| "combat log variant memo allocation failed")?;
-    }
+    output
+        .memo
+        .reserve(items.count as usize)
+        .map_err(|_| "combat log variant memo allocation failed")?;
     let start = output.len;
     let mut entries = [0_u8; BATCH * equipment_entry::STRIDE];
     let mut ids = [0_u32; BATCH];
@@ -662,7 +748,7 @@ fn read_pool(
             if variant == 0 {
                 return Err("combat log pool variant pointer null");
             }
-            match output.memo.as_deref().and_then(|memo| memo.get(variant)) {
+            match output.memo.get(variant) {
                 Some(id) => ids[index] = id,
                 None => {
                     misses[missed] = index;
@@ -686,9 +772,7 @@ fn read_pool(
             )?;
             let id = (handle >> 32) as u32;
             ids[misses[miss]] = id;
-            if let Some(memo) = output.memo.as_deref_mut() {
-                memo.insert(unknown[miss], id);
-            }
+            output.memo.insert(unknown[miss], id);
         }
         for (index, entry) in bytes.chunks_exact(equipment_entry::STRIDE).enumerate() {
             output.rows[output.len] = Row {
@@ -777,11 +861,12 @@ pub fn deleted_logs(
     let groups = Array::from_header(header[GROUPS..GROUPS + 16].try_into().unwrap(), 8)
         .ok_or("combat log group array invalid")?;
     let country = u32_at(&header, COUNTRY);
+    let mut small_memo = SmallVariantMemo::default();
     let mut output = Output {
         rows: Buffer::Exact(rows),
         len: 0,
         unread_rows: 0,
-        memo: None,
+        memo: Memo::Stack(&mut small_memo),
     };
     let mut resolver = crate::creference_registry::ScopedResolver::new(base);
     let mut pointer_bytes = [0_u8; BATCH * 8];

@@ -1167,7 +1167,6 @@ impl<const N: usize> RawLog<N> {
         Some((start, completed))
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     pub fn take_records(
         &mut self,
         memory: &impl Memory,

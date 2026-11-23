@@ -169,7 +169,7 @@ fn observe(manager: usize) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
-    let mut inline = [Row::default(); 64];
+    let mut inline = [Row::default(); 256];
     let outcome = match native::deleted_logs(&memory, base, manager, &mut inline) {
         Ok((_, Outcome::Rows { len: 0 })) => return,
         Ok((_, outcome @ (Outcome::Rows { .. } | Outcome::Truncated { .. }))) => outcome,

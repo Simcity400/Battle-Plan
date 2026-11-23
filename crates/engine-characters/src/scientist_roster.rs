@@ -140,6 +140,20 @@ pub fn walk_with_injury(
 }
 
 const BATCH: usize = 64;
+const COUNTRY_ROSTER_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ccountry::SCIENTIST_ROSTER,
+    destination_offset: 0,
+    len: 8,
+}];
+const COUNTRY_ROSTER_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&COUNTRY_ROSTER_FIELDS, 8).expect("valid country scientist roster layout");
+const ROSTER_ENTRIES_FIELDS: [RecordField; 1] = [RecordField {
+    source_offset: ENTRIES,
+    destination_offset: 0,
+    len: 16,
+}];
+const ROSTER_ENTRIES_LAYOUT: RecordLayout<'static> =
+    RecordLayout::new(&ROSTER_ENTRIES_FIELDS, 16).expect("valid scientist roster entries layout");
 const ENTRY_CHAR_FIELDS: [RecordField; 1] = [RecordField {
     source_offset: scientist_roster_entry::CHARACTER,
     destination_offset: 0,
@@ -250,17 +264,86 @@ fn walk_buffer_with_injury(
         let mut sci_ptrs = [0_usize; BATCH];
         let mut sci_records = [0_u8; BATCH * SCIENTIST_STRIDE];
         let mut skill_bytes = [0_u8; 32 * scientist_skill_entry::STRIDE];
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
-                continue;
-            };
-            let roster = reader.optional(country.pointer, ccountry::SCIENTIST_ROSTER)?;
-            if roster == 0 {
+        let mut country_slots = [ccountry::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; BATCH];
+        let mut country_ptrs = [0_usize; BATCH];
+        let mut roster_ptr_bytes = [0_u8; BATCH * 8];
+        let mut roster_ptrs = [0_usize; BATCH];
+        let mut roster_map = [u8::MAX; BATCH];
+        let mut roster_headers = [0_u8; BATCH * 16];
+        let mut next = 1_u32;
+        while next < countries.count() {
+            let end = countries.count().min(next + BATCH as u32);
+            let mut present = 0_usize;
+            for slot in next..end {
+                if let Some(country) = countries.at(slot)? {
+                    country_slots[present] = country;
+                    country_ptrs[present] = country.pointer;
+                    present += 1;
+                }
+            }
+            next = end;
+            if present == 0 {
                 continue;
             }
-            let entries = roster
-                .checked_add(ENTRIES)
-                .and_then(|address| Array::read(memory, address, 8))
+            let rosters_copied = memory.copy_records(
+                RecordSources::Pointers(&country_ptrs[..present]),
+                &COUNTRY_ROSTER_LAYOUT,
+                &mut roster_ptr_bytes[..present * 8],
+            );
+            let mut live = 0_usize;
+            roster_map[..present].fill(u8::MAX);
+            for index in 0..rosters_copied.min(present) {
+                let ptr = u64::from_le_bytes(
+                    roster_ptr_bytes[index * 8..(index + 1) * 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                if let Ok(ptr) = usize::try_from(ptr)
+                    && ptr != 0
+                {
+                    roster_map[index] = live as u8;
+                    roster_ptrs[live] = ptr;
+                    live += 1;
+                }
+            }
+            let headers_copied = if live == 0 {
+                0
+            } else {
+                memory.copy_records(
+                    RecordSources::Pointers(&roster_ptrs[..live]),
+                    &ROSTER_ENTRIES_LAYOUT,
+                    &mut roster_headers[..live * 16],
+                )
+            };
+            for index in 0..present {
+                let country = country_slots[index];
+                let roster = if index < rosters_copied {
+                    usize::try_from(u64::from_le_bytes(
+                        roster_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    ))
+                    .map_err(|_| "scientist pointer overflow")?
+                } else {
+                    reader.optional(country.pointer, ccountry::SCIENTIST_ROSTER)?
+                };
+                if roster == 0 {
+                    continue;
+                }
+                let entries = if roster_map[index] != u8::MAX
+                    && (roster_map[index] as usize) < headers_copied
+                {
+                    let at = roster_map[index] as usize * 16;
+                    Array::from_header(roster_headers[at..at + 16].try_into().unwrap(), 8)
+                } else {
+                    roster
+                        .checked_add(ENTRIES)
+                        .and_then(|address| Array::read(memory, address, 8))
+                }
                 .ok_or("scientist roster vector unreadable or invalid")?;
             let mut first = 0_u32;
             while first < entries.count {
@@ -508,6 +591,7 @@ fn walk_buffer_with_injury(
                     }
                 }
                 first += count as u32;
+            }
             }
         }
         Ok(())

@@ -48,7 +48,10 @@ pub struct DetailsRow {
     pub custom_sea_error: Option<&'static str>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "naval combat walker threads combat context and shared detail buffers"
+)]
 pub fn walk_details_timed(
     memory: &impl Memory,
     base: usize,
@@ -416,7 +419,10 @@ fn commander_input(
     Ok([index, 1])
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "naval plane reader threads combat context and shared detail buffers"
+)]
 fn read_planes(
     memory: &impl Memory,
     base: usize,
@@ -512,7 +518,10 @@ enum PlaneOwner<'a> {
     Side(&'a GroupSet),
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "naval plane appender threads combat context and shared detail buffers"
+)]
 fn append_planes(
     memory: &impl Memory,
     base: usize,
@@ -812,7 +821,10 @@ fn walk_timed_buffer(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "naval combat participant walker threads output buffers and counters"
+)]
 fn members(
     memory: &impl Memory,
     base: usize,

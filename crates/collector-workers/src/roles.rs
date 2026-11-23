@@ -226,8 +226,8 @@ impl Role {
             | Self::PresentationPreparation
             | Self::PresentationSettle
             | Self::PresentationStatus
-            | Self::Presentation
-            | Self::PresentationSpeedTerms
+            | Self::Presentation => 0,
+            Self::PresentationSpeedTerms
             | Self::DivisionInputs
             | Self::DivisionInputParts
             | Self::Divisions
@@ -244,24 +244,24 @@ impl Role {
             | Self::Templates
             | Self::IntelResidual
             | Self::AirWing
-            | Self::Countries => 0,
+            | Self::Countries
+            | Self::OrdinaryCombat
+            | Self::OrdinaryTaskForces
+            | Self::Governance
+            | Self::OrdinaryMap
+            | Self::AirMissions
+            | Self::Characters => 1,
             Self::ObserverBoundary
             | Self::ChildFronts
             | Self::Naval
-            | Self::AirMissions
             | Self::Late
-            | Self::Characters
             | Self::Intel
             | Self::MapCombats
             | Self::World
             | Self::Economy
             | Self::FinalInputs
-            | Self::Governance
             | Self::PresentationMovement
-            | Self::OrdinaryCombat
-            | Self::OrdinaryTaskForces
-            | Self::OrdinaryMap => 1,
-            Self::Radar
+            | Self::Radar
             | Self::Players
             | Self::AirStats
             | Self::Supremacy
@@ -282,7 +282,9 @@ impl Role {
             | Self::OrdinaryNaval
             | Self::Provinces
             | Self::Research
-            | Self::DivisionModelInputs => 2,
+            | Self::DivisionModelInputs
+            | Self::Session
+            | Self::Relations => 2,
             Self::States
             | Self::Capitulation
             | Self::Wars
@@ -294,7 +296,6 @@ impl Role {
             | Self::ArmyIcons
             | Self::Fronts
             | Self::Weather => 3,
-            Self::Session | Self::Relations => 2,
             Self::Factions
             | Self::Lexical
             | Self::RaidLaunch

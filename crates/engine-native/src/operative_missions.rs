@@ -11,7 +11,7 @@ use crate::{
     cpdx_array::Array,
     cstate,
     csubject_relation::{Name, NameWalk},
-    memory::Raw,
+    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     modifier_accumulator,
     modifier_definition::NamedKey,
     operative_action, operative_action_implementation, read,
@@ -153,19 +153,120 @@ fn walk_keyed(
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut mission_vtables = operative_action_implementation::Vtables::new(base);
         let expected = engine_sites::at(base, VTABLE_RVA).ok_or("operative vtable withheld")?;
+        let expected_agency =
+            engine_sites::at(base, cintelligence_agency::VTABLE_RVA).map(|v| v as u64);
         let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let warnings = warning_handles(memory, base).ok();
         let (mut bytes_len, mut required_bytes) = (0_usize, 0_usize);
-        for slot in 1..countries.count() {
-            let Some(country) = countries.at(slot)? else {
+        const BATCH: usize = 64;
+        const COUNTRY_AGENCY_FIELDS: [RecordField; 1] =
+            packed_fields([(ccountry::INTELLIGENCE_AGENCY, 8)]);
+        const COUNTRY_AGENCY_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&COUNTRY_AGENCY_FIELDS, 8).unwrap();
+        const MISSION_AGENCY_FIELDS: [RecordField; 3] = packed_fields([
+            (0, 8),
+            (cintelligence_agency::OWNER_COUNTRY, 8),
+            (cintelligence_agency::OPERATIVES, 16),
+        ]);
+        const MISSION_AGENCY_LAYOUT: RecordLayout<'static> =
+            RecordLayout::new(&MISSION_AGENCY_FIELDS, 32).unwrap();
+        let mut country_slots = [ccountry::Country {
+            pointer: 0,
+            canonical_slot: 0,
+            id: 0,
+        }; BATCH];
+        let mut country_ptrs = [0_usize; BATCH];
+        let mut agency_ptr_bytes = [0_u8; BATCH * 8];
+        let mut agency_ptrs = [0_usize; BATCH];
+        let mut agency_map = [u8::MAX; BATCH];
+        let mut agency_records = [0_u8; BATCH * 32];
+        let mut next = 1_u32;
+        while next < countries.count() {
+            let end = countries.count().min(next + BATCH as u32);
+            let mut present = 0_usize;
+            for slot in next..end {
+                if let Some(country) = countries.at(slot)? {
+                    country_slots[present] = country;
+                    country_ptrs[present] = country.pointer;
+                    present += 1;
+                }
+            }
+            next = end;
+            if present == 0 {
                 continue;
+            }
+            let ptrs_copied = memory.copy_records(
+                RecordSources::Pointers(&country_ptrs[..present]),
+                &COUNTRY_AGENCY_LAYOUT,
+                &mut agency_ptr_bytes[..present * 8],
+            );
+            let mut live = 0_usize;
+            agency_map[..present].fill(u8::MAX);
+            for index in 0..ptrs_copied.min(present) {
+                let ptr = u64::from_le_bytes(
+                    agency_ptr_bytes[index * 8..(index + 1) * 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                if let Ok(ptr) = usize::try_from(ptr)
+                    && ptr != 0
+                {
+                    agency_map[index] = live as u8;
+                    agency_ptrs[live] = ptr;
+                    live += 1;
+                }
+            }
+            let agencies_copied = if live == 0 {
+                0
+            } else {
+                memory.copy_records(
+                    RecordSources::Pointers(&agency_ptrs[..live]),
+                    &MISSION_AGENCY_LAYOUT,
+                    &mut agency_records[..live * 32],
+                )
             };
-            let Some(agency) = cintelligence_agency::root(memory, base, country)? else {
-                continue;
-            };
-            let array = Array::read(memory, at(agency, cintelligence_agency::OPERATIVES)?, 8)
-                .ok_or("operative roster unreadable or invalid")?;
+            for index in 0..present {
+                let country = country_slots[index];
+                let array = if index < ptrs_copied {
+                    let agency = usize::try_from(u64::from_le_bytes(
+                        agency_ptr_bytes[index * 8..(index + 1) * 8]
+                            .try_into()
+                            .unwrap(),
+                    ))
+                    .map_err(|_| "agency pointer overflow")?;
+                    if agency == 0 {
+                        continue;
+                    }
+                    let slot = agency_map[index] as usize;
+                    if agency_map[index] != u8::MAX && (slot + 1) * 3 <= agencies_copied {
+                        let rec = &agency_records[slot * 32..(slot + 1) * 32];
+                        let expected_a = expected_agency.ok_or("agency vtable address overflow")?;
+                        if u64::from_le_bytes(rec[0..8].try_into().unwrap()) != expected_a {
+                            return Err("agency vtable mismatch");
+                        }
+                        if u64::from_le_bytes(rec[8..16].try_into().unwrap())
+                            != country.pointer as u64
+                        {
+                            return Err("agency owner pointer mismatch");
+                        }
+                        Array::from_header(rec[16..32].try_into().unwrap(), 8)
+                            .ok_or("operative roster unreadable or invalid")?
+                    } else {
+                        let Some(agency) = cintelligence_agency::root(memory, base, country)?
+                        else {
+                            continue;
+                        };
+                        Array::read(memory, at(agency, cintelligence_agency::OPERATIVES)?, 8)
+                            .ok_or("operative roster unreadable or invalid")?
+                    }
+                } else {
+                    let Some(agency) = cintelligence_agency::root(memory, base, country)? else {
+                        continue;
+                    };
+                    Array::read(memory, at(agency, cintelligence_agency::OPERATIVES)?, 8)
+                        .ok_or("operative roster unreadable or invalid")?
+                };
             output.ensure(
                 len.checked_add(array.count as usize)
                     .ok_or("operative mission row demand overflow")?,
@@ -249,6 +350,7 @@ fn walk_keyed(
                 output[len] = row;
                 len += 1;
                 failed_operative = None;
+            }
             }
         }
         Ok(NameWalk {

@@ -97,7 +97,10 @@ pub(crate) fn read_hits(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "plane reader threads output buffers and length counters"
+)]
 #[cfg(test)]
 pub(crate) fn read(
     memory: &impl Memory,
@@ -125,7 +128,10 @@ pub(crate) fn read(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "plane reader threads output buffers and length counters"
+)]
 pub(crate) fn read_buffer(
     memory: &impl Memory,
     base: usize,
