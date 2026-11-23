@@ -215,6 +215,15 @@ ci-only = true
 command = ["cargo", "run", "--profile", "ci", "-p", "dashboard", "--features", "export-types", "--bin", "export-types", "--", "--check"]
 
 [[job]]
+name = "dashboard-shipped"
+group = "rust"
+tier = "check"
+toolchain = "rust"
+inputs = ["crates/**"]
+ci-only = true
+command = ["cargo", "check", "--profile", "ci", "-p", "dashboard", "--lib"]
+
+[[job]]
 name = "rust-test"
 group = "rust"
 tier = "check"
