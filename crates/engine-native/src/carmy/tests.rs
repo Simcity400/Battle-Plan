@@ -4085,7 +4085,8 @@ fn attrition_counter_uses_effective_country_modifier_and_rejects_unknown_feature
 
 #[test]
 fn presentation_supporting_reads_authenticate_maxima_country_sets_and_player_fallback() {
-    use crate::{cgame_state, chuman, cland_combatant, csub_unit_definition as stats};
+    use crate::{cgame_state, cland_combatant, csub_unit_definition as stats};
+    use engine_native_politics::chuman;
     let mut memory = presentation_fixture();
     p64(
         &mut memory.bytes,
@@ -4576,7 +4577,8 @@ fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order()
 #[test]
 fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_refusals() {
     use super::*;
-    use crate::{cdiplomacy_status as diplomacy, crelation::status as relation};
+    use engine_native_politics::cdiplomacy_status as diplomacy;
+    use crate::crelation::status as relation;
     const LAST: usize = 0x2e000;
     const DEFINITION: usize = 0x2e200;
     const DIPLOMACY: usize = 0x2d000;

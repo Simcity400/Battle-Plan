@@ -1,7 +1,11 @@
 use super::*;
 use engine_native::{
-    cgame_state, character_advisor_node, character_leader_node, cunit_leader_trait, msvc_tree_node,
+    cgame_state,
+    character_advisor_node,
+    cunit_leader_trait,
+    msvc_tree_node,
 };
+use engine_native_politics::character_leader_node;
 use std::cell::Cell;
 
 pub(super) const MODULE: usize = 0x7ff6_0000_0000;

@@ -565,10 +565,10 @@ impl Fixture {
             let relations = self.allocate((COUNTRY_COUNT + 1) * 8);
             self.u64(
                 diplomacy,
-                (IMAGE + engine_native::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_politics::cdiplomacy_status::VTABLE_RVA.0) as u64,
             );
             self.array(
-                diplomacy + engine_native::cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native_politics::cdiplomacy_status::RELATIONS,
                 relations,
                 COUNTRY_COUNT + 1,
             );

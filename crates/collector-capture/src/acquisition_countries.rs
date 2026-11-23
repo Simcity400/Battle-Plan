@@ -283,9 +283,8 @@ impl TemplatesRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{
-        cconvoys, cgame_state, cpolitical_status, memory::SliceMemory, msvc_string,
-    };
+    use engine_native::{cconvoys, cgame_state, memory::SliceMemory, msvc_string};
+    use engine_native_politics::cpolitical_status;
     use std::cell::RefCell;
 
     const STATE: usize = 0x1000;

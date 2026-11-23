@@ -1,11 +1,12 @@
 pub use engine_native_parts::ccurrent_autonomy_status_layout::{VTABLE_RVA, SUBJECT_COUNTRY, STATE};
 
-use crate::{
-    Memory,
-    cdiplomacy_status,
-    crelation::subject::{self as csubject_relation, Name, NameWalk, Reader},
-    read_slice,
-    walk::Outcome,
+use engine_native_memory::{Memory, read_slice, walk::Outcome};
+use crate::cdiplomacy_status;
+use engine_native::crelation::subject::{
+    self as csubject_relation,
+    Name,
+    NameWalk,
+    Reader,
 };
 
 pub const SCORE: usize = 0x08;
@@ -30,7 +31,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -44,8 +45,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -53,8 +54,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
         let reader = Reader::new(memory, base, game_state)?;
@@ -149,9 +150,9 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        autonomy_state_definition, ccountry, cgame_state, memory::SliceMemory, msvc_string,
-    };
+    use engine_native_parts::autonomy_state_definition;
+    use engine_native::{ccountry, cgame_state};
+    use engine_native_memory::{memory::SliceMemory, msvc_string};
 
     const GS: usize = 0x1000;
     const COUNTRY: usize = 0x4000;

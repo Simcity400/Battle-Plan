@@ -1,8 +1,11 @@
-use super::*;
-use crate::msvc_string;
-use crate::{
-    cadvisor, ccountry_leader, cgame_state, cprovince::UnitOrderWalk, memory::SliceMemory,
-};
+use crate::character_portraits::{PortraitRow, PortraitWalk, walk_portraits};
+use engine_native::ccharacter::*;
+use engine_native::ccharacter::{manager as ccharacter_manager, template as ccharacter_template};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use engine_native_memory::msvc_string;
+use engine_native::{cadvisor, cgame_state, cprovince::UnitOrderWalk};
+use engine_native_memory::memory::SliceMemory;
+use crate::ccountry_leader;
 
 const GS: usize = 0x1000;
 const MANAGER: usize = 0x100;
@@ -12,7 +15,7 @@ const SECOND: usize = 0x600;
 fn walk_all(
     memory: &impl Memory,
     rows: &mut Vec<PortraitRow>,
-    entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>,
+    entries: &mut Vec<crate::character_portrait_entry::Row<engine_native_memory::capture_text::Owned>>,
 ) -> UnitOrderWalk {
     walk_portraits(memory, 0, GS, rows, entries, PortraitWalk::default())
 }
@@ -38,10 +41,10 @@ fn advisor_entry(
         memory,
         base,
         entry,
-        crate::walk::Buffer::Growing(rows),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     );
-    cadvisor::append_tooltips(memory, rows, crate::walk::Buffer::Growing(bytes), prefix)
+    cadvisor::append_tooltips(memory, rows, engine_native_memory::walk::Buffer::Growing(bytes), prefix)
 }
 
 fn walk_roster(memory: &impl Memory) -> (Outcome, Vec<Row>, Vec<u8>) {
@@ -56,8 +59,8 @@ fn walk_roster(memory: &impl Memory) -> (Outcome, Vec<Row>, Vec<u8>) {
                 0,
                 entry,
                 |_| None,
-                crate::walk::Buffer::Growing(&mut row),
-                crate::walk::Buffer::Growing(&mut text),
+                engine_native_memory::walk::Buffer::Growing(&mut row),
+                engine_native_memory::walk::Buffer::Growing(&mut text),
             );
             match result.outcome {
                 Outcome::Rows { len: 1 } => {
@@ -185,13 +188,13 @@ impl<'a> TracedMemory<'a> {
 }
 
 impl Memory for TracedMemory<'_> {
-    fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+    fn read_scalar<T: engine_native_memory::memory::Raw>(&self, address: usize) -> Option<T> {
         self.scalar_reads.set(self.scalar_reads.get() + 1);
         let mut bytes = vec![0; size_of::<T>()];
         if !self.copy(address, &mut bytes) {
             return None;
         }
-        crate::memory::scalar_from_bytes(&bytes)
+        engine_native_memory::memory::scalar_from_bytes(&bytes)
     }
 
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
@@ -311,7 +314,7 @@ fn roster_pointer_chunks_preserve_both_orders_and_never_publish_a_failed_prefix(
 
 #[test]
 fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
-    use crate::character_advisor_node as node;
+    use engine_native_parts::character_advisor_node as node;
     let mut bytes = fixture();
     let head = 0x840;
     let role_node = 0xa00;
@@ -389,7 +392,7 @@ fn advisor_exact_batches_reduce_guards_and_discard_every_failed_span() {
 
 #[test]
 fn advisor_cache_fits_and_a_short_arena_grows_keeping_the_existing_role() {
-    use crate::character_advisor_node as node;
+    use engine_native_parts::character_advisor_node as node;
     let mut bytes = fixture();
     let head = 0x840;
     let role_node = 0xa00;
@@ -503,7 +506,7 @@ fn gender_is_copied_once_and_failure_does_not_poison_roles() {
 
 #[test]
 fn advisor_native_hash_order_can_reverse_literal_order() {
-    use crate::character_advisor_node as advisor_node;
+    use engine_native_parts::character_advisor_node as advisor_node;
     let mut bytes = fixture();
     let head = 0x840;
     let left = 0xa00;
@@ -686,8 +689,8 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
                 file: b"",
             })
         },
-        crate::walk::Buffer::Exact(&mut row),
-        crate::walk::Buffer::Exact(&mut names),
+        engine_native_memory::walk::Buffer::Exact(&mut row),
+        engine_native_memory::walk::Buffer::Exact(&mut names),
     );
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(
@@ -713,8 +716,8 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
         0,
         entry,
         |_| None,
-        crate::walk::Buffer::Exact(&mut row),
-        crate::walk::Buffer::Exact(&mut short),
+        engine_native_memory::walk::Buffer::Exact(&mut row),
+        engine_native_memory::walk::Buffer::Exact(&mut short),
     );
     assert_eq!(
         result.outcome,
@@ -735,8 +738,8 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
         0,
         entry,
         |_| None,
-        crate::walk::Buffer::Exact(&mut row),
-        crate::walk::Buffer::Exact(&mut names),
+        engine_native_memory::walk::Buffer::Exact(&mut row),
+        engine_native_memory::walk::Buffer::Exact(&mut names),
     );
     assert_eq!(result.outcome, Outcome::Rows { len: 1 });
     assert_eq!(row[0].template_identity.line, -1);
@@ -749,8 +752,8 @@ fn templates_are_read_or_reused_by_pointer_and_their_file_follows_the_names() {
             0,
             entry,
             |_| None,
-            crate::walk::Buffer::Exact(&mut row),
-            crate::walk::Buffer::Exact(&mut names)
+            engine_native_memory::walk::Buffer::Exact(&mut row),
+            engine_native_memory::walk::Buffer::Exact(&mut names)
         )
         .outcome,
         Outcome::Unavailable {
@@ -787,7 +790,7 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
             &memory(&bytes),
             0,
             GS,
-            crate::walk::Buffer::Exact(&mut leaders)
+            engine_native_memory::walk::Buffer::Exact(&mut leaders)
         ),
         Outcome::Rows { len: 2 }
     );
@@ -835,7 +838,7 @@ fn role_walks_keep_distinct_ideologies_and_do_not_claim_advisor_appointment() {
             &memory(&bytes),
             0,
             GS,
-            crate::walk::Buffer::Exact(&mut leaders)
+            engine_native_memory::walk::Buffer::Exact(&mut leaders)
         ),
         Outcome::Unavailable { .. }
     ));
@@ -1085,8 +1088,8 @@ fn view_pages_defer_later_fatal_slots_and_retain_independent_optional_fields() {
             0,
             first.entry().unwrap(),
             |_| None,
-            crate::walk::Buffer::Exact(&mut [Row::default(); 1]),
-            crate::walk::Buffer::Exact(&mut [0; 64])
+            engine_native_memory::walk::Buffer::Exact(&mut [Row::default(); 1]),
+            engine_native_memory::walk::Buffer::Exact(&mut [0; 64])
         )
         .outcome,
         Outcome::Unavailable { .. }
@@ -1112,7 +1115,7 @@ fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_cap
         );
     }
     let mut rows = vec![PortraitRow::default(); 2];
-    let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
+    let mut entries = vec![crate::character_portrait_entry::Row::<engine_native_memory::capture_text::Owned>::default(); 2];
     let result = walk_all(&memory(&bytes), &mut rows, &mut entries);
     assert_eq!(result.outcome, Outcome::Rows { len: 2 });
     assert_eq!([rows[0].character, rows[1].character], [22, 900]);
@@ -1145,7 +1148,7 @@ fn hourly_portrait_holder_preserves_entry_order_and_requires_whole_character_cap
 
 #[test]
 fn portrait_census_and_walk_have_no_fixed_character_limit() {
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use ccharacter_manager::{PortraitCensus, PortraitIdentity};
     const CHARACTERS: usize = 70_000;
     const OBJECTS: usize = 0x10_0000;
@@ -1211,11 +1214,11 @@ fn shared_portrait_census_removes_only_common_reads_and_preserves_faults() {
     census.finish(2);
     let shared = TracedMemory::new(&bytes, None);
     let mut rows = vec![PortraitRow::default(); 2];
-    let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
+    let mut entries = vec![crate::character_portrait_entry::Row::<engine_native_memory::capture_text::Owned>::default(); 2];
     let capture = |memory: &TracedMemory<'_>,
                    census: Option<&PortraitCensus>,
                    rows: &mut Vec<PortraitRow>,
-                   entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>| {
+                   entries: &mut Vec<crate::character_portrait_entry::Row<engine_native_memory::capture_text::Owned>>| {
         let walk = PortraitWalk {
             census,
             ..Default::default()
@@ -1235,7 +1238,7 @@ fn shared_portrait_census_removes_only_common_reads_and_preserves_faults() {
             let direct = TracedMemory::new(&bytes, fault);
             let shared = TracedMemory::new(&bytes, fault);
             let mut expected_rows = vec![PortraitRow::default(); 2];
-            let mut expected_entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
+            let mut expected_entries = vec![crate::character_portrait_entry::Row::<engine_native_memory::capture_text::Owned>::default(); 2];
             let mut actual_rows = expected_rows.clone();
             let mut actual_entries = expected_entries.clone();
             let expected = capture(&direct, None, &mut expected_rows, &mut expected_entries);
@@ -1329,11 +1332,11 @@ fn observed_portraits_reuse_only_certified_entries() {
     u64_at(&mut bytes, 0x1800 + 0x10 + msvc_string::CAPACITY, 15);
     let mut cache = Cache::new(2).unwrap();
     let mut rows = vec![PortraitRow::default(); 2];
-    let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); 2];
+    let mut entries = vec![crate::character_portrait_entry::Row::<engine_native_memory::capture_text::Owned>::default(); 2];
     let capture = |source: &TracedMemory<'_>,
                    cache: &mut Cache,
                    rows: &mut Vec<PortraitRow>,
-                   entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>| {
+                   entries: &mut Vec<crate::character_portrait_entry::Row<engine_native_memory::capture_text::Owned>>| {
         walk_portraits(
             source,
             0,
@@ -1575,7 +1578,7 @@ fn portrait_lookahead_preserves_primary_traces_faults_and_capacity() {
             changed,
         };
         let mut rows = vec![PortraitRow::default(); row_capacity];
-        let mut entries = vec![crate::character_portrait_entry::Row::<crate::capture_text::Owned>::default(); entry_capacity];
+        let mut entries = vec![crate::character_portrait_entry::Row::<engine_native_memory::capture_text::Owned>::default(); entry_capacity];
         let source = observe(None, None);
         let result = walk_all(&source, &mut rows, &mut entries);
         assert_eq!(*source.trace.borrow(), spans);

@@ -444,9 +444,9 @@ fn location_terms<const TERMINAL: bool>(
         memory,
         base,
         diplomacy,
-        engine_native::cdiplomacy_status::VTABLE_RVA,
+        engine_native_politics::cdiplomacy_status::VTABLE_RVA,
     )?;
-    let relations = array(memory, diplomacy, engine_native::cdiplomacy_status::RELATIONS, 8)?;
+    let relations = array(memory, diplomacy, engine_native_politics::cdiplomacy_status::RELATIONS, 8)?;
     let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
     let relation = if relation != 0 {
         auth(memory, base, relation, engine_native::crelation::status::VTABLE_RVA)?;

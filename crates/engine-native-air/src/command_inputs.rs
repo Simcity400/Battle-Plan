@@ -1,6 +1,7 @@
 use engine_sites::Rva;
 use engine_native_memory::{Memory, cpdx_array::Array, msvc_string::Descriptor, read};
-use engine_native::{ccountry, cgame_state, chuman};
+use engine_native::{ccountry, cgame_state};
+use engine_native_politics::chuman;
 
 pub struct Site {
     pub rva: Rva,

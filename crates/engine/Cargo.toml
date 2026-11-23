@@ -15,6 +15,7 @@ alloc-fault-injection = ["engine-mutations/alloc-fault-injection", "engine-focus
 batch-fallback-test-counts = ["engine-native/batch-fallback-test-counts"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-air.workspace = true
 engine-native-naval.workspace = true
 engine-native-intelligence.workspace = true

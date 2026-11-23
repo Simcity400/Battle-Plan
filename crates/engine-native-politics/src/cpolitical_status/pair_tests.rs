@@ -1,5 +1,5 @@
 use super::*;
-use crate::read_slice;
+use engine_native_memory::read_slice;
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -230,7 +230,7 @@ fn the_idea_count_probe_still_validates_tokens_without_reading_heap_payloads() {
                 let mut output = Vec::new();
                 let mut arena = Vec::new();
                 let walked = if count {
-                    reader.ideas_buffer(crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+                    reader.ideas_buffer(engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
                 } else {
                     reader.ideas(&mut output, &mut arena)
                 };
@@ -580,7 +580,7 @@ fn politics_pairs_keep_address_overflow_and_earlier_fault_priority() {
 
 #[test]
 fn manpower_election_cache_reads_only_eligible_initializer_dates_and_refuses_independently() {
-    for last in [crate::cgame_date::NULL_RAW_HOUR, RESET_LAST_ELECTION] {
+    for last in [engine_native_memory::cgame_date::NULL_RAW_HOUR, RESET_LAST_ELECTION] {
         let mut memory = TraceMemory::fixture(STATUS, COUNTRY_POINTER, 0);
         memory.put(STATUS + LAST_ELECTION, &last.to_le_bytes());
         memory.put(STATUS + NEXT_ELECTION_CACHE, &12345_i32.to_le_bytes());

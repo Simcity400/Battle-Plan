@@ -684,7 +684,7 @@ fn air(
     location: usize,
     row: &mut ContextRow,
 ) -> Result<(), &'static str> {
-    use engine_native::cdiplomacy_status;
+    use engine_native_politics::cdiplomacy_status;
     let owner = countries.resolve(field(memory, army, cunit::LOGICAL_OWNER)?)?;
     let active = *share(&mut sources.air_owners, owner.pointer, || {
         let diplomacy = pointer(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
@@ -772,7 +772,7 @@ fn transport_owner(
     arena: &mut Vec<TransportEnemy>,
 ) -> Result<TransportOwner, &'static str> {
     use engine_native_intelligence::ccountry_intel;
-    use engine_native::cdiplomacy_status;
+    use engine_native_politics::cdiplomacy_status;
     use engine_native_naval::cstrategic_navy_manager;
     cstrategic_navy_manager::authenticate(memory, base, game, owner)?;
     let owner_intel = pointer(memory, owner.pointer, ccountry::INTEL_TABLE)?;

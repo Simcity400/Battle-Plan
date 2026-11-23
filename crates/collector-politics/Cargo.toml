@@ -15,6 +15,7 @@ default = ["politics_capture"]
 politics_capture = []
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-decisions.workspace = true

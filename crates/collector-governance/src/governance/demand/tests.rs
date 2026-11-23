@@ -1,8 +1,13 @@
 use super::*;
 use engine_decisions::cdecision;
+use engine_native_politics::{ccountry_leader, cpolitical_status};
 use engine_native::{
-    ccountry_leader, cdynamic_modifier, cgame_state, cidea, cideology_group, cpolitical_status,
-    memory::SliceMemory, walk::Outcome,
+    cdynamic_modifier,
+    cgame_state,
+    cidea,
+    cideology_group,
+    memory::SliceMemory,
+    walk::Outcome,
 };
 use engine_stability::dynamic_modifier_entry;
 

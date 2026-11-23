@@ -6,10 +6,10 @@ use engine_native::{
     Memory,
     ccountry,
     modifier_accumulator,
-    modifier_breakdown,
     modifier_definition::NamedKey,
     read,
 };
+use engine_native_politics::modifier_breakdown;
 use engine_native_intelligence::operative_missions;
 use replay_data::rows::{OperativeEffect, OperativeEffectModifier};
 use std::{

@@ -6,7 +6,6 @@ use engine_native::{
     cair_wing_pool,
     capture_text,
     ccountry,
-    cdiplomacy_status,
     cequipment_variant,
     cfex_air,
     cfex_group,
@@ -35,6 +34,7 @@ use engine_native::{
     sweather_per_region,
     walk,
 };
+use engine_native_politics::cdiplomacy_status;
 use engine_native_air::{cair_base, cair_wing, ccountry_air_container};
 use engine_native_naval::{
     cstrategic_navy,

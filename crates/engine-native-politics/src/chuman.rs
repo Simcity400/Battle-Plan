@@ -1,9 +1,15 @@
 pub use engine_native_parts::chuman_layout::{VTABLE_RVA, STRIDE, COUNTRY_TAG};
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cgame_state, cpdx_array::Array, msvc_string, read, read_slice, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
 };
+use engine_native::{ccountry, cgame_state};
 
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00c1_0190);
 pub const FIRST_STRING: usize = 0x20;
@@ -48,8 +54,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -57,8 +63,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
         let roster = game_state
@@ -144,7 +150,7 @@ pub fn walk_buffer(
 }
 
 pub fn count_controllers(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_controllers_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_controllers_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_controllers(
@@ -157,7 +163,7 @@ pub fn walk_controllers(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -165,7 +171,7 @@ pub fn walk_controllers_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, ControllerRow>,
+    mut output: engine_native_memory::walk::Buffer<'_, ControllerRow>,
 ) -> Outcome {
     let result = (|| {
         let counts = game_state
@@ -305,13 +311,13 @@ impl Literal {
         &self,
         memory: &impl Memory,
         header: &[u8],
-        output: &mut crate::walk::Buffer<'_, u8>,
+        output: &mut engine_native_memory::walk::Buffer<'_, u8>,
         start: usize,
     ) -> Result<(), &'static str> {
         if output.is_growing() {
             if let Some(source) = self.source {
                 return match output {
-                    crate::walk::Buffer::Growing(bytes) => msvc_string::copy_growing(
+                    engine_native_memory::walk::Buffer::Growing(bytes) => msvc_string::copy_growing(
                         memory,
                         source,
                         self.len,
@@ -320,7 +326,7 @@ impl Literal {
                         "player string bytes unreadable",
                         "player string allocation failed",
                     ),
-                    crate::walk::Buffer::GrowingFrom(bytes, offset) => msvc_string::copy_growing(
+                    engine_native_memory::walk::Buffer::GrowingFrom(bytes, offset) => msvc_string::copy_growing(
                         memory,
                         source,
                         self.len,
@@ -331,7 +337,7 @@ impl Literal {
                         "player string bytes unreadable",
                         "player string allocation failed",
                     ),
-                    crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => unreachable!(),
+                    engine_native_memory::walk::Buffer::Count | engine_native_memory::walk::Buffer::Exact(_) => unreachable!(),
                 };
             }
             output.ensure(
@@ -366,7 +372,7 @@ mod sizing_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const MEMORY_BASE: usize = 0x1000;
     const BASE: usize = 0x140000000;
@@ -532,8 +538,8 @@ mod tests {
                 &world.memory(),
                 BASE,
                 GS,
-                crate::walk::Buffer::Count,
-                crate::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             ),
             NameWalk {
                 outcome: Outcome::Truncated {

@@ -55,6 +55,7 @@ worker_sampler = ["collector-workers/worker_sampler"]
 world_input_changes = ["collector-observers/world_input_changes"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-air.workspace = true
 collector-air.workspace = true
 collector-divisions.workspace = true

@@ -578,11 +578,8 @@ fn diplomacy_at(slot: usize) -> usize {
 
 fn transport_fixture(enemies: u32) -> (Sparse, Vec<TransportTerm>) {
     use engine_native_intelligence::{ccountry_intel, country_intel_row};
-    use engine_native::{
-        cdiplomacy_status,
-        cweather_manager,
-        cprovince::definition as province_definition,
-    };
+    use engine_native_politics::cdiplomacy_status;
+    use engine_native::{cweather_manager, cprovince::definition as province_definition};
     use engine_native_naval::{cstrategic_navy, cstrategic_navy_manager};
     use engine_native_parts::{
         cstatic_modifier,
@@ -759,7 +756,7 @@ fn transport_enemy_failure_is_not_a_shorter_enemy_list() {
     let (mut memory, _) = transport_fixture(5_000);
     memory
         .0
-        .remove(&(diplomacy_at(4_901) + engine_native::cdiplomacy_status::CAPITULATED));
+        .remove(&(diplomacy_at(4_901) + engine_native_politics::cdiplomacy_status::CAPITULATED));
     let result = capture_context_buffer(&memory, 0, GAME, &mut Sources::new(), ARMY, HANDLE, engine_native_memory::walk::Buffer::Growing(&mut vec![ModifierTerm::default(); 2]), engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, &mut Vec::new(), 0);
     assert_eq!(result, Err("reinforcement input unreadable"));
 }

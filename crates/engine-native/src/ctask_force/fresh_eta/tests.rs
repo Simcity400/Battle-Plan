@@ -1922,13 +1922,13 @@ fn targeted_spotting_uses_original_roster_and_native_zero_or_unlinked_slot() {
         memory.u64(COUNTRY + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         memory.u64(
             diplomacy,
-            (TERRAIN_IMAGE + crate::cdiplomacy_status::VTABLE_RVA.0) as u64,
+            (TERRAIN_IMAGE + engine_native_politics::cdiplomacy_status::VTABLE_RVA.0) as u64,
         );
         memory.u64(
-            diplomacy + crate::cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native_politics::cdiplomacy_status::COUNTRY,
             COUNTRY as u64,
         );
-        memory.array(diplomacy + crate::cdiplomacy_status::RELATIONS, 0x45000, 2);
+        memory.array(diplomacy + engine_native_politics::cdiplomacy_status::RELATIONS, 0x45000, 2);
         memory.u64(0x45000, status as u64);
         memory.u64(
             status,

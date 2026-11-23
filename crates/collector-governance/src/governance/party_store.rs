@@ -1,11 +1,17 @@
 use super::politics_hour::{QuietWalk, Visit};
 use crate::party_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{
-    cpolitical_party::Row, cpolitical_status::IdeaCarry, cpolitical_status::IdeaRow,
-    cpolitical_status::Ideas, cpolitical_status::Parties, cpolitical_status::PartyCarry,
-    walk::Outcome,
+use engine_native_politics::{
+    cpolitical_party::Row,
+    cpolitical_status::{
+        IdeaCarry,
+        IdeaRow,
+        Ideas,
+        Parties,
+        PartyCarry,
+    },
 };
+use engine_native::walk::Outcome;
 use std::ops::Range;
 
 type Certified = (u64, u64);

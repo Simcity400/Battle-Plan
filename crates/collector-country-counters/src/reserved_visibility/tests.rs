@@ -1,6 +1,10 @@
 use super::*;
+use engine_native_politics::cdiplomacy_status as diplomacy;
 use engine_native::{
-    cdiplomacy_status as diplomacy, cgame_state, crelation, csubject_relation, memory::SliceMemory,
+    cgame_state,
+    crelation,
+    csubject_relation,
+    memory::SliceMemory,
     walk::Outcome,
 };
 use std::cell::Cell as Counter;

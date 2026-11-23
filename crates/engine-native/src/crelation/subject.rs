@@ -447,7 +447,7 @@ pub fn unavailable(reason: &'static str) -> NameWalk {
     }
 }
 
-pub(crate) fn definition_name(
+pub fn definition_name(
     memory: &impl Memory,
     definition: usize,
 ) -> Result<(usize, usize), &'static str> {
@@ -489,14 +489,14 @@ pub(crate) fn definition_name(
     Ok((source, len))
 }
 
-pub(crate) struct Reader<'a, M: Memory> {
+pub struct Reader<'a, M: Memory> {
     pub(crate) memory: &'a M,
     pub(crate) base: usize,
-    pub(crate) countries: ccountry::Reader<'a, M>,
+    pub countries: ccountry::Reader<'a, M>,
 }
 
 impl<'a, M: Memory> Reader<'a, M> {
-    pub(crate) fn new(memory: &'a M, base: usize, game_state: usize) -> Result<Self, &'static str> {
+    pub fn new(memory: &'a M, base: usize, game_state: usize) -> Result<Self, &'static str> {
         Ok(Self {
             memory,
             base,
@@ -504,18 +504,18 @@ impl<'a, M: Memory> Reader<'a, M> {
         })
     }
 
-    pub(crate) fn field<T: Raw>(&self, pointer: usize, offset: usize) -> Result<T, &'static str> {
+    pub fn field<T: Raw>(&self, pointer: usize, offset: usize) -> Result<T, &'static str> {
         pointer
             .checked_add(offset)
             .and_then(|address| read::<T>(self.memory, address))
             .ok_or("subject field unreadable or address overflow")
     }
 
-    pub(crate) fn pointer(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pub fn pointer(&self, pointer: usize, offset: usize) -> Result<usize, &'static str> {
         usize::try_from(self.field::<u64>(pointer, offset)?).map_err(|_| "subject pointer overflow")
     }
 
-    pub(crate) fn vtable(
+    pub fn vtable(
         &self,
         pointer: usize,
         rva: Rva,
@@ -544,7 +544,7 @@ impl<'a, M: Memory> Reader<'a, M> {
             .ok_or("subject relation vector entry unreadable or outside array")
     }
 
-    pub(crate) fn diplomacy(&self, country: ccountry::Country) -> Result<usize, &'static str> {
+    pub fn diplomacy(&self, country: ccountry::Country) -> Result<usize, &'static str> {
         let pointer = self.pointer(country.pointer, ccountry::DIPLOMACY_STATUS)?;
         if pointer == 0 {
             return Err("country diplomacy is null");

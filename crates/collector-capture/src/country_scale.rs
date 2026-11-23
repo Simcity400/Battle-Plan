@@ -341,7 +341,7 @@ pub struct PoliticsDemand {
     pub pride_name_bytes: usize,
     pub(crate) pride_name_failure: Option<&'static str>,
     optional_failures: [Option<&'static str>; 4],
-    pub(crate) timed_ideas: engine_native::cpolitical_status::IdeaDemand,
+    pub(crate) timed_ideas: engine_native_politics::cpolitical_status::IdeaDemand,
     pub(crate) decision_random_items: engine_decisions::cdecision_status::RandomItemDemand,
     pub(crate) effect_rosters: engine_native::ccountry::EffectRosterDemand,
     pub(crate) captured_operatives: usize,
@@ -459,7 +459,7 @@ impl PoliticsDemand {
                     .tooltip_bytes
                     .max(other.advisor_modifiers.tooltip_bytes),
             },
-            timed_ideas: engine_native::cpolitical_status::IdeaDemand {
+            timed_ideas: engine_native_politics::cpolitical_status::IdeaDemand {
                 rows: self.timed_ideas.rows.max(other.timed_ideas.rows),
                 bytes: self.timed_ideas.bytes.max(other.timed_ideas.bytes),
             },
@@ -533,7 +533,7 @@ pub fn observe_politics(
     let advisor_tokens = demand(tokens.outcome)?;
     let factions = engine_native::cfaction::count_advisors(memory, base, state);
     let faction_advisors = demand(factions.outcome)?;
-    let [active, retired] = engine_native::ccountry_characters::count_records(memory, base, state);
+    let [active, retired] = engine_native_politics::ccountry_characters::count_records(memory, base, state);
     let active_characters = demand(active)?;
     let retired_characters = demand(retired)?;
     let agencies = engine_native_intelligence::cintelligence_agency::count(memory, base, state);
@@ -547,7 +547,7 @@ pub fn observe_politics(
     let strategic = engine_intelligence::strategic_operatives::count(memory, base, state);
     let strategic_operatives = demand(strategic.outcome)?;
     let (available_advisors, available_advisor_bytes) =
-        engine_native::ccountry_characters::demand_available(memory, base, state)?;
+        engine_native_politics::ccountry_characters::demand_available(memory, base, state)?;
     let advisor_modifiers =
         collector_characters::extended::characters::advisors::live_modifier_demand();
     let mut pride_name_bytes = 0_usize;
@@ -602,7 +602,7 @@ pub fn observe_politics(
         country_rosters,
         pride_name_bytes,
         pride_name_failure,
-        timed_ideas: engine_native::cpolitical_status::timed_idea_demand(memory, base, state)?,
+        timed_ideas: engine_native_politics::cpolitical_status::timed_idea_demand(memory, base, state)?,
         decision_random_items: engine_decisions::cdecision_status::random_item_demand(
             memory, base, state,
         )?,
@@ -625,7 +625,7 @@ pub fn observe_politics(
         co_belligerents,
         active_characters,
         retired_characters,
-        party_leaders: engine_native::cpolitical_status::party_leader_demand(memory, base, state)?,
+        party_leaders: engine_native_politics::cpolitical_status::party_leader_demand(memory, base, state)?,
         civil_wars: demand(engine_native::ccountry::count_civil_wars(
             memory, base, state,
         ))?,
@@ -1326,13 +1326,13 @@ mod tests {
             if (DIPLOMACY..DIPLOMACY + 8).contains(&address) {
                 return word(
                     DIPLOMACY,
-                    (BASE + engine_native::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                    (BASE + engine_native_politics::cdiplomacy_status::VTABLE_RVA.0) as u64,
                 );
             }
             if let Some((enemies, allies)) = self.bloc {
                 for (field, count) in [
-                    (engine_native::cdiplomacy_status::ENEMY_COUNTRIES, enemies),
-                    (engine_native::cdiplomacy_status::WARTIME_ALLIES, allies),
+                    (engine_native_politics::cdiplomacy_status::ENEMY_COUNTRIES, enemies),
+                    (engine_native_politics::cdiplomacy_status::WARTIME_ALLIES, allies),
                 ] {
                     let at = DIPLOMACY + field;
                     if (at..at + 16).contains(&address) {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn timed_ideas_keep_stored_days_order_and_live_demand() {
@@ -50,13 +50,13 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
         );
     }
     for country in 1..=4 {
-        let status = crate::read::<u64>(
+        let status = engine_native_memory::read::<u64>(
             &world.memory(),
             world.object(country) + ccountry::POLITICAL_STATUS,
         )
         .unwrap() as usize;
-        let old = crate::read::<u64>(&world.memory(), status + TIMED_IDEAS).unwrap() as usize;
-        let idea = crate::read::<u64>(&world.memory(), old + 8).unwrap();
+        let old = engine_native_memory::read::<u64>(&world.memory(), status + TIMED_IDEAS).unwrap() as usize;
+        let idea = engine_native_memory::read::<u64>(&world.memory(), old + 8).unwrap();
         let entries = world.alloc(10 * TIMED_IDEA_STRIDE);
         world.array(status + TIMED_IDEAS, entries, 10);
         for ordinal in 0..10 {
@@ -87,12 +87,12 @@ fn timed_ideas_keep_stored_days_order_and_live_demand() {
             b"idea\xff"
         );
     }
-    let status = crate::read::<u64>(
+    let status = engine_native_memory::read::<u64>(
         &world.memory(),
         world.object(1) + ccountry::POLITICAL_STATUS,
     )
     .unwrap() as usize;
-    let array = crate::read::<u64>(&world.memory(), status + TIMED_IDEAS).unwrap() as usize;
+    let array = engine_native_memory::read::<u64>(&world.memory(), status + TIMED_IDEAS).unwrap() as usize;
     world.u64(array, 0);
     assert_eq!(
         walk_timed_ideas(
@@ -577,7 +577,7 @@ fn the_party_leader_count_probe_counts_the_live_total_without_reading_a_leader()
     };
     let reader = Reader::new(&memory, BASE, COUNTRY_POINTER).unwrap();
     assert_eq!(
-        reader.party_leaders_buffer(9, crate::walk::Buffer::Count),
+        reader.party_leaders_buffer(9, engine_native_memory::walk::Buffer::Count),
         Outcome::Truncated {
             len: 0,
             unread_rows: 3

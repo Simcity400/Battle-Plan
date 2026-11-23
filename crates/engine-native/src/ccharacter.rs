@@ -23,7 +23,7 @@ pub const COUNTRY: usize = 0x68;
 pub const GENDER: usize = 0x70;
 pub const PORTRAITS: usize = 0x78;
 pub const PORTRAIT_DATA: usize = 0x80;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub const PORTRAIT_COUNT: usize = 0x8c;
 pub const LEADER_MAP_HEAD: usize = 0x98;
 pub const LEADER_MAP_SIZE: usize = 0xa0;
@@ -509,7 +509,7 @@ pub fn identity_with_spans(
     ))
 }
 
-pub(crate) fn identity_header(
+pub fn identity_header(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
@@ -530,10 +530,7 @@ pub fn identity_from_header(base: usize, header: [u8; 16]) -> Result<u32, &'stat
 
 
 
-#[cfg(test)]
-mod tests;
 
-pub use crate::character_portraits::{PortraitRow, PortraitWalk, count_portraits, walk_portraits};
 
 pub fn portrait_header(memory: &impl Memory, pointer: usize) -> Result<[u8; 16], &'static str> {
     let country_at = at(pointer, COUNTRY)?;

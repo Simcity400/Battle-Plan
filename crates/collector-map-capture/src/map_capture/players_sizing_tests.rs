@@ -1,5 +1,6 @@
 use super::{MapCapacities, MapCaptured, PlayersCopyContext, PlayersJob, copy_players_refresh};
-use engine_native::{Memory, ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
+use engine_native::{Memory, ccountry, cgame_state, memory::SliceMemory, walk::Outcome};
+use engine_native_politics::chuman;
 use std::cell::RefCell;
 
 const GS: usize = 0x10000;

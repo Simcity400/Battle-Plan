@@ -415,7 +415,7 @@ impl Index {
             .map(|status| {
                 engine_native::read::<i64>(
                     memory,
-                    status + engine_native::cpolitical_status::POLITICAL_POWER,
+                    status + engine_native_politics::cpolitical_status::POLITICAL_POWER,
                 )
                 .ok_or("decision political balance baseline unreadable")
             })

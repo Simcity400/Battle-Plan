@@ -7,7 +7,6 @@ use collector_projection::projection::scalar_table;
 use engine_native_air::cair_wing;
 use engine_native::{
     cfleet,
-    chuman,
     cland_combat,
     cnaval_combat,
     cnaval_combatant,
@@ -16,6 +15,7 @@ use engine_native::{
     ctask_force,
     walk::Outcome,
 };
+use engine_native_politics::chuman;
 use replay_data::{
     rows::AirWingRow, rows::ArmyOrderRow, rows::FleetRow, rows::HumanControllerRow,
     rows::LandCombatRow, rows::NavalCombatParticipantRow, rows::NavalCombatRow, rows::PlayerRow,

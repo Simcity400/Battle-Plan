@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 
 const GS: usize = 0x1000;
 const COUNTRIES: usize = 0x2000;

@@ -6,7 +6,6 @@ use engine_native::{
     allocation,
     cair_wing_pool,
     ccountry,
-    cdiplomacy_status,
     cfleet,
     cgame_state,
     cnaval_combat,
@@ -20,6 +19,7 @@ use engine_native::{
     read,
     walk,
 };
+use engine_native_politics::cdiplomacy_status;
 use engine_native_air::{cair_wing, cstrategic_air, cstrategic_air_manager};
 
 pub mod air_history_mutations;

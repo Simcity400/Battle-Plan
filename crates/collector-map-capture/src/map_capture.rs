@@ -5,7 +5,6 @@ use collector_raw::raw::RawLog;
 use engine_native::{
     Memory,
     cfleet,
-    chuman,
     cland_combat,
     cnaval_combat,
     cnaval_combatant,
@@ -13,6 +12,7 @@ use engine_native::{
     ctask_force,
     walk::Outcome,
 };
+use engine_native_politics::chuman;
 use engine_native_air::cair_wing;
 #[cfg(test)]
 use engine_native::{corder_instance, corders_group};
@@ -730,7 +730,8 @@ fn copy_player(
     vtable: usize,
     keys: &mut Vec<i32>,
 ) -> bool {
-    use engine_native::{chuman, msvc_string};
+    use engine_native_politics::chuman;
+    use engine_native::msvc_string;
     let Some(key_address) = pointer.checked_add(chuman::PLAYER_KEY) else {
         return false;
     };
@@ -824,7 +825,8 @@ fn copy_player_roster(
     base: usize,
     game_state: usize,
 ) {
-    use engine_native::{cgame_state, chuman, cpdx_array::Array};
+    use engine_native::{cgame_state, cpdx_array::Array};
+    use engine_native_politics::chuman;
     log.has_bulk = true;
     let roster_start = match pspan(
         log,
@@ -966,7 +968,8 @@ mod players_split_tests {
         MapCapacities, MapCaptured, PlayersCopyContext, PlayersCopyReport, PlayersJob,
         copy_players_refresh,
     };
-    use engine_native::{ccountry, cgame_state, chuman, memory::SliceMemory, walk::Outcome};
+    use engine_native::{ccountry, cgame_state, memory::SliceMemory, walk::Outcome};
+    use engine_native_politics::chuman;
 
     const BASE: usize = 0;
     const GS: usize = 0x10000;

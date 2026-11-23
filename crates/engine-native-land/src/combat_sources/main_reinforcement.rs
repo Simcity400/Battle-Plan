@@ -475,10 +475,8 @@ fn transport_context(
     start: usize,
 ) -> Result<ContextRow, &'static str> {
     use engine_native_intelligence::ccountry_intel;
-    use engine_native::{
-        cdiplomacy_status,
-        cweather_manager::{self, region_weather as sweather_per_region},
-    };
+    use engine_native_politics::cdiplomacy_status;
+    use engine_native::cweather_manager::{self, region_weather as sweather_per_region};
     use engine_native_naval::cstrategic_navy_manager;
     use engine_native_parts::{
         cstatic_modifier,

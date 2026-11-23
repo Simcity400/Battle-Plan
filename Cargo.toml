@@ -276,6 +276,7 @@ engine-characters = { path = "crates/engine-characters" }
 engine-air-history = { path = "crates/engine-air-history" }
 engine-governance-tests = { path = "crates/engine-governance-tests" }
 engine-native = { path = "crates/engine-native" }
+engine-native-politics = { path = "crates/engine-native-politics" }
 engine-native-air = { path = "crates/engine-native-air" }
 engine-native-naval = { path = "crates/engine-native-naval" }
 engine-native-intelligence = { path = "crates/engine-native-intelligence" }

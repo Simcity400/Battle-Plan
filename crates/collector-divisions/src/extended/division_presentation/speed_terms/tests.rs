@@ -1282,8 +1282,13 @@ const HOSTILITY_ARMIES: [(&[u32], u32); 9] = [
 ];
 
 fn hostility_world() -> World {
+    use engine_native_politics::cdiplomacy_status;
     use engine_native::{
-        cdiplomacy_status, crelation, crelation_status, cunit, cwar_relation, province_definition,
+        crelation,
+        crelation_status,
+        cunit,
+        cwar_relation,
+        province_definition,
     };
     let mut world = World::new(3);
     world.bytes.resize(0x60000, 0);

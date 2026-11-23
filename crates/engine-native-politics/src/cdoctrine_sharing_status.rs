@@ -1,5 +1,7 @@
 
-use crate::{Memory, allocation, cdoctrine_folder_template as folder, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_allocation as allocation;
+use crate::cdoctrine_folder_template as folder;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a3_8780);

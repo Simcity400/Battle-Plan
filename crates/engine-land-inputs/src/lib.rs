@@ -13,7 +13,6 @@ use engine_native::{
     ccombat_tactic,
     ccountry,
     ccountry_database,
-    cdiplomacy_status,
     cequipment_database,
     cequipment_type,
     cequipment_variant,
@@ -56,10 +55,12 @@ use engine_native::{
     sweather_per_province,
     walk,
 };
+use engine_native_politics::cdiplomacy_status;
 use engine_native_intelligence::coperative_leader;
 use engine_native_land::combat_sources;
 #[cfg(test)]
-use engine_native::{chuman, modifier_definition, read_census, reference_bucket};
+use engine_native_politics::chuman;
+use engine_native::{modifier_definition, read_census, reference_bucket};
 use engine_native_intelligence::country_memory;
 
 pub mod active_ability_record;

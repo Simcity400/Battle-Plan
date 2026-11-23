@@ -292,7 +292,7 @@ pub fn capture_presentation(
                 Ok(())
             })();
             let array = character.wrapping_add(ccharacter::PORTRAIT_DATA);
-            engine_native::portrait_cache::settled(array, live, |image| {
+            engine_native_politics::portrait_cache::settled(array, live, |image| {
                 let count = engine_native_memory::cpdx_array::Array::from_header(image.header, 0x38)
                     .ok_or("commander array invalid")?
                     .count as usize;
@@ -1219,7 +1219,11 @@ mod tests {
                 b"portrait"
             );
         }
-        use engine_native::portrait_cache::{EntryImage, HolderImage, test_images};
+        use engine_native_politics::portrait_cache::{
+            EntryImage,
+            HolderImage,
+            test_images,
+        };
         f.u32(CHARACTER + ccharacter::PORTRAIT_DATA + 12, COUNT as u32 + 1);
         assert!(capture(&f, 0, HANDLE).is_err());
         let entries: &'static [EntryImage] = Box::leak(Box::new([

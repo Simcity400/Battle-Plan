@@ -1,8 +1,14 @@
 use super::*;
 use crate::{country_input_changes::Domain, reserved_visibility};
+use engine_native_politics::{ccountry_characters, cdiplomacy_status as diplomacy};
 use engine_native::{
-    ccountry_characters, cdiplomacy_status as diplomacy, cgame_state, cname_group_member,
-    creference_registry, crelation_status, cship, memory::SliceMemory, reference_bucket as bucket,
+    cgame_state,
+    cname_group_member,
+    creference_registry,
+    crelation_status,
+    cship,
+    memory::SliceMemory,
+    reference_bucket as bucket,
 };
 use replay_data::rows::Recorded;
 use replay_frame::frame::TableView;

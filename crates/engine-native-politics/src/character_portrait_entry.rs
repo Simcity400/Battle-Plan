@@ -6,7 +6,7 @@ pub const KIND: usize = 0x0c;
 pub const IDENTITY: usize = 0x10;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Row<T = crate::msvc_string::Text<256>> {
+pub struct Row<T = engine_native_memory::msvc_string::Text<256>> {
     pub category: u32,
     pub size: u32,
     pub is_set: u8,
@@ -14,20 +14,20 @@ pub struct Row<T = crate::msvc_string::Text<256>> {
     pub identity: T,
 }
 pub fn read(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     output: &mut Row,
 ) -> Result<(), &'static str> {
     read_buffer(memory, pointer, output)
 }
 
-pub(crate) fn read_buffer<T: crate::capture_text::Value>(
-    memory: &impl crate::Memory,
+pub(crate) fn read_buffer<T: engine_native_memory::capture_text::Value>(
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     output: &mut Row<T>,
 ) -> Result<(), &'static str> {
-    use crate::cnaval_combatant::field;
-    use crate::msvc_string;
+    use engine_native::cnaval_combatant::field;
+    use engine_native_memory::msvc_string;
     let mut header = [0; 16];
     output.identity = if pointer != 0
         && pointer
@@ -82,7 +82,7 @@ fn head<T>(header: [u8; 16], output: &mut Row<T>) {
     output.kind = u32::from_le_bytes(header[12..16].try_into().unwrap());
 }
 
-pub(crate) fn from_image<T: crate::capture_text::Value>(
+pub(crate) fn from_image<T: engine_native_memory::capture_text::Value>(
     holder: &crate::portrait_cache::HolderImage<'_>,
     index: usize,
 ) -> Result<Row<T>, &'static str> {
@@ -97,7 +97,7 @@ pub(crate) fn from_image<T: crate::capture_text::Value>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Memory, memory::SliceMemory, msvc_string};
+    use engine_native_memory::{Memory, memory::SliceMemory, msvc_string};
     use std::cell::RefCell;
 
     struct Traced<'a> {
@@ -119,7 +119,7 @@ mod tests {
     }
 
     fn ordered(memory: &impl Memory, pointer: usize) -> Result<Row, &'static str> {
-        let header = crate::cnaval_combatant::field::<[u8; 16]>(memory, pointer, 0)?;
+        let header = engine_native::cnaval_combatant::field::<[u8; 16]>(memory, pointer, 0)?;
         let identity = msvc_string::read_text_prefetched(
             memory,
             pointer

@@ -6,10 +6,18 @@ use super::{
     Roles, copy_characters, walk_family,
 };
 use engine_native::{
-    cadvisor, carmy_leader, ccharacter, ccharacter_manager, ccountry_leader,
-    character_advisor_node, character_leader_node, cnavy_leader, cunit_leader, cunit_leader_skill,
-    msvc_string, msvc_tree_node,
+    cadvisor,
+    carmy_leader,
+    ccharacter,
+    ccharacter_manager,
+    character_advisor_node,
+    cnavy_leader,
+    cunit_leader,
+    cunit_leader_skill,
+    msvc_string,
+    msvc_tree_node,
 };
+use engine_native_politics::{ccountry_leader, character_leader_node};
 
 pub const BASE: usize = IMAGE;
 pub const GAME_STATE: usize = ADDRESS;

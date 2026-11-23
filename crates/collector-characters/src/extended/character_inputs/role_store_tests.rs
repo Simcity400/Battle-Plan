@@ -4,9 +4,15 @@ use crate::extended::characters::census::{FixtureHistory, RoleCensus};
 use collector_observers::character_changes::{Changes, Counting as Lookups, Counts, Watches};
 use engine_characters::cscientist;
 use engine_native::{
-    Memory, ccharacter, ccharacter_manager, ccountry_leader, cgame_state, cpdx_array::Array,
-    cunit_leader, walk::Outcome,
+    Memory,
+    ccharacter,
+    ccharacter_manager,
+    cgame_state,
+    cpdx_array::Array,
+    cunit_leader,
+    walk::Outcome,
 };
+use engine_native_politics::ccountry_leader;
 use replay_data::{rows::CharacterRoleTraitRow, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::{cell::{Cell, RefCell}, ops::Range};

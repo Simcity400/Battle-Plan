@@ -8,9 +8,8 @@ use crate::{
 use engine_allocation::{copy_vec, default_vec, owned_vec, reserve, reserve_push_batch};
 use engine_decisions::cdecision_status;
 use engine_focus::cnational_focus_progress;
-use engine_native::{
-    Memory, ccombat_tactic, ccountry, cpolitical_party, cpolitical_status, walk::Outcome,
-};
+use engine_native::{Memory, ccombat_tactic, ccountry, walk::Outcome};
+use engine_native_politics::{cpolitical_party, cpolitical_status};
 use engine_power_balance::{
     power_balance_gfx_override, power_balance_manager, power_balance_range, power_balance_record,
 };
@@ -1351,7 +1350,7 @@ impl Captured {
                     .element(record, power_balance_record::STRIDE)
                     .ok_or("power balance modifier breakdown record address overflow")?;
                 let row = if BREAKDOWN_WITNESS && witness(record) {
-                    let tree = engine_native::modifier_breakdown::balance(memory, base, address)?;
+                    let tree = engine_native_politics::modifier_breakdown::balance(memory, base, address)?;
                     rows::PowerBalanceModifierBreakdownRow {
                         record,
                         sources: tree.sources,
@@ -1361,7 +1360,7 @@ impl Captured {
                 } else {
                     rows::PowerBalanceModifierBreakdownRow {
                         record,
-                        sources: engine_native::modifier_breakdown::balance_sources(
+                        sources: engine_native_politics::modifier_breakdown::balance_sources(
                             memory, address,
                         )?,
                         daily: Vec::new(),

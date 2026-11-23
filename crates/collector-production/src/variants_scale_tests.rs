@@ -1,10 +1,8 @@
 
 use super::*;
 use engine_equipment::cequipment_upgrades_instance;
-use engine_native::{
-    cequipment_module, cequipment_type, cequipment_upgrade, equipment_module_entry,
-    equipment_upgrade_entry,
-};
+use engine_native::{cequipment_module, cequipment_type, cequipment_upgrade};
+use engine_native_politics::{equipment_module_entry, equipment_upgrade_entry};
 use replay_data::rows::TableSchema;
 
 const VARIANT: usize = (cequipment_variant::DESIGN_TEAM_TRAITS + 4).next_multiple_of(16);

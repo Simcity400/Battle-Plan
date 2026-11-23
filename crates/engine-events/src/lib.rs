@@ -11,14 +11,11 @@ use engine_native::{
     cbuilding_template,
     ccharacter,
     ccountry,
-    cdiplomacy_status,
     cequipment_variant_pool,
     cgame_state,
     cideology_group,
     cpdx_array,
     cpdx_lexer,
-    cpolitical_party,
-    cpolitical_status,
     cproduction_status,
     cprovince,
     crailway_gun,
@@ -35,6 +32,7 @@ use engine_native::{
     read_slice,
     walk,
 };
+use engine_native_politics::{cdiplomacy_status, cpolitical_party, cpolitical_status};
 use engine_native_air::{cair_wing, cstrategic_air};
 use engine_native_intelligence::{coperation, coperation_instance};
 use engine_peace::peace_conference;

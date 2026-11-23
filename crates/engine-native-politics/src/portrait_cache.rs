@@ -205,7 +205,7 @@ pub struct Cache {
 impl Cache {
     pub fn new(rows: usize) -> std::io::Result<Self> {
         Ok(Self {
-            keys: crate::allocation::filled(rows, Key::default())?,
+            keys: engine_allocation::filled(rows, Key::default())?,
             scope: (0, 0, 0, 0),
             valid: false,
             used: 0,
@@ -229,7 +229,7 @@ impl Cache {
 
     pub fn grow(&mut self, rows: usize) -> std::io::Result<()> {
         if self.keys.len() < rows {
-            crate::allocation::resize(&mut self.keys, rows, Key::default())?;
+            engine_allocation::resize(&mut self.keys, rows, Key::default())?;
         }
         Ok(())
     }
@@ -244,7 +244,7 @@ impl Cache {
                 key.revision.is_some()
                     && key
                         .pointer
-                        .checked_add(crate::ccharacter::PORTRAIT_DATA)
+                        .checked_add(engine_native::ccharacter::PORTRAIT_DATA)
                         .and_then(|array| changes.revision(array))
                         == key.revision
             })
@@ -257,7 +257,7 @@ impl Cache {
                 .all(|key| key.revision.is_some())
     }
 
-    pub fn matches_census(&self, rows: &[crate::ccharacter::manager::PortraitIdentity]) -> bool {
+    pub fn matches_census(&self, rows: &[engine_native::ccharacter::manager::PortraitIdentity]) -> bool {
         self.valid
             && self.used == rows.len()
             && self.keys[..self.used]
@@ -332,7 +332,7 @@ mod tests {
         cache.finish(1);
         cache.grow(8).unwrap();
         assert_eq!(cache.keys.len(), 8);
-        let row = crate::ccharacter::manager::PortraitIdentity {
+        let row = engine_native::ccharacter::manager::PortraitIdentity {
             pointer: key.pointer,
             character: key.character,
         };
@@ -368,7 +368,7 @@ mod tests {
         };
         cache.begin(scope);
         cache.remember(0, key);
-        let row = crate::ccharacter::manager::PortraitIdentity {
+        let row = engine_native::ccharacter::manager::PortraitIdentity {
             pointer: key.pointer,
             character: key.character,
         };
@@ -376,13 +376,13 @@ mod tests {
         assert!(!cache.matches_census(&[]));
         assert!(!cache.matches_census(&[row, row]));
         assert!(
-            !cache.matches_census(&[crate::ccharacter::manager::PortraitIdentity {
+            !cache.matches_census(&[engine_native::ccharacter::manager::PortraitIdentity {
                 pointer: 200,
                 ..row
             }])
         );
         assert!(
-            !cache.matches_census(&[crate::ccharacter::manager::PortraitIdentity {
+            !cache.matches_census(&[engine_native::ccharacter::manager::PortraitIdentity {
                 character: 99,
                 ..row
             }])

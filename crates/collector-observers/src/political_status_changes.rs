@@ -6,7 +6,8 @@ use engine_mutations::{
     political_status_mutations::Domain, political_status_mutations::MUTATIONS,
     political_status_mutations::Patch, political_status_mutations::SET_POPULARITY_RVA,
 };
-use engine_native::{Memory, ccountry, cpolitical_status};
+use engine_native::{Memory, ccountry};
+use engine_native_politics::cpolitical_status;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},

@@ -501,10 +501,12 @@ mod tests {
 
     #[test]
     fn stability_capture_counts_refused_fallbacks_and_resets_before_inputs() {
-        use engine_native::{
-            cdiplomacy_status, cgame_state, cidea, cideology_group, cpdx_array::Array,
-            cpolitical_party, cpolitical_status,
+        use engine_native_politics::{
+            cdiplomacy_status,
+            cpolitical_party,
+            cpolitical_status,
         };
+        use engine_native::{cgame_state, cidea, cideology_group, cpdx_array::Array};
         use engine_stability::{cmodifier, cworld_threat};
         use std::{cell::Cell, collections::BTreeMap};
 
@@ -643,9 +645,18 @@ mod tests {
 
     #[test]
     fn failed_static_witness_read_keeps_both_stability_tables_available() {
+        use engine_native_politics::{
+            cdiplomacy_status,
+            cpolitical_party,
+            cpolitical_status,
+        };
         use engine_native::{
-            cdiplomacy_status, cgame_state, cidea, cideology_group, cpdx_array::Array,
-            cpolitical_party, cpolitical_status, cstatic_modifier, modifier_definition,
+            cgame_state,
+            cidea,
+            cideology_group,
+            cpdx_array::Array,
+            cstatic_modifier,
+            modifier_definition,
             msvc_string,
         };
         use engine_stability::{cmodifier, cworld_threat};

@@ -2290,7 +2290,8 @@ fn cost_tree(bytes: &mut [u8], field: usize, head: usize, node: usize, stride: u
 }
 
 pub fn cost_fixture() -> Vec<u8> {
-    use engine_native::{character_advisor_node, character_leader_node};
+    use engine_native::character_advisor_node;
+    use engine_native_politics::character_leader_node;
     let mut bytes = vec![0; 0x32000];
     let mut heap = CostHeap { next: COST_HEAP };
     pointer(&mut bytes, cgame_state::CHARACTER_MANAGER, COST_MANAGER);

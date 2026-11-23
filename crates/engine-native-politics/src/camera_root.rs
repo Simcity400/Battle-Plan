@@ -1,5 +1,5 @@
 
-use crate::{Memory, read};
+use engine_native_memory::{Memory, read};
 
 pub const IDLER_CAMERA: usize = 0x760;
 pub const OWNER: usize = 0x8;

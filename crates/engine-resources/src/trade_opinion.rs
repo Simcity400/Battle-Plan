@@ -3,10 +3,20 @@ use crate::{
     cstrategic_resource_pool,
 };
 use engine_native::{
-    Memory, ccountry, cdiplomacy_status, cgame_state, cpdx_array::Array, cpolitical_party,
-    cpolitical_status, cprovince, crelation, crelation_status, cstate, csubject_relation,
-    memory::Raw, modifier_accumulator, read,
+    Memory,
+    ccountry,
+    cgame_state,
+    cpdx_array::Array,
+    cprovince,
+    crelation,
+    crelation_status,
+    cstate,
+    csubject_relation,
+    memory::Raw,
+    modifier_accumulator,
+    read,
 };
+use engine_native_politics::{cdiplomacy_status, cpolitical_party, cpolitical_status};
 use engine_sites::Rva;
 
 const ONE: i64 = 100_000;

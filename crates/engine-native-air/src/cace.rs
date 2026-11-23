@@ -308,14 +308,14 @@ pub fn portrait_sources(
 ) -> Result<[Option<msvc_string::Descriptor>; 3], &'static str> {
     let gui = read::<u64>(
         memory,
-        engine_sites::at(base, engine_native::cgui::SINGLETON_RVA)
+        engine_sites::at(base, engine_native_politics::cgui::SINGLETON_RVA)
             .ok_or("ace GUI singleton address overflow")?,
     )
     .and_then(|p| usize::try_from(p).ok())
     .filter(|p| *p != 0)
     .ok_or("ace GUI not available")?;
     if read::<u64>(memory, gui)
-        != engine_sites::at(base, engine_native::cgame_gui::VTABLE_RVA).map(|p| p as u64)
+        != engine_sites::at(base, engine_native_politics::cgame_gui::VTABLE_RVA).map(|p| p as u64)
     {
         return Err("ace GUI identity mismatch");
     }
@@ -685,8 +685,8 @@ mod tests {
         memory.bytes(ACE[0] + PORTRAIT_GENDER, &[7, 0, 0, 0, 3, 0, 0, 0]);
         memory.u64(ACE[0] + TYPE_DEFINITION, DEFINITION as u64);
         memory.inline(DEFINITION + TYPE_NAME, b"custommod_type");
-        memory.u64(engine_native::cgui::SINGLETON_RVA.0, GUI as u64);
-        memory.u64(GUI, engine_native::cgame_gui::VTABLE_RVA.0 as u64);
+        memory.u64(engine_native_politics::cgui::SINGLETON_RVA.0, GUI as u64);
+        memory.u64(GUI, engine_native_politics::cgame_gui::VTABLE_RVA.0 as u64);
         memory.array(GUI + 0xcb0, POOLS, 2);
         memory.array(POOLS + engine_native_memory::cpdx_array::STRIDE, STRINGS, 2);
         memory.inline(STRINGS, b"GFX_other_ace");

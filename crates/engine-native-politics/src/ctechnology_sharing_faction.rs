@@ -1,5 +1,6 @@
 
-use crate::{Memory, allocation, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_allocation as allocation;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02ac_66b8);
@@ -44,7 +45,7 @@ pub fn read_into(
         .ok_or("faction research sharing countries unreadable or invalid")?;
     allocation::resize_default(&mut output.countries, countries.count as usize)
         .map_err(|_| "faction sharing countries allocation failed")?;
-    crate::cpdx_array::copy_u32s(
+    engine_native_memory::cpdx_array::copy_u32s(
         memory,
         countries,
         &mut output.countries,

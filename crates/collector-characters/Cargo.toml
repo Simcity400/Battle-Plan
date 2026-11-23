@@ -19,6 +19,7 @@ roster_changes = ["collector-observers/roster_changes"]
 test-support = ["dep:collector-test-support"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-intelligence.workspace = true
 collector-test-support = { workspace = true, optional = true }
 collector-certificates.workspace = true

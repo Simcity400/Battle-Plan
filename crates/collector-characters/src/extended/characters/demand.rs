@@ -42,7 +42,7 @@ pub(super) fn presize(
         LIVE_ROLES[2].fetch_max(total_rows, std::sync::atomic::Ordering::Relaxed);
         super::advisors::remember_definition_demand(demand);
     }
-    let leaders = engine_native::ccountry_leader::walk(
+    let leaders = engine_native_politics::ccountry_leader::walk(
         memory,
         base,
         state,

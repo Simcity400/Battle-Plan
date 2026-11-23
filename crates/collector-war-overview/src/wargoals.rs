@@ -218,7 +218,8 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{ccountry::synthetic::World, cpolitical_status};
+    use engine_native::ccountry::synthetic::World;
+    use engine_native_politics::cpolitical_status;
     static TESTS: Mutex<()> = Mutex::new(());
     struct Unreadable;
     impl Memory for Unreadable {

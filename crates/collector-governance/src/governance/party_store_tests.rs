@@ -1,8 +1,9 @@
 use super::*;
 use crate::party_changes::{Counts, Watches};
-use engine_native::{
-    ccountry, cidea, cideology_group, cpolitical_party, cpolitical_status::FreshIdeas,
-    cpolitical_status::FreshParties, cpolitical_status::IdeaRow, memory::SliceMemory, msvc_string,
+use engine_native::{ccountry, cidea, cideology_group, memory::SliceMemory, msvc_string};
+use engine_native_politics::{
+    cpolitical_party,
+    cpolitical_status::{FreshIdeas, FreshParties, IdeaRow},
 };
 use std::cell::RefCell;
 

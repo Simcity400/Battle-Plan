@@ -1,8 +1,12 @@
+use engine_native_memory::{Memory, memory::SliceMemory};
 use crate::{
-    Memory, cdoctrine_folder_template as folder, cdoctrine_sharing_status as doctrine, cfaction,
-    cfaction_program_status as programs, cfaction_rule_status as rules,
-    ctechnology_sharing_faction as research, memory::SliceMemory,
+    cdoctrine_folder_template as folder,
+    cdoctrine_sharing_status as doctrine,
+    cfaction_program_status as programs,
+    cfaction_rule_status as rules,
+    ctechnology_sharing_faction as research,
 };
+use engine_native::cfaction;
 
 const FACTION: usize = 0x1000;
 const DATA: usize = 0x3000;
@@ -198,11 +202,11 @@ fn faction_companions_preserve_signed_manpower_contributions() {
     put(
         &mut bytes,
         pool,
-        (crate::carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes(),
+        (engine_native_parts::carmy_manpower_values::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     array(
         &mut bytes,
-        pool + crate::carmy_manpower_values::DATA,
+        pool + engine_native_parts::carmy_manpower_values::DATA,
         DATA,
         3,
     );

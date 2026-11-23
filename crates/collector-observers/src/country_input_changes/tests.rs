@@ -103,7 +103,7 @@ fn a_shared_level_marks_every_country_sharing_research_over_its_call() {
     );
     put(
         &mut diplomacy[..],
-        engine_native::cdiplomacy_status::FACTION,
+        engine_native_politics::cdiplomacy_status::FACTION,
         faction.as_ptr() as u64,
     );
     put(
@@ -129,7 +129,7 @@ fn a_shared_level_marks_every_country_sharing_research_over_its_call() {
     assert_eq!(take(&domain, Table::Stability).1, Vec::<usize>::new());
     put(
         &mut diplomacy[..],
-        engine_native::cdiplomacy_status::FACTION,
+        engine_native_politics::cdiplomacy_status::FACTION,
         0,
     );
     drop(domain.notify(site("research_completed"), status.as_ptr() as usize, 0));
@@ -518,7 +518,7 @@ fn the_subject_rebuild_names_its_new_overlord_on_return() {
     let mut diplomacy = Box::new([0_u8; 0x400]);
     put(
         &mut diplomacy[..],
-        engine_native::cdiplomacy_status::COUNTRY,
+        engine_native_politics::cdiplomacy_status::COUNTRY,
         country.as_ptr() as u64,
     );
     let receiver = diplomacy.as_ptr() as usize;
@@ -529,7 +529,7 @@ fn the_subject_rebuild_names_its_new_overlord_on_return() {
     assert_eq!(take(&domain, Table::Appearance), (None, vec![]));
     put_u32(
         &mut diplomacy[..],
-        engine_native::cdiplomacy_status::OVERLORD,
+        engine_native_politics::cdiplomacy_status::OVERLORD,
         7,
     );
     drop(running);
@@ -547,7 +547,7 @@ fn counter_forwards_reach_the_counter_set() {
     let mut diplomacy = Box::new([0_u8; 0x400]);
     put(
         &mut diplomacy[..],
-        engine_native::cdiplomacy_status::COUNTRY,
+        engine_native_politics::cdiplomacy_status::COUNTRY,
         owner.as_ptr() as u64,
     );
     let mut status = Box::new([0_u8; 0x400]);

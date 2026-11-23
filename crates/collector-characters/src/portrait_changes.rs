@@ -1,8 +1,13 @@
 use collector_hooks::hook::Hook;
 use engine_characters::ccharacter_portraits::MUTATIONS;
-use engine_native::{
-    Memory,
-    portrait_cache::{Changes, Counts, EntryImage, HolderImage, Readers, Reading},
+use engine_native::Memory;
+use engine_native_politics::portrait_cache::{
+    Changes,
+    Counts,
+    EntryImage,
+    HolderImage,
+    Readers,
+    Reading,
 };
 use std::{
     cell::{Cell, UnsafeCell},
@@ -392,7 +397,8 @@ impl PreImages {
     }
 
     fn copy(&self, array: usize, memory: &impl Memory, storage: &Storage) -> Option<Logged> {
-        use engine_native::{character_portrait_entry as entry, msvc_string, read};
+        use engine_native_politics::character_portrait_entry as entry;
+        use engine_native::{msvc_string, read};
         let unreadable = Some(Logged::Unreadable);
         let Some(header) = read::<[u8; 16]>(memory, array) else {
             return unreadable;
@@ -466,7 +472,7 @@ impl PreImages {
     }
 }
 
-impl engine_native::portrait_cache::PreImages for PreImages {
+impl engine_native_politics::portrait_cache::PreImages for PreImages {
     fn image(&self, array: usize) -> Option<Result<Reading<'_>, &'static str>> {
         let reader = self.readers.enter();
         if self.state.load(Ordering::SeqCst) != READING {
@@ -636,7 +642,7 @@ impl Hooks {
                 ORIGINAL[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
-            engine_native::portrait_cache::install(&PRE_IMAGES);
+            engine_native_politics::portrait_cache::install(&PRE_IMAGES);
         }
         Ok(Self { hooks })
     }
@@ -722,7 +728,8 @@ unsafe extern "system" fn insert(array: usize, at: i32, source: usize, count: i3
 #[cfg(test)]
 mod revision_tests {
     use super::*;
-    use engine_native::{memory::SliceMemory, portrait_cache::PreImages as _};
+    use engine_native::memory::SliceMemory;
+    use engine_native_politics::portrait_cache::PreImages as _;
 
     const ENTRY: usize = 0x100;
 

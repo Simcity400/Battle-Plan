@@ -1,8 +1,11 @@
 use super::*;
 use engine_native::{
-    ccountry_database, cdiplomacy_status, cgame_state, memory::CountedMemory, memory::LiveMemory,
-    memory::SliceMemory, msvc_string,
+    ccountry_database,
+    cgame_state,
+    memory::{CountedMemory, LiveMemory, SliceMemory},
+    msvc_string,
 };
+use engine_native_politics::cdiplomacy_status;
 use replay_data::rows::RowCodec;
 use std::{hint::black_box, time::Instant};
 

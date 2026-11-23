@@ -30,10 +30,8 @@ use engine_native::{
     ccharacter_manager,
     ccharacter_template,
     ccountry,
-    ccountry_leader,
     cgame_state,
     character_advisor_node,
-    character_leader_node,
     cnavy_leader,
     cpdx_array::Array,
     cunit_leader,
@@ -44,6 +42,7 @@ use engine_native::{
     read,
     walk::Outcome,
 };
+use engine_native_politics::{ccountry_leader, character_leader_node};
 use engine_native_intelligence::coperative_leader;
 use replay_data::{
     BranchId, rows::ActiveAbilityRow, rows::AdvisorRoleRow, rows::CharacterRow,

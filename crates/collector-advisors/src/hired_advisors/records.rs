@@ -1,7 +1,8 @@
 use super::appointed::{Domains, Key, key, publish};
 use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
+use engine_native::{Memory, walk::Outcome};
+use engine_native_politics::ccountry_characters as native;
 
 pub const CARRY: bool = cfg!(feature = "character_record_changes");
 

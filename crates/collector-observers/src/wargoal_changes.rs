@@ -149,7 +149,7 @@ fn expire_goals(diplomacy: usize) -> Option<Notification<'static>> {
     EXPIRY_CALLS.fetch_add(1, Ordering::Relaxed);
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let unused = diplomacy
-        .checked_add(engine_native::cdiplomacy_status::OWNED_WARGOALS + 12)
+        .checked_add(engine_native_politics::cdiplomacy_status::OWNED_WARGOALS + 12)
         .and_then(|p| engine_native::read::<u32>(&memory, p));
     expiry_in(&WATCHES, unused, || {
         named(Receiver::Diplomacy, diplomacy, 0)

@@ -1,9 +1,9 @@
 pub use engine_native_parts::cpolitical_status_layout::{COUNTRY, POLITICAL_POWER, RULING_PARTY, VTABLE_RVA};
 
-use crate::{
-    Memory, ccharacter, ccountry, ccountry_leader, cidea, cideology_group, cpdx_array::Array,
-    cpolitical_party, msvc_string, read, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read, walk::Outcome};
+use engine_native::{ccharacter, ccountry};
+use crate::{ccountry_leader, cpolitical_party};
+use engine_native_parts::{cidea, cideology_group};
 use engine_sites::Rva;
 
 
@@ -18,7 +18,7 @@ pub const LAST_ELECTION: usize = 0xa0;
 pub const NEXT_ELECTION_CACHE: usize = 0xb8;
 pub const RESET_LAST_ELECTION: i32 = 43_800_000 - 365 * 24;
 pub fn needs_election_cache(last: i32) -> bool {
-    matches!(last, crate::cgame_date::NULL_RAW_HOUR | RESET_LAST_ELECTION)
+    matches!(last, engine_native_memory::cgame_date::NULL_RAW_HOUR | RESET_LAST_ELECTION)
 }
 pub const ELECTION_FREQUENCY: usize = 0xe8;
 pub const ELECTIONS_ALLOWED: usize = 0xec;
@@ -177,7 +177,7 @@ fn visit_pointers(
     while first < count as usize {
         let len = (count as usize - first).min(POINTER_CHUNK);
         let address = data.checked_add(first.checked_mul(8)?)?;
-        if !crate::read_slice(memory, address, &mut bytes[..len * 8]) {
+        if !engine_native_memory::read_slice(memory, address, &mut bytes[..len * 8]) {
             return None;
         }
         for (pointer, word) in pointers.iter_mut().zip(bytes[..len * 8].chunks_exact(8)) {
@@ -306,9 +306,9 @@ impl<'a, M: Memory> Reader<'a, M> {
     ) -> TokenWalk {
         self.parties_carried(
             0,
-            crate::walk::Buffer::Growing(output),
+            engine_native_memory::walk::Buffer::Growing(output),
             row_start,
-            crate::walk::Buffer::Growing(tokens),
+            engine_native_memory::walk::Buffer::Growing(tokens),
             byte_start,
             &mut FreshParties,
         )
@@ -317,9 +317,9 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn parties_carried(
         &self,
         country: u32,
-        mut output: crate::walk::Buffer<'_, cpolitical_party::Row>,
+        mut output: engine_native_memory::walk::Buffer<'_, cpolitical_party::Row>,
         row_start: usize,
-        mut tokens: crate::walk::Buffer<'_, u8>,
+        mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
         byte_start: usize,
         carry: &mut impl PartyCarry,
     ) -> TokenWalk {
@@ -505,13 +505,13 @@ impl<'a, M: Memory> Reader<'a, M> {
         country: u32,
         output: &mut Vec<cpolitical_party::LeaderRow>,
     ) -> Outcome {
-        self.party_leaders_buffer(country, crate::walk::Buffer::Growing(output))
+        self.party_leaders_buffer(country, engine_native_memory::walk::Buffer::Growing(output))
     }
 
     pub fn party_leaders_buffer(
         &self,
         country: u32,
-        output: crate::walk::Buffer<'_, cpolitical_party::LeaderRow>,
+        output: engine_native_memory::walk::Buffer<'_, cpolitical_party::LeaderRow>,
     ) -> Outcome {
         self.party_leaders_carried(country, output, &mut Fresh)
     }
@@ -519,7 +519,7 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn party_leaders_carried(
         &self,
         country: u32,
-        mut output: crate::walk::Buffer<'_, cpolitical_party::LeaderRow>,
+        mut output: engine_native_memory::walk::Buffer<'_, cpolitical_party::LeaderRow>,
         carry: &mut impl LeaderCarry,
     ) -> Outcome {
         let result = (|| {
@@ -620,15 +620,15 @@ impl<'a, M: Memory> Reader<'a, M> {
 
     pub fn ideas(&self, output: &mut Vec<IdeaRow>, tokens: &mut Vec<u8>) -> TokenWalk {
         self.ideas_buffer(
-            crate::walk::Buffer::Growing(output),
-            crate::walk::Buffer::Growing(tokens),
+            engine_native_memory::walk::Buffer::Growing(output),
+            engine_native_memory::walk::Buffer::Growing(tokens),
         )
     }
 
     pub fn ideas_buffer(
         &self,
-        output: crate::walk::Buffer<'_, IdeaRow>,
-        tokens: crate::walk::Buffer<'_, u8>,
+        output: engine_native_memory::walk::Buffer<'_, IdeaRow>,
+        tokens: engine_native_memory::walk::Buffer<'_, u8>,
     ) -> TokenWalk {
         self.ideas_carried(0, output, tokens, &mut FreshIdeas)
     }
@@ -636,8 +636,8 @@ impl<'a, M: Memory> Reader<'a, M> {
     pub fn ideas_carried(
         &self,
         country: u32,
-        mut output: crate::walk::Buffer<'_, IdeaRow>,
-        mut tokens: crate::walk::Buffer<'_, u8>,
+        mut output: engine_native_memory::walk::Buffer<'_, IdeaRow>,
+        mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
         carry: &mut impl IdeaCarry,
     ) -> TokenWalk {
         let result = (|| {
@@ -733,16 +733,16 @@ impl<'a, M: Memory> Reader<'a, M> {
     ) -> TokenWalk {
         self.timed_ideas_buffer(
             country,
-            crate::walk::Buffer::Growing(output),
-            crate::walk::Buffer::Growing(tokens),
+            engine_native_memory::walk::Buffer::Growing(output),
+            engine_native_memory::walk::Buffer::Growing(tokens),
         )
     }
 
     pub fn timed_ideas_buffer(
         &self,
         country: u32,
-        mut output: crate::walk::Buffer<'_, TimedIdeaRow>,
-        mut tokens: crate::walk::Buffer<'_, u8>,
+        mut output: engine_native_memory::walk::Buffer<'_, TimedIdeaRow>,
+        mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
     ) -> TokenWalk {
         let result = (|| {
             let array = Array::read(self.memory, self.at(TIMED_IDEAS)?, TIMED_IDEA_STRIDE)
@@ -806,7 +806,7 @@ impl<'a, M: Memory> Reader<'a, M> {
 }
 
 pub fn count_timed_ideas(memory: &impl Memory, base: usize, state: usize) -> TokenWalk {
-    walk_timed_ideas_buffer(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_timed_ideas_buffer(memory, base, state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_timed_ideas(
@@ -820,8 +820,8 @@ pub fn walk_timed_ideas(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(tokens),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(tokens),
     )
 }
 
@@ -829,8 +829,8 @@ pub fn walk_timed_ideas_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, TimedIdeaRow>,
-    mut tokens: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, TimedIdeaRow>,
+    mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> TokenWalk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, state)?;
@@ -942,7 +942,7 @@ pub fn party_leader_demand(
         let Ok(reader) = Reader::new(memory, base, country.pointer) else {
             continue;
         };
-        if let Outcome::Truncated { unread_rows, .. } = reader.party_leaders_buffer(country.id, crate::walk::Buffer::Count) {
+        if let Outcome::Truncated { unread_rows, .. } = reader.party_leaders_buffer(country.id, engine_native_memory::walk::Buffer::Count) {
             total = total
                 .checked_add(unread_rows as usize)
                 .ok_or("party leader total overflow")?;

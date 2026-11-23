@@ -28,6 +28,7 @@ replay-data.workspace = true
 replay-frame.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 synthetic-game.workspace = true
 replay-data = { workspace = true, features = ["test-support"] }
 

@@ -1488,7 +1488,7 @@ fn observed_balance(
     let (address, reason) = match currency {
         PowerCurrency::Political => (
             owner.politics.and_then(|pointer| {
-                pointer.checked_add(engine_native::cpolitical_status::POLITICAL_POWER)
+                pointer.checked_add(engine_native_politics::cpolitical_status::POLITICAL_POWER)
             }),
             "politics political power balance unreadable, absent or overflowed",
         ),
@@ -2153,7 +2153,7 @@ fn government_with_old(
         }
     };
     let Some(old_party) = observed_old.map(|p| p as u64).or_else(|| {
-        at(status, engine_native::cpolitical_status::RULING_PARTY).and_then(read::<u64>)
+        at(status, engine_native_politics::cpolitical_status::RULING_PARTY).and_then(read::<u64>)
     }) else {
         failed("politics ruling party pointer unreadable or overflowed");
         return;
@@ -2782,7 +2782,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
             if registers.flags & (1 << 6) != 0 {
                 if let Some(party) = at(
                     registers.r14,
-                    engine_native::cpolitical_status::RULING_PARTY,
+                    engine_native_politics::cpolitical_status::RULING_PARTY,
                 )
                 .and_then(read::<u64>)
                 {

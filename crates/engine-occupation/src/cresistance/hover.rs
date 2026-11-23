@@ -1,6 +1,7 @@
 use super::*;
 use crate::{ccountry, msvc_string, read};
-use engine_native::{allocation, cdiplomacy_status, modifier_accumulator};
+use engine_native::{allocation, modifier_accumulator};
+use engine_native_politics::cdiplomacy_status;
 
 pub const TARGET: u32 = 0x1de;
 pub const OCCUPIED_TARGET: u32 = 0x1df;

@@ -28,8 +28,6 @@ use engine_native::{
     csupply_system,
     cunit,
     cunit_supply_inputs,
-    equipment_module_entry,
-    equipment_upgrade_entry,
     fixed5,
     memory,
     modifier_entry,
@@ -38,6 +36,7 @@ use engine_native::{
     read_slice,
     walk,
 };
+use engine_native_politics::{equipment_module_entry, equipment_upgrade_entry};
 use engine_native_air::raid_tooltip_operands;
 #[cfg(test)]
 use engine_native::{

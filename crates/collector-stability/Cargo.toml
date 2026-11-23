@@ -28,6 +28,7 @@ collector-projection.workspace = true
 collector-status.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true

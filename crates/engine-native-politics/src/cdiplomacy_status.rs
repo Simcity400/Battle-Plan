@@ -3,14 +3,8 @@ pub use engine_native_parts::cdiplomacy_status_layout::{RELATION_COUNT, RELATION
 pub use engine_native_parts::cdiplomacy_status_layout::{OWNED_RELATIONS, OWNED_WARGOALS, ENEMY_COUNTRIES, WARTIME_ALLIES};
 pub use engine_native_parts::cdiplomacy_status_layout::{VTABLE_RVA, COUNTRY, FACTION, OVERLORD, CURRENT_AUTONOMY_STATUS, SUBJECTS, RELATIONS};
 
-use crate::{
-    Memory,
-    ccountry,
-    cpdx_array::Array,
-    cwar_relation::goals as cwar_goal,
-    read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::{ccountry, cwar_relation::goals as cwar_goal};
 use engine_sites::Rva;
 
 pub const CONSTRUCTOR_RVA: Rva = Rva(0x00d9_6000);
@@ -38,8 +32,8 @@ pub fn walk_capitulation(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(recipients),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(recipients),
     )
 }
 
@@ -47,8 +41,8 @@ pub fn walk_capitulation_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, CapitulationRow>,
-    mut recipients: crate::walk::Buffer<'_, u32>,
+    mut output: engine_native_memory::walk::Buffer<'_, CapitulationRow>,
+    mut recipients: engine_native_memory::walk::Buffer<'_, u32>,
 ) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -100,7 +94,7 @@ fn war_goals(
     memory: &impl Memory,
     base: usize,
     diplomacy: usize,
-    recipients: &mut crate::walk::Buffer<'_, u32>,
+    recipients: &mut engine_native_memory::walk::Buffer<'_, u32>,
     used: usize,
 ) -> Result<Option<Option<u32>>, &'static str> {
     let Some(goals) = diplomacy
@@ -182,7 +176,8 @@ fn read_capitulation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x0001_4000_0000;
     const GAME: usize = 0x1000;
@@ -311,8 +306,8 @@ mod tests {
                 &memory(&bytes),
                 BASE,
                 GAME,
-                crate::walk::Buffer::Count,
-                crate::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             ),
             Outcome::Truncated {
                 len: 0,

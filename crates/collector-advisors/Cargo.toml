@@ -20,6 +20,7 @@ character_record_changes = ["advisor_pool_changes", "roster_changes"]
 roster_changes = []
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-allocation.workspace = true
 engine-characters.workspace = true
 engine-mutations.workspace = true

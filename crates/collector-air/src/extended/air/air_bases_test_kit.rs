@@ -364,7 +364,7 @@ pub struct SyntheticMemory<'a> {
 
 impl Memory for SyntheticMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        let address = if address == engine_native::cgui::SINGLETON_RVA.0 && output.len() == 8 {
+        let address = if address == engine_native_politics::cgui::SINGLETON_RVA.0 && output.len() == 8 {
             GUI_SINGLETON
         } else {
             address

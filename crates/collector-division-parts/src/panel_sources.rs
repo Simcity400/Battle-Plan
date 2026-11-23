@@ -13,9 +13,8 @@ pub const PHASE_NAMES: [&str; 4] = [
 ];
 use collector_observers::naval_tree_changes as changes;
 use collector_projection::certified::{Snapshot, Store as Rows};
-use engine_native::{
-    Memory, carmy::DivisionSeed, carmy_leader, ccountry, modifier_breakdown, read,
-};
+use engine_native::{Memory, carmy::DivisionSeed, carmy_leader, ccountry, read};
+use engine_native_politics::modifier_breakdown;
 use replay_data::rows::{DivisionPanelSourceRow, SharedDivisionPanelSourceRow};
 use std::sync::{Arc, OnceLock};
 type RowSnapshot = Snapshot<SharedDivisionPanelSourceRow>;

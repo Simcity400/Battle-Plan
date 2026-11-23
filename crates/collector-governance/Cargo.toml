@@ -19,6 +19,7 @@ party_changes = []
 party_leader_changes = ["character_changes"]
 
 [dependencies]
+engine-native-politics.workspace = true
 game-model.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true

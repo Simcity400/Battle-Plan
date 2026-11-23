@@ -1048,7 +1048,8 @@ mod tests {
         co_put32(bytes, at + 12, count);
     }
     fn co_world() -> Vec<u8> {
-        use engine_native::{cdiplomacy_status as diplomacy, cgame_state};
+        use engine_native_politics::cdiplomacy_status as diplomacy;
+        use engine_native::cgame_state;
         let mut bytes = vec![0_u8; 0x20000];
         co_header(&mut bytes, CO_STATE + cgame_state::COUNTRIES, 0x3000, 3);
         co_put64(&mut bytes, 0x3000, u64::MAX);

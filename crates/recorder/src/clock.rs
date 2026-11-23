@@ -1,5 +1,6 @@
 use crate::controller::{Probe, probe_withheld};
-use engine_native::{Memory, camera_root::{self, Camera}, cgame_state::{self, Clock}};
+use engine_native::{Memory, cgame_state::{self, Clock}};
+use engine_native_politics::camera_root::{self, Camera};
 use engine_native_air::command_inputs;
 use serde_json::{Map, Value, json};
 use std::{

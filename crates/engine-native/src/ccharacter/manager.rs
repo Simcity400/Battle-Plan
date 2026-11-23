@@ -47,7 +47,7 @@ fn fresh_stamp() -> u64 {
 }
 
 impl PortraitCensus {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub const INITIAL_CAPACITY: usize = 65536;
 
     pub fn try_new(capacity: usize) -> std::io::Result<Self> {
@@ -62,7 +62,7 @@ impl PortraitCensus {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(capacity: usize) -> Self {
         Self::try_new(capacity).unwrap()
     }
@@ -216,7 +216,7 @@ impl Roster {
         ccharacter::View::read(memory, self.base, pointer, roster, ordinal, required)
     }
 
-    pub(crate) fn pointer(
+    pub fn pointer(
         self,
         memory: &impl Memory,
         index: u32,

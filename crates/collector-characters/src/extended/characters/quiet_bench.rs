@@ -344,7 +344,7 @@ fn portrait_hour_costs_at_late_war_scale() {
     let _globals = crate::extended::characters::test_globals();
     use crate::extended::character_portraits::{self as portraits, CaptureContext, PARTS};
     struct Quiet;
-    impl engine_native::portrait_cache::Changes for Quiet {
+    impl engine_native_politics::portrait_cache::Changes for Quiet {
         fn revision(&self, _: usize) -> Option<(u64, u64)> {
             Some((1, 0))
         }

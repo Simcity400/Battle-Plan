@@ -18,6 +18,7 @@ tap-foreign-probe = ["collector-hooks/tap-foreign-probe"]
 test-support = ["collector-hooks/test-support", "collector-lifetime/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support", "dep:collector-test-support"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-air.workspace = true
 replay-recording.workspace = true
 collector-hooks.workspace = true

@@ -1,6 +1,7 @@
 use super::*;
 use engine_land_inputs::{active_ability_record as active, cability};
-use engine_native::{ccountry, cgame_state, cpolitical_status, crelation, cunit_leader};
+use engine_native::{ccountry, cgame_state, crelation, cunit_leader};
+use engine_native_politics::cpolitical_status;
 use engine_production::nindustrial_organisation_corganisation as mio;
 use std::{hint::black_box, time::Instant};
 const HEAP: usize = 0x350_0000;

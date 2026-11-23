@@ -13,6 +13,7 @@ doctest = false
 test-support = ["engine-native/test-support", "engine-native-memory/test-support", "engine-native-parts/test-support"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-air.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
@@ -22,6 +23,7 @@ engine-native-parts.workspace = true
 engine-sites.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 engine-native-air = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }

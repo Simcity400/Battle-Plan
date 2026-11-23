@@ -24,10 +24,19 @@ mod tests {
     use super::*;
     use collector_stability::country_stability::{Capacities, Captured, TABLES};
     use engine_native::{
-        Memory, cattache_relation, ccountry, cdiplomacy_status, cgame_state, cidea,
-        cideology_group, cpdx_array::Array, cpolitical_party, cpolitical_status, crelation,
-        cstatic_modifier, modifier_definition, msvc_string,
+        Memory,
+        cattache_relation,
+        ccountry,
+        cgame_state,
+        cidea,
+        cideology_group,
+        cpdx_array::Array,
+        crelation,
+        cstatic_modifier,
+        modifier_definition,
+        msvc_string,
     };
+    use engine_native_politics::{cdiplomacy_status, cpolitical_party, cpolitical_status};
     use engine_stability::{cmodifier, country_stability as native, cworld_threat};
     use replay_data::rows::{CountryStabilityLineRow, TableRows};
     use replay_frame::frame::{Metrics, TableInput};

@@ -192,13 +192,13 @@ fn strategic_action_friendly_gate_skips_controller_modifier_in_active_war() {
     const TUPLE: usize = 0x92000;
     const WAR: usize = 0x93000;
     image.u64(COUNTRY2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    image.u64(DIPLOMACY, crate::cdiplomacy_status::VTABLE_RVA.0 as u64);
+    image.u64(DIPLOMACY, engine_native_politics::cdiplomacy_status::VTABLE_RVA.0 as u64);
     image.u64(
-        DIPLOMACY + crate::cdiplomacy_status::COUNTRY,
+        DIPLOMACY + engine_native_politics::cdiplomacy_status::COUNTRY,
         COUNTRY2 as u64,
     );
     image.array(
-        DIPLOMACY + crate::cdiplomacy_status::RELATIONS,
+        DIPLOMACY + engine_native_politics::cdiplomacy_status::RELATIONS,
         RELATIONS,
         3,
     );

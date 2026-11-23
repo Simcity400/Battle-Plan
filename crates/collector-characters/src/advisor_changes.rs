@@ -331,9 +331,9 @@ macro_rules! role_callback {
 }
 use engine_mutations::character_role_mutations as roles;
 role_callback!(country_leader_modifiers, roles::COUNTRY_LEADER_MODIFIERS, (leader: usize),
-    collector_observers::character_changes::role_character(leader, engine_native::ccountry_leader::CHARACTER));
+    collector_observers::character_changes::role_character(leader, engine_native_politics::ccountry_leader::CHARACTER));
 role_callback!(country_leader_destroy, roles::COUNTRY_LEADER_DESTROY, (leader: usize),
-    collector_observers::character_changes::role_character(leader, engine_native::ccountry_leader::CHARACTER));
+    collector_observers::character_changes::role_character(leader, engine_native_politics::ccountry_leader::CHARACTER));
 role_callback!(country_leader_map_insert, roles::COUNTRY_LEADER_MAP_INSERT,
     (map: usize, result: usize, key: usize, value: usize),
     Some(map.saturating_sub(engine_native::ccharacter::LEADER_MAP_HEAD)));

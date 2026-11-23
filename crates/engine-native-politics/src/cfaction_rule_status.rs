@@ -1,6 +1,7 @@
 
 use engine_sites::Rva;
-use crate::{Memory, allocation, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_allocation as allocation;
 
 pub const STATUS: usize = 0x570;
 pub const VTABLE_RVA: Rva = Rva(0x02a9_bb58);

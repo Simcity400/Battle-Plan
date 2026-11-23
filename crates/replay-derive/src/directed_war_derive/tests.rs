@@ -1,9 +1,17 @@
 use super::*;
 use crate::rows::{CountryLinkRow, WarRelationRow};
 use engine_native::{
-    Memory, ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status, cwar_relation,
-    memory::SliceMemory, read, walk::Outcome,
+    Memory,
+    ccountry,
+    cgame_state,
+    crelation,
+    crelation_status,
+    cwar_relation,
+    memory::SliceMemory,
+    read,
+    walk::Outcome,
 };
+use engine_native_politics::cdiplomacy_status;
 use std::collections::BTreeMap;
 
 const BASE: usize = 0;

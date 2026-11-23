@@ -1,13 +1,14 @@
-pub use crate::ccountry::rosters::{OWNER, VTABLE_RVA, characters_object};
+pub use engine_native::ccountry::rosters::{OWNER, VTABLE_RVA, characters_object};
 
-use crate::{
-    Memory, cadvisor,
-    ccharacter::{self, Literal, NameWalk},
-    ccountry,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cpdx_lexer, read, read_slice,
+    cpdx_lexer,
+    read,
+    read_slice,
     walk::Outcome,
 };
+use engine_native::{cadvisor, ccharacter::{self, Literal, NameWalk}, ccountry};
 use engine_sites::Rva;
 
 pub const APPOINTED_ADVISORS: usize = 0x58;
@@ -40,14 +41,14 @@ pub struct ActiveRow {
 pub const RETIRED_CHARACTERS: usize = 0x28;
 
 struct Records<'a> {
-    output: crate::walk::Buffer<'a, ActiveRow>,
+    output: engine_native_memory::walk::Buffer<'a, ActiveRow>,
     len: usize,
     unread_rows: u32,
     failure: Option<&'static str>,
 }
 
 impl<'a> Records<'a> {
-    fn new(output: crate::walk::Buffer<'a, ActiveRow>) -> Self {
+    fn new(output: engine_native_memory::walk::Buffer<'a, ActiveRow>) -> Self {
         Self {
             output,
             len: 0,
@@ -153,7 +154,7 @@ impl<'a> Records<'a> {
 }
 
 pub fn count_records(memory: &impl Memory, base: usize, game_state: usize) -> [Outcome; 2] {
-    walk_records_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_records_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_records(
@@ -167,8 +168,8 @@ pub fn walk_records(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(active),
-        crate::walk::Buffer::Growing(retired),
+        engine_native_memory::walk::Buffer::Growing(active),
+        engine_native_memory::walk::Buffer::Growing(retired),
     )
 }
 
@@ -176,8 +177,8 @@ pub fn walk_records_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    active: crate::walk::Buffer<'_, ActiveRow>,
-    retired: crate::walk::Buffer<'_, ActiveRow>,
+    active: engine_native_memory::walk::Buffer<'_, ActiveRow>,
+    retired: engine_native_memory::walk::Buffer<'_, ActiveRow>,
 ) -> [Outcome; 2] {
     let mut tables = [Records::new(active), Records::new(retired)];
     let result = (|| {
@@ -218,8 +219,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     )
 }
 
@@ -227,8 +228,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    bytes: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     match walk_inner(
         memory,
@@ -288,8 +289,8 @@ pub fn walk_available_carried(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
         AVAILABLE_ADVISORS,
         false,
         carry,
@@ -313,8 +314,8 @@ pub fn walk_available(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     )
 }
 
@@ -322,8 +323,8 @@ pub fn walk_available_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    bytes: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     walk_inner(
         memory,
@@ -415,8 +416,8 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
     roster: usize,
     slots: bool,
     carry: &mut impl AvailableCarry,

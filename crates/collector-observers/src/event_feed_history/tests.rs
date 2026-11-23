@@ -1,7 +1,6 @@
 use super::*;
-use engine_native::{
-    ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status, cwar_relation,
-};
+use engine_native::{ccountry, cgame_state, crelation, crelation_status, cwar_relation};
+use engine_native_politics::cdiplomacy_status;
 use std::collections::BTreeMap;
 
 struct NoReads;

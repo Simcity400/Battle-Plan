@@ -1,4 +1,5 @@
-use crate::{Memory, cpdx_array::Array, modifier_accumulator, msvc_string, read};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read};
+use engine_native_parts::modifier_accumulator;
 
 pub use game_model::modifier_breakdown::{Node, SourceValue, SourceNode};
 
@@ -25,7 +26,7 @@ pub fn source_nodes(
         let mut values = Vec::new();
         let mut failure = false;
         modifier_accumulator::entries_at(memory, address, &mut |key, raw| {
-            if crate::allocation::reserve(&mut values, 1).is_err() {
+            if engine_allocation::reserve(&mut values, 1).is_err() {
                 failure = true;
             } else {
                 values.push(SourceValue { key, raw });
@@ -52,7 +53,7 @@ pub fn source_nodes(
         ordinal = ordinal
             .checked_add(1)
             .ok_or("division modifier source ordinal overflow")?;
-        crate::allocation::reserve(&mut stack, 1)
+        engine_allocation::reserve(&mut stack, 1)
             .map_err(|_| "division modifier source stack allocation failed")?;
         stack.push((address, children, 0));
         loop {
@@ -114,14 +115,14 @@ pub fn printed_keys(
     root: usize,
     keys: &[u32],
 ) -> Result<Vec<PrintedTree>, &'static str> {
-    let definitions = crate::modifier_definition::DefinitionMemo::default();
+    let definitions = engine_native_parts::modifier_definition::DefinitionMemo::default();
     let mut output =
-        crate::allocation::vec(keys.len()).map_err(|_| "modifier breakdown allocation failed")?;
+        engine_allocation::vec(keys.len()).map_err(|_| "modifier breakdown allocation failed")?;
     output.resize_with(keys.len(), || Ok(Vec::new()));
     if keys.is_empty() {
         return Ok(output);
     }
-    let mut values = crate::allocation::default_vec::<i64>(keys.len())
+    let mut values = engine_allocation::default_vec::<i64>(keys.len())
         .map_err(|_| "modifier breakdown allocation failed")?;
     let mut stack: Vec<(usize, Array, u32)> = Vec::new();
     let mut address = root;
@@ -164,7 +165,7 @@ pub fn printed_keys(
             }
             let name = if children.count == 0 && value != 0 {
                 match &name {
-                    Ok(name) => crate::allocation::copy_vec(name)
+                    Ok(name) => engine_allocation::copy_vec(name)
                         .map_err(|_| "modifier breakdown allocation failed")?,
                     Err(reason) => {
                         *output = Err(*reason);
@@ -175,7 +176,7 @@ pub fn printed_keys(
                 Vec::new()
             };
             let nodes = output.as_mut().unwrap();
-            crate::allocation::reserve(nodes, 1)
+            engine_allocation::reserve(nodes, 1)
                 .map_err(|_| "modifier breakdown allocation failed")?;
             nodes.push(Node {
                 children: children.count,
@@ -183,7 +184,7 @@ pub fn printed_keys(
                 name,
             });
         }
-        crate::allocation::reserve(&mut stack, 1)
+        engine_allocation::reserve(&mut stack, 1)
             .map_err(|_| "modifier breakdown allocation failed")?;
         stack.push((address, children, 0));
         loop {
@@ -224,7 +225,7 @@ fn walk(
     key: u32,
     names: Names,
 ) -> Result<Vec<Node>, &'static str> {
-    let definitions = crate::modifier_definition::DefinitionMemo::default();
+    let definitions = engine_native_parts::modifier_definition::DefinitionMemo::default();
     let mut nodes = Vec::new();
     let mut stack: Vec<(usize, Array, u32)> = Vec::new();
     let mut address = root;
@@ -238,7 +239,7 @@ fn walk(
             .ok_or("modifier breakdown children unreadable or invalid")?;
         let raw = modifier_accumulator::lookup_at(memory, address, key)?;
         let value = if raw.present {
-            crate::modifier_definition::effective_memo(memory, base, key, raw.raw, &definitions)?
+            engine_native_parts::modifier_definition::effective_memo(memory, base, key, raw.raw, &definitions)?
         } else {
             0
         };
@@ -252,9 +253,9 @@ fn walk(
         } else {
             Vec::new()
         };
-        crate::allocation::reserve(&mut nodes, 1)
+        engine_allocation::reserve(&mut nodes, 1)
             .map_err(|_| "modifier breakdown allocation failed")?;
-        crate::allocation::reserve(&mut stack, 1)
+        engine_allocation::reserve(&mut stack, 1)
             .map_err(|_| "modifier breakdown allocation failed")?;
         nodes.push(Node {
             children: children.count,
@@ -298,7 +299,7 @@ pub fn balance_sources(memory: &impl Memory, record: usize) -> Result<Vec<Vec<u8
         .and_then(|p| Array::read(memory, p, 8))
         .ok_or("power balance modifier sources unreadable or invalid")?;
     let mut names = Vec::new();
-    crate::allocation::reserve_push_batch(&mut names, sources.count as usize)
+    engine_allocation::reserve_push_batch(&mut names, sources.count as usize)
         .map_err(|_| "power balance source allocation failed")?;
     for ordinal in 0..sources.count {
         let source = sources
@@ -323,9 +324,9 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
         .and_then(|p| Array::read(memory, p, 8))
         .ok_or("power balance modifier sources unreadable or invalid")?;
     let mut output = Balance::default();
-    let mut names = crate::allocation::vec(sources.count as usize)
+    let mut names = engine_allocation::vec(sources.count as usize)
         .map_err(|_| "power balance source allocation failed")?;
-    crate::allocation::reserve_push_batch(&mut output.sources, sources.count as usize)
+    engine_allocation::reserve_push_batch(&mut output.sources, sources.count as usize)
         .map_err(|_| "power balance source allocation failed")?;
     for ordinal in 0..sources.count {
         let source = sources
@@ -356,7 +357,7 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
                     .element(i, 16)
                     .and_then(|p| read::<u32>(memory, p))
                     .ok_or("power balance source modifier key unreadable")?;
-                if crate::modifier_definition::enabled(memory, base, key)? {
+                if engine_native_parts::modifier_definition::enabled(memory, base, key)? {
                     nonempty = true;
                     break;
                 }
@@ -374,13 +375,13 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
         memory,
         base,
         root,
-        crate::modifier_keys::POWER_BALANCE_DAILY,
+        engine_executable::modifier_keys::POWER_BALANCE_DAILY,
     )?;
     output.weekly = tree(
         memory,
         base,
         root,
-        crate::modifier_keys::POWER_BALANCE_WEEKLY,
+        engine_executable::modifier_keys::POWER_BALANCE_WEEKLY,
     )?;
     for nodes in [&mut output.daily, &mut output.weekly] {
         if nodes[0].children as usize != names.len()
@@ -393,7 +394,7 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
         for (node, &source) in nodes[1..].iter_mut().zip(&names) {
             let name = &output.sources[source];
             let additional = name.len().saturating_sub(node.name.len());
-            crate::allocation::reserve(&mut node.name, additional)
+            engine_allocation::reserve(&mut node.name, additional)
                 .map_err(|_| "power balance name allocation failed")?;
             node.name.clear();
             node.name.extend_from_slice(name);
@@ -405,7 +406,9 @@ pub fn balance(memory: &impl Memory, base: usize, record: usize) -> Result<Balan
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{memory::SliceMemory, modifier_definition as definition, modifier_keys as keys};
+    use engine_native_memory::memory::SliceMemory;
+    use engine_native_parts::modifier_definition as definition;
+    use engine_executable::modifier_keys as keys;
 
     struct Fixture(Vec<u8>);
     impl Memory for Fixture {
@@ -617,7 +620,7 @@ mod tests {
             &[first, second, first],
         );
         f.node(
-            country + crate::ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native::ccountry::MODIFIER_ACCUMULATOR,
             b"",
             &[],
             &[child],
@@ -625,7 +628,7 @@ mod tests {
         let nodes = tree(
             &f,
             0,
-            country + crate::ccountry::MODIFIER_ACCUMULATOR,
+            country + engine_native::ccountry::MODIFIER_ACCUMULATOR,
             keys::LAND_REINFORCE_RATE,
         )
         .unwrap();
@@ -638,8 +641,8 @@ mod tests {
         );
         assert_eq!(nodes[2].name, vec![b'x'; 600]);
         for offset in [
-            crate::carmy_leader::MOVEMENT_MODIFIER,
-            crate::carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER,
+            engine_native::carmy_leader::MOVEMENT_MODIFIER,
+            engine_native::carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER,
         ] {
             f.node(
                 leader + offset + 0x10,
@@ -653,7 +656,7 @@ mod tests {
                 (b"commander".as_slice(), 250, -700)
             );
         }
-        let root = country + crate::ccountry::MODIFIER_ACCUMULATOR;
+        let root = country + engine_native::ccountry::MODIFIER_ACCUMULATOR;
         let full = tree(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
         let printed = printed_nodes(&f, 0, root, keys::LAND_REINFORCE_RATE).unwrap();
         assert_eq!(printed.len(), full.len());

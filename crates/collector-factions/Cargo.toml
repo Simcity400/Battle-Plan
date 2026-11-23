@@ -15,6 +15,7 @@ faction_changes = []
 test-support = []
 
 [dependencies]
+engine-native-politics.workspace = true
 collector-certificates.workspace = true
 collector-hooks.workspace = true
 collector-intel.workspace = true

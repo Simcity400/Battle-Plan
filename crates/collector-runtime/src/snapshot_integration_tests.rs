@@ -36,7 +36,8 @@ pub(crate) fn allocation_failure_exercise() {
 #[test]
 fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
     use collector_characters::extended::characters::characters_test_kit as kit;
-    use engine_native::{ccharacter, character_portrait_entry, walk};
+    use engine_native::{ccharacter, walk};
+    use engine_native_politics::character_portrait_entry;
     struct Source<'a> {
         bytes: &'a [u8],
         calls: RefCell<Vec<(usize, usize)>>,
@@ -54,19 +55,19 @@ fn portrait_dependencies_preserve_each_primary_fault_and_sorted_rows() {
         memory: &impl Memory,
     ) -> (
         engine_native::cprovince::UnitOrderWalk,
-        Vec<ccharacter::PortraitRow>,
+        Vec<engine_native_politics::character_portraits::PortraitRow>,
         Vec<character_portrait_entry::Row<engine_native::capture_text::Owned>>,
     ) {
         let mut rows = vec![ccharacter::PortraitRow::default(); 4];
         let mut entries =
             vec![character_portrait_entry::Row::<engine_native::capture_text::Owned>::default(); 4];
-        let result = ccharacter::walk_portraits(
+        let result = engine_native_politics::character_portraits::walk_portraits(
             memory,
             kit::BASE,
             kit::GAME_STATE,
             &mut rows,
             &mut entries,
-            ccharacter::PortraitWalk::default(),
+            engine_native_politics::character_portraits::PortraitWalk::default(),
         );
         (result, rows, entries)
     }

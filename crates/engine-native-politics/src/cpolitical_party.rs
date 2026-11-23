@@ -1,6 +1,6 @@
 pub use engine_native_parts::cpolitical_party_layout::{COUNTRY_LEADERS, COUNTRY_LEADER_COUNT, ID, IDEOLOGY_GROUP, VTABLE_RVA, identity};
 
-use crate::Memory;
+use engine_native_memory::Memory;
 
 pub const TAG: usize = 0x20;
 pub const NAME: usize = 0x28;
@@ -44,18 +44,18 @@ pub fn demand(memory: &impl Memory, base: usize, country: usize) -> Result<Deman
     let walked =
         crate::cpolitical_status::Reader::new(memory, base, country)?.parties_carried(
             0,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
             0,
-            crate::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
             0,
             &mut crate::cpolitical_status::FreshParties,
         );
     let rows = match walked.outcome {
-        crate::walk::Outcome::Rows { len } => len,
-        crate::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native_memory::walk::Outcome::Rows { len } => len,
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("political party sizing row count overflow")?,
-        crate::walk::Outcome::Unavailable { reason } => return Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => return Err(reason),
     };
     Ok(Demand {
         rows,

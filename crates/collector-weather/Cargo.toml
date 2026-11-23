@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-observers/test-support"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true

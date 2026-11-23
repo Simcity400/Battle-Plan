@@ -9,7 +9,8 @@ use collector_projection::projection::{
 };
 use engine_allocation::{copy_vec, owned_vec, reserve_exact};
 use engine_characters::advisor_tokens;
-use engine_native::{Memory, ccountry_characters as native, walk::Outcome};
+use engine_native::{Memory, walk::Outcome};
+use engine_native_politics::ccountry_characters as native;
 use replay_data::{
     cadence::SKIPPED_REASON, cadence::should_walk, rows::AdvisorTokenRow,
     rows::CountryCharacterRow, rows::HiredAdvisorRow, rows::TableId, rows::tables,

@@ -208,9 +208,13 @@ fn failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them
     use collector_production::production::{self, Captured, Sources};
     use engine_equipment::{cequipment_upgrades_instance, equipment_module_container};
     use engine_native::{
-        cequipment_module, cequipment_type, cequipment_upgrade, cequipment_variant as variant,
-        equipment_upgrade_entry, msvc_string,
+        cequipment_module,
+        cequipment_type,
+        cequipment_upgrade,
+        cequipment_variant as variant,
+        msvc_string,
     };
+    use engine_native_politics::equipment_upgrade_entry;
     if !contract_tests::isolated(
         "hook_failures::fresh_producer_tests::failed_design_observer_reacquires_changed_native_snapshots_and_publishes_them",
     ) {

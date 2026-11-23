@@ -18,6 +18,7 @@ variable_changes = []
 conversion_check = []
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-intelligence.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true

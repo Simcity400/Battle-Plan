@@ -189,6 +189,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 collector-test-support = { workspace = true, optional = true }
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal"] }
 replay-recording.workspace = true

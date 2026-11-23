@@ -1502,7 +1502,7 @@ mod tests {
             self.check(owner);
             assert_eq!(
                 address,
-                Self::root(owner) + engine_native::cdiplomacy_status::RELATIONS
+                Self::root(owner) + engine_native_politics::cdiplomacy_status::RELATIONS
             );
             assert_eq!(out.len(), 16);
             self.roots.set(self.roots.get() + 1);

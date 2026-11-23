@@ -5,9 +5,15 @@ use crate::{
 };
 use engine_mutations::political_status_mutations::Domain;
 use engine_native::{
-    ccharacter, ccountry, ccountry_leader, cgame_state, cidea, cideology_group, cpolitical_party,
-    memory::SliceMemory, msvc_string,
+    ccharacter,
+    ccountry,
+    cgame_state,
+    cidea,
+    cideology_group,
+    memory::SliceMemory,
+    msvc_string,
 };
+use engine_native_politics::{ccountry_leader, cpolitical_party};
 use std::cell::RefCell;
 
 const GS: usize = 0;

@@ -1,0 +1,31 @@
+[package]
+name = "engine-native-politics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[features]
+test-support = ["engine-native/test-support", "engine-native-memory/test-support", "engine-native-parts/test-support"]
+
+[dependencies]
+engine-allocation.workspace = true
+engine-executable.workspace = true
+engine-native.workspace = true
+engine-native-memory.workspace = true
+engine-native-parts.workspace = true
+engine-sites.workspace = true
+game-model.workspace = true
+
+[dev-dependencies]
+engine-allocation = { workspace = true, features = ["test-support"] }
+engine-native = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
+engine-native-parts = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

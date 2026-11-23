@@ -352,10 +352,10 @@ fn world(shape: &Shape) -> Built {
                 (0x1e9, 13),
             ],
         );
-        let diplomacy = w.object(0x300, engine_native::cdiplomacy_status::VTABLE_RVA.0);
+        let diplomacy = w.object(0x300, engine_native_politics::cdiplomacy_status::VTABLE_RVA.0);
         w.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
         w.u64(
-            diplomacy + engine_native::cdiplomacy_status::COUNTRY,
+            diplomacy + engine_native_politics::cdiplomacy_status::COUNTRY,
             country as u64,
         );
         diplomacies.push(diplomacy);
@@ -371,7 +371,7 @@ fn world(shape: &Shape) -> Built {
             w.u32(list, (1 + enemy * (slots - 1) / shape.owners) as u32);
         }
         w.array(
-            diplomacy + engine_native::cdiplomacy_status::ENEMY_COUNTRIES,
+            diplomacy + engine_native_politics::cdiplomacy_status::ENEMY_COUNTRIES,
             list,
             u32::from(at_war),
         );
@@ -394,7 +394,7 @@ fn world(shape: &Shape) -> Built {
     for (from, &diplomacy) in diplomacies.iter().enumerate() {
         let row = w.alloc(slots * 8);
         w.array(
-            diplomacy + engine_native::cdiplomacy_status::RELATIONS,
+            diplomacy + engine_native_politics::cdiplomacy_status::RELATIONS,
             row,
             slots as u32,
         );

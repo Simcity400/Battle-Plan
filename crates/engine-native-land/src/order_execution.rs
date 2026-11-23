@@ -11,7 +11,6 @@ use engine_native::{
     carmy,
     carmy_leader,
     ccountry,
-    cdiplomacy_status,
     corder_instance::{self as order, AssignedSources, PlanRow},
     corders_group,
     corders_group_member as member,
@@ -20,6 +19,7 @@ use engine_native::{
     cstate,
     cunit,
 };
+use engine_native_politics::cdiplomacy_status;
 use engine_native_parts::{
     csub_unit_definition,
     modifier_accumulator::{SnapshotArena, SnapshotCapacity},

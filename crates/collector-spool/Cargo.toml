@@ -80,6 +80,7 @@ worker_sampler = ["collector-workers/worker_sampler", "collector-map-capture/wor
 world_input_changes = ["collector-observers/world_input_changes", "collector-map-capture/world_input_changes", "collector-capture/world_input_changes"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-native-air.workspace = true
 replay.workspace = true
 replay-capture-spool = { workspace = true, features = ["journal"] }

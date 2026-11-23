@@ -20,8 +20,6 @@ use engine_native::{
     ccharacter,
     ccharacter_manager,
     ccountry,
-    ccurrent_autonomy_status,
-    cdiplomacy_status,
     cgame_state,
     cpdx_array::Array,
     crelation_status,
@@ -32,6 +30,7 @@ use engine_native::{
     read_slice,
     walk::Outcome,
 };
+use engine_native_politics::{ccurrent_autonomy_status, cdiplomacy_status};
 use engine_native_intelligence::{
     agency_upgrade_levels,
     ccountry_intel,
@@ -4603,9 +4602,13 @@ impl Captured {
 #[cfg(any(test, feature = "test-support"))]
 pub mod relations_test_kit {
     use super::*;
+    use engine_native_politics::cdiplomacy_status;
     use engine_native::{
-        cdiplomacy_status, cgame_state, cguarantee_relation, cmarket_access_rights_relation,
-        crelation, memory::SliceMemory,
+        cgame_state,
+        cguarantee_relation,
+        cmarket_access_rights_relation,
+        crelation,
+        memory::SliceMemory,
     };
 
     pub const BASE: usize = 0;

@@ -1,10 +1,22 @@
 use collector_extended_support::bench_world::{Heap, World};
 use engine_land_inputs::{cfront, cfront_section};
 use engine_native::{
-    carmy, carmy_group, ccontroller_area, ccountry, cdiplomacy_status, cgame_state,
-    corder_instance as order, corders_group as group, corders_group_member, cprovince,
-    creference_registry as registry, cstate, ctheatre, cunit, reference_bucket as bucket,
+    carmy,
+    carmy_group,
+    ccontroller_area,
+    ccountry,
+    cgame_state,
+    corder_instance as order,
+    corders_group as group,
+    corders_group_member,
+    cprovince,
+    creference_registry as registry,
+    cstate,
+    ctheatre,
+    cunit,
+    reference_bucket as bucket,
 };
+use engine_native_politics::cdiplomacy_status;
 
 #[cfg(test)]
 const STATE: usize = 0x10000;

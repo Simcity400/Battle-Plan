@@ -189,7 +189,7 @@ impl SourceCache {
             }
             missing.push((key, total));
         }
-        let trees = engine_native::modifier_breakdown::printed_keys(memory, base, root, &printed);
+        let trees = engine_native_politics::modifier_breakdown::printed_keys(memory, base, root, &printed);
         let (mut trees, shared_failure) = match trees {
             Ok(trees) => (trees.into_iter(), None),
             Err(reason) => (Vec::new().into_iter(), Some(reason)),
@@ -764,7 +764,8 @@ mod tests {
 
     fn marker_fixture() -> Vec<u8> {
         use cresistance::map_icons as map;
-        use engine_native::{ccountry, cdiplomacy_status, cgame_state};
+        use engine_native::{ccountry, cgame_state};
+        use engine_native_politics::cdiplomacy_status;
         use engine_occupation::{
             ccountry_occupation_data as group, ccountry_occupation_status as holder,
             pdx_robin_hood_bucket as bucket,

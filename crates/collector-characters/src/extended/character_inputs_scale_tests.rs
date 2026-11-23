@@ -1,10 +1,18 @@
 use super::{Capacities, Captured, Demand};
 use engine_characters::cscientist;
 use engine_native::{
-    Memory, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_characters,
-    ccountry_leader, cgame_state as gs, character_advisor_node, character_leader_node,
-    creference_registry, cunit_leader, msvc_tree_node as node,
+    Memory,
+    cadvisor,
+    ccharacter,
+    ccharacter_manager,
+    ccountry,
+    cgame_state as gs,
+    character_advisor_node,
+    creference_registry,
+    cunit_leader,
+    msvc_tree_node as node,
 };
+use engine_native_politics::{ccountry_characters, ccountry_leader, character_leader_node};
 use replay_frame::frame::TableView;
 use std::collections::BTreeMap;
 

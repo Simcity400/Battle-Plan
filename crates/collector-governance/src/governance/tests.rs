@@ -171,7 +171,7 @@ fn breakdown_capture_reads_sources_without_the_cached_trees() {
         base: 0,
         bytes: &bytes,
     };
-    assert!(engine_native::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
+    assert!(engine_native_politics::modifier_breakdown::balance(&memory, 0, RECORDS).is_err());
     let mut captured = Captured::vacant();
     captured.balances.outcome = Outcome::Rows { len: 1 };
     captured.capture_breakdowns(&memory, 0, STATE, 1);
@@ -213,9 +213,8 @@ fn incomplete_breakdown_tree_cannot_publish_a_default_row() {
 
 #[test]
 fn party_leader_role_identity_survives_capture_at_country_scale() {
-    use engine_native::{
-        ccharacter, ccountry, ccountry_leader, cideology_group, memory::SliceMemory,
-    };
+    use engine_native::{ccharacter, ccountry, cideology_group, memory::SliceMemory};
+    use engine_native_politics::ccountry_leader;
     let mut bytes = vec![0_u8; 0x3000];
     let mut word = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
     word(0x100, ccountry::VTABLE_RVA.0 as u64);

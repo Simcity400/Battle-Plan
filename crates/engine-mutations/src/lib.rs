@@ -11,15 +11,11 @@ use engine_native::{
     cair_wing_pool,
     ccharacter,
     ccountry,
-    ccountry_characters,
-    cdiplomacy_status,
     cequipment_production_license,
     cfaction,
     cgame_state,
     clicensed_production_status,
     cpdx_array,
-    cpolitical_party,
-    cpolitical_status,
     cprovince,
     creferenced_division_template,
     crelation,
@@ -27,6 +23,12 @@ use engine_native::{
     cstate,
     province_definition,
     read,
+};
+use engine_native_politics::{
+    ccountry_characters,
+    cdiplomacy_status,
+    cpolitical_party,
+    cpolitical_status,
 };
 use engine_native_air::{
     cair_base,

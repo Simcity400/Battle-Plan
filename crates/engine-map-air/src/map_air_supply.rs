@@ -3,7 +3,6 @@ use engine_native::allocation as engine_allocation;
 use engine_native::{
     Memory,
     ccountry,
-    cdiplomacy_status,
     cpdx_array::Array,
     cprovince,
     creference_registry::{Header, ScopedResolver},
@@ -12,6 +11,7 @@ use engine_native::{
     memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
     read,
 };
+use engine_native_politics::cdiplomacy_status;
 use engine_native_air::cair_base;
 use engine_sites::Rva;
 

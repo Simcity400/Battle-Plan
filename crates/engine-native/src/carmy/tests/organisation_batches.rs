@@ -209,7 +209,8 @@ fn compare(
 #[test]
 fn division_status_organisation_batches_keep_every_field_fault_and_later_edge() {
     let (mut source, mut seeds) = fixture(3);
-    use crate::{cdiplomacy_status as diplomacy, crelation::status as relation};
+    use engine_native_politics::cdiplomacy_status as diplomacy;
+    use crate::crelation::status as relation;
     const DIPLOMACY: usize = 0x2d000;
     const RELATIONS: usize = 0x2d200;
     const RELATION: usize = 0x2d300;

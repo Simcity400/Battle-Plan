@@ -1439,7 +1439,7 @@ impl Captured {
                     if source.accumulator == 0 {
                         return Err("reserve modifier tree accumulator missing");
                     }
-                    let tree = engine_native::modifier_breakdown::printed_nodes(
+                    let tree = engine_native_politics::modifier_breakdown::printed_nodes(
                         memory,
                         base,
                         source.accumulator,

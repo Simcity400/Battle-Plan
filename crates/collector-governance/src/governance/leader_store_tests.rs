@@ -1,9 +1,7 @@
 use super::*;
 use crate::party_leader_changes::{Counts, Pair, Watches};
-use engine_native::{
-    ccharacter, ccountry, ccountry_leader, cideology_group, cpolitical_party::LeaderRow,
-    memory::SliceMemory,
-};
+use engine_native::{ccharacter, ccountry, cideology_group, memory::SliceMemory};
+use engine_native_politics::{ccountry_leader, cpolitical_party::LeaderRow};
 use std::cell::RefCell;
 
 const REGION: usize = 0x2000;

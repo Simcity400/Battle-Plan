@@ -1,10 +1,6 @@
-use crate::ccharacter::{PORTRAIT_DATA, identity_header, portrait_header};
-use crate::{
-    Memory,
-    ccharacter::manager as ccharacter_manager,
-    msvc_string, read,
-    walk::Outcome,
-};
+use engine_native::ccharacter::{PORTRAIT_DATA, identity_header, portrait_header};
+use engine_native_memory::{Memory, msvc_string, read, walk::Outcome};
+use engine_native::ccharacter::manager as ccharacter_manager;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PortraitRow {
@@ -38,15 +34,15 @@ pub fn walk_portraits(
     base: usize,
     state: usize,
     output: &mut Vec<PortraitRow>,
-    entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>,
+    entries: &mut Vec<crate::character_portrait_entry::Row<engine_native_memory::capture_text::Owned>>,
     walk: PortraitWalk<'_>,
-) -> crate::cprovince::UnitOrderWalk {
+) -> engine_native::cprovince::UnitOrderWalk {
     walk_portraits_buffer(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(entries),
         walk,
     )
 }
@@ -56,25 +52,25 @@ pub fn count_portraits(
     base: usize,
     state: usize,
     walk: PortraitWalk<'_>,
-) -> crate::cprovince::UnitOrderWalk {
-    walk_portraits_buffer::<crate::capture_text::Owned>(
+) -> engine_native::cprovince::UnitOrderWalk {
+    walk_portraits_buffer::<engine_native_memory::capture_text::Owned>(
         memory,
         base,
         state,
-        crate::walk::Buffer::Count,
-        crate::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
         walk,
     )
 }
 
-fn walk_portraits_buffer<T: crate::capture_text::Value>(
+fn walk_portraits_buffer<T: engine_native_memory::capture_text::Value>(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, PortraitRow>,
-    mut entries: crate::walk::Buffer<'_, crate::character_portrait_entry::Row<T>>,
+    mut output: engine_native_memory::walk::Buffer<'_, PortraitRow>,
+    mut entries: engine_native_memory::walk::Buffer<'_, crate::character_portrait_entry::Row<T>>,
     walk: PortraitWalk<'_>,
-) -> crate::cprovince::UnitOrderWalk {
+) -> engine_native::cprovince::UnitOrderWalk {
     let PortraitWalk {
         part,
         parts,
@@ -106,7 +102,7 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                     if let Some(address) = identities[hinted as usize]
                         .pointer
                         .checked_add(PORTRAIT_DATA)
-                        && crate::memory::is_canonical_range(address, 16)
+                        && engine_native_memory::memory::is_canonical_range(address, 16)
                     {
                         memory.prefetch(address, 16);
                     }
@@ -133,7 +129,7 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                 } else {
                     portrait_header(memory, pointer)?
                 };
-                let a = crate::cpdx_array::Array::from_header(
+                let a = engine_native_memory::cpdx_array::Array::from_header(
                     header,
                     crate::character_portrait_entry::STRIDE,
                 )
@@ -178,8 +174,8 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
                         {
                             const HINT_BYTES: usize =
                                 crate::character_portrait_entry::IDENTITY + msvc_string::STRIDE;
-                            if crate::memory::is_canonical_range(entry, HINT_BYTES) {
-                                crate::prefetch::span(entry, HINT_BYTES);
+                            if engine_native_memory::memory::is_canonical_range(entry, HINT_BYTES) {
+                                engine_native_memory::prefetch::span(entry, HINT_BYTES);
                             }
                         }
                         hinted += 1;
@@ -212,7 +208,7 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
             let placed = crate::portrait_cache::settled(array, live, |image| {
                 used = start;
                 required = required_before;
-                let count = crate::cpdx_array::Array::from_header(
+                let count = engine_native_memory::cpdx_array::Array::from_header(
                     image.header,
                     crate::character_portrait_entry::STRIDE,
                 )
@@ -278,9 +274,12 @@ fn walk_portraits_buffer<T: crate::capture_text::Value>(
             _ => cache.invalidate(),
         }
     }
-    crate::cprovince::UnitOrderWalk {
+    engine_native::cprovince::UnitOrderWalk {
         outcome: result.unwrap_or_else(|reason| Outcome::Unavailable { reason }),
         len: used,
         required,
     }
 }
+
+#[cfg(test)]
+mod layout_tests;

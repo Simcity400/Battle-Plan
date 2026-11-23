@@ -19,7 +19,7 @@ pub(super) fn presize(
     let mut focus_bytes = 0_usize;
     let mut slots = 0_usize;
     let mut leaders = 0_usize;
-    let mut ideas = engine_native::cpolitical_status::IdeaDemand::default();
+    let mut ideas = engine_native_politics::cpolitical_status::IdeaDemand::default();
     let mut decisions = [0_usize; 2];
     let mut tactic_bytes = 0_usize;
     let mut research_rows = [0_usize; 3];
@@ -51,7 +51,7 @@ pub(super) fn presize(
         if let Err(reason) = add_rows(&mut slots, slot_demand) {
             refusal.get_or_insert(reason);
         }
-        match engine_native::cpolitical_status::Reader::new(memory, base, country.pointer) {
+        match engine_native_politics::cpolitical_status::Reader::new(memory, base, country.pointer) {
             Ok(reader) => {
                 if let Err(reason) = add_rows(
                     &mut leaders,
@@ -198,7 +198,7 @@ pub(super) fn presize(
     ] {
         raise(target, rows(count, 1));
     }
-    match engine_native::cpolitical_status::timed_idea_demand(
+    match engine_native_politics::cpolitical_status::timed_idea_demand(
         memory, base, state,
     ) {
         Ok(timed) => {

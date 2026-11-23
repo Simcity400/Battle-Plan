@@ -4,7 +4,6 @@ use engine_native_memory::{Memory, cpdx_array::Array, walk::Outcome};
 use engine_native::{
     carmy_leader,
     ccountry,
-    cdiplomacy_status,
     corder_instance,
     corders_group,
     corders_group_member,
@@ -14,6 +13,7 @@ use engine_native::{
     ctheatre,
     cunit,
 };
+use engine_native_politics::cdiplomacy_status;
 use engine_native_parts::{
     modifier_accumulator,
     modifier_definition::{DefinitionMemo, effective_memo},

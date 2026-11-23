@@ -1,9 +1,16 @@
 
 use crate::cmodifier;
 use engine_native::{
-    Memory, cadvisor, ccharacter, cdoctrine_sharing_status, cfaction_member_status, cgame_date,
-    cpdx_array::Array, creference_registry, ctechnology_sharing_faction, read,
+    Memory,
+    cadvisor,
+    ccharacter,
+    cfaction_member_status,
+    cgame_date,
+    cpdx_array::Array,
+    creference_registry,
+    read,
 };
+use engine_native_politics::{cdoctrine_sharing_status, ctechnology_sharing_faction};
 use engine_sites::Rva;
 
 pub const STATUS: usize = 0x838;

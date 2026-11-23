@@ -12,18 +12,18 @@ pub const IDEOLOGY_VTABLE_RVA: Rva = Rva(0x029b_a2d8);
 pub const NULL_IDEOLOGY_VTABLE_RVA: Rva = Rva(0x029b_a558);
 
 pub fn current_ideology(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     role: usize,
 ) -> Result<Option<u32>, &'static str> {
-    let pointer = crate::read::<u64>(memory, crate::ccharacter::at(role, CURRENT_IDEOLOGY)?)
+    let pointer = engine_native_memory::read::<u64>(memory, engine_native::ccharacter::at(role, CURRENT_IDEOLOGY)?)
         .ok_or("country leader current ideology pointer unreadable")?;
     let pointer =
         usize::try_from(pointer).map_err(|_| "country leader current ideology pointer overflow")?;
     if pointer == 0 {
         return Ok(None);
     }
-    let header = crate::read::<[u8; 12]>(memory, pointer)
+    let header = engine_native_memory::read::<[u8; 12]>(memory, pointer)
         .ok_or("country leader current ideology unreadable")?;
     let expected = engine_sites::at(base, IDEOLOGY_VTABLE_RVA).ok_or("module address overflow")?;
     let null_expected =
@@ -36,11 +36,13 @@ pub fn current_ideology(
 }
 
 pub(crate) fn role_key(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     character: usize,
     leader: usize,
 ) -> Result<i32, &'static str> {
-    use crate::{ccharacter, character_leader_node, msvc_tree_node::Cursor, read};
+    use engine_native::ccharacter;
+    use crate::character_leader_node;
+    use engine_native_memory::{msvc_tree_node::Cursor, read};
     let mut tree = Cursor::read(memory, character, ccharacter::LEADER_MAP_HEAD)?;
     let mut previous = None;
     let mut found = None;
@@ -76,12 +78,13 @@ pub struct Row {
 }
 
 pub fn walk(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-) -> crate::walk::Outcome {
-    use crate::{ccharacter::manager as ccharacter_manager, walk::Outcome};
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+) -> engine_native_memory::walk::Outcome {
+    use engine_native::ccharacter::manager as ccharacter_manager;
+    use engine_native_memory::walk::Outcome;
     let result = (|| {
         let mut len = 0;
         let mut unread_rows = 0_u32;
@@ -111,18 +114,14 @@ pub fn walk(
 }
 
 pub fn walk_entry(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
-    entry: crate::ccharacter::manager::Entry,
-    mut output: crate::walk::Buffer<'_, Row>,
-) -> crate::walk::Outcome {
-    use crate::{
-        ccharacter::{self, at},
-        character_leader_node,
-        msvc_tree_node::Cursor as RoleTree,
-        read,
-        walk::Outcome,
-    };
+    entry: engine_native::ccharacter::manager::Entry,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+) -> engine_native_memory::walk::Outcome {
+    use engine_native::ccharacter::{self, at};
+    use crate::character_leader_node;
+    use engine_native_memory::{msvc_tree_node::Cursor as RoleTree, read, walk::Outcome};
     let result = (|| {
         let expected = engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
         let mut len = 0;
@@ -193,15 +192,13 @@ pub fn walk_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn unreadable_current_ideology_keeps_the_existing_role_row() {
-        use crate::{
-            ccharacter::{self, manager::Entry},
-            character_leader_node,
-            msvc_tree_node,
-        };
+        use engine_native::ccharacter::{self, manager::Entry};
+        use crate::character_leader_node;
+        use engine_native_memory::msvc_tree_node;
         let mut bytes = vec![0; 0x400];
         let word = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
@@ -238,9 +235,9 @@ mod tests {
                 },
                 0,
                 entry,
-                crate::walk::Buffer::Exact(&mut rows)
+                engine_native_memory::walk::Buffer::Exact(&mut rows)
             ),
-            crate::walk::Outcome::Rows { len: 1 }
+            engine_native_memory::walk::Outcome::Rows { len: 1 }
         );
         assert_eq!(rows[0].character, 7);
         assert_eq!(rows[0].ideology, -7);
@@ -258,9 +255,9 @@ mod tests {
                 },
                 0,
                 entry,
-                crate::walk::Buffer::Exact(&mut rows)
+                engine_native_memory::walk::Buffer::Exact(&mut rows)
             ),
-            crate::walk::Outcome::Rows { len: 1 }
+            engine_native_memory::walk::Outcome::Rows { len: 1 }
         );
         assert_eq!(rows[0].current_ideology, Some(None));
         assert_eq!(rows[0].current_ideology_failure, None);
@@ -275,9 +272,9 @@ mod tests {
                 },
                 0,
                 entry,
-                crate::walk::Buffer::Exact(&mut rows)
+                engine_native_memory::walk::Buffer::Exact(&mut rows)
             ),
-            crate::walk::Outcome::Rows { len: 1 }
+            engine_native_memory::walk::Outcome::Rows { len: 1 }
         );
         assert_eq!(rows[0].current_ideology, Some(Some(0)));
         assert_eq!(rows[0].current_ideology_failure, None);

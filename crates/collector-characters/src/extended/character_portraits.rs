@@ -41,7 +41,7 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let acquired = ccharacter::count_portraits(memory, base, state, Default::default());
+        let acquired = engine_native_politics::character_portraits::count_portraits(memory, base, state, Default::default());
         let count = collector_extended_support::demand::rows(acquired.outcome)?;
         collector_primitives::table_capture::grow_capacity(&mut self.rows, count.div_ceil(PARTS));
         collector_primitives::table_capture::grow_capacity(&mut self.arena, acquired.required);
@@ -59,9 +59,9 @@ struct Certificate {
 }
 
 pub struct Part {
-    rows: CaptureRows<ccharacter::PortraitRow>,
-    arena: Arena<engine_native::character_portrait_entry::Row<engine_native::capture_text::Owned>>,
-    cache: engine_native::portrait_cache::Cache,
+    rows: CaptureRows<engine_native_politics::character_portraits::PortraitRow>,
+    arena: Arena<engine_native_politics::character_portrait_entry::Row<engine_native::capture_text::Owned>>,
+    cache: engine_native_politics::portrait_cache::Cache,
     plan: collector_snapshots::snapshot_plan::SnapshotPlan,
     certified: Option<Certificate>,
     matched: Option<u64>,
@@ -73,7 +73,7 @@ impl Part {
         Self {
             rows: CaptureRows::new(c.rows),
             arena: Arena::new(c.arena),
-            cache: engine_native::portrait_cache::Cache::new(
+            cache: engine_native_politics::portrait_cache::Cache::new(
                 if cfg!(feature = "portrait_changes") {
                     c.rows
                 } else {
@@ -81,7 +81,7 @@ impl Part {
                 },
             )
             .map_err(collector_memory::terminal::io)
-            .unwrap_or_else(|_| engine_native::portrait_cache::Cache::empty()),
+            .unwrap_or_else(|_| engine_native_politics::portrait_cache::Cache::empty()),
             plan: collector_snapshots::snapshot_plan::SnapshotPlan::default(),
             certified: None,
             matched: None,
@@ -92,7 +92,7 @@ impl Part {
         Self {
             rows: CaptureRows::new(0),
             arena: Arena::new(0),
-            cache: engine_native::portrait_cache::Cache::empty(),
+            cache: engine_native_politics::portrait_cache::Cache::empty(),
             plan: collector_snapshots::snapshot_plan::SnapshotPlan::default(),
             certified: None,
             matched: None,
@@ -152,7 +152,7 @@ impl Part {
         context: CaptureContext,
         part: usize,
         census: Option<&engine_native::ccharacter_manager::PortraitCensus>,
-        observer: &dyn engine_native::portrait_cache::Changes,
+        observer: &dyn engine_native_politics::portrait_cache::Changes,
     ) -> u64 {
         let _reads = collector_memory::read_accounting::table(TableId::CharacterPortraits);
         let begin = qpc();
@@ -194,7 +194,7 @@ impl Part {
                 self.rows.outcome = acquired.outcome;
                 self.arena.len = acquired.len;
                 self.arena.required = acquired.required;
-                crate::portrait_changes::record(engine_native::portrait_cache::Counts {
+                crate::portrait_changes::record(engine_native_politics::portrait_cache::Counts {
                     reused_characters: acquired.outcome.len() as u64,
                     reused_entries: acquired.len as u64,
                     ..Default::default()
@@ -221,13 +221,13 @@ impl Part {
             self.plan.begin(memory, false);
         }
         let observation = cfg!(feature = "portrait_changes").then_some((&mut self.cache, observer));
-        let acquired = ccharacter::walk_portraits(
+        let acquired = engine_native_politics::character_portraits::walk_portraits(
             &self.plan.view(memory),
             context.base,
             context.game_state,
             &mut self.rows.rows,
             &mut self.arena.first,
-            ccharacter::PortraitWalk {
+            engine_native_politics::character_portraits::PortraitWalk {
                 part,
                 parts: PARTS,
                 observation,
@@ -540,7 +540,7 @@ mod owned_tests {
         let pointer = census.rows(kit::BASE, kit::GAME_STATE).unwrap()[0].pointer;
         let header = pointer + ccharacter::PORTRAIT_DATA;
         let entry = bytes.len();
-        bytes.resize(entry + engine_native::character_portrait_entry::STRIDE, 0);
+        bytes.resize(entry + engine_native_politics::character_portrait_entry::STRIDE, 0);
         let offset = header - kit::GAME_STATE;
         bytes[offset..offset + 8]
             .copy_from_slice(&((kit::GAME_STATE + entry) as u64).to_le_bytes());
@@ -557,7 +557,7 @@ mod owned_tests {
             any: Cell<u64>,
             during: Cell<bool>,
         }
-        impl engine_native::portrait_cache::Changes for Observer {
+        impl engine_native_politics::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, 0))
             }
@@ -624,7 +624,7 @@ mod owned_tests {
             holders: Cell<u64>,
             domain: Cell<u64>,
         }
-        impl engine_native::portrait_cache::Changes for Observer {
+        impl engine_native_politics::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, self.holders.get()))
             }
@@ -717,7 +717,7 @@ mod owned_tests {
     #[test]
     fn a_quiet_share_stays_quiet_across_growth_and_a_new_census() {
         struct Observer;
-        impl engine_native::portrait_cache::Changes for Observer {
+        impl engine_native_politics::portrait_cache::Changes for Observer {
             fn revision(&self, _: usize) -> Option<(u64, u64)> {
                 Some((1, 0))
             }
@@ -775,7 +775,7 @@ mod owned_tests {
         }
         for (part, character) in [(0, 900), (1, 22)] {
             capture.parts[part].rows.outcome = Outcome::Rows { len: 1 };
-            capture.parts[part].rows.rows[0] = ccharacter::PortraitRow {
+            capture.parts[part].rows.rows[0] = engine_native_politics::character_portraits::PortraitRow {
                 character,
                 portraits: [0, 1],
             };

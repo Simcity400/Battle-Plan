@@ -2015,7 +2015,8 @@ fn wars_typed_walk_keeps_full_validation_from_any_starting_storage() {
 #[test]
 fn wars_primary_faults_preserve_native_validation_scope() {
     use collector_states::wars_test_kit as kit;
-    use engine_native::{ccountry, cdiplomacy_status, cgame_state, crelation, memory::SliceMemory};
+    use engine_native::{ccountry, cgame_state, crelation, memory::SliceMemory};
+    use engine_native_politics::cdiplomacy_status;
     struct Fault<'a> {
         memory: SliceMemory<'a>,
         fault: std::ops::Range<usize>,

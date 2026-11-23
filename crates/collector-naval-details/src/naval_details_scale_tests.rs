@@ -144,11 +144,11 @@ fn cold_and_later_terrain_names_keep_mod_heap_bytes_in_publication() {
             let diplomacy = memory.allocate(0x400);
             memory.u64(
                 diplomacy,
-                (IMAGE + engine_native::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_politics::cdiplomacy_status::VTABLE_RVA.0) as u64,
             );
             let relations = memory.allocate(8);
             memory.array(
-                diplomacy + engine_native::cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native_politics::cdiplomacy_status::RELATIONS,
                 relations,
                 1,
             );

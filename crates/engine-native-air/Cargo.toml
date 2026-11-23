@@ -15,6 +15,7 @@ layout-fixtures = []
 alloc-fault-injection = ["engine-allocation/alloc-fault-injection"]
 
 [dependencies]
+engine-native-politics.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-native.workspace = true
@@ -24,6 +25,7 @@ engine-sites.workspace = true
 game-model.workspace = true
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 engine-native-memory = { workspace = true, features = ["test-support"] }

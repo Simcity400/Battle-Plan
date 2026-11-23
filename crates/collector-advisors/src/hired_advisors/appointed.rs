@@ -1,9 +1,7 @@
 use crate::advisor_pool_changes::{Counts, Table};
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, ccharacter::NameWalk, ccountry_characters as native, ccountry_characters::Row,
-    cpdx_array::Array, walk::Outcome,
-};
+use engine_native::{Memory, ccharacter::NameWalk, cpdx_array::Array, walk::Outcome};
+use engine_native_politics::ccountry_characters::{self as native, Row};
 
 pub const CARRY: bool = cfg!(feature = "appointment_changes");
 
