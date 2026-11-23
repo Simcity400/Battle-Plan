@@ -20,7 +20,7 @@ import { trimLabel, trimValue } from '../research/gameRuns';
 import { DetailValues, Name, Painted } from './ProjectDetails';
 import type { Asked } from './ProjectDetails';
 import { REWARDS_PANEL, detailTexts, effectsRead, effectsStructure, optionEffects, rewardsStructure, validateProjectDetails, validateProjectEffects, validateProjectIteration } from './projectDetailsData';
-import { completedLabel, episodeBound, iterationCount, joinDue, lastScientist, readLabel, runtimeProject, scientistName, statusRead } from './specialProjectsData';
+import { episodeBound, iterationCount, joinDue, lastScientist, readLabel, runtimeProject, scientistName, statusRead } from './specialProjectsData';
 import type { ProjectCard, RuntimeMatch } from './specialProjectsData';
 import type { ProjectChoice, ProjectEffects, ProjectRuntimeDetails, SpecialProjectDetails, SpecialProjectEffects, SpecialProjectIteration, ProjectStatus, SpecialProjectsReply } from '../../generated/dashboard';
 
@@ -58,12 +58,12 @@ function Summary({ reply, card, hour, feed, active, clock }: { reply: SpecialPro
           <span className="dossier-chip" title={assigned ?? undefined}>{person.name && (person.portrait ? <img src={person.portrait} alt="" /> : <ArtFallback icon="helmet" />)}
             <span>{scientistName(reply, info)}</span>{scientistRead && <small>{scientistRead}</small>}</span>
         </div>
-        {read && <p className="dossier-note">{`Status ${read}`}</p>}
+        {read && !done && <p className="dossier-note">{`Status ${read}`}</p>}
       </div>
     </header>
     <div className={`dossier-progress${done ? ' is-done' : ''}`} ref={facts} data-project={done ? undefined : project.id}
       style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties}>
-      {done ? <strong className="dossier-progress-value">{`Completed ${completedLabel(run)}`}</strong> : <>
+      {done ? <strong className="dossier-progress-value">{read ? `Completed · ${read}` : 'Completed'}</strong> : <>
         <strong className="dossier-progress-value" data-paint="progress">{run.progress}%</strong>
         <span className="special-project-progress" aria-hidden="true"><span /></span>
       </>}

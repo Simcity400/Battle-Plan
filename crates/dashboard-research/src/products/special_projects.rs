@@ -111,8 +111,6 @@ pub struct ProjectStatus {
     pub scientist_read: Option<i32>,
     #[doc = " The program read that last named `lastScientist`."]
     pub last_scientist_read: Option<i32>,
-    #[doc = " A completed status's completion date: the latest counted completion dated at or before its read with no proven new attempt between; none where no completion is attributed to it."]
-    pub completion: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -138,7 +136,7 @@ pub struct ProjectEntry {
     pub read_hour: i32,
     #[doc = " A completion dated within the campaign, the country's custody and its read."]
     pub counted: bool,
-    #[doc = " A counted completion's name: its index in `presentations`, from the nearest status at or after its date; none where no status names it."]
+    #[doc = " A counted completion's name: its index in `presentations`, from the completed Projects row usable at the read that first listed it, where nothing follows it in that read; none otherwise."]
     pub presentation: Option<u32>,
 }
 
@@ -161,7 +159,7 @@ pub struct ProjectRecord {
     #[doc = " The project's raw owner id and its id within it, as the project detail products key it."]
     pub owner: u32,
     pub local: u32,
-    #[doc = " The first usable Projects read of the project, published or not, and its state."]
+    #[doc = " The first usable Projects read of the project, published or not, and its state; for a project seen only in history, its first history read and an unknown state."]
     pub first_read: i32,
     pub first_state: ProjectState,
     pub statuses: Vec<ProjectStatus>,
@@ -595,10 +593,10 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
     for &raw in &owners {
         let raw = u128::from(raw);
         projects.push(dashboard_query::cost::storage(|| {
-            lanes::history(recording, piece.run, TableId::Projects, &PROJECT_COLUMNS, Keys::Range(raw << 32, raw << 32 | u128::from(u32::MAX)), piece.first, piece.last)
+            lanes::history(recording, piece.run, TableId::Projects, &PROJECT_COLUMNS, Keys::Range(raw << 32, raw << 32 | u128::from(u32::MAX)), piece.reach(), piece.last)
         })?);
         histories.push(dashboard_query::cost::storage(|| {
-            lanes::history(recording, piece.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::Range(raw << 64, raw << 64 | u128::from(u64::MAX)), piece.first, piece.last)
+            lanes::history(recording, piece.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::Range(raw << 64, raw << 64 | u128::from(u64::MAX)), piece.reach(), piece.last)
         })?);
     }
     let mut programs: BTreeSet<u128> = BTreeSet::new();
@@ -621,7 +619,7 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
         (History::default(), Vec::new())
     } else {
         (
-            dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::ProjectPrograms, &PROGRAM_COLUMNS, Keys::These(&programs), piece.first, piece.last))?,
+            dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::ProjectPrograms, &PROGRAM_COLUMNS, Keys::These(&programs), piece.reach(), piece.last))?,
             dashboard_query::cost::storage(|| lanes::complete_reads(recording, piece.run, TableId::ProjectPrograms, piece.reach(), piece.last))?,
         )
     };
@@ -663,9 +661,6 @@ fn last_read(reads: &[(i32, i32)], hour: i32) -> Option<i32> {
 }
 
 fn see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, cancelled: &AtomicBool) -> io::Result<()> {
-    for &(first, last) in &read.projects_partial {
-        facts::extend(&mut facts.partial, first, last);
-    }
     let mut projects: Vec<(u32, u32, Cursor<'_>)> = Vec::new();
     for (history, &raw) in read.projects.iter().zip(&read.owners) {
         projects.extend(history.keys.iter().map(|(key, steps)| (raw, *key as u32, Cursor::new(steps))));
@@ -707,6 +702,9 @@ fn see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, cancelled: &Ato
         }
         let shown: Vec<facts::Read<'_>> = rows.iter().map(|(row, program, stamp)| facts::Read { row, read: *stamp, program: program.clone() }).collect();
         let published = within(&read.roster, hour) && projects_read.len() == linked.len();
+        if !published && within(&read.projects_partial, hour) {
+            facts::extend(&mut facts.partial, hour, hour);
+        }
         facts.hour(&facts::Hour {
             country: (piece.slot, piece.id),
             at: hour,
@@ -880,6 +878,12 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
             *first = (*first).min(run.first);
         }
     }
+    for kept in facts.evidence.values().flat_map(|evidence| &evidence.entries) {
+        if let Some(definition) = kept.definition {
+            let first = definitions.entry(definition).or_insert(kept.read);
+            *first = (*first).min(kept.read);
+        }
+    }
     match respell(cache.as_ref().map(|(defs, chars, ..)| (defs, chars)), &definitions, &characters) {
         Respell::Kept => {}
         Respell::All => {
@@ -902,8 +906,7 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     let mut people = Interned::new();
     let mut presentations = Interned::new();
     let mut names = HashMap::new();
-    let mut shown = |look: u32, hour: i32, naming: &mut Naming<'_>| {
-        let look = &facts.looks[look as usize];
+    let mut shown = |look: &facts::Look, hour: i32, naming: &mut Naming<'_>| {
         let name = names.entry((look.definition, hour)).or_insert_with(|| {
             let slot = query.holders.at(&params.country, hour).and_then(|run| match run.holder {
                 Holder::Found { slot, .. } => Some(slot),
@@ -931,25 +934,22 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         })
     };
     let none = facts::Evidence::default();
-    let mut projects = Vec::with_capacity(facts.projects.len());
-    for project in &facts.projects {
-        let evidence = facts.evidence_of(project).unwrap_or(&none);
-        let statuses: Vec<ProjectStatus> = project
-            .runs
+    let mut record = |country: (u32, u32), owner: u32, local: u32, first: (i32, ProjectState), runs: &[facts::Run], evidence: &facts::Evidence, naming: &mut Naming<'_>| {
+        let statuses: Vec<ProjectStatus> = runs
             .iter()
             .map(|run| ProjectStatus {
                 first_hour: run.first,
                 last_hour: run.last,
                 read_hour: run.read,
-                presentation: shown(run.look, run.first, &mut naming),
+                presentation: shown(&facts.looks[run.look as usize], run.first, naming),
                 progress: run.progress,
                 state: run.state,
                 iterations: run.iterations,
                 scientist_read: run.scientist_read,
                 last_scientist_read: run.last_scientist_read,
-                completion: (run.state == ProjectState::Completed).then(|| evidence.completion(run.read)).flatten(),
             })
             .collect();
+        let unnamed = |definition| facts::Look { definition, person: Person::Unknown("A history entry names no scientist.".into()), last: None };
         let entries = evidence
             .entries
             .iter()
@@ -959,20 +959,20 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
                 completion: kept.entry.completion(),
                 read_hour: kept.read,
                 counted: kept.counted,
-                presentation: kept.counted.then(|| statuses.iter().find(|status| status.read_hour >= kept.entry.date && evidence.unbroken(kept.entry.date, status.read_hour))).flatten().map(|status| status.presentation),
+                presentation: kept.definition.map(|definition| shown(&unnamed(definition), kept.read, naming)),
             })
             .collect();
         let attempts = evidence.attempts.iter().map(|attempt| ProjectAttempt { ordinal: attempt.entry.ordinal, date: attempt.entry.date, read_hour: attempt.read, since_read: attempt.since }).collect();
-        projects.push(ProjectRecord {
-            id: format!("{}:{}:{}:{}", project.country.0, project.country.1, project.owner, project.local),
-            owner: project.owner,
-            local: project.local,
-            first_read: project.first.0,
-            first_state: project.first.1,
-            statuses,
-            entries,
-            attempts,
-        });
+        ProjectRecord { id: format!("{}:{}:{owner}:{local}", country.0, country.1), owner, local, first_read: first.0, first_state: first.1, statuses, entries, attempts }
+    };
+    let mut projects = Vec::with_capacity(facts.projects.len());
+    for project in &facts.projects {
+        let evidence = facts.evidence_of(project).unwrap_or(&none);
+        projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, &mut naming));
+    }
+    for (&(slot, id, owner, local), evidence) in facts.unlisted() {
+        let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
+        projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], evidence, &mut naming));
     }
     let counts: BTreeSet<i32> = projects.iter().flat_map(|project| &project.statuses).filter_map(|status| status.iterations).collect();
     let iteration_texts: BTreeMap<i32, Option<String>> = counts.into_iter().map(|count| (count, naming.iterations(count))).collect();
@@ -1084,89 +1084,85 @@ pub struct Completions {
     pub warnings: Vec<String>,
 }
 
-type Marked = BTreeMap<(u128, i32), (u32, i32)>;
-
-struct Listing<'a> {
-    run: u32,
-    history: &'a History,
-    complete: &'a [(i32, i32)],
-    links: &'a RunLinks,
-    campaign_start: i32,
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Counted {
+    tag: String,
+    slot: u32,
+    owner: u32,
+    local: u32,
+    entry: Entry,
+    read: i32,
+    definition: Option<u32>,
 }
 
-fn completed_in(found: &mut Marked, listing: &Listing<'_>, from: i32, to: i32) {
-    for (key, steps) in &listing.history.keys {
-        let raw = (key >> 64) as u32;
-        for step in steps.iter().filter(|step| within(listing.complete, step.hour)) {
-            let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
-            let custody = || {
-                let mut held = listing.links.within(raw, entry.date, step.hour);
-                matches!((held.next(), held.next()), (Some((Some(_), _, _)), None))
-            };
-            if entry.completion() && (from..=to).contains(&entry.date) && listing.campaign_start <= entry.date && entry.date <= step.hour && custody() {
-                found.entry((*key, entry.date)).or_insert((listing.run, step.hour));
-            }
-        }
-    }
-}
-
-pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
+fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
-    let content = content(source, load)?;
-    let names = country_ids::Names::new(&query.holders);
-    let mut found: Marked = BTreeMap::new();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
     let mut links: HashMap<u32, RunLinks> = HashMap::new();
+    let mut tags: BTreeSet<String> = BTreeSet::new();
     for stretch in query.timeline.within(from, to) {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
         unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
         let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
-        let listing = Listing { run: stretch.run, history: &history, complete: &held, links: links_of(query, &mut links, stretch.run)?, campaign_start: query.timeline.first };
-        completed_in(&mut found, &listing, from, to);
-    }
-    let mut by_hour: BTreeMap<(u32, i32), BTreeSet<u128>> = BTreeMap::new();
-    for (&(key, _), &(run, observed)) in &found {
-        by_hour.entry((run, observed)).or_default().insert(key >> 32);
-    }
-    let mut naming = Naming::new(&content);
-    let mut shown: HashMap<(u128, i32), ProjectCompletion> = HashMap::new();
-    let mut frames = at_hour::Frames::new(query)?;
-    for ((run, hour), projects) in by_hour {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let frame = frames.frame(hour, &[Read::these(TableId::Projects, projects.iter().copied())], "Special project completion")?;
-        let rows = frame.complete::<tables::Projects>().unwrap_or(&[]);
-        let definitions: Vec<u32> = rows.iter().map(|row| row.definition_id).collect();
-        let lexical = frames.frame(hour, &[Read::these(TableId::LexicalTokens, definitions.iter().map(|&id| u128::from(id)))], "Special project names")?;
-        let tokens = spellings(&lexical, definitions);
-        let run_links = links_of(query, &mut links, run)?;
-        for &key in &projects {
-            let (owner, project) = ((key >> 32) as u32, key as u32);
-            let tag = names.tag_at(run_links, owner, hour).map(str::to_owned);
-            let row = rows.iter().find(|row| (row.owner, row.local_id) == (owner, project));
-            let mut completion = ProjectCompletion { tag: tag.clone(), date: hour, observed_hour: hour, owner, project, ordinal: 0, name: None, icon: None, icon_missing: Some("The project was not read.".into()) };
-            match (row, tag) {
-                (Some(row), Some(tag)) => {
-                    let slot = run_links.slot_at(owner, hour);
-                    let mut scoped = |key: &str| match slot {
-                        Some(slot) => scoped_at(query, &content, key, hour, slot),
-                        None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
-                    };
-                    let named = naming.definition(tokens.get(&row.definition_id).map(String::as_str), row.definition_id, &tag, &mut scoped);
-                    completion.name = Some(named.name);
-                    completion.icon = named.icon;
-                    completion.icon_missing = named.icon_missing;
+        let run_links = links_of(query, &mut links, stretch.run)?;
+        for (key, steps) in &history.keys {
+            for step in steps {
+                let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
+                if !entry.completion() || !(from..=to).contains(&entry.date) {
+                    continue;
                 }
-                (None, _) => naming.note("the completed project's row was not recorded", format!("{owner}:{project}")),
-                (Some(_), None) => naming.note("no tag held the completed project's country", format!("{owner}:{project}")),
+                let Some(slot) = run_links.slot_at((key >> 64) as u32, step.hour) else { continue };
+                let holds = |runs: &[dashboard_query::identity::HolderRun]| {
+                    runs.iter().any(|run| run.first <= step.hour && step.hour <= run.last && matches!(run.holder, Holder::Found { slot: held, .. } if held == slot))
+                };
+                tags.extend(query.holders.tags.iter().filter(|(_, runs)| holds(runs)).map(|(tag, _)| tag.clone()));
             }
-            shown.insert((key, hour), completion);
         }
     }
-    let mut events: Vec<ProjectCompletion> = found
-        .into_iter()
-        .filter_map(|((key, date), (_, observed))| shown.get(&(key >> 32, observed)).map(|completion| ProjectCompletion { date, ordinal: key as u32, ..completion.clone() }))
-        .collect();
+    let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
+    for tag in tags {
+        let mut facts = Facts::new(query.timeline.first);
+        let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), from, to);
+        for piece in pieces {
+            let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
+            see_piece(&mut facts, &piece, &read, cancelled)?;
+        }
+        for (&(slot, _, owner, local), evidence) in &facts.evidence {
+            for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
+                found
+                    .entry((owner, local, kept.entry.ordinal, kept.entry.date))
+                    .or_insert_with(|| Counted { tag: tag.clone(), slot, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
+            }
+        }
+    }
+    Ok((found.into_values().collect(), unrecorded))
+}
+
+pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
+    let content = content(source, load)?;
+    let (found, unrecorded) = counted(query, from, to, cancelled)?;
+    let mut naming = Naming::new(&content);
+    let mut frames = at_hour::Frames::new(query)?;
+    let mut events = Vec::with_capacity(found.len());
+    for counted in found {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let Counted { tag, slot, owner, local, entry, read, definition } = counted;
+        let mut completion =
+            ProjectCompletion { tag: Some(tag.clone()), date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
+        match definition {
+            Some(definition) => {
+                let lexical = frames.frame(read, &[Read::these(TableId::LexicalTokens, [u128::from(definition)])], "Special project names")?;
+                let tokens = spellings(&lexical, [definition]);
+                let named = naming.definition(tokens.get(&definition).map(String::as_str), definition, &tag, &mut |key| scoped_at(query, &content, key, read, slot));
+                completion.name = Some(named.name);
+                completion.icon = named.icon;
+                completion.icon_missing = named.icon_missing;
+            }
+            None => naming.note("the completed project's name is not recorded", format!("{owner}:{local}")),
+        }
+        events.push(completion);
+    }
     events.sort_by(|a, b| (a.date, a.owner, a.project, a.ordinal).cmp(&(b.date, b.owner, b.project, b.ordinal)));
     Ok(Completions { events, unrecorded, warnings: naming.warnings() })
 }

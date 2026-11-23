@@ -36,7 +36,7 @@ import { useHeadHour } from '../army-size/headHour';
 import { motionOf } from '../../charts/easing.ts';
 import { OPTIONS, VIEWS } from './definition';
 import { projectStructure, closedLane, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyUnrecorded, historyKey, historyTooltip, iterationMark, iterationTooltip,
-  observedAt, completedLabel, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
+  observedAt, completions, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, scientistName, shownCard, statusRead,
   unobservedReason, validateSpecialProjectsReply } from './specialProjectsData';
 import type { ProjectCard } from './specialProjectsData';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
@@ -78,6 +78,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
       {running.length ? <Section label="In progress" count={running.length}>{running.map(card => {
         const { run, info } = card;
         const read = readLabel(statusRead(reply, card.project, at), at);
+        const scientistRead = readLabel(run.scientistRead, at);
         return <div key={card.project.id} data-project={card.project.id} className={`special-project-now${run.state === 'paused' ? ' is-paused' : run.state === 'unknown' ? ' is-unknown' : ''}`}
           style={{ '--project-progress': Math.max(0, run.progress) / 100 } as CSSProperties} {...item(card)}>
           <ProjectTile icon={info.icon} onClick={event => open(card, event)} />
@@ -85,9 +86,10 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
           <span className="special-project-who">
             {run.state === 'paused' && <b className="special-project-state is-paused">Paused</b>}
             {run.state === 'unknown' && <b className="special-project-state">State unknown</b>}
-            <Scientist reply={reply} info={info} />{read && <small className="special-project-read">{read}</small>}</span>
+            <Scientist reply={reply} info={info} />{scientistRead && <small className="special-project-read">{scientistRead}</small>}</span>
           <span className="special-project-progress" aria-hidden="true"><span /></span>
           <strong className="special-project-percent" id={`${valueId}-${card.project.id}-progress`} data-paint="progress">{run.progress}%</strong>
+          {read && <small className="special-project-read">{read}</small>}
           <small className="special-project-iterations" id={`${valueId}-${card.project.id}-iterations`} data-paint="iterations">{iterationMark(run.iterations)}</small>
         </div>;
       })}</Section> : <p data-panel-label="none" className="special-project-none">No projects in progress.</p>}
@@ -96,7 +98,7 @@ function CurrentList({ reply, at, item, open, clock, feed }: { clock: PlaybackCo
           <ProjectTile icon={card.info.icon} onClick={event => open(card, event)} />
           <strong className="special-project-name is-open" data-panel-label={card.project.id} onClick={event => open(card, event)}>{card.info.name}</strong>
           <span className="special-project-who"><Scientist reply={reply} info={card.info} /></span>
-          <span className="special-project-when">{completedLabel(card.run)}</span>
+          <span className="special-project-when">{readLabel(statusRead(reply, card.project, at), at) ?? 'Completed'}</span>
         </div>)}
         {earlier.length > 0 && <details className="special-project-earlier">
           <summary className="special-project-row"><span className="blueprint-tile special-project-count">+{usNumber.format(earlier.length)}</span>
@@ -180,8 +182,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && view === 'history' && tags.length > 1);
   const menu = useContextMenu('Project actions');
   const [opened, setOpened] = useState<{ on: string; id: string; x: number; y: number } | null>(null);
-  const bounded = useProducts<SpecialProjectsReply>(runtime.client, requests.map(r => ({ ...r, params: { ...r.params, hour: at } })), active && view === 'history', validateSpecialProjectsReply, track?.source);
-  const notes = view === 'history' ? bounded.data : currentData;
+  const notes = data;
   const baseWarnings = useMemo(() => [...(notes?.flatMap(reply => reply.warnings) ?? []), ...(groups.data?.warnings ?? [])], [notes, groups.data]);
   const detailWarnings = useRef<readonly string[]>([]);
   const reportWarnings = useCallback((warnings: readonly string[]) => {
@@ -194,7 +195,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const from = extent[0];
   const lanes = useMemo(() => view !== 'history' ? [] : notes?.flatMap((reply, country) => {
     const membership = resolved.memberships.get(reply.tag) ?? [];
-    const history = projectHistory(reply, at, membership, from);
+    const history = projectHistory(reply, at, membership, from, following);
     const closing = closedLane(JSON.stringify([country, null, 'closed']), history);
     const projects = [...history.lanes.map(lane => ({ ...lane, id: JSON.stringify([country, lane.id]) })), ...(closing ? [closing] : [])];
     const hour = projectCountryHour(reply, labelHour, membership);
@@ -202,7 +203,7 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     if (notes.length === 1) return projects;
     const empty = () => historyUnrecorded([reply], from, at, () => membership) ?? 'No special projects yet.';
     return [projectHeading(JSON.stringify([country, null]), labelAt(hour)(reply.tag), reply.unavailable ?? (projects.length ? '' : empty())), ...projects];
-  }) ?? [], [notes, at, from, labelAt, labelHour, resolved.memberships, view]);
+  }) ?? [], [notes, at, from, labelAt, labelHour, resolved.memberships, view, following]);
   useLayoutEffect(() => {
     if (view !== 'history' || !data) return;
     const report = () => shown(now());
@@ -212,9 +213,8 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   const openMenu = (card: ProjectCard, x: number, y: number) => {
     if (!track) return;
     const start = jumpItem(runtime, track.id, card.project.firstRead);
-    const completion = card.run.completion;
     menu.open(x, y, [{ ...start, label: `Jump to first recorded · ${dayLabel(card.project.firstRead)}` },
-      ...(completion !== null ? [{ ...jumpItem(runtime, track.id, completion), label: `Jump to completion · ${dayLabel(completion)}` }] : [])]);
+      ...completions(card.project, now()).map(entry => ({ ...jumpItem(runtime, track.id, entry.date), label: `Jump to completion · ${dayLabel(entry.date)}` }))]);
   };
   const item = (reply: SpecialProjectsReply): ItemProps => card => {
     const atNow = () => {
@@ -252,8 +252,6 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
   else if (!resolved.ready || !tags.length) body = <WidgetState kind="empty" message="No selected countries were recorded." />;
   else if (view === 'live' && !requestedNow.length) body = <WidgetState kind="empty" message="No selected countries were recorded at this moment." />;
   else if (!data) body = <WidgetState kind="loading" label="Loading special projects…" />;
-  else if (view === 'history' && bounded.error) body = <WidgetState kind="error" failure={bounded.error} onRetry={bounded.retry} />;
-  else if (view === 'history' && !notes) body = <WidgetState kind="loading" label="Loading special projects…" />;
   else if (data.every(reply => reply.unavailable)) body = <WidgetState kind="unavailable" message={data.find(reply => reply.unavailable)?.unavailable ?? PROJECTS_UNRECORDED} />;
   else if (view === 'live') {
     const reply = data.find(reply => resolved.match.matches(reply.tag, at));
@@ -281,14 +279,14 @@ function ProjectPanel({ widget, runtime, active, onDiagnostics }: ComparisonProp
     barHeight={18} hoursPerSecond={motionOf(runtime.clock.getSnapshot())} labelMenu
     tooltip={(lane, span, hour) => {
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = notes?.[country];
-      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, Math.min(now(), at), resolved.memberships.get(reply.tag));
+      const reply = data[country];
+      return id === null || !reply ? null : historyTooltip(reply, id, span, hour, now(), resolved.memberships.get(reply.tag));
     }}
     onContextMenu={(_hour, x, y, lane) => {
       if (!lane) return;
       const [country, id] = JSON.parse(lane.id) as [number, string | null];
-      const reply = notes?.[country];
-      const card = id === null || !reply ? null : historyCard(reply, id, Math.min(now(), at), resolved.memberships.get(reply.tag));
+      const reply = data[country];
+      const card = id === null || !reply ? null : historyCard(reply, id, now(), resolved.memberships.get(reply.tag));
       if (card) openMenu(card, x, y);
     }} />;
   return <div className="special-projects" ref={view === 'live' ? live.root : undefined}>{groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null}{body}{menu.menu}</div>;

@@ -1,5 +1,5 @@
 use dashboard_effects::ScriptedEffects;
-use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, spelled, supplied_project};
+use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, proven_owners, spelled, supplied_project};
 use dashboard_base::{
     Source,
     products::{
@@ -62,6 +62,7 @@ pub struct SpecialProjectIteration {
 dashboard_base::reply_warnings!(SpecialProjectIteration);
 
 pub(super) struct Listing {
+    read: i32,
     project: ProjectRow,
     row: ProjectHistoryRow,
     history: Vec<ProjectHistoryRow>,
@@ -114,8 +115,8 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
         if row.date != at.hour {
             return Err("The asked hour is not this iteration's hour".to_owned());
         }
-        let (project, _) = supplied_project(&frame, &reads, params.owner, params.project)?;
-        Ok((project.clone(), row.clone(), history.to_vec()))
+        let (project, _) = supplied_project(&reads, params.owner, params.project)?;
+        Ok((project, row.clone(), history.to_vec()))
     })();
     let (project, row, history) = match found {
         Ok(found) => found,
@@ -124,12 +125,12 @@ pub(super) fn listed(query: &Query<'_>, at: &At<'_, Context>, params: &SpecialPr
     let handles = [project.definition_id, row.prototype_reward_handle, row.option_handle];
     let lexical = dashboard_base::products::at_hour::frame(query, read, &[Read::these(TableId::LexicalTokens, handles.map(u128::from))], SpecialProjectIterationAt::TITLE)?;
     let [definition, reward, option] = handles.map(|handle| spelled(&lexical, handle));
-    Ok((|| Ok(Listing { project, row, history, definition: definition?, reward: reward?, option: option? }))())
+    Ok((|| Ok(Listing { read, project, row, history, definition: definition?, reward: reward?, option: option? }))())
 }
 
 pub(super) fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing: &Listing) -> Result<(), String> {
     let (owner, id, definition) = (listing.project.owner, listing.project.local_id, listing.project.definition_id);
-    let (row, read) = supplied_project(frame, reads, owner, id)?;
+    let (row, read) = supplied_project(reads, owner, id)?;
     if read != reads.hour {
         return Err(UNREAD_AT_CHOICE.to_owned());
     }
@@ -141,7 +142,43 @@ pub(super) fn same_project(frame: &DecodedFrame, reads: &Reads<'_, '_>, listing:
     let clicked = listing.history.iter().position(|row| row.ordinal == listing.row.ordinal).ok_or(UNPROVEN_PROJECT)?;
     let between = if clicked < then { clicked + 1..then } else { then..clicked };
     let restarted = listing.history.get(between).unwrap_or_default().iter().any(|row| row.prototype_reward_handle == COMPLETION_MARKER && row.option_handle == COMPLETION_MARKER);
-    if listing.history.starts_with(project_history(rows, owner, id)) && !restarted { Ok(()) } else { Err(UNPROVEN_PROJECT.into()) }
+    if !listing.history.starts_with(project_history(rows, owner, id)) || restarted || replaced(reads, owner, id, listing.read)? {
+        return Err(UNPROVEN_PROJECT.into());
+    }
+    Ok(())
+}
+
+fn replaced(reads: &Reads<'_, '_>, owner: u32, id: u32, listed: i32) -> Result<bool, String> {
+    use super::super::{Cursor, HISTORY_COLUMNS, facts::{Entry, Evidence}, history_entry, read_columns, read_key, sample};
+    let (choice, recording) = (reads.hour, reads.query.replay.recording());
+    if reads.query.timeline.at(listed).map(|stretch| stretch.run) != Some(reads.run) {
+        return Ok(true);
+    }
+    let key = u128::from(owner) << 64 | u128::from(id) << 32;
+    let history = dashboard_query::cost::storage(|| replay::lanes::history(recording, reads.run, TableId::ProjectHistory, &HISTORY_COLUMNS, replay::lanes::Keys::Range(key, key | u128::from(u32::MAX)), choice, listed))
+        .map_err(|why| why.to_string())?;
+    let columns = read_columns().map_err(|why| why.to_string())?;
+    let stamps = dashboard_query::cost::storage(|| replay::lanes::history(recording, reads.run, TableId::SliceReads, &columns, replay::lanes::Keys::These(&[read_key(TableId::ProjectHistory, owner)]), choice, listed))
+        .map_err(|why| why.to_string())?;
+    let whole: Vec<(i32, i32)> = dashboard_query::cost::storage(|| replay::lanes::statuses(recording, reads.run, TableId::ProjectHistory, choice, listed))
+        .map_err(|why| why.to_string())?
+        .into_iter()
+        .filter(|run| run.status == replay_columnar::manifest::Status::Complete)
+        .map(|run| (run.first, run.last))
+        .collect();
+    let mut entries: Vec<(u32, Cursor<'_>)> = history.keys.iter().map(|(key, steps)| (*key as u32, Cursor::new(steps))).collect();
+    let mut stamp = stamps.keys.first().map(|(_, steps)| Cursor::new(steps));
+    let (mut evidence, mut last) = (Evidence::default(), None);
+    for hour in choice..=listed {
+        let Some(read) = stamp.as_mut().and_then(|cursor| sample(cursor.at(hour))) else { continue };
+        if read < choice || last == Some(read) || !super::super::within(&whole, read) {
+            continue;
+        }
+        last = Some(read);
+        let listing: Vec<Entry> = entries.iter_mut().filter_map(|(ordinal, cursor)| cursor.at(read).and_then(|cells| history_entry(*ordinal, cells))).collect();
+        evidence.read(read, &listing, |_| false, |_| true, None);
+    }
+    Ok(evidence.attempts.iter().any(|attempt| attempt.since.is_some()))
 }
 
 fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c content_reader_core::special_projects::PrototypeOption, String> {
@@ -181,11 +218,11 @@ fn shown(text: &str, refusals: &mut BTreeMap<String, usize>) -> Option<Vec<GameR
     runs(text).map_err(|why| *refusals.entry(why).or_default() += 1).ok()
 }
 
-fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, out: &mut SpecialProjectIteration) -> Result<(), String> {
+fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &Listing, option: &content_reader_core::special_projects::PrototypeOption, proven: std::collections::BTreeSet<u32>, out: &mut SpecialProjectIteration) -> Result<(), String> {
     let catalogue = &content.politics.catalogue;
     let scripted = catalogue.scripted_content()?;
     let project = &listing.project;
-    let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot);
+    let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot).with_proven_projects(proven);
     let cache = scripted.effects()?;
     let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project iteration", cache.view(None)).with_entity_links();
     let description = dashboard_effects::effect_description::project_iteration_description(&option.output, &context, project.owner, project.local_id, scopes(frame, &listing.row));
@@ -232,7 +269,8 @@ fn answer(frame: &DecodedFrame, params: &SpecialProjectIterationParams, at: &At<
     if let Err(why) = same_project(frame, &reads, &listing) {
         return Ok(Err(why));
     }
-    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, out)))
+    let proven = proven_owners(&reads, frame);
+    Ok(chosen(content, &listing).and_then(|option| render(content, frame, holder.slot, &listing, option, proven, out)))
 }
 
 impl AtHour for SpecialProjectIterationAt {
@@ -267,7 +305,7 @@ impl AtHour for SpecialProjectIterationAt {
         if step != 0 {
             return Vec::new();
         }
-        effect_tables().into_iter().map(Read::all).chain([history_range(params.owner, params.project), project_slices(params.owner)]).collect()
+        effect_tables().into_iter().map(Read::all).chain([history_range(params.owner, params.project), Read::all(TableId::SliceReads)]).collect()
     }
 
     fn context(source: &Source, load: &LoadContext) -> io::Result<Self::Context> {

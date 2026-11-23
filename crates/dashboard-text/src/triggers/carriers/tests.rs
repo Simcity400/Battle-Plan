@@ -840,3 +840,18 @@ fn project_built_in_variables_are_refused() {
         }
     });
 }
+
+#[test]
+fn a_completed_project_counts_only_from_an_owners_proven_read() {
+    engine_executable::executable_tables::initialize_for_tests()
+        .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
+    let mut f = fixture();
+    let TableView::Complete(TableRows::Projects(rows)) = &mut *f.tables[TableId::Projects.index()] else { unreachable!() };
+    rows[0].completed = 1;
+    with_world_proven(&f, BTreeSet::from([101]), |world| {
+        assert_eq!(world.completed_project(1, b"synthetic_project"), Ok(true), "the owner's read supplies the hour");
+    });
+    with_world_proven(&f, BTreeSet::new(), |world| {
+        assert!(world.completed_project(1, b"synthetic_project").is_err(), "O-S1: a completed row read before its owner joined the country decides nothing");
+    });
+}

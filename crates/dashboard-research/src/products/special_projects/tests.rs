@@ -13,31 +13,6 @@ const UNKNOWN: (u32, u8, u8, u64) = (0x99, 1, 1, 0);
 const POOL: (u32, u8, u8, u64) = (0x18, 1, 0, 0);
 
 #[test]
-fn feed_completions_are_the_markers_the_ledger_counts_each_first_observed_once() {
-    let marker = i64::from(COMPLETION_MARKER);
-    let step = |hour, date: i64| Step { hour, cells: Some(Box::new([Cell::Number(marker), Cell::Number(marker), Cell::Number(date)])) };
-    let key = |owner: u128, ordinal: u128| (owner << 64) | (1_u128 << 32) | ordinal;
-    let history = History {
-        keys: vec![
-            (key(11, 4), vec![step(1_010, 1_008), step(1_011, 1_008), step(1_050, 1_049)]),
-            (key(11, 5), vec![step(1_060, 1_070)]),
-            (key(11, 6), vec![step(1_080, 1_079)]),
-            (key(12, 4), vec![step(1_030, 1_020)]),
-        ],
-        ..History::default()
-    };
-    let links = RunLinks { slots: HashMap::from([(11, vec![(START, 1_200, Some(5))]), (12, vec![(START, 1_024, Some(6)), (1_025, 1_200, Some(5))])]) };
-    let listing = Listing { run: 2, history: &history, complete: &[(START, 1_079), (1_081, 1_200)], links: &links, campaign_start: START };
-    let mut found = BTreeMap::new();
-    completed_in(&mut found, &listing, START, 1_100);
-    assert_eq!(
-        found,
-        BTreeMap::from([((key(11, 4), 1_008), (2, 1_010)), ((key(11, 4), 1_049), (2, 1_050))]),
-        "a replacement's completion reusing the marker ordinal is its own event; a marker dated after its read, one read in part, and one dated before its owner joined the country are not completions"
-    );
-}
-
-#[test]
 fn custody_holds_only_when_the_owner_stayed_linked_from_the_read_through_the_hour() {
     let links = RunLinks { slots: HashMap::from([(10, vec![(0, 49, Some(5)), (50, 99, Some(5)), (100, 199, Some(6))]), (11, vec![(50, 199, Some(5))]), (12, vec![(0, 199, Some(6))])]) };
     assert_eq!(owner_ids(&links, 5, 20, 150), BTreeMap::from([(10, vec![(20, 99)]), (11, vec![(50, 150)])]));
@@ -253,7 +228,7 @@ fn t2_a_marker_read_late_is_its_own_dated_completion_and_never_dates_the_status(
 #[test]
 fn t3_markers_are_kept_once_each_across_an_unknown_state_and_unavailable_projects() {
     let facts = recorded("t3", 20, 26, |at| Hour {
-        history: match at { 20..=22 => vec![(0, M, 20)], _ => vec![(0, M, 20), (1, M, 22)] },
+        history: match at { 20..=21 => vec![(0, M, 20)], _ => vec![(0, M, 20), (1, M, 22)] },
         projects_table: at != 22,
         ..hour(at, if at == 20 { COMPLETED } else { UNKNOWN })
     });
@@ -390,13 +365,26 @@ fn h2_a_read_supplies_an_hour_only_while_its_owner_stayed_with_the_country_from_
 }
 
 #[test]
-fn h3_a_completion_is_attributed_and_named_only_where_no_proven_attempt_lies_between() {
-    let facts = recorded("h3-restart", 20, 32, |at| Hour {
-        history: if at >= 30 { vec![(0, 41, 18), (1, M, 20), (2, 41, 22)] } else { vec![(0, 41, 18), (1, M, 20)] },
-        ..hour(at, COMPLETED)
-    });
-    let evidence = facts.evidence.values().next().unwrap();
-    assert_eq!(evidence.completion(21), Some(20), "a status read before the next attempt began is the completion's");
-    assert_eq!(evidence.completion(25), None, "P-S9, U-S3: a status read after the next attempt's first choice is not, though that attempt was proven only by the read at 30");
-    assert!(!evidence.unbroken(20, 25));
+fn h3_a_completion_is_named_only_by_the_completed_row_read_with_it_when_nothing_follows_it() {
+    let definitions = |id: &str, state: (u32, u8, u8, u64), history: Vec<(u32, u32, i32)>| {
+        let facts = recorded(id, 20, 22, move |at| Hour { history: history.clone(), ..hour(at, state) });
+        facts.evidence.values().flat_map(|evidence| &evidence.entries).filter(|kept| kept.entry.completion()).map(|kept| kept.definition).collect::<Vec<_>>()
+    };
+    assert_eq!(definitions("h3-last", COMPLETED, vec![(0, 41, 18), (1, M, 20)]), [Some(40)], "the completed row read with the marker names it");
+    assert_eq!(definitions("h3-restart", COMPLETED, vec![(0, 41, 18), (1, M, 20), (2, 41, 20)]), [None], "R2-S5: a later ordinal in the same hour is the next attempt, whose row it is");
+    assert_eq!(definitions("h3-started", RUNNING, vec![(0, 41, 18), (1, M, 20)]), [None], "a running row is already the next attempt");
+}
+
+#[test]
+fn feed_completions_are_the_ledgers_counted_markers() {
+    let completions = |id: &str, spec: fn(i32) -> Hour| {
+        let source = synthetic(id, 20, 34, move |at| frame(at, &spec(at)));
+        let query = dashboard_base::queries::query(&source, 1).unwrap();
+        let (found, _) = counted(&query, 20, 34, &AtomicBool::new(false)).unwrap();
+        found.into_iter().map(|counted| (counted.tag, counted.entry.date, counted.read, counted.definition)).collect::<Vec<_>>()
+    };
+    let listed = completions("feed-listed", |at| Hour { history: if at < 25 { vec![(0, M, 21)] } else { vec![(0, M, 21), (1, M, 33)] }, ..hour(at, COMPLETED) });
+    assert_eq!(listed, [("GER".to_owned(), 21, 21, Some(40))], "one event per counted marker, named by the row read with it; a marker dated after its read is none");
+    let renamed = completions("feed-renamed", |at| Hour { holder: Some(at >= 30), history: if at >= 30 { vec![(0, M, 25)] } else { Vec::new() }, ..hour(at, COMPLETED) });
+    assert_eq!(renamed, [], "P-S7: a completion dated before this tag's holder took it is not credited to it, though the slot never changed");
 }

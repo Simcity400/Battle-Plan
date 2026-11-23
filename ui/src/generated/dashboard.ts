@@ -3376,11 +3376,7 @@ scientistRead: number | null,
 /**
  * The program read that last named `lastScientist`.
  */
-lastScientistRead: number | null,
-/**
- * A completed status's completion date: the latest counted completion dated at or before its read with no proven new attempt between; none where no completion is attributed to it.
- */
-completion: number | null, };
+lastScientistRead: number | null, };
 export type OwnerRead = {
 /**
  * The Projects read of a raw owner that supplied the list at these hours.
@@ -3400,7 +3396,7 @@ readHour: number,
  */
 counted: boolean,
 /**
- * A counted completion's name: its index in `presentations`, from the nearest status at or after its date; none where no status names it.
+ * A counted completion's name: its index in `presentations`, from the completed Projects row usable at the read that first listed it, where nothing follows it in that read; none otherwise.
  */
 presentation: number | null, };
 export type ProjectAttempt = {
@@ -3414,7 +3410,7 @@ export type ProjectRecord = { id: string,
  */
 owner: number, local: number,
 /**
- * The first usable Projects read of the project, published or not, and its state.
+ * The first usable Projects read of the project, published or not, and its state; for a project seen only in history, its first history read and an unknown state.
  */
 firstRead: number, firstState: ProjectState, statuses: Array<ProjectStatus>, entries: Array<ProjectEntry>, attempts: Array<ProjectAttempt>, };
 export type SpecialProjectsReply = { branchId: string, tag: string,

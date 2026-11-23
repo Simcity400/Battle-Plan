@@ -1281,6 +1281,12 @@ fn convoy_weapon_bound_accounts_for_recorded_variant_bonuses_and_global_upgrades
     )
     .unwrap();
     assert_eq!(unresolved_bound, Ok([0, 120_000]));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "equipments = { convoy_1 = { type = convoy lg_attack = 0.6 scaled_by_reliability = { lg_attack = unknown_amount } } }").unwrap();
+    let unread = content_reader_core::equipment::Database::load(&content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap()).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let cached = convoy_weapon_bound_for_frame(static_bound.as_ref().copied().map_err(String::as_str), Some(&unread), &unresolved_frame).unwrap();
+    assert_eq!(cached, Ok([0, 120_000]), "O-S6: a variant's recorded final stats stand though the equipment's own terms are unreadable");
 
     let upgrade_frame = base_frame(
         Recorded::Value(VariantDesignState::default()),

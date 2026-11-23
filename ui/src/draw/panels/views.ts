@@ -163,6 +163,8 @@ export function projectChangeAfter(reply: SpecialProjectsReply, hour: number) {
     for (const spans of [reply.available, reply.reads, ...reply.projects.map(p => p.statuses)]) {
       for (const span of spans) { all.add(span.firstHour); all.add(span.lastHour + 1); }
     }
+    for (const read of reply.reads) all.add(read.readHour + 1);
+    for (const run of reply.projects.flatMap(p => p.statuses)) if (run.scientistRead !== null) all.add(run.scientistRead + 1);
     edges = Array.from(all).sort((a, b) => a - b);
     boundaries.set(reply, edges);
   }

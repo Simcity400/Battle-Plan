@@ -40,7 +40,7 @@ const daily = (from: number, start: number, perDay: number): ProjectStatus[] => 
   for (let day = 0; from + day * 24 < HOURS; day++) {
     const progress = Math.min(100, start + Math.floor(day * perDay));
     runs.push({ firstHour: from + day * 24, lastHour: Math.min(HOURS - 1, from + day * 24 + 23), readHour: from + day * 24, presentation: 0, progress, state: 'running',
-      iterations: Math.floor(progress / 25), scientistRead: null, lastScientistRead: null, completion: null });
+      iterations: Math.floor(progress / 25), scientistRead: null, lastScientistRead: null });
   }
   return runs;
 };

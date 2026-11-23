@@ -129,6 +129,7 @@ pub struct Kept {
     pub entry: Entry,
     pub read: i32,
     pub counted: bool,
+    pub definition: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,7 +154,7 @@ fn choices_after_last_marker(entries: &[Entry]) -> i32 {
 }
 
 impl Evidence {
-    fn read(&mut self, stamp: i32, entries: &[Entry], counted: impl Fn(&Entry) -> bool, continued: impl Fn(i32) -> bool) {
+    pub fn read(&mut self, stamp: i32, entries: &[Entry], counted: impl Fn(&Entry) -> bool, continued: impl Fn(i32) -> bool, named: Option<u32>) {
         if let Some((held, _)) = &self.latest {
             if *held == stamp {
                 return;
@@ -163,9 +164,11 @@ impl Evidence {
                 self.most = 0;
             }
         }
-        for entry in entries {
+        for (at, entry) in entries.iter().enumerate() {
             if !self.entries.iter().any(|kept| kept.entry == *entry) {
-                self.entries.push(Kept { entry: *entry, read: stamp, counted: entry.completion() && counted(entry) });
+                let counted = entry.completion() && counted(entry);
+                let definition = named.filter(|_| counted && at + 1 == entries.len());
+                self.entries.push(Kept { entry: *entry, read: stamp, counted, definition });
             }
         }
         let mut proven = Vec::new();
@@ -192,14 +195,6 @@ impl Evidence {
     fn iterations(&self) -> Option<i32> {
         let (_, entries) = self.latest.as_ref()?;
         (entries.len() >= self.most).then(|| choices_after_last_marker(entries))
-    }
-
-    pub fn unbroken(&self, date: i32, read: i32) -> bool {
-        !self.attempts.iter().any(|attempt| date < attempt.entry.date && attempt.entry.date <= read)
-    }
-
-    pub fn completion(&self, read: i32) -> Option<i32> {
-        self.entries.iter().filter(|kept| kept.counted && kept.entry.date <= read && self.unbroken(kept.entry.date, read)).map(|kept| kept.entry.date).max()
     }
 }
 
@@ -263,6 +258,10 @@ impl Facts {
         self.evidence.get(&(project.country.0, project.country.1, project.owner, project.local))
     }
 
+    pub fn unlisted(&self) -> impl Iterator<Item = (&Key, &Evidence)> {
+        self.evidence.iter().filter(|(key, evidence)| !self.index.contains_key(key) && !evidence.entries.is_empty())
+    }
+
     fn look(&mut self, look: Look) -> u32 {
         if let Some(&id) = self.look_ids.get(&look) {
             return id;
@@ -282,11 +281,13 @@ impl Facts {
             let Some(&stamp) = hour.histories.get(&owner) else { continue };
             let entries = hour.listed.get(&(owner, local)).map_or(&[][..], Vec::as_slice);
             let held = hour.held;
+            let named = hour.reads.iter().find(|read| (read.row.owner, read.row.local) == (owner, local) && read.read <= stamp && completed(read.row)).map(|read| read.row.definition);
             self.evidence.entry((country.0, country.1, owner, local)).or_default().read(
                 stamp,
                 entries,
                 |entry| start <= entry.date && entry.date <= stamp && held(owner, entry.date, stamp),
                 |earlier| held(owner, earlier, stamp),
+                named,
             );
         }
     }

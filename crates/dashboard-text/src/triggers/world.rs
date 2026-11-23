@@ -548,6 +548,7 @@ pub struct World<'a> {
     leader_roles: PreparedOperand<'a, Result<&'a LeaderRoles, &'a str>>,
     appearance: Index<Linked<BTreeMap<u32, u128>>>,
     template_names: Option<TemplateNames<'a>>,
+    proven_projects: Option<BTreeSet<u32>>,
 }
 
 pub struct ContentFacts<'a> {
@@ -1498,7 +1499,13 @@ impl<'a> World<'a> {
             leader_roles: content.leader_roles.into(),
             appearance: OnceLock::new(),
             template_names: None,
+            proven_projects: None,
         }
+    }
+
+    pub fn with_proven_projects(mut self, owners: Option<BTreeSet<u32>>) -> Self {
+        self.proven_projects = owners;
+        self
     }
 
     #[cfg(test)]
@@ -2267,6 +2274,10 @@ impl<'a> World<'a> {
             for row in each::<tables::Projects>(table::<tables::Projects>(self.frame, COMPLETED)?) {
                 let row = row?;
                 if row.completed == 0 {
+                    continue;
+                }
+                if self.proven_projects.as_ref().is_some_and(|proven| !proven.contains(&row.owner)) {
+                    unresolved = Some(format!("the projects of raw owner {} were not read while it belonged to its country", row.owner).into());
                     continue;
                 }
                 match self.slot(row.owner) {

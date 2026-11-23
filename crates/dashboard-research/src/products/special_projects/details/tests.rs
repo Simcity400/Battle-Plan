@@ -11,10 +11,10 @@ use serde_json::{Value, json};
 use std::sync::atomic::AtomicBool;
 
 const FIRST: i32 = 20;
-const LAST: i32 = 55;
+const LAST: i32 = 60;
 const DAILY_READS: [i32; 2] = [28, 52];
 const PROJECT_READS: [i32; 3] = [30, 40, 55];
-const UNHELD: i32 = 45;
+const UNHELD: i32 = 57;
 const LATE_ITERATION: i32 = 48;
 const UNHELD_NEXT_ITERATION: i32 = 42;
 const MOVED_OWNER: u32 = 9002;
@@ -585,6 +585,12 @@ fn an_iterations_project_values_open_from_compatible_reads_and_are_withheld_wher
     assert!(operands(restarted, |hour| hour, 21, 2, 22).is_err(), "a completion between the choice-hour history and the choice proves the choice another attempt's");
     let within = |hour: i32| if hour >= 21 { vec![(0, 41, 21), (1, COMPLETION_MARKER, 21), (2, 41, 21)] } else { Vec::new() };
     assert!(operands(within, |hour| hour, 21, 0, 22).is_err(), "P-S10: a completion after the choice inside the choice-hour history proves that read another attempt's");
+    let replaced = |hour: i32| match hour {
+        ..=21 => Vec::new(),
+        22..=23 => vec![(0, 43, 22)],
+        _ => vec![(0, 41, 21)],
+    };
+    assert!(operands(replaced, |hour| hour, 21, 0, 24).is_err(), "R2-S8: a read between the choice and its listing that held another entry at the ordinal proves a replacement, though the choice-hour history was empty");
 }
 
 fn owned_frame(hour: i32, linked: impl Fn(i32) -> bool, definition: impl Fn(i32) -> u32, read: impl Fn(i32) -> (Option<i32>, Option<i32>)) -> DecodedFrame {

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { deepFreeze } from '../../testFrozen.ts';
 import type { CountryGroupReply, ProjectEntry, ProjectRuntimeDetails, ProjectStatus, SpecialProjectDetails, SpecialProjectsReply } from '../../generated/dashboard';
 import type { CountryLabelValue } from '../../dashboard/countryLabelData.ts';
-import { closedLane, completedLabel, completedWhenFirstRecorded, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
+import { closedLane, completedWhenFirstRecorded, completions, currentKey, currentProjects, earlierBound, endedCount, historyCard, historyKey, historyUnrecorded, historyTooltip, iterationCount, iterationMark, iterationTooltip, observedAt, projectCountries, projectCountryHour, projectHeading, projectHistory, projectHistoryExtent, projectTooltip, readLabel, runningValues, runtimeProject, shownCard, statusRead, episodeBound, joinDue, validateSpecialProjectsReply } from './specialProjectsData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
@@ -29,8 +29,8 @@ const fixture = (): SpecialProjectsReply => ({ branchId: '1', tag: 'tag with spa
   presentations:[{name:'Mod project name',specialization:'mod_kind',specializationName:'Mod science',icon:null,iconMissing:'Missing mod icon',scientist:0,lastScientist:null}],
   reads:[],
   projects:[{id:'episode',owner:9,local:3,firstRead:100,firstState:'running',statuses:[
-    {firstHour:100,lastHour:147,readHour:100,presentation:0,progress:17,state:'running',iterations:2,scientistRead:100,lastScientistRead:null,completion:null},
-    {firstHour:148,lastHour:199,readHour:148,presentation:0,progress:100,state:'completed',iterations:3,scientistRead:100,lastScientistRead:null,completion:140},
+    {firstHour:100,lastHour:147,readHour:100,presentation:0,progress:17,state:'running',iterations:2,scientistRead:100,lastScientistRead:null},
+    {firstHour:148,lastHour:199,readHour:148,presentation:0,progress:100,state:'completed',iterations:3,scientistRead:100,lastScientistRead:null},
   ],entries:[marker(140,148)],attempts:[]}],
 });
 
@@ -52,13 +52,15 @@ test('an exact project read derives its structure from the sampled hour', () => 
   assert.equal(values?.get('episode'), 'Mod project name');
 });
 
-test('statuses step without interpolation, and a completion takes its date from the history marker', () => {
+test("statuses step without interpolation, and a completion's date is a history entry, never the status's", () => {
   const data = fixture();
   assert.equal(currentProjects(data,147).running[0].run.progress,17);
   assert.equal(currentProjects(data,148).completed[0].run.state,'completed');
   const done = currentProjects(data,148).completed[0].run;
-  assert.equal(completedLabel(done),dayLabel(140));
-  assert.equal(completedLabel({...done,completion:null}),'date not recorded', 'U-S3: a completed status with no completion attributed to it has no date, though the project lists a dated one');
+  assert.equal(projectTooltip(data,currentProjects(data,148).completed[0],148).rows.find(row=>row.label==='State')?.value,'Completed', 'K4: the status says Completed and carries no date');
+  assert.ok(!('completion' in done));
+  assert.deepEqual(completions(data.projects[0],147).map(entry=>entry.date),[], 'a completion first listed at 148 is not shown at 147');
+  assert.deepEqual(completions(data.projects[0],148).map(entry=>entry.date),[140], 'its dated history entry is');
   assert.equal(projectHistory(fixture(),147).lanes[0].spans[0].positive,false);
   assert.equal(projectHistory(fixture(),148).lanes[0].spans.at(-1)?.positive,true);
 });
@@ -104,8 +106,6 @@ test('validator rejects bad references, overlaps, missing and invented percentag
     (data:SpecialProjectsReply)=>{data.projects[0].entries[0].date=200;},
     (data:SpecialProjectsReply)=>{data.projects[0].entries[0].completion=false;},
     (data:SpecialProjectsReply)=>{data.identities[1].firstHour=190;},
-    (data:SpecialProjectsReply)=>{data.projects[0].statuses[0].completion=140;},
-    (data:SpecialProjectsReply)=>{data.projects[0].statuses[1].completion=150;},
     (data:SpecialProjectsReply)=>{data.reads=[{owner:9,firstHour:100,lastHour:120,readHour:101}];},
     (data:SpecialProjectsReply)=>{data.reads=[{owner:9,firstHour:100,lastHour:120,readHour:100},{owner:9,firstHour:110,lastHour:130,readHour:110}];},
   ]) {const data=fixture();mutate(data);assert.throws(()=>validateSpecialProjectsReply(data));}
@@ -123,7 +123,7 @@ test('the scientist shows its own program read, and the last observed one apart 
   assert.equal(iterationCount(card.run.iterations), '2 iterations');
   assert.equal(iterationCount(1), '1 iteration');
   assert.equal(iterationCount(null), 'Iterations not recorded');
-  assert.equal(projectTooltip(data,currentProjects(data,160).completed[0],160).rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
+  assert.equal(projectTooltip(data,currentProjects(data,160).completed[0],160).rows.find(row=>row.label==='State')?.value, 'Completed');
 });
 test('presentation has no content count cap at 5000 projects and defaults are saved options', () => {
   const data=fixture(); data.projects=Array.from({length:5000},(_,id)=>({...data.projects[0],id:`mod-${id}`}));
@@ -157,7 +157,7 @@ test('history tooltip resolves the hovered status bounded by the playhead; gaps 
   assert.equal(historyTooltip(data,'episode',span,120,199)?.rows.find(row=>row.label==='Progress')?.value,'17%');
   assert.equal(historyTooltip(data,'episode',{...span,lastHour:199},170,130)?.rows.find(row=>row.label==='Progress')?.value,'17%');
   assert.match(historyTooltip(data,'episode',null,205,300)?.note ?? '',/not recorded at this hour/);
-  assert.equal(historyTooltip(data,'episode',null,170,199)?.rows.find(row=>row.label==='Completed')?.value, dayLabel(140));
+  assert.equal(historyTooltip(data,'episode',null,170,199)?.rows.find(row=>row.label==='State')?.value, 'Completed');
 });
 test('group membership clips timeline bars and unassigned is an explicit flag', () => {
   const data=fixture();
@@ -244,7 +244,7 @@ test('membership cannot borrow a later project presentation or status', () => {
   assert.equal(lane.identity?.label, 'Mod project name');
   assert.equal(lane.spans[0].positive, false);
   assert.equal(historyCard(data, 'episode', 199, membership)?.run.state, 'running');
-  assert.ok(!historyTooltip(data, 'episode', lane.spans[0], 112, 199, membership)?.rows.some(row => row.label === 'Completed'));
+  assert.ok(!historyTooltip(data, 'episode', lane.spans[0], 112, 199, membership)?.rows.some(row => row.value === 'Completed'));
   assert.equal(projectHistory(data, 199, []).lanes[0], undefined);
 });
 
@@ -320,12 +320,12 @@ function projects(): SpecialProjectsReply {
   const data = fixture();
   data.iterationTexts = { 0: 'Mod iterations: 0', 1: 'Mod iterations: 1', 2: 'Mod iterations: 2', 3: 'Mod iterations: 3' };
   data.presentations.push(...['Alpha early', 'Beta running', 'Gamma running', 'Delta cancelled'].map(name => ({ ...data.presentations[0], name })));
-  const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: ProjectStatus['state'], iterations = 0, completion: number | null = null): ProjectStatus =>
-    ({ firstHour, lastHour, readHour: firstHour, presentation, progress, state, iterations, scientistRead: null, lastScientistRead: null, completion });
+  const run = (firstHour: number, lastHour: number, presentation: number, progress: number, state: ProjectStatus['state'], iterations = 0): ProjectStatus =>
+    ({ firstHour, lastHour, readHour: firstHour, presentation, progress, state, iterations, scientistRead: null, lastScientistRead: null });
   const project = (id: string, local: number, firstRead: number, firstState: ProjectStatus['state'], statuses: ProjectStatus[], entries: ProjectEntry[] = []) =>
     ({ id, owner: 9, local, firstRead, firstState, statuses, entries, attempts: [] });
   data.projects = [
-    project('done', 1, 100, 'running', [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed', 0, 160)], [marker(160, 160)]),
+    project('done', 1, 100, 'running', [run(100, 159, 0, 40, 'running'), run(160, 199, 0, 100, 'completed')], [marker(160, 160)]),
     project('early', 2, 100, 'completed', [run(100, 199, 1, 100, 'completed')]),
     project('beta', 3, 120, 'running', [run(120, 149, 2, 0, 'running'), run(150, 172, 2, 30, 'running'), run(173, 199, 2, 30, 'running', 1)]),
     project('gamma', 4, 110, 'running', [run(110, 199, 3, 55, 'running')]),
@@ -370,7 +370,7 @@ test('History lanes run in first-read order, split at each progress step and fol
 test('Current renders again only when a section, order, name, scientist, state or date changes, never for progress alone', () => {
   const data = projects();
   assert.equal(currentKey(data, 149), currentKey(data, 150));
-  assert.equal(currentKey(data, 172), currentKey(data, 173));
+  assert.notEqual(currentKey(data, 172), currentKey(data, 173), 'a new iteration count renders');
   assert.notEqual(currentKey(data, 159), currentKey(data, 160));
   const overtaking = projects();
   overtaking.projects[2].statuses[2] = { ...overtaking.projects[2].statuses[2], progress: 60 };
@@ -379,9 +379,11 @@ test('Current renders again only when a section, order, name, scientist, state o
   const inPart = { ...projects(), partial: [{ firstHour: 200, lastHour: 200 }] };
   assert.notEqual(currentKey(inPart, 200), currentKey(inPart, 201), 'an hour read in part and a following unrecorded hour name different reasons');
   const dated = projects();
-  dated.projects[0].statuses[1] = { ...dated.projects[0].statuses[1], completion: 155 };
-  assert.notEqual(currentKey(dated, 170), currentKey(data, 170), 'another completion date renders');
-  assert.notEqual(historyKey(dated, 170), historyKey(data, 170), 'History renders again when a completion date changes');
+  dated.projects[0].entries = [marker(160, 160), marker(165, 170)];
+  assert.notEqual(historyKey(dated, 170), historyKey(data, 170), 'History renders again when a completion is listed');
+  const counted = projects();
+  counted.projects[2].statuses[2] = { ...counted.projects[2].statuses[2], iterations: 2 };
+  assert.notEqual(currentKey(counted, 180), currentKey(projects(), 180), 'U-S4: a recorded iteration count renders the open pop-up again');
 });
 
 test('History names an interval read only in part or not at all, never as no projects, though a later read is complete or only part was read', () => {
@@ -513,6 +515,7 @@ test('U-S1: a status and its scientist name the read they come from when it is o
   assert.equal(tip.rows.find(row => row.label === 'Status')?.value, `read ${formatDateTime(124)}`);
   assert.equal(tip.rows.find(row => row.label === 'Scientist')?.value, `Mod scientist (read ${formatDateTime(100)})`);
   assert.notEqual(currentKey(data, 123), currentKey(data, 124), 'Current renders again when the read it names changes');
+  assert.notEqual(currentKey(data, 124), currentKey(data, 125), 'K6: and when its label first shows, one hour after the read');
 });
 
 test('X-S9: the pop-up joins the Projects read that supplied its card, though it precedes the published hours', () => {
@@ -523,4 +526,11 @@ test('X-S9: the pop-up joins the Projects read that supplied its card, though it
   const read: ProjectRuntimeDetails = { owner: 9, id: 3, label: { token: 'mod_project', name: null }, readHour: 100, pendingKnown: true, pending: null, seed: null, variables: null, choices: null, historyReadHour: null };
   const joined = runtimeProject({ hour: 120, scientists: null, programs: null, breakthroughs: null, projects: [read], unavailable: [], warnings: [] }, card, 120);
   assert.ok(joined && typeof joined === 'object', `${joined}`);
+});
+
+test('U-S5: with the playhead live, the latest status draws on to the head; earlier ones stay cut at their end', () => {
+  const data = projects();
+  const beta = (open: boolean) => projectHistory(data, 160, undefined, -Infinity, open).lanes.find(lane => lane.id === 'beta')!.spans.map(span => span.lastHour);
+  assert.deepEqual(beta(false), [149, 160]);
+  assert.deepEqual(beta(true), [149, 172], 'the timeline clips the open status at the live head, so the bar grows without another request');
 });
