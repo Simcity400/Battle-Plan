@@ -378,34 +378,44 @@ mod details {
     #[test]
     fn complete_first_hour_without_peak_and_province_changes_under_one_battle_id() {
         use super::super::battles::{NavalBattleCountryFilter, NavalBattles, NavalBattlesParams, NavalBattlesRanking, NavalBattlesRankingParams};
-        use replay_data::rows::{CountryLinkRow, CountryRow, NavalBattleRow, NavalCombatParticipantRow, NavalCombatRow, Recorded, TableId};
+        use dashboard_base::test_fixtures::session;
+        use replay_data::rows::{CampaignRow, ClockRow, CountryLinkRow, CountryRow, NavalBattleRow, NavalCombatParticipantRow, NavalCombatRow, Recorded, TableId};
+        use replay_frame::branches::{BranchReason, BranchStart, Parentage};
+        use replay_journal::synthetic::{Input, Sample};
 
         let current: Vec<usize> = replay_recording::schema::schema().unwrap().iter().map(Vec::len).collect();
         let mut columns = current.clone();
         columns[TableId::NavalBattles.index()] = 0;
 
-        let frames = (100..=105)
-            .map(|hour| {
-                let mut frame = source(1, hour, Some(1));
-                let mut countries = frame.complete::<tables::Countries>().unwrap().to_vec();
-                countries.push(CountryRow { id: 44, canonical_slot: 2, tag: b"ENG".to_vec(), ..CountryRow::default() });
-                countries.push(CountryRow { id: 45, canonical_slot: 3, tag: b"GER".to_vec(), ..CountryRow::default() });
-                countries.sort_by_key(|row| row.id);
-                set::<tables::Countries>(&mut frame, countries);
-                let mut links = frame.complete::<tables::CountryLinks>().unwrap().to_vec();
-                links.push(CountryLinkRow { id: 44, canonical_slot: 2 });
-                links.push(CountryLinkRow { id: 45, canonical_slot: 3 });
-                links.sort_by_key(|row| row.id);
-                set::<tables::CountryLinks>(&mut frame, links);
-                let mut combats = vec![NavalCombatRow { id: 10, province: 500, ..NavalCombatRow::default() }];
-                if (102..=103).contains(&hour) {
-                    combats.push(NavalCombatRow { id: 9, province: 500, ..NavalCombatRow::default() });
-                } else if hour == 104 {
-                    combats.push(NavalCombatRow { id: 9, province: 600, ..NavalCombatRow::default() });
-                }
-                combats.sort_by_key(|row| row.id);
-                set::<tables::NavalCombats>(&mut frame, combats);
-                set::<tables::NavalBattles>(&mut frame, vec![
+        let branch = BranchStart { id: 1, session: 1, loaded_hour: None, first_hour: 100, parent: Parentage::Unknown, reason: BranchReason::SessionStart };
+        let replay = Replay::from_synthetic(recorder_derive::writers_within(&columns, &current), CAMPAIGN.into(), session(1), branch, 105, |frame, hour| {
+            frame.table(TableId::Clock, Input::Snapshot { rows: &[ClockRow { hour, ..ClockRow::default() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+            frame.table(TableId::Campaign, Input::Snapshot { rows: &[CampaignRow { id: CAMPAIGN.into() }], partial: None, read: true, sample: Sample::FromReadBit })?;
+            frame.table(TableId::Countries, Input::Snapshot {
+                rows: &[
+                    CountryRow { id: 44, canonical_slot: 2, tag: b"ENG".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..CountryRow::default() },
+                    CountryRow { id: 45, canonical_slot: 3, tag: b"GER".to_vec(), border_land_doctrine_level: Recorded::Value(None), ..CountryRow::default() },
+                ],
+                partial: None,
+                read: true,
+                sample: Sample::FromReadBit,
+            })?;
+            frame.table(TableId::CountryLinks, Input::Snapshot {
+                rows: &[CountryLinkRow { id: 44, canonical_slot: 2 }, CountryLinkRow { id: 45, canonical_slot: 3 }],
+                partial: None,
+                read: true,
+                sample: Sample::FromReadBit,
+            })?;
+            let mut combats = vec![NavalCombatRow { id: 10, province: 500, ..NavalCombatRow::default() }];
+            if (102..=103).contains(&hour) {
+                combats.push(NavalCombatRow { id: 9, province: 500, ..NavalCombatRow::default() });
+            } else if hour == 104 {
+                combats.push(NavalCombatRow { id: 9, province: 600, ..NavalCombatRow::default() });
+            }
+            combats.sort_by_key(|row| row.id);
+            frame.table(TableId::NavalCombats, Input::Snapshot { rows: &combats, partial: None, read: true, sample: Sample::FromReadBit })?;
+            frame.table(TableId::NavalBattles, Input::Snapshot {
+                rows: &[
                     NavalBattleRow {
                         combat: 9,
                         first_hour: 100,
@@ -426,28 +436,36 @@ mod details {
                         attacker_convoys_sunk: Recorded::Value(0),
                         defender_convoys_sunk: Recorded::NotRecorded,
                     },
-                ]);
-                set::<tables::NavalCombatParticipants>(&mut frame, vec![
+                ],
+                partial: None,
+                read: true,
+                sample: Sample::FromReadBit,
+            })?;
+            frame.table(TableId::NavalCombatParticipants, Input::Snapshot {
+                rows: &[
                     NavalCombatParticipantRow { combat: 9, side: 0, battle_slot: 0, ship: 11, owner: 44, state: 0 },
                     NavalCombatParticipantRow { combat: 9, side: 1, battle_slot: 0, ship: 21, owner: 45, state: 0 },
                     NavalCombatParticipantRow { combat: 10, side: 0, battle_slot: 0, ship: 11, owner: 44, state: 0 },
                     NavalCombatParticipantRow { combat: 10, side: 1, battle_slot: 0, ship: 21, owner: 45, state: 0 },
-                ]);
-                frame
+                ],
+                partial: None,
+                read: true,
+                sample: Sample::FromReadBit,
             })
-            .collect();
-        let replay = Replay::from_records(recorder_derive::writers_within(&columns, &current), CAMPAIGN.into(), &[records(1, frames)])
-            .unwrap()
-            .into_timelines(&Default::default())
-            .unwrap();
+        })
+        .unwrap()
+        .into_timelines(&Default::default())
+        .unwrap();
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "naval-peakless".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
 
         let window = NavalBattles::load(&source, &NavalBattlesParams { branch_id: "1".into(), window: 0 }, &LoadContext { content: None }, &AtomicBool::new(false)).unwrap();
         let moving = window.rows.iter().find(|row| row.id == "combat:9:100").expect("single derived battle id");
+        assert_eq!(moving.province_id, Some(600));
         let spans: Vec<_> = moving.runs.iter().map(|run| (run.first_hour, run.last_hour, run.province_id, run.row.place.hour, run.row.place.named_at)).collect();
         assert_eq!(spans, vec![(100, 101, None, 100, None), (102, 103, Some(500), 100, Some(102)), (104, 104, Some(600), 100, Some(104)), (105, 105, None, 100, None)]);
 
         let peakless = window.rows.iter().find(|row| row.id == "combat:10:100").expect("peakless complete battle");
+        assert_eq!(peakless.runs[0].peak_hour, None);
         let attacker = serde_json::to_value(&peakless.runs[0].row.sides[0]).unwrap();
         let defender = serde_json::to_value(&peakless.runs[0].row.sides[1]).unwrap();
         assert_eq!(attacker["countries"][0]["tag"], "ENG", "complete roster resolves attacker even without a derived peak");
@@ -463,12 +481,16 @@ mod details {
         )
         .unwrap();
         let ranked = ranking.rows.iter().find(|row| row.id == "combat:10:100").expect("ranked peakless battle");
+        assert_eq!(ranked.province_id, Some(500));
         let ranked_attacker = serde_json::to_value(&ranked.runs[0].row.sides[0]).unwrap();
         let ranked_defender = serde_json::to_value(&ranked.runs[0].row.sides[1]).unwrap();
         assert_eq!(ranked_attacker["countries"][0]["tag"], "ENG");
         assert_eq!(ranked_attacker["countriesUnknown"], serde_json::Value::Null);
         assert_eq!(ranked_defender["countries"][0]["tag"], "GER");
         assert_eq!(ranked_defender["countriesUnknown"], serde_json::Value::Null);
+        let ranked_moving = ranking.rows.iter().find(|row| row.id == "combat:9:100").expect("ranked moving battle");
+        assert_eq!(ranked_moving.province_id, None);
+        assert_eq!(ranked_moving.runs[0].province_id, None);
     }
 
     #[test]
