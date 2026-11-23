@@ -4,7 +4,7 @@ mod tests;
 
 use viewer_layer_core::layers::{Carried, Settling, Dirty, Inputs, Layer, List, Num, View};
 use super::resource_icons::{complete, next_version};
-use viewer_layer_core::playhead_host::{MapSide, mirror::{Mirror, Mirrors}};
+use viewer_layer_core::playhead_host::{mirror::{Mirror, Mirrors}};
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::rows::{Field, NativeValue, Opaque, OccupationMap, Recorded, TableId};
@@ -151,7 +151,7 @@ impl OccupationMarks {
     }
 }
 
-pub fn drawn(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<&OccupationMarks> {
+pub fn drawn<'a>(side: viewer_layer_core::playhead_host::LayerParts<'a>) -> Option<&'a OccupationMarks> {
     if !side.draws(NAME) {
         return None;
     }

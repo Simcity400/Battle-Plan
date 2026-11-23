@@ -755,20 +755,20 @@ impl Layer for Scripts {
     }
 }
 
-pub fn drawn(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<&Scripts> {
-    viewer_layer_core::layers::drawn_layer::<Scripts>(side, NAME)
+pub fn drawn<'a>(side: viewer_layer_core::playhead_host::LayerParts<'a>) -> Option<&'a Scripts> {
+    side.drawn::<Scripts>(NAME)
 }
 
-pub fn raids(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
+pub fn raids(side: viewer_layer_core::playhead_host::LayerParts<'_>, branch: replay_data::BranchId, ours: u32) -> Option<Arc<RaidIcons>> {
     drawn(side)?.raids(branch, ours)
 }
 
 pub fn notes(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>, ours: u32) -> Option<Arc<Vec<String>>> {
-    drawn(side)?.notes(ours)
+    drawn(side.layer_parts())?.notes(ours)
 }
 
 pub fn music(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Arc<viewer_audio::Chances>> {
-    drawn(side)?.music_at().map(|(_, music)| music)
+    drawn(side.layer_parts())?.music_at().map(|(_, music)| music)
 }
 
 pub fn summary(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Value {

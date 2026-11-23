@@ -841,7 +841,7 @@ impl Vision {
 
 }
 
-pub fn drawn(side: &crate::playhead_host::MapSide<impl crate::playhead_host::PlaybackProducts>) -> Option<&Vision> {
+pub fn drawn<'a>(side: crate::playhead_host::LayerParts<'a>) -> Option<&'a Vision> {
     if !side.draws("vision") {
         return None;
     }

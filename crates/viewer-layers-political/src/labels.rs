@@ -954,12 +954,12 @@ pub struct Stamped {
 }
 
 pub fn stamped(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Stamped> {
-    let (labels, ours) = drawn(side)?;
+    let (labels, ours) = drawn(side.layer_parts())?;
     let layer = side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<Labels>())?;
     Some(Stamped { labels, ours, branch: side.branch()?, hours: layer.drawn_hours()? })
 }
 
-pub fn drawn(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<(Arc<Display>, u32)> {
+pub fn drawn(side: viewer_layer_core::playhead_host::LayerParts<'_>) -> Option<(Arc<Display>, u32)> {
     if !side.draws("labels") {
         return None;
     }

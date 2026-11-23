@@ -1834,7 +1834,7 @@ impl Layer for Counters {
     }
 }
 
-pub fn published(side: &viewer_layer_core::playhead_host::MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Arc<LandStacks>> {
+pub fn published(side: viewer_layer_core::playhead_host::LayerParts<'_>) -> Option<Arc<LandStacks>> {
     if !side.draws("counters") {
         return None;
     }

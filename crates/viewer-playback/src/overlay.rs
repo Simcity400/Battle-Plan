@@ -1,6 +1,6 @@
 use viewer_layer_core::playhead_host::{lock, views::{Need as RowNeed, self}, timeline::{self, Mark}};
-use crate::{document::{Content, OverlayRows, OverlayTables, PreparedOverlay}, map_open::{MapSide, Products}, side::{LayInKeys, LayIns}, map_views::{CounterView, Presentation}};
-use viewer_layer_core::{playhead_host::Overlaying, layers::{Layer, Settling}};
+use crate::{document::{Content, OverlayRows, OverlayTables, PreparedOverlay}, map_open::Products, side::{LayInKeys, LayIns}, map_views::{CounterView, Presentation}};
+use viewer_layer_core::{playhead_host::{OverlayStep, Overlaying}, layers::{Layer, Settling}};
 use viewer_layers_counters::counter_kinds;
 use viewer_layers_political::left_to_layers::LeftToLayers;
 use replay_data::{BranchId, Hour, rows::TableId};
@@ -428,10 +428,6 @@ struct Shared {
     signal: Condvar,
 }
 
-fn counters_at(names: &[&'static str]) -> Option<usize> {
-    names.iter().position(|name| counter_kinds::LAYERS.iter().any(|(held, _)| held == name))
-}
-
 pub struct Lend<'a> {
     pub views: &'a views::Store,
     pub applied: Option<Hour>,
@@ -452,7 +448,6 @@ pub struct Lend<'a> {
 
 pub struct Overlay {
     content: Arc<Content>,
-    counters_at: Option<usize>,
     ask: Option<Ask>,
     shared: Arc<Shared>,
     worker: Option<JoinHandle<()>>,
@@ -475,7 +470,6 @@ impl Overlay {
     pub fn new(content: Arc<Content>) -> Self {
         Self {
             content,
-            counters_at: None,
             ask: None,
             shared: Arc::new(Shared { held: Mutex::new(Held::default()), signal: Condvar::new() }),
             worker: None,
@@ -493,13 +487,6 @@ impl Overlay {
             missed: Vec::new(),
             maker: timeline::maker("overlay"),
         }
-    }
-
-    pub fn counters_at(&mut self, names: &[&'static str]) -> Option<usize> {
-        if self.counters_at.is_none() {
-            self.counters_at = counters_at(names);
-        }
-        self.counters_at
     }
 
     pub fn ask(&mut self, ask: Ask) {
@@ -1095,30 +1082,26 @@ impl Maker {
 }
 
 impl Overlaying<Products> for Overlay {
-    fn ask_step(&mut self, side: &mut MapSide, whole: bool, lay: bool, moved: Arc<MovedHours>) -> bool {
-        let keys = LayInKeys::of(side);
-        let lay_ins = Arc::new(LayIns::of(side));
-        let published = viewer_layers_counters::counter_kinds::published(side);
-        let draws = viewer_layers_counters::counter_kinds::draws(side);
-        let left = viewer_layers_political::left_to_layers::LeftToLayers::of(Some(side));
-        let draws_labels = side.draws("labels");
+    fn ask_step(&mut self, mut side: OverlayStep<'_>, whole: bool, lay: bool, moved: Arc<MovedHours>) -> bool {
+        let keys = LayInKeys::of(side.layers);
+        let lay_ins = Arc::new(LayIns::of(side.layers, side.branch));
+        let published = counter_kinds::published(side.layers);
+        let draws = counter_kinds::draws(side.layers);
+        let left = viewer_layers_political::left_to_layers::LeftToLayers::of(Some(side.layers));
+        let draws_labels = side.layers.draws("labels");
         let engaged = side.engaged();
-        let vision = if whole { side.copy_vision(true) } else { side.vision_for(&side.view().perspective) };
-        let (applied, branch) = (side.applied(), side.branch());
-        let (perspective, views) = (&side.view().perspective, side.views());
+        let vision = side.vision(whole);
+        let (applied, branch) = (side.applied, side.branch);
+        let (perspective, views) = (side.perspective, side.views);
         Overlay::ask_step(self, Lend { views, applied, branch, perspective, vision, engaged, draws_labels, lay_ins, keys, published, draws, left, moved, whole, lay })
     }
 
     fn join(&mut self, layers: &[Box<dyn Layer>], perspective: &Choice, branch: Option<BranchId>, settling: Settling) -> bool {
         let at_hour = Overlay::join(self, settling);
         if let (Some(branch), Some((tables, rosters))) = (branch, self.tables_of(perspective).map(Arc::clone).zip(self.rosters())) {
-            viewer_layers_counters::counter_kinds::give(layers, perspective, tables.vision(), tables.counters(), branch, move || rosters as viewer_layers_counters::air_mission_counters::Passes);
+            counter_kinds::give(layers, perspective, tables.vision(), tables.counters(), branch, move || rosters as viewer_layers_counters::air_mission_counters::Passes);
         }
         at_hour
-    }
-
-    fn counters_at(&mut self, names: &[&'static str]) -> Option<usize> {
-        Overlay::counters_at(self, names)
     }
 
     fn ask(&mut self, ask: Ask) {
@@ -1265,13 +1248,6 @@ mod tests {
         let pressed = view(CounterView { pressed: Some(viewer_runtime::unit_handle::Unit::Division(7)), plate_hovered: Some(viewer_runtime::unit_handle::Unit::Division(7)), ..CounterView::default() });
         assert_eq!(held, Laid { view: pressed, ..laid() }, "a plate's state draws the layout again, never lays it out");
         assert_ne!(held, laid_on(&Arc::new(Presentation::default())));
-    }
-
-    #[test]
-    fn the_tables_are_given_before_the_first_counter_layer_settles() {
-        let names = ["political", "vision", "engagements", "counters", "land_markers", "labels"];
-        assert_eq!(counters_at(&names), Some(3), "the land stacks' layer, after the vision and the engagements");
-        assert_eq!(counters_at(&["political", "vision", "labels"]), None, "a map drawing no counter kind makes no tables for them");
     }
 
     #[test]

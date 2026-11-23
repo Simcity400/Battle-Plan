@@ -1,20 +1,10 @@
 use crate::map_open::MapSide;
-use viewer_layer_core::playhead_host::details::reasons::{BEING_READ, words};
-use viewer_layer_core::{layers::View, test_support::recorded::record, playhead_host::{details, open, views::tests::hourly_steps, shared_maps_tests::Reads, units::Units}};
+use viewer_layer_core::playhead_host::details::BEING_READ;
+use viewer_layer_core::test_support::limitations::{REASON, unavailable};
+use viewer_layer_core::{layers::View, test_support::recorded::record, playhead_host::{details, open, views::tests::hourly_steps, shared_maps_tests::Reads}};
 use replay_columnar::manifest::Status;
 use replay_data::{rows::TableId, scope::CaptureMode};
 use std::sync::Arc;
-
-const REASON: &str = "the collector could not read it";
-
-fn unavailable(name: &str) -> Units {
-    record(name, 12, |at, store| {
-        let reason = store.intern(REASON.as_bytes()).unwrap();
-        let status = if (4..8).contains(&at) { Status::Unavailable { reason } } else { Status::Complete };
-        store.status(TableId::LandCombats.index(), status, true, Some(at as i32), true).unwrap();
-        store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
-    })
-}
 
 fn once_read(mut read: impl FnMut() -> String) -> String {
     for _ in 0..50_000_000u64 {
@@ -40,13 +30,6 @@ fn an_unavailable_table_no_layer_declares_gives_its_reasons_words_at_the_head() 
     assert_eq!(detail, format!("LandCombats: unavailable ({REASON})"), "the report waits for the words: asked once, first, it gives them");
     let limitation = once_read(|| line(super::lines(&side).unwrap(), "Table LandCombats "));
     assert!(limitation.starts_with(&format!("Table LandCombats unavailable: {REASON}: ")), "the reason's words, never its id: {limitation}");
-}
-
-#[test]
-fn a_reason_id_the_recording_holds_no_text_for_is_named_as_such() {
-    let entry = open(unavailable("limitations no text"), hourly_steps()).unwrap();
-    let words = words(&entry, TableId::LandCombats, 9_999, (0, 0), super::REPORT_WAIT);
-    assert_eq!(words, "the recording holds no text for its reason (string 9999)");
 }
 
 struct RowNotes;

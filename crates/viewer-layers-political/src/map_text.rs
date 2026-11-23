@@ -424,7 +424,7 @@ impl Layer for MapText {
             let Some(Slot::Ready(presented)) = self.queue.pop_front() else { break };
             self.presented = Some(presented.at().1);
             match presented {
-                Presented::Hour { at, seek, prepared } => gpu.scene.present_hours(at, seek, [(&none, &*prepared)], Continuity::Continue, |province| content.counters.anchor(province, 0), content.heights(), &content.counter_assets.gui),
+                Presented::Hour { at, seek, prepared } => gpu.scene.present_hours(at, seek, [(&none, &*prepared)], Continuity::Continue, |province| content.counters.anchor(province, 0), content.heights(), gpu.counter_gui),
                 Presented::Missing { at, seek, reason } => gpu.scene.missing_map_text_events(at, seek, reason),
             }
         }

@@ -1,5 +1,5 @@
 use crate::{map_open::{Combat, MapSide}, overlay};
-use viewer_layer_core::{playhead_host::{Doing, Entry, Frame, Head, OnScreen, Waited, lock, views}};
+use viewer_layer_core::playhead_host::{Doing, Entry, Frame, Head, LayerParts, OnScreen, Waited, lock, views};
 use viewer_layer_core::layers::{Gpu, Installs, View, drawn_layer as drawn};
 use replay_data::Hour;
 use std::{
@@ -567,10 +567,10 @@ pub struct LayIns {
 }
 
 impl LayIns {
-    pub fn of(side: &MapSide) -> Self {
+    pub fn of(side: LayerParts<'_>, branch: Option<replay_data::BranchId>) -> Self {
         let resources = viewer_layers_political::resource_icons::drawn(side);
         let occupation = viewer_layers_political::occupation_marks::drawn(side);
-        let (branch, ours) = (side.branch(), viewer_layer_core::vision::drawn(side).and_then(viewer_layer_core::vision::Vision::ours));
+        let ours = viewer_layer_core::vision::drawn(side).and_then(viewer_layer_core::vision::Vision::ours);
         Self {
             labels: viewer_layers_political::labels::drawn(side),
             intel: viewer_layers_forces::intel_icons::drawn(side),
@@ -749,7 +749,7 @@ pub struct LayInKeys {
 }
 
 impl LayInKeys {
-    pub fn of(side: &MapSide) -> Self {
+    pub fn of(side: LayerParts<'_>) -> Self {
         Self {
             labels: viewer_layers_political::labels::drawn(side).map(|(labels, ours)| (Arc::as_ptr(&labels) as usize, ours)),
             intel: viewer_layers_forces::intel_icons::drawn(side).map(|icons| Arc::as_ptr(&icons) as usize),
@@ -826,10 +826,10 @@ impl Products {
         self.radar = drawn::<viewer_layers_infrastructure::radar::Radar>(side, "radar").and_then(viewer_layers_infrastructure::radar::Radar::field);
         self.plan = drawn::<viewer_layers_forces::orders::Orders>(side, "orders").and_then(|orders| orders.plan().map(|(hour, plan)| (hour, Arc::clone(plan))));
         self.routes = side.draws("units").then(|| drawn::<viewer_layers_forces::convoys::Convoys>(side, "convoys")).flatten().and_then(viewer_layers_forces::convoys::Convoys::shown);
-        self.left = viewer_layers_political::left_to_layers::LeftToLayers::of(Some(side));
+        self.left = viewer_layers_political::left_to_layers::LeftToLayers::of(Some(side.layer_parts()));
         self.placements = viewer_layers_political::names::drawn(side);
-        self.counters = viewer_layers_counters::counter_kinds::published(side);
-        self.counter_kinds = viewer_layers_counters::counter_kinds::draws(side);
+        self.counters = viewer_layers_counters::counter_kinds::published(side.layer_parts());
+        self.counter_kinds = viewer_layers_counters::counter_kinds::draws(side.layer_parts());
         self.units = viewer_layers_forces::units::prepared(side).map(Arc::clone);
         let made = side.last_frame().made;
         if self.movement_of != Some(made) {
@@ -841,7 +841,7 @@ impl Products {
                 self.pick_divisions = units.pick_divisions();
             }
         }
-        self.ours = viewer_layer_core::vision::drawn(side).and_then(viewer_layer_core::vision::Vision::ours);
+        self.ours = viewer_layer_core::vision::drawn(side.layer_parts()).and_then(viewer_layer_core::vision::Vision::ours);
         self.engaged = drawn::<viewer_layer_core::engagements::Engagements>(side, "engagements").and_then(viewer_layer_core::engagements::Engagements::history).map(Arc::clone);
         self.take_highlight(side, wants.highlight);
         self.snow = drawn::<viewer_layers_infrastructure::snow::Snow>(side, "snow").and_then(viewer_layers_infrastructure::snow::Snow::summary);

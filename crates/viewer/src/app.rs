@@ -3405,7 +3405,7 @@ impl Viewer {
             {
                 scene.apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: color.unwrap_or_default() }).map_err(|why| why.to_string())?;
                 if let Some(side) = self.playhead_map.as_mut() {
-                    side.reassert(&mut viewer_layer_core::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
+                    side.reassert(&mut viewer_layer_core::layers::Gpu { device, queue, scene, content: &document.content, counter_gui: &document.icons.counters.gui, whole: false });
                 }
             }
             return Ok(());
@@ -3429,7 +3429,7 @@ impl Viewer {
                 .apply(device, queue, SceneInput::SetFactionHighlight { plan: &restore, strategic_regions: &[], color: color.unwrap_or_default() })
                 .map_err(|why| why.to_string())?;
             if let Some(side) = self.playhead_map.as_mut() {
-                side.reassert(&mut viewer_layer_core::layers::Gpu { device, queue, scene, content: &document.content, whole: false });
+                side.reassert(&mut viewer_layer_core::layers::Gpu { device, queue, scene, content: &document.content, counter_gui: &document.icons.counters.gui, whole: false });
             }
         }
         let content = Arc::clone(&document.content);
@@ -4062,7 +4062,7 @@ impl Viewer {
                             .map(|why| format!("A saved frame draws the models and plan of its own hour {hour}: {why}"));
                     }
                     if let Some(scene) = self.scene.as_mut() {
-                        let mut gpu = viewer_layer_core::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
+                        let mut gpu = viewer_layer_core::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, counter_gui: &document.icons.counters.gui, whole: through.is_none() };
                         window.upload(&mut gpu);
                     }
                     window.take(viewer_playback::side::Wants { warnings: wanted, highlight: self.highlight_wanted });
@@ -4105,7 +4105,7 @@ impl Viewer {
             if let Some(scene) = self.scene.as_mut() {
                 let side = self.playhead_map.as_mut().expect("the map's side is open");
                 let written = shown_head.map(|head| head.hour).filter(|_| !saved);
-                let mut gpu = viewer_layer_core::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, whole: through.is_none() };
+                let mut gpu = viewer_layer_core::layers::Gpu { device: &state.device, queue: &state.queue, scene, content: &document.content, counter_gui: &document.icons.counters.gui, whole: through.is_none() };
                 side.install(&mut gpu, written);
                 if let Some(installed) = side.installed_through()
                     && shown_head.is_some_and(|head| head.hour != installed)

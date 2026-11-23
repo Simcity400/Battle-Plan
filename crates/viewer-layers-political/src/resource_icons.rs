@@ -3,7 +3,7 @@
 pub(super) mod tests;
 
 use viewer_layer_core::layers::{Carried, Settling, Dirty, Inputs, Layer, Num, Text, View};
-use viewer_layer_core::playhead_host::{MapSide, mirror::{Mirror, Mirrors}};
+use viewer_layer_core::playhead_host::{mirror::{Mirror, Mirrors}};
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::rows::TableId;
@@ -418,7 +418,7 @@ impl ResourceIcons {
     }
 }
 
-pub fn drawn(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<&ResourceIcons> {
+pub fn drawn<'a>(side: viewer_layer_core::playhead_host::LayerParts<'a>) -> Option<&'a ResourceIcons> {
     if !side.draws(NAME) {
         return None;
     }

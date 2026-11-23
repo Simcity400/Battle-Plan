@@ -118,16 +118,23 @@ fn read(pages: &dyn Pages, run: usize, block: usize, table: usize, id: u32) -> i
     Ok(None)
 }
 
-pub fn words(entry: &Entry, table: TableId, id: u32, place: (usize, usize), wait: Duration) -> String {
+pub(super) fn words(entry: &Entry, table: TableId, id: u32, place: (usize, usize), wait: Duration) -> String {
     reason(entry.pages(), table, id, place).words(wait)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{BEING_READ, NOT_IN_TIME, Reason};
+    use crate::{playhead_host::{open, views::tests::hourly_steps}, test_support::limitations::{REASON, unavailable}};
+    use replay_data::rows::TableId;
     use std::time::Duration;
 
-    const REASON: &str = "the collector could not read it";
+    #[test]
+    fn a_reason_id_the_recording_holds_no_text_for_is_named_as_such() {
+        let entry = open(unavailable("limitations no text"), hourly_steps()).unwrap();
+        let words = super::words(&entry, TableId::LandCombats, 9_999, (0, 0), super::super::REPORT_WAIT);
+        assert_eq!(words, "the recording holds no text for its reason (string 9999)");
+    }
 
     #[test]
     fn a_reason_still_unread_is_being_read_on_a_frame_and_not_read_in_time_in_a_report() {

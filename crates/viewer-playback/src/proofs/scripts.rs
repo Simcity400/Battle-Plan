@@ -43,7 +43,7 @@ impl Line {
         self.step_ns.extend(self.steps.iter().filter(|step| !step.reset()).map(|step| step.built().ns));
         if self.on
             && playing
-            && let Some(product) = viewer_layers_political::scripts::drawn(side).and_then(Scripts::product)
+            && let Some(product) = viewer_layers_political::scripts::drawn(side.layer_parts()).and_then(Scripts::product)
         {
             self.age.push(f64::from(head - product.hour));
         }
@@ -58,7 +58,7 @@ impl Line {
             SeekResult::Frame(frame) => Arc::new(*frame),
             SeekResult::Gap { reason, .. } => return Err(io::Error::other(format!("Today's reader finds a gap at {hour}: {reason}"))),
         };
-        let layer = viewer_layers_political::scripts::drawn(side);
+        let layer = viewer_layers_political::scripts::drawn(side.layer_parts());
         let tables = layer.map_or(0, |layer| layer.needs().len());
         let reached = layer.and_then(Scripts::product).filter(|product| product.hour == hour && product.complete).and_then(|product| {
             let raids = product.raids.clone().filter(|icons| icons.built_for.is_some_and(|(branch, at, country)| (branch, at, country) == (self.recording.branch, hour, ours)))?;
@@ -109,7 +109,7 @@ impl Line {
 
     pub fn summary(&self, side: &MapSide, distribution: fn(Vec<f64>) -> Value) -> Value {
         let ms = |values: &[u64]| distribution(values.iter().map(|&ns| ns as f64 / 1e6).collect());
-        let layer = viewer_layers_political::scripts::drawn(side);
+        let layer = viewer_layers_political::scripts::drawn(side.layer_parts());
         json!({
             "on": self.on,
             "compared": self.totals.iter().map(|(name, (entries, differing, samples))| json!({"compare": name, "samples": samples, "entries": entries, "differing": differing})).collect::<Vec<_>>(),

@@ -2,7 +2,7 @@ use viewer_layers_political::left_to_layers::LeftToLayers;
 
 #[cfg(test)]
 pub mod music_inputs;
-use viewer_layer_core::scene_content::{KeptConvoys, OverlayLayers, SceneContent, links_of, trade_route_read::{self, TradeRouteRead}};
+use viewer_layer_core::scene_content::{KeptConvoys, OverlayLayers, SceneContent, links_of, trade_route_read};
 
 use crate::map_icons::MapIcons;
 use crate::map_views::CounterView;
@@ -1859,7 +1859,7 @@ impl Document {
             let h_scripted = content_reader_core::parallel::spawn(prefix, move || {
                 let _startup = crate::perf_log::StartupSpan::new("document_scripted_text");
                 let _stage = viewer_runtime::load_record::stage("content.scripted");
-                Arc::new(dashboard_text::scripted_text::ScriptedContent::read(
+                Arc::new(dashboard_base::catalogue::read_scripted_content(
                     scripted_content,
                     scripted_language,
                 ))
@@ -3019,7 +3019,6 @@ impl Document {
                     weather_effects,
                     movement,
                     province_geometry,
-                    counter_assets: Arc::clone(&icons.counters),
                 },
                 loading,
                 first_frame_reported: std::sync::atomic::AtomicBool::new(false),
@@ -3668,39 +3667,7 @@ impl<'a> Hour<'a> {
     }
 
     pub fn trade_route_convoys_kept(&self, ours: u32, kept: &mut Option<KeptConvoys>) -> Arc<Vec<viewer_unit_models::trade_routes::ConvoyLine>> {
-        use replay_data::rows::TableId;
-        use viewer_unit_models::trade_routes;
-        let read = TradeRouteRead::of(self.frame, kept.as_ref().map(|held| &held.read));
-        if let Some(held) = kept.as_mut()
-            && held.ours == ours
-            && held.read.same(&read)
-        {
-            if held.read.assigned_same(&read) {
-                held.read = read;
-                viewer_runtime::view_record::add("trade routes", "convoys kept", 1);
-                return Arc::clone(&held.convoys);
-            }
-            if let Ok(defines) = &self.trade_routes
-                && let Some(made) = trade_routes::sailed(&held.routes, &defines.convoys, read.assigned_of(TableId::ResourceOrigins), read.assigned_of(TableId::ConvoyClients))
-            {
-                let made = Arc::new(made);
-                static KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                if viewer_runtime::install_check::due(&KEPT) {
-                    let whole = self.trade_route_lines(ours);
-                    if whole.convoys != *made {
-                        viewer_runtime::install_check::found("trade route convoys", format!("hour {}: {} convoy lines kept, {} built whole", self.frame.hour, made.len(), whole.convoys.len()));
-                    }
-                }
-                (held.read, held.convoys) = (read, Arc::clone(&made));
-                viewer_runtime::view_record::add("trade routes", "convoys made again", 1);
-                return made;
-            }
-        }
-        viewer_runtime::view_record::add("trade routes", "lines built whole", 1);
-        let routes = self.trade_route_lines(ours);
-        let convoys = Arc::new(routes.convoys.clone());
-        *kept = Some(KeptConvoys { read, ours, routes, convoys: Arc::clone(&convoys) });
-        convoys
+        KeptConvoys::for_hour(self.frame, ours, kept, &self.trade_routes, || self.trade_route_lines(ours))
     }
 
     fn build_trade_route_lines(&self, ours: u32) -> viewer_unit_models::trade_routes::TradeRoutes {

@@ -85,7 +85,7 @@ fn icons_at(side: &mut MapSide, hour: replay_data::Hour, what: &str) {
 fn learned_at(side: &mut MapSide, hour: replay_data::Hour) {
     sought(side, hour);
     at(side, hour, "the reader opens", Icons::is_open);
-    assert!(read(side).is_none() && drawn(side).is_none(), "while its tables load the window keeps today's icons");
+    assert!(read(side).is_none() && drawn(side.layer_parts()).is_none(), "while its tables load the window keeps today's icons");
     sought(side, hour);
     at(side, hour, "the table the content reads is learned", |layer| layer.tables().contains(&TableId::HumanControllers));
     icons_at(side, hour, "the icons of the hour");
@@ -121,13 +121,13 @@ fn the_icons_are_evaluated_over_rows_at_the_head_on_their_worker_learning_the_ta
     let mut side = side("intel icons at the head");
     learned_at(&mut side, 2);
     assert_eq!(read(&side).unwrap().0, "links Some(2), humans Some(1), on Some(\"intel icons\")");
-    assert_eq!(drawn(&side).unwrap().built_for, Some((RECORDING.branch, 2, 0)));
+    assert_eq!(drawn(side.layer_parts()).unwrap().built_for, Some((RECORDING.branch, 2, 0)));
     let mut seen = Vec::new();
     play(&mut side, 2, "the icons at the head", |side, frame| {
         let applied = frame.applied.unwrap();
         if let Some((text, hour)) = read(side) {
             assert_eq!(hour, applied, "an unlimited settle gives the icons of the hour applied");
-            assert_eq!(drawn(side).unwrap().built_for, Some((RECORDING.branch, applied, 0)));
+            assert_eq!(drawn(side.layer_parts()).unwrap().built_for, Some((RECORDING.branch, applied, 0)));
             seen.push((applied, text));
         }
         applied >= 340
@@ -152,7 +152,7 @@ fn in_another_map_mode_it_declares_nothing_and_holds_nothing_and_opens_again_wit
     probe.inputs(&View::default(), &mut declared).unwrap();
     assert!(declared.into_tables().is_empty(), "another mode declares no table");
     assert!(!layer(&side).is_open(), "no reader and no worker");
-    assert!(layer(&side).icons().is_none() && drawn(&side).is_none(), "no icons");
+    assert!(layer(&side).icons().is_none() && drawn(side.layer_parts()).is_none(), "no icons");
     assert!(layer(&side).held() <= 64 * std::mem::size_of::<TableId>(), "only the names of the tables it learned: {}", layer(&side).held());
     side.set_view(operatives()).unwrap();
     at(&mut side, 2, "the reader opens again", Icons::is_open);

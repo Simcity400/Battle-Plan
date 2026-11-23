@@ -68,6 +68,7 @@ pub struct Gpu<'a> {
     pub queue: &'a wgpu::Queue,
     pub scene: &'a mut viewer_world::scene::Scene,
     pub content: &'a crate::scene_content::SceneContent,
+    pub counter_gui: &'a viewer_native_gui::native_resources::GuiResources,
     pub whole: bool,
 }
 
@@ -187,10 +188,7 @@ impl Settling {
 }
 
 pub fn drawn_layer<'a, T: 'static>(side: &'a crate::playhead_host::MapSide<impl crate::playhead_host::PlaybackProducts>, name: &str) -> Option<&'a T> {
-    if !side.draws(name) {
-        return None;
-    }
-    side.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<T>())
+    side.layer_parts().drawn(name)
 }
 
 pub trait Layer: Send {
@@ -555,9 +553,15 @@ fn counting_in_view() -> bool {
     IN_VIEW.load(Ordering::Relaxed)
 }
 
+#[derive(Clone, Copy)]
+pub struct SightInputs<'a> {
+    pub scene: &'a crate::scene_content::SceneContent,
+    pub state_provinces: &'a BTreeMap<u32, Vec<u32>>,
+}
+
 pub struct Sight<'a> {
     admission: Option<Admission>,
-    content: Option<&'a crate::scene_content::SceneContent>,
+    content: Option<SightInputs<'a>>,
     eye: Option<[f32; 3]>,
 }
 
@@ -566,22 +570,22 @@ impl<'a> Sight<'a> {
         Self { admission: None, content: None, eye: None }
     }
 
-    pub fn of(content: Option<&'a crate::scene_content::SceneContent>, view: &View) -> Self {
+    pub fn of(content: Option<SightInputs<'a>>, view: &View) -> Self {
         let (Some(content), Some(placement)) = (content, view.camera) else { return Self::none() };
         if view.viewport == [0, 0] || !counting_in_view() {
             return Self::none();
         }
-        let camera = placement.on(MapSize::of(&content.map), content.map_defines);
+        let camera = placement.on(MapSize::of(&content.scene.map), content.scene.map_defines);
         let eye = camera.eye();
         Self { admission: Some(Admission::new(camera, view.viewport)), content: Some(content), eye: Some(eye) }
     }
 
     pub fn province(&self, province: u32) -> Option<bool> {
-        Some(self.admission.as_ref()?.admits_province(&self.content?.counters.bounds, province))
+        Some(self.admission.as_ref()?.admits_province(&self.content?.scene.counters.bounds, province))
     }
 
     pub fn state(&self, state: u32) -> Option<bool> {
-        let provinces = self.content?.products.triggers.state_provinces.get(&state);
+        let provinces = self.content?.state_provinces.get(&state);
         self.admission.as_ref()?;
         Some(provinces.is_some_and(|provinces| provinces.iter().any(|&province| self.province(province) == Some(true))))
     }
@@ -594,7 +598,7 @@ impl<'a> Sight<'a> {
 
     pub fn province_heard(&self, province: u32, hearing: Option<f32>) -> Option<bool> {
         let (eye, hearing) = (self.eye?, hearing?);
-        let Some(&[min_x, min_z, max_x, max_z]) = self.content?.counters.bounds.get(&province) else { return Some(false) };
+        let Some(&[min_x, min_z, max_x, max_z]) = self.content?.scene.counters.bounds.get(&province) else { return Some(false) };
         let [dx, dz] = [eye[0] - eye[0].clamp(min_x, max_x), eye[2] - eye[2].clamp(min_z, max_z)];
         Some(dx * dx + dz * dz <= hearing * hearing)
     }

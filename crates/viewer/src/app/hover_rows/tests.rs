@@ -64,7 +64,7 @@ fn the_hovers_read_the_vision_the_maps_vision_layer_shows_and_are_loading_by_nam
     };
     assert_eq!(viewer_layer_core::vision::seen_made_here(), made, "the frame's thread copied the layer's arrays and made no vision");
     assert_eq!(vision.ours(), 1, "the viewing country the layer resolved");
-    let seen = viewer.playhead_map.as_ref().unwrap().with_side(|side| viewer_layer_core::vision::drawn(side).expect("the vision layer draws").vision().expect("the layer's vision"));
+    let seen = viewer.playhead_map.as_ref().unwrap().with_side(|side| viewer_layer_core::vision::drawn(side.layer_parts()).expect("the vision layer draws").vision().expect("the layer's vision"));
     assert_eq!(vision.differences(&seen), (0, Vec::new()), "made off the frame, it is the layer's vision");
     let again = viewer.shown_vision().unwrap_or_else(|why| panic!("still shown: {why}"));
     assert!(Arc::ptr_eq(&vision, &again), "the same value while nothing the layer shows moves");

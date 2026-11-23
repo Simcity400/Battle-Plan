@@ -1,30 +1,21 @@
 
 use viewer_layer_core::layers::Layer;
 use super::{air_mission_counters::{AirMissionCounters, Passes}, base_counters::BaseCountersFed, gun_counters::GunCounters, land_markers::LandMarkers, naval_markers::NavalMarkers};
-use viewer_layer_core::playhead_host::MapSide;
+use viewer_layer_core::playhead_host::{COUNTER_LAYERS, LayerParts};
 use replay_data::BranchId;
 use std::sync::Arc;
 use viewer_counters::map::counters::{HourTables, Kinds, Layered};
 use viewer_foundation::perspective::{Choice, Vision};
 
-pub const LAYERS: [(&str, Kinds); 6] = [
-    ("counters", Kinds::LAND),
-    ("land_markers", Kinds::LAND_MARKERS),
-    ("naval_markers", Kinds::NAVAL_MARKERS),
-    ("base_counters", Kinds::BASES),
-    ("gun_counters", Kinds::GUNS),
-    ("air_mission_counters", Kinds::AIR_MISSIONS),
-];
-
-pub fn draws(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Kinds {
-    LAYERS.iter().filter(|(name, _)| side.draws(name)).fold(Kinds::default(), |kinds, &(_, kind)| kinds.with(kind))
+pub fn draws(side: LayerParts<'_>) -> Kinds {
+    COUNTER_LAYERS.iter().filter(|(name, _)| side.draws(name)).fold(Kinds::default(), |kinds, &(_, kind)| kinds.with(kind))
 }
 
 fn find<T: 'static>(layers: &[Box<dyn Layer>]) -> Option<&T> {
     layers.iter().find_map(|layer| layer.any().downcast_ref::<T>())
 }
 
-pub fn published(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Layered {
+pub fn published(side: LayerParts<'_>) -> Layered {
     let Some((_, layers)) = side.parts() else { return Layered::default() };
     let drawn = |name: &str| side.draws(name);
     let viewer = side.viewer();

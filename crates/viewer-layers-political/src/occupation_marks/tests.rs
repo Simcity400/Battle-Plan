@@ -153,21 +153,21 @@ fn the_window_takes_the_layers_marks_where_it_draws_them_and_todays_where_it_doe
     let entry = open(units, Settings { step_threads: 1, fetch_threads: 1, ahead: 2, ring: 3, speed: 1.0, rate: 1.0, ..Settings::default() }).unwrap();
     entry.set_capture(replay_data::scope::CaptureMode::Full);
     let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(OccupationMarks::new(content()))], resistance_mode()).unwrap();
-    assert!(drawn(&side).is_none(), "not composed yet: today's makes the marks");
+    assert!(drawn(side.layer_parts()).is_none(), "not composed yet: today's makes the marks");
     side.anchor(0, false, 0.0, true);
     side.catch_up(5).unwrap();
-    let left = LeftToLayers::of(Some(&side));
+    let left = LeftToLayers::of(Some(side.layer_parts()));
     assert_eq!(left, LeftToLayers { resource_icons: false, occupation_marks: true, radar: left.radar }, "the layer draws the marks in the resistance mode");
-    let version = drawn(&side).expect("drawn").version();
+    let version = drawn(side.layer_parts()).expect("drawn").version();
     side.catch_up(8).unwrap();
-    assert_eq!(drawn(&side).expect("drawn").version(), version, "no step to hour 8 changed a mark: the window lays nothing out again");
+    assert_eq!(drawn(side.layer_parts()).expect("drawn").version(), version, "no step to hour 8 changed a mark: the window lays nothing out again");
     side.catch_up(12).unwrap();
-    assert!(drawn(&side).expect("drawn").version() > version, "the step to hour 10 changed state 1's mark: the window lays it out again");
+    assert!(drawn(side.layer_parts()).expect("drawn").version() > version, "the step to hour 10 changed state 1's mark: the window lays it out again");
     side.set_view(View::default()).unwrap();
     side.catch_up(14).unwrap();
-    let left = LeftToLayers::of(Some(&side));
+    let left = LeftToLayers::of(Some(side.layer_parts()));
     assert_eq!(left, LeftToLayers::default(), "in another mode the layer draws nothing");
-    assert_eq!(LeftToLayers::of(None::<&MapSide>), LeftToLayers::default(), "the playhead off: today's makes both");
+    assert_eq!(LeftToLayers::of(None), LeftToLayers::default(), "the playhead off: today's makes both");
 }
 
 #[test]

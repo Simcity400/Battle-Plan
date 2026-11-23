@@ -2389,3 +2389,10 @@ fn apart_drive_stops_when_a_read_fails() {
         entry.playhead().error()
     );
 }
+
+#[test]
+fn the_tables_are_given_before_the_first_counter_layer_settles() {
+    let names = ["political", "vision", "engagements", "counters", "land_markers", "labels"];
+    assert_eq!(super::counters_at(&names), Some(3), "the land stacks' layer, after the vision and the engagements");
+    assert_eq!(super::counters_at(&["political", "vision", "labels"]), None, "a map drawing no counter kind makes no tables for them");
+}

@@ -4,9 +4,8 @@ use viewer_layers_counters::{air_mission_counters, base_counters, counters, gun_
 use viewer_layers_forces::{aircraft, convoys, intel_icons, orders, ships, units as ground_units};
 use viewer_layers_infrastructure::{buildings, intel, radar, rails, snow, sounds, strikes, trains};
 use viewer_layers_political::{labels, map_text, mode_fills, names, naval, occupation_marks, political, resource_icons};
-use viewer_layer_core::{layers::{Layer, View}, playhead_host::{At, PlaybackProducts, combat::Asking, keep_registered, open, settings, units, views}};
+use viewer_layer_core::{layers::{Layer, SightInputs, View}, playhead_host::{At, PlaybackProducts, combat::Asking, keep_registered, open, settings, units, views}};
 use crate::{document::Content, overlay::{Ask, Made, Overlay}};
-use viewer_layer_core::scene_content::SceneContent;
 use replay_data::Hour;
 use std::{io, sync::Arc};
 
@@ -21,8 +20,8 @@ impl PlaybackProducts for Products {
     type OverlayAsk = Ask;
     type OverlayMade = Made;
 
-    fn scene(content: &Content) -> &SceneContent {
-        content
+    fn sight(content: &Content) -> SightInputs<'_> {
+        SightInputs { scene: content, state_provinces: &content.icons.raids.trigger_content.state_provinces }
     }
 
     fn overlay_viewer(made: &Made) -> u32 {

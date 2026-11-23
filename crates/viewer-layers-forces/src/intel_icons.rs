@@ -489,7 +489,7 @@ impl Layer for Icons {
     }
 }
 
-pub fn drawn(side: &MapSide<impl viewer_layer_core::playhead_host::PlaybackProducts>) -> Option<Arc<IntelIcons>> {
+pub fn drawn(side: viewer_layer_core::playhead_host::LayerParts<'_>) -> Option<Arc<IntelIcons>> {
     if !side.draws(NAME) {
         return None;
     }

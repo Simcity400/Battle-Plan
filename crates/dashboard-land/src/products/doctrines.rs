@@ -34,7 +34,7 @@ pub const TABLES: [TableId; 13] = [
 
 fn selected_tables() -> Vec<TableId> {
     let mut selected = BTreeSet::from(TABLES);
-    selected.extend(dashboard_text::effect_description::recorded_tables());
+    selected.extend(dashboard_effects::effect_description::recorded_tables());
     selected.into_iter().collect()
 }
 
@@ -548,7 +548,8 @@ fn enrich(
     default_reward: Option<i64>,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    use dashboard_text::{effect_description::{self, Context}, scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
+    use dashboard_effects::{ScriptedEffects, effect_description::{self, Context}};
+    use dashboard_text::{scripted_text::{EventObject, EventScope, EventScopes, ScriptedText}};
     let (_, slot) = doctrine_country(frame, &Country::from(reply.tag.as_str()))?;
     let content = catalogue.scripted_content().map_err(invalid)?;
     let scripted = ScriptedText::new(frame, &catalogue.localisation, content, slot);
@@ -800,6 +801,7 @@ mod tests {
                 ),
             ),
         ]);
+        let catalogue = dashboard_base::catalogue::tests::with_effect_describer(catalogue, dashboard_effects::effect_describer);
         let catalogue = Arc::new(catalogue);
         let database = content_reader_core::doctrines::read(&catalogue.content.layers).unwrap();
         let politics =
@@ -1081,7 +1083,7 @@ mod tests {
     fn doctrine_description_selection_uses_shared_scoped_inputs() {
         let selected = selected_tables();
         assert!(
-            dashboard_text::effect_description::recorded_tables().all(|table| selected.contains(&table))
+            dashboard_effects::effect_description::recorded_tables().all(|table| selected.contains(&table))
         );
         assert!(selected.contains(&TableId::Clock));
         assert!(selected.contains(&TableId::TimedIdeas));

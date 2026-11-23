@@ -35,6 +35,7 @@ replay-data.workspace = true
 replay-derive.workspace = true
 replay-frame.workspace = true
 dashboard-core.workspace = true
+dashboard-effects.workspace = true
 dashboard-text.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 
@@ -64,6 +65,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-sound = { workspace = true, features = ["test-support"] }
+dashboard-effects = { workspace = true, features = ["test-support"] }
 map-content = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }

@@ -24,8 +24,6 @@ use viewer_foundation::tables::{
     table_limitations,
 };
 
-const REPORT_WAIT: Duration = Duration::from_secs(60);
-
 pub const NOT_GIVEN: &str = "Map limitations: not given at the playback head: ";
 
 struct Head<'a> {
@@ -36,14 +34,7 @@ struct Head<'a> {
 
 impl Statuses for Head<'_> {
     fn seen(&self, table: TableId) -> Seen {
-        let entry = self.side.entry();
-        match details::status(entry, entry.playhead().timeline(), table, self.hour) {
-            Ok(Some((Status::Complete, _))) => Seen::Complete,
-            Ok(Some((Status::Truncated { missing }, _))) => Seen::Truncated(missing),
-            Ok(Some((Status::Unavailable { reason: id }, place))) => Seen::Unavailable(details::reasons::words(entry, table, id, place, self.wait)),
-            Ok(Some((Status::NotRecorded, _))) | Ok(None) => Seen::NotRecorded(entry.capture()),
-            Err(error) => Seen::Unavailable(format!("its status cannot be read at the head ({error})")),
-        }
+        details::seen(self.side.entry(), table, self.hour, self.wait)
     }
 }
 
@@ -300,7 +291,7 @@ fn by_text(ours: &[String], theirs: &[&String]) -> (Vec<String>, Vec<String>, u6
 
 pub fn differ(side: &MapSide, every: &replay_frame::frame::DecodedFrame, today: &[String]) -> Compared {
     let Some(hour) = side.applied() else { return Compared { entries: 1, differing: 1, first: Some("the head has reached no hour".into()), ..Compared::default() } };
-    let head = Head { side, hour, wait: REPORT_WAIT };
+    let head = Head { side, hour, wait: details::REPORT_WAIT };
     let raids = raid_notes(side);
     let raids = raids.as_deref().map(Vec::as_slice);
     let apart: Vec<TableId> = TableId::ALL.into_iter().filter(|&table| matches!(head.seen(table), Seen::NotRecorded(_)) && !matches!(every.seen(table), Seen::NotRecorded(_))).collect();

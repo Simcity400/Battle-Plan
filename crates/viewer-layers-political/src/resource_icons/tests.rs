@@ -338,16 +338,16 @@ fn the_window_takes_the_layers_icons_in_the_resources_mode_and_todays_where_it_d
     let (units, _) = campaign("resource icons, drawn", false);
     let mut side = side(units, content());
     side.catch_up(5).unwrap();
-    let left = LeftToLayers::of(Some(&side));
+    let left = LeftToLayers::of(Some(side.layer_parts()));
     assert_eq!(left, LeftToLayers { resource_icons: true, occupation_marks: false, radar: left.radar }, "the layer draws the icons in the resources mode");
-    let version = drawn(&side).expect("drawn").version();
+    let version = drawn(side.layer_parts()).expect("drawn").version();
     side.catch_up(8).unwrap();
-    assert_eq!(drawn(&side).expect("drawn").version(), version, "no step to hour 8 changed an icon: the window lays nothing out again");
+    assert_eq!(drawn(side.layer_parts()).expect("drawn").version(), version, "no step to hour 8 changed an icon: the window lays nothing out again");
     side.catch_up(22).unwrap();
-    assert!(drawn(&side).expect("drawn").version() > version, "the step to hour 20 changed MIXED's icon: the window lays it out again");
+    assert!(drawn(side.layer_parts()).expect("drawn").version() > version, "the step to hour 20 changed MIXED's icon: the window lays it out again");
     side.set_view(View::default()).unwrap();
     side.catch_up(24).unwrap();
-    let left = LeftToLayers::of(Some(&side));
+    let left = LeftToLayers::of(Some(side.layer_parts()));
     assert_eq!(left, LeftToLayers::default(), "in another mode the layer draws nothing");
 }
 

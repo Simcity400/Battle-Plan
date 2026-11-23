@@ -17,6 +17,7 @@ use mirror::{Mirror, Mirrors};
 use playhead::{Consumer, Declared, Lanes, Playhead, Reader, Settings, Step, pages::Pages};
 use replay_columnar::state::Kind;
 use replay_data::{Hour, rows::TableId};
+use viewer_counters::map::counters::Kinds;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io,
@@ -133,10 +134,6 @@ impl Entry {
 
     pub fn anchored(&self) -> bool {
         lock(&self.anchors).0.is_some()
-    }
-
-    pub fn capture(&self) -> Option<replay_data::scope::CaptureMode> {
-        self.capture.get().copied()
     }
 
     pub fn set_capture(&self, capture: replay_data::scope::CaptureMode) {
@@ -599,7 +596,7 @@ pub trait PlaybackProducts: 'static {
     type OverlayAsk;
     type OverlayMade;
 
-    fn scene(content: &Self::Sight) -> &crate::scene_content::SceneContent;
+    fn sight(content: &Self::Sight) -> crate::layers::SightInputs<'_>;
     fn overlay_viewer(made: &Self::OverlayMade) -> u32;
 }
 
@@ -611,8 +608,8 @@ impl PlaybackProducts for NoProducts {
     type OverlayAsk = std::convert::Infallible;
     type OverlayMade = std::convert::Infallible;
 
-    fn scene(content: &Self::Sight) -> &crate::scene_content::SceneContent {
-        content
+    fn sight(content: &Self::Sight) -> crate::layers::SightInputs<'_> {
+        crate::layers::SightInputs { scene: content, state_provinces: &content.products.triggers.state_provinces }
     }
 
     fn overlay_viewer(made: &Self::OverlayMade) -> u32 {
@@ -620,10 +617,22 @@ impl PlaybackProducts for NoProducts {
     }
 }
 
+pub const COUNTER_LAYERS: [(&str, Kinds); 6] = [
+    ("counters", Kinds::LAND),
+    ("land_markers", Kinds::LAND_MARKERS),
+    ("naval_markers", Kinds::NAVAL_MARKERS),
+    ("base_counters", Kinds::BASES),
+    ("gun_counters", Kinds::GUNS),
+    ("air_mission_counters", Kinds::AIR_MISSIONS),
+];
+
+fn counters_at(names: &[&'static str]) -> Option<usize> {
+    names.iter().position(|name| COUNTER_LAYERS.iter().any(|(held, _)| held == name))
+}
+
 pub trait Overlaying<P: PlaybackProducts>: Send {
-    fn counters_at(&mut self, names: &[&'static str]) -> Option<usize>;
     fn ask(&mut self, ask: P::OverlayAsk);
-    fn ask_step(&mut self, side: &mut MapSide<P>, whole: bool, lay: bool, moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool;
+    fn ask_step(&mut self, side: OverlayStep<'_>, whole: bool, lay: bool, moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool;
     fn join(&mut self, layers: &[Box<dyn Layer>], perspective: &viewer_foundation::perspective::Choice, branch: Option<replay_data::BranchId>, settling: Settling) -> bool;
     fn stepped(&mut self);
     fn stands_at(&self, hour: Hour) -> bool;
@@ -633,6 +642,71 @@ pub trait Overlaying<P: PlaybackProducts>: Send {
     fn hour(&self) -> Option<Hour>;
     fn loading(&self) -> &[String];
     fn missed(&self) -> &[TableId];
+}
+
+#[derive(Clone, Copy)]
+pub struct LayerParts<'a> {
+    names: &'a [&'static str],
+    reads: &'a [Result<BTreeSet<usize>, String>],
+    ready: &'a [bool],
+    mirrors: Option<&'a Mirrors>,
+    layers: &'a [Box<dyn Layer>],
+    composing: bool,
+    superseded: bool,
+}
+
+impl<'a> LayerParts<'a> {
+    pub fn draws(&self, name: &str) -> bool {
+        self.names.iter().enumerate().any(|(at, held)| *held == name && self.reads[at].is_ok() && self.ready[at])
+    }
+
+    pub fn parts(&self) -> Option<(&'a Mirrors, &'a [Box<dyn Layer>])> {
+        self.mirrors.filter(|_| !self.superseded).map(|mirrors| (mirrors, self.layers))
+    }
+
+    pub fn drawn<T: 'static>(&self, name: &str) -> Option<&'a T> {
+        if !self.draws(name) {
+            return None;
+        }
+        self.parts()?.1.iter().find_map(|layer| layer.any().downcast_ref::<T>())
+    }
+
+    pub fn viewer(&self) -> Option<u32> {
+        self.vision_layer()?.ours()
+    }
+
+    fn vision_layer(&self) -> Option<&'a crate::vision::Vision> {
+        vision_of(self.names, self.reads, self.ready, self.layers, self.composing || self.superseded)
+    }
+
+    fn engaged(&self) -> Option<Arc<viewer_engagements::engagement_history::History>> {
+        self.layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::engagements::Engagements>()).and_then(crate::engagements::Engagements::history).map(Arc::clone)
+    }
+}
+
+pub struct OverlayStep<'a> {
+    pub layers: LayerParts<'a>,
+    pub views: &'a views::Store,
+    pub applied: Option<Hour>,
+    pub branch: Option<replay_data::BranchId>,
+    pub perspective: &'a viewer_foundation::perspective::Choice,
+    vision: &'a mut shown_vision::ShownVision,
+}
+
+impl OverlayStep<'_> {
+    pub fn engaged(&self) -> Option<Arc<viewer_engagements::engagement_history::History>> {
+        self.layers.engaged()
+    }
+
+    pub fn vision(&mut self, whole: bool) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
+        if whole {
+            let home = self.layers.mirrors.is_some() && !self.layers.composing && !self.layers.superseded;
+            let layer = self.layers.vision_layer();
+            self.vision.shown(layer, self.applied, home, true)
+        } else {
+            self.vision.kept_for(self.perspective)
+        }
+    }
 }
 
 pub struct MapSide<P: PlaybackProducts = NoProducts> {
@@ -646,6 +720,7 @@ pub struct MapSide<P: PlaybackProducts = NoProducts> {
     upstream: Vec<Vec<usize>>,
     recompose: Vec<bool>,
     names: Vec<&'static str>,
+    counter_at: Option<usize>,
     mirrors: Option<Arc<Mirrors>>,
     views: views::Store,
     declared_layers: BTreeMap<usize, Read>,
@@ -763,7 +838,8 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     pub fn with_products(entry: Arc<Entry>, mut layers: Vec<Box<dyn Layer>>, view: View) -> io::Result<Self> {
-        let names = layers.iter().map(|layer| layer.name()).collect();
+        let names: Vec<_> = layers.iter().map(|layer| layer.name()).collect();
+        let counter_at = counters_at(&names);
         let views = views::Store::new(&entry);
         for layer in &mut layers {
             layer.views(&views)?;
@@ -799,6 +875,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             upstream,
             reads,
             names,
+            counter_at,
             mirrors: Some(Arc::default()),
             views,
             layers_awake: awake_mask(&declared_layers),
@@ -893,10 +970,6 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.vision.kept_for(&self.view_shown.perspective)
     }
 
-    pub fn vision_for(&self, perspective: &viewer_foundation::perspective::Choice) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
-        self.vision.kept_for(perspective)
-    }
-
     pub fn view_shown(&self) -> &View {
         &self.view_shown
     }
@@ -928,18 +1001,32 @@ impl<P: PlaybackProducts> MapSide<P> {
         self.combat.loading()
     }
 
-    pub fn engaged(&self) -> Option<Arc<viewer_engagements::engagement_history::History>> {
-        self.layers.iter().find_map(|layer| layer.any().downcast_ref::<crate::engagements::Engagements>()).and_then(crate::engagements::Engagements::history).map(Arc::clone)
+    fn engaged(&self) -> Option<Arc<viewer_engagements::engagement_history::History>> {
+        self.layer_parts().engaged()
     }
 
     fn ask_overlay_step(&mut self, whole: bool, lay: bool, moved: Arc<viewer_unit_reads::counter_move::MovedHours>) -> bool {
         if self.overlay.is_none() || self.composing || self.superseded {
             return false;
         }
-        let mut overlay = self.overlay.take().expect("held above");
-        let asked = overlay.ask_step(self, whole, lay, moved);
-        self.overlay = Some(overlay);
-        asked
+        let layers = LayerParts {
+            names: &self.names,
+            reads: &self.reads,
+            ready: &self.ready,
+            mirrors: self.mirrors.as_deref(),
+            layers: &self.layers,
+            composing: self.composing,
+            superseded: self.superseded,
+        };
+        let step = OverlayStep {
+            layers,
+            views: &self.views,
+            applied: self.applied,
+            branch: self.branch,
+            perspective: &self.view.perspective,
+            vision: &mut self.vision,
+        };
+        self.overlay.as_deref_mut().expect("held above").ask_step(step, whole, lay, moved)
     }
 
     fn moved_before(&self, step: &Step, into: &mut viewer_unit_reads::counter_move::MovedHours) {
@@ -952,13 +1039,8 @@ impl<P: PlaybackProducts> MapSide<P> {
         }
     }
 
-    fn overlay_counters_at(&mut self) -> Option<usize> {
-        let (overlay, names) = (self.overlay.as_deref_mut(), &self.names);
-        overlay.and_then(|overlay| overlay.counters_at(names))
-    }
-
     fn join_overlay(&mut self, settling: Settling) -> bool {
-        let at = self.overlay_counters_at().unwrap_or(0);
+        let at = self.counter_at.unwrap_or(0);
         self.overlay.as_deref_mut().is_some_and(|overlay| overlay.join(&self.layers[at..], &self.view.perspective, self.branch, settling))
     }
 
@@ -1265,7 +1347,7 @@ impl<P: PlaybackProducts> MapSide<P> {
         let settles_lap = replay_frame::cpu::scope("side.settles", Some("other"));
         if !self.composing {
             let composing = compose.iter().any(|&wanted| wanted) && !composed_here;
-            let overlay_at = (!composing && self.overlay.is_some()).then(|| self.overlay_counters_at().unwrap_or(0));
+            let overlay_at = (!composing && self.overlay.is_some()).then(|| self.counter_at.unwrap_or(0));
             if overlay_at.is_some() {
                 if viewer_runtime::view_record::on() {
                     let (movers, hours) = moved.counts();
@@ -1429,7 +1511,7 @@ impl<P: PlaybackProducts> MapSide<P> {
             {
                 let _in_view = replay_frame::cpu::scope("side.in-view", Some("other"));
                 let content = self.sight.clone();
-                let sight = crate::layers::Sight::of(content.as_deref().map(P::scene), &self.view);
+                let sight = crate::layers::Sight::of(content.as_deref().map(P::sight), &self.view);
                 for (at, left) in counted {
                     let part = &mut frame.layers[at];
                     part.scope = self.layers[at].scope(&sight).or_else(|| settled[at].then(|| crate::layers::Scope { settled: part.dirty.saturating_sub(left) as u64, in_view: None }));
@@ -1624,7 +1706,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     pub fn draws(&self, name: &str) -> bool {
-        self.names.iter().enumerate().any(|(at, held)| *held == name && self.reads[at].is_ok() && self.ready[at])
+        self.layer_parts().draws(name)
     }
 
     pub fn catch_up(&mut self, head: Hour) -> io::Result<()> {
@@ -1684,13 +1766,6 @@ impl<P: PlaybackProducts> MapSide<P> {
             report.jobs_running,
             report.preparing,
         )
-    }
-
-    pub fn copy_vision(&mut self, exact: bool) -> Result<Arc<viewer_foundation::perspective::Vision>, String> {
-        let applied = self.applied;
-        let home = self.mirrors.is_some() && !self.composing && !self.superseded;
-        let layer = vision_of(&self.names, &self.reads, &self.ready, &self.layers, self.composing || self.superseded);
-        self.vision.shown(layer, applied, home, exact)
     }
 
     fn overlay_whole(&mut self, head: Hour) -> io::Result<bool> {
@@ -1754,7 +1829,7 @@ impl<P: PlaybackProducts> MapSide<P> {
     }
 
     fn vision_layer(&self) -> Option<&crate::vision::Vision> {
-        vision_of(&self.names, &self.reads, &self.ready, &self.layers, self.composing || self.superseded)
+        self.layer_parts().vision_layer()
     }
 
     pub fn viewer(&self) -> Option<u32> {
@@ -2064,8 +2139,20 @@ impl<P: PlaybackProducts> MapSide<P> {
         &self.views
     }
 
+    pub fn layer_parts(&self) -> LayerParts<'_> {
+        LayerParts {
+            names: &self.names,
+            reads: &self.reads,
+            ready: &self.ready,
+            mirrors: self.mirrors.as_deref(),
+            layers: &self.layers,
+            composing: self.composing,
+            superseded: self.superseded,
+        }
+    }
+
     pub fn parts(&self) -> Option<(&Mirrors, &[Box<dyn Layer>])> {
-        self.mirrors.as_deref().filter(|_| !self.superseded).map(|mirrors| (mirrors, &self.layers[..]))
+        self.layer_parts().parts()
     }
 
     #[cfg(any(test, feature = "test-support"))]

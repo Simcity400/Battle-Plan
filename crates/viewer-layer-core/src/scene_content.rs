@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, io, sync::Arc};
 use replay_frame::frame::DecodedFrame;
 use viewer_counters::map::counters;
 use viewer_gpu::{layers::Omissions, province_map::HeightField};
+use viewer_unit_models::trade_routes::{self, ConvoyLine, TradeRouteDefines, TradeRoutes};
 
 pub mod trade_route_read;
 use trade_route_read::TradeRouteRead;
@@ -81,10 +82,53 @@ impl OverlayLayers {
 }
 
 pub struct KeptConvoys {
-    pub read: TradeRouteRead,
-    pub ours: u32,
-    pub routes: Arc<viewer_unit_models::trade_routes::TradeRoutes>,
-    pub convoys: Arc<Vec<viewer_unit_models::trade_routes::ConvoyLine>>,
+    read: TradeRouteRead,
+    ours: u32,
+    routes: Arc<TradeRoutes>,
+    convoys: Arc<Vec<ConvoyLine>>,
+}
+
+impl KeptConvoys {
+    pub fn for_hour(
+        frame: &DecodedFrame,
+        ours: u32,
+        kept: &mut Option<Self>,
+        defines: &Result<TradeRouteDefines, String>,
+        lines: impl FnOnce() -> Arc<TradeRoutes>,
+    ) -> Arc<Vec<ConvoyLine>> {
+        use replay_data::rows::TableId;
+        let read = TradeRouteRead::of(frame, kept.as_ref().map(|held| &held.read));
+        if let Some(held) = kept.as_mut()
+            && held.ours == ours
+            && held.read.same(&read)
+        {
+            if held.read.assigned_same(&read) {
+                held.read = read;
+                viewer_runtime::view_record::add("trade routes", "convoys kept", 1);
+                return Arc::clone(&held.convoys);
+            }
+            if let Ok(defines) = defines
+                && let Some(made) = trade_routes::sailed(&held.routes, &defines.convoys, read.assigned_of(TableId::ResourceOrigins), read.assigned_of(TableId::ConvoyClients))
+            {
+                let made = Arc::new(made);
+                static KEPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                if viewer_runtime::install_check::due(&KEPT) {
+                    let whole = lines();
+                    if whole.convoys != *made {
+                        viewer_runtime::install_check::found("trade route convoys", format!("hour {}: {} convoy lines kept, {} built whole", frame.hour, made.len(), whole.convoys.len()));
+                    }
+                }
+                (held.read, held.convoys) = (read, Arc::clone(&made));
+                viewer_runtime::view_record::add("trade routes", "convoys made again", 1);
+                return made;
+            }
+        }
+        viewer_runtime::view_record::add("trade routes", "lines built whole", 1);
+        let routes = lines();
+        let convoys = Arc::new(routes.convoys.clone());
+        *kept = Some(Self { read, ours, routes, convoys: Arc::clone(&convoys) });
+        convoys
+    }
 }
 
 pub fn links_of(frame: &DecodedFrame) -> io::Result<BTreeMap<u32, u32>> {
@@ -112,7 +156,6 @@ pub struct SceneContent {
     pub weather_effects: Arc<viewer_weather_effects::weather_effects::Assets>,
     pub movement: Option<Arc<viewer_foundation::movement_timing::MovementContent>>,
     pub province_geometry: Arc<viewer_gpu::province_geometry::ProvinceGeometry>,
-    pub counter_assets: Arc<viewer_counters::map::counters::CounterAssets>,
 }
 
 impl SceneContent {

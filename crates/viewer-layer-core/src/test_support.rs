@@ -1,3 +1,4 @@
+pub mod limitations;
 pub mod rail_recording;
 pub mod recorded;
 pub mod reloaded_playback;
