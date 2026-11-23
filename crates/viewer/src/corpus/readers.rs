@@ -280,7 +280,7 @@ pub fn run(
         ),
     }
     log.read("dashboard.scripted_content", || {
-        dashboard_text::scripted_text::ScriptedContent::read(Arc::clone(&resolved), language.clone())
+        dashboard_base::catalogue::read_scripted_content(Arc::clone(&resolved), language.clone())
             .map(|content| {
                 (
                     content.names,

@@ -6,6 +6,7 @@ use crate::{
     presentation::{Presentation, Presented},
     products::ContentOptions,
 };
+use dashboard_text::scripted_text::ScriptedContent;
 use kept::Keeping;
 use std::{io, sync::Arc};
 
@@ -160,7 +161,16 @@ fn load_with(
         warnings,
         recorded_language,
         gui_decode,
+        Some(dashboard_effects::effect_describer),
     ))
+}
+
+pub fn read_scripted_content(
+    content: Arc<content_reader_core::content::ResolvedContent>,
+    recorded_language: String,
+) -> Result<ScriptedContent, String> {
+    ScriptedContent::read(content, recorded_language)
+        .map(|scripted| scripted.with_effect_describer(dashboard_effects::effect_describer))
 }
 
 pub fn built_catalogue(source: &Source, options: &ContentOptions) -> io::Result<Catalogue> {

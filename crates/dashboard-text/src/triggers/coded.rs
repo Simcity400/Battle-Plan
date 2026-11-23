@@ -873,7 +873,7 @@ impl Evaluator<'_, '_> {
         result
     }
 
-    pub(crate) fn leader_visible<'r>(&self, row: impl Into<Leader<'r>>) -> Eval {
+    pub fn leader_visible<'r>(&self, row: impl Into<Leader<'r>>) -> Eval {
         let row = row.into();
         self.decide_leader_visibility(row, self.world().leader_visibility(row), false)
     }

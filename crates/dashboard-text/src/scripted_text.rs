@@ -1,6 +1,6 @@
 
 use job_priority::SpawnCarried as _;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
 
 use crate::scope::{RecordedScopes, table_in as rows};
@@ -14,7 +14,7 @@ use replay_data::rows::{
 };
 use replay_frame::frame::{HourFrame, OperandStatus, Rowset};
 use std::borrow::Cow;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::TableView;
 
 const ORGANISATION: u64 = mask::<IndustrialOrganisationRow>(&["owner", "token", "name"]);
@@ -83,7 +83,7 @@ pub(super) fn each<'r, R: RowCodec + Clone + 'r>(
     rows.iter().map(|row| row.map_err(built))
 }
 
-pub(super) fn spelled<'r>(
+pub fn spelled<'r>(
     lexical: &Rowset<'r, LexicalTokenRow>,
     token: u32,
 ) -> Result<Option<&'r [u8]>, String> {
@@ -95,6 +95,8 @@ pub(super) fn spelled<'r>(
 pub const TABLES: &[replay_data::rows::TableId] = crate::triggers::RECORDED_TABLES;
 
 mod balance;
+#[cfg(any(test, feature = "test-support"))]
+pub use balance::tests as balance_test_support;
 mod dependence;
 mod entries;
 mod numeric;
@@ -202,7 +204,7 @@ impl EventScope {
         }
     }
 
-    pub(crate) fn random_draw(&self) -> Result<u32, String> {
+    pub fn random_draw(&self) -> Result<u32, String> {
         Ok(random::scoped_draw(self.require_random_seed()?, self.random_counter) as u32)
     }
 }
@@ -271,7 +273,7 @@ fn linked_scope(length: usize, at: usize, link: Link, name: &str) -> Result<usiz
 }
 
 #[derive(Clone)]
-pub(crate) struct ExpansionScopes<'e, 'a> {
+pub struct ExpansionScopes<'e, 'a> {
     scopes: std::cell::RefCell<Vec<EventScope>>,
     variables: std::cell::Cell<ScopeVariables>,
     targets: std::cell::RefCell<EventScopes>,
@@ -287,6 +289,22 @@ pub(crate) struct ExpansionScopes<'e, 'a> {
 }
 
 impl<'e, 'a> ExpansionScopes<'e, 'a> {
+    pub fn world(&self) -> Option<&'e crate::triggers::World<'a>> {
+        self.world
+    }
+
+    pub fn combat(&self) -> Option<&'e dyn crate::triggers::Combat> {
+        self.combat
+    }
+
+    pub fn variable_session(&self) -> Option<crate::triggers::VariableSession> {
+        self.session.borrow().clone()
+    }
+
+    pub fn replace_variable_session(&self, session: Option<crate::triggers::VariableSession>) {
+        self.session.replace(session);
+    }
+
     fn new(scopes: &EventScopes) -> Self {
         let prev_distance = (0..scopes.scopes.len())
             .map(|start| {
@@ -335,23 +353,41 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
         self.scopes.borrow()[at]
     }
 
-    fn append_description<'s>(&'s self, scopes: &EventScopes) -> DescriptionScopeGuard<'s, 'e, 'a> {
-        let next = Self::new(scopes);
+    fn append_description<'s>(
+        &'s self,
+        scopes: &EventScopes,
+    ) -> Result<DescriptionScopeGuard<'s, 'e, 'a>, String> {
+        for (kind, targets) in [
+            ("tooltip target", &scopes.tooltip_targets),
+            ("saved target", &scopes.saved_targets),
+        ] {
+            if let Some((&at, _)) = targets.last_key_value()
+                && at >= scopes.scopes.len()
+            {
+                return Err(format!("scripted text {kind} event scope {at} is not given"));
+            }
+        }
         let offset = self.scopes.borrow().len();
         let rebase = |link| match link {
-            Link::Scope(at) => Link::Scope(at + offset),
-            other => other,
+            Link::Scope(at) => at
+                .checked_add(offset)
+                .map(Link::Scope)
+                .ok_or_else(|| format!("scripted text event scope link {at} overflows when rebased")),
+            other => Ok(other),
         };
-        let appended: Vec<_> = scopes
+        let appended = scopes
             .scopes
             .iter()
-            .map(|scope| EventScope {
-                root: rebase(scope.root),
-                from: rebase(scope.from),
-                prev: rebase(scope.prev),
-                ..*scope
+            .map(|scope| {
+                Ok(EventScope {
+                    root: rebase(scope.root)?,
+                    from: rebase(scope.from)?,
+                    prev: rebase(scope.prev)?,
+                    ..*scope
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>()?;
+        let next = Self::new(scopes);
         self.scopes.borrow_mut().extend(appended);
         self.prev_distance
             .borrow_mut()
@@ -371,13 +407,13 @@ impl<'e, 'a> ExpansionScopes<'e, 'a> {
             &mut targets.global_tooltip_targets,
             scopes.global_tooltip_targets.clone(),
         );
-        DescriptionScopeGuard {
+        Ok(DescriptionScopeGuard {
             expanded: self,
             offset,
             variables,
             valid_links,
             globals,
-        }
+        })
     }
 
     fn linked(&self, at: usize, link: Link, name: &str) -> Result<usize, String> {
@@ -434,6 +470,22 @@ impl Drop for DescriptionScopeGuard<'_, '_, '_> {
     }
 }
 
+pub trait EffectDescriber: std::any::Any + Send + Sync {
+    fn describe<'f>(
+        &self,
+        text: &ScriptedText<'f>,
+        source: &str,
+        items: &[content_reader_core::parser::Item],
+        expansion: &ExpansionScopes<'_, 'f>,
+        graph: &mut EventScopes,
+        refused: &mut Vec<String>,
+    ) -> Result<String, String>;
+
+    fn prepare_static_modifiers(&self, content: &ScriptedContent) -> Result<(), String>;
+}
+
+pub type EffectDescriberFactory = fn() -> Box<dyn EffectDescriber>;
+
 pub struct ScriptedContent {
     pub names: content_reader_scripted_localisation::scripted_localisation::Names,
     pub recursion: i32,
@@ -448,9 +500,8 @@ pub struct ScriptedContent {
     pub(crate) template_names:
         content_reader_core::content::diagnostics::Once<Result<Localisation, String>>,
     event_index: content_reader_core::content::diagnostics::Once<content_reader_events::events::LazyEvents>,
-    pub(crate) effects: content_reader_core::content::diagnostics::Once<
-        Result<crate::effect_description::CachedContent, String>,
-    >,
+    effect_describer: Option<Box<dyn EffectDescriber>>,
+    static_modifiers: std::sync::Arc<content_reader_core::static_modifiers::Descriptions>,
 }
 
 impl ScriptedContent {
@@ -485,17 +536,35 @@ impl ScriptedContent {
             state_content: std::sync::Arc::new(content_reader_core::content::diagnostics::Once::new()),
             template_names: content_reader_core::content::diagnostics::Once::new(),
             event_index: content_reader_core::content::diagnostics::Once::new(),
-            effects: content_reader_core::content::diagnostics::Once::new(),
+            effect_describer: None,
+            static_modifiers: Default::default(),
         })
     }
 
-    pub(crate) fn event_index(&self) -> &content_reader_events::events::LazyEvents {
+    pub fn with_effect_describer(mut self, factory: EffectDescriberFactory) -> Self {
+        debug_assert!(self.effect_describer.is_none(), "effect describer is already installed");
+        self.effect_describer.get_or_insert_with(factory);
+        self
+    }
+
+    pub fn effect_describer<T: EffectDescriber>(&self) -> Option<&T> {
+        let describer = self.effect_describer.as_deref()?;
+        (describer as &dyn std::any::Any).downcast_ref()
+    }
+
+    pub fn static_modifiers(
+        &self,
+    ) -> &std::sync::Arc<content_reader_core::static_modifiers::Descriptions> {
+        &self.static_modifiers
+    }
+
+    pub fn event_index(&self) -> &content_reader_events::events::LazyEvents {
         self.event_index.get_or_init(|| {
             content_reader_events::events::LazyEvents::from_content(std::sync::Arc::clone(&self.layers))
         })
     }
 
-    pub(crate) fn environment(&self) -> Result<&Environment, String> {
+    pub fn environment(&self) -> Result<&Environment, String> {
         self.environment
             .get_or_init(|| {
                 Environment::read(&self.layers.layers)
@@ -508,6 +577,10 @@ impl ScriptedContent {
 
 #[cfg(any(test, feature = "test-support"))]
 impl ScriptedContent {
+    pub fn set_synthetic_environment_error(&self, reason: String) {
+        assert!(self.environment().unwrap().inputs.set(Err(reason)).is_ok());
+    }
+
     pub fn set_synthetic_environment(&self, state_names: std::collections::BTreeMap<u32, String>) {
         let mut environment = entries::EnvironmentInputs::synthetic();
         environment.state_names = state_names
@@ -1035,7 +1108,7 @@ impl<'a> ScriptedText<'a> {
         result
     }
 
-    pub(crate) fn expand_in_description(
+    pub fn expand_in_description(
         &self,
         text: &str,
         scopes: &EventScopes,
@@ -1061,7 +1134,10 @@ impl<'a> ScriptedText<'a> {
                 &fresh
             }
         };
-        let appended = expanded.append_description(scopes);
+        let appended = match expanded.append_description(scopes) {
+            Ok(appended) => appended,
+            Err(why) => return (Err(why), session),
+        };
         expanded.session.replace(session);
         let object = faction_environment.map_or(Object::Event, Object::FactionEnvironment);
         let result = self.process(text, 0, expanded, at + appended.offset, object);
@@ -1076,7 +1152,15 @@ impl<'a> ScriptedText<'a> {
         self.frame
     }
 
-    pub(crate) fn content(&self) -> &'a ScriptedContent {
+    pub fn localisation(&self) -> &'a Localisation {
+        self.localisation
+    }
+
+    pub fn nato_counters(&self) -> bool {
+        self.nato_counters
+    }
+
+    pub fn content(&self) -> &'a ScriptedContent {
         self.content
     }
 
@@ -1096,16 +1180,37 @@ impl<'a> ScriptedText<'a> {
         self.names()
     }
 
-    pub(crate) fn viewing_country(&self) -> u32 {
+    pub fn country_name_operands(
+        &self,
+        slot: u32,
+    ) -> Option<&Result<content_reader_country_names::country_names::Operands, String>> {
+        self.country_names().operands(slot)
+    }
+
+    pub fn viewing_country(&self) -> u32 {
         self.root
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_synthetic_world(&self, world: crate::triggers::World<'a>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_synthetic_world(&self, world: crate::triggers::World<'a>) {
         assert!(self.world.set(Ok(world)).is_ok());
     }
 
-    pub(crate) fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_synthetic_world_with_template_names(&self, world: crate::triggers::World<'a>) {
+        self.set_synthetic_world(world.with_template_names(
+            &self.content.template_names,
+            &self.content.layers.layers,
+            &self.content.recorded_language,
+        ));
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn synthetic_world_loaded(&self) -> bool {
+        self.world.get().is_some()
+    }
+
+    pub fn country_name(&self, country: u32, definite: bool) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::CountryName(country, definite)),
             || self.country_name_unrecorded(country, definite),
@@ -1147,17 +1252,17 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    pub(crate) fn country_marked_name(&self, country: u32) -> Result<String, String> {
+    pub fn country_marked_name(&self, country: u32) -> Result<String, String> {
         let tag = self.country_tag(country)?;
         let name = crt_case_text(&self.names().name_with(country, "_DEF")?, true, true);
         Ok(format!("\u{12}{tag} {name}"))
     }
 
-    pub(crate) fn country_adjective(&self, country: u32) -> Result<String, String> {
+    pub fn country_adjective(&self, country: u32) -> Result<String, String> {
         self.names().name_with(country, "_ADJ")
     }
 
-    pub(crate) fn recorded_language(&self) -> &str {
+    pub fn recorded_language(&self) -> &str {
         &self.content.recorded_language
     }
 
@@ -2106,7 +2211,7 @@ impl<'a> ScriptedText<'a> {
         self.party_name(&party, tag, long)
     }
 
-    pub(crate) fn party_name(
+    pub fn party_name(
         &self,
         party: &replay_data::rows::PoliticalPartyRow,
         tag: &str,
@@ -2172,7 +2277,7 @@ impl<'a> ScriptedText<'a> {
         self.faction_name_by_id(faction)
     }
 
-    pub(crate) fn faction_name_by_id(&self, id: u64) -> Result<String, String> {
+    pub fn faction_name_by_id(&self, id: u64) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::FactionNameById(id)),
             || self.faction_name_by_id_unrecorded(id),
@@ -2242,6 +2347,18 @@ const OLD_NAMES: [(&str, &str, bool); 5] = [
     ("GetOldAdjective", "_ADJ", false),
     ("GetOldAdjectiveCap", "_ADJ", true),
 ];
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn complete_test_frame() -> DecodedFrame {
+    let mut frame = crate::scope::tests::positive_frame();
+    use replay_data::rows::{TableId, TableRows};
+    for id in TableId::ALL {
+        if matches!(&*frame.tables[id.index()], TableView::Unavailable { .. }) {
+            *frame.tables[id.index()] = TableView::Complete(TableRows::empty(id));
+        }
+    }
+    frame
+}
 
 #[cfg(test)]
 mod tests;
