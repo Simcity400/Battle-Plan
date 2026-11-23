@@ -26,6 +26,7 @@ export {
 } from './scroll.ts';
 export {
   attachAuditWatch,
+  createBoundAuditReader,
   mountFamilyCanvas,
   reportFamilyShownHour,
   useFamilyAnnouncer,
@@ -34,14 +35,17 @@ export {
   useFamilyInstanceId,
   useFamilyPauseFlush,
   useFamilyPlacement,
+  useFamilyTooltip,
   type AuditWatchController,
+  type BoundAuditEntry,
   type FamilyAuditHandle,
   type FamilyAuditOptions,
+  type FamilyAuditVerifier,
   type FamilyPlacementHandle,
   type FamilyPlacementOptions,
   type MountedFamilyCanvas,
 } from './surface.ts';
-export { reducedMotionEnabled, useFamilyTheme } from './theme.ts';
+export { reducedMotionEnabled, sameFamilyTheme, useFamilyTheme } from './theme.ts';
 export {
   FamilyTooltipController,
   HOVER_CLOSE_MS,

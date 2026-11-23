@@ -48,6 +48,7 @@ export class FamilyTooltipController {
   private focusCache: FittedCache | null = null;
   private pinned: PinnedTooltip | null = null;
   private hoverShown = false;
+  private tipVisible = false;
   private hoverTimer: ReturnType<typeof setTimeout> | null = null;
   private leaveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -90,10 +91,14 @@ export class FamilyTooltipController {
     if (this.pinned) return;
     if (!tip || !pos) {
       this.hoverShown = false;
-      hideTooltip(this.owner);
+      if (this.tipVisible) {
+        this.tipVisible = false;
+        hideTooltip(this.owner);
+      }
       return;
     }
     this.hoverShown = true;
+    this.tipVisible = true;
     const fitted = this.fitCached(channel, tip.content, tip.hour, viewportHeight);
     showTooltip(this.owner, fitted, pos.x, pos.y, tip.rowKey);
   }
@@ -104,13 +109,11 @@ export class FamilyTooltipController {
         this.show('hover', input.hoverTip, input.pointerPos, input.viewportHeight);
       } else if (input.focusInside && input.focusedKey && input.focusTip && input.focusTip.rowKey === input.focusedKey) {
         this.show('focus', input.focusTip, input.focusAnchor, input.viewportHeight);
-      } else if (!this.pinned) {
-        this.hoverShown = false;
-        hideTooltip(this.owner);
+      } else {
+        this.hideIfUnpinned();
       }
-    } else if (!this.pinned) {
-      this.hoverShown = false;
-      hideTooltip(this.owner);
+    } else {
+      this.hideIfUnpinned();
     }
   }
 
@@ -171,6 +174,7 @@ export class FamilyTooltipController {
     const dateText = formatDateTime(Math.floor(hour));
     const pinnedContent: TooltipContent = { ...tip.content, subtitle: `Pinned at ${dateText}` };
     this.pinned = { key: tip.rowKey, content: pinnedContent, x: pos.x, y: pos.y };
+    this.tipVisible = true;
     showTooltip(this.owner, fitTooltip([pinnedContent], viewportHeight), pos.x, pos.y, `${tip.rowKey}:pinned`);
     announce?.('Tooltip pinned.');
     return true;
@@ -179,21 +183,28 @@ export class FamilyTooltipController {
   unpin(announce?: (message: string) => void): boolean {
     if (!this.pinned) return false;
     this.pinned = null;
+    this.tipVisible = false;
     hideTooltip(this.owner);
     announce?.('Tooltip unpinned.');
     return true;
   }
 
   hideIfUnpinned(): void {
-    if (this.pinned) return;
+    if (this.pinned || !this.tipVisible) return;
     this.hoverShown = false;
+    this.tipVisible = false;
+    hideTooltip(this.owner);
+  }
+
+  clearPinAndHide(): void {
+    this.cancelTimers();
+    this.pinned = null;
+    this.hoverShown = false;
+    this.tipVisible = false;
     hideTooltip(this.owner);
   }
 
   dispose(): void {
-    this.cancelTimers();
-    this.pinned = null;
-    this.hoverShown = false;
-    hideTooltip(this.owner);
+    this.clearPinAndHide();
   }
 }

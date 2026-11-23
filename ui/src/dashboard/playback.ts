@@ -4,6 +4,7 @@ import { OUTSIDE, perfLog } from '../shell/perf.ts';
 import { engine } from '../engine/frame.ts';
 import type { EngineTask, FrameEngine } from '../engine/frame.ts';
 import { PAGE_CLOCK_ID } from './mapPlayback.ts';
+import { setPlaybackActive } from '../widgets/rendererLoaders.ts';
 
 export const MIN_PLAYBACK_SPEED = 0.25;
 export const MAX_PLAYBACK_SPEED = 1440;
@@ -149,6 +150,7 @@ export class PlaybackController {
     this.snapshot = { ...next, hour, composedAt: next.playing ? this.lastTime : performance.now(), fraction: next.position - hour,
       sequence: this.snapshot.sequence + (hourChanged || discontinuity ? 1 : 0),
       seekSequence: this.snapshot.seekSequence + (discontinuity ? 1 : 0) };
+    if (next.playing !== previous.playing) setPlaybackActive(this, next.playing);
     perfLog?.clock(this.snapshot.position, this.snapshot.playing, this.snapshot.hoursPerSecond, this.snapshot.sequence, this.snapshot.seekSequence, this.snapshot.composedAt);
     for (const listener of this.firstListeners) listener(previous, this.snapshot);
     for (const listener of this.publishListeners) listener(previous, this.snapshot);

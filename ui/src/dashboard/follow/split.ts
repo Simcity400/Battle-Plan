@@ -41,7 +41,7 @@ export function resetStamps() {
   };
 }
 
-export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
+export function splitForLanes(bytes: Uint8Array, lanes: number, stats?: { recordVisits: number }): Split {
   const failure = followFailure(bytes);
   if (failure !== null) return { kind: 'failure', reason: failure };
   const kind = wireKind(bytes);
@@ -71,14 +71,22 @@ export function splitForLanes(bytes: Uint8Array, lanes: number): Split {
     if (record.lane === 'all') { shared += size; for (let lane = 0; lane < lanes; lane++) { sizes[lane]! += size; counts[lane]!++; } }
     else { sizes[record.lane]! += size; counts[record.lane]!++; owned[record.lane]! += follow ? 16 + 2 * Math.max(size - 16, data.getUint32(record.start + 12, true)) : 2 * size; }
   }
-  const out = sizes.map(size => new Uint8Array(size)), put = sizes.map(() => 24);
+  const out = sizes.map((size, index) => follow || counts[index] ? new Uint8Array(size) : null), put = sizes.map(() => 24);
   out.forEach((lane, index) => {
+    if (!lane) return;
     lane.set(bytes.subarray(0, 24));
     new DataView(lane.buffer).setUint32(follow ? 12 : 8, counts[index]!, true);
   });
   for (const record of records) {
     const piece = bytes.subarray(record.start, record.end);
-    for (let lane = 0; lane < lanes; lane++) if (record.lane === 'all' || record.lane === lane) { out[lane]!.set(piece, put[lane]!); put[lane]! += piece.length; }
+    if (record.lane === 'all') {
+      if (stats) stats.recordVisits += lanes;
+      for (let lane = 0; lane < lanes; lane++) { out[lane]!.set(piece, put[lane]!); put[lane]! += piece.length; }
+    } else {
+      if (stats) stats.recordVisits++;
+      const lane = record.lane;
+      out[lane]!.set(piece, put[lane]!); put[lane]! += piece.length;
+    }
   }
-  return { kind: follow ? 'follow' : 'panels', lanes: out.map((lane, index) => follow || counts[index] ? lane : null), owned, header: 24 + 2 * shared };
+  return { kind: follow ? 'follow' : 'panels', lanes: out, owned, header: 24 + 2 * shared };
 }

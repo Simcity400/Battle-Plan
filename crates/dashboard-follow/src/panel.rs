@@ -65,6 +65,7 @@ pub trait Panel: Send {
 
 pub trait PanelRows: Send + Sync {
     fn reader(&self, tables: &[TableId]) -> io::Result<Box<dyn PanelReader>>;
+    fn on_publish(&self, _wake: Wake) {}
 }
 
 pub trait PanelReader: Send {

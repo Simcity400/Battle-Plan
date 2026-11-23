@@ -101,7 +101,7 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const widgetKey = useWidgetKey();
   const [owner] = useState(() => pinnedOwners--);
   const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? headKey(widgetKey, track.axisOffset, region) : null,
-    { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, widget: widgetKey, key: `${region.widget.kind}|${panelName}|${paramsKey}` });
+    { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, widget: widgetKey, kind: region.widget.kind, key: `${region.widget.kind}|${panelName}|${paramsKey}` });
   const checked = useMemo(() => following ? gate.checkFollow({ ...params, panel: panelName, branchId: track!.branch.id }) : null,
     [following, panelName, paramsKey, track?.branch.id, gate.checkFollow]);
   const query = checked?.query ?? null;

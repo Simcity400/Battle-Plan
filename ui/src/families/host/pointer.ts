@@ -206,6 +206,13 @@ export function bindFamilyPointer(options: FamilyPointerBindingOptions): () => v
   return () => {
     pointerDown = null;
     tooltips.cancelTimers();
+    lastPointerRef.current = null;
+    if (inspectedKeyRef.current !== null) {
+      inspectedKeyRef.current = null;
+      pipeline.pointer(pipe, 0, null);
+      pipeline.inspect(pipe, null);
+    }
+    tooltips.hideIfUnpinned();
     bodyNode.removeEventListener('pointermove', onPointerMove);
     bodyNode.removeEventListener('pointerleave', onPointerLeave);
     bodyNode.removeEventListener('pointerdown', onPointerDown);

@@ -1243,6 +1243,36 @@ fn a_followed_list_of_a_log_holds_its_listed_rows_at_twenty_seeks() {
 }
 
 #[test]
+fn a_listed_log_added_at_the_final_paused_hour_delivers_when_its_read_completes() {
+    let pages = record_log();
+    let columns = vec![0, 1, 2];
+    let (appended, forgotten) = log_read_directly(&pages, &columns);
+    let rows: BTreeMap<u64, LogRow> = appended.iter().cloned().collect();
+    let last = (HOURS - 1) as Hour;
+    let mut expected: BTreeMap<u64, &LogRow> = rows.iter().filter(|(_, row)| row.1 <= last).map(|(&ordinal, row)| (ordinal, row)).collect();
+    for &(_, ordinal) in forgotten.iter().filter(|(at, _)| *at <= last) {
+        expected.remove(&ordinal);
+    }
+    let want: Vec<(u128, Vec<(i64, State)>)> = expected.values().map(|row| (row.0, row.2.clone())).collect();
+    let mut harness = harness(&pages);
+    harness.playhead().lead(playhead::Lead { seconds: 1.0, bytes: 8 << 20 });
+    harness.seek(last);
+    let _ = harness.play(last);
+    harness.follow.follow(2, Query::Cells { table: TABLE, columns, rows: Rows::Listed }).unwrap();
+    let answer = loop {
+        let played = harness.played.recv().unwrap();
+        if let Some((_, _, answer)) = played.answers().into_iter().find(|(id, _, _)| *id == 2) {
+            break answer;
+        }
+    };
+    assert!(answer.not_recorded.is_none() && answer.hours.is_none());
+    let held: Vec<(u128, Vec<(i64, State)>)> = (0..answer.keys.len())
+        .map(|row| (answer.keys[row], (0..answer.columns).map(|column| (answer.values[row * answer.columns + column], answer.states[row * answer.columns + column])).collect()))
+        .collect();
+    assert_eq!(held, want);
+}
+
+#[test]
 fn a_followed_list_of_a_table_holding_state_is_refused_by_name() {
     let pages = record(quiet);
     let mut harness = harness(&pages);

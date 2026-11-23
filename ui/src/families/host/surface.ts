@@ -6,10 +6,12 @@ import { useElement, useFollowedWidget, usePipeline, useSurfaceLabel } from '../
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { useWidgetFrame } from '../../dashboard/widgetFrame.tsx';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
-import { perfLog, type ExactPicture } from '../../shell/perf.ts';
+import { perfLog } from '../../shell/perf.ts';
 import { AuditSnapshotStore, auditRowsOf, subscribeFamilyAuditing, useFamilyAuditing } from '../audit.ts';
 import type { FamilySourceSubscription } from '../contract.ts';
-import type { FamilyTooltipController } from './tooltips.ts';
+import { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
+import { FamilyTooltipController } from './tooltips.ts';
+export { createBoundAuditReader, type BoundAuditEntry, type FamilyAuditVerifier } from './auditBinding.ts';
 export { reportFamilyShownHour } from './shownHour.ts';
 
 const STATIC_HOLD = {};
@@ -26,6 +28,9 @@ export interface FamilyPlacementOptions {
   readonly declarationKind: string;
   readonly widgetId: string;
   readonly widgetKind: string;
+  readonly subject?: string;
+  readonly widgetTrackIds?: readonly string[];
+  readonly dataContext?: string;
   readonly runtime: WidgetRuntime;
   readonly enabled: boolean;
   readonly auditable: boolean;
@@ -44,6 +49,7 @@ export interface FamilyPlacementHandle {
   readonly subsReady: number;
   readonly instanceId: number;
   readonly tooltipOwner: string;
+  readonly dataContextKey: string;
   readonly retryStream: () => void;
   readonly retryLocal: (afterRetry?: () => void) => void;
 }
@@ -54,6 +60,9 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     declarationKind,
     widgetId,
     widgetKind,
+    subject = '',
+    widgetTrackIds,
+    dataContext = '',
     runtime,
     enabled,
     auditable,
@@ -84,6 +93,15 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     () => JSON.stringify(subscriptions.map(s => [s.name, s.source.id, s.source.revision, s.branch, s.offset, s.channel, s.product ?? '', canonical(s.query)])),
     [subscriptions],
   );
+  const trackContext = widgetTrackIds && widgetTrackIds.length > 0
+    ? widgetTrackIds.map(id => {
+        const track = runtime.tracks.find(item => item.id === id);
+        return track ? [track.source.id, track.source.revision, track.branch.id] : [id];
+      })
+    : runtime.tracks.map(track => [track.source.id, track.source.revision, track.branch.id]);
+  const subsContext = subscriptions.map(s => [s.source.id, s.source.revision, s.branch]);
+  const dataContextKey = JSON.stringify([declarationKind, subject, trackContext, subsContext, dataContext]);
+
   const subsRef = useRef(subscriptions);
   subsRef.current = subscriptions;
   const sourceIdsRef = useRef<Record<string, number>>({});
@@ -123,7 +141,23 @@ export function useFamilyPlacement(options: FamilyPlacementOptions): FamilyPlace
     }
   }, [pipeline, pipe]);
 
-  return { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, retryStream, retryLocal };
+  return { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, dataContextKey, retryStream, retryLocal };
+}
+
+export function useFamilyTooltip(tooltipOwner: string, dataContextKey: string): FamilyTooltipController {
+  const controller = useMemo(() => new FamilyTooltipController(tooltipOwner), [tooltipOwner]);
+  const prevContextRef = useRef(dataContextKey);
+
+  useEffect(() => {
+    if (prevContextRef.current !== dataContextKey) {
+      prevContextRef.current = dataContextKey;
+      controller.clearPinAndHide();
+    }
+  }, [controller, dataContextKey]);
+
+  useEffect(() => () => controller.dispose(), [controller]);
+
+  return controller;
 }
 
 export interface MountedFamilyCanvas {
@@ -163,27 +197,25 @@ export function mountFamilyCanvas(
   };
 }
 
-export interface FamilyAuditOptions<TSnapshot> {
+export interface FamilyAuditOptions {
   readonly pipeline: Pipeline | null;
   readonly pipe: number | null;
   readonly ownerId: number;
   readonly auditable: boolean;
   readonly maxEntries?: number;
-  readonly exact: (hour: number, snap: TSnapshot, auditId: number | undefined) => ReturnType<ExactPicture>;
 }
 
 export interface FamilyAuditHandle<TSnapshot> {
-  readonly store: AuditSnapshotStore<TSnapshot>;
+  readonly capture: (snapshot: TSnapshot, verify: FamilyAuditVerifier<TSnapshot>) => number;
+  readonly update: (id: number, patch: (current: TSnapshot) => TSnapshot) => void;
   readonly captureActive: boolean;
 }
 
-export function useFamilyAudit<TSnapshot>(options: FamilyAuditOptions<TSnapshot>): FamilyAuditHandle<TSnapshot> {
-  const { pipeline, pipe, ownerId, auditable, maxEntries = 512, exact } = options;
+export function useFamilyAudit<TSnapshot>(options: FamilyAuditOptions): FamilyAuditHandle<TSnapshot> {
+  const { pipeline, pipe, ownerId, auditable, maxEntries = 512 } = options;
   const captureActive = useFamilyAuditing();
-  const storeRef = useRef<AuditSnapshotStore<TSnapshot> | null>(null);
-  if (!storeRef.current) storeRef.current = new AuditSnapshotStore<TSnapshot>(maxEntries);
-  const exactRef = useRef(exact);
-  exactRef.current = exact;
+  const storeRef = useRef<AuditSnapshotStore<BoundAuditEntry<TSnapshot>> | null>(null);
+  if (!storeRef.current) storeRef.current = new AuditSnapshotStore<BoundAuditEntry<TSnapshot>>(maxEntries);
 
   useEffect(() => () => {
     storeRef.current?.clear();
@@ -196,10 +228,7 @@ export function useFamilyAudit<TSnapshot>(options: FamilyAuditOptions<TSnapshot>
     const stopReader = perfLog.reader(
       pipe,
       ownerId,
-      async (hour, auditId) => {
-        const snap = store.require(auditId);
-        return exactRef.current(hour, snap, auditId);
-      },
+      createBoundAuditReader(store),
       pipeline.generation,
       auditId => store.pin(auditId),
     );
@@ -209,7 +238,15 @@ export function useFamilyAudit<TSnapshot>(options: FamilyAuditOptions<TSnapshot>
     };
   }, [pipeline, pipe, ownerId, auditable]);
 
-  return { store: storeRef.current, captureActive };
+  const capture = useCallback((snapshot: TSnapshot, verify: FamilyAuditVerifier<TSnapshot>) => {
+    return storeRef.current!.create({ snapshot, verify });
+  }, []);
+
+  const update = useCallback((id: number, patch: (current: TSnapshot) => TSnapshot) => {
+    storeRef.current!.update(id, entry => ({ snapshot: patch(entry.snapshot), verify: entry.verify }));
+  }, []);
+
+  return { capture, update, captureActive };
 }
 
 export interface AuditWatchController {

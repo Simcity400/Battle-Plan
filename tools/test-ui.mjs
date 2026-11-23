@@ -28,6 +28,7 @@ export const browserTests = [
   'ui/src/dashboard/widgetCaption.dom.test.ts',
   'ui/src/dashboard/follow/held.dom.test.ts',
   'ui/src/dashboard/follow/install.dom.test.ts',
+  'ui/src/families/host/host.dom.test.ts',
   'ui/src/families/log/logFamily.dom.test.ts',
   'ui/src/families/table/tableFamily.dom.test.ts',
   'ui/src/dashboard/playbackBars.dom.test.ts',

@@ -86,6 +86,7 @@ const LINE_REPAIR: &str = "repair";
 pub enum ProjectKind {
     Building,
     Railway,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
