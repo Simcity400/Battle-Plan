@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 default = []
-test-support = ["dep:collector-test-support"]
+test-support = ["dep:collector-test-support", "engine-native/layout-fixtures"]
 
 [dependencies]
 engine-visibility.workspace = true
