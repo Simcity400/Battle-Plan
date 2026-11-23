@@ -43,7 +43,7 @@ function lane(views: (kind: string) => LaneView | undefined, onClose?: () => voi
   }, {
     views: (kind, wake) => views(kind) ?? (kind === 'fields' ? fields : drawnViews(kind, wake) ?? fields),
     crop: async sources => sources.map(() => ({ width: 1, height: 1, close() {} }) as unknown as ImageBitmap),
-    later: run => setImmediate(run),
+    later: run => setImmediate(() => { if (!closed) run(); }),
   });
   return worker;
 }
@@ -54,6 +54,7 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
   gate?: (product: string) => Promise<void> | undefined; session?: string;
   open?: (opened: readonly MessagePort[]) => Promise<string | undefined>; } = {}) {
   let ports: readonly MessagePort[] = [];
+  let closed = false;
   const asked: { product: string; params: Record<string, unknown> }[] = [];
   const followers = new Set<unknown>();
   const takePorts = (opened: readonly MessagePort[]) => {
@@ -92,26 +93,40 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, followCl
   const clock = new PlaybackController();
   clock.setBounds({ firstHour: 0, lastHour: 100_000 });
   const channels = new Map<MessagePort, boolean>();
-  const host: PipelineHost = { lanes: Array.from({ length: lanes }, () => lane(views)), open: list => client.openFollow!(list),
+  const workers = Array.from({ length: lanes }, () => lane(views));
+  const host: PipelineHost = { lanes: workers, open: list => client.openFollow!(list),
     channel: () => {
       const made = new MessageChannel(), shut = made.port2.close.bind(made.port2);
       made.port2.close = () => { channels.set(made.port2, true); shut(); };
       channels.set(made.port2, false);
       return made;
-    }, frameRate: () => 60, rate: () => 1 };
+    }, frameRate: () => 60, rate: () => 1,
+    close: () => { for (const worker of workers) worker.close(); } };
   const pipeline = new Pipeline(clock, client, host);
   const stamp = resetStamps();
   const send = (bytes: Uint8Array) => {
     const resets = stamp(bytes), split = splitForLanes(bytes, lanes);
-    if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) ports[index]!.postMessage(packet(split.kind, part, resets)); });
+    if (split.kind !== 'failure') {
+      const target = ports;
+      setImmediate(() => {
+        if (closed || ports !== target) return;
+        split.lanes.forEach((part, index) => { if (part) target[index]?.postMessage(packet(split.kind, part, resets)); });
+      });
+    }
   };
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as unknown as DashboardSource;
   const settle = async (done: () => boolean, rounds = 200) => {
     for (let at = 0; at < rounds && !done(); at++) await new Promise(resolve => setTimeout(resolve, 2));
     return done();
   };
-  const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
-  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => { pipeline.close(); for (const port of ports) port.close(); } };
+  const fail = (reason: string) => {
+    const target = ports;
+    setImmediate(() => {
+      if (closed || ports !== target) return;
+      for (const port of target) port.postMessage({ kind: 'failure', reason } satisfies FromPull);
+    });
+  };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => { closed = true; pipeline.close(); for (const port of ports) port.close(); ports = []; } };
 }
 
 export function managedInProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, open }: {
@@ -123,6 +138,7 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
   open?: (opened: readonly MessagePort[]) => Promise<string | undefined>;
 } = {}) {
   let ports: readonly MessagePort[] = [];
+  let closed = false;
   let stamp = resetStamps();
   let openCalls = 0;
   let activeReaders = 0;
@@ -234,10 +250,24 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
   });
   const send = (bytes: Uint8Array) => {
     const resets = stamp(bytes), split = splitForLanes(bytes, lanes);
-    if (split.kind !== 'failure') split.lanes.forEach((part, index) => { if (part) ports[index]?.postMessage(packet(split.kind, part, resets)); });
+    if (split.kind !== 'failure') {
+      const target = ports;
+      const gen = openCalls;
+      setImmediate(() => {
+        if (closed || ports !== target || openCalls !== gen) return;
+        split.lanes.forEach((part, index) => { if (part) target[index]?.postMessage(packet(split.kind, part, resets)); });
+      });
+    }
     return resets;
   };
-  const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
+  const fail = (reason: string) => {
+    const target = ports;
+    const gen = openCalls;
+    setImmediate(() => {
+      if (closed || ports !== target || openCalls !== gen) return;
+      for (const port of target) port.postMessage({ kind: 'failure', reason } satisfies FromPull);
+    });
+  };
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as unknown as DashboardSource;
   const waitView = (pipeline: Pipeline, widget: number, predicate: (view: ReturnType<Pipeline['view']>) => boolean) => {
     if (predicate(pipeline.view(widget))) return Promise.resolve();
@@ -253,6 +283,6 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
     get pipeline() { return current; },
     clock, client, source, send, fail, nextEvent, waitView,
     counts: () => ({ openCalls, activeReaders, activeLanes, activeOwnedPorts, clockListeners }),
-    close: () => { stopSync(); current.close(); },
+    close: () => { closed = true; stopSync(); current.close(); },
   };
 }

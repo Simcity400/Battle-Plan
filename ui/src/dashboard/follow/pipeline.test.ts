@@ -765,7 +765,7 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
   } as never;
   const source = { id: 's', revision: 'r', path: 'p', metadata: {} } as never;
   const pendingPipe = new Pipeline(clock, client, {
-    lanes: [{ onmessage: null, postMessage() {} }],
+    lanes: [{ onmessage: null, postMessage(m) { if (m.type === 'init') m.port.close(); } }],
     open: ports => (client as { openFollow(p: readonly MessagePort[]): unknown }).openFollow(ports) as never,
     channel: () => new MessageChannel(),
     frameRate: () => 60,
@@ -814,7 +814,7 @@ test('close aborts in-flight follow requests, terminates a pending reader immedi
     },
   } as never;
   const abortPipe = new Pipeline(clock, abortClient, {
-    lanes: [{ onmessage: null, postMessage() {} }],
+    lanes: [{ onmessage: null, postMessage(m) { if (m.type === 'init') m.port.close(); } }],
     open: ports => (abortClient as { openFollow(p: readonly MessagePort[]): Promise<string> }).openFollow(ports),
     channel: () => new MessageChannel(),
     frameRate: () => 60,
@@ -1041,16 +1041,20 @@ test('P2/F2: useFollowedAll recomputes failure outcome and Retry when a lane fau
     };
     env.clock.seek(10);
     const c1 = env.nextEvent('follow-clock');
-    const f2 = env.nextEvent('follow');
     const first = render();
-    await Promise.all([c1, f2]);
     const subA = (first.entries[0] as { id: number } | null)?.id;
-    assert.ok(subA !== undefined);
+    const subB = (first.entries[1] as { id: number } | null)?.id;
+    assert.ok(subA !== undefined && subB !== undefined);
+    await c1;
+    while (env.pipeline.status(subA).status !== 'followed' || env.pipeline.status(subB).status !== 'followed') {
+      await env.nextEvent('follow');
+    }
     assert.equal(first.error, undefined);
+    const widgetId = env.pipeline.page.widgets.keys().next().value!;
     const seek = env.clock.getSnapshot().seekSequence;
     env.send(msgMod.message(10, [{ id: subA, answer: { keys: [1n], columns: 1, values: [10n] } }], true, NATIVE, seek));
     env.send(msgMod.message(15, [{ id: subA, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, NATIVE, seek));
-    await env.waitView(env.pipeline, 1, v => v?.mode === 'failed');
+    await env.waitView(env.pipeline, widgetId, v => v?.mode === 'failed');
     const second = render();
     assert.equal(second.entries, first.entries, 'entries reference stays stable across view change');
     assert.ok(second.error !== undefined, 'useFollowedAll must recompute error when view changes to failed');
