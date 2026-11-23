@@ -98,7 +98,7 @@ fn moved_frame(hour: i32) -> DecodedFrame {
 
 fn moved_recording() -> Source {
     let frames = (FIRST..=LAST).map(moved_frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "production-moved".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 

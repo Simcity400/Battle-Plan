@@ -43,9 +43,9 @@ pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<
     storage(|| replay::lanes::lifetimes(recording, run, table))
 }
 
-pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
+pub fn presences(recording: &Recording, run: u32, table: TableId, keys: (u128, u128), from: i64, to: i64) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
     declared(table)?;
-    storage(|| replay::lanes::presences(recording, run, table))
+    storage(|| replay::lanes::presences(recording, run, table, keys, from, to))
 }
 
 pub fn declared(table: TableId) -> io::Result<()> {

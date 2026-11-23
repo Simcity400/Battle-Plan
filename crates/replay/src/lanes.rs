@@ -1148,13 +1148,17 @@ pub fn chart_at(
 }
 
 pub fn lifetimes(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, i64, i64)>> {
-    Ok(presences(recording, run, table)?
+    Ok(lives(recording, run, table, None)?
         .into_iter()
         .filter_map(|(key, spans)| Some((key, spans.first()?.0, spans.last()?.1)))
         .collect())
 }
 
-pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
+pub fn presences(recording: &Recording, run: u32, table: TableId, keys: (u128, u128), from: i64, to: i64) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
+    lives(recording, run, table, Some((keys, from, to)))
+}
+
+fn lives(recording: &Recording, run: u32, table: TableId, exact: Option<((u128, u128), i64, i64)>) -> io::Result<Vec<(u128, Vec<(i64, i64)>)>> {
     let held = recording.run(run)?;
     let valid_hour = match recording.predates(table.index()) {
         Some(_) => None,
@@ -1182,13 +1186,20 @@ pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<
         let size = summary::bucket_hours(piece.directory.level);
         covered.push((piece.directory.first_hour, piece.directory.first_hour + i64::from(piece.directory.hours)));
         for (at, &key) in piece.keys.iter().enumerate() {
+            if exact.is_some_and(|((lo, hi), ..)| key < lo || key > hi) {
+                continue;
+            }
             for (bucket, life) in piece.life(at)?.iter().enumerate() {
                 if life.hours == 0 {
                     continue;
                 }
                 let start = (piece.directory.first_bucket + bucket as i64) * size;
                 let (first, last) = (start + i64::from(life.first), start + i64::from(life.end) - 1);
-                if i64::from(life.hours) < last - first + 1 {
+                let refined = exact.and_then(|(_, from, to)| {
+                    let (first, last) = (first.max(from).max(valid_hour.unwrap_or(first)), last.min(to));
+                    (i64::from(life.hours) < i64::from(life.end) - i64::from(life.first) && first <= last).then_some((first, last))
+                });
+                if let Some((first, last)) = refined {
                     gapped.push((key, first, last));
                 } else {
                     spans.entry(key).or_default().push((first, last));
@@ -1229,12 +1240,17 @@ pub fn presences(recording: &Recording, run: u32, table: TableId) -> io::Result<
         Some((_, Shape::Values(_)))
     );
     if values && blocks > 0 {
-        let ranges = uncovered(recording, run, 0..blocks, &covered, 0, held.ordinals - 1)?;
+        let floor = valid_hour.map_or(0, |hour| (hour - i64::from(held.first_hour)) as u32);
+        let ranges = if floor < held.ordinals { uncovered(recording, run, 0..blocks, &covered, floor, held.ordinals - 1)? } else { Vec::new() };
+        let keyed: Option<(u128, u128)> = exact.map(|(keys, ..)| keys);
         if !ranges.is_empty() {
             let mut walk = Walk::new(None, None, i64::from(held.first_hour), i64::from(held.ordinals), 1);
+            walk.span = keyed;
             walk_ranges(recording, run, table, &[], &ranges, &mut walk)?;
             for (key, row) in walk.rows {
-                spans.entry(key).or_default().extend(row.lived);
+                if keyed.is_none_or(|(lo, hi)| lo <= key && key <= hi) {
+                    spans.entry(key).or_default().extend(row.lived);
+                }
             }
         }
     }
@@ -1277,7 +1293,12 @@ fn walk_ranges(recording: &Recording, run: u32, table: TableId, columns: &[usize
         let before = first.checked_sub(1);
         let from = first_hour + before.unwrap_or(0) as i32;
         let to = first_hour + last as i32;
-        crate::points::points(recording, run, table, columns, walk.source, Keys::All, from, to, &mut |point| {
+        let keys = match (walk.keys, walk.span) {
+            (Some(keys), _) => Keys::These(keys),
+            (None, Some((lo, hi))) => Keys::Range(lo, hi),
+            (None, None) => Keys::All,
+        };
+        crate::points::points(recording, run, table, columns, walk.source, keys, from, to, &mut |point| {
             if before.is_some() && point.hour == from {
                 walk.begin(point.key, point.covered, point.value, start);
             } else {
@@ -1346,6 +1367,7 @@ struct Track {
 struct Walk<'a> {
     source: Option<summary::Source>,
     keys: Option<&'a [u128]>,
+    span: Option<(u128, u128)>,
     first_bin: i64,
     bin_hours: i64,
     bins: usize,
@@ -1358,6 +1380,7 @@ impl<'a> Walk<'a> {
         Self {
             source,
             keys,
+            span: None,
             first_bin,
             bin_hours,
             bins,
