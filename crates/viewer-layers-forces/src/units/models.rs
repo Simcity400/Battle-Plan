@@ -105,13 +105,17 @@ pub trait Select: Send + Sync {
 
 #[derive(Default)]
 pub struct Kept {
-    convoys: Option<viewer_layer_core::scene_content::KeptConvoys>,
+    state: Option<Box<dyn std::any::Any + Send>>,
     parts: Vec<(&'static str, u64)>,
 }
 
 impl Kept {
-    pub fn convoys_and_timings(&mut self) -> (&mut Option<viewer_layer_core::scene_content::KeptConvoys>, &mut Vec<(&'static str, u64)>) {
-        (&mut self.convoys, &mut self.parts)
+    pub fn state_and_timings<T: Default + Send + 'static>(&mut self) -> (&mut T, &mut Vec<(&'static str, u64)>) {
+        let state = self.state.get_or_insert_with(|| Box::<T>::default());
+        if !state.is::<T>() {
+            *state = Box::<T>::default();
+        }
+        (state.downcast_mut().expect("the worker's preparation state type"), &mut self.parts)
     }
 }
 

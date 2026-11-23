@@ -71,7 +71,7 @@ impl Select for crate::document::Content {
 
     fn prepare(&self, frame: &DecodedFrame, perspective: &Choice, layered: Option<&[ConvoyLine]>, naval: bool, kept: &mut Kept) -> io::Result<PreparedModels> {
         engine_executable::executable_tables::scope(self.tables, || {
-            let (convoys, parts) = kept.convoys_and_timings();
+            let (convoys, parts) = kept.state_and_timings();
             let mut since = std::time::Instant::now();
             let mut lap = |name: &'static str| {
                 let now = std::time::Instant::now();

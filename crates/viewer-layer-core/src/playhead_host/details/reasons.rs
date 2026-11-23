@@ -32,14 +32,18 @@ impl Reason {
     }
 
     fn words(&self, wait: Duration) -> String {
-        let deadline = Instant::now() + wait;
+        let deadline = Instant::now().checked_add(wait);
         let mut text = lock(&self.text);
         while text.is_none() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            text = self.read.wait_timeout(text, left).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+            text = if let Some(deadline) = deadline {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                self.read.wait_timeout(text, left).unwrap_or_else(std::sync::PoisonError::into_inner).0
+            } else {
+                self.read.wait(text).unwrap_or_else(std::sync::PoisonError::into_inner)
+            };
         }
         match &*text {
             None if wait.is_zero() => BEING_READ.to_owned(),
@@ -143,5 +147,6 @@ mod tests {
         assert_eq!(reason.words(Duration::from_nanos(1)), NOT_IN_TIME, "a report that waited says so by name");
         reason.set(Ok(Some(REASON.as_bytes().to_vec())), 7);
         assert_eq!(reason.words(Duration::ZERO), REASON);
+        assert_eq!(reason.words(Duration::MAX), REASON, "an indefinite wait still returns a cached reason");
     }
 }
