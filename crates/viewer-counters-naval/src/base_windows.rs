@@ -456,13 +456,10 @@ impl PreparedBases {
                 },
                 &mut report.icon_gui_notes,
             );
-            #[cfg(any(test, feature = "test-support"))]
             viewer_counter_kit::plan_probe::record(|counts| {
                 counts.pools_presented += 1;
                 counts.pools_kept += u64::from(kept);
             });
-            #[cfg(not(any(test, feature = "test-support")))]
-            let _ = kept;
             *written = held.into_inner();
             let live = view.live();
             if let Some((at, _)) = family.wing_grid() {
