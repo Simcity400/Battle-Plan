@@ -282,13 +282,14 @@ test('a downloaded update says so in words above the footer, and the footer glyp
   try {
     const { PanelView } = await vite.ssrLoadModule('/ui/src/recorder/RecorderPanel.tsx') as { PanelView: (props: PanelViewProps) => unknown };
     const state: UpdateState = { enabled: true, status: 'up-to-date', channel: 'stable', build: 'stable', currentVersion: '0.9.4', availableVersion: null,
-      downloadedVersion: null, releasedAt: null, notes: [], downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null, downgrade: false };
+      downloadedVersion: null, releases: [], unlisted: false, downloadPercent: null, checkedAt: null, message: null, errorContext: null, installBlocked: null, channelWarning: null, downgrade: false };
     const update = (change: Partial<UpdateState>, ask: PanelUpdate['ask'] = null): PanelUpdate =>
       ({ state: { ...state, ...change }, failure: null, ask, pending: false, press() {}, restart() {}, retry() {}, dismiss() {}, channel() {} });
     const render = (props: Partial<PanelViewProps>) => renderToStaticMarkup(createElement(PanelView as never, {
       snapshot: { ...recording, phase: 'waiting', campaign: null, recording: null }, settings, view: 'main', asking: false, error: null, now: STARTED,
       actions, ...props } as never));
-    const { blockedReason } = await vite.ssrLoadModule('/ui/src/update/logic.ts') as typeof import('../update/logic');
+    const { blockedReason, peekTitle } = await vite.ssrLoadModule('/ui/src/update/logic.ts') as typeof import('../update/logic');
+    const { UpdateNotes } = await vite.ssrLoadModule('/ui/src/update/UpdateControl.tsx') as typeof import('../update/UpdateControl');
     const { actionFailure } = await vite.ssrLoadModule('/ui/src/dashboard/queryError.ts') as typeof import('../dashboard/queryError');
     assert.deepEqual(actionFailure('Couldn’t show the recording in its folder.', 'Couldn’t show Germany 1936 in its folder: C:\\Rec\\Germany 1936.battleplan: denied'),
       { text: 'Couldn’t show Germany 1936 in its folder.', detail: 'Couldn’t show Germany 1936 in its folder: C:\\Rec\\Germany 1936.battleplan: denied' });
@@ -323,6 +324,22 @@ test('a downloaded update says so in words above the footer, and the footer glyp
     assert.match(text(render({ view: 'settings', update: downloadFailed })), /Couldn’t download update 0\.9\.5\. Try again/);
     const laterCheck = update({ status: 'downloaded', errorContext: 'check', availableVersion: '0.9.5', downloadedVersion: '0.9.5', message: offline });
     assert.match(text(render({ view: 'settings', update: laterCheck })), /Update 0\.9\.5 is downloaded\./, 'a later failed check never hides a downloaded update');
+    const summarized = { version: '0.9.6', since: '0.9.5', date: null, changes: 4, more: 2, pulls: [],
+      highlights: [{ label: 'Fog of war', detail: 'The map hides what a country cannot see.' }] };
+    const listed = { version: '0.9.5', since: '0.9.3', date: null, changes: 3, highlights: null, more: null,
+      pulls: [{ number: 10, title: 'Recorder: a spool survives a crash' }] };
+    const behind = text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', releases: [summarized, listed], unlisted: true }) }));
+    assert.match(behind, /is available\. Fog of war\. The map hides what a country cannot see\. Plus 2 more fixes and improvements\. 0\.9\.5 Recorder: a spool survives a crash And 2 more changes\. Earlier releases aren’t listed here\./,
+      'each release the update brings, newest first; one without a summary lists its pull requests, and a gap in the history is named');
+    assert.match(text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', unlisted: true }) })), /This update’s changes aren’t listed here\./,
+      'an update whose notes are missing says so');
+    const direct = { version: '0.9.6', since: '0.9.5', date: null, changes: 1, highlights: [], more: 0, pulls: [] };
+    assert.match(text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', releases: [direct] }) })), /1 change made without a pull request\./,
+      'a change no summary read is never called internal');
+    assert.equal(peekTitle({ ...state, status: 'error', errorContext: 'download', availableVersion: '0.9.6' }), 'Couldn’t download update 0.9.6 · Try again',
+      'hovering a failed update names the failure, never a ready update');
+    assert.match(renderToStaticMarkup(createElement(UpdateNotes, { state: { ...state, status: 'available', availableVersion: '0.9.6', unlisted: true },
+      onOpenRelease() {} })), /Release on GitHub/, 'an update without notes still links to its release');
     const installFailed = render({ update: update({ status: 'error', errorContext: 'install', availableVersion: '0.9.5', downloadedVersion: '0.9.5', message: 'The installer couldn’t be started: denied.' }) });
     assert.match(text(installFailed), /Couldn’t install update 0\.9\.5\. Restart to update/, 'a failed install says so where the restart is offered');
     assert.doesNotMatch(text(installFailed), /denied/);

@@ -166,8 +166,8 @@ pub struct UpdateState {
     pub current_version: &'static str,
     pub available_version: Option<String>,
     pub downloaded_version: Option<String>,
-    pub released_at: Option<String>,
-    pub notes: Vec<String>,
+    pub releases: Vec<feed::ReleaseNotes>,
+    pub unlisted: bool,
     pub download_percent: Option<f64>,
     pub checked_at: Option<u64>,
     pub message: Option<String>,
@@ -201,15 +201,6 @@ fn now_ms() -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .map(|elapsed| elapsed.as_millis() as u64)
-}
-
-fn notes(body: Option<&str>) -> Vec<String> {
-    body.unwrap_or_default()
-        .lines()
-        .map(|line| line.trim().trim_start_matches(['-', '*']).trim())
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 fn feed(channel: Channel) -> Result<String, String> {
@@ -290,8 +281,8 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         current_version: VERSION,
         available_version: None,
         downloaded_version: None,
-        released_at: None,
-        notes: Vec::new(),
+        releases: Vec::new(),
+        unlisted: false,
         download_percent: None,
         checked_at: None,
         message: disabled.clone().or(saved.err()),
@@ -503,8 +494,8 @@ impl Updates {
                         inner.state.status = Status::Available;
                     }
                     inner.state.available_version = Some(update.version.clone());
-                    inner.state.released_at = update.released_at.clone();
-                    inner.state.notes = notes(update.notes.as_deref());
+                    inner.state.releases = update.releases.clone();
+                    inner.state.unlisted = update.unlisted;
                     inner.state.downgrade = update.older;
                     inner.state.error_context = None;
                     inner.state.message = None;
@@ -564,8 +555,8 @@ impl Updates {
         inner.package = None;
         inner.state.available_version = None;
         inner.state.downloaded_version = None;
-        inner.state.released_at = None;
-        inner.state.notes.clear();
+        inner.state.releases.clear();
+        inner.state.unlisted = false;
         inner.state.download_percent = None;
         inner.state.install_blocked = None;
         inner.state.downgrade = false;
