@@ -12,12 +12,11 @@ import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { holdElement } from '../../draw/bitmapSurface.ts';
-import { perfLog } from '../../shell/perf.ts';
+import { perfLog, type ExactPicture } from '../../shell/perf.ts';
 import type { FamilySources } from '../contract.ts';
 import {
   attachAuditWatch,
   bindFamilyPointer,
-  FamilyTooltipController,
   handleFamilyKeyDown,
   mountFamilyCanvas,
   optionElementId,
@@ -30,6 +29,7 @@ import {
   useFamilyPauseFlush,
   useFamilyPlacement,
   useFamilyTheme,
+  useFamilyTooltip,
   type FamilyNavTuple,
   type FamilyTooltipField,
   type ListboxMirrorItem,
@@ -92,6 +92,67 @@ interface LogAuditSnapshot<TOptions> {
     readonly offset: number;
     readonly pageSize: number;
   } | null;
+}
+
+async function verifyLogAuditSnapshot<TOptions>(hour: number, snap: LogAuditSnapshot<TOptions>): ReturnType<ExactPicture> {
+  if (snap.frozen) {
+    const frozenExact = await snap.exactSources(snap.frozen.hour, snap.limit);
+    if (!frozenExact) return null;
+    let effectiveSources = frozenExact;
+    if (snap.frozen.offset > 0 && snap.onLoadScrollPage) {
+      const pageTail = await snap.onLoadScrollPage(
+        snap.frozen.hour,
+        snap.frozen.offset,
+        snap.frozen.pageSize,
+        snap.frozen.baseOrdinal,
+        snap.frozen.total,
+      );
+      if (!isLogTailReply(pageTail)) return null;
+      const baseTail = frozenExact.panels.get('tail');
+      const mergedTail = isLogTailReply(baseTail) ? mergeFrozenPageIntoTail(baseTail, pageTail) : pageTail;
+      const panels = new Map(frozenExact.panels);
+      panels.set('tail', mergedTail);
+      panels.set('__offset', snap.frozen.offset);
+      effectiveSources = { ...frozenExact, panels };
+    }
+    let newRowCount = 0;
+    if (!snap.isStatic) {
+      const liveExact = await snap.exactSources(hour, 1);
+      const liveTail = liveExact?.panels.get('tail');
+      if (isLogTailReply(liveTail)) {
+        newRowCount = Math.max(0, parseOrdinal(liveTail.total) - snap.frozen.total);
+      }
+    }
+    const model = snap.projection.project(effectiveSources, snap.frozen.hour, snap.options);
+    const layout = buildLogLayout(model, snap.density, snap.months);
+    const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
+    const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
+    const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
+    const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, newRowCount);
+    return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
+  }
+
+  const exact = await snap.exactSources(hour, snap.limit);
+  if (!exact) return null;
+  const model = snap.projection.project(exact, hour, snap.options);
+  const layout = buildLogLayout(model, snap.density, snap.months);
+  const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
+  const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
+  const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
+  const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, 0);
+  return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
+}
+
+function logFadeDisabled(): boolean {
+  if ((globalThis as { __logNoFade?: boolean }).__logNoFade === true) return true;
+  if (typeof localStorage !== 'undefined') {
+    try {
+      if (localStorage.getItem('bp_log_no_fade') === '1') return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 export interface FamilyLogHostProps<TOptions> {
@@ -207,6 +268,7 @@ export default function FamilyLogHost<TOptions>({
   const activeNavRef = useRef<LogNavEntry | null>(null);
   const lastHourRef = useRef<number | null>(staticSources?.hour ?? null);
   const lastMetaRef = useRef<LogMetaField | null>(null);
+  const lastMetaKeyRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; rawMeta: unknown } | null>(null);
   const lastAuditRef = useRef<{ id: number; key: string; options: TOptions } | null>(null);
   const lastPhasesRef = useRef<unknown>(null);
 
@@ -230,6 +292,8 @@ export default function FamilyLogHost<TOptions>({
     declarationKind: projection.kind,
     widgetId: widget.id,
     widgetKind: widget.kind,
+    subject,
+    widgetTrackIds: widget.trackIds,
     runtime,
     enabled,
     auditable,
@@ -240,10 +304,9 @@ export default function FamilyLogHost<TOptions>({
     frameRef,
     surfaceLabel: 'log',
   });
-  const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, retryStream, retryLocal } = placement;
+  const { pipeline, pipe, sourceIdsRef, subsReady, instanceId, tooltipOwner, dataContextKey, retryStream, retryLocal } = placement;
 
-  const tooltips = useMemo(() => new FamilyTooltipController(tooltipOwner), [tooltipOwner]);
-  useEffect(() => () => tooltips.dispose(), [tooltips]);
+  const tooltips = useFamilyTooltip(tooltipOwner, dataContextKey);
   useFamilyHold(frameRef, held, tooltips);
 
   const audit = useFamilyAudit<LogAuditSnapshot<TOptions>>({
@@ -251,54 +314,6 @@ export default function FamilyLogHost<TOptions>({
     pipe,
     ownerId: LOG_AUDIT,
     auditable,
-    exact: async (hour, snap) => {
-      if (snap.frozen) {
-        const frozenExact = await snap.exactSources(snap.frozen.hour, snap.limit);
-        if (!frozenExact) return null;
-        let effectiveSources = frozenExact;
-        if (snap.frozen.offset > 0 && snap.onLoadScrollPage) {
-          const pageTail = await snap.onLoadScrollPage(
-            snap.frozen.hour,
-            snap.frozen.offset,
-            snap.frozen.pageSize,
-            snap.frozen.baseOrdinal,
-            snap.frozen.total,
-          );
-          if (!isLogTailReply(pageTail)) return null;
-          const baseTail = frozenExact.panels.get('tail');
-          const mergedTail = isLogTailReply(baseTail) ? mergeFrozenPageIntoTail(baseTail, pageTail) : pageTail;
-          const panels = new Map(frozenExact.panels);
-          panels.set('tail', mergedTail);
-          panels.set('__offset', snap.frozen.offset);
-          effectiveSources = { ...frozenExact, panels };
-        }
-        let newRowCount = 0;
-        if (!snap.isStatic) {
-          const liveExact = await snap.exactSources(hour, 1);
-          const liveTail = liveExact?.panels.get('tail');
-          if (isLogTailReply(liveTail)) {
-            newRowCount = Math.max(0, parseOrdinal(liveTail.total) - snap.frozen.total);
-          }
-        }
-        const model = snap.projection.project(effectiveSources, snap.frozen.hour, snap.options);
-        const layout = buildLogLayout(model, snap.density, snap.months);
-        const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
-        const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
-        const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
-        const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, newRowCount);
-        return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-      }
-
-      const exact = await snap.exactSources(hour, snap.limit);
-      if (!exact) return null;
-      const model = snap.projection.project(exact, hour, snap.options);
-      const layout = buildLogLayout(model, snap.density, snap.months);
-      const [start, end] = visibleItemRange(layout.items, snap.scrollTop, snap.height);
-      const sticky = snap.months ? stickyMonthAt(layout, snap.scrollTop) : null;
-      const stickyH = sticky ? LOG_MONTH_HEIGHT[snap.density] : 0;
-      const rows = deriveLogAuditRows(model, layout.items, start, end, snap.scrollTop, stickyH, snap.height, 0);
-      return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-    },
   });
 
   const paintPills = useCallback((pills: readonly LogFacetPill[]) => {
@@ -402,7 +417,7 @@ export default function FamilyLogHost<TOptions>({
       if (lastAuditRef.current && lastAuditRef.current.key === snapKey && lastAuditRef.current.options === cur.options) {
         auditId = lastAuditRef.current.id;
       } else {
-        auditId = audit.store.create({
+        auditId = audit.capture({
           projection: cur.projection,
           options: cur.options,
           density: cur.density,
@@ -420,11 +435,12 @@ export default function FamilyLogHost<TOptions>({
             offset: frozen.offset,
             pageSize: frozen.pageSize,
           } : null,
-        });
+        }, verifyLogAuditSnapshot);
         lastAuditRef.current = { id: auditId, key: snapKey, options: cur.options };
       }
     }
 
+    const noFade = logFadeDisabled();
     const bindingModel: FamilyLogBinding<TOptions> = {
       family: 'log',
       kind: cur.projection.kind,
@@ -447,6 +463,7 @@ export default function FamilyLogHost<TOptions>({
       selectedKey: cur.selectedKey,
       focusedKey: focusInsideRef.current ? focusedKeyRef.current : null,
       reducedMotion: cur.reducedMotion,
+      ...(noFade ? { fadeEnabled: false } : {}),
       pauseFlush: pauseFlushRef.current,
       ...(perfLog && cur.captureActive && auditId !== undefined ? { audit: true, auditId } : {}),
     };
@@ -466,7 +483,7 @@ export default function FamilyLogHost<TOptions>({
       {},
       bindingModel,
     );
-  }, [pipeline, pipe, audit.store, sourceIdsRef]);
+  }, [pipeline, pipe, audit.capture, sourceIdsRef]);
 
   const bindRef = useRef(bind);
   bindRef.current = bind;
@@ -624,11 +641,19 @@ export default function FamilyLogHost<TOptions>({
       if (nextLogical !== curTop) scrollToLogicalTop(nextLogical);
     }
     if (node) {
-      const idx = entry?.ordinal ?? navEntriesRef.current.findIndex(item => item.key === key);
-      if (idx >= 0) node.setAttribute('aria-activedescendant', optionElementId(`log-${instanceId}`, idx));
+      node.setAttribute('aria-activedescendant', optionElementId(`log-${instanceId}`, key));
     }
     bindRef.current();
   }, [instanceId, scrollToLogicalTop]);
+
+  const paintMirrorRef = useRef(paintMirror);
+  paintMirrorRef.current = paintMirror;
+  const paintPillsRef = useRef(paintPills);
+  paintPillsRef.current = paintPills;
+  const ensureRangeLoadedRef = useRef(ensureRangeLoaded);
+  ensureRangeLoadedRef.current = ensureRangeLoaded;
+  const refreshFocusAnchorRef = useRef(refreshFocusAnchor);
+  refreshFocusAnchorRef.current = refreshFocusAnchor;
 
   const focusByOrdinal = useCallback((ordinal: number) => {
     const match = navEntriesRef.current.find(item => item.ordinal === ordinal);
@@ -651,6 +676,7 @@ export default function FamilyLogHost<TOptions>({
     const node = scrollRef.current;
     if (!node || !pipeline || pipe === null) return;
     lastExtentHeightRef.current = -1;
+    lastMetaKeyRef.current = null;
     lastPhasesRef.current = null;
 
     const mounted = mountFamilyCanvas(node, pipeline, pipe, 'log', 'family-log-canvas', 'family-log-extent');
@@ -690,22 +716,32 @@ export default function FamilyLogHost<TOptions>({
       auditWatch.settleIfReady(visible, viewMode, shown?.installedBinding, shown?.fields);
 
       if (rawMeta) lastMetaRef.current = rawMeta;
-      const empty = rawMeta?.mode === 'empty' ? rawMeta.empty : null;
-      const warnings = rawMeta?.warnings ?? [];
-      const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', warnings]);
-      if (nextMetaSig !== metaSigRef.current) {
-        metaSigRef.current = nextMetaSig;
-        setMeta({ mode: effectiveMode, reason, failureOrigin, empty, warnings });
+      const prevMetaKey = lastMetaKeyRef.current;
+      if (
+        !prevMetaKey
+        || prevMetaKey.mode !== effectiveMode
+        || prevMetaKey.reason !== reason
+        || prevMetaKey.failureOrigin !== failureOrigin
+        || prevMetaKey.rawMeta !== rawMeta
+      ) {
+        lastMetaKeyRef.current = { mode: effectiveMode, reason, failureOrigin, rawMeta };
+        const empty = rawMeta?.mode === 'empty' ? rawMeta.empty : null;
+        const warnings = rawMeta?.warnings ?? [];
+        const nextMetaSig = JSON.stringify([effectiveMode, reason, failureOrigin, empty?.kind ?? '', empty?.message ?? '', empty?.detail ?? '', warnings]);
+        if (nextMetaSig !== metaSigRef.current) {
+          metaSigRef.current = nextMetaSig;
+          setMeta({ mode: effectiveMode, reason, failureOrigin, empty, warnings });
+        }
       }
 
       if (!isPictureWithModel || !shown?.fields) {
-        paintMirror(null);
-        paintPills([]);
+        paintMirrorRef.current(null);
+        paintPillsRef.current([]);
         tooltips.hideIfUnpinned();
         return;
       }
 
-      if (rawMeta.facetPills) paintPills(rawMeta.facetPills);
+      if (rawMeta.facetPills) paintPillsRef.current(rawMeta.facetPills);
 
       const extH = Math.max(viewportRef.current.height, rawMeta.physicalHeight);
       if (extH !== lastExtentHeightRef.current) {
@@ -741,27 +777,34 @@ export default function FamilyLogHost<TOptions>({
       if (activeNav !== undefined) activeNavRef.current = activeNav;
 
       const mirror = shown.fields.mirror as { readonly total: number; readonly items: readonly ListboxMirrorItem[] } | undefined;
-      if (mirror) paintMirror(mirror);
+      if (mirror) paintMirrorRef.current(mirror);
 
       const phases = shown.fields.phases as Record<string, unknown> | undefined;
-      if (phases && phases !== lastPhasesRef.current && frameNode) {
+      if (phases && phases !== lastPhasesRef.current && frameNode && perfLog) {
         lastPhasesRef.current = phases;
         frameNode.dataset.familyPhases = JSON.stringify(phases);
       }
 
-      const hoverTipField = shown.fields.tooltip as FamilyTooltipField | undefined;
-      const focusTipField = shown.fields.focusTooltip as FamilyTooltipField | undefined;
-      if (focusInsideRef.current && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
+      const activeInspected = inspectedKeyRef.current;
+      const activeFocusInside = focusInsideRef.current;
+      if (!activeInspected && !activeFocusInside) {
+        tooltips.hideIfUnpinned();
+        return;
+      }
+
+      const hoverTipField = activeInspected ? (shown.fields.tooltip as FamilyTooltipField | undefined) : undefined;
+      const focusTipField = activeFocusInside ? (shown.fields.focusTooltip as FamilyTooltipField | undefined) : undefined;
+      if (activeFocusInside && focusedKeyRef.current && focusTipField?.text && focusTipField.text.rowKey === focusedKeyRef.current) {
         const opt = mirrorRef.current?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(focusedKeyRef.current)}"]`);
         if (opt) opt.setAttribute('aria-description', tooltips.describeFocused(focusTipField.text, focusTipField.text.hour, latestRef.current.viewportHeight));
       }
       tooltips.syncFromInstall({
         dim: !!shown.dim,
         held: heldRef.current,
-        inspectedKey: inspectedKeyRef.current,
+        inspectedKey: activeInspected,
         pointerPos: lastPointerRef.current,
         hoverTip: hoverTipField?.text ?? null,
-        focusInside: focusInsideRef.current,
+        focusInside: activeFocusInside,
         focusedKey: focusedKeyRef.current,
         focusAnchor: focusAnchorRef.current,
         focusTip: focusTipField?.text ?? null,
@@ -838,7 +881,7 @@ export default function FamilyLogHost<TOptions>({
         if (frozenRef.current && geom) {
           const wantStart = rowIndexAtLogicalY(geom, logicalTop);
           const wantEnd = rowIndexAtLogicalY(geom, logicalTop + viewportRef.current.height) + 2;
-          ensureRangeLoaded(wantStart, wantEnd);
+          ensureRangeLoadedRef.current(wantStart, wantEnd);
         }
       }
       bindRef.current();
@@ -848,7 +891,7 @@ export default function FamilyLogHost<TOptions>({
       const rect = entries[0]?.contentRect;
       const w = Math.round(rect ? rect.width : node.clientWidth);
       const h = Math.round(rect ? rect.height : node.clientHeight);
-      refreshFocusAnchor();
+      refreshFocusAnchorRef.current();
       if (w === viewportRef.current.width && h === viewportRef.current.height) return;
       viewportRef.current.width = w;
       viewportRef.current.height = h;
@@ -867,7 +910,7 @@ export default function FamilyLogHost<TOptions>({
       limitRef.current = initLimit;
       latestRef.current.onLimitChange?.(initLimit);
     }
-    refreshFocusAnchor();
+    refreshFocusAnchorRef.current();
 
     node.addEventListener('scroll', onScroll, { passive: true });
     bindRef.current();
@@ -883,7 +926,7 @@ export default function FamilyLogHost<TOptions>({
       lastExtentHeightRef.current = -1;
       holdElement(frameRef.current, false);
     };
-  }, [pipeline, pipe, ensureRangeLoaded, paintMirror, paintPills, refreshFocusAnchor, tooltips]);
+  }, [pipeline, pipe, tooltips]);
 
   useLayoutEffect(() => {
     if (pipe !== null && enabled) bind();

@@ -479,6 +479,7 @@ window.logFamilyDom = {
     const jumpBefore = hostNode?.querySelector('.family-log-jump')?.textContent ?? '';
 
     const jumpUpdated = waitForDom(hostNode!, () => (hostNode?.querySelector('.family-log-jump')?.textContent ?? '').includes('new'));
+    commits = 0;
     const nextHour = baseHour + 1;
     send(datedPanel(subId, nextHour, makeTailReply(baseTotal + 10, nextHour), seek, ROUTE));
     send(datedPanel(subId, nextHour + 1, makeTailReply(baseTotal + 10, nextHour + 1), seek, ROUTE));
@@ -492,6 +493,7 @@ window.logFamilyDom = {
       await served;
     }
     await jumpUpdated;
+    const jumpUpdateCommits = commits;
     const jumpAfter = hostNode?.querySelector('.family-log-jump')?.textContent ?? '';
 
     const jumpCleared = waitForDom(hostNode!, () => !hostNode?.querySelector('.family-log-jump'));
@@ -500,6 +502,62 @@ window.logFamilyDom = {
     await jumpCleared;
     const scrollAfterJump = scrollEl.scrollTop;
     clock.setPlaying(false);
-    return { jumpBefore, jumpAfter, scrollAfterJump };
+    return { jumpBefore, jumpAfter, jumpUpdateCommits, scrollAfterJump };
+  },
+
+  async testDualPlacementAndDrillSurvival() {
+    const drillHost = document.createElement('div');
+    drillHost.style.cssText = 'width:400px;height:200px;display:flex;flex-direction:column;';
+    document.body.append(drillHost);
+    const drillRoot = createRoot(drillHost);
+    const drillWidget: WidgetSpec = { ...widget, id: 'w-div-log-drill' };
+    flushSync(() => drillRoot.render(
+      <FollowedWidgetKey.Provider value="dom-div-log">
+        <FamilyLogHost
+          projection={divisionLogProjection}
+          options={OPTIONS}
+          label="Deliveries"
+          subject="divisions"
+          widget={drillWidget}
+          runtime={runtime}
+          active
+          density="compact"
+          months={false}
+          subscriptions={SUBSCRIPTIONS}
+          offset={0}
+          pin={null}
+          bounds={[BASE_HOUR, BASE_HOUR + 4000]}
+        />
+      </FollowedWidgetKey.Provider>,
+    ));
+
+    let drillPipeId = -1;
+    await waitForDom(drillHost, () => {
+      const canvas = drillHost.querySelector<HTMLCanvasElement>('canvas.family-log-canvas');
+      if (!canvas?.dataset.placement) return false;
+      drillPipeId = Number(canvas.dataset.placement);
+      return drillPipeId > 0;
+    });
+
+    const distinctPlacements = drillPipeId !== pipeId;
+    flushSync(() => drillRoot.unmount());
+    drillHost.remove();
+
+    const beforeInstalls = installs;
+    const nextHour = Math.floor(clock.getHour()) + 1;
+    const nextPainted = waitForInstall(() => {
+      const meta = pipeline.view(pipeId)?.fields?.meta as LogMetaField | undefined;
+      return meta?.hour === nextHour;
+    });
+    clock.seek(nextHour);
+    seek = clock.getSnapshot().seekSequence;
+    send(datedPanel(subId, nextHour, makeTailReply(180, nextHour), seek, ROUTE));
+    await nextPainted;
+    return {
+      distinctPlacements,
+      mainPipeId: pipeId,
+      drillPipeId,
+      mainStillInstalled: installs > beforeInstalls,
+    };
   },
 };

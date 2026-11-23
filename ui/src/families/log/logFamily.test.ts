@@ -17,8 +17,10 @@ import {
 } from './layout.ts';
 import { logLookAt } from './declaration.ts';
 import { LOG_FAMILY_OPTIONS, logFamilySettings } from './options.ts';
-import { canonicalLogRowAudit, deriveLogAudit, deriveLogTooltip } from './model.ts';
+import { canonicalLogRowAudit, deriveLogAudit, deriveLogAuditRows, deriveLogTooltip } from './model.ts';
 import { createLogPicture, drawLog, type LogTheme } from './painter.ts';
+import { familyLogLaneView, LOG_FADE_DURATION_MS, type FamilyLogBinding, type LogPhasesField } from './laneView.ts';
+import './registerAll.ts';
 import { mergeFrozenPageIntoTail, pageReplyToTail, scrollPageOrdinalRange, type LogTailReplyWire } from './tailReply.ts';
 import { ledgerFacets, ledgerSelection, ledgerTitle, type LedgerItem } from '../../dashboard/marketLedger.ts';
 import { divisionFacets } from '../../widgets/division-log/divisionLogData.ts';
@@ -301,7 +303,7 @@ test('division-log projection keeps missing kind as notRecorded, uses inline pla
   assert.ok(layout.items.some(item => item.kind === 'gap' && item.label.startsWith('Not recorded · ')), 'gap row rendered inline');
 
   const tip = deriveLogTooltip(row1);
-  assert.equal(tip?.title, '1st Infantry');
+  assert.equal(tip?.title, 'Inf. Div. 0');
   assert.equal(tip?.subtitle, undefined, 'tooltip omits static date line so display controller formats date outside audited model');
 });
 
@@ -842,4 +844,242 @@ test('S29: log family options omit the removed rowAnimation setting', () => {
     months: true,
     chips: false,
   });
+});
+
+test('fade-in runs only at <=48 h/s with motion enabled, completes cleanly with zero idle frames, and skips >48 h/s or reducedMotion', () => {
+  const hour0 = HOUR_EPOCH + 1940 * 365 * 24 + 10;
+  const reply0: LogTailReplyWire = {
+    branchId: '1',
+    log: 'division-events',
+    columns: DIV_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '5',
+    rows: [4, 3, 2, 1, 0].map(i => makeDivisionRow(i, hour0 - (4 - i))),
+    facetTotals: [],
+    missing: [],
+    warnings: [],
+  };
+  const reply1: LogTailReplyWire = {
+    ...reply0,
+    total: '6',
+    rows: [5, 4, 3, 2, 1, 0].map(i => makeDivisionRow(i, hour0 + 1 - (5 - i))),
+  };
+  const opts: DivisionLogProjectionOptions = {
+    events: 'both',
+    showTotals: false,
+    lossesAvailable: true,
+    looks: { GER: [{ from: 0, name: 'Germany' }] },
+    manifestWarnings: [],
+    manifestGaps: [],
+  };
+
+  const alphasSeen: number[] = [];
+  const { ctx } = countingCanvasContext();
+  const rawCtx = ctx as unknown as { fillText(text: string, x: number, y: number): void; globalAlpha: number };
+  const baseFillText = rawCtx.fillText.bind(rawCtx);
+  rawCtx.fillText = (text: string, x: number, y: number) => {
+    if (rawCtx.globalAlpha < 1) alphasSeen.push(rawCtx.globalAlpha);
+    baseFillText(text, x, y);
+  };
+  const pic = createLogPicture();
+  const m0 = divisionLogProjection.project(makeTailSources(reply0), hour0, opts);
+  const l0 = buildLogLayout(m0, 'comfortable', false);
+  const m1 = divisionLogProjection.project(makeTailSources(reply1), hour0 + 1, opts);
+  const l1 = buildLogLayout(m1, 'comfortable', false);
+
+  const r0 = drawLog(ctx, pic, {
+    model: m0,
+    layout: l0,
+    density: 'comfortable',
+    showMonths: false,
+    width: 480,
+    height: 300,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas: null,
+  });
+  assert.equal(r0.drew, true);
+  assert.equal(r0.visitedItems, 5);
+
+  const prevCanvas = {} as CanvasImageSource;
+  const r1Fade = drawLog(ctx, pic, {
+    model: m1,
+    layout: l1,
+    density: 'comfortable',
+    showMonths: false,
+    width: 480,
+    height: 300,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas,
+    rowAlphas: new Map([[m1.rows[0]!.key, 0.5]]),
+  });
+  assert.equal(r1Fade.drew, true);
+  assert.equal(r1Fade.incremental, true, 'tail advance with fading top row still uses incremental blit');
+  assert.equal(r1Fade.visitedItems, 1, 'tail advance visits only the 1 new row, not all visible rows');
+  assert.ok(alphasSeen.some(a => a > 0 && a < 1), 'fading row draws with globalAlpha < 1');
+
+  const r1Done = drawLog(ctx, pic, {
+    model: m1,
+    layout: l1,
+    density: 'comfortable',
+    showMonths: false,
+    width: 480,
+    height: 300,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas,
+  });
+  assert.equal(r1Done.drew, true);
+  const r1Idle = drawLog(ctx, pic, {
+    model: m1,
+    layout: l1,
+    density: 'comfortable',
+    showMonths: false,
+    width: 480,
+    height: 300,
+    scrollTop: 0,
+    theme: THEME,
+    inspectedKey: null,
+    focusedKey: null,
+    selectedKey: null,
+    icons: new Map(),
+    dpr: 1,
+    prevCanvas,
+  });
+  assert.equal(r1Idle.drew, false, 'after fade completes, identical frame skips repaint');
+  assert.equal(r1Idle.visitedItems, 0);
+
+  if (typeof OffscreenCanvas !== 'undefined') {
+    let fakeNow = 1000;
+    const laneView = familyLogLaneView(() => {}, { clock: () => fakeNow });
+    const makeBinding = (overrides: Partial<FamilyLogBinding<DivisionLogProjectionOptions>> = {}): FamilyLogBinding<DivisionLogProjectionOptions> => ({
+      family: 'log',
+      kind: 'division-log',
+      options: opts,
+      density: 'comfortable',
+      months: false,
+      sources: { tail: 1 },
+      width: 480,
+      height: 300,
+      scrollTop: 0,
+      theme: THEME,
+      ...overrides,
+    });
+    const runPaint = (
+      state: Map<string, unknown>,
+      reply: LogTailReplyWire,
+      hour: number,
+      speed: number,
+      binding: FamilyLogBinding<DivisionLogProjectionOptions>,
+    ) => {
+      let seq = 0;
+      return laneView.paint({
+        widget: 1,
+        hour,
+        now: fakeNow,
+        speed,
+        binding: { surfaces: [{ width: 480, height: 300, dpr: 1 }] },
+        model: binding,
+        subs: [{ id: 1, spec: {} as never }],
+        pictures: [{ hour, through: hour, parts: [{ kind: 'panel', value: { kind: 'panel', data: reply, refused: null } }] }],
+        inspect: null,
+      } as never, state, () => `c${++seq}`);
+    };
+
+    const st24 = new Map<string, unknown>();
+    runPaint(st24, reply0, hour0, 24, makeBinding());
+    const pFade = runPaint(st24, reply1, hour0 + 1, 24, makeBinding());
+    assert.equal(pFade.motion, true, '24 h/s new row triggers single-pass fade motion');
+    const phasesFade = pFade.fields.phases?.value as LogPhasesField | undefined;
+    assert.ok((phasesFade?.fadeActiveFrames ?? 0) >= 1, 'fadeActiveFrames increments during active fade');
+
+    fakeNow += LOG_FADE_DURATION_MS + 20;
+    const pDone = runPaint(st24, reply1, hour0 + 1, 24, makeBinding());
+    assert.equal(pDone.motion, false, 'motion stops cleanly once fade completes (zero idle frames)');
+
+    const stFast = new Map<string, unknown>();
+    runPaint(stFast, reply0, hour0, 1440, makeBinding());
+    const pFast = runPaint(stFast, reply1, hour0 + 1, 1440, makeBinding());
+    assert.equal(pFast.motion, false, '>48 h/s skips fade-in');
+
+    const stReduced = new Map<string, unknown>();
+    runPaint(stReduced, reply0, hour0, 24, makeBinding({ reducedMotion: true }));
+    const pReduced = runPaint(stReduced, reply1, hour0 + 1, 24, makeBinding({ reducedMotion: true }));
+    assert.equal(pReduced.motion, false, 'reducedMotion skips fade-in');
+
+    const stDisabled = new Map<string, unknown>();
+    runPaint(stDisabled, reply0, hour0, 24, makeBinding({ fadeEnabled: false }));
+    const pDisabled = runPaint(stDisabled, reply1, hour0 + 1, 24, makeBinding({ fadeEnabled: false }));
+    assert.equal(pDisabled.motion, false, 'fadeEnabled=false skips fade-in');
+  }
+});
+
+test('Direction B canonical audit & PR #292 market ledger parity preserve seller/buyer states, unread delivery amounts, and new-row badge', () => {
+  const hour = HOUR_EPOCH + 1941 * 365 * 24 + 5;
+  const reply: LogTailReplyWire = {
+    branchId: '1',
+    log: 'market-events',
+    columns: MARKET_COLUMNS,
+    baseOrdinal: '0',
+    firstOrdinal: '0',
+    total: '2',
+    rows: [
+      makeMarketRow(1, hour, {
+        kind: numCell(34),
+        mode: { kind: 'notRecorded' },
+        seller: { kind: 'missing' },
+        buyer: { kind: 'notRecorded' },
+        amountRaw: { kind: 'notRecorded' },
+        variant: txtCell('0'),
+        equipment: { kind: 'missing' },
+      }),
+      makeMarketRow(0, hour - 1, {
+        kind: numCell(20),
+        mode: numCell(20),
+        amountRaw: numCell('0'),
+        equipment: { kind: 'missing' },
+        equipmentMissing: txtCell('Design missing from recording'),
+      }),
+    ],
+    facetTotals: [],
+    missing: [],
+    warnings: [],
+  };
+  const opts: MarketLedgerProjectionOptions = {
+    looks: { GER: [{ from: 0, name: 'Germany' }], FRA: [{ from: 0, name: 'France' }] },
+  };
+  const model = marketLedgerProjection.project(makeTailSources(reply), hour, opts);
+  assert.equal(model.rows.length, 2);
+  const row0 = model.rows[0]!;
+  const row1 = model.rows[1]!;
+  const audit0 = canonicalLogRowAudit(row0);
+  const audit1 = canonicalLogRowAudit(row1);
+  assert.ok(audit0.includes('notRecorded'), 'unknown mode/buyer/amount encoded as notRecorded in canonical audit');
+  assert.ok(audit0.includes('notApplicable'), 'missing seller encoded as notApplicable distinctly from notRecorded');
+  assert.ok(audit1.includes('Design missing from recording'), 'missing equipment reason preserved in audit');
+  assert.equal(row0.meta && ledgerSelection(row0.meta as never), null, 'mode-unknown kind 34 cannot open drill');
+  assert.notEqual(row1.meta && ledgerSelection(row1.meta as never), null, 'valid contract row opens drill');
+
+  const layout = buildLogLayout(model, 'comfortable', false);
+  const auditWithBadge = deriveLogAuditRows(model, layout.items, 0, layout.items.length, 0, 0, 300, 7);
+  const auditNoBadge = deriveLogAuditRows(model, layout.items, 0, layout.items.length, 0, 0, 300, 0);
+  assert.notDeepEqual(auditWithBadge, auditNoBadge, 'new-row badge count is part of canonical audit');
+  assert.ok(auditWithBadge.some(r => r.key === '__summary__' && r.value?.includes('newRowCount') && r.value?.includes('7')));
 });

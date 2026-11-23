@@ -47,10 +47,21 @@ test('log family plays live with zero React commits, zero layout reads on instal
     const scroll = await page.stage('scrollBack', () => act<{
       jumpBefore: string;
       jumpAfter: string;
+      jumpUpdateCommits: number;
       scrollAfterJump: number;
     }>('testScrollBackAndJump()'), 10_000);
     assert.equal(scroll.jumpBefore, 'Jump to latest');
     assert.ok(scroll.jumpAfter.includes('new · Jump to latest'), `new count pill shown while scrolled away: ${scroll.jumpAfter}`);
+    assert.equal(scroll.jumpUpdateCommits, 0, 'S26: live new-row badge updates without React commits');
     assert.equal(scroll.scrollAfterJump, 0, 'Jump to latest resets scrollTop to top');
+
+    const drill = await page.stage('dualPlacement', () => act<{
+      distinctPlacements: boolean;
+      mainPipeId: number;
+      drillPipeId: number;
+      mainStillInstalled: boolean;
+    }>('testDualPlacementAndDrillSurvival()'), 10_000);
+    assert.equal(drill.distinctPlacements, true, 'S21: drill log under same FollowedWidgetKey gets distinct placement');
+    assert.equal(drill.mainStillInstalled, true, 'S21: unmounting drill log leaves main log installing');
   });
 });
