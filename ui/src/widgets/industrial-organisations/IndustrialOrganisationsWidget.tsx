@@ -123,12 +123,12 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see organisations." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  if (head.read === 'off') return <WidgetState kind="outside" />;
-  if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  if (!data) return <div ref={head.root}><WidgetState kind="loading" label="Loading organisations…" /></div>;
   const country = nameReadText(names.get(nameKey(hour, tag)));
-  const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} organisations</span>, headerSlot);
-  const body = data.missing ? <WidgetState kind="unavailable" message={data.missing} />
+  const header = data && headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} organisations</span>, headerSlot);
+  const body = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+    : !data ? <WidgetState kind="loading" label="Loading organisations…" />
+    : data.missing ? <WidgetState kind="unavailable" message={data.missing} />
     : !rows.length ? <WidgetState kind="empty" icon="factory" message={`${country} has no industrial organisations at this date.`} />
       : <Table rowRevision={organisationRevision} key={`${track.source.id}:${track.branch.id}:${tag}`} label="Industrial organisations" rows={rows} columns={columns}
         rowKey={row => row.key} sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}

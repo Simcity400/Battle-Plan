@@ -101,14 +101,14 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
   if (saved) return head.outside ? <WidgetState kind="outside" read={head} /> : <PairHistory {...props} pair={null} gate={gate} hour={gate.hour} />;
-  if (head.read === 'off') return <WidgetState kind="outside" />;
-  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  if (filtered && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
-  if (selection?.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
-  if (chosen?.length === 0) return <WidgetState kind="unavailable" message="Choose a country in the widget settings." />;
-  if (!data || selection && !selection.ready) return <WidgetState kind="loading" label="Loading intel networks…" />;
-  if (data.missing || !at || !ordered) return <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." detail={data.missing ?? undefined} />;
-  const main = touching && axisTags.length === 1 ? <WidgetState kind="empty" message="No intel networks of or in this country at this date." />
+  const main = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error && !data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+    : filtered && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+    : selection?.reason ? <WidgetState kind="unavailable" message={selection.reason} />
+    : chosen?.length === 0 ? <WidgetState kind="unavailable" message="Choose a country in the widget settings." />
+    : !data || selection && !selection.ready ? <WidgetState kind="loading" label="Loading intel networks…" />
+    : data.missing || !at || !ordered ? <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." detail={data.missing ?? undefined} />
+    : touching && axisTags.length === 1 ? <WidgetState kind="empty" message="No intel networks of or in this country at this date." />
     : axisTags.length < 2 ? <WidgetState kind="empty" message="Fewer than two countries are shown at this date." />
     : !data.networks.length ? <WidgetState kind="empty" message="No intel networks at this date." />
     : <HeatMatrix label="Intel network coverage" rows={axis} columns={axis} cell={cell} live={cells} revision={`${field}:${axisTags.join(',')}`} active={active}

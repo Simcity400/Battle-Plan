@@ -105,19 +105,19 @@ export default function OccupationReserveWidget(props: WidgetProps) {
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...unnamed ? [`${unnamed} holders the recording names no tag for are not shown.`] : [], ...groups.data?.warnings ?? []] : null);
   if (!track) return <WidgetState kind="empty" icon="flag" message="Load a campaign to see occupation manpower." />;
   if (pinned) return head.outside ? <WidgetState kind="outside" read={head} /> : <HolderSources {...props} holder={pinnedHolder} hour={moment} extent={extent} playhead={playhead} liveHead={liveHead} />;
-  if (head.read === 'off') return <WidgetState kind="outside" />;
-  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = grouped && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (resolved.reason && !all) return <>{groupFailure}<WidgetState kind="empty" message={resolved.reason} /></>;
-  if (none) return <>{groupFailure}<NoMembersState reason={none.reason} icon="flag" /></>;
-  if (!data || grouped && !groups.data) return <>{groupFailure}<WidgetState kind="loading" label="Loading occupation manpower…" /></>;
-  if (data.missing) return <>{groupFailure}<WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." detail={data.missing} /></>;
+  const parentState = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error && !data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+      : groupFailure && !groups.data ? null
+        : resolved.reason && !all ? <WidgetState kind="empty" message={resolved.reason} />
+          : none ? <NoMembersState reason={none.reason} icon="flag" />
+            : !data || grouped && !groups.data ? <WidgetState kind="loading" label="Loading occupation manpower…" />
+              : data.missing ? <WidgetState kind="unavailable" message="Occupation manpower was not recorded at this time." detail={data.missing} /> : undefined;
   const tooltip = (tag: string, _hour: number, name: string): TooltipContent[] | null => {
     const holder = byTag.get(tag);
     return holder ? [holderTooltip(reserveOf(holder, live.read()), name, sourceName, sourceColour, readHour.current === null ? null : dayLabel(readHour.current))] : null;
   };
-  const main = <CountryRaceView runtime={runtime} track={track} active={active && !drill.breakdown} options={options} view="race" extent={extent}
+  const main = parentState !== undefined ? parentState : <CountryRaceView runtime={runtime} track={track} active={active && !drill.breakdown} options={options} view="race" extent={extent}
     playhead={playhead} moment={moment} slots={top ?? Math.max(1, holders.length)} ranked={ranked.read()} liveRanked={liveRanked} lines={[]} parts={parts}
     raceLegendParts={parts} partsLabel="Source countries" countryTags={holderTags} label="Occupation reserve manpower"
     empty="No reserve manpower is held at this date." formatValue={value => Math.round(value).toLocaleString('en-US')}

@@ -144,17 +144,17 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const titleNames = useCountryLabelsAt(runtime.client, track, titleRead ? [titleRead] : [], active);
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see licences." />;
-  if (head.read === 'off') return <WidgetState kind="outside" />;
-  if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!data || !match.ready) return <div ref={head.root}>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></div>;
-  const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <div ref={head.root}>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></div>;
-  if (data.missing) return <div ref={head.root}>{groupFailure}<WidgetState kind="unavailable" message={data.missing} /></div>;
-  const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()}{listed.unattributed ? '+' : ''} licences</span>, headerSlot);
-  const main = <div ref={head.root} className="production-licences">
+  const groupReason = data && match.ready ? groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour) : null;
+  const parentState = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+      : groupFailure && !groups.data ? null
+        : match.reason ? <WidgetState kind="unavailable" message={match.reason} />
+          : !data || !match.ready ? <div ref={head.root}><WidgetState kind="loading" label="Loading licences…" /></div>
+            : groupReason ? <div ref={head.root}><WidgetState kind={groupReason.kind} message={groupReason.message} /></div>
+              : data.missing ? <div ref={head.root}><WidgetState kind="unavailable" message={data.missing} /></div> : undefined;
+  const header = parentState === undefined && headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()}{listed.unattributed ? '+' : ''} licences</span>, headerSlot);
+  const main = parentState !== undefined ? parentState : <div ref={head.root} className="production-licences">
     <FlowDiagram label="Production licences: licensors to licensees" nodes={nodes} links={links} stretch={width} slots={capacity + 1} hour={hour}
       hoursPerSecond={hoursPerSecond} active={active && !(drill.breakdown && options.drill !== 'popout')} tooltip={tooltip} onCapacity={setCapacity}
       message={rows.length && !pairs.length ? 'No licence lends civilian factories at this date.' : rows.length ? null

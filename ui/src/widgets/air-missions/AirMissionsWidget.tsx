@@ -105,9 +105,9 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
   const pill = headerSlot && data && !data.missing && theatresKnown && createPortal(<span className="pill">{rows.length} {rows.length === 1 ? 'region' : 'regions'}</span>, headerSlot);
   if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see air missions." />;
   if (!tag) return <WidgetState kind="empty" icon="plane" message="Choose a country in the widget's header." />;
-  if (error) return <div ref={attach}><WidgetState kind="error" failure={error} onRetry={retry} /></div>;
-  if (!data) return <div ref={attach}><WidgetState kind="loading" label="Loading air missions…" /></div>;
-  const main = data.missing ? <WidgetState kind="unavailable" message={data.missing} />
+  const main = error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    : !data ? <WidgetState kind="loading" label="Loading air missions…" />
+    : data.missing ? <WidgetState kind="unavailable" message={data.missing} />
     : !theatresKnown ? <WidgetState kind="unavailable" message={data.theatresMissing ?? 'Air theatre membership was not recorded at this time.'} />
     : !rows.length ? <WidgetState kind="empty" message={`${countryName ?? 'This country'} has no air missions at this date.`} />
     : <Table rowRevision={row => [row, columns]} key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Air missions by region" rows={rows} columns={columns}
@@ -119,7 +119,7 @@ export default function AirMissionsWidget({ widget, runtime, active, onDiagnosti
     <DrillHost drill={drillControl} runtime={runtime} subject={open} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={region?.name ?? 'Wings'} day={drill.follow ? <LiveText live={dayLive} at="day" /> : drill.hour === null ? '' : dayLabel(drill.hour)} canFollow onClose={() => dispatch({ type: 'close' })} main={main}>
       <div ref={wings.root} className="air-missions">
-        <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />
+        {data && <WingTable reply={wings.data} error={wings.error} read={wings} missions={data.missions} live={wings.live} hoursPerSecond={hoursPerSecond} />}
       </div>
     </DrillHost>
   </div>;
