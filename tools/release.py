@@ -42,6 +42,7 @@ import binascii
 import contextlib
 import datetime
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -258,8 +259,8 @@ def merged_pulls(repository, since, until):
 def read_highlights(reply, numbers):
     """The highlights in the model's reply and how many other pull requests change what users see.
     Refused unless the reply is complete and every pull request it cites is one of `numbers`."""
-    if reply.get("status") != "completed":
-        raise Refused(f"the model's reply is {reply.get('status')}, not completed")
+    if not isinstance(reply, dict) or reply.get("status") != "completed":
+        raise Refused(f"the model's reply is {isinstance(reply, dict) and reply.get('status')}, not completed")
     text = "".join(part.get("text") or "" for item in reply.get("output") or [] for part in item.get("content") or []
                    if part.get("type") == "output_text").strip()
     try:
@@ -311,7 +312,7 @@ def summarize(pulls):
     try:
         with urllib.request.urlopen(request, timeout=SUMMARY_TIMEOUT) as answer:
             return read_highlights(json.load(answer), [pull["number"] for pull in pulls])
-    except (OSError, ValueError, Refused) as error:
+    except (OSError, ValueError, http.client.HTTPException, Refused) as error:
         say(f"No summary was written, so the notes list pull requests without one: {error}.")
         return None
 
@@ -340,7 +341,7 @@ def render_notes(notes):
         lines += [f"- **{item['label']}.** {item['detail']}" for item in highlights]
         if more:
             lines += ["", f"### Plus {more} more {'fix or improvement' if more == 1 else 'fixes and improvements'}."]
-        if not highlights and not more:
+        if not highlights and not more and changes == len(notes["pulls"]):
             lines.append("Nothing you’ll notice in the app: these changes are internal.")
         lines += ["", "<details>", "<summary>Every pull request</summary>", ""]
     lines += [f"- {pull['title']} (#{pull['number']})" for pull in notes["pulls"]]

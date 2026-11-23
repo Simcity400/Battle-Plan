@@ -115,10 +115,12 @@ export function releaseView(notes: ReleaseNotes, shown = 6): ReleaseView {
   if (!notes.changes) return { items: [], footer: notes.since ? 'No changes since the previous release.' : 'The first release on this channel.' };
   if (notes.highlights) {
     const more = notes.more ?? 0;
+    const unmerged = notes.changes - notes.pulls.length;
     return {
       items: notes.highlights.map(highlight => ({ label: highlight.label, text: highlight.detail })),
       footer: more ? `Plus ${plural(more, 'more fix or improvement', 'more fixes and improvements')}.`
-        : notes.highlights.length ? null : 'Nothing you’ll notice in the app: these changes are internal.',
+        : notes.highlights.length ? null
+        : unmerged ? `${plural(unmerged, 'change', 'changes')} made without a pull request.` : 'Nothing you’ll notice in the app: these changes are internal.',
     };
   }
   const items = notes.pulls.slice(0, shown).map(pull => ({ label: null, text: pull.title }));

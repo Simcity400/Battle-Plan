@@ -134,7 +134,7 @@ export function UpdateButton({ state }: { state: UpdateState | null }) {
       <UpdateIcon state={state} />
     </button>
     <Popover menu={menu} className="update-popover" aria-label="Update" onPointerEnter={() => clearTimeout(peekTimer.current)} onPointerLeave={unpeek}
-      onToggle={event => { if (event.newState !== 'open') setPeeking(false); }}>
+      onToggle={event => { if (event.newState !== 'open') { setPeeking(false); setNotice(null); } }}>
       <PopoverBody open={menu.open}>{() => {
         if (actions.failure) {
           const { retry } = actions.failure;

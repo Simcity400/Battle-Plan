@@ -332,6 +332,9 @@ test('a downloaded update says so in words above the footer, and the footer glyp
       'each release the update brings, newest first; one without a summary lists its pull requests, and a gap in the history is named');
     assert.match(text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', unlisted: true }) })), /This update’s changes aren’t listed here\./,
       'an update whose notes are missing says so');
+    const direct = { version: '0.9.6', since: '0.9.5', date: null, changes: 1, highlights: [], more: 0, pulls: [] };
+    assert.match(text(render({ view: 'settings', update: update({ status: 'available', availableVersion: '0.9.6', releases: [direct] }) })), /1 change made without a pull request\./,
+      'a change no summary read is never called internal');
     const installFailed = render({ update: update({ status: 'error', errorContext: 'install', availableVersion: '0.9.5', downloadedVersion: '0.9.5', message: 'The installer couldn’t be started: denied.' }) });
     assert.match(text(installFailed), /Couldn’t install update 0\.9\.5\. Restart to update/, 'a failed install says so where the restart is offered');
     assert.doesNotMatch(text(installFailed), /denied/);

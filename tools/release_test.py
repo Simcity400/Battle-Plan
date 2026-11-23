@@ -2,6 +2,7 @@ import argparse
 import base64
 import datetime
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -422,15 +423,16 @@ class Notes(unittest.TestCase):
         cited = {"highlights": [{"label": "Feature", "detail": "Works.", "pulls": [99]}], "others": []}
         for reply, reason in ((model_reply(cited, "incomplete"), "not completed"), (model_reply("{\"highlights\": ["), "not JSON"),
                               (model_reply(cited), "lacks"), (model_reply({"highlights": [], "others": [99]}), "not this release's"),
-                              (model_reply({"highlights": [{"label": "", "detail": "Works.", "pulls": [1]}]}), "lacks")):
+                              (model_reply({"highlights": [{"label": "", "detail": "Works.", "pulls": [1]}]}), "lacks"),
+                              ([], "not completed")):
             with self.assertRaisesRegex(release.Refused, reason):
                 release.read_highlights(reply, [1, 2])
         with mock.patch.object(release, "urllib") as network, mock.patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
             self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
             network.request.urlopen.assert_not_called()
-        failed = mock.Mock(side_effect=OSError("HTTP Error 500"))
-        with mock.patch.object(release.urllib.request, "urlopen", failed), mock.patch.dict(os.environ, {"OPENAI_API_KEY": "key"}):
-            self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
+        for failure in (OSError("HTTP Error 500"), http.client.IncompleteRead(b"{")):
+            with mock.patch.object(release.urllib.request, "urlopen", mock.Mock(side_effect=failure)),                     mock.patch.dict(os.environ, {"OPENAI_API_KEY": "key"}):
+                self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
 
     def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
         notes = {"version": "1.4.3", "since": "1.4.2", "date": None, "changes": 3, "more": 1,
@@ -446,6 +448,9 @@ class Notes(unittest.TestCase):
         self.assertNotIn("<details>", plain)
         self.assertIn("- Map: fog of war (#10)", plain)
         self.assertEqual(release.render_notes({**notes, "since": None, "changes": 0, "pulls": []}), "The first release on this channel.\n")
+        quiet = {**notes, "highlights": [], "more": 0}
+        self.assertNotIn("internal", release.render_notes(quiet), "a change without a pull request was never read, so it is not called internal")
+        self.assertIn("these changes are internal", release.render_notes({**quiet, "changes": 2}))
 
     def test_the_feed_carries_this_release_then_the_newest_earlier_ones_it_replaces(self):
         entry = lambda version: {"version": version}

@@ -77,14 +77,15 @@ fn listed(
         })
         .collect();
     kept.sort_by(|(left, _), (right, _)| right.cmp(left));
-    let unlisted = kept.last().is_none_or(|(_, oldest)| {
-        offered > current
-            && oldest.since.as_deref().is_some_and(|since| {
-                semver::Version::parse(since)
-                    .ok()
-                    .is_none_or(|since| since > *current)
-            })
-    });
+    let unlisted = kept.is_empty()
+        || (offered > current
+            && kept.iter().any(|(_, notes)| {
+                notes.since.as_deref().is_some_and(|since| {
+                    semver::Version::parse(since).ok().is_none_or(|since| {
+                        since > *current && !kept.iter().any(|(version, _)| *version == since)
+                    })
+                })
+            }));
     (kept.into_iter().map(|(_, notes)| notes).collect(), unlisted)
 }
 
@@ -268,6 +269,9 @@ mod tests {
             switched,
             (vec!["0.1.2-nightly.20261121.3".to_owned()], false)
         );
+        let mut skipped = history();
+        skipped.retain(|notes| notes.version != "0.1.2-nightly.20261122.4");
+        assert!(listed(skipped, &offered, &version("0.1.2-nightly.20261121.3")).1);
         assert!(listed(Vec::new(), &offered, &version("0.1.1")).1);
         assert!(
             !listed(
