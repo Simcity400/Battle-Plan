@@ -94,9 +94,13 @@ content-reader-events = { workspace = true, features = ["test-support"] }
 content-reader-focus = { workspace = true, features = ["test-support"] }
 content-reader-gfx = { workspace = true, features = ["test-support"] }
 content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
 content-reader-localisation = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-naval-combat-defines = { workspace = true, features = ["test-support"] }
 content-reader-naval-path = { workspace = true, features = ["test-support"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-raids = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
@@ -111,4 +115,3 @@ engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-smallvec = { workspace = true }

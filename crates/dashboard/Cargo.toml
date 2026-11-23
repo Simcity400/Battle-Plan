@@ -18,7 +18,6 @@ content-reader-layers.workspace = true
 content-reader-military.workspace = true
 content-reader-parser.workspace = true
 content-reader-politics.workspace = true
-content-reader-script.workspace = true
 base64 = "0.22.1"
 blake3 = { workspace = true }
 content-reader-country-names = { workspace = true }
@@ -72,7 +71,6 @@ path = "src/bin/dashboard-bridge.rs"
 
 [dev-dependencies]
 content-reader-layers = { workspace = true, features = ["test-support"] }
-content-reader-script = { workspace = true, features = ["test-support"] }
 content-reader-country-names = { workspace = true, features = ["test-support"] }
 content-reader-equipment-graphics = { workspace = true, features = ["test-support"] }
 content-reader-wargoals = { workspace = true, features = ["test-support"] }
@@ -98,6 +96,9 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
+content-reader-politics = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
@@ -109,7 +110,6 @@ test-unify = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
 unify-once_cell = { workspace = true }
-unify-smallvec = { workspace = true }
 unify-wgpu = { workspace = true }
 unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }

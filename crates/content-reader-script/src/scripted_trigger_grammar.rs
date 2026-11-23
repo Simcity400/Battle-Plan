@@ -1,7 +1,5 @@
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-};
+use std::collections::BTreeMap;
 
 use crate::{trigger_grammar::Node, key_names::KeyNames, native::{self, Shape}};
 use content_reader_parser::parser::{Item, Value, c_string};

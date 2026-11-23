@@ -32,7 +32,7 @@ test-support = ["layer-fixtures", "content-reader-layers/test-support", "content
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-smallvec = { workspace = true }

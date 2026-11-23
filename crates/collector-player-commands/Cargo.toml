@@ -53,7 +53,8 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 collector-player-commands = { workspace = true, features = ["default", "test-support"] }
-content-reader-gui = { workspace = true, features = ["test-support"] }
+content-reader-key-names = { workspace = true, features = ["test-support"] }
+content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
@@ -63,5 +64,4 @@ replay = { workspace = true, features = ["default", "journal", "recording", "tes
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-smallvec = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }

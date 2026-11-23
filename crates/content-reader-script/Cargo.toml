@@ -32,5 +32,4 @@ layer-fixtures = []
 [target.'cfg(all())'.dev-dependencies]
 content-reader-script = { workspace = true, features = ["layer-fixtures", "test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
-replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

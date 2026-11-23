@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
 };
 
 use crate::{equipment_stats, native::{self, Kind, Shape}};

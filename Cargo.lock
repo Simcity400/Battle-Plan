@@ -128,16 +128,12 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 1.3.2",
  "hashbrown 0.17.1",
- "lock_api",
  "log",
  "minisign-verify",
- "parking_lot",
  "reqwest",
- "rustc-hash 2.1.3",
  "semver",
  "serde",
  "serde_json",
- "smallvec",
  "tauri",
  "test-unify",
  "uuid",
@@ -634,7 +630,8 @@ dependencies = [
  "collector-states",
  "collector-visibility",
  "collector-workers",
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -1203,7 +1200,8 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "collector-workers",
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -1244,7 +1242,8 @@ dependencies = [
  "collector-test-support",
  "collector-timing",
  "collector-workers",
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -1620,7 +1619,8 @@ dependencies = [
  "collector-projection",
  "collector-test-support",
  "collector-timing",
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-air-history",
@@ -2296,7 +2296,8 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -2311,7 +2312,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "windows-sys 0.52.0",
 ]
@@ -2640,8 +2640,9 @@ dependencies = [
  "collector-weather",
  "collector-workers",
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-air-history",
@@ -2682,7 +2683,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "syn 2.0.119",
  "synthetic-game",
  "test-unify",
@@ -2844,8 +2844,9 @@ dependencies = [
  "collector-visibility",
  "collector-workers",
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -2864,7 +2865,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "synthetic-game",
  "test-unify",
  "windows-sys 0.52.0",
@@ -3173,7 +3173,6 @@ dependencies = [
  "engine-allocation",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3188,7 +3187,6 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3218,7 +3216,6 @@ dependencies = [
  "mlua",
  "replay-identity",
  "sha2",
- "smallvec",
  "test-unify",
 ]
 
@@ -3233,7 +3230,6 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3243,7 +3239,6 @@ version = "0.1.0"
 dependencies = [
  "content-reader-defines",
  "content-reader-equipment-graphics",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3257,7 +3252,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-spool",
- "smallvec",
  "test-unify",
 ]
 
@@ -3272,7 +3266,6 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3289,7 +3282,6 @@ dependencies = [
  "engine-allocation",
  "job-priority",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3303,7 +3295,6 @@ dependencies = [
  "content-reader-script",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3323,7 +3314,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "sha2",
- "smallvec",
  "test-unify",
 ]
 
@@ -3343,6 +3333,7 @@ name = "content-reader-key-names"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
+ "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
  "content-reader-script",
@@ -3352,7 +3343,6 @@ dependencies = [
  "replay-identity",
  "replay-spool",
  "serde",
- "smallvec",
  "synthetic-game",
  "test-unify",
  "zstd",
@@ -3400,17 +3390,16 @@ name = "content-reader-map"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-image",
  "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-script",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
  "replay-identity",
- "smallvec",
  "synthetic-game",
  "test-unify",
 ]
@@ -3421,13 +3410,13 @@ version = "0.1.0"
 dependencies = [
  "content-reader-defines",
  "content-reader-layers",
+ "content-reader-mesh",
  "content-reader-parser",
  "content-reader-script",
  "engine-allocation",
  "engine-heap",
  "replay-identity",
  "sha2",
- "smallvec",
  "test-unify",
 ]
 
@@ -3443,7 +3432,6 @@ dependencies = [
  "engine-allocation",
  "engine-heap",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3457,7 +3445,6 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3465,13 +3452,12 @@ dependencies = [
 name = "content-reader-naval-path"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-map",
  "content-reader-naval-path",
  "engine-allocation",
  "engine-executable",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3494,12 +3480,12 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-script",
  "engine-allocation",
  "engine-executable",
  "engine-heap",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3507,7 +3493,6 @@ dependencies = [
 name = "content-reader-province-area"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3516,7 +3501,6 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3537,7 +3521,6 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3561,7 +3544,6 @@ name = "content-reader-save"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3571,7 +3553,6 @@ dependencies = [
  "engine-allocation",
  "replay-data",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3584,7 +3565,6 @@ dependencies = [
  "engine-allocation",
  "engine-executable",
  "engine-heap",
- "replay-identity",
  "replay-spool",
  "synthetic-game",
  "test-unify",
@@ -3601,7 +3581,6 @@ dependencies = [
  "content-reader-scripted-localisation",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3620,7 +3599,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
 ]
@@ -3638,7 +3616,6 @@ dependencies = [
  "engine-allocation",
  "log",
  "replay-identity",
- "smallvec",
  "symphonia",
  "test-unify",
 ]
@@ -3654,7 +3631,6 @@ dependencies = [
  "content-reader-state-categories",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3663,7 +3639,6 @@ name = "content-reader-states"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3672,7 +3647,6 @@ dependencies = [
  "content-reader-states",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3680,14 +3654,13 @@ dependencies = [
 name = "content-reader-unit-path"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
  "content-reader-unit-path",
  "engine-allocation",
  "engine-executable",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3702,7 +3675,6 @@ dependencies = [
  "content-reader-wargoals",
  "engine-allocation",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -3710,7 +3682,6 @@ dependencies = [
 name = "content-reader-weather"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
@@ -3723,7 +3694,6 @@ dependencies = [
  "engine-allocation",
  "replay-data",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -4097,10 +4067,11 @@ dependencies = [
  "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
- "content-reader-script",
  "content-reader-wargoals",
  "content-reader-weather",
  "dashboard",
@@ -4143,7 +4114,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4167,6 +4137,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-regions",
  "content-reader-script",
  "content-reader-weather",
@@ -4199,7 +4170,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4226,6 +4196,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
@@ -4271,7 +4242,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "syn 2.0.119",
  "test-unify",
  "ts-rs",
@@ -4293,6 +4263,7 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -4312,7 +4283,6 @@ dependencies = [
  "replay-spool",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4339,6 +4309,9 @@ version = "0.1.0"
 dependencies = [
  "content-reader-gui",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-politics",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4364,7 +4337,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4390,6 +4362,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
@@ -4415,7 +4388,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4429,8 +4401,9 @@ name = "dashboard-follow"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "dashboard-declare",
@@ -4448,7 +4421,6 @@ dependencies = [
  "replay-identity",
  "rmp-serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "winapi-util",
 ]
@@ -4462,8 +4434,11 @@ dependencies = [
  "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-raids",
  "content-reader-script",
  "dashboard-base",
@@ -4491,7 +4466,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4512,8 +4486,10 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-script",
  "dashboard-base",
  "dashboard-core",
@@ -4546,7 +4522,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4564,7 +4539,10 @@ dependencies = [
  "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-regions",
  "content-reader-script",
  "dashboard-base",
@@ -4593,7 +4571,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4608,6 +4585,9 @@ name = "dashboard-players"
 version = "0.1.0"
 dependencies = [
  "content-reader-gui",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-politics",
  "dashboard-base",
  "dashboard-core",
  "dashboard-follow",
@@ -4629,7 +4609,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4652,6 +4631,8 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
  "content-reader-politics",
  "content-reader-script",
@@ -4685,7 +4666,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4705,7 +4685,10 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "dashboard-base",
  "dashboard-core",
  "dashboard-declare",
@@ -4735,7 +4718,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4750,8 +4732,9 @@ name = "dashboard-query"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "dashboard-declare",
@@ -4767,7 +4750,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "ts-rs",
  "winapi-util",
@@ -4780,8 +4762,11 @@ dependencies = [
  "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-script",
  "dashboard-base",
  "dashboard-core",
@@ -4810,7 +4795,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4840,6 +4824,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
@@ -4878,7 +4863,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "uuid",
  "wgpu",
@@ -4898,6 +4882,8 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-politics",
  "content-reader-script",
@@ -4932,7 +4918,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -4956,6 +4941,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
@@ -4988,7 +4974,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "ts-rs",
  "uuid",
@@ -7418,6 +7403,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
@@ -7476,6 +7462,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
@@ -7532,7 +7519,6 @@ name = "map-snow"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-image",
  "content-reader-key-names",
  "content-reader-layers",
@@ -7546,7 +7532,6 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -8584,8 +8569,9 @@ name = "playhead"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -8599,7 +8585,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -8915,6 +8900,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
  "content-reader-politics",
  "content-reader-province-area",
@@ -8949,7 +8935,6 @@ dependencies = [
  "replay-identity",
  "serde",
  "serde_json",
- "smallvec",
  "synthetic-game",
  "test-unify",
  "uuid",
@@ -8971,6 +8956,9 @@ dependencies = [
  "content-reader-image",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
@@ -8993,7 +8981,6 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
- "smallvec",
  "tauri",
  "tauri-build",
  "test-unify",
@@ -9006,9 +8993,9 @@ name = "recorder-derive"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -9027,7 +9014,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9036,8 +9022,9 @@ name = "recorder-derive-air"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -9049,7 +9036,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9058,8 +9044,9 @@ name = "recorder-derive-economy"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -9071,7 +9058,6 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9079,8 +9065,8 @@ dependencies = [
 name = "recorder-derive-equipment"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
  "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -9093,7 +9079,6 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9102,9 +9087,9 @@ name = "recorder-derive-framework"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -9114,7 +9099,6 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9122,7 +9106,8 @@ dependencies = [
 name = "recorder-derive-land"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -9132,7 +9117,6 @@ dependencies = [
  "replay-data",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9140,7 +9124,8 @@ dependencies = [
 name = "recorder-derive-naval"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -9152,7 +9137,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9160,8 +9144,9 @@ dependencies = [
 name = "recorder-derive-politics"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -9172,7 +9157,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9181,8 +9165,9 @@ name = "recorder-derive-world"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9194,7 +9179,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-looks",
- "smallvec",
  "test-unify",
 ]
 
@@ -9203,10 +9187,10 @@ name = "recorder-derived"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
  "content-reader-politics",
  "content-reader-province-area",
@@ -9222,7 +9206,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9231,8 +9214,9 @@ name = "recorder-metrics"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -9246,7 +9230,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -9255,7 +9238,7 @@ name = "recorder-movement-oracle"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
  "content-reader-province-area",
@@ -9270,7 +9253,6 @@ dependencies = [
  "replay-derive",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -9281,13 +9263,14 @@ dependencies = [
  "content-reader-country-names",
  "content-reader-defines",
  "content-reader-division-names",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-regions",
@@ -9350,7 +9333,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9359,8 +9341,9 @@ name = "recorder-oracle-air"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9375,7 +9358,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9384,9 +9366,9 @@ name = "recorder-oracle-air-ledger"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9402,7 +9384,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9410,7 +9391,8 @@ dependencies = [
 name = "recorder-oracle-air-missions"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9424,7 +9406,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9432,10 +9413,12 @@ dependencies = [
 name = "recorder-oracle-characters"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-military",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9449,7 +9432,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9457,7 +9439,8 @@ dependencies = [
 name = "recorder-oracle-combat-details"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9471,7 +9454,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9479,7 +9461,8 @@ dependencies = [
 name = "recorder-oracle-combat-log"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9495,7 +9478,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9504,8 +9486,9 @@ name = "recorder-oracle-construction"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9522,7 +9505,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9531,8 +9513,8 @@ name = "recorder-oracle-core"
 version = "0.1.0"
 dependencies = [
  "content-reader-defines",
- "content-reader-gui",
  "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9545,7 +9527,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9553,7 +9534,8 @@ dependencies = [
 name = "recorder-oracle-counters"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9567,7 +9549,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9575,8 +9556,10 @@ dependencies = [
 name = "recorder-oracle-country-rosters"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9589,7 +9572,6 @@ dependencies = [
  "replay-data",
  "replay-derive",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9597,7 +9579,8 @@ dependencies = [
 name = "recorder-oracle-economy"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9614,7 +9597,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9623,8 +9605,9 @@ name = "recorder-oracle-equipment-destruction"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9637,7 +9620,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9645,7 +9627,8 @@ dependencies = [
 name = "recorder-oracle-event-feed"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9658,7 +9641,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9666,7 +9648,8 @@ dependencies = [
 name = "recorder-oracle-faction-theatres"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9679,7 +9662,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9687,8 +9669,8 @@ dependencies = [
 name = "recorder-oracle-factories"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
  "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9703,7 +9685,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9712,8 +9693,9 @@ name = "recorder-oracle-fog"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9727,7 +9709,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9735,7 +9716,8 @@ dependencies = [
 name = "recorder-oracle-fuel-demand"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9749,7 +9731,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9757,7 +9738,8 @@ dependencies = [
 name = "recorder-oracle-game-score"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9770,7 +9752,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9778,8 +9759,9 @@ dependencies = [
 name = "recorder-oracle-governance"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-politics",
  "content-reader-province-area",
@@ -9798,7 +9780,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9806,10 +9787,12 @@ dependencies = [
 name = "recorder-oracle-intel"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-military",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9823,7 +9806,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9831,7 +9813,8 @@ dependencies = [
 name = "recorder-oracle-land"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9847,7 +9830,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
 ]
 
@@ -9855,7 +9837,8 @@ dependencies = [
 name = "recorder-oracle-map-inputs"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9869,7 +9852,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9877,7 +9859,8 @@ dependencies = [
 name = "recorder-oracle-military"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9896,7 +9879,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9904,7 +9886,8 @@ dependencies = [
 name = "recorder-oracle-modifier-breakdowns"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9918,7 +9901,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9926,7 +9908,8 @@ dependencies = [
 name = "recorder-oracle-modifiers"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9940,7 +9923,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9948,7 +9930,8 @@ dependencies = [
 name = "recorder-oracle-naval-history"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -9962,7 +9945,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9970,7 +9952,8 @@ dependencies = [
 name = "recorder-oracle-naval-missions"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -9984,7 +9967,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -9993,8 +9975,9 @@ name = "recorder-oracle-naval-result-sources"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
@@ -10006,7 +9989,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10014,7 +9996,8 @@ dependencies = [
 name = "recorder-oracle-pass-inputs"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10032,7 +10015,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10041,8 +10023,9 @@ name = "recorder-oracle-peace"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10056,7 +10039,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10064,7 +10046,8 @@ dependencies = [
 name = "recorder-oracle-plans"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10078,7 +10061,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10086,9 +10068,10 @@ dependencies = [
 name = "recorder-oracle-politics"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
  "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10104,7 +10087,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10113,8 +10095,9 @@ name = "recorder-oracle-power-ledger"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10127,7 +10110,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10136,9 +10118,9 @@ name = "recorder-oracle-production"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10156,7 +10138,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10164,7 +10145,7 @@ dependencies = [
 name = "recorder-oracle-projects"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
@@ -10180,7 +10161,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10188,7 +10168,8 @@ dependencies = [
 name = "recorder-oracle-railway-guns"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10202,7 +10183,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10210,7 +10190,8 @@ dependencies = [
 name = "recorder-oracle-relations"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10224,7 +10205,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10233,8 +10213,9 @@ name = "recorder-oracle-rocket-output"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
@@ -10247,7 +10228,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10255,7 +10235,8 @@ dependencies = [
 name = "recorder-oracle-saved-event-targets"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10269,7 +10250,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10277,7 +10257,7 @@ dependencies = [
 name = "recorder-oracle-selected-routes"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10291,7 +10271,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10299,7 +10278,8 @@ dependencies = [
 name = "recorder-oracle-session"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10312,7 +10292,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10320,7 +10299,8 @@ dependencies = [
 name = "recorder-oracle-stability"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10333,7 +10313,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10341,7 +10320,8 @@ dependencies = [
 name = "recorder-oracle-supply-trains"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10355,7 +10335,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10363,9 +10342,9 @@ dependencies = [
 name = "recorder-oracle-support"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-parser",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10381,7 +10360,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10389,7 +10367,8 @@ dependencies = [
 name = "recorder-oracle-unit-combat-references"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
@@ -10401,7 +10380,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10409,7 +10387,8 @@ dependencies = [
 name = "recorder-oracle-visibility"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10422,7 +10401,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10430,7 +10408,8 @@ dependencies = [
 name = "recorder-oracle-wars"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-save",
@@ -10443,7 +10422,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10451,8 +10429,10 @@ dependencies = [
 name = "recorder-oracle-weather"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-layers",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
@@ -10468,7 +10448,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10476,7 +10455,8 @@ dependencies = [
 name = "recorder-platform"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -10495,8 +10475,9 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-allocation",
@@ -10514,7 +10495,6 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "serde_json",
- "smallvec",
  "test-unify",
  "weather-period",
  "windows-sys 0.61.2",
@@ -10524,7 +10504,8 @@ dependencies = [
 name = "recorder-sizes"
 version = "0.1.0"
 dependencies = [
- "content-reader-gui",
+ "content-reader-key-names",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -10544,8 +10525,9 @@ name = "recorder-test-support"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -10556,7 +10538,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
 ]
 
@@ -10565,10 +10546,10 @@ name = "recording-upgrade"
 version = "0.1.0"
 dependencies = [
  "content-reader-country-names",
- "content-reader-gui",
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "engine-executable",
@@ -10579,7 +10560,6 @@ dependencies = [
  "replay-derive",
  "replay-frame",
  "replay-identity",
- "smallvec",
  "test-unify",
  "zstd",
 ]
@@ -10700,8 +10680,9 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "content-reader-country-names",
- "content-reader-gui",
+ "content-reader-key-names",
  "content-reader-localisation",
+ "content-reader-map",
  "content-reader-province-area",
  "content-reader-regions",
  "crc32fast",
@@ -10725,7 +10706,6 @@ dependencies = [
  "self_cell",
  "serde",
  "serde_json",
- "smallvec",
  "test-unify",
  "windows-sys 0.61.2",
  "zstd",
@@ -10804,8 +10784,11 @@ dependencies = [
  "app-update",
  "bitflags 1.3.2",
  "content-reader-gui",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-combat-defines",
  "content-reader-naval-path",
+ "content-reader-politics",
  "content-reader-script",
  "content-reader-settings",
  "content-reader-sound",
@@ -11537,7 +11520,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "shader-pipeline",
- "smallvec",
  "test-unify",
  "thiserror 2.0.20",
  "uuid",
@@ -12335,13 +12317,14 @@ dependencies = [
  "jsonptr",
  "libc",
  "litemap",
+ "lock_api",
  "memchr",
  "miniz_oxide 0.8.9",
  "miniz_oxide 0.9.1",
  "num-conv",
  "num-traits",
  "option-ext",
- "parking_lot_core",
+ "parking_lot",
  "percent-encoding",
  "phf",
  "plist",
@@ -12355,7 +12338,6 @@ dependencies = [
  "regex-syntax",
  "rustc-hash 2.1.3",
  "same-file",
- "scopeguard",
  "serde",
  "serde-untagged",
  "serde_core",
@@ -13082,6 +13064,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-script",
@@ -13125,6 +13108,7 @@ dependencies = [
 name = "viewer-audio"
 version = "0.1.0"
 dependencies = [
+ "content-reader-key-names",
  "content-reader-layers",
  "content-reader-sound",
  "cpal",
@@ -13136,7 +13120,6 @@ dependencies = [
  "map-display-data",
  "replay-data",
  "replay-identity",
- "smallvec",
  "test-unify",
  "windows 0.62.2",
 ]
@@ -13151,6 +13134,8 @@ dependencies = [
  "content-reader-image",
  "content-reader-layers",
  "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-states",
@@ -13195,6 +13180,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-states",
@@ -13242,6 +13228,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-naval-combat-defines",
  "content-reader-parser",
@@ -13300,7 +13287,9 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "dashboard-core",
@@ -13347,6 +13336,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
  "content-reader-politics",
  "content-reader-province-area",
@@ -13409,6 +13399,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-naval-path",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-script",
@@ -13456,7 +13447,9 @@ dependencies = [
  "content-reader-gui",
  "content-reader-layers",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "dashboard-text",
@@ -13545,6 +13538,9 @@ version = "0.1.0"
 dependencies = [
  "content-reader-defines",
  "content-reader-gui",
+ "content-reader-map",
+ "content-reader-mesh",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-unit-path",
  "dpi",
@@ -13630,7 +13626,9 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-settings",
@@ -13668,8 +13666,11 @@ dependencies = [
 name = "viewer-layer-core"
 version = "0.1.0"
 dependencies = [
+ "content-reader-gui",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-sound",
  "content-reader-weather",
@@ -13731,8 +13732,11 @@ dependencies = [
 name = "viewer-layers-counters"
 version = "0.1.0"
 dependencies = [
+ "content-reader-gui",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-sound",
@@ -13785,8 +13789,10 @@ version = "0.1.0"
 dependencies = [
  "content-reader-gui",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-sound",
  "content-reader-weather",
  "dashboard-base",
@@ -13840,7 +13846,9 @@ dependencies = [
  "content-reader-gui",
  "content-reader-key-names",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-sound",
  "content-reader-weather",
@@ -13897,6 +13905,7 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-path",
  "content-reader-parser",
  "content-reader-politics",
@@ -13957,6 +13966,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
@@ -13999,6 +14009,7 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
  "content-reader-politics",
  "content-reader-province-area",
@@ -14051,7 +14062,9 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-script",
@@ -14097,8 +14110,10 @@ dependencies = [
  "content-reader-gui",
  "content-reader-image",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-unit-path",
@@ -14144,7 +14159,10 @@ dependencies = [
  "content-reader-image",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-settings",
@@ -14190,6 +14208,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-naval-combat-defines",
  "content-reader-naval-path",
  "content-reader-parser",
@@ -14284,6 +14303,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-military",
  "content-reader-parser",
  "content-reader-politics",
@@ -14343,6 +14363,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-unit-path",
@@ -14386,7 +14407,10 @@ dependencies = [
  "content-reader-key-names",
  "content-reader-layers",
  "content-reader-localisation",
+ "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-settings",
  "dashboard-core",
@@ -14432,6 +14456,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-script",
@@ -14476,7 +14501,9 @@ dependencies = [
  "content-reader-gui",
  "content-reader-image",
  "content-reader-layers",
+ "content-reader-map",
  "content-reader-mesh",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-unit-path",
@@ -14515,6 +14542,7 @@ dependencies = [
  "content-reader-gui",
  "content-reader-map",
  "content-reader-mesh",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "dpi",
@@ -14557,6 +14585,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-raids",
  "content-reader-script",
@@ -14602,7 +14631,9 @@ dependencies = [
  "content-reader-layers",
  "content-reader-localisation",
  "content-reader-map",
+ "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-script",
  "content-reader-states",
@@ -14646,6 +14677,7 @@ dependencies = [
  "content-reader-map",
  "content-reader-mesh",
  "content-reader-parser",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-script",
@@ -14693,6 +14725,7 @@ dependencies = [
  "content-reader-layers",
  "content-reader-map",
  "content-reader-mesh",
+ "content-reader-politics",
  "content-reader-province-area",
  "content-reader-regions",
  "content-reader-script",
