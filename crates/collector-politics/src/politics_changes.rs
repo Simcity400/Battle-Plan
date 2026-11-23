@@ -758,7 +758,6 @@ pub unsafe fn release() {
     LOGS.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
-    #[cfg(test)]
     CONSERVATION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2872,53 +2871,9 @@ pub fn refusals() -> impl serde::Serialize {
     })
 }
 #[cfg(test)]
-const INLINE_LANE_SNAPSHOT: usize = 256;
-
-#[cfg(test)]
-enum LaneSnapshot {
-    Inline {
-        values: [usize; INLINE_LANE_SNAPSHOT],
-        len: usize,
-    },
-    Spilled(Vec<usize>),
-}
-
-#[cfg(test)]
-impl LaneSnapshot {
-    fn collect(values: impl ExactSizeIterator<Item = usize>) -> Self {
-        let len = values.len();
-        if len <= INLINE_LANE_SNAPSHOT {
-            let mut buffer = [0usize; INLINE_LANE_SNAPSHOT];
-            for (slot, value) in buffer.iter_mut().zip(values) {
-                *slot = value;
-            }
-            Self::Inline {
-                values: buffer,
-                len,
-            }
-        } else {
-            Self::Spilled(values.collect())
-        }
-    }
-}
-
-#[cfg(test)]
-impl serde::Serialize for LaneSnapshot {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let slice = match self {
-            Self::Inline { values, len } => &values[..*len],
-            Self::Spilled(values) => values.as_slice(),
-        };
-        slice.serialize(serializer)
-    }
-}
-
-#[cfg(test)]
-struct ActiveStatus {
+struct ActiveStatusMeta {
     events: u64,
     spill_pending: usize,
-    required_entries_per_lane: LaneSnapshot,
-    staging_entries_per_lane: LaneSnapshot,
     staging_entries: usize,
     staging_threads: usize,
     shared_lane_entries: usize,
@@ -2927,57 +2882,86 @@ struct ActiveStatus {
 }
 
 #[cfg(test)]
-fn status() -> impl serde::Serialize {
-    let (counters, epoch, failures, unlisted_failures, required_keys, active) = {
-        let retained = LOGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let counters = COUNTERS
-            .each_ref()
-            .map(|value| value.load(Ordering::Relaxed));
-        let epoch = EPOCH.load(Ordering::SeqCst);
-        let failures = FAILURES
-            .each_ref()
-            .map(|count| count.load(Ordering::Relaxed));
-        let unlisted_failures = UNLISTED_FAILURES.load(Ordering::Relaxed);
-        let required_keys = REQUIRED_KEYS.load(Ordering::Relaxed);
-        let pointer = LOG.load(Ordering::Acquire) as *const Log;
-        let active = retained
-            .iter()
-            .flat_map(|batch| batch.iter())
-            .find(|log| std::ptr::eq(*log, pointer))
-            .map(|log| ActiveStatus {
+struct StatusSnapshot {
+    counters: [u64; 13],
+    epoch: u64,
+    failures: [u64; FAILURE_NAMES.len()],
+    unlisted_failures: u64,
+    required_keys: usize,
+    active: Option<ActiveStatusMeta>,
+}
+
+#[cfg(test)]
+fn snapshot_status(
+    required_entries: &mut Vec<usize>,
+    staging_entries: &mut Vec<usize>,
+) -> StatusSnapshot {
+    required_entries.clear();
+    staging_entries.clear();
+    let retained = LOGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let counters = COUNTERS
+        .each_ref()
+        .map(|value| value.load(Ordering::Relaxed));
+    let epoch = EPOCH.load(Ordering::SeqCst);
+    let failures = FAILURES
+        .each_ref()
+        .map(|count| count.load(Ordering::Relaxed));
+    let unlisted_failures = UNLISTED_FAILURES.load(Ordering::Relaxed);
+    let required_keys = REQUIRED_KEYS.load(Ordering::Relaxed);
+    let pointer = LOG.load(Ordering::Acquire) as *const Log;
+    let active = retained
+        .iter()
+        .flat_map(|batch| batch.iter())
+        .find(|log| std::ptr::eq(*log, pointer))
+        .map(|log| {
+            required_entries.extend(
+                log.lanes
+                    .iter()
+                    .map(|lane| lane.required_entries.load(Ordering::Relaxed)),
+            );
+            staging_entries.extend(log.lanes.iter().map(|lane| lane.slots.len()));
+            ActiveStatusMeta {
                 events: log.frontier(),
                 spill_pending: log.spill_pending(),
-                required_entries_per_lane: LaneSnapshot::collect(
-                    log.lanes
-                        .iter()
-                        .map(|lane| lane.required_entries.load(Ordering::Relaxed)),
-                ),
-                staging_entries_per_lane: LaneSnapshot::collect(
-                    log.lanes.iter().map(|lane| lane.slots.len()),
-                ),
                 staging_entries: log.entries,
                 staging_threads: log.lanes.len(),
                 shared_lane_entries: log.shared.len(),
                 required_shared_lane_entries: log.shared.required_entries(),
                 staging_key_stride: log.key_stride,
-            });
-        (
-            counters,
-            epoch,
-            failures,
-            unlisted_failures,
-            required_keys,
-            active,
-        )
-    };
+            }
+        });
+    StatusSnapshot {
+        counters,
+        epoch,
+        failures,
+        unlisted_failures,
+        required_keys,
+        active,
+    }
+}
+
+#[cfg(test)]
+fn format_status<L: serde::Serialize>(
+    snapshot: StatusSnapshot,
+    required_entries: L,
+    staging_entries: L,
+) -> impl serde::Serialize {
+    let StatusSnapshot {
+        counters,
+        epoch,
+        failures,
+        unlisted_failures,
+        required_keys,
+        active,
+    } = snapshot;
     let (
         events,
         spill_pending,
         required_entries_per_lane,
         staging_entries_per_lane,
-        staging_entries,
+        staging_entries_count,
         staging_threads,
         shared_lane_entries,
         required_shared_lane_entries,
@@ -2986,8 +2970,8 @@ fn status() -> impl serde::Serialize {
         Some(active) => (
             Some(active.events),
             Some(active.spill_pending),
-            Some(active.required_entries_per_lane),
-            Some(active.staging_entries_per_lane),
+            Some(required_entries),
+            Some(staging_entries),
             Some(active.staging_entries),
             Some(active.staging_threads),
             Some(active.shared_lane_entries),
@@ -3009,7 +2993,7 @@ fn status() -> impl serde::Serialize {
         "required_entries_per_lane": required_entries_per_lane,
         "staging_entries_per_lane": staging_entries_per_lane,
         "required_key_bytes": required_keys,
-        "staging_entries": staging_entries,
+        "staging_entries": staging_entries_count,
         "staging_threads": staging_threads,
         "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
         "shared_lane_entries": shared_lane_entries,
@@ -3022,7 +3006,23 @@ fn status() -> impl serde::Serialize {
         "conservation": conservation_status(), "government_endpoint_mismatches": counters[5],
     })
 }
+
 #[cfg(test)]
+fn status_into<'a>(
+    required_entries: &'a mut Vec<usize>,
+    staging_entries: &'a mut Vec<usize>,
+) -> impl serde::Serialize + use<'a> {
+    let snapshot = snapshot_status(required_entries, staging_entries);
+    format_status(snapshot, required_entries.as_slice(), staging_entries.as_slice())
+}
+
+#[cfg(test)]
+fn status() -> impl serde::Serialize {
+    let mut required_entries = Vec::new();
+    let mut staging_entries = Vec::new();
+    let snapshot = snapshot_status(&mut required_entries, &mut staging_entries);
+    format_status(snapshot, required_entries, staging_entries)
+}
 #[derive(Clone, Copy)]
 struct ConservationExample {
     country: u32,
@@ -3030,7 +3030,6 @@ struct ConservationExample {
     currency: PowerCurrency,
     amount: i128,
 }
-#[cfg(test)]
 #[derive(Clone, Copy, Default)]
 struct Conservation {
     counts: [u64; 2],
@@ -3038,48 +3037,41 @@ struct Conservation {
     absolute_amounts: [u128; 2],
     examples: [Option<ConservationExample>; 16],
 }
-#[cfg(test)]
 static CONSERVATION: Mutex<Conservation> = Mutex::new(Conservation {
     counts: [0; 2],
     amounts: [0; 2],
     absolute_amounts: [0; 2],
     examples: [None; 16],
 });
-pub fn mismatch(country: u32, hour: i32, currency: PowerCurrency, amount: i128) {
-    #[cfg(not(test))]
-    let _ = (country, hour, currency, amount);
-    #[cfg(test)]
-    {
-        let mut metrics = CONSERVATION
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = currency as usize;
-        metrics.counts[index] += 1;
-        metrics.amounts[index] += amount;
-        metrics.absolute_amounts[index] += amount.unsigned_abs();
-        if metrics
+pub(crate) fn mismatch(country: u32, hour: i32, currency: PowerCurrency, amount: i128) {
+    let mut metrics = CONSERVATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let index = currency as usize;
+    metrics.counts[index] += 1;
+    metrics.amounts[index] += amount;
+    metrics.absolute_amounts[index] += amount.unsigned_abs();
+    if metrics
+        .examples
+        .iter()
+        .flatten()
+        .filter(|example| example.currency == currency)
+        .count()
+        < 8
+        && let Some(example) = metrics
             .examples
-            .iter()
-            .flatten()
-            .filter(|example| example.currency == currency)
-            .count()
-            < 8
-            && let Some(example) = metrics
-                .examples
-                .iter_mut()
-                .find(|example| example.is_none())
-        {
-            *example = Some(ConservationExample {
-                country,
-                hour,
-                currency,
-                amount,
-            });
-        }
+            .iter_mut()
+            .find(|example| example.is_none())
+    {
+        *example = Some(ConservationExample {
+            country,
+            hour,
+            currency,
+            amount,
+        });
     }
 }
-#[cfg(test)]
-fn conservation_status() -> impl serde::Serialize {
+pub fn conservation_status() -> impl serde::Serialize {
     use crate::status::{DebugValue, DisplayValue, sequence, status};
     let metrics = *CONSERVATION
         .lock()
@@ -4990,9 +4982,14 @@ mod tests {
     #[test]
     fn status_reads_active_log_without_allocating_or_popping_spilled_records() {
         let _guard = staging_test();
+        let previous_lanes = REQUIRED_LANES.load(Ordering::Relaxed);
+        let target_lanes = thread_slots().max(257);
+        REQUIRED_LANES.store(target_lanes, Ordering::Relaxed);
         // SAFETY: Unit test owns politics staging with no concurrent teardown.
         unsafe { resize(8, 16) };
+        REQUIRED_LANES.store(previous_lanes, Ordering::Relaxed);
         let active = log().unwrap();
+        assert!(active.lanes.len() >= 257);
         active
             .pushed
             .push((Record::default(), Vec::new()))
@@ -5014,12 +5011,14 @@ mod tests {
                 self.cursor.flush()
             }
         }
-        let mut scratch = [0u8; 8192];
+        let mut required_scratch = Vec::with_capacity(active.lanes.len());
+        let mut staging_scratch = Vec::with_capacity(active.lanes.len());
+        let mut scratch = vec![0u8; 16384];
         let (written, writes) = collector_test_support::with_allocations_denied(|| {
-            let snapshot = status();
+            let snapshot = status_into(&mut required_scratch, &mut staging_scratch);
             assert!(LOGS.try_lock().is_ok());
             let mut writer = LockCheckingWriter {
-                cursor: std::io::Cursor::new(&mut scratch[..]),
+                cursor: std::io::Cursor::new(scratch.as_mut_slice()),
                 writes: 0,
             };
             serde_json::to_writer(&mut writer, &snapshot).unwrap();
