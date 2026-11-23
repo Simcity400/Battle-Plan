@@ -45,6 +45,14 @@ const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<voi
     await run(act);
   }, 240_000), [stubs], true);
 const scene = (value: unknown) => `mount(${JSON.stringify(value)})`;
+const followedQuery = (ask: Ask, product: string): Record<string, unknown> | null => {
+  const query = ask.product === 'follow' ? ask.params?.query as Record<string, unknown> | undefined : undefined;
+  if (!query) return null;
+  if (query.panel === product) { const { panel: _panel, ...params } = query; return params; }
+  return query.product === product ? query.params as Record<string, unknown> ?? {} : null;
+};
+const follows = (asks: Ask[], product: string) => asks.flatMap(ask => { const params = followedQuery(ask, product); return params && !ask.hours.length ? [params] : []; });
+const reads = (asks: Ask[], product: string) => [...asks.filter(ask => ask.product === product).map(ask => ask.params ?? {}), ...follows(asks, product)];
 const pinAt = (hour: number) => ({ mode: 'pin', windows: { main: { firstOffset: hour - 100, lastOffset: hour - 100 } } });
 const NO_PIN = { mode: 'pin', windows: {} };
 const groupsOf = (tags: string[], members: { tag: string; firstHour: number; lastHour: number }[] = []) => ({ branchId: '1', warnings: [], warStarts: [], capitulations: [],
@@ -97,7 +105,7 @@ test('4. Fuel’s saved consumption breakdown pinned at 105, the page at 110: Fo
   assert.ok(followed.pressed && followed.text.includes(OUTSIDE), `following the page at 110 is outside: ${followed.text}`);
   const back = await act<Read>('seek(105)');
   assert.ok(!back.text.includes(OUTSIDE) && !back.buttons.includes('Follow playback'), `back inside, still following: ${back.text} ${JSON.stringify(back.buttons)}`);
-  assert.ok(back.asks.some(ask => ask.product === 'country-fuel' && ask.hour === 105), `it reads the playback hour: ${JSON.stringify(back.asks)}`);
+  assert.ok(follows(back.asks, 'country-fuel').some(params => params.country === 'GER'), `it follows playback for its country, naming no hour: ${JSON.stringify(back.asks)}`);
 }));
 
 test('5. Stability’s saved breakdown following playback, mounted at 95 before its 100–109 track: it asks nothing there, binds GER when the clock enters the track, and says loading while its parts are pending', () => onPage(async act => {
@@ -175,7 +183,7 @@ test('9. Weather over 100–108: a province breakdown picked at 103 keeps its ow
   assert.deepEqual(followed.asks.filter(ask => ask.product === 'regional-weather-provinces' && ask.hour !== null && ask.hour > 109), [], 'nothing is asked past the track');
   const back = await act<Read>('seek(104)');
   assert.ok(back.drillOpen && !back.drill.includes(OUTSIDE), `back inside, still following: ${back.drill}`);
-  assert.ok(back.asks.some(ask => ask.product === 'regional-weather-provinces' && ask.hour === 104), `it reads the playback hour: ${JSON.stringify(back.asks)}`);
+  assert.ok(follows(back.asks, 'regional-weather-provinces').some(params => params.region === 'r1'), `it follows playback for its region, naming no hour: ${JSON.stringify(back.asks)}`);
 }));
 
 const COLUMNS = `({ branchId: '1', warnings: [], defaultColumns: ['power'], defaultSort: 'power', columns: [{ key: 'power', label: 'Power', unit: '', decimals: 0,
@@ -187,11 +195,11 @@ const TOP = { kind: 'group', group: { type: 'top', count: 3 }, membership: 'hour
 const dated = (asks: Ask[], hour: number) => asks.filter(ask => ask.hours.includes(hour));
 
 test('10. Diplomatic relations: the default Top N ranks and reads opinions, and two countries chosen by slot are both read', () => onPage(async act => {
-  const top = await act<Read>(scene({ kind: 'diplomatic-relations', time: { mode: 'follow' }, hour: 105, countries: TOP, groups: groupsOf(['GER', 'ENG']),
+  const top = await act<Read>(scene({ kind: 'diplomatic-relations', time: pinAt(105), hour: 105, countries: TOP, groups: groupsOf(['GER', 'ENG']),
     replies: { 'scoreboard-columns': COLUMNS, scoreboard: RANKED, 'diplomatic-relations': PAIR_OWNERS } }));
   assert.ok(top.asks.some(ask => ask.product === 'diplomatic-relations'), `Top N reads opinions: ${top.text} ${JSON.stringify(top.asks.map(ask => ask.product))}`);
   assert.ok(!top.text.includes('Loading opinions'), top.text);
-  const slots = await act<Read>(scene({ kind: 'diplomatic-relations', time: { mode: 'follow' }, hour: 105, countries: { kind: 'tags', tags: ['\u00001', '\u00002'] },
+  const slots = await act<Read>(scene({ kind: 'diplomatic-relations', time: pinAt(105), hour: 105, countries: { kind: 'tags', tags: ['\u00001', '\u00002'] },
     groups: groupsOf(['GER', 'ENG']), replies: { 'diplomatic-relations': PAIR_OWNERS } }));
   const read = slots.asks.find(ask => ask.product === 'diplomatic-relations');
   assert.deepEqual(read?.params?.countries, [1, 2], `both slots are read: ${slots.text} ${JSON.stringify(slots.asks)}`);
@@ -323,7 +331,8 @@ test('19. Fuel: GER picked at 103, its drill followed to 108 where another count
   const country = JSON.parse(await act<string>(`content(${JSON.stringify(saved.options.fuelCountry)})`)) as { tag: string; originOffset: number };
   assert.deepEqual([country.tag, country.originOffset, saved.countries], ['GER', 3, GER], `the pin holds the country picked at 103, not GER at 108: ${JSON.stringify(country)}`);
   const restored = await act<Read>(scene({ kind: 'fuel', time: saved.time, hour: 108, countries: saved.countries, options: saved.options, groups: RENAMED }));
-  const read = restored.asks.filter(ask => ask.hours.includes(108) && ask.params?.country !== undefined).map(ask => ask.params?.country);
+  const read = [...restored.asks.filter(ask => ask.hours.includes(108)).map(ask => ask.params ?? {}), ...follows(restored.asks, 'country-fuel')]
+    .flatMap(params => params.country === undefined ? [] : [params.country]);
   assert.ok(read.includes('GDR') && !read.includes('GER'), `the restored pin reads the picked country under its tag at 108: ${JSON.stringify(restored.asks)}`);
 }));
 
@@ -430,9 +439,10 @@ test('28. Resource balance: GER’s breakdown picked at 103 keeps that country t
   const played = await act<Read & { hour: number; playing: boolean }>('play(1, 5, 1000)');
   assert.ok(played.playing && played.hour >= 107, `playback runs to ${played.hour}`);
   assert.ok(naming(played.asks, 'GDR').length > 0, `past 105 the breakdown reads GDR without a seek: ${JSON.stringify(played.asks.map(ask => [ask.product, ask.params]))}`);
-  const drilled = played.asks.filter(ask => ask.product === 'resource-balance' && !('order' in (ask.params ?? {})));
-  assert.ok(drilled.some(ask => ask.params?.country === 'GDR'), `the breakdown’s own read names GDR: ${JSON.stringify(drilled)}`);
-  assert.deepEqual(drilled.filter(ask => ask.params?.country === 'GER' && (ask.hour ?? 0) >= 105), [], 'the breakdown never reads the other country now named GER');
+  const drilled = reads(played.asks, 'resource-balance').filter(params => !('order' in params));
+  assert.ok(drilled.some(params => params.country === 'GDR'), `the breakdown’s own read names GDR: ${JSON.stringify(played.asks)}`);
+  assert.deepEqual(played.asks.filter(ask => ask.product === 'resource-balance' && ask.params?.country === 'GER' && (ask.hour ?? 0) >= 105), [],
+    'the breakdown never reads the other country now named GER');
   await act('pause()');
 }));
 
@@ -488,8 +498,8 @@ test('33. A saved range starting before its branch is clipped to the branch befo
 
 test('34. Fuel’s exact series reads name the country the native reader expects, and only at hours inside each country’s membership', () => onPage(async act => {
   const shown = await act<Read>(scene({ kind: 'fuel', time: { mode: 'follow' }, hour: 108, countries: HUMANS, groups: groupsOf(['GER'], [{ tag: 'GER', firstHour: 107, lastHour: 109 }]) }));
-  const reads = shown.asks.filter(ask => ask.product === 'series-state').flatMap(ask => (ask.params?.reads ?? []) as Record<string, unknown>[]);
-  assert.ok(reads.length > 0 && reads.every(read => 'country' in read && !('tag' in read)), `series reads name their country: ${JSON.stringify(reads)}`);
+  const named = reads(shown.asks, 'series-state').flatMap(params => (params.reads ?? []) as Record<string, unknown>[]);
+  assert.ok(named.length > 0 && named.every(read => 'country' in read && !('tag' in read)), `series reads name their country: ${JSON.stringify(shown.asks)}`);
   const hovered = await act<Read & { called: boolean }>('call("TimeChart", "onHover", 103)');
   const early = hovered.asks.filter(ask => ask.product === 'series-state').flatMap(ask => (ask.params?.reads ?? []) as { hour?: number }[]).filter(read => read.hour === 103);
   assert.deepEqual(early, [], 'no exact read before GER joins the group');

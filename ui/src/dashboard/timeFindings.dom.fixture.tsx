@@ -20,6 +20,8 @@ import { dayLabel } from '../charts/draw';
 import { contentKey } from './options';
 import { forgetProducts } from './products';
 import { productionLineToken } from '../widgets/production-lines/productionData';
+import { datedPanel } from './follow/messages.fixture.ts';
+import { packet, splitForLanes } from './follow/split.ts';
 
 class OnScreen {
   private readonly heard: IntersectionObserverCallback;
@@ -42,10 +44,31 @@ const hoursIn = (value: unknown, key = ''): number[] => Array.isArray(value) ? v
   : value !== null && typeof value === 'object' ? Object.entries(value).flatMap(([name, item]) => hoursIn(item, name))
   : typeof value === 'number' && DATED(key) ? [value] : [];
 const follows = new Map<number, string>();
+const ROUTE = 9;
+let ports: readonly MessagePort[] = [];
+const panelFollows = new Map<number, { panel: string; params: Record<string, unknown> }>();
+const refusedPanel = (id: number, hour: number, reason: string, seek: number) => {
+  const body = new TextEncoder().encode(reason), out = new Uint8Array((40 + body.length + 7) & ~7), words = new Uint32Array(out.buffer);
+  words.set([0x324c4e50, 6, 1, 0, ROUTE, seek, id, hour, 0, body.length]);
+  out.set(body, 40);
+  return out;
+};
+const pushPanels = (hour: number, only?: number) => {
+  const seek = clock.getSnapshot().seekSequence;
+  for (const [id, held] of panelFollows) {
+    const reply = only === undefined || id === only ? state.replies[held.panel] : undefined;
+    if (!reply || state.failures.has(held.panel)) continue;
+    let bytes: Uint8Array;
+    try { bytes = datedPanel(id, hour, reply(hour, held.params), seek, ROUTE); }
+    catch (error) { bytes = refusedPanel(id, hour, error instanceof Error ? error.message : String(error), seek); }
+    const split = splitForLanes(bytes, ports.length);
+    if (split.kind !== 'failure') split.lanes.forEach((part, lane) => { if (part) ports[lane]!.postMessage(packet('panels', part, undefined), [part.buffer]); });
+  }
+};
 const followLog: string[] = [];
 const state = {
   asks: [] as Ask[], options: [] as [string, unknown][], pins: [] as unknown[], replies: {} as Record<string, Reply>, failures: new Set<string>(),
-  groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>, accept: false, route: 0,
+  groups: null as unknown, trade: undefined as unknown, raids: undefined as unknown, props: {} as Record<string, Record<string, unknown>>, accept: true,
   shown: [] as (number | null)[],
 };
 const reportShown = (hour: number | null) => { state.shown.push(hour); };
@@ -74,17 +97,23 @@ const delivered = <T,>(work: () => T | Promise<never>): Promise<T> => {
 };
 const client = {
   available: true,
-  openFollow: async () => {},
+  openFollow: async (opened: readonly MessagePort[]) => { ports = opened; },
   product: (request: { sourceId: string; revision: string; product: string; params?: Record<string, unknown> }) => delivered(() => {
-    if (request.product === 'follow-clock') return answer(request, null);
+    if (request.product === 'follow-clock') return answer(request, { available: true });
     const params = request.params ?? null;
-    if (request.product === 'unfollow') { follows.delete(params?.id as number); followLog.push(`unfollow ${params?.id}`); return answer(request, null); }
+    if (request.product === 'unfollow') { follows.delete(params?.id as number); panelFollows.delete(params?.id as number); followLog.push(`unfollow ${params?.id}`); return answer(request, null); }
     if (request.product === 'follow') {
       state.asks.push({ product: 'follow', hour: null, hours: hoursIn(params?.query), params });
       followLog.push(`follow ${params?.id}`);
       if (!state.accept) return answer(request, { available: false, reason: 'not followed here' });
-      follows.set(params?.id as number, JSON.stringify(params?.query));
-      return answer(request, { available: true, route: ++state.route });
+      const id = params?.id as number, query = (params?.query ?? {}) as Record<string, unknown>;
+      follows.set(id, JSON.stringify(query));
+      if (typeof query.panel === 'string') {
+        const { panel, ...asked } = query;
+        panelFollows.set(id, { panel, params: asked });
+        queueMicrotask(() => pushPanels(clock.getHour(), id));
+      }
+      return answer(request, { available: true, route: ROUTE });
     }
     const hour = typeof params?.hour === 'number' ? params.hour : null;
     state.asks.push({ product: request.product, hour, hours: hoursIn(params), params });
@@ -108,6 +137,7 @@ const tick = (ms: number) => {
 };
 const clock = new PlaybackController(engine);
 clock.setBounds({ firstHour: 0, lastHour: 200 });
+clock.onPublish((previous, next) => { if (next.hour !== previous.hour || next.seekSequence !== previous.seekSequence) pushPanels(next.hour); });
 const sourceOf = (gaps: { firstHour: number; lastHour: number; reason: string }[], last = LAST) => ({ id: 'findings', path: 'findings.battleplan', revision: '1',
   metadata: { path: 'findings.battleplan', name: 'Findings', format: 1, captureMode: 'full', campaignKey: 'campaign',
     branches: [{ id: '1', sessionId: 's', firstHour: FIRST, lastHour: last, main: true, fork: null, joins: [], sampleBoundary: '', gaps }],
@@ -172,11 +202,11 @@ Object.assign(window, { findings: {
     await loadWidgetRenderer(scene.kind);
     root?.unmount();
     await settle();
-    follows.clear(); followLog.length = 0;
+    follows.clear(); panelFollows.clear(); followLog.length = 0;
     forgetProducts(client as never, 'findings');
     document.body.replaceChildren();
     Object.assign(state, { asks: [], options: [], pins: [], shown: [], props: {}, replies: Object.fromEntries(Object.entries(scene.replies ?? {}).map(([name, body]) => [name, replyOf(body)])),
-      failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids, accept: scene.accept ?? false });
+      failures: new Set(scene.failures ?? []), groups: scene.groups ?? null, trade: scene.trade, raids: scene.raids, accept: scene.accept ?? true });
     clock.setPlaying(false);
     clock.setBounds({ firstHour: 0, lastHour: Math.max(200, (scene.last ?? LAST) + 100) });
     clock.seek(scene.hour);
