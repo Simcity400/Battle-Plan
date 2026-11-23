@@ -14,4 +14,4 @@ Timed layers own hour-stamped command sets. The frame takes the installer once a
 
 Hourly reads reuse the same change sets and decode to recover the exact hour of a move. Resolve a step's changed province cells against the mirror immediately before that step. Using a later mirror can assign a move to a different unit after compaction or slot reuse. Omit units born or deleted within the step when the before-step identity cannot establish their movement and use their publication placement. Seeks, piece crossings and catch-up steps without hourly reads likewise use the publication placement. Preserve the distinction between a missing column and a recorded empty change.
 
-[Layer interfaces and helpers](../../crates/viewer-playback/src/layers.rs) · [Map side](../../crates/viewer-playback/src/playhead_host.rs)
+[Layer interfaces and helpers](../../crates/viewer-layer-core/src/layers.rs) · [Map side](../../crates/viewer-layer-core/src/playhead_host.rs)

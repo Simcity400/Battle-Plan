@@ -1,17 +1,8 @@
 
 use super::Compared;
-use crate::{
-    document::Document,
-    layers::{
-        Layer,
-        intel::Intel,
-        radar::Radar,
-        snow::Snow,
-        vision::Vision,
-        weather::Weather,
-    },
-    playhead_host::mirror::Mirrors,
-};
+use crate::{document::Document, playhead_host::mirror::Mirrors};
+use viewer_layer_core::{layers::Layer, vision::Vision};
+use viewer_layers_infrastructure::{intel::Intel, radar::Radar, snow::Snow, weather::Weather};
 use serde_json::{Value, json};
 use std::io;
 
@@ -25,7 +16,7 @@ fn layer<T: 'static>(layer: &dyn Layer) -> &T {
 }
 
 pub(super) fn weather_make(document: &Document) -> Box<dyn Layer> {
-    crate::layers::weather::for_document(document)
+    viewer_playback::layer_sources::weather(document)
 }
 
 pub(super) fn weather_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
@@ -46,7 +37,7 @@ pub(super) fn weather_today(layer: &dyn Layer, document: &Document) -> io::Resul
     Ok(compared)
 }
 
-pub(super) fn weather_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn weather_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = self::layer::<Weather>(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -65,7 +56,7 @@ pub(super) fn weather_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 pub(super) fn snow_make(document: &Document) -> Box<dyn Layer> {
-    crate::layers::snow::for_document(document)
+    viewer_playback::layer_sources::snow(document)
 }
 
 fn snow_against(layer: &Snow, today: &map_display_data::SnowMud, compared: &mut Compared) {
@@ -140,7 +131,7 @@ pub(super) fn snow_today(layer: &dyn Layer, document: &Document) -> io::Result<C
     Ok(compared)
 }
 
-pub(super) fn snow_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn snow_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = self::layer::<Snow>(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -183,7 +174,7 @@ pub(super) fn snow_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 pub(super) fn vision_make(document: &Document) -> Box<dyn Layer> {
-    crate::layers::vision::for_document(document)
+    viewer_playback::layer_sources::vision(document)
 }
 
 fn vision_cold(document: &Document, choice: &viewer_foundation::perspective::Choice) -> io::Result<viewer_foundation::perspective::Vision> {
@@ -256,7 +247,7 @@ fn dependent_queries(layer: &Vision, today: &viewer_foundation::perspective::Vis
     Ok(queries)
 }
 
-pub(super) fn vision_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn vision_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = self::layer::<Vision>(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;
@@ -320,7 +311,7 @@ pub(super) fn vision_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 pub(super) fn intel_make(document: &Document) -> Box<dyn Layer> {
-    crate::layers::intel::for_document(document)
+    viewer_playback::layer_sources::intel(document)
 }
 
 pub(super) fn intel_today(layer: &dyn Layer, document: &Document) -> io::Result<Compared> {
@@ -363,7 +354,7 @@ pub(super) fn intel_today(layer: &dyn Layer, document: &Document) -> io::Result<
     Ok(compared)
 }
 
-pub(super) fn intel_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn intel_fresh(layer: &dyn Layer, _mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = self::layer::<Intel>(layer);
     let fresh = layer.composed();
     let ((ours, fog, fogged), (theirs, their_fog, their_fogged)) = (layer.map(), fresh.map());
@@ -384,7 +375,7 @@ pub(super) fn intel_marked(layer: &dyn Layer) -> Vec<(&'static str, u64)> {
 }
 
 pub(super) fn radar_make(document: &Document) -> Box<dyn Layer> {
-    crate::layers::radar::for_document(document)
+    viewer_playback::layer_sources::radar(document)
 }
 
 fn radar_field(layer: &Radar, document: &Document, ours: u32) -> io::Result<viewer_aircraft::radar_symbols::Field> {
@@ -428,7 +419,7 @@ pub(super) fn radar_today(layer: &dyn Layer, document: &Document) -> io::Result<
     Ok(compared)
 }
 
-pub(super) fn radar_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn radar_fresh(layer: &dyn Layer, mirrors: &Mirrors, _upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     let layer = self::layer::<Radar>(layer);
     let mut fresh = layer.fresh();
     fresh.compose(mirrors)?;

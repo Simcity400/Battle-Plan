@@ -57,6 +57,7 @@ workspace = true
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
+content-reader-sound = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
 dashboard-effects = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
@@ -72,6 +73,7 @@ unify-winapi-util = { workspace = true }
 unify-windows = { workspace = true }
 unify-windows-sys-0-52 = { workspace = true }
 unify-windows-sys-0-59 = { workspace = true }
+viewer-borders = { workspace = true, features = ["test-support"] }
 viewer-counter-products = { path = "../viewer-counter-products", features = ["test-support"] }
 viewer-map-icons = { workspace = true, features = ["test-support"] }
 viewer-map-modes = { workspace = true, features = ["test-support"] }
@@ -79,3 +81,4 @@ viewer-map-text = { workspace = true, features = ["test-support"] }
 viewer-native-gui = { workspace = true, features = ["test-support"] }
 viewer-rail = { workspace = true, features = ["test-support"] }
 viewer-scene-base = { workspace = true, features = ["test-support"] }
+viewer-terrain = { workspace = true, features = ["test-support"] }

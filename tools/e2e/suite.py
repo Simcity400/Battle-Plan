@@ -43,6 +43,8 @@ import uuid
 from ctypes import wintypes as w
 from pathlib import Path
 
+APP_TITLES = ("BattlePlan (Alpha)", "BattlePlan (Nightly)")
+
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 DEFAULT_STATE = Path(os.environ.get("BATTLEPLAN_CAPTURES", os.environ.get("HOI4_CAPTURES", ROOT / "captures"))) / "ci" / "e2e"
@@ -239,7 +241,7 @@ class App:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             for hwnd, title in self.windows():
-                if title == "BattlePlan":
+                if title in APP_TITLES:
                     return hwnd
             if not self.running():
                 raise RuntimeError(f"the app exited with {self.exit_code()} before showing its window")
@@ -279,7 +281,7 @@ class App:
         try:
             if self.running():
                 for hwnd, title in self.windows():
-                    if title == "BattlePlan":
+                    if title in APP_TITLES:
                         u.PostMessageW(hwnd, WM_CLOSE, 0, 0)
                 if k.WaitForSingleObject(self.info.process, CLOSE_SECONDS * 1000) != STILL_ACTIVE:
                     code = self.exit_code()

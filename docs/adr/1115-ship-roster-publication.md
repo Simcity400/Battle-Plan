@@ -8,4 +8,4 @@ The visible product stands at the newest hour all admitted figures can support. 
 
 Regression tests step the head to a named hour and synchronize on roster worker handovers. This covers slot reuse, backward seeks, camera admission, and a second roster request outstanding after the first finishes. A stepper's newest buffered hour varies with scheduling and is unsuitable for an assertion about a particular hour.
 
-[Ships layer](../../crates/viewer-playback/src/layers/ships.rs) · [Tests](../../crates/viewer-playback/src/layers/ships/tests.rs)
+[Ships layer](../../crates/viewer-layers-forces/src/ships.rs) · [Tests](../../crates/viewer-layers-forces/src/ships/tests.rs)

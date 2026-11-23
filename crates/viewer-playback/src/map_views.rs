@@ -94,7 +94,7 @@ const OWNER_TABLES: [replay_data::rows::TableId; 3] = [
 #[derive(Debug, Default)]
 pub struct CounterOwners {
     resolved: Option<ResolvedOwners>,
-    head: Option<crate::playhead_host::views::AtHead>,
+    head: Option<viewer_layer_core::playhead_host::views::AtHead>,
 }
 
 type ResolvedOwners = (
@@ -107,10 +107,10 @@ impl CounterOwners {
     pub fn get(
         &mut self,
         today: Option<&replay_frame::frame::DecodedFrame>,
-        head: Option<&crate::playhead_host::views::Views>,
+        head: Option<&viewer_layer_core::playhead_host::views::Views>,
         filter: &dashboard_core::protocol::CounterFilter,
     ) -> Option<Arc<BTreeSet<u32>>> {
-        use crate::playhead_host::views::{AtHead, Pace};
+        use viewer_layer_core::playhead_host::views::{AtHead, Pace};
         let Some(views) = head else {
             self.head = None;
             return today.and_then(|frame| self.read(frame, filter));

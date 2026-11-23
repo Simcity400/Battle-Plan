@@ -275,10 +275,13 @@ fn main() {
         };
         std::process::exit(code);
     }
-    if app_update::refused_during_setup("BattlePlan") {
+    if app_update::refused_during_setup(app_update::app_name()) {
         return;
     }
-    let context = context();
+    let mut context = context();
+    if let Some(window) = context.config_mut().app.windows.iter_mut().find(|window| window.label == "main") {
+        window.title = app_update::app_name().to_owned();
+    }
     perf::init();
     if let Some(prefix) = perf::map_prefix() {
         viewer::host::log_map_frames(prefix);

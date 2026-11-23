@@ -8,4 +8,4 @@ The worker keeps complete plan-read cells for SupplyNodes owned by the plan's co
 
 The plan reacts to status classes in addition to row changes. A status-only batch can require publication, while sample times and truncated-row counts alone do not invalidate the plan. Decode copied opaque cells using the writer's row format. The stepped proof compares plan value, age and each batch's included steps. In particular, a worker that is behind can fold several steps into one plan, but a published plan covers every step already applied when that build began.
 
-[Train layer](../../crates/viewer-playback/src/layers/trains.rs) · [Plan maker](../../crates/viewer-playback/src/layers/trains/maker.rs) · [Store](../../crates/viewer-playback/src/layers/trains/store.rs)
+[Train layer](../../crates/viewer-layers-infrastructure/src/trains.rs) · [Plan maker](../../crates/viewer-layers-infrastructure/src/trains/maker.rs) · [Store](../../crates/viewer-layers-infrastructure/src/trains/store.rs)

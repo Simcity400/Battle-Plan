@@ -313,7 +313,7 @@ fn the_states_mode_names_its_live_category_or_refuses_the_line() -> std::io::Res
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-state-category")?;
     let document = &fixture.document;
-    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+    let viewer_playback::map_source::Current::Frame(frame) = document.playback.current() else {
         panic!("the fixture hour is a gap");
     };
     let province = frame
@@ -362,7 +362,7 @@ fn a_scripted_modes_hover_reads_the_viewer_and_the_hovered_state() -> std::io::R
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-scripted-hover")?;
     let document = &fixture.document;
-    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+    let viewer_playback::map_source::Current::Frame(frame) = document.playback.current() else {
         panic!("the fixture hour is a gap");
     };
     let province = frame
@@ -438,7 +438,7 @@ fn the_resistance_hover_shows_the_recorded_strengths() -> std::io::Result<()> {
     use viewer_counter_products::map::province_tooltips::{Cache, ModeHover};
     let fixture = Fixture::load("viewer-resistance-hover")?;
     let document = &fixture.document;
-    let crate::playback::Current::Frame(frame) = document.playback.current() else {
+    let viewer_playback::map_source::Current::Frame(frame) = document.playback.current() else {
         panic!("the fixture hour is a gap");
     };
     let resistance = frame
