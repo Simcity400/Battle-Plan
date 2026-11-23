@@ -2858,8 +2858,8 @@ export type NavalBattlesReply = { window: number, interval: BattleWindow, rows: 
  * The window's hours whose live combats were read.
  */
 observed: Array<[number, number]>, warnings: Array<BattleWarning>, contentWarnings: Array<string>, };
-export type NavalBattleHistory = { id: string, provinceId: number, runs: Array<NavalBattleRun>, };
-export type NavalBattleRun = { firstHour: number, lastHour: number, row: BattleRow, peakHour: number | null,
+export type NavalBattleHistory = { id: string, provinceId: number | null, runs: Array<NavalBattleRun>, };
+export type NavalBattleRun = { firstHour: number, lastHour: number, provinceId: number | null, row: BattleRow, peakHour: number | null,
 /**
  * Ships sunk, Peak ships and Length.
  */
