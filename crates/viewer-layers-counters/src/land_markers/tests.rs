@@ -5,7 +5,7 @@ use crate::naval_counters::Admits;
 use content_reader_map::movement::MovementMap;
 use replay_columnar::{manifest::Status, state::Cell, store::Store};
 use replay_data::rows::{Field, NativeValue, Opaque, TableId};
-use viewer_counters::map::counters::combat_markers::{LandCombatDefines, MarkerOutcome};
+use viewer_counter_kit::combat_markers::{LandCombatDefines, MarkerOutcome};
 use viewer_engagements::{engaged::Engaged, engagement_history::{Covered, History, LAND}};
 use viewer_gpu::camera::Placement;
 use viewer_foundation::perspective::{Choice, Country, Vision};

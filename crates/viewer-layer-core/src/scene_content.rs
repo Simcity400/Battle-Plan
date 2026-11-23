@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, io, sync::Arc};
 use replay_frame::frame::DecodedFrame;
-use viewer_counters::map::counters;
+use viewer_counter_kit::CounterDisplay;
 use viewer_gpu::{layers::Omissions, province_map::HeightField};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,7 +10,7 @@ pub struct OverlayLayers {
     pub raids: bool,
     pub raids_hovered: bool,
     pub labels: bool,
-    pub counters: counters::CounterDisplay,
+    pub counters: CounterDisplay,
     pub land_combats: bool,
     pub naval_markers: bool,
 }
@@ -23,7 +23,7 @@ impl Default for OverlayLayers {
             raids: true,
             raids_hovered: true,
             labels: true,
-            counters: counters::CounterDisplay::default(),
+            counters: CounterDisplay::default(),
             land_combats: true,
             naval_markers: true,
         }
@@ -42,7 +42,7 @@ impl OverlayLayers {
             raids: part(graphics.raid_icons),
             raids_hovered: true,
             labels: graphics.city_names,
-            counters: counters::CounterDisplay {
+            counters: CounterDisplay {
                 land: part(graphics.land_counters),
                 railway_guns: part(graphics.railway_gun_counters),
                 naval: part(graphics.naval_counters),
@@ -63,7 +63,7 @@ impl OverlayLayers {
             raids: labels,
             raids_hovered: labels,
             labels,
-            counters: counters::CounterDisplay {
+            counters: CounterDisplay {
                 land: counters,
                 railway_guns: counters,
                 naval: counters,
@@ -90,7 +90,7 @@ pub struct SceneContent {
     pub map_defines: viewer_gpu::camera::MapDefines,
     pub assets: viewer_world::scene_content::MapAssets,
     pub border_meshes: Arc<viewer_borders::borders::BorderMeshes>,
-    pub counters: Arc<viewer_counters::map::counters::CounterContent>,
+    pub counters: Arc<viewer_counters::counters::CounterContent>,
     pub radar_centers: viewer_aircraft::radar_symbols::Centers,
     pub map_buildings: viewer_buildings::map_buildings::MapBuildingAssets,
     pub rail_assets: viewer_rail::railways::RailAssets,

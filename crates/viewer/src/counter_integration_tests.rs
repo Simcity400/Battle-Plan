@@ -1,7 +1,7 @@
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::collections::{BTreeMap, BTreeSet};
-use viewer_counters::map::counters::test_support::{LandMarkers, kept_frames_at};
+use viewer_counter_kit::{combat_markers::LandMarkers, test_support::kept_frames_at};
 use viewer_engagements::{
     engaged::Engaged,
     engagement_history::{LAND_ICON, Provenance, kept_frames},

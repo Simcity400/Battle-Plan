@@ -1,3 +1,7 @@
+use replay_derive::{
+    air_mission_counts::{Counts, MISSIONS, count_of, registration},
+    air_region_derive::{Filter, Retained, last_pass},
+};
 
 use viewer_layer_core::{layers::{Carried, Settling, Dirty, Inputs, Layer, List, Num, Published, View}, owned::opaque};
 use viewer_layer_core::playhead_host::mirror::{Cell, Mirror, Mirrors};
@@ -18,10 +22,9 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use viewer_counters::map::counters::{
-    AirPasses, AirValues, CounterContent, Ground,
-    air_mission_counts::{Counts, MISSIONS, count_of, registration},
-    air_region_derive::{Filter, Retained, last_pass},
+use viewer_counters::counters::CounterContent;
+use viewer_counters_naval::air_missions::{
+    AirPasses, AirValues, Ground,
     counts_withheld, ground_of, interception_gate, interception_received_of, region_alerts, supplied, supply_refusal,
 };
 use viewer_foundation::{mode_visibility::PriorityTable, perspective::{Choice, Vision}};
