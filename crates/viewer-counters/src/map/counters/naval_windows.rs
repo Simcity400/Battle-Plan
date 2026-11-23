@@ -1,7 +1,9 @@
 
 mod draw_parts;
 
-use super::*;
+use super::{Allegiance, Arc, BTreeMap, BTreeSet, Batch, CounterInputs, CounterPointer, CounterReport, Countries, Cow, IconFamily, NAVAL_BASE_WINDOW, NAVAL_COMBAT_WINDOW, NAVAL_RESULT_WINDOW, NAVY_WINDOW, NativeWindows, NavalBaseIcon, NavalRegionalControl, NavalRegionalHover, PriorityIcon, TINY_UNIT_COUNTER_WINDOW, Unit, air_grid, air_missions, bases, gui_windows, io, land, layer, native, naval, naval_hovers, naval_markers, naval_missions};
+#[cfg(test)]
+use super::{CounterColorMode, CounterSettings, Level};
 use std::collections::{HashMap, HashSet};
 use viewer_engagements::combat_selection::Hit;
 use viewer_engagements::combat_selection::Selection;

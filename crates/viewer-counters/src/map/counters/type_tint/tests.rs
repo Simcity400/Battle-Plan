@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    Allegiance, Arc, BTreeMap, BTreeSet, Colors, DecodedFrame, DivisionRow, Index, Key, Memo, SentVolunteerRow, Side, TABLES, TableId, plate, tables,
+};
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryRow, rows::DirectedWars,
     rows::FactionMemberRow, rows::Recorded, rows::ReservedCountryNamingRow,

@@ -1,5 +1,7 @@
 
-use super::*;
+use super::{AIR_BASE_WINDOW, AirGridHover, Arc, BTreeMap, Batch, CounterInputs, CounterReport, Countries, FACILITY_WINDOW, GUN_EMPLACEMENT_WINDOW, IconAnchor, IconFamily, NAVAL_HEADQUARTER_WINDOW, PriorityIcon, RADAR_WINDOW, ROCKET_SITE_WINDOW, STRATEGIC_LOCATION_WINDOW, Shards, air_grid, bases, gui_windows, layer, native};
+#[cfg(test)]
+use super::{CounterFrame, NavalBaseIcon, VICTORY_POINT, building_facts, naval_repairs, naval_windows};
 use std::collections::HashMap;
 use viewer_native_gui::gui_resources::hit_rectangle;
 use viewer_native_gui::gui_resources::viewport as gui_resources_viewport;
@@ -746,7 +748,7 @@ fn air_text(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Arc, BTreeMap, CounterFrame, CounterInputs, CounterReport, Family, IconAnchor, IconFamily, Instance, NavalBaseIcon, PreparedBases, RADAR_WINDOW, State, VICTORY_POINT, air_text, bases, bind, building_facts, hit_rectangle, layer, native, native_gui, naval_repairs, naval_windows, record_hit, update};
     use native_gui::{PartKind, lifecycle::Tick};
     use viewer_native_gui::test_support::gui::fixture;
 

@@ -1,5 +1,5 @@
 
-use super::*;
+use super::{Available, BTreeMap, BTreeSet, CounterFrame, CounterInputs, DEFENDING, DecodedFrame, Defines, HourTables, IconFamily, STANDSTILL, SharingUnknown, Vision, counter_groups, invalid, io, land_windows, rows, tables};
 use viewer_engagements::engagement_history::Provenance;
 use viewer_engagements::icon_frames::{self, Kept};
 use viewer_native_gui::gui_resources::viewport;
@@ -668,7 +668,7 @@ pub(super) fn land_combats(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BTreeMap, DEFENDING, DecodedFrame, Engaged, Gaps, LandCombatDefines, LandMarkers, Provenance, STANDSTILL, Vision, combat_anchors, progress_text};
     use replay_data::{
         rows::DivisionMovementRow, rows::DivisionRow, rows::DivisionStatusRow,
         rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandCombatRow,

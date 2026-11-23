@@ -1,4 +1,4 @@
-use super::*;
+use super::{Arc, BTreeMap, Bounds, DecodedFrame, Geometry, GroupDefines, Memo, ProvinceRow, core, io, tables};
 use crate::map::counter_groups::{self, Icon, Level};
 use replay_data::rows::{TableId, TableRows};
 use replay_frame::frame::TableView;

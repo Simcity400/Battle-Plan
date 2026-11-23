@@ -63,7 +63,7 @@ impl<V, E: PartialEq> Carried<V, E> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Arc, Carried, DecodedFrame, TableId};
     use replay_data::rows::{TableRows, tables};
     use std::cell::Cell;
     use viewer_foundation::test_support::{test_frame, test_put};

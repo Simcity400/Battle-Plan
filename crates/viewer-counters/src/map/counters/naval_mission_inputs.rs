@@ -1,4 +1,9 @@
-use super::{naval_missions::MissionIcons, *};
+use super::naval_missions::MissionIcons;
+use super::{Arc, BTreeMap, BTreeSet, CounterContent, DecodedFrame, NativeInputs, ProvinceKind, ResolvedLayers, io, naval_missions, tables};
+#[cfg(test)]
+use super::native;
+#[cfg(test)]
+use super::{BuildingIconContent, CounterDefines, MapSize, TemplateIconMemo, geography};
 use engine_executable::modifier_keys as keys;
 use replay_data::rows::*;
 use replay_derive::naval_mission_derive as derive;

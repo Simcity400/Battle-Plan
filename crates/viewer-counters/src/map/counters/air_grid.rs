@@ -65,7 +65,7 @@ pub(super) fn items<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AirWingRow, Wing, items};
 
     fn wing(row: &AirWingRow) -> Wing<'_> {
         Wing {

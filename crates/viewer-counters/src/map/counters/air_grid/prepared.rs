@@ -1,5 +1,5 @@
 use super::super::{CounterInputs, tables};
-use super::*;
+use super::{AirWingRow, Item, Wing, items};
 use content_reader_localisation::localisation::Argument;
 use replay_data::{rows::AirBaseRow, rows::Recorded, rows::WingEquipmentRow};
 use replay_frame::frame::DecodedFrame;
@@ -628,7 +628,7 @@ fn hover(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AirWingRow, BTreeMap, DecodedFrame, Values, and, carrier_bases, carrier_kind, group_color, or, ratio, summary};
     fn values(wing: &AirWingRow) -> Values<'_> {
         Values {
             wing,

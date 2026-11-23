@@ -1,5 +1,5 @@
 
-use super::*;
+use super::{Allegiance, Arc, BTreeSet, BaseView, CounterColorMode, CounterInputs, DecodedFrame, HourTables, Layouts, MissionMemo, PoolView, STANDSTILL, Shared, Vision, countries, hour_tables, land_unit, land_windows, layout_gui, naval_windows, prepare_cached, type_tint, with_counter_inputs_fixture};
 
 fn synthetic_hour(inputs: &CounterInputs<'_>, frame: &DecodedFrame) -> HourTables {
     let moves = viewer_unit_reads::movement_reads::test_support::unnamed_assets();

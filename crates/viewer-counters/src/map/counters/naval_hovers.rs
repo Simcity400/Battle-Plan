@@ -1,5 +1,5 @@
 
-use super::*;
+use super::{Allegiance, Arc, BTreeMap, gui_windows, native, naval};
 use viewer_native_gui::counter_hovers::gui_authored::Authored;
 use viewer_native_gui::counter_hovers::task_force::{Control, Hover};
 #[cfg(test)]
@@ -80,7 +80,7 @@ pub(super) fn presented(
 #[cfg(test)]
 mod tests {
     use super::super::gui_windows::tests::at_sea_flotilla;
-    use super::*;
+    use super::{BTreeMap, Control, contains, gui_windows, hit_rectangle, native, native_gui, presented};
     use viewer_native_gui::native_gui::lifecycle::Instance;
     use viewer_native_gui::test_support::{Fixture, VIEWPORT};
 

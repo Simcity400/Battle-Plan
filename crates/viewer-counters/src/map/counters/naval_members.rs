@@ -1,5 +1,7 @@
 
-use super::*;
+use super::{BTreeMap, BTreeSet, CounterContent, CounterTables, HourTables, MapData, MovementContent, NavalContext, NavalSources, SHIP_IN_PORT, Sight, UnitKinds, Vision, counter_move, io, naval, rows, tables, type_tint, unit_flag_owner};
+#[cfg(test)]
+use super::counter_order;
 use viewer_unit_reads::task_force_visual::Placement;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

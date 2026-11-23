@@ -1,5 +1,7 @@
 
-use super::*;
+use super::{BTreeMap, Batch, CounterInputs, CounterReport, Countries, IconAnchor, LAND_COMBAT_WINDOW, LandMarker, PriorityIcon, gui_windows, layer, native};
+#[cfg(test)]
+use super::naval_markers;
 use std::collections::HashMap;
 use viewer_engagements::combat_selection::Hit;
 use viewer_engagements::combat_selection::Selection;
@@ -272,7 +274,8 @@ impl PreparedCombats {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use viewer_native_gui::native_gui;
+    use super::{BTreeMap, Instance, LAND_COMBAT_WINDOW, LandMarker, MapIconPool, Placed, controls, hit_rectangle, native, naval_markers, update, visible_layout};
     use native_gui::{PartKind, Resources};
     use viewer_native_gui::test_support::gui::fixture;
 

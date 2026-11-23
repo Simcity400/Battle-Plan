@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, DecodedFrame, io, tables};
 use viewer_unit_reads::air_detection::{Countries, CountryModifier};
 
 #[derive(Clone, Copy)]
@@ -170,7 +170,7 @@ impl Allowances {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Defines;
     #[test]
     fn allowance_caps_only_base_term_and_truncates_modifiers_separately() {
         let defines = Defines {

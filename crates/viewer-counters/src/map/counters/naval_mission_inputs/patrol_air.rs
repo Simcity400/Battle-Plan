@@ -1,4 +1,7 @@
-use super::*;
+use replay_data::rows::{AirBaseRow, AirMissionInputRow, AirWingRow, ClockState, CountryCounterInputRow, TaskForceRow};
+use super::{AceRangeInputRow, BTreeMap, DecodedFrame, Fact, Hour, OnceLock, ProvinceKind, ResolvedLayers, data, io, tables};
+#[cfg(test)]
+use super::{NativeInputs, RaidAirScoreRow};
 use air_range::Sources;
 use viewer_unit_reads::{air_detection, air_range};
 
@@ -775,8 +778,9 @@ pub(super) fn density(hour: &Hour<'_>, region: u32, visibility: [i64; 2]) -> Fac
 
 #[cfg(test)]
 mod tests {
+    use replay_data::rows::{AirMissionInputRow, AirRegionalMissionRow, AirWingRow, DayNightClock, TableId, TableRows, WeatherProvinceRow};
     use super::super::tests::{anchors, content, frame, hour, set};
-    use super::*;
+    use super::{BTreeMap, DecodedFrame, Defines, Fact, HOUR_EPOCH, NativeInputs, ONE, RaidAirScoreRow, density, disruption, night_raw, province_clock, weighted_density, wing_weight};
     use replay_frame::frame::TableView;
 
     fn input_frame() -> DecodedFrame {

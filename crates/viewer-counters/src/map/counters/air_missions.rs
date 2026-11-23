@@ -1,4 +1,6 @@
-use super::*;
+use super::{AirMissionHover, AirMissionPart, Arc, BTreeMap, BTreeSet, Batch, CounterAssets, CounterContent, CounterInputs, CounterReport, DecodedFrame, HourTables, IconFamily, PoolView, PriorityIcon, PriorityTable, Vision, gui_resources_viewport, gui_windows, invalid, io, layer, native, tables};
+#[cfg(test)]
+use super::AirMissionClick;
 #[cfg(test)]
 use replay_data::rows::AirRegionalMissionRow;
 use replay_data::rows::AirWingRow;
@@ -1154,7 +1156,7 @@ impl Prepared {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AirMissionClick, AirMissionPart, AirRegionalMissionRow, AirWingRow, Arc, Ground, MISSIONS, PASS_UNKNOWN, TIMEOUT_UNKNOWN, average, count, ground, interception_alert, interception_received, regional_counts};
     #[test]
     fn ground_crews_keep_active_controls_enabled_and_compare_unrounded_power() {
         assert_eq!(

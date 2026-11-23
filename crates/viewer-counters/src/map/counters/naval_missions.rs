@@ -1,6 +1,8 @@
 
 use super::naval_windows::{Mark, mark, marks};
-use super::*;
+use super::{Arc, BTreeMap, BTreeSet, Batch, CounterDefines, CounterFrame, CounterInputs, CounterReport, Cow, DecodedFrame, IconFamily, NativeInputs, NavalMissionHit, NavalRegionalControl, PriorityIcon, Vision, counter_inputs, gui_windows, io, layer, native, naval_mine_badges, naval_regional, naval_windows, rows, tables, visible};
+#[cfg(test)]
+use super::MAPICONS_GUI;
 use std::collections::HashMap;
 use viewer_native_gui::gui_resources::GuiAssets;
 use viewer_native_gui::gui_resources::count_noted;

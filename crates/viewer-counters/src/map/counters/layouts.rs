@@ -1,5 +1,7 @@
 
-use super::*;
+use super::{ABILITY_WINDOW, AbilityGrid, Child, ColumnLayout, GUN_WINDOW, GunCounter, LAND_WINDOW, LandCounter, STACK_WINDOW, TextChild, ZOOMED_IN_OFFSET, invalid, io, native, text};
+#[cfg(test)]
+use super::{ActionContent, Layouts, MAPICONS_GUI, zoom_lift};
 use viewer_native_gui::native_gui;
 #[cfg(test)]
 use viewer_native_gui::native_windows::NativeWindows;
@@ -320,7 +322,7 @@ pub(super) fn column_layout(guis: &native::Guis) -> io::Result<ColumnLayout> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ActionContent, GUN_WINDOW, LAND_WINDOW, Layouts, MAPICONS_GUI, NativeWindows, STACK_WINDOW, ability_grid, child, column_layout, land_counter, native, text_child, window, zoom_lift};
 
     #[test]
     fn counter_action_land_child_loads_its_authored_sprite() {

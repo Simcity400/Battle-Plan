@@ -1,4 +1,6 @@
-use super::super::*;
+use super::super::{AirGridHover, Allegiance, Arc, BTreeMap, CounterColorMode, CounterInputs, CounterReport, Countries, IconFamily, counter_inputs, counter_plate_color, gui_resources_viewport, gui_windows, native};
+#[cfg(test)]
+use super::super::{NAVY_WINDOW, SharedNativeWindows};
 use super::{PreparedItem, prepared};
 use std::collections::HashMap;
 use viewer_native_gui::{
@@ -451,7 +453,7 @@ fn update_item(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AirGridHover, Allegiance, Arc, BTreeMap, Composed, CounterColorMode, CounterReport, Countries, Drawn, IconFamily, Instance, NAVY_WINDOW, PreparedItem, SharedNativeWindows, Tick, View, WINDOW, native, native_gui, update_item};
     use viewer_native_gui::test_support::gui::fixture;
     fn window_bytes() -> &'static [u8] {
         br#"guiTypes={containerWindowType={name=air_wing_counter size={width=58 height=27}

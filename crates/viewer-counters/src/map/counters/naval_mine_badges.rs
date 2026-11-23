@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, CounterInputs, CounterReport, DecodedFrame, Vision, native, tables, visible};
 use replay_data::rows::AirCountryRelationRow;
 use viewer_native_gui::native_gui::{self, lifecycle::Instance};
 use replay_derive::{naval_mine_levels::Levels, naval_region_control::raw_roster};
@@ -414,7 +414,7 @@ pub(super) fn relayout(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{enemy_sum, native_gui, positions, ratio};
     #[test]
     fn status_row_centers_only_visible_widths_in_native_order() {
         assert_eq!(

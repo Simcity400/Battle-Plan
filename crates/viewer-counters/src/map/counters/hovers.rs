@@ -1,5 +1,7 @@
 
-use super::*;
+use super::{ABILITY_WINDOW, Batch, CounterControl, CounterInputs, GUN_WINDOW, LAND_WINDOW, SpriteSheet, bar_placement, counter_status, land, native, sprites};
+#[cfg(test)]
+use super::{Arc, Child, ResolvedLayers, SpriteSet, draw_bar, templates};
 use viewer_native_gui::counter_hovers::gui_authored::Authored;
 #[cfg(test)]
 use viewer_runtime::geometry::contains;
@@ -463,7 +465,7 @@ fn control(element: &native::Element, railway_gun: bool) -> CounterControl {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Arc, Child, Frame, Hit, ResolvedLayers, SpriteSet, contains, draw_bar, land, native, presented, sprites, templates, test_tga_rgba8};
 
     #[test]
     fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {

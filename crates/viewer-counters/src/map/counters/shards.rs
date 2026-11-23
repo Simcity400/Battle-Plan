@@ -168,7 +168,7 @@ impl<K: Sharded + fmt::Debug, V: Clone + PartialEq + fmt::Debug> fmt::Debug for 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BTreeMap, Shards};
 
     #[test]
     fn a_change_copies_its_shard_alone_and_reads_as_the_whole_map() {

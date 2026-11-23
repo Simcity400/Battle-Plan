@@ -1,4 +1,4 @@
-use super::*;
+use super::{BTreeMap, DecodedFrame};
 
 pub(super) struct Sources<'a>(replay_derive::naval_repairs::Sources<'a>);
 impl<'a> Sources<'a> {
@@ -44,7 +44,7 @@ impl Capacity {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Capacity;
     #[test]
     fn repair_capacity_text_preserves_native_controls() {
         assert_eq!(

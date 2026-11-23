@@ -1,5 +1,5 @@
 
-use super::*;
+use super::{Arc, BTreeMap, gui_windows, native};
 use viewer_native_gui::counter_hovers::gui_authored::Authored;
 use viewer_native_gui::counter_hovers::task_force_port::{Control, Hover, Metadata};
 use viewer_native_gui::native_gui;
@@ -98,7 +98,7 @@ pub(super) fn presented(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Arc, BTreeMap, Control, Metadata, control, native, native_gui, presented};
 
     #[test]
     fn port_binder_excludes_unbound_supply_marker_counts_and_wrong_authored_kind() {

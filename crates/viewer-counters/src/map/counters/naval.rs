@@ -1,5 +1,8 @@
+use viewer_native_gui::native_windows::NAVAL_BASE_WINDOW;
 
-use super::*;
+use super::{Admission, Allegiance, Arc, BTreeMap, BTreeSet, CounterContent, CounterDefines, CounterFrame, CounterInputs, CounterTables, Countries, Cow, DecodedFrame, JoinRules, Level, MapData, MovementContent, NativeInputs, NavalBaseIcon, PriorityTable, ProvinceKind, Sight, Source, SourceUnit, StackKey, UnitKinds, Visibility, Vision, air_grid, counter_inputs, counter_move, counter_order, gui_windows, io, naval_members, naval_regional, naval_windows, rows, tables, type_tint};
+#[cfg(test)]
+use super::{CounterColorMode, CounterReport, DEFENDING, MAPICONS_GUI, MissionMemo, Preparation, PreparedCounters, TemplateIcons, Unit, hour_tables, native, prepare_cached, prepare_retained, unit_flag_owner};
 use viewer_native_gui::gui_resources::viewport;
 
 #[derive(Clone)]

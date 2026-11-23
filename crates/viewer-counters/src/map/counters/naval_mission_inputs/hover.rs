@@ -1,4 +1,7 @@
-use super::*;
+use replay_data::rows::{ModifierBreakdownNode, NavalMissionLedgerRow};
+use super::{BTreeMap, BTreeSet, Fact, HashMap, Hour, ModifierDefinitionRow, TokenError, data, derive, io, keys, naval_missions, tables};
+#[cfg(test)]
+use super::{CountryIntelRow, NativeInputs, native};
 use content_reader_localisation::{localisation::Argument, localisation::Localisation};
 use viewer_foundation::tooltip_text::{self, Tooltip};
 
@@ -646,7 +649,7 @@ fn escort_force(hour: &mut Hour<'_>, handle: u64, efficiency: i64, out: &mut Pre
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Localisation, Prepared, percent};
     #[test]
     fn efficiency_colour_uses_unclamped_value() {
         assert_eq!(percent(-1), "\u{11}R0%\u{11}!");

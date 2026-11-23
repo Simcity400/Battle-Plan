@@ -1,5 +1,5 @@
 
-use super::*;
+use super::{Arc, BTreeMap, CounterTables, DivisionStatus, HourTables, LandUnit, SHIP_IN_PORT, STANDSTILL, SharingUnknown, Sight, counter_action, counter_inputs, counter_move, counter_status, type_tint, unit_flag_owner};
 use viewer_unit_reads::counter_inputs::OrderFacts;
 use content_reader_core::movement::MovementMap;
 

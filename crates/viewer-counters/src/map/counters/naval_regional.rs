@@ -1,4 +1,4 @@
-use super::*;
+use super::{Allegiance, Arc, BTreeMap, BTreeSet, CounterFrame, CounterInputs, CounterReport, Countries, Cow, DecodedFrame, NavalContext, NavalRegionalControl, NavalRegionalHover, NavalSources, NavalUnit, PriorityTable, Sight, Unit, Vision, counter_inputs, gui_windows, io, native, naval, naval_markers, naval_mine_badges, naval_missions, naval_windows, tables, visible};
 struct RaidingGrid<'a> {
     active: u8,
     row: &'a replay_data::rows::NavalMissionTaskForceRow,
@@ -781,7 +781,9 @@ pub(super) fn control_hovers(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        Allegiance, RaidingGrid, SortKey, allegiance_break, assigned, compare, raiding_visible, searched,
+    };
     #[test]
     fn regional_raider_admission_keeps_native_or_and_demand_gates() {
         let mut row = replay_data::rows::NavalMissionTaskForceRow {

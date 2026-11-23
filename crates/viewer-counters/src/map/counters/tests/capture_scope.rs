@@ -1,5 +1,7 @@
 
-use super::*;
+use super::{
+    Arc, BTreeMap, Choice, MissionMemo, Vision, action_gui, hour_tables, land, prepare_cached, tables, type_tint, with_counter_inputs_fixture,
+};
 use replay_data::rows::TableId;
 use viewer_foundation::test_support::{
     assert_reads_recorded,

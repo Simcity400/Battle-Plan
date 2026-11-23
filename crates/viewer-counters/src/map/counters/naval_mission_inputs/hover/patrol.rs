@@ -1,4 +1,7 @@
-use super::*;
+use replay_data::rows::{NavalMissionLedgerRow, NavalPatrolMissionInputRow};
+use super::{BTreeMap, Fact, Hour, Prepared, Value, data, derive, io, keys, name, tables};
+#[cfg(test)]
+use super::{NativeInputs, Op};
 use viewer_unit_reads::counter_order;
 use replay_derive::{directed_wars, naval_region_control};
 use viewer_foundation::visibility::Relations;
@@ -562,7 +565,8 @@ pub(super) fn prepare(hour: &mut Hour<'_>, ledger: &NavalMissionLedgerRow, out: 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use replay_data::rows::{NavalMissionLedgerRow, NavalPatrolMissionInputRow, RadarCoverageRow, Recorded, TableId, TableRows, TaskForceCounterInputRow, TaskForceRow};
+    use super::{Breakdown, NativeInputs, ONE, Op, Prepared, REFUSED, Value, prepare, printed, radar_counts, saturate};
     #[test]
     fn progress_display_preserves_native_wrapping_and_guard() {
         assert_eq!(printed(100_000), 1000);

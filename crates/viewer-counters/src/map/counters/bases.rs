@@ -1,5 +1,9 @@
+use viewer_native_gui::native_windows::STRATEGIC_LOCATION_WINDOW;
+use super::FACILITY_SPRITE_PREFIX;
 
-use super::*;
+use super::{AIR_BASE_WINDOW, Arc, Available, BTreeMap, BTreeSet, CounterContent, CounterFrame, CounterInputs, CounterReport, DecodedFrame, Defines, GUN_EMPLACEMENT_WINDOW, HourTables, MapData, ProvinceKind, RADAR_WINDOW, ROCKET_SITE_WINDOW, STANDSTILL, Shards, VICTORY_POINT, Vision, air_grid, air_volunteers, base_windows, building_facts, core, counter_order, invalid, io, naval_repairs, positions, rows, tables};
+#[cfg(test)]
+use super::{Kinds, Layered, MissionMemo, Preparation, hour_tables, type_tint};
 use content_reader_core::{buildings::BuildingType, buildings::Buildings, buildings::SpawnPoint};
 use replay_data::{rows::BuildingRow, rows::ProvinceRow};
 use viewer_gpu::province_map::ProvinceMap;

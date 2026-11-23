@@ -1,3 +1,5 @@
+use super::NAVAL_COMBAT_WINDOW;
+use viewer_unit_reads::counter_order;
 use super::super::gui_windows::{BG_FRAME, FRAME_BTN, GRIDS, PROGRESS};
 
 #[test]
@@ -368,7 +370,7 @@ fn a_naval_icon_kept_off_screen_asks_only_while_its_province_will_be_cleaned() {
         assert_eq!(keeps_asking(off_screen, cleans), asks, "off screen {off_screen}, cleans {cleans}");
     }
 }
-use super::*;
+use super::{Admission, Arc, BTreeMap, BaseDue, BaseInputs, BaseWritten, COMBAT_KEPT, COUNTER_SOURCE_UNRECORDED, CombatIcon, CombatOwner, CombatPass, CounterColorMode, CounterReport, CounterSettings, Countries, Cow, Forces, GROWTH_FRAME, GridFill, IconSlot, Instance, ItemKey, ItemPool, Level, Marked, NAVAL_BASE_WINDOW, NativeWindows, PLACE, Pool, Registered, ResultPass, Schedule, SlotId, TRANSITION, Tick, Windows, adopt_countries, allocate, base_due, base_items, combat_owners, combat_parts, combat_resolves, counter_window, fill_grids_in, fill_ports, frame, gui_windows, held_presentation, keeps_asking, kept_frame, land, native, native_gui, naval, naval_markers, planned_update, port_parts, result_empty, result_owners, settle_counters, skipped_counter, tick, transition_unknown, undecided_results, unknown_items, update_combat, update_item, update_or_withhold, visible_layout_kept};
 use std::collections::BTreeSet;
 use viewer_runtime::geometry::contains;
 use viewer_native_gui::icon_windows::{GUI_DELTA_CLAMP, visible_layout};

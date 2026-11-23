@@ -1,5 +1,8 @@
+use viewer_native_gui::native_windows::NAVAL_COMBAT_WINDOW;
 
-use super::*;
+use super::{Allegiance, Arc, Available, BTreeMap, BTreeSet, CounterColorMode, CounterDefines, CounterFrame, CounterInputs, CounterReport, Countries, Cow, DecodedFrame, Flotilla, HourTables, NavalContext, NavalSources, NavalUnit, ProvinceKind, SHIP_IN_PORT, STANDSTILL, Sight, Vision, allegiance, coarse, gui_windows, io, native, naval_windows, rows, tables, visible};
+#[cfg(test)]
+use super::{NativeInputs, UiColors, layer, sprites};
 use replay_data::{
     rows::NavalCombatDetailsRow, rows::NavalProvinceCombatRow,
     rows::NavalResultRow,

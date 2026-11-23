@@ -15,7 +15,7 @@ use viewer_gpu::province_schedule::Update;
 #[cfg(test)]
 use viewer_native_gui::test_support::gui as test_support_gui;
 
-use super::*;
+use super::{Admission, Arc, Available, BTreeMap, BTreeSet, Batch, CounterContent, CounterFrame, CounterInputs, CounterReport, Countries, DecodedFrame, gui_windows, io, layer, native, rows, tables};
 use viewer_native_gui::native_gui;
 
 const COUNT: &str = "count";
@@ -484,7 +484,7 @@ impl PreparedPins {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{BTreeMap, BTreeSet, COUNT, FACTION_ICON, FACTION_PING_WINDOW, FactionTheatreRow, PinReport, Schedule, Update, hover_rect, native, native_gui, refresh, region_icon_position, region_listed, shown, test_support_gui, theatre_anchor, unwrap};
 
     #[test]
     fn region_owner_lingers_through_cleanup_frame_then_erases_at_still_camera() {

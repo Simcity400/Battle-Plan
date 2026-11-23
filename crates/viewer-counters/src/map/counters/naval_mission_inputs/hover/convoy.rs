@@ -1,4 +1,7 @@
-use super::*;
+use replay_data::rows::{ClockState, NavalMissionLedgerRow, NavalMissionTaskForceRow};
+use super::{Fact, HashMap, Hour, Prepared, TokenError, Value, data, derive, io, keys, patrol, tables};
+#[cfg(test)]
+use super::{CountryIntelRow, Localisation, NativeInputs};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Defines {
@@ -733,7 +736,8 @@ pub(super) fn append(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use replay_data::rows::{CountryCounterInputRow, TableId, TableRows};
+    use super::{CountryIntelRow, Defines, Inputs, Localisation, NativeInputs, Prepared, Speed, append, daily, decryption, decryption_value, speed};
     #[test]
     fn aliased_intel_owners_use_current_ids_and_canonical_target_slots() {
         use crate::map::counters::naval_mission_inputs::tests as fixture;
