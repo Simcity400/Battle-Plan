@@ -33,6 +33,7 @@ struct Inner {
     generation: u64,
     status: HostStatus,
     bounds: Option<ViewBounds>,
+    holes: Vec<ViewBounds>,
     pending: Pending,
     requested_path: Option<String>,
     requested_revision: Option<String>,
@@ -69,9 +70,29 @@ impl Inner {
         }
         for command in self.pending.take_commands(visible) {
             if !map.send(command) {
-                break;
+                self.pending.hole_waiters.clear();
+                return;
             }
         }
+        if let Some(rects) = self.pending.holes.take() {
+            let waiting = std::mem::take(&mut self.pending.hole_waiters);
+            let applied = Box::new(move || waiting.into_iter().for_each(|waiter| { let _ = waiter.send(()); }));
+            map.send(viewer::host::Command::Holes(viewer::host::Holes { rects, applied }));
+        }
+    }
+
+    fn set_holes(&mut self, holes: Vec<ViewBounds>) -> Result<Option<tokio::sync::oneshot::Receiver<()>>, String> {
+        dashboard_core::protocol::validate_map_holes(&holes).map_err(str::to_owned)?;
+        let shown = self.map.is_some() && self.status.ready && self.status.visible;
+        self.holes.clone_from(&holes);
+        self.pending.holes = Some(holes);
+        let answered = shown.then(|| {
+            let (applied, answered) = tokio::sync::oneshot::channel();
+            self.pending.hole_waiters.push(applied);
+            answered
+        });
+        self.flush();
+        Ok(answered)
     }
 
     fn ask_export(&mut self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {
@@ -242,6 +263,10 @@ impl NativeHost {
             .unwrap_or_else(|e| e.into_inner())
             .status
             .clone()
+    }
+
+    pub fn set_holes(&self, holes: Vec<ViewBounds>) -> Result<Option<tokio::sync::oneshot::Receiver<()>>, String> {
+        self.shared.lock().map_err(|e| e.to_string())?.set_holes(holes)
     }
 
     pub fn export(&self, path: String, view_id: Option<String>) -> Result<tokio::sync::oneshot::Receiver<viewer::host::Answer>, String> {

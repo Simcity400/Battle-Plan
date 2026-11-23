@@ -56,8 +56,7 @@ export default function MapWidget({ widget, runtime, mapOptions }: WidgetProps) 
       <div className="dash-map-placeholder" role={state?.error ? undefined : 'status'}>{state?.error
         ? <WidgetState kind="error" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />
         : <><span className="empty-icon">{preparing ? <span className="spinner" /> : <Icon name="map" />}</span>
-        <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden ? 'Map hidden for layout controls'
-          : hidden ? 'Map hidden while a menu is open'
+        <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden || hidden ? 'Map hidden for layout controls'
           : !track ? 'Load a campaign' : !desired ? 'No map at this time' : matched || framed ? 'Campaign map' : 'Preparing this map…'}</strong>
         <p>{nativeUnavailable ? 'Open a recording in the desktop app to explore its campaign map.'
           : !desired && track ? 'Choose another time.' : null}</p></>}

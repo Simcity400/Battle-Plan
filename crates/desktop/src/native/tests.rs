@@ -18,6 +18,22 @@ fn resized_commands_coalesce_and_close_takes_priority() {
 }
 
 #[test]
+fn popover_holes_wait_only_for_a_shown_map_and_follow_a_restart() {
+    let hole = ViewBounds { x: 10, y: 20, width: 300, height: 200 };
+    let mut inner = Inner { status: HostStatus { ready: true, visible: true, ..Default::default() }, ..Default::default() };
+    assert!(inner.set_holes(vec![hole]).unwrap().is_none(), "no running map has nothing to wait for");
+    assert!(inner.pending.hole_waiters.is_empty());
+    assert!(inner.set_holes(vec![ViewBounds { width: 0, ..hole }]).is_err());
+    inner.pending.holes = None;
+    inner.restore_commands();
+    assert_eq!(inner.pending.holes, Some(vec![hole]), "a restarted map gets the open popovers' holes");
+    inner.set_holes(Vec::new()).unwrap();
+    inner.pending.holes = None;
+    inner.restore_commands();
+    assert_eq!(inner.pending.holes, None);
+}
+
+#[test]
 fn unload_forgets_only_its_recording_and_cannot_restore_it_after_restart() {
     let mut inner = Inner {
         requested_path: Some("A".into()),

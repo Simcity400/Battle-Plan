@@ -76,6 +76,11 @@ export function setMapView(view: MapView): Promise<void> {
   return invoke<void>('set_map_view', { visible: view.visible, bounds: view.bounds });
 }
 
+export function setMapHoles(holes: MapBounds[]): Promise<void> {
+  requireDesktop();
+  return invoke<void>('set_map_holes', { holes });
+}
+
 export function selectNativeView(dashboard: boolean): Promise<void> {
   if (!desktopAvailable) return Promise.resolve();
   return invoke<void>('select_native_view', { dashboard });
