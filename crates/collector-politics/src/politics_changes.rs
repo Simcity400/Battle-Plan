@@ -439,6 +439,7 @@ impl Log {
     fn consumed_frontier(&self) -> u64 {
         self.base_cursor.load(Ordering::Acquire) + self.consumed.load(Ordering::Acquire)
     }
+    #[cfg(test)]
     fn spill_pending(&self) -> usize {
         let spill = self
             .spill
@@ -757,6 +758,7 @@ pub unsafe fn release() {
     LOGS.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
+    #[cfg(test)]
     CONSERVATION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2869,54 +2871,158 @@ pub fn refusals() -> impl serde::Serialize {
         "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
     })
 }
-struct Status {
-    counters: [u64; 13],
+#[cfg(test)]
+const INLINE_LANE_SNAPSHOT: usize = 256;
+
+#[cfg(test)]
+enum LaneSnapshot {
+    Inline {
+        values: [usize; INLINE_LANE_SNAPSHOT],
+        len: usize,
+    },
+    Spilled(Vec<usize>),
 }
-impl serde::Serialize for Status {
+
+#[cfg(test)]
+impl LaneSnapshot {
+    fn collect(values: impl ExactSizeIterator<Item = usize>) -> Self {
+        let len = values.len();
+        if len <= INLINE_LANE_SNAPSHOT {
+            let mut buffer = [0usize; INLINE_LANE_SNAPSHOT];
+            for (slot, value) in buffer.iter_mut().zip(values) {
+                *slot = value;
+            }
+            Self::Inline {
+                values: buffer,
+                len,
+            }
+        } else {
+            Self::Spilled(values.collect())
+        }
+    }
+}
+
+#[cfg(test)]
+impl serde::Serialize for LaneSnapshot {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let slice = match self {
+            Self::Inline { values, len } => &values[..*len],
+            Self::Spilled(values) => values.as_slice(),
+        };
+        slice.serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+struct ActiveStatus {
+    events: u64,
+    spill_pending: usize,
+    required_entries_per_lane: LaneSnapshot,
+    staging_entries_per_lane: LaneSnapshot,
+    staging_entries: usize,
+    staging_threads: usize,
+    shared_lane_entries: usize,
+    required_shared_lane_entries: usize,
+    staging_key_stride: usize,
+}
+
+#[cfg(test)]
+fn status() -> impl serde::Serialize {
+    let (counters, epoch, failures, unlisted_failures, required_keys, active) = {
         let retained = LOGS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let counters = COUNTERS
+            .each_ref()
+            .map(|value| value.load(Ordering::Relaxed));
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        let failures = FAILURES
+            .each_ref()
+            .map(|count| count.load(Ordering::Relaxed));
+        let unlisted_failures = UNLISTED_FAILURES.load(Ordering::Relaxed);
+        let required_keys = REQUIRED_KEYS.load(Ordering::Relaxed);
         let pointer = LOG.load(Ordering::Acquire) as *const Log;
         let active = retained
             .iter()
             .flat_map(|batch| batch.iter())
-            .find(|log| std::ptr::eq(*log, pointer));
-        let counters = self.counters;
-        crate::status::status!({
-            "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
-            "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
-            "epoch": EPOCH.load(Ordering::SeqCst), "events": active.map(Log::frontier),
-            "spilled_records": counters[1], "sentinel_failures": counters[2],
-            "spill_pending": active.map(Log::spill_pending),
-            "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
-            "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
-            "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
-            "failed_native_reads": counters[3], "missing_item_identities": counters[4],
-            "required_entries_per_lane": active.map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.required_entries.load(Ordering::Relaxed)))),
-            "staging_entries_per_lane": active.map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.slots.len()))),
-            "required_key_bytes": REQUIRED_KEYS.load(Ordering::Relaxed),
-            "staging_entries": active.map(|log| log.entries),
-            "staging_threads": active.map(|log| log.lanes.len()),
-            "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
-            "shared_lane_entries": active.map(|log| log.shared.len()),
-            "required_shared_lane_entries": active.map(|log| log.shared.required_entries()),
-            "staging_key_stride": active.map(|log| log.key_stride),
-            "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
-            "staging_allocation_failures": counters[10],
-            "staging_error": (counters[10] != 0).then_some("politics staging allocation failed"),
-            "short_handoffs": counters[6], "daily_decomposition_failures":counters[7],
-            "conservation": conservation_status(), "government_endpoint_mismatches":counters[5],
-        })
-        .serialize(serializer)
-    }
+            .find(|log| std::ptr::eq(*log, pointer))
+            .map(|log| ActiveStatus {
+                events: log.frontier(),
+                spill_pending: log.spill_pending(),
+                required_entries_per_lane: LaneSnapshot::collect(
+                    log.lanes
+                        .iter()
+                        .map(|lane| lane.required_entries.load(Ordering::Relaxed)),
+                ),
+                staging_entries_per_lane: LaneSnapshot::collect(
+                    log.lanes.iter().map(|lane| lane.slots.len()),
+                ),
+                staging_entries: log.entries,
+                staging_threads: log.lanes.len(),
+                shared_lane_entries: log.shared.len(),
+                required_shared_lane_entries: log.shared.required_entries(),
+                staging_key_stride: log.key_stride,
+            });
+        (
+            counters,
+            epoch,
+            failures,
+            unlisted_failures,
+            required_keys,
+            active,
+        )
+    };
+    let (
+        events,
+        spill_pending,
+        required_entries_per_lane,
+        staging_entries_per_lane,
+        staging_entries,
+        staging_threads,
+        shared_lane_entries,
+        required_shared_lane_entries,
+        staging_key_stride,
+    ) = match active {
+        Some(active) => (
+            Some(active.events),
+            Some(active.spill_pending),
+            Some(active.required_entries_per_lane),
+            Some(active.staging_entries_per_lane),
+            Some(active.staging_entries),
+            Some(active.staging_threads),
+            Some(active.shared_lane_entries),
+            Some(active.required_shared_lane_entries),
+            Some(active.staging_key_stride),
+        ),
+        None => (None, None, None, None, None, None, None, None, None),
+    };
+    crate::status::status!({
+        "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
+        "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
+        "epoch": epoch, "events": events,
+        "spilled_records": counters[1], "sentinel_failures": counters[2],
+        "spill_pending": spill_pending,
+        "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(failures).filter(|(_, count)| *count != 0)),
+        "first_unlisted_native_read_reason": UNLISTED_FAILURE.get(),
+        "unlisted_native_read_reasons": unlisted_failures,
+        "failed_native_reads": counters[3], "missing_item_identities": counters[4],
+        "required_entries_per_lane": required_entries_per_lane,
+        "staging_entries_per_lane": staging_entries_per_lane,
+        "required_key_bytes": required_keys,
+        "staging_entries": staging_entries,
+        "staging_threads": staging_threads,
+        "shared_lane_threads": counters[11], "shared_lane_full": counters[12],
+        "shared_lane_entries": shared_lane_entries,
+        "required_shared_lane_entries": required_shared_lane_entries,
+        "staging_key_stride": staging_key_stride,
+        "observer_timing": "offline and matched live run; no per-detour clock instrumentation",
+        "staging_allocation_failures": counters[10],
+        "staging_error": (counters[10] != 0).then_some("politics staging allocation failed"),
+        "short_handoffs": counters[6], "daily_decomposition_failures": counters[7],
+        "conservation": conservation_status(), "government_endpoint_mismatches": counters[5],
+    })
 }
-pub fn status() -> impl serde::Serialize {
-    let counters = COUNTERS
-        .each_ref()
-        .map(|value| value.load(Ordering::Relaxed));
-    Status { counters }
-}
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct ConservationExample {
     country: u32,
@@ -2924,6 +3030,7 @@ struct ConservationExample {
     currency: PowerCurrency,
     amount: i128,
 }
+#[cfg(test)]
 #[derive(Clone, Copy, Default)]
 struct Conservation {
     counts: [u64; 2],
@@ -2931,6 +3038,7 @@ struct Conservation {
     absolute_amounts: [u128; 2],
     examples: [Option<ConservationExample>; 16],
 }
+#[cfg(test)]
 static CONSERVATION: Mutex<Conservation> = Mutex::new(Conservation {
     counts: [0; 2],
     amounts: [0; 2],
@@ -2938,33 +3046,39 @@ static CONSERVATION: Mutex<Conservation> = Mutex::new(Conservation {
     examples: [None; 16],
 });
 pub fn mismatch(country: u32, hour: i32, currency: PowerCurrency, amount: i128) {
-    let mut metrics = CONSERVATION
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let index = currency as usize;
-    metrics.counts[index] += 1;
-    metrics.amounts[index] += amount;
-    metrics.absolute_amounts[index] += amount.unsigned_abs();
-    if metrics
-        .examples
-        .iter()
-        .flatten()
-        .filter(|example| example.currency == currency)
-        .count()
-        < 8
-        && let Some(example) = metrics
-            .examples
-            .iter_mut()
-            .find(|example| example.is_none())
+    #[cfg(not(test))]
+    let _ = (country, hour, currency, amount);
+    #[cfg(test)]
     {
-        *example = Some(ConservationExample {
-            country,
-            hour,
-            currency,
-            amount,
-        });
+        let mut metrics = CONSERVATION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = currency as usize;
+        metrics.counts[index] += 1;
+        metrics.amounts[index] += amount;
+        metrics.absolute_amounts[index] += amount.unsigned_abs();
+        if metrics
+            .examples
+            .iter()
+            .flatten()
+            .filter(|example| example.currency == currency)
+            .count()
+            < 8
+            && let Some(example) = metrics
+                .examples
+                .iter_mut()
+                .find(|example| example.is_none())
+        {
+            *example = Some(ConservationExample {
+                country,
+                hour,
+                currency,
+                amount,
+            });
+        }
     }
 }
+#[cfg(test)]
 fn conservation_status() -> impl serde::Serialize {
     use crate::status::{DebugValue, DisplayValue, sequence, status};
     let metrics = *CONSERVATION
@@ -4885,12 +4999,33 @@ mod tests {
             .unwrap();
         let epoch_before = EPOCH.load(Ordering::SeqCst);
         let failures_before = COUNTERS[10].load(Ordering::Relaxed);
+        struct LockCheckingWriter<'a> {
+            cursor: std::io::Cursor<&'a mut [u8]>,
+            writes: usize,
+        }
+        impl std::io::Write for LockCheckingWriter<'_> {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                assert!(LOGS.try_lock().is_ok());
+                self.writes += 1;
+                self.cursor.write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                assert!(LOGS.try_lock().is_ok());
+                self.cursor.flush()
+            }
+        }
         let mut scratch = [0u8; 8192];
-        let written = collector_test_support::with_allocations_denied(|| {
-            let mut cursor = std::io::Cursor::new(&mut scratch[..]);
-            serde_json::to_writer(&mut cursor, &status()).unwrap();
-            cursor.position() as usize
+        let (written, writes) = collector_test_support::with_allocations_denied(|| {
+            let snapshot = status();
+            assert!(LOGS.try_lock().is_ok());
+            let mut writer = LockCheckingWriter {
+                cursor: std::io::Cursor::new(&mut scratch[..]),
+                writes: 0,
+            };
+            serde_json::to_writer(&mut writer, &snapshot).unwrap();
+            (writer.cursor.position() as usize, writer.writes)
         });
+        assert!(writes > 0);
         assert_eq!(active.pushed.len(), 1);
         assert_eq!(EPOCH.load(Ordering::SeqCst), epoch_before);
         assert_eq!(COUNTERS[10].load(Ordering::Relaxed), failures_before);

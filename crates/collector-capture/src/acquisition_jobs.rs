@@ -1344,7 +1344,9 @@ fn run_with_memory(
         ),
         Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
         Job::EventFeedSeal(feed) => {
-            // SAFETY: Admitted hourly capture worker owns sealing this prepared event-feed interval.
+            // SAFETY: Admitted hourly capture worker is the sole consumer for this frame with
+            // teardown excluded; a live event-feed owner exists whenever `feed` holds a prepared
+            // interval (otherwise `seal` is a no-op preserving the refusal).
             unsafe { feed.seal() };
             Report::EventFeedSeal
         }

@@ -74,11 +74,14 @@ impl Captured {
         }
     }
     /// # Safety
-    /// Caller must hold hourly capture ownership as the sole consumer sealing this frame's
-    /// prepared event-feed interval while observer storage stays live.
+    /// Caller must hold hourly capture ownership as the sole consumer for this frame with teardown
+    /// excluded (or own an isolated test fixture); a live event-feed observer owner is required
+    /// only when this frame holds a prepared interval (`self.prepared.is_some()`), otherwise
+    /// `seal` is a no-op preserving any refused state.
     pub unsafe fn seal(&mut self) {
         if let Some((hour, partial)) = self.prepared {
-            // SAFETY: Caller holds hourly capture ownership for sealing this event-feed interval.
+            // SAFETY: `self.prepared` is `Some`, so the caller guarantees hourly ownership,
+            // exclusion of teardown, and a live event-feed observer owner for sealing.
             unsafe {
                 collector_observers::event_feed_observer::seal(&mut self.snapshot, hour, partial);
             }
