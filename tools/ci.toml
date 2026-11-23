@@ -115,6 +115,7 @@ group = "windows"
 tier = "check"
 toolchain = "rust"
 inputs = ["Cargo.toml", "Cargo.lock", "crates/*/Cargo.toml", "vendor/*/Cargo.toml", "tools/check-feature-unification.py"]
+ci-only = true
 command = ["{python}", "tools/check-feature-unification.py"]
 
 [[job]]
@@ -190,7 +191,7 @@ dependents = false
 shared = ["tools/check-clippy.py"]
 command = ["{python}", "tools/check-clippy.py", "--against", "{base}", "--", "cargo", "clippy", "--all-targets", "--keep-going", "--no-deps", "{packages}"]
 ci-only = true
-shards = 2
+shards = 1
 warm = ["cargo", "clippy", "--workspace", "--all-targets", "--keep-going", "--no-deps"]
 
 [[job]]

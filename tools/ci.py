@@ -1,8 +1,8 @@
 """Plan and run the jobs in tools/ci.toml (Python 3.11+).
 
 usage: python tools/ci.py check [--base REF]
-       python tools/ci.py changes --tier TIER --base REF [--exact-base] [--github-output FILE]
-       python tools/ci.py job --tier TIER --group GROUP --jobs NAMES --base REF [--exact-base] [--shard AT/COUNT]
+       python tools/ci.py changes --tier TIER --base REF [--exact-base] [--everything] [--github-output FILE]
+       python tools/ci.py job --tier TIER --group GROUP --jobs NAMES --base REF [--exact-base] [--everything] [--shard AT/COUNT]
        python tools/ci.py times --target DIR
        python tools/ci.py warm --job NAME --target DIR
        python tools/ci.py weights --timings HTML --junit XML [--out FILE]
@@ -337,15 +337,17 @@ def split_crates(crates, names, weights, dirty, most):
 class Context:
     """What a plan decides from: the files as they are, the paths changed since the base, the
     workspace crates (None when the manifests could not be read), the pipeline, each job's
-    definition at the base (None when the base has no readable pipeline, so every job runs), and
-    whether the tier runs every job across everything it covers, whatever changed (a push to
-    main)."""
+    definition at the base (None when the base has no readable pipeline, so every job runs),
+    whether the run takes every job across everything it covers, whatever changed (main's nightly,
+    or a push to main with no green main commit to compare with), and whether a crates job takes
+    every crate above a changed one rather than its direct dependents (a push to main)."""
     tree: set
     changed: set
     crates: dict | None
     pipeline: Pipeline
     definitions: dict | None = None
     everything: bool = False
+    transitive: bool = False
 
 
 @dataclass
@@ -398,10 +400,11 @@ def decide_inputs(job, ctx):
 def decide_crates(job, ctx):
     """The changed crates and, unless the job says `dependents = false` (Clippy: a dependent's
     lints cannot change when its own source did not, and the tests compile it), their direct
-    dependents; the workspace when the change is wide, or on a tier that runs everything, naming
-    the crates that lie beyond a pull request's scope. The crates a restored cache must rebuild
-    are dirty: every crate when a toolchain file changed, or the changed crates and those above
-    them."""
+    dependents, or on a transitive run every crate whose library builds on a changed one and
+    every crate whose tests use one of those; the workspace when the change is wide, or on a run
+    of everything; and the crates it takes that a pull request's scope leaves out. The crates a
+    restored cache must rebuild are dirty: every crate when a toolchain file changed, or the
+    changed crates and those above them."""
     wide = widened(ctx, job)
     if ctx.crates is None:
         rust = wide or ctx.everything or any(path.startswith("crates/") for path in ctx.changed)
@@ -411,15 +414,18 @@ def decide_crates(job, ctx):
     changed = {owner(path) for path in ctx.changed} - {None}
     dependents = {crate.name for crate in crates.values() if crate.deps & changed} if job.dependents else set()
     toolchain = matcher(ctx.pipeline.toolchains[job.toolchain])
-    dirty = frozenset(crates) if any(toolchain(path) for path in ctx.changed) else frozenset(dependents_closure(crates, changed))
-    selected = set(crates) if wide else changed | dependents
+    built = dependents_closure(crates, changed)
+    dirty = frozenset(crates) if any(toolchain(path) for path in ctx.changed) else frozenset(built)
+    reach = built | {crate.name for crate in crates.values() if crate.deps & built} if ctx.transitive and job.dependents else changed | dependents
+    selected = set(crates) if wide else reach
     if not selected and not ctx.everything:
         return Decision(job, "skipped", "no crate changed since the base")
-    beyond = [] if wide or not ctx.everything else sorted(set(crates) - selected)
     if ctx.everything:
-        selected, wide = set(crates), True
-    detail = f"{len(selected)} crates" + (f" (workspace-wide; {len(beyond)} beyond a pull request's scope)" if beyond
-                                          else " (workspace-wide)" if wide else "")
+        selected = set(crates)
+    beyond = [] if wide else sorted(selected - changed - dependents)
+    wide = wide or ctx.everything
+    notes = (["workspace-wide"] if wide else []) + ([f"{len(beyond)} beyond a pull request's scope"] if beyond else [])
+    detail = f"{len(selected)} crates" + (f" ({'; '.join(notes)})" if notes else "")
     names = sorted(selected)
     arguments = ["--workspace"] if wide else [arg for name in names for arg in ("-p", name)]
     return Decision(job, "run", detail, arguments, crates=names, beyond=beyond, dirty=dirty)
@@ -704,10 +710,11 @@ def ratchet_base(base):
     return git("rev-parse", "--verify", "--quiet", "HEAD^1", check=False).strip() or None
 
 
-def plan(tier, base_ref, exact=False):
+def plan(tier, base_ref, exact=False, everything=False):
     """The decisions for a tier against the merge base with `base_ref`, or against `base_ref`
-    itself when `exact` (a push compares with the tip it replaced, which a force-push may have
-    dropped), from the files alone."""
+    itself when `exact` (main compares with its last green commit, which a force-push may have
+    dropped), from the files alone; a tier after the first takes every crate above a changed one,
+    and `everything` takes every job across everything it covers."""
     pipeline = load_pipeline(PIPELINE.read_text(encoding="utf-8"))
     if tier not in pipeline.tiers:
         sys.exit(f"tools/ci.toml has no tier {tier!r}")
@@ -721,7 +728,7 @@ def plan(tier, base_ref, exact=False):
               "npm": shutil.which("npm.cmd") or shutil.which("npm") or "npm", "base": ratchet_base(base) or base}
     needs_crates = any(job.kind == "crates" for job in pipeline.jobs)
     ctx = Context(read_tree(), changed_since(base), crates_from_manifests(ROOT) if needs_crates else {}, pipeline,
-                  definitions_at(base), everything=tier != pipeline.tiers[0])
+                  definitions_at(base), everything=everything, transitive=tier != pipeline.tiers[0])
     decisions = [decide(job, ctx, tier) for job in pipeline.jobs]
     if not ratchet_base(base):
         decisions = [Decision(d.job, "not run", f"no commit to ratchet against: {base} is not one and HEAD has no parent")
@@ -783,7 +790,7 @@ def matrix_legs(pipeline, decisions, crates, table):
 
 def changes(args):
     """The workflow's `changes` job: each job's gate, and the matrix of legs."""
-    pipeline, _, decisions, base = plan(args.tier, args.base, exact=args.exact_base)
+    pipeline, _, decisions, base = plan(args.tier, args.base, exact=args.exact_base, everything=args.everything)
     for decision in decisions:
         print(f"  {decision.state:8} {decision.job.name:22} {decision.job.group:8} {decision.detail}")
     sharded = any(d.state == "run" and d.job.shards for d in decisions)
@@ -830,7 +837,7 @@ def take_shard(decisions, shard, crates, table):
 def job_group(args):
     """The workflow's matrix leg: runs the jobs of one group that `changes` gated in, or one
     runner's share of a sharded job."""
-    pipeline, values, decisions, _ = plan(args.tier, args.base, exact=args.exact_base)
+    pipeline, values, decisions, _ = plan(args.tier, args.base, exact=args.exact_base, everything=args.everything)
     if args.group not in pipeline.groups:
         sys.exit(f"tools/ci.toml has no group {args.group!r}")
     planned = args.jobs.split()
@@ -1049,12 +1056,14 @@ def main(argv=None):
     gating.add_argument("--base", required=True, metavar="REF")
     gating.add_argument("--github-output", metavar="FILE")
     gating.add_argument("--exact-base", action="store_true", help="compare with the base itself, not the merge base")
+    gating.add_argument("--everything", action="store_true", help="run every job across everything it covers, whatever changed")
     grouped = commands.add_parser("job", help="run one leg's jobs, as the workflow does")
     grouped.add_argument("--tier", default="check")
     grouped.add_argument("--group", required=True)
     grouped.add_argument("--jobs", required=True, help="the job names `changes` planned for this leg, space-separated")
     grouped.add_argument("--base", required=True, metavar="REF")
     grouped.add_argument("--exact-base", action="store_true", help="compare with the base itself, not the merge base")
+    grouped.add_argument("--everything", action="store_true", help="run every job across everything it covers, whatever changed")
     grouped.add_argument("--shard", default="", metavar="AT/COUNT", help="run this runner's share of the one sharded job planned")
     timing = commands.add_parser("times", help="set file times for a target folder restored from a cache")
     timing.add_argument("--target", required=True)

@@ -3,7 +3,7 @@ run-name: Release ${{ inputs.channel || 'nightly' }}${{ inputs.draft && ' (dry r
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "41 * * * *"
   workflow_dispatch:
     inputs:
       channel:
