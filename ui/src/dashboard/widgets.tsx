@@ -27,7 +27,7 @@ export function WidgetBody({ widget, runtime, active = true, mapOptions, headerS
   const playing = useSyncExternalStore(runtime.clock.subscribe, readPlaying, readPlaying);
   const time = useRegionScope(runtime, useRegion(resolved));
   if (unavailable || !definition || !Render) return <WidgetState kind="unavailable" message={unavailable ?? 'Widget renderer unavailable.'} />;
-  if (!MEASURE_UNGATED && playing && !definition.playsBackDated) return <div className="widget-state dash-empty" data-state="empty" role="status"><span className="widget-state-title">{widget.title} isn’t playing back yet.</span></div>;
+  if (!MEASURE_UNGATED && playing && !definition.playsBackDated) return <div className="widget-state dash-empty" data-state="placeholder" data-playback-placeholder="" role="status"><span className="widget-state-title">{widget.title} isn’t playing back yet.</span></div>;
   const scopedTrack = runtime.tracks.filter(track => resolved.trackIds.includes(track.id))
     .find(track => scopeReason(definition, track.source.metadata.captureMode) !== null);
   if (scopedTrack) return <WidgetState kind="unavailable" cause={{ kind: 'capture-mode', mode: scopedTrack.source.metadata.captureMode }} />;

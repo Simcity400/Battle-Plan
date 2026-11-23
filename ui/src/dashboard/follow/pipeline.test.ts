@@ -6,6 +6,9 @@ import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
 import type { PageSurface } from './page.ts';
 import type { LaneView } from '../../draw/lane';
+import { installedEntry } from './store.ts';
+import { classifyFailure, ShownError } from '../queryError.ts';
+import { followFailure } from './useFollow.ts';
 
 const surface = (): PageSurface<ImageBitmap> & { cleared: number } => ({ cleared: 0, install() {}, clear() { this.cleared++; } });
 
@@ -392,4 +395,47 @@ test('transport or host errors on open or follow stay retryable failures distinc
     asked.send(message(10, [{ id: failedSub, answer: { keys: [1n], columns: 1, values: [4n] } }], false, NATIVE, asked.clock.getSnapshot().seekSequence));
     assert.ok(await asked.settle(() => asked.pipeline.view(failedId)?.mode === 'picture'));
   } finally { asked.close(); }
+
+  let clockAttempts = 0;
+  const clockFail = inProcess({
+    followClock: () => {
+      clockAttempts++;
+      if (clockAttempts === 1) throw new ShownError('Host stream clock stalled.', 'clock rpc 504');
+      return { available: true };
+    },
+  });
+  try {
+    const id = clockFail.pipeline.acquire('clock-fail|0', { offset: 0, pin: null });
+    const sub = clockFail.pipeline.subscribe(id, {}, clockFail.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    const entry = installedEntry(clockFail.pipeline, id, sub);
+    clockFail.clock.seek(10);
+    assert.ok(await clockFail.settle(() => clockFail.pipeline.view(id)?.mode === 'failed'));
+    assert.equal(entry.status, 'failed');
+    const shownErr = followFailure({ status: entry.status, reason: entry.reason, error: entry.error, structure: '', entry, hidden: false, reading: null });
+    assert.ok(shownErr);
+    assert.deepEqual(classifyFailure(shownErr.error), { kind: 'retryable', reason: 'Host stream clock stalled.', detail: 'clock rpc 504' });
+    shownErr.retry();
+    assert.ok(await clockFail.settle(() => clockAttempts === 2 && clockFail.pipeline.view(id)?.mode === 'reading'));
+    clockFail.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [11n] } }], false, NATIVE, clockFail.clock.getSnapshot().seekSequence));
+    assert.ok(await clockFail.settle(() => clockFail.pipeline.view(id)?.mode === 'picture'));
+  } finally { clockFail.close(); }
+
+  let openCalls = 0;
+  const streamDrop = inProcess({ open: async () => `session-${++openCalls}` });
+  try {
+    const id = streamDrop.pipeline.acquire('stream-drop|0', { offset: 0, pin: null });
+    const sub = streamDrop.pipeline.subscribe(id, {}, streamDrop.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    const entry = installedEntry(streamDrop.pipeline, id, sub);
+    streamDrop.clock.seek(10);
+    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.status(sub).status === 'followed'));
+    streamDrop.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE, streamDrop.clock.getSnapshot().seekSequence));
+    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.view(id)?.mode === 'picture'));
+    streamDrop.fail('The pushed answers stopped');
+    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.view(id)?.mode === 'failed'));
+    assert.equal(entry.status, 'failed');
+    entry.retry!();
+    assert.ok(await streamDrop.settle(() => openCalls === 2 && streamDrop.pipeline.status(sub).status === 'followed'));
+    streamDrop.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [3n] } }], true, NATIVE, streamDrop.clock.getSnapshot().seekSequence));
+    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.view(id)?.mode === 'picture'));
+  } finally { streamDrop.close(); }
 });

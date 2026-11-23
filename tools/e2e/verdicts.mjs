@@ -44,17 +44,18 @@ export function machineLine(run) {
 
 export function classifyWidgetSnapshot({
   domState = null, domDetail = null,
+  isPlaceholder = false,
   placeholderText = null, unavailableText = null, errorDetail = null,
   outsideText = null, notRecordedText = null, emptyText = null,
   probeState = null, probeDrawing = false,
 } = {}) {
   const clean = value => (typeof value === 'string' && value.trim() ? value.trim() : null);
-  const ph = clean(placeholderText);
-  if (ph && /isn['’]t playing back yet\.?$/i.test(ph)) {
-    return { outcome: 'placeholder', detail: ph, notMigrated: true };
-  }
   const state = clean(domState);
   const detail = clean(domDetail);
+  const ph = clean(placeholderText);
+  if (state === 'placeholder' || isPlaceholder) {
+    return { outcome: 'placeholder', detail: ph ?? detail ?? 'placeholder', notMigrated: true };
+  }
   if (state === 'unavailable') return { outcome: 'refusal', detail: clean(unavailableText) ?? detail ?? 'unavailable', notMigrated: false };
   if (state === 'error') return { outcome: 'error', detail: clean(errorDetail) ?? detail ?? 'error', notMigrated: false };
   if (state === 'outside') return { outcome: 'outside', detail: clean(outsideText) ?? detail ?? 'outside', notMigrated: false };

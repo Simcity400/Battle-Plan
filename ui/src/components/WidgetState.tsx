@@ -200,6 +200,7 @@ function StateBox({ scale, state, error = false, icon, title, secondLine, action
   useEffect(() => {
     if (scale !== 'body' || error || !frame) return;
     frame.announce(announceKey, typeof secondLine === 'string' ? `${title} ${secondLine}` : title);
+    return () => frame.clearAnnouncement(announceKey);
   }, [scale, error, frame, announceKey, title, secondLine]);
   return <div className={`widget-state${error ? ' is-error' : ''}${scale === 'section' ? ' is-section' : ''}`}
     data-state={state} role={error ? 'alert' : undefined} data-detail={detailAttr}>
@@ -251,10 +252,12 @@ function Loading({ label, read, skeleton, delayMs = 2000, scale }: {
     const timer = setTimeout(() => setDelayed(true), delayMs);
     return () => clearTimeout(timer);
   }, [delayMs]);
+  const announceKey = `loading:${text}`;
   useEffect(() => {
     if (scale !== 'body' || outside || !frame) return;
-    frame.announce(`loading:${text}`, text);
-  }, [scale, outside, frame, text]);
+    frame.announce(announceKey, text);
+    return () => frame.clearAnnouncement(announceKey);
+  }, [scale, outside, frame, announceKey, text]);
   if (outside) return <Outside read={read} scale={scale} />;
   if (scale === 'section') {
     return <div className="widget-state is-section" data-state="loading" aria-label={text}>

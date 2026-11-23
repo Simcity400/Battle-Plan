@@ -20,6 +20,7 @@ export const panelStructure = (_answer: FollowedAnswer | undefined, entry: Follo
 export interface Followed {
   status: 'off' | FollowEntry['status'];
   reason?: string;
+  error?: Failure;
   structure: string;
   entry: FollowEntry | null;
   hidden: boolean;
@@ -36,7 +37,7 @@ export function followRefusal(...followed: readonly Followed[]): string | null {
 export function followFailure(...followed: readonly Followed[]): { error: Failure; retry: () => void } | null {
   for (const each of followed) if (each.status === 'failed') {
     return {
-      error: asFailure(new Error(each.reason ?? 'The followed reading stopped without a reason')),
+      error: each.error ?? asFailure(new Error(each.reason ?? 'The followed reading stopped without a reason')),
       retry: () => { for (const item of followed) if (item.status === 'failed') item.entry?.retry?.(); },
     };
   }
@@ -81,7 +82,7 @@ export function useFollow(store: FollowStore | null, asked: FollowQuery | null, 
   useLayoutEffect(() => entry && pipeline && pipe !== null ? onInstalled(pipeline, pipe, () => painting.current?.(entry)) : undefined, [entry, pipeline, pipe]);
   const status: Followed['status'] = !query ? 'off' : entry ? entry.status : 'pending';
   return {
-    status, ...entry?.reason !== undefined ? { reason: entry.reason } : {},
+    status, ...entry?.reason !== undefined ? { reason: entry.reason } : {}, ...entry?.error !== undefined ? { error: entry.error } : {},
     structure: entry ? structureOf(entry.answer, entry) : '',
     entry, hidden: !!query && !visible,
     reading: query ? datedReading(componentReading(pipeline && pipe !== null ? pipeline.view(pipe) : view, sub), datedStore(pipeline, pipe)) : null,

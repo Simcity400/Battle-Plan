@@ -94,14 +94,23 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
     opened={shown.research} item={researching.find(item => isOpenedResearch(item, shown.research)) ?? null}
     shown={describe(shown.research)} feed={now.feed} installed={now.inspected} subscribe={now.live.subscribe} active={active} anchor={shown} onClose={() => setOpened(null)} />;
   const idle = rows.filter(item => item.kind === 'idle').length;
-  if (!rows.length && !failure) return <WidgetState kind="empty" message={reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`} />;
+  if (!rows.length && !failure) {
+    return <>
+      {reply.missing
+        ? <WidgetState kind="not-recorded" reason={reply.missing} />
+        : <WidgetState kind="empty" message={`No research slots recorded at ${researchDate(reply.hour)}.`} />}
+      {popup}
+    </>;
+  }
   return <section className="active-research" aria-label="Active research" ref={now.root}>
     {failure && <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />}
     <div className="active-rows">
       {rows.length > 0 && <p className="active-section">Researching<span>{researching.length}</span>{idle > 0 && <span className="is-idle">{idle} idle</span>}</p>}
       {rows.map(row)}
     </div>
-    {!rows.length && <WidgetState kind="empty" scale="section" message={reply.missing ?? `No research slots recorded at ${researchDate(reply.hour)}.`} />}
+    {!rows.length && (reply.missing
+      ? <WidgetState kind="not-recorded" scale="section" reason={reply.missing} />
+      : <WidgetState kind="empty" scale="section" message={`No research slots recorded at ${researchDate(reply.hour)}.`} />)}
     {popup}
   </section>;
 }

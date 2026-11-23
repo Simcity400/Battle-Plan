@@ -521,7 +521,7 @@ async function playbackInputs() {
       if (canvases.length) return null;
       const content = article.querySelector('.dash-widget-content');
       if (!content) return 'no content';
-      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-state="empty"], [data-state="unavailable"], [data-state="outside"], [data-state="not-recorded"], [data-state="nothing-chosen"], [data-state="no-members"]')].some(visible)) return null;
+      if ([...content.querySelectorAll('.dash-empty[role="status"], [data-playback-placeholder], [data-state="placeholder"], [data-state="empty"], [data-state="unavailable"], [data-state="outside"], [data-state="not-recorded"], [data-state="nothing-chosen"], [data-state="no-members"]')].some(visible)) return null;
       if ([...content.querySelectorAll('[data-row-ink="pending"]')].some(visible)) return 'pending rows';
       if ([...content.querySelectorAll('canvas, img, svg')].some(visible)) return null;
       return [...content.querySelectorAll('*')].some(node => {

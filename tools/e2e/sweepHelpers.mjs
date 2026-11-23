@@ -122,7 +122,7 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
     const readDetail = el => el ? (el.getAttribute('data-detail')?.trim() || el.getAttribute('data-tooltip')?.trim() || el.textContent?.trim() || null) : null;
     const bodyState = a.querySelector('.widget-state[data-state]:not(.is-section)') ?? a.querySelector('[data-state]');
     const domState = bodyState?.getAttribute('data-state') ?? null;
-    const placeholder = a.querySelector('.dash-empty[role="status"]');
+    const placeholder = a.querySelector('[data-playback-placeholder], [data-state="placeholder"]');
     const unavailable = a.querySelector('[data-state="unavailable"]');
     const error = a.querySelector('[data-state="error"], [role="alert"]');
     const outside = a.querySelector('[data-state="outside"]');
@@ -132,6 +132,7 @@ export function buildWidgetClassifierExpr(classifySnapshot) {
     return classify({
       domState,
       domDetail: readDetail(bodyState),
+      isPlaceholder: Boolean(placeholder),
       placeholderText: placeholder?.textContent ?? null,
       unavailableText: unavailable ? (readDetail(unavailable) || 'unavailable') : null,
       errorDetail: error ? (readDetail(error) || 'error') : null,

@@ -57,6 +57,7 @@ export default function WidgetPreview({ definition, initial, runtime }: {
     captionSlot,
     reportState,
     announce: noop,
+    clearAnnouncement: noop,
     setDynamicViewSwitch,
     skeleton: (definition.skeleton ?? 'generic') as WidgetSkeletonKind | (() => ReactNode),
     setSkeleton: noop,
@@ -88,7 +89,7 @@ export default function WidgetPreview({ definition, initial, runtime }: {
         <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
         <div className="dash-widget-content"><div className="dash-widget-scaled">
           <HeldFailuresContext.Provider value={failures}>
-            <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} />
+            <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} setOption={noop} setOptions={noop} />
           </HeldFailuresContext.Provider>
         </div></div>
       </WidgetFrameContext.Provider>

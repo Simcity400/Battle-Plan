@@ -50,7 +50,10 @@ test('map load errors hide diagnostics and retain Retry; an hour not available y
     (props.runtime.clock as { getSnapshot: () => unknown }).getSnapshot = () => ({ position: 106, hour: 106, playing: true, sequence: 3, seekSequence: 1, fraction: 0, hoursPerSecond: 4 });
     const behind = render();
     assert.match(behind, /data-held="behind"/);
-    host.__mapReview = { ...host.__mapReview, hour: null, branchId: null };
+    host.__mapReview = { ...host.__mapReview, hour: 105, sequence: 3, requestedSequence: 3, loading: false, behind: 12 };
+    const reportedBehind = render();
+    assert.match(reportedBehind, /data-held="behind"/, 'reported native behind > 0 marks the map held even when loading is false');
+    host.__mapReview = { ...host.__mapReview, behind: 0, hour: null, branchId: null };
     const first = render();
     assert.match(first, /spinner/);
     assert.match(first, /Preparing this map…/);

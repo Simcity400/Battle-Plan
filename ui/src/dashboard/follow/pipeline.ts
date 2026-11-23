@@ -12,7 +12,7 @@ import { perfLog } from '../../shell/perf.ts';
 import type { AuditRow } from '../../draw/notifications';
 import { productRequest } from '../request.ts';
 import type { GatedParams } from '../regionTime';
-import { RefusedError } from '../queryError.ts';
+import { asFailure, RefusedError, type Failure } from '../queryError.ts';
 
 export type FollowQuery = Readonly<Record<string, unknown>>;
 
@@ -29,12 +29,15 @@ export interface PipelineHost {
 export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
-  id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string;
+  id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
   query: FollowQuery; product?: string;
   widgets: Set<number>; released: boolean;
 }
 
-interface RouteState { page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number; serial: Promise<unknown>; told: string | null }
+interface RouteState {
+  page: number; native: number | null; key: string; source: DashboardSource; branch: string; offset: number;
+  serial: Promise<unknown>; told: string | null; error?: Failure; streamFailed?: boolean;
+}
 
 interface WidgetState {
   id: number; lane: number; subs: Map<object, number>; view: string; model?: unknown; mounted: boolean; route: RouteState | null;
@@ -61,7 +64,8 @@ export class Pipeline {
   private nextWidget = 1;
   private nextRoute = 1;
   private opened: Promise<void> | null = null;
-  private readonly ports: readonly MessagePort[];
+  private ports: MessagePort[] = [];
+  private portsTransferred = false;
   private changed = new Set<WidgetState>();
   private redated = new Set<WidgetState>();
   private dated = false;
@@ -78,13 +82,34 @@ export class Pipeline {
     this.nextSub = Array.from({ length: count }, () => 1);
     this.page = new Page<ImageBitmap>({ lanes: count, seek: clock.getSnapshot().seekSequence, post: (lane, message) => this.post(lane, message) });
     host.lanes.forEach((lane, index) => { lane.onmessage = ({ data }) => this.receive(index, data); });
-    const channels = host.lanes.map(() => host.channel());
-    channels.forEach((channel, lane) => host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: host.rate() }, [channel.port1]));
-    this.ports = channels.map(channel => channel.port2);
+    this.initChannels(false);
     this.stopPublish = clock.onPublish((previous, next) => this.published(previous, next), true);
     this.stopClock = clock.subscribe(() => this.anchor());
     const s = clock.getSnapshot();
     this.page.publish(s.hour, { playing: s.playing, speed: s.hoursPerSecond, step: 0 });
+  }
+
+  private initChannels(rehydrate: boolean) {
+    for (const port of this.ports) port.close();
+    const count = this.host.lanes.length;
+    const channels = this.host.lanes.map(() => this.host.channel());
+    channels.forEach((channel, lane) => this.host.lanes[lane]!.postMessage({ type: 'init', lane, lanes: count, port: channel.port1, rate: this.rate }, [channel.port1]));
+    this.ports = channels.map(channel => channel.port2);
+    this.portsTransferred = false;
+    if (!rehydrate) return;
+    for (const sub of this.byId.values()) {
+      if (sub.released) continue;
+      this.host.lanes[sub.lane]!.postMessage({ type: 'follow', sub: sub.id, channel: sub.channel, ...sub.product !== undefined ? { product: sub.product } : {} });
+      if (sub.status === 'followed' && sub.route.native !== null) {
+        this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: sub.route.native, seek: this.page.seek, offset: sub.route.offset });
+      }
+    }
+    for (const widget of this.widgets.values()) {
+      if (!widget.mounted) continue;
+      this.host.lanes[widget.lane]!.postMessage({ type: 'mount', widget: widget.id, subs: [...new Set(widget.subs.values())], view: widget.view, model: widget.model });
+      this.host.lanes[widget.lane]!.postMessage({ type: 'bind', widget: widget.id, binding: widget.binding });
+    }
+    this.page.sync();
   }
 
   get lanes() { return this.host.lanes.length; }
@@ -97,9 +122,13 @@ export class Pipeline {
   }
 
   private open(): Promise<void> {
-    this.opened ??= this.host.open(this.ports)
-      .then(session => { if (typeof session === 'string') this.session = session; })
-      .catch(error => { this.opened = null; throw error; });
+    if (!this.opened) {
+      if (this.portsTransferred) this.initChannels(true);
+      this.portsTransferred = true;
+      this.opened = this.host.open(this.ports)
+        .then(session => { if (typeof session === 'string') this.session = session; })
+        .catch(error => { this.opened = null; throw error; });
+    }
     return this.opened;
   }
 
@@ -184,6 +213,12 @@ export class Pipeline {
     if (message.type === 'failure') {
       const routes = new Set<number>();
       for (const widget of this.widgets.values()) if (message.lane === -1 || widget.lane === lane) routes.add(this.page.widgets.get(widget.id)!.route);
+      for (const route of this.routes.values()) {
+        if (routes.has(route.page)) {
+          route.error = asFailure(new Error(message.reason));
+          route.streamFailed = true;
+        }
+      }
       for (const route of routes) this.page.fail(route, this.page.command(route), message.reason);
       this.flush();
       return;
@@ -261,9 +296,12 @@ export class Pipeline {
 
   lane(id: number) { return this.widgets.get(id)?.lane ?? 0; }
 
-  status(sub: number): { status: SubStatus; reason?: string } {
+  status(sub: number): { status: SubStatus; reason?: string; error?: Failure } {
     const held = this.byId.get(sub);
-    return held ? { status: held.status, ...held.reason !== undefined ? { reason: held.reason } : {} } : { status: 'pending' };
+    if (!held) return { status: 'pending' };
+    const routeError = this.page.routeFailed(held.route.page) ? held.route.error : undefined;
+    const error = held.error ?? routeError;
+    return { status: held.status, ...held.reason !== undefined ? { reason: held.reason } : {}, ...error !== undefined ? { error } : {} };
   }
 
   view(id: number): WidgetView | null { return this.widgets.has(id) ? this.page.view(id) : null; }
@@ -437,33 +475,58 @@ export class Pipeline {
         this.anchor();
       }, error => {
         if (sub.released) return;
-        const reason = error instanceof Error ? error.message : String(error);
-        if (error instanceof RefusedError) this.refuse(sub, reason);
-        else this.fail(sub, reason);
+        const failure = asFailure(error);
+        if (error instanceof RefusedError) this.refuse(sub, failure.message);
+        else this.fail(sub, failure);
       });
   }
 
   retry(subId: number) {
     const sub = this.byId.get(subId);
-    if (!sub || sub.released || sub.status !== 'failed') return;
-    sub.status = 'pending';
-    sub.reason = undefined;
-    for (const widgetId of sub.widgets) {
-      const widget = this.widgets.get(widgetId);
-      if (widget) this.remount(widget);
+    if (!sub || sub.released) return;
+    if (sub.status === 'failed') {
+      sub.status = 'pending';
+      sub.reason = undefined;
+      sub.error = undefined;
+      for (const widgetId of sub.widgets) {
+        const widget = this.widgets.get(widgetId);
+        if (widget) this.remount(widget);
+      }
+      this.register(sub, sub.query, sub.product);
+      return;
     }
-    this.register(sub, sub.query, sub.product);
+    if (sub.status === 'followed' && this.page.routeFailed(sub.route.page)) {
+      const route = sub.route;
+      const reopen = !!route.streamFailed;
+      route.error = undefined;
+      route.streamFailed = false;
+      route.told = null;
+      this.page.recover(route.page);
+      if (reopen) {
+        this.opened = null;
+        route.native = null;
+        const affected = [...this.byId.values()].filter(item => !item.released && item.channel !== 'pinned' && item.route === route && (item.status === 'followed' || item.status === 'failed'));
+        for (const item of affected) {
+          item.status = 'pending';
+          item.reason = undefined;
+          item.error = undefined;
+          this.register(item, item.query, item.product);
+        }
+      } else {
+        this.anchor();
+      }
+    }
   }
 
   private refuse(sub: SubState, reason: string) {
-    sub.status = 'refused'; sub.reason = reason;
+    sub.status = 'refused'; sub.reason = reason; sub.error = undefined;
     for (const widget of sub.widgets) this.page.name(widget, 'refused', reason);
     this.flush();
   }
 
-  private fail(sub: SubState, reason: string) {
-    sub.status = 'failed'; sub.reason = reason;
-    for (const widget of sub.widgets) this.page.name(widget, 'failed', reason);
+  private fail(sub: SubState, failure: Failure) {
+    sub.status = 'failed'; sub.reason = failure.message; sub.error = failure;
+    for (const widget of sub.widgets) this.page.name(widget, 'failed', failure.message);
     this.flush();
   }
 
@@ -482,12 +545,23 @@ export class Pipeline {
       route.serial = route.serial.then(async () => {
         if (!this.holds(route) || route.page !== page) return;
         let reason: string | null = null;
+        let failure: Failure | undefined;
         try {
           const data = await this.ask('follow-clock', { branchId: route.branch, clock: route.offset, hour: s.position + route.offset, playing: s.playing, speed: s.hoursPerSecond,
             frameRate: this.host.frameRate(), seek: s.seekSequence, sought, composedAt, sentAt: performance.timeOrigin + performance.now() }, route) as { available?: boolean; reason?: string } | null;
-          if (data?.available !== true) reason = data?.reason ?? 'The followed stream is no longer available';
-        } catch (error) { if (route.page === page) route.told = null; reason = error instanceof Error ? error.message : String(error); }
-        if (reason !== null && this.holds(route) && route.page === page && this.page.fail(page, command, reason)) this.flush();
+          if (data?.available !== true) {
+            reason = data?.reason ?? 'The followed stream is no longer available';
+            failure = asFailure(new Error(reason));
+          }
+        } catch (error) {
+          if (route.page === page) route.told = null;
+          failure = asFailure(error);
+          reason = failure.message;
+        }
+        if (reason !== null && this.holds(route) && route.page === page) {
+          route.error = failure;
+          if (this.page.fail(page, command, reason)) this.flush();
+        }
       });
     }
   }

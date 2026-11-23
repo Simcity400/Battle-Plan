@@ -76,7 +76,7 @@ test('technical errors stay generic with Retry and Details, named refusals are n
       value: {
         title: 'Factories', subject: 'factories', things: 'factories', timeMode: 'pin', pinned: true,
         bounds: { firstHour: 43800000, lastHour: 43800024 }, hasSubject: true, captionSlot: null,
-        reportState() {}, announce() {}, setDynamicViewSwitch() {}, skeleton: 'generic', setSkeleton() {},
+        reportState() {}, announce() {}, clearAnnouncement() {}, setDynamicViewSwitch() {}, skeleton: 'generic', setSkeleton() {},
       },
     }, createElement(WidgetState as never, { kind: 'outside', pinned: true, onChangeTime: () => {} } as never)));
     assert.match(outsideWithBounds, /data-state="outside"/);

@@ -297,6 +297,11 @@ button.dash-time-chip:hover, button.dash-time-chip[aria-expanded='true'] { backg
   padding: 3px 9px; border-radius: 999px; background: var(--overlay-glass); box-shadow: inset 0 0 0 1px var(--line), var(--shadow-sm);
   color: var(--muted); font-size: var(--type-xs); font-weight: 500; font-variant-numeric: tabular-nums;
 }
+.dash-reading-badge.is-in-header {
+  position: static; flex: 0 1 auto; min-width: 0; max-width: 24ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
 .widget-reset-undo {
   display: flex; align-items: center; gap: 6px; margin: 0 0 8px; padding: 6px 10px; border-radius: var(--r-sm);
   background: var(--hover); color: var(--muted); font-size: var(--type-sm);

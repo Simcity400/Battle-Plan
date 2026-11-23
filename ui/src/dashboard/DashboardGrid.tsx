@@ -123,6 +123,8 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const [readingBadge, setReadingBadge] = useState<string | null>(null);
   const openCountriesRef = useRef<(() => void) | undefined>(undefined);
   const openTimeRef = useRef<(() => void) | undefined>(undefined);
+  const [hasCountryOpener, setHasCountryOpener] = useState(false);
+  const [hasTimeOpener, setHasTimeOpener] = useState(false);
   const [failures] = useState(() => new HeldFailures());
   const [slots] = useState(() => {
     const noted: Record<'header' | 'country', HTMLSpanElement | null> = { header: null, country: null };
@@ -283,16 +285,18 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     setAnnouncement(text);
   }, []);
 
+  const clearAnnouncement = useCallback((key: string) => {
+    if (lastAnnounced.current !== key) return;
+    lastAnnounced.current = '';
+    setAnnouncement(previous => previous === '' ? previous : '');
+  }, []);
+
   useEffect(() => {
-    if (readingBadge) {
-      announce(`reading:${readingBadge}`, readingBadge);
-      return;
-    }
-    if (!hasBodyState) {
-      lastAnnounced.current = '';
-      setAnnouncement(previous => previous === '' ? previous : '');
-    }
-  }, [hasBodyState, readingBadge, announce]);
+    if (!readingBadge) return;
+    const key = `reading:${readingBadge}`;
+    announce(key, readingBadge);
+    return () => clearAnnouncement(key);
+  }, [readingBadge, announce, clearAnnouncement]);
 
   const setDynamicViewSwitch = useCallback((owner: object, spec: DynamicViewSwitch | null) => {
     if (spec) switchOwners.current.set(owner, spec); else switchOwners.current.delete(owner);
@@ -313,8 +317,14 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
   const showTime = definition?.data !== false && (definition?.timeModes.length ?? 0) > 0;
 
   const wording = useMemo(() => widgetWording(definition, widget.title), [definition, widget.title]);
-  const registerOpenCountries = useCallback((open: (() => void) | undefined) => { openCountriesRef.current = open; }, []);
-  const registerOpenTime = useCallback((open: (() => void) | undefined) => { openTimeRef.current = open; }, []);
+  const registerOpenCountries = useCallback((open: (() => void) | undefined) => {
+    openCountriesRef.current = open;
+    setHasCountryOpener(Boolean(open));
+  }, []);
+  const registerOpenTime = useCallback((open: (() => void) | undefined) => {
+    openTimeRef.current = open;
+    setHasTimeOpener(Boolean(open));
+  }, []);
 
   const frameValue = useMemo<WidgetFrameValue>(() => ({
     title: widget.title,
@@ -325,14 +335,15 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     bounds: campaignTrack ? { firstHour: campaignTrack.branch.firstHour, lastHour: campaignTrack.branch.lastHour } : null,
     hasSubject,
     captionSlot,
-    openCountries: hasSubject ? () => openCountriesRef.current?.() : undefined,
-    openTime: showTime && (definition?.timeModes.length ?? 0) > 1 ? () => openTimeRef.current?.() : undefined,
+    openCountries: hasSubject && hasCountryOpener ? () => openCountriesRef.current?.() : undefined,
+    openTime: showTime && hasTimeOpener ? () => openTimeRef.current?.() : undefined,
     reportState,
     announce,
+    clearAnnouncement,
     setDynamicViewSwitch,
     skeleton: customSkeleton ?? definition?.skeleton ?? 'generic',
     setSkeleton,
-  }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, captionSlot, showTime, definition?.timeModes.length, definition?.skeleton, reportState, announce, setDynamicViewSwitch, customSkeleton, setSkeleton]);
+  }), [widget.title, wording.subject, wording.things, widget.time.mode, campaignTrack, hasSubject, hasCountryOpener, captionSlot, showTime, hasTimeOpener, definition?.skeleton, reportState, announce, clearAnnouncement, setDynamicViewSwitch, customSkeleton, setSkeleton]);
 
   const drawnHere = !prepared || definition?.preview !== false;
 
@@ -349,6 +360,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       active={active === true}
       activeSwitch={activeSwitch}
       hasBodyState={hasBodyState}
+      readingBadge={widget.kind === 'map' ? readingBadge : null}
       summarySlotRef={slots.header}
       countrySlotRef={slots.country}
       headerSlotElement={headerSlot}
@@ -373,7 +385,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
             <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
           </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}
         </div>
-        {readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}
+        {widget.kind !== 'map' && readingBadge && <div className="dash-reading-badge">{readingBadge}</div>}
       </div>
     </WidgetFrameContext.Provider>
     <div className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</div>

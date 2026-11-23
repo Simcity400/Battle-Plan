@@ -480,5 +480,27 @@ export class Page<B extends Bitmap = Bitmap> {
     return true;
   }
 
+  routeFailed(route: number): boolean {
+    return this.routes.get(route)?.failed != null;
+  }
+
+  recover(route: number) {
+    const at = this.routes.get(route);
+    if (!at?.failed) return;
+    at.failed = null;
+    for (const widget of this.widgets.values()) if (widget.route === route && widget.pin === null) {
+      widget.failed = false;
+      if (widget.status === 'failed') this.reading(widget);
+    }
+    this.post('all', { type: 'stream', route, seek: this.seek, target: this.T });
+    this.tell();
+    this.request(true, false);
+  }
+
+  sync() {
+    for (const route of this.routes.keys()) this.post('all', { type: 'stream', route, seek: this.seek, target: this.T });
+    this.request(true, false);
+  }
+
   pending(lane: number) { return { installed: this.acks[lane]!.length, refused: this.refusals[lane]!.length }; }
 }

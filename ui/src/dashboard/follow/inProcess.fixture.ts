@@ -33,18 +33,30 @@ function lane(views: (kind: string) => LaneView | undefined): LaneWorker {
   return worker;
 }
 
-export function inProcess({ lanes = 1, views = () => undefined, follow, gate, session, open }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
+export function inProcess({ lanes = 1, views = () => undefined, follow, followClock, gate, session, open }: { lanes?: number; views?: (kind: string) => LaneView | undefined;
   follow?: (id: number, query: Record<string, unknown>) => { available: boolean; reason?: string; route?: number };
+  followClock?: (params: Record<string, unknown>) => { available: boolean; reason?: string };
   gate?: (product: string) => Promise<void> | undefined; session?: string;
   open?: (opened: readonly MessagePort[]) => Promise<string | undefined>; } = {}) {
   let ports: readonly MessagePort[] = [];
   const asked: { product: string; params: Record<string, unknown> }[] = [];
   const followers = new Set<unknown>();
+  const takePorts = (opened: readonly MessagePort[]) => {
+    const owned = structuredClone([...opened], { transfer: [...opened] });
+    for (const port of owned) (port as MessagePort & { unref?(): void }).unref?.();
+    return owned;
+  };
   const client = {
     available: true,
     openFollow: (opened: readonly MessagePort[]) => {
-      if (open) return open(opened).then(id => { ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return id; });
-      ports = opened; for (const port of opened) (port as MessagePort & { unref?(): void }).unref?.(); return Promise.resolve(session);
+      const owned = takePorts(opened);
+      const replace = () => {
+        for (const port of ports) port.close();
+        ports = owned;
+      };
+      if (open) return open(owned).then(id => { replace(); return id; }, error => { for (const port of owned) port.close(); throw error; });
+      replace();
+      return Promise.resolve(session);
     },
     product: async (request: { product: string; params: Record<string, unknown> }) => {
       asked.push(request);
@@ -55,7 +67,10 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
         return { data: told.available ? { available: true, route: told.route ?? NATIVE } : told };
       }
       if (request.product === 'unfollow') followers.delete(request.params.id);
-      if (request.product === 'follow-clock') return { data: { available: followers.size > 0 } };
+      if (request.product === 'follow-clock') {
+        const told = followClock ? followClock(request.params) : { available: followers.size > 0 };
+        return { data: told };
+      }
       return { data: { available: true } };
     },
   } as unknown as DashboardClient;
@@ -81,5 +96,5 @@ export function inProcess({ lanes = 1, views = () => undefined, follow, gate, se
     return done();
   };
   const fail = (reason: string) => { for (const port of ports) port.postMessage({ kind: 'failure', reason } satisfies FromPull); };
-  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => pipeline.close() };
+  return { pipeline, clock, client, send, fail, source, asked, settle, channels, close: () => { pipeline.close(); for (const port of ports) port.close(); } };
 }

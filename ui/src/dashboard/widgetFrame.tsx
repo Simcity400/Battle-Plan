@@ -25,6 +25,7 @@ export interface WidgetFrameValue {
   openTime?: () => void;
   reportState: (owner: object, active: boolean) => void;
   announce: (key: string, text: string) => void;
+  clearAnnouncement: (key: string) => void;
   setDynamicViewSwitch: (owner: object, spec: DynamicViewSwitch | null) => void;
   skeleton: WidgetSkeletonKind | (() => ReactNode);
   setSkeleton: (owner: object, skeleton: WidgetSkeletonKind | (() => ReactNode) | null) => void;

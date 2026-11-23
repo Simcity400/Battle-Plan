@@ -5,6 +5,7 @@ import { parseAnswer, type FollowedAnswer, type FollowedPanel } from './message.
 import type { Pipeline } from './pipeline';
 import { componentReading, installedAnswer, installedModel, installedPanel } from './useFollowed.ts';
 import type { LiveMap } from '../../draw/views/fields';
+import type { Failure } from '../queryError';
 
 export type { FollowQuery } from '../regionTime';
 
@@ -21,6 +22,7 @@ export interface FollowEntry {
   readonly id: number;
   readonly status: 'pending' | 'followed' | 'unavailable' | 'failed';
   readonly reason?: string;
+  readonly error?: Failure;
   readonly answer: FollowedAnswer | undefined;
   readonly panel?: FollowedPanel;
   readonly values?: Map<string, number | bigint | string>;
@@ -57,6 +59,7 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
       const reading = componentReading(view(), sub);
       return pipeline.status(sub).reason ?? (reading.state === 'refused' ? reading.reason : undefined);
     },
+    get error() { return pipeline.status(sub).error; },
     get answer() { return answerOf(installedAnswer(installed(), sub)); },
     get panel() { return installedPanel(installedModel(installed(), sub)); },
     get values() { return (installed()?.fields?.[`live:${sub}`] as LiveMap | null | undefined) ?? undefined; },

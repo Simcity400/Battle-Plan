@@ -121,8 +121,9 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const fromPanel = pushed ? panelReply(panel, validate) : {};
   const refusedNamed = checked?.refused ?? (following && view?.mode === 'refused' ? view.reason ?? 'Not in this recording' : undefined);
   const failedNamed = following && view?.mode === 'failed' ? view.reason ?? 'The followed stream failed' : undefined;
+  const subError = following && pipeline && sub !== undefined ? pipeline.status(sub).error : undefined;
   const followFailure = useMemo(() => refusedNamed !== undefined ? new RefusedError(refusedNamed)
-    : failedNamed !== undefined ? asFailure(new Error(failedNamed)) : undefined, [refusedNamed, failedNamed]);
+    : failedNamed !== undefined ? (subError ?? asFailure(new Error(failedNamed))) : undefined, [refusedNamed, failedNamed, subError]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : forwardRequest(track!.source, product, { ...params, branchId: track!.branch.id, hour } as unknown as ParamsFor<K>),
     [], active, validate, track?.source);
@@ -184,9 +185,13 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   useRecordedRows(panelName, pushed && data !== undefined && at !== null && exactRead ? {
     hour: at, rows: () => recordedPanelRows(panelName, data), exact: async () => recordedPanelRows(panelName, await exactRead(at)),
   } : undefined, pipe ?? undefined);
+  const retry = useCallback(() => {
+    if (following && pipeline && sub !== undefined) pipeline.retry(sub);
+    else asked.retry();
+  }, [following, pipeline, sub, asked.retry]);
   const shownThrough = () => outside ? null : following ? (pipe === null || !pipeline ? null : pipeline.view(pipe)?.through ?? null) : data === undefined ? null : at;
   return {
-    data, error, retry: asked.retry, root, hour, live: shownLive, ...coverageOf(gate.outside),
+    data, error, retry, root, hour, live: shownLive, ...coverageOf(gate.outside),
     structure: outside || !pushed ? undefined : model?.structure,
     exactRead,
     workerFollow: pushed ? sub : undefined,

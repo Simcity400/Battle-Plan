@@ -235,7 +235,7 @@ Object.assign(window, { findings: {
       title: widget.title, subject: wording.subject, things: wording.things,
       timeMode: widget.time.mode, pinned: widget.time.mode === 'pin' || widget.time.mode === 'range',
       bounds: { firstHour: FIRST, lastHour: scene.last ?? LAST }, hasSubject: true, captionSlot: null,
-      openCountries: () => {}, openTime: () => {}, reportState: () => {}, announce: () => {},
+      openCountries: () => {}, openTime: () => {}, reportState: () => {}, announce: () => {}, clearAnnouncement: () => {},
       setDynamicViewSwitch: () => {}, skeleton: 'generic' as const, setSkeleton: () => {},
     };
     root = createRoot(element);

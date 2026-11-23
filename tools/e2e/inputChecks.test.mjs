@@ -198,6 +198,11 @@ test('browser widget classifier expression delegates directly to classifyWidgetS
     classify(makeNode({ '.widget-state[data-state]:not(.is-section)': gapNode, '[data-state="not-recorded"]': gapNode })),
     { outcome: 'not-recorded', detail: 'Not recorded at this time.', notMigrated: false },
   );
+  const placeholderNode = nodeWith('placeholder', 'Any custom copy');
+  assert.deepEqual(
+    classify(makeNode({ '.widget-state[data-state]:not(.is-section)': placeholderNode, '[data-playback-placeholder], [data-state="placeholder"]': placeholderNode })),
+    { outcome: 'placeholder', detail: 'Any custom copy', notMigrated: true },
+  );
   assert.deepEqual(
     classify(makeNode({}, { state: 'loading', drawing: true })),
     { outcome: 'content', detail: null, notMigrated: false },

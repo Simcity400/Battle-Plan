@@ -320,8 +320,12 @@ test('classifyWidgetSnapshot classifies strictly from explicit DOM state and kee
     assert.deepEqual(fn({ probeState: 'loading' }), { outcome: 'error', detail: 'still loading', notMigrated: false });
     assert.deepEqual(fn({ probeState: 'loading', probeDrawing: true }), { outcome: 'content', detail: null, notMigrated: false });
     assert.deepEqual(fn({ probeState: 'blank' }), { outcome: 'error', detail: 'blank widget body', notMigrated: false });
+    assert.deepEqual(fn({ domState: 'placeholder', placeholderText: 'Scoreboard paused' }),
+      { outcome: 'placeholder', detail: 'Scoreboard paused', notMigrated: true },
+      'explicit placeholder DOM state classifies without English text matching');
     assert.deepEqual(fn({ placeholderText: "Scoreboard isn't playing back yet" }),
-      { outcome: 'placeholder', detail: "Scoreboard isn't playing back yet", notMigrated: true });
+      { outcome: 'error', detail: "Scoreboard isn't playing back yet", notMigrated: false },
+      'plain text without explicit placeholder marker is not matched by regex');
   }
 });
 

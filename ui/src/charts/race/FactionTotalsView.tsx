@@ -190,7 +190,7 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     extent={extent} playhead={drill.breakdown != null ? membersHour : playhead} hour={membersHour} head={membersHead} onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} /> : null;
   const state = !track ? <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />
     : gate.outside ? <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />
-      : error ? <WidgetState kind="error" failure={error} onRetry={view === 'race' ? () => { rosters.retry(); groups.retry(); asked.retry(); } : lines.retry} />
+      : error ? <WidgetState kind="error" failure={error} onRetry={view === 'race' ? () => { rosters.retry(); groups.retry(); asked.retry(); if (followed.status === 'failed') followed.entry?.retry?.(); } : lines.retry} />
         : looks.loading && !group ? <WidgetState kind="loading" label="Loading factions…" />
           : view === 'race' && rosterData?.missing ? <WidgetState kind="unavailable" message={rosterData.missing} />
             : view === 'race' && (!rosterData || !live && members.length > 0 && !asked.data) ? <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} /> : undefined;

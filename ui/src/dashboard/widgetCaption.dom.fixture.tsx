@@ -17,8 +17,48 @@ import { PlaybackController } from './playback.ts';
 import type { FrameEngine } from '../engine/frame.ts';
 import { useWidgetViewSwitch, WidgetCaption } from './widgetFrame.tsx';
 import WidgetState from '../components/WidgetState.tsx';
+import { useHeadProduct } from './headProduct.ts';
+import { useGate } from './regionGate.ts';
+import { SPEC } from './regionTime.ts';
+import { classifyFailure, ShownError } from './queryError.ts';
+import ActiveResearchWidget from '../widgets/active-research/ActiveResearchWidget.tsx';
 
 declare global { interface Window { captionLayout: unknown } }
+
+function createVirtualTimers() {
+  const realSetTimeout = window.setTimeout.bind(window);
+  const realClearTimeout = window.clearTimeout.bind(window);
+  let now = 0;
+  let nextId = 1;
+  const tasks = new Map<number, { at: number; fn: () => void }>();
+  window.setTimeout = ((handler: TimerHandler, timeout = 0, ...args: unknown[]) => {
+    const id = nextId++;
+    const fn = typeof handler === 'function' ? () => (handler as (...a: unknown[]) => void)(...args) : () => {};
+    tasks.set(id, { at: now + Math.max(0, Number(timeout) || 0), fn });
+    return id;
+  }) as unknown as typeof window.setTimeout;
+  window.clearTimeout = ((id: number) => { tasks.delete(id); }) as unknown as typeof window.clearTimeout;
+  return {
+    advance(ms: number) {
+      const target = now + ms;
+      while (true) {
+        let earliest: [number, { at: number; fn: () => void }] | null = null;
+        for (const entry of tasks.entries()) {
+          if (entry[1].at <= target && (!earliest || entry[1].at < earliest[1].at)) earliest = entry;
+        }
+        if (!earliest) break;
+        tasks.delete(earliest[0]);
+        now = earliest[1].at;
+        earliest[1].fn();
+      }
+      now = target;
+    },
+    restore() {
+      window.setTimeout = realSetTimeout;
+      window.clearTimeout = realClearTimeout;
+    },
+  };
+}
 
 function MeasureBody({ caption, empty, layout }: { caption: string | null; empty: boolean; layout: 'windowed' | 'chart' | 'table' }) {
   const body = useRef<HTMLDivElement>(null);
@@ -69,14 +109,14 @@ const Body = ({ widget }: WidgetProps) => createElement(MeasureBody, {
 });
 
 let switchClicks: string[] = [];
-function DynamicSwitchBody({ widget }: WidgetProps) {
+function DynamicSwitchBody({ widget, setOption }: WidgetProps) {
   const version = String(widget.options?.version ?? 'v1');
-  useWidgetViewSwitch({
+  useWidgetViewSwitch(setOption ? {
     label: 'Mode',
     value: 'a',
     options: [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Beta' }],
     onChange: next => { switchClicks.push(`${version}:${next}`); },
-  });
+  } : null);
   return <div className="dynamic-switch-body">{version}</div>;
 }
 
@@ -90,8 +130,30 @@ function FrameProbeBody({ widget, headerSlot }: WidgetProps) {
       ? <WidgetState kind="empty" message="Nothing here yet." />
       : mode === 'loading'
         ? <WidgetState kind="loading" label="Loading probe…" />
-        : <div className="frame-probe-body" data-held={held}>Picture</div>}
+        : mode === 'error'
+          ? <WidgetState kind="error" what="probe" failure={new Error('Synthetic failure')} onRetry={() => {}} />
+          : mode === 'nothing-chosen'
+            ? <WidgetState kind="nothing-chosen" prompt="Choose a country." />
+            : <div className="frame-probe-body" data-held={held}>Picture</div>}
   </>;
+}
+
+function MapBadgeProbeBody({ widget }: WidgetProps) {
+  const held = typeof widget.options?.held === 'string' ? widget.options.held : undefined;
+  return <div className="dash-map-widget" data-held={held}><div className="dash-map-surface" /></div>;
+}
+
+const headRetryState: { retry: (() => void) | null; error: unknown } = { retry: null, error: null };
+function HeadRetryProbeBody({ widget, runtime, active }: WidgetProps) {
+  const gate = useGate(runtime, widget, SPEC, active);
+  const head = useHeadProduct<{ ok: boolean }, 'research-slots'>(runtime, gate, 'research-slots', gate.track ? { country: 'GER' } as never : null, {
+    active,
+    validate: value => value as { ok: boolean },
+  });
+  headRetryState.retry = head.retry;
+  headRetryState.error = head.error ?? null;
+  if (head.error) return <WidgetState kind="error" what="research" failure={head.error} onRetry={head.retry} />;
+  return <div className="head-retry-probe">Waiting</div>;
 }
 
 registerWidgets([{
@@ -151,6 +213,7 @@ registerWidgets([{
   viewSwitch: { option: 'view' },
   minSize: { w: 2, h: 2 },
   defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
   render: FrameProbeBody,
 }, {
   kind: 'frame-probe-test',
@@ -160,7 +223,8 @@ registerWidgets([{
   description: 'Reading badge and announcer test.',
   data: true,
   history: true,
-  countrySelection: false,
+  countrySelection: true,
+  countries: { max: 1 },
   defaultCountries: { kind: 'all' },
   timeModes: ['follow'],
   defaultTime: 'follow',
@@ -169,6 +233,41 @@ registerWidgets([{
   defaultSize: { w: 6, h: 6 },
   playsBackDated: true,
   render: FrameProbeBody,
+}, {
+  kind: 'map',
+  version: 1,
+  title: 'Campaign map',
+  icon: 'map',
+  description: 'Map badge placement test.',
+  data: true,
+  history: false,
+  countrySelection: true,
+  countries: { max: 1 },
+  defaultCountries: { kind: 'all' },
+  timeModes: ['follow'],
+  defaultTime: 'follow',
+  scope: 'moment',
+  minSize: { w: 2, h: 2 },
+  defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
+  render: MapBadgeProbeBody,
+}, {
+  kind: 'head-retry-test',
+  version: 1,
+  title: 'Head retry',
+  icon: 'grid',
+  description: 'Head product follow retry test.',
+  data: true,
+  history: true,
+  countrySelection: false,
+  defaultCountries: { kind: 'all' },
+  timeModes: ['follow'],
+  defaultTime: 'follow',
+  scope: 'moment',
+  minSize: { w: 2, h: 2 },
+  defaultSize: { w: 6, h: 6 },
+  playsBackDated: true,
+  render: HeadRetryProbeBody,
 }]);
 
 const branch = { id: 'b1', sessionId: 'b1', firstHour: 43800000, lastHour: 43800200, main: true, fork: null, joins: [], sampleBoundary: '', gaps: [] };
@@ -194,22 +293,21 @@ const makeClock = () => {
   return clock;
 };
 
-const client = { available: true, setMapViews: async () => {}, onMapStates: async () => () => {} };
+const baseClient = { available: true, setMapViews: async () => {}, onMapStates: async () => () => {} };
 
-const makeRuntime = (clock: PlaybackController, loadedTracks: BoundTrack[] = tracks) => ({
+const makeRuntime = (clock: PlaybackController, loadedTracks: BoundTrack[] = tracks, clientOverride: Record<string, unknown> = baseClient) => ({
   tracks: loadedTracks,
   campaignTracks: loadedTracks,
   defaultRoleId: 'primary',
   alignment: 'calendar',
   campaigns: [],
   recordings: [],
-  maps: new MapViewsStore(client as never, clock),
-  client,
+  maps: new MapViewsStore(clientOverride as never, clock),
+  client: clientOverride,
   clock,
 } as unknown as WidgetRuntime);
 
 const settle = () => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 async function waitFor<T>(read: () => T | null, host: HTMLElement): Promise<T> {
   for (let frame = 0; frame < 60; frame++) {
     const value = read();
@@ -310,7 +408,8 @@ window.captionLayout = {
     const previewRoot = createRoot(previewHost);
     const { widgetDefinition } = await import('./definitions.ts');
     previewRoot.render(createElement(WidgetPreview, { definition: widgetDefinition('dynamic-switch-test')!, runtime }));
-    await waitFor(() => previewHost.querySelector('[data-view-switch]'), previewHost);
+    await settle();
+    await settle();
     const previewHasDynamicSwitch = !!previewHost.querySelector('[data-view-switch]');
     previewRoot.unmount();
     root.unmount();
@@ -358,27 +457,39 @@ window.captionLayout = {
     const loadedStage = Number(header.dataset.headerStage);
     const subjectCompact = !!header.querySelector('.dash-widget-country-button.is-compact');
 
-    host.style.width = '900px';
-    root.render(createElement(DashboardGrid, { template: makeTemplate(12, { pill: '1 completed' }), runtime: loadedRuntime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+    host.style.width = '840px';
+    root.render(createElement(DashboardGrid, { template: makeTemplate(24, { pill: '1' }), runtime: loadedRuntime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
     await waitFor(() => header.querySelector('.dash-widget-summary .pill'), host);
     await settle();
+    await settle();
     const stageBeforePlay = Number(header.dataset.headerStage);
-    const changesDuringPlay: string[] = [];
-    const playMo = new MutationObserver(() => changesDuringPlay.push(header.dataset.headerStage ?? ''));
-    playMo.observe(header, { attributes: true, attributeFilter: ['data-header-stage'] });
+    clock.setPlaying(true);
+    root.render(createElement(DashboardGrid, { template: makeTemplate(24, { pill: '123,456,789 completed items' }), runtime: loadedRuntime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+    await settle();
+    await settle();
+    const stageAfterContentGrowWhilePlaying = Number(header.dataset.headerStage);
+    clock.setPlaying(false);
+    await settle();
+    await settle();
+    const stageAfterPauseFlush = Number(header.dataset.headerStage);
+
+    host.style.width = '900px';
+    root.render(createElement(DashboardGrid, { template: makeTemplate(24, { pill: '1 completed' }), runtime: loadedRuntime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+    await settle();
+    await settle();
+    const wideStage = Number(header.dataset.headerStage);
     clock.setPlaying(true);
     host.style.width = '420px';
     await settle();
     await settle();
-    const stageWhilePlaying = Number(header.dataset.headerStage);
-    const changesWhilePlaying = changesDuringPlay.length;
+    const stageAfterResizeWhilePlaying = Number(header.dataset.headerStage);
     clock.setPlaying(false);
-    await settle();
-    await settle();
-    const stageAfterPause = Number(header.dataset.headerStage);
-    playMo.disconnect();
     root.unmount();
-    return { unloadedOscillations, triggerWidth, loadedStage, subjectCompact, stageBeforePlay, stageWhilePlaying, changesWhilePlaying, stageAfterPause };
+    return {
+      unloadedOscillations, triggerWidth, loadedStage, subjectCompact,
+      stageBeforePlay, stageAfterContentGrowWhilePlaying, stageAfterPauseFlush,
+      wideStage, stageAfterResizeWhilePlaying,
+    };
   },
 
   async testReadingBadgeAndAnnouncer() {
@@ -390,54 +501,237 @@ window.captionLayout = {
     document.body.appendChild(host);
     const clock = makeClock();
     const runtime = makeRuntime(clock, tracks);
-    const makeTemplate = (options: Record<string, string>, title = 'Frame probe'): DashboardTemplate => ({
+    const makeTemplate = (options: Record<string, string>, kind = 'frame-probe-test'): DashboardTemplate => ({
       version: 1, name: 'Test', alignment: 'calendar',
       roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
       tracks: [{ id: 't1', roleId: 'primary', label: 'Primary', branchIndex: 0, anchorOffset: null }],
       widgets: [{
-        id: 'fp1', kind: 'frame-probe-test', configVersion: 1, title, campaign: 'default',
+        id: 'fp1', kind, configVersion: 1, title: kind === 'map' ? 'Campaign map' : 'Frame probe', campaign: 'default',
         trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'all' }, options,
       }],
       layouts: { lg: [{ i: 'fp1', x: 0, y: 0, w: 6, h: 8 }] },
     });
+    const timers = createVirtualTimers();
     const root = createRoot(host);
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'loading' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await waitFor(() => host.querySelector('[data-state="loading"]'), host);
-    await settle();
-    const article = host.querySelector<HTMLElement>('article.dash-widget')!;
-    const loadingRole = article.querySelector('[data-state="loading"]')?.getAttribute('role') ?? null;
-    const loadingAnnouncement = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+    try {
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'loading' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => host.querySelector('[data-state="loading"]'), host);
+      await settle();
+      const article = host.querySelector<HTMLElement>('article.dash-widget')!;
+      const loadingRole = article.querySelector('[data-state="loading"]')?.getAttribute('role') ?? null;
+      const loadingAnnouncement = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
 
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture', held: 'stale' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await waitFor(() => article.querySelector('[data-held="stale"]'), host);
-    await delay(220);
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture', held: 'stale', tick: '1' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await delay(240);
-    const badgeAfterRerender = article.querySelector('.dash-reading-badge')?.textContent ?? null;
-    const badgeRole = article.querySelector('.dash-reading-badge')?.getAttribute('role') ?? null;
-    const badgeAnnouncement = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'error' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => article.querySelector('[data-state="error"]'), host);
+      await settle();
+      const announcedDuringError = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'loading' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => article.querySelector('[data-state="loading"]'), host);
+      await settle();
+      const loadingAfterRetryError = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
 
-    clock.setPlaying(true);
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture', held: 'behind' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await settle();
-    await delay(460);
-    const behindBadge = article.querySelector('.dash-reading-badge')?.textContent ?? null;
-    clock.setPlaying(false);
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture', held: 'stale' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => article.querySelector('[data-held="stale"]'), host);
+      timers.advance(220);
+      await settle();
+      const badgeBeforeThreshold = article.querySelector('.dash-reading-badge')?.textContent ?? null;
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture', held: 'stale', tick: '1' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await settle();
+      timers.advance(200);
+      await settle();
+      const badgeAfterRerender = article.querySelector('.dash-reading-badge')?.textContent ?? null;
+      const badgeRole = article.querySelector('.dash-reading-badge')?.getAttribute('role') ?? null;
+      const badgeAnnouncement = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
 
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'empty' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await waitFor(() => article.querySelector('[data-state="empty"]'), host);
-    await settle();
-    const firstEmptyAnnounced = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await waitFor(() => article.querySelector('.frame-probe-body'), host);
-    await settle();
-    const clearedOnPicture = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
-    root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'empty' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
-    await waitFor(() => article.querySelector('[data-state="empty"]'), host);
-    await settle();
-    const repeatedEmptyAnnounced = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+      clock.setPlaying(true);
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture', held: 'behind' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await settle();
+      timers.advance(420);
+      await settle();
+      const behindBadge = article.querySelector('.dash-reading-badge')?.textContent ?? null;
+      clock.setPlaying(false);
 
-    root.unmount();
-    return { loadingRole, loadingAnnouncement, badgeAfterRerender, badgeRole, badgeAnnouncement, behindBadge, firstEmptyAnnounced, clearedOnPicture, repeatedEmptyAnnounced };
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'empty' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => article.querySelector('[data-state="empty"]'), host);
+      await settle();
+      const firstEmptyAnnounced = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'picture' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => article.querySelector('.frame-probe-body'), host);
+      await settle();
+      const clearedOnPicture = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'empty' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => article.querySelector('[data-state="empty"]'), host);
+      await settle();
+      const repeatedEmptyAnnounced = article.querySelector('.sr-only[aria-live="polite"]')?.textContent ?? '';
+
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ held: 'behind' }, 'map'), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => host.querySelector('.dash-map-surface'), host);
+      timers.advance(420);
+      await settle();
+      const mapBadge = host.querySelector<HTMLElement>('.dash-reading-badge');
+      const mapSurface = host.querySelector<HTMLElement>('.dash-map-surface')!;
+      const mapBadgeOutsideSurface = !!mapBadge && mapBadge.getBoundingClientRect().bottom <= mapSurface.getBoundingClientRect().top + 1;
+
+      const unloadedRuntime = makeRuntime(clock, []);
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'nothing-chosen' }), runtime: unloadedRuntime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => host.querySelector('[data-state="empty"]'), host);
+      await settle();
+      const chooseButtonWhenUnloaded = [...host.querySelectorAll('button')].some(b => b.textContent?.includes('Choose country'));
+      root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'nothing-chosen' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await settle();
+      const chooseButtonWhenLoaded = [...host.querySelectorAll('button')].some(b => b.textContent?.includes('Choose country'));
+
+      return {
+        loadingRole, loadingAnnouncement, announcedDuringError, loadingAfterRetryError,
+        badgeBeforeThreshold, badgeAfterRerender, badgeRole, badgeAnnouncement, behindBadge,
+        firstEmptyAnnounced, clearedOnPicture, repeatedEmptyAnnounced,
+        mapBadgeOutsideSurface, chooseButtonWhenUnloaded, chooseButtonWhenLoaded,
+      };
+    } finally {
+      root.unmount();
+      timers.restore();
+    }
+  },
+
+  async testHeadProductFollowRetry() {
+    headRetryState.retry = null;
+    headRetryState.error = null;
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.className = 'dash-grid-scroll';
+    host.style.width = '900px';
+    host.style.height = '400px';
+    document.body.appendChild(host);
+    const clock = makeClock();
+    let followCalls = 0;
+    const mockClient = {
+      available: true,
+      setMapViews: async () => {},
+      onMapStates: async () => () => {},
+      openFollow: async (ports: readonly MessagePort[]) => {
+        const owned = structuredClone([...ports], { transfer: [...ports] });
+        for (const p of owned) p.close();
+        return 'session-head-retry';
+      },
+      product: async (req: { product: string }) => {
+        if (req.product === 'follow') {
+          followCalls++;
+          if (followCalls === 1) throw new ShownError('Desktop panel channel busy.', 'panel follow 503');
+          return { data: { available: true, route: 7 } };
+        }
+        return { data: { available: true } };
+      },
+    };
+    const runtime = makeRuntime(clock, tracks, mockClient);
+    const template: DashboardTemplate = {
+      version: 1, name: 'Test', alignment: 'calendar',
+      roles: [{ id: 'primary', label: 'Primary', selectedTag: null }],
+      tracks: [{ id: 't1', roleId: 'primary', label: 'Primary', branchIndex: 0, anchorOffset: null }],
+      widgets: [{
+        id: 'hr1', kind: 'head-retry-test', configVersion: 1, title: 'Head retry', campaign: 'default',
+        trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'all' }, options: {},
+      }],
+      layouts: { lg: [{ i: 'hr1', x: 0, y: 0, w: 6, h: 8 }] },
+    };
+    const root = createRoot(host);
+    try {
+      root.render(createElement(DashboardGrid, { template, runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
+      await waitFor(() => host.querySelector('[data-state="error"]'), host);
+      await settle();
+      const firstError = classifyFailure(headRetryState.error as never);
+      const callsBeforeRetry = followCalls;
+      (headRetryState.retry as (() => void) | null)?.();
+      for (let i = 0; i < 60 && followCalls < 2; i++) await settle();
+      const callsAfterRetry = followCalls;
+      return { firstError, callsBeforeRetry, callsAfterRetry };
+    } finally {
+      root.unmount();
+    }
+  },
+
+  async testActiveResearchPopupOnEmpty() {
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.className = 'dash-grid-scroll';
+    host.style.width = '900px';
+    host.style.height = '400px';
+    document.body.appendChild(host);
+    const clock = makeClock();
+    const mockClient = {
+      available: true,
+      setMapViews: async () => {},
+      onMapStates: async () => () => {},
+      product: async (req: { sourceId: string; revision: string; product: string; params: Record<string, unknown> }) => {
+        if (req.product === 'research') {
+          return {
+            sourceId: req.sourceId, revision: req.revision, product: req.product,
+            data: {
+              history: {
+                coverage: [{ firstHour: 43800000, lastHour: 43800200 }],
+                slots: [{
+                  index: 0,
+                  availability: [{ firstHour: 43800000, lastHour: 43800110 }],
+                  entries: [{
+                    token: 'tech_a', level: 0, technologyHandle: 1, databaseIndex: 1,
+                    continuityStartHour: 43800000, firstObservedHour: 43800000, lastObservedHour: 43800110,
+                    startedAfterHour: null, endedByHour: 43800110, outcomeObservedHour: 43800110, outcome: 'completed',
+                  }],
+                }],
+              },
+              definitions: [{ token: 'tech_a', databaseIndex: 1, name: 'Synthetic Tech', description: null }],
+              artwork: [],
+              folders: [],
+              technologyFolders: [],
+              warnings: [],
+            },
+          };
+        }
+        if (req.product === 'research-slots') {
+          const hour = Number(req.params.hour ?? 43800100);
+          const slots = hour <= 43800110
+            ? [{
+                index: 0,
+                state: {
+                  firstHour: 43800000, lastHour: 43800110,
+                  token: 'tech_a', databaseIndex: 1, entryFirstObservedHour: 43800000,
+                  speedMultiplierRaw: '100000', bankedDaysRaw: '0', appliedDaysRaw: '0',
+                  aheadReductionYearsRaw: null, details: null,
+                },
+                progress: null,
+                definition: null,
+              }]
+            : [];
+          return {
+            sourceId: req.sourceId, revision: req.revision, product: req.product,
+            data: { tag: 'GER', readHour: hour, slots, missing: null, warnings: [], grants: { nextId: null, unavailable: null, grants: [] } },
+          };
+        }
+        if (req.product === 'research-breakdown') {
+          return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { parts: [] } };
+        }
+        return { sourceId: req.sourceId, revision: req.revision, product: req.product, data: { artwork: [], warnings: [] } };
+      },
+    };
+    const runtime = makeRuntime(clock, tracks, mockClient);
+    const makeWidget = (offset: number): WidgetSpec => ({
+      id: 'ar1', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default',
+      trackIds: ['t1'], time: { mode: 'pin', windows: { t1: { firstOffset: offset, lastOffset: offset } } },
+      countries: { kind: 'tags', tags: ['GER'] }, options: {},
+    });
+    const root = createRoot(host);
+    try {
+      root.render(createElement(ActiveResearchWidget, { widget: makeWidget(100), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
+      const rowName = await waitFor(() => host.querySelector<HTMLElement>('.active-row-name'), host);
+      rowName.click();
+      await waitFor(() => document.querySelector('.research-window'), host);
+      const openBeforeEmpty = !!document.querySelector('.research-window');
+      root.render(createElement(ActiveResearchWidget, { widget: makeWidget(150), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
+      await waitFor(() => host.querySelector('[data-state="empty"]'), host);
+      await settle();
+      const openAfterEmpty = !!document.querySelector('.research-window');
+      return { openBeforeEmpty, openAfterEmpty };
+    } finally {
+      root.unmount();
+    }
   },
 };

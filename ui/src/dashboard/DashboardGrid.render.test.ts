@@ -409,4 +409,31 @@ test('catalogue previews respect field.visibleWhen, TimeSection stays usable wit
       assert.doesNotMatch(html, /dash-empty/, `${name} does not render raw dash-empty`);
     }
   } finally { await realVite.close(); }
+
+  const activeResearchVite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'active-research-missing-ssr', enforce: 'pre',
+      transform(_source, id) {
+        const path = id.replaceAll('\\', '/');
+        if (path.endsWith('/widgets/research/useResearch.ts')) {
+          return `export const historyTokens = () => [];
+            export const useResearchReply = () => ({ track: { id: 't1', axisOffset: 0, branch: { id: 'b1', firstHour: 100, lastHour: 200 }, source: { id: 's1', revision: '1', metadata: { campaignKey: 'c', countries: [] } } }, tag: 'GER', data: { history: { slots: [], coverage: [] }, warnings: [] }, error: undefined, retry() {} });
+            export const useResearchSlots = () => ({ data: { hour: 43800100, slots: [], missing: 'Research table block 100 unreadable: checksum', warnings: [] }, error: undefined, retry() {}, read: 'asked', root() {}, live: { subscribe: () => () => {} }, latest: { current: undefined, inspect: () => undefined }, feed: null, inspected: () => undefined });`;
+        }
+        if (path.endsWith('/widgets/research/useTechnologyArtwork.ts')) return 'export const useTechnologyArtwork = () => ({ artwork: new Map(), warnings: [] });';
+      },
+    }] });
+  try {
+    const { default: ActiveResearch } = await activeResearchVite.ssrLoadModule('/ui/src/widgets/active-research/ActiveResearchWidget.tsx');
+    const html = renderToStaticMarkup(createElement(ActiveResearch as never, {
+      widget: { id: 'ar', kind: 'active-research', configVersion: 1, title: 'Active research', campaign: 'default', trackIds: ['t1'], time: { mode: 'follow' }, countries: { kind: 'tags', tags: ['GER'] }, options: {} },
+      runtime: { tracks: [], campaignTracks: [], defaultRoleId: null, maps: {}, client: { available: true }, clock: { getHour: () => 43800100, getSnapshot: () => ({ playing: false, hoursPerSecond: 1 }), subscribe: () => () => {}, subscribeFrame: () => () => {} } },
+      active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {},
+    } as never));
+    const visible = html.replace(/<[^>]*>/g, ' ');
+    assert.match(html, /data-state="not-recorded"/, 'unreadable research table renders not-recorded instead of empty');
+    assert.doesNotMatch(visible, /unreadable: checksum/, 'raw decoder error stays inside Details, not on the card face');
+    assert.match(html, /data-detail="Research table block 100 unreadable: checksum"/);
+    assert.match(visible, /Details/);
+  } finally { await activeResearchVite.close(); }
 });

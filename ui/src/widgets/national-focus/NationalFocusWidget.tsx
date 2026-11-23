@@ -273,6 +273,9 @@ export default function NationalFocusWidget({ widget, runtime, active, headerSlo
   if (!order || readingHour === undefined) {
     return <WidgetState kind="not-recorded" reason={missing?.reason} />;
   }
+  if (!moment && !listItems.length) {
+    return <WidgetState kind="empty" icon="target" message="No completed focuses recorded at this point." />;
+  }
   const newest = live ? order.completed.at(-1)?.ordinal : undefined;
   const shownFocus = activeFocus(order);
   const currentArt = at(shownFocus?.database ?? 'national', shownFocus?.token ?? '', hours?.active ?? readingHour);

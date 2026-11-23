@@ -27,6 +27,7 @@ export interface WidgetHeaderProps {
   active?: boolean;
   activeSwitch: DynamicViewSwitch | null;
   hasBodyState: boolean;
+  readingBadge?: string | null;
   summarySlotRef: (element: HTMLSpanElement | null) => void;
   countrySlotRef: (element: HTMLSpanElement | null) => void;
   headerSlotElement: HTMLSpanElement | null;
@@ -56,6 +57,7 @@ export default function WidgetHeader({
   active = false,
   activeSwitch,
   hasBodyState,
+  readingBadge = null,
   summarySlotRef,
   countrySlotRef,
   headerSlotElement,
@@ -80,6 +82,7 @@ export default function WidgetHeader({
   const pendingMeasure = useRef(false);
   const measuredHeader = useRef({
     measuredOnce: false,
+    lastHeaderWidth: 0,
     probeKey: '',
     pillKey: '', pill: 0,
     viewFullKey: '', viewFull: 0,
@@ -112,12 +115,12 @@ export default function WidgetHeader({
       return;
     }
     const inspect = () => {
-      const next = (headerSlotElement.textContent ?? '').trim().length > 0;
+      const next = headerSlotElement.childNodes.length > 0;
       setHasSummaryContent(previous => previous === next ? previous : next);
     };
     inspect();
     const observer = new MutationObserver(inspect);
-    observer.observe(headerSlotElement, { childList: true, subtree: true, characterData: true });
+    observer.observe(headerSlotElement, { childList: true });
     return () => observer.disconnect();
   }, [headerSlotElement]);
 
@@ -132,15 +135,14 @@ export default function WidgetHeader({
     };
     const trigger = (headerChanged: boolean, slotChanged: boolean) => {
       if (!headerChanged && !slotChanged) return;
-      if (isPlaying()) {
-        pendingMeasure.current = true;
-        return;
-      }
       if (headerChanged) {
         const next = Math.floor(header.clientWidth);
         setHeaderWidth(previous => previous === next ? previous : next);
       }
-      if (slotChanged) setMeasureEpoch(previous => previous + 1);
+      if (slotChanged) {
+        if (isPlaying()) pendingMeasure.current = true;
+        else setMeasureEpoch(previous => previous + 1);
+      }
     };
     const observer = new ResizeObserver(entries => {
       let headerChanged = false;
@@ -166,12 +168,9 @@ export default function WidgetHeader({
     if (hasSubject) observe(header.querySelector('.dash-widget-country-button, .dash-widget-controls > .dash-widget-country, .dash-widget-controls > .dash-widget-country-slot'));
     if (activeSwitch) observe(header.querySelector('[data-view-switch]'));
     if (showTime) observe(header.querySelector('.dash-time-chip'));
-    if (!isPlaying()) {
-      const next = Math.floor(header.clientWidth);
-      setHeaderWidth(previous => previous === next ? previous : next);
-    } else {
-      pendingMeasure.current = true;
-    }
+    const next = Math.floor(header.clientWidth);
+    setHeaderWidth(previous => previous === next ? previous : next);
+    if (isPlaying()) pendingMeasure.current = true;
     const unsub = !readOnly ? runtime.clock.subscribe?.(() => {
       if (isPlaying() || !pendingMeasure.current) return;
       pendingMeasure.current = false;
@@ -187,11 +186,13 @@ export default function WidgetHeader({
     if (!header || header.clientWidth <= 0) return;
     const playing = !readOnly && (runtime.clock.getSnapshot?.().playing ?? false);
     const cache = measuredHeader.current;
-    if (playing && cache.measuredOnce) {
+    const headerResized = cache.measuredOnce && header.clientWidth !== cache.lastHeaderWidth;
+    if (playing && cache.measuredOnce && !headerResized) {
       pendingMeasure.current = true;
       return;
     }
     cache.measuredOnce = true;
+    cache.lastHeaderWidth = header.clientWidth;
     const available = header.clientWidth - 16;
     const widthOf = (el: HTMLElement | null) => el ? Math.ceil(el.getBoundingClientRect().width) : 0;
     const iconEl = header.querySelector<HTMLElement>('.dash-widget-icon');
@@ -295,6 +296,7 @@ export default function WidgetHeader({
       {source && <span className="dash-widget-subtitle">{recordingDisplayName(source.path)}</span>}
     </div>
     <span className="dash-widget-summary" ref={summarySlotRef} hidden={effectiveDrop.dropPill || hasBodyState || undefined} />
+    {readingBadge && <span className="dash-reading-badge is-in-header">{readingBadge}</span>}
     <div className="dash-widget-controls">
       {hasSubject && (readOnly || !template || !onApply
         ? <CountryChip widget={widget} runtime={runtime} active={false} compact={effectiveDrop.compactSubject} onSlot={countrySlotRef} />
