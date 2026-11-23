@@ -236,32 +236,44 @@ test('renderer preload status reports incomplete before preload runs', async () 
   assert.equal(status.done, false);
 });
 
-test('PerfRecorder schedules no animation frames or flush timers while paused and idle, and wakes on playback or activity', async () => {
-  const saved = new Map(['requestAnimationFrame', 'cancelAnimationFrame', 'PerformanceObserver', 'devicePixelRatio', 'innerWidth', 'innerHeight', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'MessageChannel']
+function installPerfEnv() {
+  const saved = new Map(['requestAnimationFrame', 'cancelAnimationFrame', 'PerformanceObserver', 'devicePixelRatio', 'innerWidth', 'innerHeight', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'MessageChannel', 'performance', 'window']
     .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  let now = 0;
   const rafs = new Map<number, FrameRequestCallback>();
   let nextRaf = 0, rafCount = 0;
   let intervalCalls = 0;
   const timeouts = new Map<number, () => void>();
   let nextTimeout = 0;
-  const ports: { onmessage: ((event: { data: number }) => void) | null }[] = [];
+  const pendingMessages: (() => void)[] = [];
   class FakeChannel {
     port1 = { onmessage: null as ((event: { data: number }) => void) | null };
-    port2 = { postMessage: (data: number) => { queueMicrotask(() => this.port1.onmessage?.({ data })); } };
-    constructor() { ports.push(this.port1); }
+    port2 = { postMessage: (data: number) => { pendingMessages.push(() => this.port1.onmessage?.({ data })); } };
   }
   class FakeObserver {
     static supportedEntryTypes: string[] = [];
     observe() {}
     disconnect() {}
   }
-  const runNextRaf = (now: number) => {
+  const flushMessages = () => {
+    while (pendingMessages.length) pendingMessages.shift()!();
+  };
+  const runNextRaf = (at: number) => {
     const first = rafs.entries().next().value as [number, FrameRequestCallback] | undefined;
     if (!first) return false;
     rafs.delete(first[0]);
-    first[1](now);
+    now = at;
+    first[1](at);
+    flushMessages();
     return true;
   };
+  const runAllTimeouts = () => {
+    for (const [id, fn] of [...timeouts.entries()]) {
+      timeouts.delete(id);
+      fn();
+    }
+  };
+  const setNow = (value: number) => { now = value; };
   Object.assign(globalThis, {
     requestAnimationFrame: (cb: FrameRequestCallback) => { rafCount++; const id = ++nextRaf; rafs.set(id, cb); return id; },
     cancelAnimationFrame: (id: number) => { rafs.delete(id); },
@@ -274,58 +286,269 @@ test('PerfRecorder schedules no animation frames or flush timers while paused an
     setTimeout: (fn: () => void) => { const id = ++nextTimeout; timeouts.set(id, fn); return id as unknown as ReturnType<typeof setTimeout>; },
     clearTimeout: (id: number) => { timeouts.delete(id); },
     MessageChannel: FakeChannel,
+    performance: { timeOrigin: 0, now: () => now },
+    window: {},
   });
+  return {
+    rafs,
+    get rafCount() { return rafCount; },
+    get intervalCalls() { return intervalCalls; },
+    setNow,
+    runNextRaf,
+    flushMessages,
+    runAllTimeouts,
+    restore() {
+      for (const [key, desc] of saved) {
+        if (desc) Object.defineProperty(globalThis, key, desc);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    },
+  };
+}
+
+test('PerfRecorder schedules no animation frames or flush timers while paused and idle, and wakes on playback or activity', async () => {
+  const env = installPerfEnv();
   let recorder: PerfRecorder | null = null;
   try {
     recorder = new PerfRecorder();
     const lines = (recorder as unknown as { lines: string[] }).lines;
-    assert.equal(intervalCalls, 0, 'does not run a permanent polling interval while idle');
-    assert.equal(rafs.size, 0, 'starts idle with no animation frame scheduled while paused');
-    const initialCount = rafCount;
+    assert.equal(env.intervalCalls, 0, 'does not run a permanent polling interval while idle');
+    assert.equal(env.rafs.size, 0, 'starts idle with no animation frame scheduled while paused');
 
+    env.setNow(10);
     recorder.clock(100, false, 24, 1, 1);
-    assert.equal(rafs.size, 1, 'wakes on a paused clock update');
-    runNextRaf(10);
-    await Promise.resolve();
-    runNextRaf(26);
-    await Promise.resolve();
-    assert.equal(rafs.size, 0, 'returns to sleep after recording the paused update');
-    const afterPaused = rafCount;
-    assert.ok(afterPaused > initialCount);
+    assert.equal(env.rafs.size, 0, 'paused clock tick without work keeps the recorder asleep');
 
+    env.setNow(100);
     recorder.count('w1', 'render');
-    assert.equal(rafs.size, 1, 'wakes on widget work while paused');
-    runNextRaf(100);
-    await Promise.resolve();
-    runNextRaf(116);
-    await Promise.resolve();
-    assert.equal(rafs.size, 0, 'sleeps again once the work frame is recorded');
+    assert.equal(env.rafs.size, 1, 'wakes on widget work while paused');
+    env.runNextRaf(116);
+    assert.equal(env.rafs.size, 1, 'runs one trailing frame after dirty wake');
+    env.runNextRaf(132);
+    assert.equal(env.rafs.size, 0, 'sleeps again once the work frame is recorded');
     const recorded = lines.map(line => JSON.parse(line) as { t: string; playing?: boolean; work?: Record<string, unknown> });
     assert.ok(recorded.some(r => r.t === 'frame' && r.work?.w1), 'recorded the paused work frame');
 
+    env.setNow(200);
     recorder.clock(101, true, 24, 2, 1);
-    assert.equal(rafs.size, 1, 'starts continuous frames while playing');
-    runNextRaf(200);
-    await Promise.resolve();
-    assert.equal(rafs.size, 1, 'keeps scheduling frames while playing');
-    runNextRaf(216);
-    await Promise.resolve();
-    assert.equal(rafs.size, 1, 'still scheduling frames while playing');
+    assert.equal(env.rafs.size, 1, 'starts continuous frames while playing');
+    env.runNextRaf(216);
+    assert.equal(env.rafs.size, 1, 'keeps scheduling frames while playing');
+    env.runNextRaf(232);
+    assert.equal(env.rafs.size, 1, 'still scheduling frames while playing');
 
+    env.setNow(240);
     recorder.clock(102, false, 24, 3, 1);
-    runNextRaf(232);
-    await Promise.resolve();
-    assert.equal(rafs.size, 0, 'stops scheduling frames once playback pauses and the final frame is recorded');
+    env.runNextRaf(248);
+    assert.equal(env.rafs.size, 0, 'stops scheduling frames once playback pauses and the final frame is recorded');
   } finally {
     if (recorder) {
       const stop = recorder.finish();
-      for (let i = 0; i < 4 && runNextRaf(999); i++) {}
-      for (const fn of [...timeouts.values()]) fn();
+      for (let i = 0; i < 4 && env.runNextRaf(999); i++) {}
+      env.runAllTimeouts();
       await stop.catch(() => {});
     }
-    for (const [key, desc] of saved) {
-      if (desc) Object.defineProperty(globalThis, key, desc);
-      else Reflect.deleteProperty(globalThis, key);
+    env.restore();
+  }
+});
+
+test('F6: Play after idle records the stall interval before the first animation callback without charging idle time', async () => {
+  const env = installPerfEnv();
+  let recorder: PerfRecorder | null = null;
+  try {
+    env.setNow(100);
+    recorder = new PerfRecorder();
+    const lines = (recorder as unknown as { lines: string[] }).lines;
+    assert.equal(env.rafs.size, 0);
+
+    env.setNow(30_100);
+    recorder.clock(100, true, 24, 1, 1);
+    assert.equal(env.rafs.size, 1);
+    env.runNextRaf(30_185);
+    const frames = lines.map(line => JSON.parse(line) as { t: string; dt?: number; playing?: boolean }).filter(r => r.t === 'frame');
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0]!.playing, true);
+    assert.equal(frames[0]!.dt, 85, 'records the 85ms Play stall without charging the 30s idle gap');
+  } finally {
+    if (recorder) {
+      const stop = recorder.finish();
+      for (let i = 0; i < 4 && env.runNextRaf(31_000); i++) {}
+      env.runAllTimeouts();
+      await stop.catch(() => {});
     }
+    env.restore();
+  }
+});
+
+test('F7: paused paint or commit just before stop() or finish() is emitted before the boundary', async () => {
+  const env = installPerfEnv();
+  let recorder: PerfRecorder | null = null;
+  try {
+    env.setNow(100);
+    recorder = new PerfRecorder();
+    const flushed: string[] = [];
+    (recorder as unknown as { flush: () => Promise<void> }).flush = async () => {
+      const lines = (recorder as unknown as { lines: string[] }).lines;
+      flushed.push(...lines.splice(0));
+    };
+
+    env.setNow(500);
+    recorder.paint('w-paint', 4.5, 500);
+    recorder.count('w-work', 'render');
+    const stopping = recorder.stop().catch(() => {});
+    for (let i = 0; i < 6; i++) {
+      env.runNextRaf(516 + i * 16);
+      env.runAllTimeouts();
+      await Promise.resolve();
+    }
+    await stopping;
+    const stopRecords = flushed.map(line => JSON.parse(line) as { t: string; work?: Record<string, unknown>; paint?: Record<string, number> });
+    const frameIdx = stopRecords.findIndex(r => r.t === 'frame' && r.work?.['w-work'] && r.paint?.['w-paint'] === 4.5);
+    const stopIdx = stopRecords.findIndex(r => r.t === 'stop');
+    assert.ok(frameIdx >= 0 && stopIdx > frameIdx, 'paused work and paint emit before the stop record');
+
+    flushed.length = 0;
+    env.setNow(700);
+    recorder.paint('w-late', 3.25, 700);
+    const finishing = recorder.finish();
+    for (let i = 0; i < 6; i++) {
+      env.runNextRaf(716 + i * 16);
+      env.runAllTimeouts();
+      await Promise.resolve();
+    }
+    await finishing;
+    const finishRecords = flushed.map(line => JSON.parse(line) as { t: string; paint?: Record<string, number> });
+    assert.ok(finishRecords.some(r => r.t === 'frame' && r.paint?.['w-late'] === 3.25), 'paused paint just before finish() is emitted instead of cancelled');
+    recorder = null;
+  } finally {
+    if (recorder) {
+      const stop = recorder.finish();
+      for (let i = 0; i < 4 && env.runNextRaf(999); i++) {}
+      env.runAllTimeouts();
+      await stop.catch(() => {});
+    }
+    env.restore();
+  }
+});
+
+test('F8: commits before PerfRecorder attaches are not counted in the first emitted frame', async () => {
+  const env = installPerfEnv();
+  const hook = (globalThis as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: { onCommitFiberRoot: (r: number, root: { current: unknown }) => void } }).__REACT_DEVTOOLS_GLOBAL_HOOK__;
+  assert.ok(hook, 'commitCount installs the fiber commit hook');
+  const root = { current: { child: null, sibling: null, return: null, alternate: null, flags: 0, subtreeFlags: 0, type: null, elementType: null, memoizedProps: null, memoizedState: null, dependencies: null } };
+  let recorder: PerfRecorder | null = null;
+  try {
+    hook.onCommitFiberRoot(1, root);
+    hook.onCommitFiberRoot(1, root);
+    hook.onCommitFiberRoot(1, root);
+    env.setNow(100);
+    recorder = new PerfRecorder();
+    const lines = (recorder as unknown as { lines: string[] }).lines;
+    env.setNow(120);
+    hook.onCommitFiberRoot(1, root);
+    env.runNextRaf(136);
+    const frames = lines.map(line => JSON.parse(line) as { t: string; commits?: number; commitSequence?: number }).filter(r => r.t === 'frame');
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0]!.commits, 1);
+    assert.equal(frames[0]!.commitSequence, 1);
+  } finally {
+    if (recorder) {
+      const stop = recorder.finish();
+      for (let i = 0; i < 4 && env.runNextRaf(999); i++) {}
+      env.runAllTimeouts();
+      await stop.catch(() => {});
+    }
+    env.restore();
+  }
+});
+
+test('playing window records the same frames, commits, paints and pictures as a continuous reference loop', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const env = installPerfEnv();
+  const hook = (globalThis as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: { onCommitFiberRoot: (r: number, root: { current: unknown }) => void } }).__REACT_DEVTOOLS_GLOBAL_HOOK__!;
+  const root = { current: { child: null, sibling: null, return: null, alternate: null, flags: 0, subtreeFlags: 0, type: null, elementType: null, memoizedProps: null, memoizedState: null, dependencies: null } };
+  let recorder: PerfRecorder | null = null;
+  try {
+    env.setNow(1000);
+    recorder = new PerfRecorder();
+    const flushed: string[] = [];
+    (recorder as unknown as { flush: () => Promise<void> }).flush = async () => {
+      const lines = (recorder as unknown as { lines: string[] }).lines;
+      flushed.push(...lines.splice(0));
+    };
+    await recorder.beginAudit();
+    await recorder.start();
+
+    const refFrames: { playing: boolean; commits: number; paintMs: number; renders: number }[] = [];
+    let refLast: number | null = 1000;
+    let refPlaying = false;
+    let refCommits = 0;
+    let refRenders = 0;
+    const refPaints = new Map<number, number>();
+    const refTick = (at: number) => {
+      if (refLast !== null) {
+        let paintMs = 0;
+        for (const [pAt, ms] of refPaints) if (pAt <= refLast) { paintMs += ms; refPaints.delete(pAt); }
+        refFrames.push({ playing: refPlaying, commits: refCommits, paintMs, renders: refRenders });
+        refCommits = 0;
+        refRenders = 0;
+      }
+      refLast = at;
+    };
+
+    const sample = (at: number) => ({ t: 'picture', at, widget: 'w1', surface: 'table', placement: 1, owner: 0, renderer: 'page', head: at, hour: at, offset: 0, since: at, through: at, eligibleHour: at, entry: at, parts: [], face: '', drawMs: 0, mode: 'picture', dim: false, reset: 0, binding: 0, inspect: null, tooltip: false }) as never;
+
+    env.setNow(1000);
+    recorder.clock(10, true, 24, 1, 1);
+    refPlaying = true;
+    for (let i = 1; i <= 5; i++) {
+      const t = 1000 + i * 16;
+      env.setNow(t - 4);
+      if (i % 2 === 1) {
+        hook.onCommitFiberRoot(1, root);
+        refCommits++;
+      }
+      recorder.count('w1', 'render');
+      refRenders++;
+      recorder.paint('w1', 2, t);
+      refPaints.set(t, (refPaints.get(t) ?? 0) + 2);
+      recordPicture(sample(i));
+      env.runNextRaf(t);
+      refTick(t);
+    }
+    env.setNow(1090);
+    recorder.clock(15, false, 24, 2, 1);
+    refPlaying = false;
+    env.runNextRaf(1096);
+    refTick(1096);
+
+    const stopping = recorder.stop().catch(() => {});
+    for (let i = 0; i < 6; i++) {
+      env.runNextRaf(1112 + i * 16);
+      env.runAllTimeouts();
+      await Promise.resolve();
+    }
+    await stopping;
+
+    const batch = await capturePicturesBatch(100);
+    await capturePictures(false);
+    const records = flushed.map(line => JSON.parse(line) as { t: string; playing?: boolean; commits?: number; paint_ms?: number; work?: { w1?: { render?: number } } });
+    const startIdx = records.findIndex(r => r.t === 'start');
+    const stopIdx = records.findIndex(r => r.t === 'stop');
+    const windowFrames = records.slice(startIdx + 1, stopIdx).filter(r => r.t === 'frame');
+
+    assert.equal(windowFrames.filter(f => f.playing).length, refFrames.filter(f => f.playing).length);
+    assert.equal(windowFrames.reduce((s, f) => s + (f.commits ?? 0), 0), refFrames.reduce((s, f) => s + f.commits, 0));
+    assert.equal(windowFrames.reduce((s, f) => s + (f.paint_ms ?? 0), 0), refFrames.reduce((s, f) => s + f.paintMs, 0));
+    assert.equal(windowFrames.reduce((s, f) => s + (f.work?.w1?.render ?? 0), 0), refFrames.reduce((s, f) => s + f.renders, 0));
+    assert.equal(batch.records.filter(r => r.t === 'picture').length, 5);
+  } finally {
+    if (recorder) {
+      const stop = recorder.finish();
+      for (let i = 0; i < 4 && env.runNextRaf(2000); i++) {}
+      env.runAllTimeouts();
+      await stop.catch(() => {});
+    }
+    env.restore();
   }
 });

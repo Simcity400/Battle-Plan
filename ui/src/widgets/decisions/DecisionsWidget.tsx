@@ -8,7 +8,8 @@ import { CountryFlagUrl } from '../../components/CountryFlag';
 import WidgetState from '../../components/WidgetState';
 import LogList from '../../charts/log/LogList';
 import LogGaps from '../../charts/log/LogGaps';
-import type { LogRow } from '../../charts/log/logData';
+import { NO_COUNTRY_REQUESTS, sameCountryRequests } from '../../charts/log/logData';
+import type { CountryRequest, LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
@@ -34,10 +35,6 @@ import './decisions.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 
-const NO_ROWS: readonly LogRow<DecisionAt>[] = [];
-const sameKeys = (held: readonly LogRow<DecisionAt>[], next: readonly LogRow<DecisionAt>[]) => held.length === next.length
-  && held.every((row, index) => row.key === next[index].key);
-
 export default function DecisionsWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
@@ -60,8 +57,8 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
     edges: card => card.occurrence.edges, days: card => card.occurrence.edges.some(edge => edge.days !== null),
     at: (row, hour, breaks) => decisionAt(row, hour, breaks, statuses, country) }), [statuses, country, scope]);
   const cards = useCards(runtime, widget, track, active && match.ready, list);
-  const [visible, setVisible] = useDistinctState<readonly LogRow<DecisionAt>[]>(NO_ROWS, sameKeys);
-  const wanted = useMemo(() => occurrenceCountryRequests(visible.map(row => row.item.card.occurrence)), [visible]);
+  const [wanted, setWanted] = useDistinctState<readonly CountryRequest[]>(NO_COUNTRY_REQUESTS, sameCountryRequests);
+  const onVisible = useCallback((rows: readonly LogRow<DecisionAt>[]) => setWanted(occurrenceCountryRequests(rows.map(row => row.item.card.occurrence))), [setWanted]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameHour = (row: LogRow<DecisionAt>) => row.item.card.occurrence.edges[0].row.nameHour;
   const label = useCallback((hour: number, tag: string) => {
@@ -116,7 +113,7 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
       onToggle={key => setOption?.(key, !statuses.has(key))} /></div>}
     <LogGaps missing={cards.feed.missing} until={cards.hour} />
     <LogList pages={cards.pages} label="Decisions" density={log.density} months={log.months}
-      animate={log.animate && cards.follow} playhead={cards.follow ? cards.hour : null} onVisible={setVisible} onWantedPages={cards.feed.onWantedPages}
+      animate={log.animate && cards.follow} playhead={cards.follow ? cards.hour : null} onVisible={onVisible} onWantedPages={cards.feed.onWantedPages}
       renderRow={renderRow} describe={row => decisionDescription(row.item, name(row))} tooltip={row => decisionTooltip(row.item, name(row)).map(form => ({ ...form,
         ...countryNameDetails(...[row.item.card.country, row.item.card.target].map(tag => tag === null ? null : label(nameHour(row), tag))) }))}
       menu={row => decisionJumps(row.item).map(hour => jumpItem(runtime, track.id, hour))}

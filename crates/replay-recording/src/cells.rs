@@ -11,7 +11,59 @@ use replay_columnar::{
         restore::RestoreEntry,
     },
 };
-use std::{collections::BTreeMap, io};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    io,
+};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TableReadStats {
+    pub opened: u64,
+    pub restores: u64,
+    pub stretches: u64,
+    pub backward_seeks: u64,
+}
+
+pub type ReadCounts = BTreeMap<TableId, TableReadStats>;
+
+thread_local! {
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    static COUNTS: RefCell<Option<ReadCounts>> = const { RefCell::new(None) };
+}
+
+fn note_read(table: TableId, update: impl FnOnce(&mut TableReadStats)) {
+    if !COUNTING.get() {
+        return;
+    }
+    COUNTS.with(|held| {
+        if let Some(counts) = held.borrow_mut().as_mut() {
+            update(counts.entry(table).or_default());
+        }
+    });
+}
+
+pub fn count_reads<T>(work: impl FnOnce() -> T) -> (T, ReadCounts) {
+    struct Guard {
+        previous_flag: bool,
+        previous: Option<ReadCounts>,
+    }
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            COUNTING.set(self.previous_flag);
+            COUNTS.with(|held| *held.borrow_mut() = self.previous.take());
+        }
+    }
+    let previous_flag = COUNTING.replace(true);
+    let previous = COUNTS.with(|held| held.borrow_mut().replace(BTreeMap::new()));
+    let mut guard = Guard { previous_flag, previous };
+    let value = work();
+    let counts = COUNTS.with(|held| held.borrow_mut().take()).unwrap_or_default();
+    COUNTING.set(guard.previous_flag);
+    COUNTS.with(|held| *held.borrow_mut() = guard.previous.take());
+    std::mem::forget(guard);
+    (value, counts)
+}
 
 fn label(name: &str) -> engine_allocation::labels::Scope {
     engine_allocation::labels::enter(engine_allocation::labels::owner(name), engine_allocation::labels::Kind::WalkerTables)
@@ -165,6 +217,7 @@ struct LogRead {
 
 impl TableReader {
     pub fn new(recording: &Recording, run: u32, table: TableId, columns: Option<&[usize]>) -> io::Result<Self> {
+        note_read(table, |stats| stats.opened += 1);
         let held = recording.run(run)?;
         let index = table.index();
         let absent = recording.predates(index).is_some();
@@ -346,6 +399,7 @@ impl TableReader {
         .map_err(|error| self.damaged(restored, error))?;
         self.cells = cells;
         self.restores += 1;
+        note_read(self.table(), |stats| stats.restores += 1);
         self.strings = Strings::default();
         for (id, text) in meta.strings {
             self.strings.pin(id, &text)?;
@@ -437,6 +491,9 @@ impl TableReader {
 
     pub fn go_to(&mut self, recording: &Recording, ordinal: u32) -> io::Result<()> {
         self.check_ordinal(ordinal)?;
+        if self.ordinal.is_some_and(|at| ordinal < at) {
+            note_read(self.table(), |stats| stats.backward_seeks += 1);
+        }
         match self.ordinal {
             Some(at) if at == ordinal => {
                 self.changes.clear();
@@ -487,6 +544,7 @@ impl TableReader {
     }
 
     pub fn read_stretch(&mut self, recording: &Recording, to: u32) -> io::Result<Stretch> {
+        note_read(self.table(), |stats| stats.stretches += 1);
         if self.log.is_some() {
             return Err(invalid(format!("{:?} is a log: its rows never change, so it has no stretch of track events; read its rows at an hour", self.table())));
         }

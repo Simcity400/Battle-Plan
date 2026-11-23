@@ -480,29 +480,6 @@ fn cell_number(kind: Kind, value: Value<'_>) -> Option<i64> {
     })
 }
 
-fn slice_read_at(
-    recording: &Recording,
-    held_run: &RecordingRun,
-    reader: &mut TableReader,
-    col: usize,
-    table: TableId,
-    owner: u32,
-    hour: i32,
-) -> io::Result<Option<i32>> {
-    let Some(ordinal) = held_run.ordinal(hour) else { return Ok(None) };
-    dashboard_query::cost::storage(|| reader.go_to(recording, ordinal))?;
-    if !reader.available() {
-        return Ok(None);
-    }
-    let view = reader.view();
-    let Some(slot) = view.slot(read_key(table, owner)) else { return Ok(None) };
-    if reader.read_rows().is_some_and(|read| read.binary_search(&slot).is_err()) {
-        return Ok(None);
-    }
-    let Some(&kind) = reader.kinds().get(col) else { return Ok(None) };
-    Ok(cell_number(kind, view.value(col, slot)).and_then(|v| i32::try_from(v).ok()))
-}
-
 fn project_row_at(
     recording: &Recording,
     held_run: &RecordingRun,
@@ -1273,181 +1250,226 @@ struct Counted {
     definition: Option<u32>,
 }
 
-#[allow(clippy::too_many_arguments, reason = "Point-lookup helper borrows the run readers and custody spans directly without cloning per country.")]
-fn first_usable_history_read(
-    recording: &Recording,
-    held_run: &RecordingRun,
-    slice_reader: &mut TableReader,
-    sample_col: usize,
-    custody: &Custody,
-    history_complete: &[(i32, i32)],
-    owner: u32,
-    epoch_start: i32,
-    epoch_end: i32,
-    min_stamp: i32,
-    cancelled: &AtomicBool,
-) -> io::Result<Option<(i32, i32)>> {
-    let Some(spans) = custody.owners.get(&owner) else { return Ok(None) };
-    for &(span_first, span_last) in spans {
-        let start = span_first.max(epoch_start);
-        let end = span_last.min(epoch_end);
-        if start > end {
-            continue;
-        }
-        let mut h = start;
-        let mut stride = STAGGER_PERIOD;
-        let mut cur = slice_read_at(recording, held_run, slice_reader, sample_col, TableId::ProjectHistory, owner, h)?;
-        loop {
-            dashboard_text::metadata::check_cancel(cancelled)?;
-            if let Some(stamp) = custody.usable(owner, cur, history_complete, h)
-                && stamp >= min_stamp
-            {
-                return Ok(Some((h, stamp)));
-            }
-            if h >= end {
-                break;
-            }
-            let probe = h.saturating_add(stride).min(end);
-            let next_val = slice_read_at(recording, held_run, slice_reader, sample_col, TableId::ProjectHistory, owner, probe)?;
-            if next_val == cur {
-                h = probe;
-                stride = stride.saturating_mul(2).min(4096);
-                continue;
-            }
-            stride = STAGGER_PERIOD;
-            let (mut lo, mut hi) = (h + 1, probe);
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-                let mid_val = slice_read_at(recording, held_run, slice_reader, sample_col, TableId::ProjectHistory, owner, mid)?;
-                if mid_val == cur {
-                    lo = mid + 1;
-                } else {
-                    hi = mid;
-                }
-            }
-            h = lo;
-            cur = slice_read_at(recording, held_run, slice_reader, sample_col, TableId::ProjectHistory, owner, h)?;
-        }
-    }
-    Ok(None)
-}
-
 fn step_cells(steps: &[Step], hour: i32) -> Option<&[Cell]> {
     let at = steps.partition_point(|step| step.hour <= hour);
     at.checked_sub(1).and_then(|index| steps[index].cells.as_deref())
 }
 
-#[allow(clippy::too_many_arguments, reason = "Run-batched evidence pass sorts all completion epochs across countries so SliceReads and Projects readers advance monotonically once.")]
+fn slice_read_value(reader: &TableReader, col: usize, table: TableId, owner: u32) -> Option<i32> {
+    if !reader.available() {
+        return None;
+    }
+    let view = reader.view();
+    let slot = view.slot(read_key(table, owner))?;
+    if reader.read_rows().is_some_and(|read| read.binary_search(&slot).is_err()) {
+        return None;
+    }
+    let &kind = reader.kinds().get(col)?;
+    cell_number(kind, view.value(col, slot)).and_then(|v| i32::try_from(v).ok())
+}
+
+struct PendingHit {
+    piece_idx: usize,
+    raw: u32,
+    hour: i32,
+    h_stamp: i32,
+    p_stamp: Option<i32>,
+    listed: BTreeMap<(u32, u32), Vec<Entry>>,
+}
+
+struct CompletionWatch {
+    win_start: i32,
+    win_end: i32,
+    piece_idx: usize,
+    raw: u32,
+    project: u32,
+    entry: Entry,
+}
+
+#[allow(clippy::too_many_arguments, reason = "Run-batched evidence pass advances one SliceReads reader and one Projects reader strictly forward across active completion windows.")]
 fn see_run_evidence(
     tag_facts: &mut BTreeMap<String, Facts>,
     campaign_start: i32,
     recording: &Recording,
+    run: u32,
     held_run: &RecordingRun,
     prepared: &[(String, Piece, Custody, Vec<u32>)],
     history_by_owner: &HashMap<u32, Vec<(u32, u32, Vec<Step>)>>,
     from: i32,
     to: i32,
-    sample_col: usize,
-    slice_reader: &mut TableReader,
-    project_reader: &mut TableReader,
+    sample: &[usize; 1],
     projects_complete: &[(i32, i32)],
     history_complete: &[(i32, i32)],
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    let mut tasks: Vec<(i32, i32, i32, usize, u32)> = Vec::new();
-    for (piece_idx, (_, piece, custody, owners)) in prepared.iter().enumerate() {
+    let mut seen: std::collections::HashSet<(String, u32, u32, u32, u32, Entry)> = std::collections::HashSet::new();
+    for (tag, facts) in tag_facts.iter() {
+        for (&(slot, id, owner, local), evidence) in &facts.evidence {
+            for kept in &evidence.entries {
+                seen.insert((tag.clone(), slot, id, owner, local, kept.entry));
+            }
+        }
+    }
+    let mut watches: Vec<CompletionWatch> = Vec::new();
+    for (piece_idx, (tag, piece, _, owners)) in prepared.iter().enumerate() {
+        let reach = piece.reach();
         for &raw in owners {
             let Some(held) = history_by_owner.get(&raw) else { continue };
-            let mut completion_hours: Vec<i32> = Vec::new();
-            for (_, ordinal, steps) in held {
-                for step in steps {
-                    if step.hour <= piece.last
-                        && step.cells.as_deref().and_then(|cells| history_entry(*ordinal, cells)).is_some_and(|entry| entry.completion() && (from..=to).contains(&entry.date))
-                    {
-                        completion_hours.push(step.hour);
+            for (project, ordinal, steps) in held {
+                for (idx, step) in steps.iter().enumerate() {
+                    let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*ordinal, cells)) else { continue };
+                    if !entry.completion() || !(from..=to).contains(&entry.date) {
+                        continue;
+                    }
+                    if seen.contains(&(tag.clone(), piece.slot, piece.id, raw, *project, entry)) {
+                        continue;
+                    }
+                    let step_end = steps.get(idx + 1).map_or(piece.last, |next| (next.hour - 1).min(piece.last));
+                    if step_end < reach || step.hour > piece.last {
+                        continue;
+                    }
+                    let win_start = step.hour.max(piece.first);
+                    let win_end = step_end.saturating_add(STAGGER_PERIOD - 1).min(piece.last);
+                    if win_start <= win_end {
+                        watches.push(CompletionWatch { win_start, win_end, piece_idx, raw, project: *project, entry });
                     }
                 }
             }
-            let Some(&first_completion) = completion_hours.iter().min() else { continue };
-            let mut epochs = completion_hours;
-            if first_completion <= piece.first {
-                epochs.push(piece.first);
+        }
+    }
+    if watches.is_empty() {
+        return Ok(());
+    }
+    watches.sort_unstable_by_key(|w| (w.win_start, w.piece_idx, w.raw, w.project));
+    let mut slice_reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::SliceReads, Some(sample)))?;
+    slice_reader.index_keys();
+    let sample_col = sample[0];
+    let mut hits: Vec<PendingHit> = Vec::new();
+    let mut project_asks: Vec<(i32, u32, u32)> = Vec::new();
+    let mut last_h_stamp: HashMap<(usize, u32), i32> = HashMap::new();
+    let mut active: Vec<usize> = Vec::new();
+    let mut active_pairs: Vec<(usize, u32)> = Vec::new();
+    let mut next_watch = 0usize;
+    let mut hour = watches[0].win_start;
+    loop {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        active.retain(|&w| {
+            let watch = &watches[w];
+            if hour > watch.win_end {
+                return false;
             }
-            if let Some(spans) = custody.owners.get(&raw) {
-                for &(span_first, span_last) in spans {
-                    if span_first <= piece.last && span_last >= piece.first && span_first >= first_completion {
-                        epochs.push(span_first.max(piece.first));
-                    }
+            let (tag, piece, ..) = &prepared[watch.piece_idx];
+            !seen.contains(&(tag.clone(), piece.slot, piece.id, watch.raw, watch.project, watch.entry))
+        });
+        if active.is_empty() {
+            while next_watch < watches.len() {
+                let watch = &watches[next_watch];
+                let (tag, piece, ..) = &prepared[watch.piece_idx];
+                if !seen.contains(&(tag.clone(), piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
+                    break;
                 }
+                next_watch += 1;
             }
-            epochs.sort_unstable();
-            epochs.dedup();
-            for (idx, &epoch_hour) in epochs.iter().enumerate() {
-                let epoch_start = epoch_hour.max(piece.first);
-                let epoch_end = epochs.get(idx + 1).map_or(piece.last, |&next| (next - 1).min(piece.last));
-                if epoch_start > epoch_end {
+            if next_watch >= watches.len() {
+                break;
+            }
+            hour = hour.max(watches[next_watch].win_start);
+        }
+        while next_watch < watches.len() && watches[next_watch].win_start <= hour {
+            let watch = &watches[next_watch];
+            let (tag, piece, ..) = &prepared[watch.piece_idx];
+            if hour <= watch.win_end && !seen.contains(&(tag.clone(), piece.slot, piece.id, watch.raw, watch.project, watch.entry)) {
+                active.push(next_watch);
+            }
+            next_watch += 1;
+        }
+        if active.is_empty() {
+            continue;
+        }
+        if let Some(ordinal) = held_run.ordinal(hour) {
+            dashboard_query::cost::storage(|| slice_reader.go_to(recording, ordinal))?;
+            active_pairs.clear();
+            for &w in &active {
+                active_pairs.push((watches[w].piece_idx, watches[w].raw));
+            }
+            active_pairs.sort_unstable();
+            active_pairs.dedup();
+            for &(piece_idx, raw) in &active_pairs {
+                let (tag, piece, custody, _) = &prepared[piece_idx];
+                let h_raw = slice_read_value(&slice_reader, sample_col, TableId::ProjectHistory, raw);
+                let Some(hs) = custody.usable(raw, h_raw, history_complete, hour) else { continue };
+                if last_h_stamp.get(&(piece_idx, raw)) == Some(&hs) {
                     continue;
                 }
-                let min_stamp = if epoch_hour <= piece.first { piece.reach() } else { epoch_hour };
-                tasks.push((epoch_start, epoch_end, min_stamp, piece_idx, raw));
+                last_h_stamp.insert((piece_idx, raw), hs);
+                let p_raw = slice_read_value(&slice_reader, sample_col, TableId::Projects, raw);
+                let ps = custody.usable(raw, p_raw, projects_complete, hour);
+                let Some(held) = history_by_owner.get(&raw) else { continue };
+                let mut listed: BTreeMap<(u32, u32), Vec<Entry>> = BTreeMap::new();
+                for (project, ordinal, steps) in held {
+                    if let Some(cells) = step_cells(steps, hs)
+                        && let Some(entry) = history_entry(*ordinal, cells)
+                    {
+                        listed.entry((raw, *project)).or_default().push(entry);
+                    }
+                }
+                let mut introduces = false;
+                for (&(_, project), entries) in &listed {
+                    for (at, &entry) in entries.iter().enumerate() {
+                        if seen.insert((tag.clone(), piece.slot, piece.id, raw, project, entry)) {
+                            introduces = true;
+                            if entry.completion()
+                                && at + 1 == entries.len()
+                                && campaign_start <= entry.date
+                                && entry.date <= hs
+                                && custody.held(raw, entry.date, hs)
+                                && let Some(p_stamp) = ps
+                                && p_stamp <= hs
+                                && p_stamp >= entry.date
+                            {
+                                project_asks.push((p_stamp, raw, project));
+                            }
+                        }
+                    }
+                }
+                if introduces {
+                    hits.push(PendingHit { piece_idx, raw, hour, h_stamp: hs, p_stamp: ps, listed });
+                }
+            }
+        }
+        if hour == i32::MAX {
+            break;
+        }
+        hour += 1;
+    }
+    let mut project_rows: HashMap<(i32, u32, u32), Row> = HashMap::new();
+    if !project_asks.is_empty() {
+        project_asks.sort_unstable();
+        project_asks.dedup();
+        let mut project_reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::Projects, Some(&COMPLETION_PROJECT_COLUMNS)))?;
+        project_reader.index_keys();
+        project_rows.reserve(project_asks.len());
+        for (p_stamp, raw, project) in project_asks {
+            dashboard_text::metadata::check_cancel(cancelled)?;
+            if let Some(row) = project_row_at(recording, held_run, &mut project_reader, raw, project, p_stamp)? {
+                project_rows.insert((p_stamp, raw, project), row);
             }
         }
     }
-    tasks.sort_unstable();
-    let mut hits: Vec<(usize, u32, i32, i32, Option<i32>)> = Vec::with_capacity(tasks.len());
-    let mut project_asks: Vec<(i32, u32, u32)> = Vec::new();
-    for (epoch_start, epoch_end, min_stamp, piece_idx, raw) in tasks {
-        let custody = &prepared[piece_idx].2;
-        let Some((hour, h_stamp)) = first_usable_history_read(recording, held_run, slice_reader, sample_col, custody, history_complete, raw, epoch_start, epoch_end, min_stamp, cancelled)? else {
-            continue;
-        };
-        let p = slice_read_at(recording, held_run, slice_reader, sample_col, TableId::Projects, raw, hour)?;
-        let p_stamp = custody.usable(raw, p, projects_complete, hour);
-        if let Some(ps) = p_stamp
-            && let Some(held) = history_by_owner.get(&raw)
-        {
-            for (project, _, _) in held {
-                project_asks.push((ps, raw, *project));
-            }
-        }
-        hits.push((piece_idx, raw, hour, h_stamp, p_stamp));
-    }
-    project_asks.sort_unstable();
-    project_asks.dedup();
-    let mut project_rows: HashMap<(i32, u32, u32), Row> = HashMap::with_capacity(project_asks.len());
-    for (p_stamp, raw, project) in project_asks {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        if let Some(row) = project_row_at(recording, held_run, project_reader, raw, project, p_stamp)? {
-            project_rows.insert((p_stamp, raw, project), row);
-        }
-    }
-    hits.sort_unstable_by_key(|&(piece_idx, raw, hour, ..)| (piece_idx, raw, hour));
+    hits.sort_unstable_by_key(|hit| (hit.piece_idx, hit.raw, hit.hour));
     let mut projects_read: BTreeMap<u32, i32> = BTreeMap::new();
     let mut histories_read: BTreeMap<u32, i32> = BTreeMap::new();
-    let mut listed: BTreeMap<(u32, u32), Vec<Entry>> = BTreeMap::new();
     let mut rows: Vec<(Row, i32)> = Vec::new();
-    for (piece_idx, raw, hour, h_stamp, p_stamp) in hits {
-        let (tag, piece, custody, _) = &prepared[piece_idx];
-        let Some(held) = history_by_owner.get(&raw) else { continue };
-        listed.clear();
-        for (project, ordinal, steps) in held {
-            if let Some(cells) = step_cells(steps, h_stamp)
-                && let Some(entry) = history_entry(*ordinal, cells)
-            {
-                listed.entry((raw, *project)).or_default().push(entry);
-            }
-        }
-        if listed.is_empty() {
-            continue;
-        }
+    for hit in hits {
+        let (tag, piece, custody, _) = &prepared[hit.piece_idx];
         histories_read.clear();
-        histories_read.insert(raw, h_stamp);
+        histories_read.insert(hit.raw, hit.h_stamp);
         projects_read.clear();
         rows.clear();
-        if let Some(ps) = p_stamp {
-            projects_read.insert(raw, ps);
-            for &(_, project) in listed.keys() {
-                if let Some(row) = project_rows.get(&(ps, raw, project)) {
+        if let Some(ps) = hit.p_stamp {
+            projects_read.insert(hit.raw, ps);
+            for &(_, project) in hit.listed.keys() {
+                if let Some(row) = project_rows.get(&(ps, hit.raw, project)) {
                     rows.push((row.clone(), ps));
                 }
             }
@@ -1456,30 +1478,17 @@ fn see_run_evidence(
         let facts = tag_facts.entry(tag.clone()).or_insert_with(|| Facts::new(campaign_start));
         facts.histories_only(&facts::Hour {
             country: (piece.slot, piece.id),
-            at: hour,
+            at: hit.hour,
             held: &|owner, from, through| custody.held(owner, from, through),
             projects: &projects_read,
             histories: &histories_read,
-            listed: &listed,
+            listed: &hit.listed,
             reads: &shown,
             published: false,
         });
     }
     Ok(())
 }
-
-#[cfg(test)]
-thread_local! {
-    static COUNTED_SCANS: std::cell::RefCell<Vec<TableId>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-#[cfg(test)]
-fn note_counted_scan(table: TableId) {
-    COUNTED_SCANS.with(|scans| scans.borrow_mut().push(table));
-}
-
-#[cfg(not(test))]
-fn note_counted_scan(_table: TableId) {}
 
 fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
@@ -1491,7 +1500,6 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
         dashboard_text::metadata::check_cancel(cancelled)?;
         let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
         unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
-        note_counted_scan(TableId::ProjectHistory);
         let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
         let run_links = links_of(query, &mut links, stretch.run)?;
         for (key, steps) in &history.keys {
@@ -1555,10 +1563,7 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
         }
         let history = match scanned_histories.remove(&run) {
             Some((first, last, history)) if first <= run_reach && run_last <= last => history,
-            _ => {
-                note_counted_scan(TableId::ProjectHistory);
-                dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, run_reach, run_last))?
-            }
+            _ => dashboard_query::cost::storage(|| lanes::history(recording, run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, run_reach, run_last))?,
         };
         let mut completion_projects: BTreeSet<(u32, u32)> = BTreeSet::new();
         for (key, steps) in &history.keys {
@@ -1586,13 +1591,9 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
             }
         }
         let held_run = recording.run(run)?;
-        let mut slice_reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::SliceReads, Some(&sample)))?;
-        slice_reader.index_keys();
-        let mut project_reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::Projects, Some(&COMPLETION_PROJECT_COLUMNS)))?;
-        project_reader.index_keys();
         let projects_complete = available(query, run, TableId::Projects, run_reach, run_last)?;
         let history_complete = available(query, run, TableId::ProjectHistory, run_reach, run_last)?;
-        see_run_evidence(&mut tag_facts, query.timeline.first, recording, held_run, &prepared, &history_by_owner, from, to, sample[0], &mut slice_reader, &mut project_reader, &projects_complete, &history_complete, cancelled)?;
+        see_run_evidence(&mut tag_facts, query.timeline.first, recording, run, held_run, &prepared, &history_by_owner, from, to, &sample, &projects_complete, &history_complete, cancelled)?;
     }
     let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
     for (tag, facts) in tag_facts {
@@ -1607,12 +1608,20 @@ fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io:
     Ok((found.into_values().collect(), unrecorded))
 }
 
-pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
-    let content = content(source, load)?;
-    let (mut found, unrecorded) = counted(query, from, to, cancelled)?;
-    found.sort_by_key(|counted| (counted.read, counted.owner, counted.local, counted.entry.ordinal, counted.entry.date));
+fn open_lexical(recording: &Recording, run: u32, literal_col: usize) -> io::Result<Option<TableReader>> {
+    match dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::LexicalTokens, Some(&[literal_col]))) {
+        Ok(mut reader) => {
+            reader.index_keys();
+            Ok(Some(reader))
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn spell_completions(query: &Query<'_>, found: &[Counted], cancelled: &AtomicBool) -> io::Result<HashMap<(i32, u32), String>> {
     let mut by_run: BTreeMap<u32, BTreeMap<i32, BTreeSet<u32>>> = BTreeMap::new();
-    for counted in &found {
+    for counted in found {
         if let Some(definition) = counted.definition
             && let Some(stretch) = query.timeline.within(counted.read, counted.read).next()
         {
@@ -1620,63 +1629,49 @@ pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from:
         }
     }
     let mut spelled: HashMap<(i32, u32), String> = HashMap::new();
-    if !by_run.is_empty() {
-        let recording = query.replay.recording();
-        let literal_col = dashboard_declare::field(TableId::LexicalTokens, "literal")?;
-        for (run, reads) in by_run {
+    if by_run.is_empty() {
+        return Ok(spelled);
+    }
+    let recording = query.replay.recording();
+    let literal_col = dashboard_declare::field(TableId::LexicalTokens, "literal")?;
+    for (run, reads) in by_run {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let held_run = recording.run(run)?;
+        let mut reader = open_lexical(recording, run, literal_col)?;
+        for (read, definitions) in reads {
             dashboard_text::metadata::check_cancel(cancelled)?;
-            let held_run = recording.run(run)?;
-            let first_read = *reads.keys().next().expect("non-empty run reads");
-            let last_read = *reads.keys().next_back().expect("non-empty run reads");
-            let complete = available(query, run, TableId::LexicalTokens, first_read, last_read)?;
-            let Some(&(_, last_complete)) = complete.last() else { continue };
-            let mut reader = dashboard_query::cost::storage(|| TableReader::new(recording, run, TableId::LexicalTokens, Some(&[literal_col])))?;
-            reader.index_keys();
-            let read_token = |reader: &TableReader, id: u32| -> Option<String> {
-                if reader.status() != Status::Complete {
-                    return None;
-                }
-                let view = reader.view();
-                let slot = view.slot(u128::from(id))?;
-                let Value::Text(text_id) = view.value(literal_col, slot) else { return None };
-                let bytes = reader.strings().get(text_id)?;
-                std::str::from_utf8(content_reader_parser::parser::c_string(bytes)).ok().map(str::to_owned)
-            };
-            let mut at_end: HashMap<u32, String> = HashMap::new();
-            if let Some(ordinal) = held_run.ordinal(last_complete) {
-                dashboard_query::cost::storage(|| reader.go_to(recording, ordinal))?;
-                let unique: BTreeSet<u32> = reads.values().flat_map(|set| set.iter().copied()).collect();
-                for id in unique {
-                    if let Some(text) = read_token(&reader, id) {
-                        at_end.insert(id, text);
+            let Some(active) = reader.as_mut() else { break };
+            let Some(ordinal) = held_run.ordinal(read) else { continue };
+            match dashboard_query::cost::storage(|| active.go_to(recording, ordinal)) {
+                Ok(()) => {
+                    if active.status() != Status::Complete {
+                        continue;
                     }
-                }
-            }
-            for (read, definitions) in reads {
-                if !within(&complete, read) {
-                    continue;
-                }
-                let mut missing = Vec::new();
-                for id in definitions {
-                    if let Some(text) = at_end.get(&id) {
-                        spelled.insert((read, id), text.clone());
-                    } else {
-                        missing.push(id);
-                    }
-                }
-                if !missing.is_empty()
-                    && let Some(ordinal) = held_run.ordinal(read)
-                {
-                    dashboard_query::cost::storage(|| reader.go_to(recording, ordinal))?;
-                    for id in missing {
-                        if let Some(text) = read_token(&reader, id) {
-                            spelled.insert((read, id), text);
+                    let view = active.view();
+                    for id in definitions {
+                        let Some(slot) = view.slot(u128::from(id)) else { continue };
+                        let Value::Text(text_id) = view.value(literal_col, slot) else { continue };
+                        let Some(bytes) = active.strings().get(text_id) else { continue };
+                        if let Ok(text) = std::str::from_utf8(content_reader_parser::parser::c_string(bytes)) {
+                            spelled.insert((read, id), text.to_owned());
                         }
                     }
                 }
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    reader = open_lexical(recording, run, literal_col)?;
+                }
+                Err(error) => return Err(error),
             }
         }
     }
+    Ok(spelled)
+}
+
+pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
+    let content = content(source, load)?;
+    let (mut found, unrecorded) = counted(query, from, to, cancelled)?;
+    found.sort_by_key(|counted| (counted.read, counted.owner, counted.local, counted.entry.ordinal, counted.entry.date));
+    let spelled = spell_completions(query, &found, cancelled)?;
     let mut naming = Naming::new(&content);
     let mut scoped_frames = None;
     let mut events = Vec::with_capacity(found.len());

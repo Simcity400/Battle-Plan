@@ -7,9 +7,8 @@ import { dayLabel } from '../charts/draw';
 import { jumpItem } from '../charts/jump';
 import LogList from '../charts/log/LogList';
 import { useRevealClock } from '../charts/reveal';
-import { logCountryRequests } from '../charts/log/logData';
-import type { LogRow } from '../charts/log/logData';
-import type { LogDensity } from '../charts/log/logData';
+import { logCountryRequests, NO_COUNTRY_REQUESTS, sameCountryRequests } from '../charts/log/logData';
+import type { CountryRequest, LogDensity, LogRow } from '../charts/log/logData';
 import { useChartTokens } from '../charts/useChartTokens';
 import { useCountryLabelsAt } from './countryFlagsAt';
 import type { WidgetRuntime } from './definitions';
@@ -25,9 +24,6 @@ import type { BoundWindow } from './regionTime';
 
 const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
 const PALETTE: Record<number, number> = { 3: 1, 4: 5, 5: 4, 6: 5, 10: 0, 11: 2, 12: 5, 20: 1, 21: 3, 34: 1 };
-const NO_ROWS: readonly LogRow<LedgerItem>[] = [];
-const sameKeys = (held: readonly LogRow<LedgerItem>[], next: readonly LogRow<LedgerItem>[]) => held.length === next.length
-  && held.every((row, index) => row.key === next[index].key);
 
 export interface MarketOccurrencesProps {
   runtime: WidgetRuntime;
@@ -54,8 +50,8 @@ export default function MarketOccurrences({ runtime, track, kinds, tags, span, c
   const offset = cut.follow ? cut.offset : 0;
   const trackHour = useCallback((clockHour: number) => Math.floor(clockHour) + offset, [offset]);
   const reveal = useRevealClock(runtime.clock, cut.follow, trackHour);
-  const [visible, setVisible] = useDistinctState<readonly LogRow<LedgerItem>[]>(NO_ROWS, sameKeys);
-  const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.hour, tags: [row.item.seller, row.item.buyer] })), [visible]);
+  const [wanted, setWanted] = useDistinctState<readonly CountryRequest[]>(NO_COUNTRY_REQUESTS, sameCountryRequests);
+  const onVisible = useCallback((rows: readonly LogRow<LedgerItem>[]) => setWanted(logCountryRequests(rows, row => ({ hour: row.hour, tags: [row.item.seller, row.item.buyer] }))), [setWanted]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null) => tag === null ? 'Country not recorded' : labelAt(row.hour)(tag).name, [labelAt]);
   if (list.error) return <WidgetState kind="error" failure={list.error} onRetry={list.retry} />;
@@ -64,7 +60,7 @@ export default function MarketOccurrences({ runtime, track, kinds, tags, span, c
     return [dayLabel(row.hour), ledgerTitle(row.item, named), `${named(row.item.seller)} → ${named(row.item.buyer)}`, row.item.equipment, figure?.text].filter(Boolean).join(' · ');
   };
   return <LogList pages={list.pages} onWantedPages={list.onWantedPages} label={label} density={density} months={months}
-    animate={animate && cut.follow} playhead={cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : null} reveal={reveal} columns={COLUMNS} onVisible={setVisible}
+    animate={animate && cut.follow} playhead={cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : null} reveal={reveal} columns={COLUMNS} onVisible={onVisible}
     renderRow={row => {
       const named = name(row), figure = ledgerFigure(row.item), seller = row.item.seller === null ? null : labelAt(row.hour)(row.item.seller);
       const open = onOpen ? () => onOpen(row.item, row.hour) : undefined;

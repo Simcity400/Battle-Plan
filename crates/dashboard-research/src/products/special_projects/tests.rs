@@ -2,8 +2,9 @@ use super::facts::{COMPLETION_MARKER, Facts, Look, Person};
 use super::incremental::Follow;
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay_data::rows::{CountryLinkRow, CountryRow, ProjectHistoryRow, ProjectProgramRow, ProjectRow, SliceReadRow, TableRows};
+use replay_data::rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ProjectHistoryRow, ProjectProgramRow, ProjectRow, SliceReadRow, TableRows};
 use replay_frame::frame::TableView;
+use replay_recording::cells::count_reads;
 
 const START: i32 = 1_000;
 const RUNNING: (u32, u8, u8, u64) = (0x18, 1, 1, 7 << 32 | PROGRAM_REFERENCE as u64);
@@ -428,34 +429,212 @@ fn h3b_a_completed_read_before_a_marker_does_not_name_it() {
     assert_eq!(named, [(20, Some(40)), (29, None)], "P-S9, R3-S4: a completed row read at 25 names no completion dated 29; the marker and its date stay");
 }
 
+fn reference_counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
+    let recording = query.replay.recording();
+    let mut unrecorded: Vec<HourSpan> = Vec::new();
+    let mut links: HashMap<u32, RunLinks> = HashMap::new();
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+    for stretch in query.timeline.within(from, to) {
+        dashboard_text::metadata::check_cancel(cancelled)?;
+        let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
+        unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
+        let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
+        let run_links = links_of(query, &mut links, stretch.run)?;
+        for (key, steps) in &history.keys {
+            for step in steps {
+                let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
+                if !entry.completion() || !(from..=to).contains(&entry.date) {
+                    continue;
+                }
+                let Some(slot) = run_links.slot_at((key >> 64) as u32, step.hour) else { continue };
+                let holds = |runs: &[dashboard_query::identity::HolderRun]| {
+                    runs.iter().any(|run| run.first <= step.hour && step.hour <= run.last && matches!(run.holder, Holder::Found { slot: held, .. } if held == slot))
+                };
+                tags.extend(query.holders.tags.iter().filter(|(_, runs)| holds(runs)).map(|(tag, _)| tag.clone()));
+            }
+        }
+    }
+    let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
+    for tag in tags {
+        let mut facts = Facts::new(query.timeline.first);
+        let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), query.timeline.first, to);
+        for piece in pieces {
+            let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
+            see_piece(&mut facts, &piece, &read, cancelled)?;
+        }
+        for (&(slot, _, owner, local), evidence) in &facts.evidence {
+            for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
+                found
+                    .entry((owner, local, kept.entry.ordinal, kept.entry.date))
+                    .or_insert_with(|| Counted { tag: tag.clone(), slot, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
+            }
+        }
+    }
+    Ok((found.into_values().collect(), unrecorded))
+}
+
+fn reference_spell_completions(query: &Query<'_>, found: &[Counted]) -> io::Result<HashMap<(i32, u32), String>> {
+    let mut frames = at_hour::Frames::new(query)?;
+    let mut out = HashMap::new();
+    for item in found {
+        if let Some(definition) = item.definition {
+            let lexical = frames.frame(item.read, &[Read::these(TableId::LexicalTokens, [u128::from(definition)])], "Special project names")?;
+            let tokens = spellings(&lexical, [definition]);
+            if let Some(text) = tokens.get(&definition) {
+                out.insert((item.read, definition), text.clone());
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[test]
-fn counted_batches_one_scan_per_table_per_run_and_matches_per_country_follow() {
-    let actors: [(u32, u32, &[u8], i32, u32); 3] = [
-        (9001, 1, b"GER", 24, 40),
-        (9002, 2, b"FRA", 52, 41),
-        (9003, 3, b"ENG", 76, 42),
-    ];
-    let first = 20;
-    let last = 150;
-    let source = synthetic("counted-batched-multi", first, last, |at| {
+fn f1_slice_reads_unavailable_at_probe_hours_still_finds_valid_stamp_between() {
+    let source = synthetic("f1-unavailable-probes", 20, 50, |at| {
+        let mut frame = frame(at, &Hour { history: vec![(0, M, 20)], projects_read: Some(20), history_read: Some(20), ..hour(at, COMPLETED) });
+        if at != 21 {
+            *frame.tables[TableId::SliceReads.index()] = TableView::Unavailable { reason: "Synthetic slice-reads refusal".into() };
+        }
+        frame
+    });
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let actual = counted(&query, 20, 50, &cancelled).unwrap();
+    let expected = reference_counted(&query, 20, 50, &cancelled).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.0.len(), 1);
+    assert_eq!((actual.0[0].entry.date, actual.0[0].read, actual.0[0].definition), (20, 20, Some(40)));
+}
+
+#[test]
+fn f2_replacement_marker_keeps_earlier_marker_read_from_delayed_stamp() {
+    let source = synthetic("f2-replacement-marker", 20, 35, |at| {
+        let history = match at {
+            24..=27 => vec![(0, M, 24)],
+            28..=35 => vec![(0, M, 28)],
+            _ => Vec::new(),
+        };
+        let stamp = match at {
+            28 => Some(27),
+            29..=35 => Some(28),
+            _ => None,
+        };
+        frame(at, &Hour { history, projects_read: stamp, history_read: stamp, ..hour(at, if at >= 24 { COMPLETED } else { RUNNING }) })
+    });
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let actual = counted(&query, 20, 35, &cancelled).unwrap();
+    let expected = reference_counted(&query, 20, 35, &cancelled).unwrap();
+    assert_eq!(actual, expected);
+    let summary: Vec<_> = actual.0.iter().map(|c| (c.entry.date, c.read, c.definition)).collect();
+    assert_eq!(summary, [(24, 27, Some(40)), (28, 28, Some(40))]);
+}
+
+#[test]
+fn f3_lexical_token_appearing_later_never_names_an_earlier_completion() {
+    let source = synthetic("f3-late-lexical-token", 20, 34, |at| {
+        let history = match at {
+            24..=29 => vec![(0, M, 24)],
+            30..=34 => vec![(0, M, 24), (1, M, 30)],
+            _ => Vec::new(),
+        };
+        let mut frame = frame(at, &Hour { history, ..hour(at, COMPLETED) });
+        let tokens = if at >= 28 { vec![LexicalTokenRow { token: 40, literal: b"sp_late_token".to_vec() }] } else { Vec::new() };
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(tokens));
+        frame
+    });
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let (found, _) = counted(&query, 20, 34, &cancelled).unwrap();
+    assert_eq!(found.len(), 2);
+    let actual = spell_completions(&query, &found, &cancelled).unwrap();
+    let expected = reference_spell_completions(&query, &found).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.get(&(24, 40)), None);
+    assert_eq!(actual.get(&(30, 40)).map(String::as_str), Some("sp_late_token"));
+}
+
+#[test]
+fn f4_damaged_lexical_block_keeps_dated_completions_and_other_runs() {
+    let make = |hours: std::ops::RangeInclusive<i32>, branch: u64| {
+        hours
+            .map(|at| {
+                let history = if at < 24 {
+                    Vec::new()
+                } else if at < 34 {
+                    vec![(0, M, 24)]
+                } else {
+                    vec![(0, M, 24), (1, M, 34)]
+                };
+                let mut frame = frame(at, &Hour { history, ..hour(at, COMPLETED) });
+                frame.branch = branch;
+                if let TableView::Complete(TableRows::Projects(rows)) = &mut *frame.tables[TableId::Projects.index()]
+                    && at >= 30
+                {
+                    rows[0].definition_id = 41;
+                }
+                let tokens = if at < 30 {
+                    vec![LexicalTokenRow { token: 40, literal: b"sp_run_zero".to_vec() }]
+                } else {
+                    vec![
+                        LexicalTokenRow { token: 40, literal: b"sp_run_zero".to_vec() },
+                        LexicalTokenRow { token: 41, literal: b"sp_run_one".to_vec() },
+                    ]
+                };
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(tokens));
+                frame
+            })
+            .collect()
+    };
+    let segments = [records(1, make(20..=29, 1)), records(2, make(30..=39, 2))];
+    let clean = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap();
+    let mut bytes = clean.recording().memory().unwrap().to_vec();
+    let entry = clean.recording().table_entry(0, 0, TableId::LexicalTokens.index()).unwrap();
+    for (_, chunks) in &entry.unit.first.as_ref().unwrap().streams {
+        for chunk in chunks {
+            let f = &chunk.frame;
+            bytes[(f.offset + u64::from(f.stored) / 2) as usize] ^= 0x40;
+        }
+    }
+    let damaged = replay::campaign::Replay::open(bytes).unwrap().into_timelines(&Default::default()).unwrap();
+    let source = Source::from_replay(dashboard_base::SourceKey { source_id: "f4-damaged-lexical".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(damaged), &AtomicBool::new(false)).unwrap();
+    let query = dashboard_base::queries::query(&source, 1).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let (found, _) = counted(&query, 20, 39, &cancelled).unwrap();
+    assert_eq!(found.len(), 2);
+    let actual = spell_completions(&query, &found, &cancelled).unwrap();
+    let expected = reference_spell_completions(&query, &found).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.get(&(24, 40)), None);
+    assert_eq!(actual.get(&(34, 41)).map(String::as_str), Some("sp_run_one"));
+}
+
+fn multi_actor_source(id: &str, actors: &[(u32, u32, &[u8], i32, u32)], first: i32, last: i32, overlap_owner: Option<(u32, u32)>) -> Source {
+    synthetic(id, first, last, |at| {
         let mut frame = source(1, at, None);
         if let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] {
             let template = countries[0].clone();
             countries.clear();
-            for &(owner, slot, tag, ..) in &actors {
+            for &(owner, slot, tag, ..) in actors {
                 countries.push(CountryRow { id: owner, canonical_slot: slot, tag: tag.to_vec(), ..template.clone() });
             }
+            countries.sort_by_key(|row| row.id);
         }
         if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
             links.clear();
-            for &(owner, slot, ..) in &actors {
+            for &(owner, slot, ..) in actors {
                 links.push(CountryLinkRow { id: owner, canonical_slot: slot });
             }
+            if let Some((extra_owner, slot)) = overlap_owner {
+                links.push(CountryLinkRow { id: extra_owner, canonical_slot: slot });
+            }
+            links.sort_by_key(|row| row.id);
         }
         let mut projects = Vec::new();
         let mut histories = Vec::new();
         let mut stamps = Vec::new();
-        for &(owner, _, _, done, def) in &actors {
+        let mut tokens = Vec::new();
+        for &(owner, _, _, done, def) in actors {
             let mut row = ProjectRow { owner, local_id: 1, definition_id: def, started: 1, ..Default::default() };
             let (offset, not_completed) = if at >= done { (0xe8, 0) } else { (0x18, 1) };
             row.state.current_offset = offset;
@@ -466,68 +645,351 @@ fn counted_batches_one_scan_per_table_per_run_and_matches_per_country_follow() {
             unfinished.state.not_completed = 1;
             projects.push(unfinished);
             if at >= done + 2 {
-                histories.push(ProjectHistoryRow {
-                    owner,
-                    project: 1,
-                    ordinal: 0,
-                    prototype_reward_handle: M,
-                    option_handle: M,
-                    date: done,
-                    ..Default::default()
-                });
+                histories.push(ProjectHistoryRow { owner, project: 1, ordinal: 0, prototype_reward_handle: M, option_handle: M, date: done, ..Default::default() });
             }
-            if owner == 9001 && at >= done + 60 {
-                histories.push(ProjectHistoryRow {
-                    owner,
-                    project: 1,
-                    ordinal: 1,
-                    prototype_reward_handle: M,
-                    option_handle: M,
-                    date: done + 58,
-                    ..Default::default()
-                });
+            if owner == actors[0].0 && at >= done + 60 {
+                histories.push(ProjectHistoryRow { owner, project: 1, ordinal: 1, prototype_reward_handle: M, option_handle: M, date: done + 58, ..Default::default() });
             }
-            histories.push(ProjectHistoryRow {
-                owner,
-                project: 2,
-                ordinal: 0,
-                prototype_reward_handle: 3,
-                option_handle: 4,
-                date: first,
-                ..Default::default()
-            });
+            histories.push(ProjectHistoryRow { owner, project: 2, ordinal: 0, prototype_reward_handle: 3, option_handle: 4, date: first, ..Default::default() });
             let sample_hour = first + ((at - first) / STAGGER_PERIOD) * STAGGER_PERIOD;
             stamps.push(SliceReadRow { table: TableId::Projects.index() as u32, owner, sample_hour });
             stamps.push(SliceReadRow { table: TableId::ProjectHistory.index() as u32, owner, sample_hour });
+            tokens.push(LexicalTokenRow { token: def, literal: format!("sp_def_{def}").into_bytes() });
         }
+        if let Some((extra_owner, _)) = overlap_owner {
+            let mut row = ProjectRow { owner: extra_owner, local_id: 1, definition_id: 49, started: 1, ..Default::default() };
+            row.state.current_offset = 0xe8;
+            row.state.not_completed = 0;
+            projects.push(row);
+            if at >= first + 40 {
+                histories.push(ProjectHistoryRow { owner: extra_owner, project: 1, ordinal: 0, prototype_reward_handle: M, option_handle: M, date: first + 38, ..Default::default() });
+            }
+            let sample_hour = first + ((at - first) / STAGGER_PERIOD) * STAGGER_PERIOD;
+            stamps.push(SliceReadRow { table: TableId::Projects.index() as u32, owner: extra_owner, sample_hour });
+            stamps.push(SliceReadRow { table: TableId::ProjectHistory.index() as u32, owner: extra_owner, sample_hour });
+            tokens.push(LexicalTokenRow { token: 49, literal: b"sp_def_49".to_vec() });
+        }
+        projects.sort_by_key(|row| (row.owner, row.local_id));
         histories.sort_by_key(|row| (row.owner, row.project, row.ordinal));
         stamps.sort_by_key(|row| (row.table, row.owner));
+        tokens.sort_by_key(|row| row.token);
+        tokens.dedup_by_key(|row| row.token);
         *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(projects));
         *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(histories));
         *frame.tables[TableId::SliceReads.index()] = TableView::Complete(TableRows::SliceReads(stamps));
+        *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(tokens));
         frame
-    });
-    let query = dashboard_base::queries::query(&source, 1).unwrap();
-    let cancelled = AtomicBool::new(false);
-    COUNTED_SCANS.with(|scans| scans.borrow_mut().clear());
-    let (batched, unrecorded) = counted(&query, first, last, &cancelled).unwrap();
-    let scans = COUNTED_SCANS.with(|scans| std::mem::take(&mut *scans.borrow_mut()));
-    assert!(unrecorded.is_empty());
-    assert_eq!(scans, vec![TableId::ProjectHistory], "three countries in one run scan ProjectHistory once and resolve Projects and SliceReads by point lookup");
+    })
+}
 
-    let mut expected: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
-    for &(_, _, tag, ..) in &actors {
-        let tag = std::str::from_utf8(tag).unwrap().to_owned();
-        let mut follow = Follow::new(query.timeline.first);
-        follow.to(&query, &Country::Tag(tag.clone()), last, &cancelled).unwrap();
-        for (&(slot, _, owner, local), evidence) in &follow.facts.evidence {
-            for kept in evidence.entries.iter().filter(|kept| kept.counted && (first..=last).contains(&kept.entry.date)) {
-                expected
-                    .entry((owner, local, kept.entry.ordinal, kept.entry.date))
-                    .or_insert_with(|| Counted { tag: tag.clone(), slot, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
-            }
+#[test]
+fn f10_reader_boundary_counts_stay_bounded_across_countries_mid_run_and_overlaps() {
+    let three: [(u32, u32, &[u8], i32, u32); 3] = [(9001, 1, b"GER", 24, 40), (9002, 2, b"FRA", 52, 41), (9003, 3, b"ENG", 76, 42)];
+    let six: [(u32, u32, &[u8], i32, u32); 6] = [
+        (9001, 1, b"GER", 24, 40),
+        (9002, 2, b"FRA", 40, 41),
+        (9003, 3, b"ENG", 56, 42),
+        (9004, 4, b"ITA", 72, 43),
+        (9005, 5, b"SOV", 88, 44),
+        (9006, 6, b"USA", 104, 45),
+    ];
+    let (first, last) = (20, 150);
+    let cancelled = AtomicBool::new(false);
+
+    let src3 = multi_actor_source("f10-three-overlap", &three, first, last, Some((9010, 1)));
+    let q3 = dashboard_base::queries::query(&src3, 1).unwrap();
+    let ((full3, full3_unrec), full3_reads) = count_reads(|| counted(&q3, first, last, &cancelled).unwrap());
+    let ((ref_full3, ref_full3_unrec), ref_full3_reads) = count_reads(|| reference_counted(&q3, first, last, &cancelled).unwrap());
+    assert!(full3_unrec.is_empty());
+    assert_eq!((&full3, &full3_unrec), (&ref_full3, &ref_full3_unrec));
+    assert_eq!(full3.len(), 5);
+    assert_eq!(full3_reads[&TableId::ProjectHistory].stretches, 1);
+    assert_eq!(full3_reads[&TableId::ProjectHistory].backward_seeks, 0);
+    assert_eq!(full3_reads[&TableId::SliceReads].opened, 1);
+    assert_eq!(full3_reads[&TableId::SliceReads].stretches, 0);
+    assert_eq!(full3_reads[&TableId::SliceReads].backward_seeks, 0);
+    assert_eq!(full3_reads[&TableId::Projects].opened, 1);
+    assert_eq!(full3_reads[&TableId::Projects].stretches, 0);
+    assert_eq!(full3_reads[&TableId::Projects].backward_seeks, 0);
+    assert!(!full3_reads.contains_key(&TableId::ProjectPrograms));
+    assert!(full3_reads[&TableId::ProjectHistory].stretches < ref_full3_reads[&TableId::ProjectHistory].stretches);
+    assert!(full3_reads[&TableId::SliceReads].stretches < ref_full3_reads[&TableId::SliceReads].stretches);
+
+    let ((mid3, mid3_unrec), mid3_reads) = count_reads(|| counted(&q3, 50, last, &cancelled).unwrap());
+    let (ref_mid3, ref_mid3_unrec) = reference_counted(&q3, 50, last, &cancelled).unwrap();
+    assert_eq!((&mid3, &mid3_unrec), (&ref_mid3, &ref_mid3_unrec));
+    assert_eq!(mid3_reads[&TableId::ProjectHistory].stretches, 2);
+    assert_eq!(mid3_reads[&TableId::SliceReads].opened, 1);
+    assert_eq!(mid3_reads[&TableId::SliceReads].stretches, 0);
+    assert_eq!(mid3_reads[&TableId::SliceReads].backward_seeks, 0);
+    assert_eq!(mid3_reads[&TableId::Projects].opened, 1);
+    assert_eq!(mid3_reads[&TableId::Projects].stretches, 0);
+    assert_eq!(mid3_reads[&TableId::Projects].backward_seeks, 0);
+    assert!(!mid3_reads.contains_key(&TableId::ProjectPrograms));
+
+    let (spelled3, spell3_reads) = count_reads(|| spell_completions(&q3, &full3, &cancelled).unwrap());
+    assert_eq!(spelled3, reference_spell_completions(&q3, &full3).unwrap());
+    assert_eq!(spell3_reads[&TableId::LexicalTokens].opened, 1);
+    assert_eq!(spell3_reads[&TableId::LexicalTokens].stretches, 0);
+    assert_eq!(spell3_reads[&TableId::LexicalTokens].backward_seeks, 0);
+
+    let src6 = multi_actor_source("f10-six", &six, first, last, None);
+    let q6 = dashboard_base::queries::query(&src6, 1).unwrap();
+    let ((full6, _), full6_reads) = count_reads(|| counted(&q6, first, last, &cancelled).unwrap());
+    let ((ref_full6, _), ref_full6_reads) = count_reads(|| reference_counted(&q6, first, last, &cancelled).unwrap());
+    assert_eq!(full6, ref_full6);
+    assert_eq!(full6.len(), 7);
+    assert_eq!(full6_reads[&TableId::ProjectHistory].opened, full3_reads[&TableId::ProjectHistory].opened);
+    assert_eq!(full6_reads[&TableId::SliceReads].opened, full3_reads[&TableId::SliceReads].opened);
+    assert_eq!(full6_reads[&TableId::Projects].opened, full3_reads[&TableId::Projects].opened);
+    assert_eq!(full6_reads[&TableId::ProjectHistory].stretches, full3_reads[&TableId::ProjectHistory].stretches);
+    assert_eq!(full6_reads[&TableId::SliceReads].stretches, full3_reads[&TableId::SliceReads].stretches);
+    assert!(ref_full6_reads[&TableId::SliceReads].stretches > ref_full3_reads[&TableId::SliceReads].stretches);
+}
+
+#[test]
+fn differential_batched_completions_matches_reference_across_300_seeds() {
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn range(&mut self, lo: i32, hi: i32) -> i32 {
+            if hi <= lo { return lo; }
+            lo + (self.next() % ((hi - lo + 1) as u64)) as i32
+        }
+        fn chance(&mut self, num: u64, den: u64) -> bool {
+            self.next() % den < num
         }
     }
-    assert_eq!(batched.len(), 4);
-    assert_eq!(batched, expected.into_values().collect::<Vec<_>>());
+    let tags_pool: [&[u8]; 4] = [b"GER", b"FRA", b"ENG", b"ITA"];
+    let cancelled = AtomicBool::new(false);
+    let mut total_completions = 0usize;
+    let mut total_spelled = 0usize;
+    for seed in 0..300u64 {
+        let mut rng = Rng((seed + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let first = 20;
+        let len = rng.range(24, 42);
+        let last = first + len;
+        let two_runs = rng.chance(1, 3);
+        let split = first + len / 2;
+        let actor_count = rng.range(2, 4) as usize;
+        let mut actor_owners: Vec<(u32, u32, &[u8])> = Vec::with_capacity(actor_count);
+        for i in 0..actor_count {
+            actor_owners.push((9001 + i as u32, (i + 1) as u32, tags_pool[i]));
+        }
+        let swap_hour = if rng.chance(1, 4) { Some(rng.range(first + 4, last - 4)) } else { None };
+        let unlink_owner = if rng.chance(1, 4) { Some((actor_owners[0].0, rng.range(first + 2, last - 4))) } else { None };
+
+        #[derive(Clone)]
+        struct MarkerPlan {
+            project: u32,
+            ordinal: u32,
+            appear: i32,
+            disappear: Option<i32>,
+            reappear: Option<i32>,
+            date: i32,
+            replaced_at: Option<(i32, i32)>,
+            is_completion: bool,
+        }
+        let mut plans: Vec<(u32, Vec<MarkerPlan>, u32, i32)> = Vec::new();
+        for &(owner, _, _) in &actor_owners {
+            let def = 40 + (rng.next() % 5) as u32;
+            let complete_at = rng.range(first, last);
+            let mut markers = Vec::new();
+            let count = rng.range(1, 3);
+            for idx in 0..count {
+                let project = if idx == 0 { 1 } else { rng.range(1, 2) as u32 };
+                let ordinal = if idx == 0 { 0 } else { rng.range(0, 2) as u32 };
+                let appear = rng.range(first, last - 2);
+                let disappear = if rng.chance(1, 4) { Some(rng.range(appear + 1, last)) } else { None };
+                let reappear = disappear.and_then(|d| if d + 1 <= last && rng.chance(1, 2) { Some(rng.range(d + 1, last)) } else { None });
+                let date = match rng.next() % 5 {
+                    0 => first - 2,
+                    1 => (appear + rng.range(1, 5)).min(last + 3),
+                    _ => rng.range(first, appear),
+                };
+                let replaced_at = if rng.chance(1, 3) && appear + 2 <= last {
+                    let at = rng.range(appear + 1, last);
+                    Some((at, rng.range(first, at)))
+                } else {
+                    None
+                };
+                let is_completion = idx == 0 || rng.chance(3, 4);
+                markers.push(MarkerPlan { project, ordinal, appear, disappear, reappear, date, replaced_at, is_completion });
+            }
+            plans.push((owner, markers, def, complete_at));
+        }
+
+        let lex_appear: [i32; 5] = std::array::from_fn(|_| if rng.chance(1, 3) { rng.range(first + 3, last + 2) } else { first });
+        let mut slice_unavail: BTreeSet<i32> = BTreeSet::new();
+        let mut slice_trunc: BTreeSet<i32> = BTreeSet::new();
+        let mut proj_unavail: BTreeSet<i32> = BTreeSet::new();
+        let mut hist_unavail: BTreeSet<i32> = BTreeSet::new();
+        let mut lex_unavail: BTreeSet<i32> = BTreeSet::new();
+        for at in first..=last {
+            if rng.chance(1, 7) { slice_unavail.insert(at); }
+            else if rng.chance(1, 9) { slice_trunc.insert(at); }
+            if rng.chance(1, 10) { proj_unavail.insert(at); }
+            if rng.chance(1, 12) { hist_unavail.insert(at); }
+            if rng.chance(1, 10) { lex_unavail.insert(at); }
+        }
+        let mut stamps_h: HashMap<(u32, i32), Option<i32>> = HashMap::new();
+        let mut stamps_p: HashMap<(u32, i32), Option<i32>> = HashMap::new();
+        for &(owner, ..) in &actor_owners {
+            let mut cur_h: Option<i32> = None;
+            let mut cur_p: Option<i32> = None;
+            for at in first..=last {
+                if cur_h.is_none() || rng.chance(1, 3) {
+                    let delay = rng.range(0, 4);
+                    cur_h = if rng.chance(1, 8) { None } else { Some((at - delay).max(first)) };
+                }
+                if cur_p.is_none() || rng.chance(1, 3) {
+                    let delay = rng.range(0, 4);
+                    cur_p = if rng.chance(1, 8) { None } else { Some((at - delay).max(first)) };
+                }
+                stamps_h.insert((owner, at), cur_h);
+                stamps_p.insert((owner, at), cur_p);
+            }
+        }
+        let drop_trunc_owner = actor_owners[0].0;
+
+        let build_frame = |at: i32, branch: u64| {
+            let mut frame = source(branch, at, None);
+            if let TableView::Complete(TableRows::Countries(countries)) = &mut *frame.tables[TableId::Countries.index()] {
+                let template = countries[0].clone();
+                countries.clear();
+                for &(owner, slot, tag) in &actor_owners {
+                    let shown_tag = if swap_hour.is_some_and(|sh| at >= sh) && slot == 1 { b"ALT".as_slice() } else { tag };
+                    countries.push(CountryRow { id: owner, canonical_slot: slot, tag: shown_tag.to_vec(), ..template.clone() });
+                }
+                countries.sort_by_key(|row| row.id);
+            }
+            if let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] {
+                links.clear();
+                for &(owner, slot, _) in &actor_owners {
+                    if unlink_owner.is_some_and(|(u, h)| owner == u && (h..=h + 2).contains(&at)) {
+                        continue;
+                    }
+                    links.push(CountryLinkRow { id: owner, canonical_slot: slot });
+                }
+                links.sort_by_key(|row| row.id);
+            }
+            if proj_unavail.contains(&at) {
+                *frame.tables[TableId::Projects.index()] = TableView::Unavailable { reason: "Synthetic projects unavailable".into() };
+            } else {
+                let mut rows = Vec::new();
+                for &(owner, _, def, complete_at) in &plans {
+                    let mut p1 = ProjectRow { owner, local_id: 1, definition_id: def, started: 1, ..Default::default() };
+                    if at >= complete_at {
+                        p1.state.current_offset = 0xe8;
+                        p1.state.not_completed = 0;
+                    } else {
+                        p1.state.current_offset = 0x18;
+                        p1.state.not_completed = 1;
+                    }
+                    rows.push(p1);
+                    let mut p2 = ProjectRow { owner, local_id: 2, definition_id: def, started: 1, ..Default::default() };
+                    p2.state.current_offset = 0xe8;
+                    p2.state.not_completed = 0;
+                    rows.push(p2);
+                }
+                rows.sort_by_key(|row| (row.owner, row.local_id));
+                *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(rows));
+            }
+            if hist_unavail.contains(&at) {
+                *frame.tables[TableId::ProjectHistory.index()] = TableView::Unavailable { reason: "Synthetic history unavailable".into() };
+            } else {
+                let mut by_key: BTreeMap<(u32, u32, u32), ProjectHistoryRow> = BTreeMap::new();
+                for (owner, markers, _, _) in &plans {
+                    for m in markers {
+                        let visible = if at < m.appear {
+                            false
+                        } else if let Some(d) = m.disappear {
+                            at < d || m.reappear.is_some_and(|r| at >= r)
+                        } else {
+                            true
+                        };
+                        if !visible {
+                            continue;
+                        }
+                        let (date, is_comp) = match m.replaced_at {
+                            Some((rep_at, rep_date)) if at >= rep_at => (rep_date, true),
+                            _ => (m.date, m.is_completion),
+                        };
+                        let (reward, option) = if is_comp { (M, M) } else { (3, 4) };
+                        by_key.insert(
+                            (*owner, m.project, m.ordinal),
+                            ProjectHistoryRow { owner: *owner, project: m.project, ordinal: m.ordinal, prototype_reward_handle: reward, option_handle: option, date, ..Default::default() },
+                        );
+                    }
+                }
+                *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(by_key.into_values().collect()));
+            }
+            if slice_unavail.contains(&at) {
+                *frame.tables[TableId::SliceReads.index()] = TableView::Unavailable { reason: "Synthetic slice reads unavailable".into() };
+            } else {
+                let mut rows = Vec::new();
+                for &(owner, ..) in &actor_owners {
+                    if slice_trunc.contains(&at) && owner == drop_trunc_owner {
+                        continue;
+                    }
+                    if let Some(sh) = stamps_p.get(&(owner, at)).copied().flatten() {
+                        rows.push(SliceReadRow { table: TableId::Projects.index() as u32, owner, sample_hour: sh });
+                    }
+                    if let Some(sh) = stamps_h.get(&(owner, at)).copied().flatten() {
+                        rows.push(SliceReadRow { table: TableId::ProjectHistory.index() as u32, owner, sample_hour: sh });
+                    }
+                }
+                rows.sort_by_key(|row| (row.table, row.owner));
+                *frame.tables[TableId::SliceReads.index()] = if slice_trunc.contains(&at) {
+                    TableView::Truncated { rows: TableRows::SliceReads(rows), missing: 1 }
+                } else {
+                    TableView::Complete(TableRows::SliceReads(rows))
+                };
+            }
+            if lex_unavail.contains(&at) {
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Unavailable { reason: "Synthetic lexical unavailable".into() };
+            } else {
+                let mut rows = Vec::new();
+                for (i, &start_at) in lex_appear.iter().enumerate() {
+                    if at >= start_at {
+                        let tok = 40 + i as u32;
+                        rows.push(LexicalTokenRow { token: tok, literal: format!("sp_tok_{tok}").into_bytes() });
+                    }
+                }
+                *frame.tables[TableId::LexicalTokens.index()] = TableView::Complete(TableRows::LexicalTokens(rows));
+            }
+            frame
+        };
+
+        let segments = if two_runs {
+            vec![
+                records(1, (first..=split - 1).map(|at| build_frame(at, 1)).collect()),
+                records(2, (split..=last).map(|at| build_frame(at, 2)).collect()),
+            ]
+        } else {
+            vec![records(1, (first..=last).map(|at| build_frame(at, 1)).collect())]
+        };
+        let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &segments).unwrap().into_timelines(&Default::default()).unwrap();
+        let src = Source::from_replay(dashboard_base::SourceKey { source_id: format!("diff-{seed}"), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
+        let query = dashboard_base::queries::query(&src, 1).unwrap();
+        let win_from = if rng.chance(1, 2) { first } else { rng.range(first + 1, last - 2) };
+        let win_to = if rng.chance(1, 2) { last } else { rng.range(win_from, last) };
+        let actual = counted(&query, win_from, win_to, &cancelled).unwrap();
+        let expected = reference_counted(&query, win_from, win_to, &cancelled).unwrap();
+        assert_eq!(actual, expected, "seed {seed} window {win_from}..={win_to} two_runs={two_runs}");
+        let actual_spelled = spell_completions(&query, &actual.0, &cancelled).unwrap();
+        let expected_spelled = reference_spell_completions(&query, &expected.0).unwrap();
+        assert_eq!(actual_spelled, expected_spelled, "seed {seed} spellings window {win_from}..={win_to}");
+        total_completions += actual.0.len();
+        total_spelled += actual_spelled.len();
+    }
+    assert!(total_completions > 100, "expected differential suite to exercise completions, got {total_completions}");
+    assert!(total_spelled > 50, "expected differential suite to exercise spellings, got {total_spelled}");
 }

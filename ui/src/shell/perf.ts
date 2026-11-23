@@ -277,6 +277,8 @@ export class PerfRecorder {
   private lastFrame: number | null = null;
   private dirty = false;
   private readonly runFrame: (now: number) => void;
+  private readonly emitFrame: (now: number, drainAllPaints?: boolean) => void;
+  private readonly postMain: (at: number) => void;
   private waiting: { record: PerfRecord; of: number }[] = [];
   private work = new Map<string, Partial<Record<WidgetWork, number>>>();
   private zones = new Map<string, number>();
@@ -299,27 +301,30 @@ export class PerfRecorder {
       const [entry] = this.waiting.splice(at, 1);
       this.push({ ...entry.record, main });
     };
+    this.postMain = (at: number) => rendered.port2.postMessage(at);
+    this.emitFrame = (now: number, drainAllPaints = false) => {
+      if (this.lastFrame === null) return;
+      const work = this.work.size ? Object.fromEntries(this.work) : undefined;
+      const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
+      const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
+      this.work.clear();
+      this.zones.clear();
+      this.causes.clear();
+      const painted = this.takePaints(drainAllPaints ? Infinity : this.lastFrame);
+      const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(Math.max(0, now - this.lastFrame)), playing: this.playing,
+        late: round(Math.max(0, performance.now() - now)), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
+      const main = mains.get(this.lastFrame);
+      if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
+    };
     this.runFrame = (now: number) => {
       this.frameRequest = 0;
       if (this.stopped) return;
-      const active = this.playing || this.dirty;
+      const wasDirty = this.dirty;
       this.dirty = false;
-      if (this.lastFrame !== null) {
-        const work = this.work.size ? Object.fromEntries(this.work) : undefined;
-        const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
-        const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
-        this.work.clear();
-        this.zones.clear();
-        this.causes.clear();
-        const painted = this.takePaints(this.lastFrame);
-        const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
-          late: round(performance.now() - now), commits: takeCommits(), commitSequence: this.commitSequence, ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
-        const main = mains.get(this.lastFrame);
-        if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
-      }
-      if (active) {
+      this.emitFrame(now);
+      if (this.playing || wasDirty || this.hasPendingActivity()) {
         this.lastFrame = now;
-        rendered.port2.postMessage(now);
+        this.postMain(now);
         this.frameRequest = requestAnimationFrame(this.runFrame);
       } else {
         this.lastFrame = null;
@@ -339,6 +344,7 @@ export class PerfRecorder {
           top: top ? `${top.invoker ?? ''} ${top.sourceURL ?? ''}`.trim() : null });
       }
     });
+    takeCommits();
     attributeCommits((rendered, causes) => {
       this.commitSequence++;
       if (this.commitAudit) {
@@ -354,14 +360,22 @@ export class PerfRecorder {
     });
   }
 
-  private scheduleFrame(): void {
-    if (this.stopped || this.frameRequest) return;
-    this.frameRequest = requestAnimationFrame(this.runFrame);
+  private hasPendingActivity(): boolean {
+    return this.dirty || this.work.size > 0 || this.zones.size > 0 || this.causes.size > 0 || this.paints.size > 0;
   }
 
-  private noteActivity(): void {
+  private armFrame(anchor = performance.now()): void {
+    if (this.stopped) return;
+    if (this.lastFrame === null) {
+      this.lastFrame = anchor;
+      this.postMain(anchor);
+    }
+    if (!this.frameRequest) this.frameRequest = requestAnimationFrame(this.runFrame);
+  }
+
+  private noteActivity(anchor?: number): void {
     this.dirty = true;
-    this.scheduleFrame();
+    this.armFrame(anchor);
   }
 
   private scheduleFlush(): void {
@@ -417,11 +431,13 @@ export class PerfRecorder {
   lanes(count: number): void { this.laneCountValue = count; }
 
   clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number, composedAt?: number): void {
+    const now = performance.now();
     const wasPlaying = this.playing;
     this.playing = playing;
     this.position = position;
-    this.push({ t: 'tick', at: epoch(performance.now()), hour: round(position), composedAt: composedAt === undefined ? undefined : epoch(composedAt), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
-    if (playing || !wasPlaying) this.noteActivity();
+    this.push({ t: 'tick', at: epoch(now), hour: round(position), composedAt: composedAt === undefined ? undefined : epoch(composedAt), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
+    if (playing) this.armFrame(now);
+    else if (wasPlaying) this.armFrame(now);
   }
 
   widget(id: string, kind: string, title: string): void {
@@ -443,7 +459,8 @@ export class PerfRecorder {
     let widgets = this.paints.get(frame);
     if (!widgets) this.paints.set(frame, widgets = new Map());
     widgets.set(widget, (widgets.get(widget) ?? 0) + ms);
-    this.noteActivity();
+    const now = performance.now();
+    this.noteActivity(Number.isFinite(frame) ? Math.max(now, frame) : now);
   }
 
   shown(widget: string, hour: number | null): void {
@@ -540,8 +557,17 @@ export class PerfRecorder {
   }
 
   private async settleFrames(): Promise<void> {
-    if (!this.frameRequest && !this.waiting.length && this.lastFrame === null) return;
-    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    if (!this.frameRequest && !this.waiting.length && this.lastFrame === null && !this.hasPendingActivity()) return;
+    if (this.hasPendingActivity() && !this.frameRequest) this.armFrame();
+    const waitTurn = () => new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    if (this.frameRequest) await waitTurn();
+    if (!this.playing && this.hasPendingActivity() && this.frameRequest) await waitTurn();
+    if (this.hasPendingActivity()) {
+      const now = performance.now();
+      if (this.lastFrame === null) this.lastFrame = now;
+      this.dirty = false;
+      this.emitFrame(now, true);
+    }
     for (const { record } of this.waiting.splice(0)) this.push({ ...record, main: null });
   }
 
