@@ -536,7 +536,7 @@ fn paint_appearance(store: &mut replay_columnar::store::Store, slot: u32, channe
     }
 }
 
-fn politics(name: &str, provinces_out: std::ops::RangeInclusive<u32>, mut campaign: impl FnMut(u32, &mut replay_columnar::store::Store)) -> viewer_layer_core::playhead_host::units::Units {
+fn politics(name: &str, provinces_out: Option<std::ops::RangeInclusive<u32>>, mut campaign: impl FnMut(u32, &mut replay_columnar::store::Store)) -> viewer_layer_core::playhead_host::units::Units {
     use replay_columnar::{manifest::Status, state::Cell};
     use replay_data::rows::TableId;
     let tables = [TableId::Provinces, TableId::Countries, TableId::CountryLinks, TableId::CountryAppearance, TableId::Subjects, TableId::Autonomy, TableId::StateFlags, TableId::States];
@@ -564,7 +564,7 @@ fn politics(name: &str, provinces_out: std::ops::RangeInclusive<u32>, mut campai
         }
         campaign(at, store);
         for table in tables {
-            let status = if table == TableId::Provinces && provinces_out.contains(&at) { Status::Unavailable { reason: 1 } } else { Status::Complete };
+            let status = if table == TableId::Provinces && provinces_out.as_ref().is_some_and(|out| out.contains(&at)) { Status::Unavailable { reason: 1 } } else { Status::Complete };
             store.status(table.index(), status, true, Some(at as i32), true).unwrap();
         }
     })
@@ -666,7 +666,7 @@ fn certified(name: &str, units: viewer_layer_core::playhead_host::units::Units, 
 
 #[test]
 fn a_core_table_unavailable_inside_publications_certifies_none_of_its_hours() {
-    let units = politics("political core outage", 15..=26, |_, _| {});
+    let units = politics("political core outage", Some(15..=26), |_, _| {});
     certified("core outage", units, content(), &[12, 24, 36], |hour, installer, _| {
         let recorded = !(15..=26).contains(&hour);
         let key = installer.keys_of.get(1).copied().unwrap_or(0);
@@ -677,7 +677,7 @@ fn a_core_table_unavailable_inside_publications_certifies_none_of_its_hours() {
 #[test]
 fn a_demilitarised_row_gone_inside_a_publication_ends_the_zone_at_its_hour() {
     use replay_data::rows::TableId;
-    let units = politics("political zone row gone", 1..=0, |at, store| {
+    let units = politics("political zone row gone", None, |at, store| {
         if at == 15 {
             delete_row(store, TableId::StateFlags, 0);
         }
@@ -693,7 +693,7 @@ fn a_demilitarised_row_gone_inside_a_publication_ends_the_zone_at_its_hour() {
 fn a_link_written_inside_a_publication_undates_the_provinces_painted_before_it() {
     use replay_columnar::state::Cell;
     use replay_data::rows::TableId;
-    let units = politics("political link rewritten", 1..=0, |at, store| match at {
+    let units = politics("political link rewritten", None, |at, store| match at {
         15 => hold(store, 2, 8, 8),
         19 => write_cell(store, TableId::CountryLinks, 1, "canonical_slot", Cell::U32(2)),
         _ => {}
@@ -711,7 +711,7 @@ fn a_link_written_inside_a_publication_undates_the_provinces_painted_before_it()
 
 #[test]
 fn a_core_table_unavailable_and_back_inside_one_step_certifies_none_of_its_hours() {
-    let units = politics("political core blink", 15..=17, |_, _| {});
+    let units = politics("political core blink", Some(15..=17), |_, _| {});
     certified("core blink", units, content(), &[12, 24, 36], |hour, installer, _| {
         let recorded = !(15..=17).contains(&hour);
         let key = installer.keys_of.get(1).copied().unwrap_or(0);
@@ -723,7 +723,7 @@ fn a_core_table_unavailable_and_back_inside_one_step_certifies_none_of_its_hours
 fn a_link_written_inside_a_publication_undates_the_provinces_already_on_it() {
     use replay_columnar::state::Cell;
     use replay_data::rows::TableId;
-    let units = politics("political link under a province", 1..=0, |at, store| match at {
+    let units = politics("political link under a province", None, |at, store| match at {
         5 => hold(store, 2, 8, 8),
         19 => write_cell(store, TableId::CountryLinks, 1, "canonical_slot", Cell::U32(2)),
         _ => {}
@@ -743,7 +743,7 @@ fn a_link_written_inside_a_publication_undates_the_provinces_already_on_it() {
 fn appearance_rows_moved_between_slots_undate_the_appearance_writes() {
     use replay_data::rows::TableId;
     let red = [1.0, 0.0, 0.0];
-    let units = politics("political appearance reslotted", 1..=0, |at, store| match at {
+    let units = politics("political appearance reslotted", None, |at, store| match at {
         0 => {
             hold(store, 10, 8, 8);
             hold(store, 20, 9, 9);
@@ -771,7 +771,7 @@ fn appearance_rows_moved_between_slots_undate_the_appearance_writes() {
 fn an_inner_keys_colour_refusal_does_not_blank_the_publications_end() {
     use replay_columnar::state::Cell;
     use replay_data::rows::TableId;
-    let units = politics("political inner colour refusal", 1..=0, |at, store| match at {
+    let units = politics("political inner colour refusal", None, |at, store| match at {
         0 => {
             insert_row(store, TableId::CountryLinks, 3, 6);
             write_cell(store, TableId::CountryLinks, 3, "canonical_slot", Cell::U32(5));
@@ -799,7 +799,7 @@ fn an_inner_keys_colour_refusal_does_not_blank_the_publications_end() {
 fn a_subject_relation_undone_inside_a_publication_dates_none_of_the_hours_between() {
     use replay_columnar::state::Cell;
     use replay_data::rows::TableId;
-    let units = politics("political relation undone", 1..=0, |at, store| match at {
+    let units = politics("political relation undone", None, |at, store| match at {
         0 => {
             hold(store, 20, 9, 9);
             insert_row(store, TableId::Subjects, 0, 8 << 32 | 9);
@@ -828,7 +828,7 @@ fn an_old_colour_source_written_caps_the_hours_when_the_new_one_is_not_followed(
     use replay_columnar::state::Cell;
     use replay_data::rows::TableId;
     let (red, blue) = ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
-    let units = politics("political old colour source", 1..=0, |at, store| match at {
+    let units = politics("political old colour source", None, |at, store| match at {
         0 => {
             hold(store, 10, 8, 8);
             insert_row(store, TableId::CountryAppearance, 3, 85);
@@ -854,7 +854,7 @@ fn an_old_colour_source_written_caps_the_hours_when_the_new_one_is_not_followed(
 
 #[test]
 fn a_recovery_whole_after_a_refused_write_carries_the_ends_borders() {
-    let units = politics("political refused recovery", 1..=0, |at, store| {
+    let units = politics("political refused recovery", None, |at, store| {
         if at == 15 {
             hold(store, 2, 8, 8);
         }

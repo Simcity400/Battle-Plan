@@ -24,8 +24,12 @@ pub fn past_slots(table: impl std::fmt::Display) -> io::Error {
     invalid(format!("{table}: more than 4,294,967,295 rows, the format's slot width"))
 }
 
+const fn valid_slot(slot: u32) -> bool {
+    slot < SLOTS
+}
+
 fn slot_at(word: usize, bit: u32) -> Option<u32> {
-    word.checked_mul(64).and_then(|first| first.checked_add(bit as usize)).and_then(|slot| u32::try_from(slot).ok()).filter(|&slot| slot < SLOTS)
+    word.checked_mul(64).and_then(|first| first.checked_add(bit as usize)).and_then(|slot| u32::try_from(slot).ok()).filter(|&slot| valid_slot(slot))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1440,7 +1444,7 @@ impl TableState {
     }
 
     fn insert_at(&mut self, slot: u32, key: u128) -> io::Result<()> {
-        if slot >= SLOTS {
+        if !valid_slot(slot) {
             return Err(past_slots("A table"));
         }
         if self.live.get(slot) {
@@ -2795,7 +2799,7 @@ impl TableChanges<'_> {
         let rows = appended[table].as_mut().expect("a log's hour rows");
         let at = rows.slots;
         let result: io::Result<()> = (|| {
-            if at >= SLOTS {
+            if !valid_slot(at) {
                 return Err(past_slots(format_args!("Log table {table}'s hour")));
             }
             rows.insert_at(at, key)?;
@@ -2947,7 +2951,7 @@ impl TableChanges<'_> {
 
     fn inserting(&mut self, slot: u32, key: u128, given: bool) -> io::Result<()> {
         self.holds_state("inserted")?;
-        if slot >= SLOTS {
+        if !valid_slot(slot) {
             return Err(past_slots(format_args!("Table {}", self.table)));
         }
         self.state().insert_at(slot, key)?;
