@@ -29,8 +29,11 @@ export function rowsById<T extends BattleRow>(rows: readonly T[]): ReadonlyMap<s
 
 export interface BattleLabels {
   place: string; date: string; start: string; end: string; winner: string;
-  ongoing: string; unknownPlace: string; unknownStart: string;
+  ongoing: string; unknownPlace: string; unrecordedPlace?: string; unknownStart: string;
 }
+
+export const battlePlaceText = (row: BattleRow & { provinceId?: number | null }, labels: BattleLabels, loading = false) =>
+  row.place.name ?? (row.provinceId === null ? (labels.unrecordedPlace ?? 'Province not recorded') : loading ? 'Loading…' : labels.unknownPlace);
 export type BattleCountryLabel = (tag: string, hour: number) => { name: string; flag?: string; flagReason?: string; flagDetail?: string; flagPending?: boolean };
 export type BattleLossFormatter<T extends BattleRow = BattleRow> = (value: BattleValue, row: T, side: number, tooltip: boolean) => string;
 export interface BattleMeasure<T extends BattleRow = BattleRow> {
@@ -178,7 +181,7 @@ export function battleTooltip<T extends BattleRow>(row: T, labels: BattleLabels,
     for (const value of side.losses) rows.push({ label: value.label, value: formatLoss ? formatLoss(value, row, index, true) : battleValueText(value), indent: true });
   }
   rows.push({ label: labels.winner, value: battleWinner(row), divider: true });
-  return { title: row.place.name ?? labels.unknownPlace, rows, note };
+  return { title: battlePlaceText(row as T & { provinceId?: number | null }, labels), rows, note };
 }
 
 export function battleWindowIndex(windows: readonly BattleWindow[], at: number): number {
@@ -211,23 +214,25 @@ export function battleWarnings(windows: ReadonlyMap<number, { contentWarnings: s
   return [...new Set([...windows.values()].flatMap(reply => [...reply.contentWarnings,
     ...reply.warnings.filter(w => w.hour >= first && w.hour <= last).map(w => `Hour ${w.hour}: ${w.reason} (${w.count})`)]))];
 }
-export function battlePlaceRequests(rows: readonly (BattleRow & { provinceId: number })[]): { provinceId: number; hour: number }[] {
+export function battlePlaceRequests(rows: readonly (BattleRow & { provinceId: number | null })[]): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
-  for (const row of rows) places.set(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour), { provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour });
+  for (const row of rows) if (row.provinceId !== null) places.set(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour), { provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour });
   return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
 }
-export function placesLeadingWith(rows: readonly (BattleRow & { provinceId: number })[], rest: readonly { provinceId: number; hour: number }[]): { provinceId: number; hour: number }[] {
+export function placesLeadingWith(rows: readonly (BattleRow & { provinceId: number | null })[], rest: readonly { provinceId: number; hour: number }[]): { provinceId: number; hour: number }[] {
   const places = new Map<string, { provinceId: number; hour: number }>();
   for (const row of rows) {
+    if (row.provinceId === null) continue;
     const hour = row.place.namedAt ?? row.place.hour, key = placeKey(row.provinceId, hour);
     if (!places.has(key)) places.set(key, { provinceId: row.provinceId, hour });
   }
   for (const place of rest) { const key = placeKey(place.provinceId, place.hour); if (!places.has(key)) places.set(key, place); }
   return [...places.values()];
 }
-export function namedBattles<T extends BattleRow & { provinceId: number }>(rows: readonly T[], places: PlaceNamesReply | undefined): T[] {
+export function namedBattles<T extends BattleRow & { provinceId: number | null }>(rows: readonly T[], places: PlaceNamesReply | undefined): T[] {
   const byPlace = new Map(places?.places.map(place => [placeKey(place.provinceId, place.hour), place]));
   return rows.map(row => {
+    if (row.provinceId === null) return row;
     const name = byPlace.get(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour))?.name ?? row.place.name;
     return name === row.place.name ? row : { ...row, place: { ...row.place, name } };
   });

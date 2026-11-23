@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CountryFlagUrl, countryFlagUnavailable } from '../../components/CountryFlag';
+import { ValueState } from '../../components/ValueState';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import DrillHost from '../../charts/drill/DrillHost';
@@ -17,9 +18,10 @@ import type { BattleLogProps } from '../battles/BattleLog';
 import type { BattleViewContext } from '../battles/BattleLogView';
 import { battleValueText, rowsById } from '../battles/battleRows';
 import type { BattleCountryLabel } from '../battles/battleRows';
-import { battleOutcome, battleTooltip, heldTerrain, lengthText, missingTerrain, sideLook, validateLandBattleTerrain } from './landBattleCourse';
+import { battleOutcome, battleTooltip, clearBattleParts, heldTerrain, lengthText, lossWidth, missingTerrain, paintBattle, sameKnownSides, sideLook, subText, validateLandBattleTerrain } from './landBattleCourse';
 import type { HeldTerrain, SideLook } from './landBattleCourse';
-import { landManpowerLost } from './landBattlesData.ts';
+export { paintBattle } from './landBattleCourse';
+import { landManpowerSides } from './landBattlesData.ts';
 import type { LandBattleRow } from './landBattlesData';
 import { definition } from './definition';
 import LandBattleDrill from './LandBattleDrill';
@@ -49,47 +51,10 @@ export function Flags({ look, max = FLAGS }: { look: SideLook; max?: number }) {
 
 function Side({ look, index, state }: { look: SideLook; index: number; state: 'winner' | 'loser' | null }) {
   const names = look.countries.map(part => part.name).concat(look.unknown ? [look.unknown] : []);
-  const label = look.name ?? (look.unknown && !look.countries.length ? 'Not recorded' : null);
+  const unknownOnly = Boolean(look.unknown && !look.countries.length);
   return <span className={`lb-side lb-side-${index}${state ? ` is-${state}` : ''}${look.unknown ? ' is-unknown' : ''}`} title={`${SIDES[index]}: ${names.join(', ')}`}>
-    <Flags look={look} />{label && <span className="lb-side-name">{label}</span>}
+    <Flags look={look} />{look.name ? <span className="lb-side-name">{look.name}</span> : unknownOnly ? <ValueState kind="missing" narrow reason={look.unknown ?? undefined} className="lb-side-name" /> : null}
   </span>;
-}
-
-const lossWidth = (value: number, larger: number) => larger > 0 && value > 0 ? `${Math.max(3, value / larger * 50)}%` : '0';
-
-export function paintBattle(element: HTMLElement, row: LandBattleRow, terrain: string | null) {
-  const held = battleParts(element);
-  const { values, bars, sub } = held;
-  const lost = landManpowerLost(row);
-  if (lost && values.length === 2 && bars.length === 2 && (lost[0] !== held.lost[0] || lost[1] !== held.lost[1])) {
-    held.lost = lost;
-    const larger = Math.max(lost[0], lost[1]);
-    lost.forEach((value, side) => {
-      const text = usNumber.format(value);
-      if (values[side].textContent !== text) values[side].textContent = text;
-      const width = lossWidth(value, larger);
-      if (bars[side].style.width !== width) bars[side].style.width = width;
-    });
-  }
-  const line = subLine(row);
-  if (sub && (line !== held.line || terrain !== held.terrain)) {
-    held.line = line; held.terrain = terrain;
-    const text = subText(row, terrain);
-    if (sub.textContent !== text) sub.textContent = text;
-  }
-}
-
-interface BattleParts { values: readonly HTMLElement[]; bars: readonly HTMLElement[]; sub: HTMLElement | null;
-  lost: readonly number[]; line: string | null; terrain: string | null | undefined }
-const parts = new WeakMap<HTMLElement, BattleParts>();
-function battleParts(element: HTMLElement): BattleParts {
-  let held = parts.get(element);
-  if (!held || (held.sub && !element.contains(held.sub)) || (held.values[0] && !element.contains(held.values[0]))) {
-    held = { values: [...element.querySelectorAll<HTMLElement>('.lb-losses .log-value')], bars: [...element.querySelectorAll<HTMLElement>('.lb-losses .lb-bar')],
-      sub: element.querySelector<HTMLElement>('.lb-place small'), lost: [], line: null, terrain: undefined };
-    parts.set(element, held);
-  }
-  return held;
 }
 
 function shownCells(element: HTMLElement): boolean {
@@ -99,46 +64,45 @@ function shownCells(element: HTMLElement): boolean {
   return row?.dataset.reveal !== 'ahead';
 }
 
-function subLine(row: LandBattleRow): string | null {
-  const hours = row.length.value;
-  if (hours === null || row.end === null && hours < 24) return null;
-  return `${hours < 24 ? hours : `d${Math.floor(hours / 24)}`}${row.length.atLeast === true ? '+' : ''}`;
-}
-
-function subText(row: LandBattleRow, terrain: string | null) {
-  return [terrain, row.end !== null || row.length.value !== null && row.length.value >= 24
-    ? row.length.value === null ? null : lengthText(row.length.value, row.length.atLeast === true, false) : null].filter(Boolean).join(' · ');
-}
-
 function Losses({ row, colours }: { row: LandBattleRow; colours: readonly string[] }) {
   const values = row.sides.map(side => side.losses.find(value => value.label === 'Manpower lost') ?? null);
-  if (values.some(value => value === null || value.value === null)) {
-    const reason = values.find(value => value && value.value === null);
-    return <span className="lb-losses is-unknown" title={reason && reason.value === null ? reason.unknown : 'Casualties not recorded'}>
-      <span className="log-value is-muted">—</span><span className="lb-bars"><i className="lb-hatch" /></span><span className="log-value is-muted">—</span></span>;
-  }
-  const [attacker, defender] = values.map(value => value!.value as number);
-  const larger = Math.max(attacker, defender);
-  const width = (value: number) => lossWidth(value, larger);
-  return <span className="lb-losses">
-    <span className="log-value">{usNumber.format(attacker)}</span>
-    <span className="lb-bars" aria-hidden="true"><i className="lb-bar is-attacker" style={{ width: width(attacker), background: colours[0] }} />
-      <i className="lb-axis" /><i className="lb-bar is-defender" style={{ width: width(defender), background: colours[1] }} /></span>
-    <span className="log-value">{usNumber.format(defender)}</span>
+  const nums = values.map(value => value !== null && value.value !== null ? value.value : null);
+  const reasonOf = (index: number) => {
+    const held = values[index];
+    return held && held.value === null ? held.unknown : 'Casualties not recorded';
+  };
+  const bothKnown = nums[0] !== null && nums[1] !== null;
+  const larger = bothKnown ? Math.max(nums[0]!, nums[1]!) : 0;
+  const sideValue = (index: number) => nums[index] !== null
+    ? <span className="log-value">{usNumber.format(nums[index]!)}</span>
+    : <span className="log-value"><ValueState kind="missing" narrow reason={reasonOf(index)} /></span>;
+  const barReason = nums[0] === null ? reasonOf(0) : nums[1] === null ? reasonOf(1) : undefined;
+  return <span className={`lb-losses${bothKnown ? '' : ' is-unknown'}`}>
+    {sideValue(0)}
+    {bothKnown
+      ? <span className="lb-bars" aria-hidden="true"><i className="lb-bar is-attacker" style={{ width: lossWidth(nums[0]!, larger), background: colours[0] }} />
+        <i className="lb-axis" /><i className="lb-bar is-defender" style={{ width: lossWidth(nums[1]!, larger), background: colours[1] }} /></span>
+      : <span className="lb-bars" title={barReason}><i className="lb-hatch" /></span>}
+    {sideValue(1)}
   </span>;
 }
 
 function Result({ row, looks, live }: { row: LandBattleRow; looks: SideLook[]; live: boolean }) {
   const outcome = battleOutcome(row);
   if (outcome.kind === 'ongoing') return <span className={`lb-result${live ? ' is-live' : ''}`}>{live && <i className="live-dot" aria-hidden="true" />}Ongoing</span>;
-  if (outcome.kind === 'unknown') return <span className="lb-result is-unknown" title={outcome.text}>{outcome.text}</span>;
+  if (outcome.kind === 'unknown') return <span className="lb-result is-unknown"><ValueState kind="missing" narrow reason={outcome.text} /></span>;
   const look = looks[outcome.side];
+  if (look.unknown) {
+    const label = SIDES[outcome.side];
+    return <span className="lb-result" title={`${label} won`}>
+      <span className="lb-winner-side">{label}</span><span className="lb-won">won</span></span>;
+  }
   return <span className="lb-result" title={`${look.countries.map(part => part.name).join(', ') || SIDES[outcome.side]} won`}>
     <Flags look={look} max={2} />{look.name && <span className="lb-side-name">{look.name}</span>}<span className="lb-won">won</span></span>;
 }
 
 function placeName(row: LandBattleRow, pending: boolean) {
-  return row.place.name ?? (pending ? 'Loading…' : 'Unnamed province');
+  return row.place.name ?? (row.provinceId === null ? 'Province not recorded' : pending ? 'Loading…' : 'Unnamed province');
 }
 
 function flagElement(url: string | undefined, reason: string | undefined, detail: string | undefined, pending: boolean | undefined): HTMLElement {
@@ -202,16 +166,26 @@ function battleCellsElement(item: LandBattleRow, values: LandBattleRow, sides: S
   };
   const losses = (() => {
     const known = values.sides.map(entry => entry.losses.find(value => value.label === 'Manpower lost') ?? null);
-    if (known.some(value => value === null || value.value === null)) {
-      const reason = known.find(value => value && value.value === null);
+    const nums = known.map(value => value !== null && value.value !== null ? value.value : null);
+    const reasonOf = (index: number) => {
+      const held = known[index];
+      return held && held.value === null ? held.unknown : 'Casualties not recorded';
+    };
+    const sideCell = (index: number) => {
+      if (nums[index] !== null) return element('span', 'log-value', usNumber.format(nums[index]!));
+      const missing = element('span', 'log-value is-muted', 'Not recorded');
+      missing.title = reasonOf(index);
+      return missing;
+    };
+    if (nums[0] === null || nums[1] === null) {
       const made = element('span', 'lb-losses is-unknown');
-      made.title = reason && reason.value === null ? reason.unknown : 'Casualties not recorded';
       const bars = element('span', 'lb-bars');
+      bars.title = nums[0] === null ? reasonOf(0) : reasonOf(1);
       bars.append(element('i', 'lb-hatch'));
-      made.append(element('span', 'log-value is-muted', '—'), bars, element('span', 'log-value is-muted', '—'));
+      made.append(sideCell(0), bars, sideCell(1));
       return made;
     }
-    const [attacker, defender] = known.map(value => value!.value as number);
+    const [attacker, defender] = [nums[0]!, nums[1]!];
     const larger = Math.max(attacker, defender);
     const made = element('span', 'lb-losses'), bars = element('span', 'lb-bars');
     bars.setAttribute('aria-hidden', 'true');
@@ -235,6 +209,12 @@ function battleCellsElement(item: LandBattleRow, values: LandBattleRow, sides: S
     if (outcome.kind === 'unknown') { const made = element('span', 'lb-result is-unknown', outcome.text); made.title = outcome.text; return made; }
     const look = sides[outcome.side];
     const made = element('span', 'lb-result');
+    if (look.unknown) {
+      const label = SIDES[outcome.side];
+      made.title = `${label} won`;
+      made.append(element('span', 'lb-winner-side', label), element('span', 'lb-won', 'won'));
+      return made;
+    }
     made.title = `${look.countries.map(part => part.name).join(', ') || SIDES[outcome.side]} won`;
     made.append(flagsElement(look, 2));
     if (look.name) made.append(element('span', 'lb-side-name', look.name));
@@ -254,7 +234,7 @@ interface CellsProps {
   pending: boolean;
   keyedPlace: string | null;
   rank: number | undefined;
-  measure: string | null;
+  measure: { text: string; unknown?: string } | null;
   view: Props['view'];
   live: boolean;
   painted: boolean;
@@ -268,18 +248,18 @@ const sameLook = (a: SideLook, b: SideLook) => a.name === b.name && a.unknown ==
 
 function sameCells(a: CellsProps, b: CellsProps): boolean {
   if (a.stateKey !== b.stateKey || a.item.place.name !== b.item.place.name || a.pending !== b.pending || a.keyedPlace !== b.keyedPlace || a.rank !== b.rank
-    || a.measure !== b.measure || a.view !== b.view || a.live !== b.live || a.painted !== b.painted || a.colours !== b.colours || a.onOpen !== b.onOpen
+    || a.measure?.text !== b.measure?.text || a.measure?.unknown !== b.measure?.unknown || a.view !== b.view || a.live !== b.live || a.painted !== b.painted || a.colours !== b.colours || a.onOpen !== b.onOpen
     || a.sides.length !== b.sides.length || !a.sides.every((look, index) => sameLook(look, b.sides[index]))) return false;
   if (a.painted) return true;
-  const [lostA, lostB] = [landManpowerLost(a.values), landManpowerLost(b.values)];
-  return subText(a.values, a.terrain) === subText(b.values, b.terrain) && (lostA === lostB || !!lostA && !!lostB && lostA[0] === lostB[0] && lostA[1] === lostB[1]);
+  const [lostA, lostB] = [landManpowerSides(a.values), landManpowerSides(b.values)];
+  return subText(a.values, a.terrain) === subText(b.values, b.terrain) && lostA[0] === lostB[0] && lostA[1] === lostB[1];
 }
 
 const BattleCells = memo(function BattleCells({ stateKey, item, values, sides, terrain, pending, keyedPlace, rank, measure, view, live, colours, onOpen }: CellsProps) {
   const outcome = battleOutcome(item);
   const state = (index: number) => outcome.kind !== 'won' ? null : outcome.side === index ? 'winner' : 'loser';
   const cells = useRef<HTMLSpanElement>(null);
-  useLayoutEffect(() => { if (cells.current) parts.delete(cells.current); });
+  useLayoutEffect(() => { if (cells.current) clearBattleParts(cells.current); });
   return <span ref={cells} className="lb-cells" data-battle={item.id} onClick={() => onOpen(stateKey)}>
     <span className="lb-place">
       <b className="log-text">{view === 'biggest' && <span className="lb-rank">{rank}</span>}
@@ -291,7 +271,7 @@ const BattleCells = memo(function BattleCells({ stateKey, item, values, sides, t
     <Side look={sides[0]} index={0} state={state(0)} />
     <Losses row={values} colours={colours} />
     <Side look={sides[1]} index={1} state={state(1)} />
-    {view === 'biggest' && <span className="log-value lb-measure">{measure}</span>}
+    {view === 'biggest' && <span className={`log-value lb-measure${measure?.unknown ? ' is-muted' : ''}`} title={measure?.unknown}>{measure?.text}</span>}
     <Result row={item} looks={sides} live={live} />
   </span>;
 }, sameCells);
@@ -307,7 +287,7 @@ export default function LandBattleList(props: Props) {
   const owner = JSON.stringify([context.track.source.id, context.track.source.revision, context.track.branch.id]);
   const [openId, setOpenId] = useState<{ client: typeof context.runtime.client; owner: string; id: string; row: LandBattleRow; hour: number } | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
-  const terrainRef = useRef<(province: number) => string | null>(() => null);
+  const terrainRef = useRef<(province: number | null) => string | null>(() => null);
   const content = useContentRevision(context.runtime.client);
   const held = useRef<HeldTerrain | null>(null);
   held.current = heldTerrain(held.current, context.runtime.client, context.track.source, content);
@@ -329,7 +309,7 @@ export default function LandBattleList(props: Props) {
     product: 'land-battle-terrain', params: { provinces } }) : null;
   const terrainReply = useProduct(context.runtime.client, terrainRequest, context.active, validateLandBattleTerrain);
   for (const entry of terrainReply.data?.provinces ?? []) terrains.names.set(entry.provinceId, entry);
-  const terrainOf = (province: number) => terrainReads.reads.values.get(String(province))?.name ?? terrains.names.get(province)?.name ?? null;
+  const terrainOf = (province: number | null) => province === null ? null : terrainReads.reads.values.get(String(province))?.name ?? terrains.names.get(province)?.name ?? null;
   terrainRef.current = terrainOf;
   const ranks = useMemo(() => new Map(rows.map((row, index) => [row.id, index + 1])), [rows]);
   const now = (() => {
@@ -364,7 +344,7 @@ export default function LandBattleList(props: Props) {
   const bindRow = useMemo(() => view !== 'log' ? undefined : (row: LogRow<LandBattleRow>) => {
     const item = row.item, at = context.headHour();
     const head = at === null ? item : (context.rowAt(item.id, at) as LandBattleRow | null) ?? item;
-    const values = !landManpowerLost(head) === !landManpowerLost(item) ? head : item;
+    const values = sameKnownSides(head, item) ? head : item;
     return battleCellsElement(item, values, looks(item), terrainRef.current(item.provinceId), context.placePending(item),
       item.place.name === null && keyed ? keyed.place(item) : null, live, colours, () => opener.current(item));
   }, [view, context, looks, keyed, live, colours]);
@@ -376,7 +356,7 @@ export default function LandBattleList(props: Props) {
     [looks, colours, context.placePending, terrains, terrainReply.data]);
   const visible = useCallback((shown: readonly LogRow<LandBattleRow>[]) => {
     onVisibleRows(shown.map(row => row.item));
-    drawn.current = shown.map(row => row.item.provinceId);
+    drawn.current = shown.flatMap(row => row.item.provinceId === null ? [] : [row.item.provinceId]);
     const current = held.current;
     if (!current || following.current) return;
     const wanted = missingTerrain(current, drawn.current);
@@ -398,12 +378,11 @@ export default function LandBattleList(props: Props) {
   }, [listed, context.shownHour]);
   const current = opened ? listed ?? (opened.hour <= context.shownHour ? opened.row : null) : null;
   const heldAt = opened && !listed && current ? opened.hour : null;
-  const measureText = (row: LandBattleRow) => {
-    const value = measure === 'Length' ? row.length : measure === 'Peak size' ? (row.peakUnknown ? null : row.peak.value) : row.casualties;
-    if (value === null) return '—';
-    if (typeof value === 'number') return usNumber.format(value);
-    if (value.value === null) return '—';
-    return measure === 'Length' ? lengthText(value.value, value.atLeast === true, false) : battleValueText(value);
+  const measureText = (row: LandBattleRow): { text: string; unknown?: string } => {
+    if (measure === 'Peak size') return row.peakUnknown ? { text: '—', unknown: 'Roster not recorded' } : { text: usNumber.format(row.peak.value) };
+    const value = measure === 'Length' ? row.length : row.casualties;
+    if (value.value === null) return { text: '—', unknown: value.unknown };
+    return { text: measure === 'Length' ? lengthText(value.value, value.atLeast === true, false) : battleValueText(value) };
   };
   const columns = view === 'log' ? 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) minmax(68px, 1fr)'
     : 'minmax(96px, 1.5fr) minmax(56px, 190px) minmax(128px, 168px) minmax(56px, 190px) max-content minmax(68px, 1fr)';
@@ -416,7 +395,7 @@ export default function LandBattleList(props: Props) {
       renderRow={row => {
         const item = row.item, head = atHead(item);
         drawnItems.set(row.key, item);
-        const values = !landManpowerLost(head) === !landManpowerLost(item) ? head : item;
+        const values = sameKnownSides(head, item) ? head : item;
         return <BattleCells stateKey={row.key} item={item} values={values} sides={looks(item)} terrain={terrainOf(item.provinceId)} pending={context.placePending(item)}
           keyedPlace={item.place.name === null && props.keyed ? props.keyed.place(item) : null} rank={view === 'biggest' ? ranks.get(item.id) : undefined}
           measure={view === 'biggest' ? measureText(item) : null} view={view} live={live} painted={now !== null} colours={colours} onOpen={openState} />;
