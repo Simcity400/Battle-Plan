@@ -162,7 +162,7 @@ mod tests {
     const CHANGED: u32 = BLOCK + 10;
 
     fn recording(campaign: &[u8], change: fn(&mut CountryRow)) -> Recording {
-        let (bytes, _) = fixtures::written(campaign, &[(7, 1000, 2)], &[TableId::Countries], |synthetic, _, ordinal| {
+        let (bytes, _) = fixtures::written(recorder_derive::writers(), campaign, &[(7, 1000, 2)], &[TableId::Countries], |synthetic, _, ordinal| {
             let rows: Vec<CountryRow> = (1..=3)
                 .map(|id| {
                     let mut row = CountryRow { id, tag: format!("tag {id}").into_bytes(), stability_raw: i64::from(ordinal / 100), ..Default::default() };

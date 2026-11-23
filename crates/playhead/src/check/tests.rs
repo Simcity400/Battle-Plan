@@ -183,7 +183,7 @@ fn segment(id: BranchId, hours: std::ops::RangeInclusive<Hour>) -> Vec<Record> {
 }
 
 fn reloaded() -> (Replay, WorldPages) {
-    let replay = Replay::from_records(CAMPAIGN.to_vec(), &[segment(1, 1_000..=1_005), segment(2, 1_003..=1_006)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.to_vec(), &[segment(1, 1_000..=1_005), segment(2, 1_003..=1_006)]).unwrap().into_timelines(&Default::default()).unwrap();
     let pages = WorldPages::over(replay.recording().selecting(&TableId::ALL).unwrap(), Span::Whole).unwrap();
     (replay, pages)
 }

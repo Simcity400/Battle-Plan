@@ -6,4 +6,4 @@ Division events live for the observation hour in the derived table. They carry p
 
 `BalanceDrops` compares known political and command power across consecutive complete hours only. It starts a new baseline after a gap or an incomplete country table. It keys a drop by kind, raw country ID and observation hour and discards that row when the next hour runs. On resume it primes the balances and the currently living drop keys from the commit without persisting another copy. This lets a drop immediately after a resume match the uninterrupted run and clears the prior hour's rows.
 
-[Division event writer](../../crates/recorder-derive/src/division_events.rs) · [Division event inputs](../../crates/recorder-derive/src/division_events/inputs.rs) · [Balance drops](../../crates/recorder-derive/src/drops.rs)
+[Division event writer](../../crates/recorder-derive-land/src/division_events.rs) · [Division event inputs](../../crates/recorder-derive-land/src/division_events/inputs.rs) · [Balance drops](../../crates/recorder-derive-world/src/drops.rs)

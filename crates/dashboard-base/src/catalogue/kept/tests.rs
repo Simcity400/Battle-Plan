@@ -266,6 +266,7 @@ fn a_cold_source_reads_the_kept_catalogue_as_it_was_built() {
         "memory.battleplan".into(),
         Arc::new(
             replay::campaign::Replay::from_records(
+                recorder_derive::writers(),
                 crate::test_fixtures::CAMPAIGN.into(),
                 &[session(&identity)],
             )

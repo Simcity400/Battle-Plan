@@ -389,7 +389,7 @@ pub fn allocation_test_directory(name: &str) -> std::path::PathBuf {
 
 pub fn replay(records: Vec<replay::spool::Record>) -> replay::campaign::Replay {
     let encoded =
-        replay::campaign::Replay::from_records(ALLOCATION_CAMPAIGN.to_vec(), &[records]).unwrap();
+        replay::campaign::Replay::from_records(recorder_derive::writers(), ALLOCATION_CAMPAIGN.to_vec(), &[records]).unwrap();
     replay::campaign::Replay::open(encoded.bytes().to_vec()).unwrap()
 }
 

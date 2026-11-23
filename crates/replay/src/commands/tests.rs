@@ -297,6 +297,7 @@ fn columnar_capture_metadata_has_the_same_player_report_as_rows() {
         _ => unreachable!(),
     };
     let row = crate::campaign::fixtures::encode_records(
+        recorder_derive::writers(),
         capture.campaign_id.clone(),
         &[vec![
             Record::SessionStart(session()),
@@ -397,7 +398,7 @@ fn phase_declares_a_campaign_branch_without_recording_an_hour() {
         Record::SessionStart(session()),
         Record::Control(entry.clone()),
     ];
-    let replay = Replay::from_records(campaign.to_vec(), &[records]).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), campaign.to_vec(), &[records]).unwrap();
     assert_eq!(replay.branches.len(), 1);
     assert!(replay.index.is_empty());
     let history = replay.into_history().unwrap();
@@ -419,7 +420,7 @@ fn phase_declares_a_campaign_branch_without_recording_an_hour() {
         unreachable!()
     };
     packet.phase.as_mut().unwrap().campaign[0] = b'f';
-    let conflicting = Replay::from_records(campaign.to_vec(), &[vec![Record::SessionStart(session()), Record::Control(entry)]]).unwrap();
+    let conflicting = Replay::from_records(recorder_derive::writers(), campaign.to_vec(), &[vec![Record::SessionStart(session()), Record::Control(entry)]]).unwrap();
     assert!(conflicting.controls.is_empty());
     assert_eq!(conflicting.damaged_parts, 1);
     assert!(conflicting.warnings.iter().any(|warning| warning.contains("player command phase conflicts")), "{:?}", conflicting.warnings);
@@ -529,7 +530,7 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
         }));
         records.push(Record::Control(control));
     }
-    let rows = Replay::from_records(b"synthetic".to_vec(), &[records.clone()]).unwrap();
+    let rows = Replay::from_records(recorder_derive::writers(), b"synthetic".to_vec(), &[records.clone()]).unwrap();
     let mut encoded_session = Vec::new();
     session().encode(&mut encoded_session).unwrap();
     let mut metadata = Vec::new();
@@ -648,6 +649,7 @@ fn paused_commands_before_native_load_marker_resume_into_the_first_hour() {
         load_signal: 0,
     });
     let replay = Replay::from_records(
+        recorder_derive::writers(),
         campaign.to_vec(),
         &[vec![
             Record::SessionStart(session()),

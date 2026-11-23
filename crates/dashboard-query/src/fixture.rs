@@ -257,7 +257,7 @@ impl Fixture {
     fn record(data: Data, hours: RangeInclusive<i32>, gap: Option<RangeInclusive<i32>>) -> Self {
         let (first, last) = hours.into_inner();
         let campaign = CampaignRow { id: b"tiles".to_vec() };
-        let replay = Replay::from_synthetic(campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
+        let replay = Replay::from_synthetic(recorder_derive::writers(), campaign.id.clone(), session(1), branch_start(1, first), last, |frame, hour| {
             sample(frame, TableId::Clock, &[ClockRow { hour, ..ClockRow::default() }])?;
             sample(frame, TableId::Campaign, std::slice::from_ref(&campaign))?;
             country_rows(frame, hour, matches!(data, Data::Power))?;

@@ -58,7 +58,7 @@ fn recompress_routes_through_the_cli() {
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("synthetic.battleplan");
-    fs::write(&path, ::replay::columnar_frames::fixtures::restored(7, &[(1, 100, 1)])).unwrap();
+    fs::write(&path, ::replay::columnar_frames::fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)])).unwrap();
     let run = |level: &[&str]| {
         let mut args = vec!["recompress".into(), path.clone().into_os_string()];
         args.extend(level.iter().map(Into::into));

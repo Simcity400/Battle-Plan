@@ -48,7 +48,7 @@ fn segment(id: BranchId, hours: RangeInclusive<Hour>) -> Vec<Record> {
 
 pub fn reloaded(base: Hour) -> Replay {
     let segments = [segment(1, base..=base + 5), segment(2, base + 3..=base + 6), segment(3, base + 7..=base + 8)];
-    Replay::from_records(b"campaign".to_vec(), &segments).unwrap().into_timelines(&Default::default()).unwrap()
+    Replay::from_records(recorder_derive::writers(), b"campaign".to_vec(), &segments).unwrap().into_timelines(&Default::default()).unwrap()
 }
 
 pub fn segment_of(base: Hour, branch: BranchId, hour: Hour) -> BranchId {
