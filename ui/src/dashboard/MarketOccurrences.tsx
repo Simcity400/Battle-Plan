@@ -16,8 +16,8 @@ import type { BoundTrack } from './model';
 import { useLogPages } from './useLogPages';
 import { useDistinctState } from './useDistinctState';
 import type { LogCut, LogSpec } from './useLogPages';
-import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerTitle, MARKET_LEDGER, MARKET_LOG } from './marketLedger.ts';
-import type { LedgerItem } from './marketLedger';
+import { ledgerEntry, ledgerFacets, ledgerFigure, ledgerIcon, ledgerPartyName, ledgerSelection, ledgerTitle, MARKET_LEDGER, MARKET_LOG } from './marketLedger.ts';
+import type { LedgerItem, PartyState } from './marketLedger';
 import '../widgets/event-feed/eventFeed.css';
 import './market.css';
 import type { BoundWindow } from './regionTime';
@@ -53,23 +53,24 @@ export default function MarketOccurrences({ runtime, track, kinds, tags, span, c
   const [wanted, setWanted] = useDistinctState<readonly CountryRequest[]>(NO_COUNTRY_REQUESTS, sameCountryRequests);
   const onVisible = useCallback((rows: readonly LogRow<LedgerItem>[]) => setWanted(logCountryRequests(rows, row => ({ hour: row.hour, tags: [row.item.seller, row.item.buyer] }))), [setWanted]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null) => tag === null ? 'Country not recorded' : labelAt(row.hour)(tag).name, [labelAt]);
+  const name = useCallback((row: LogRow<LedgerItem>) => (tag: string | null, state: PartyState = 'notRecorded') =>
+    ledgerPartyName(tag, state, t => labelAt(row.hour)(t).name), [labelAt]);
   if (list.error) return <WidgetState kind="error" failure={list.error} onRetry={list.retry} />;
   const describe = (row: LogRow<LedgerItem>) => {
     const named = name(row), figure = ledgerFigure(row.item);
-    return [dayLabel(row.hour), ledgerTitle(row.item, named), `${named(row.item.seller)} → ${named(row.item.buyer)}`, row.item.equipment, figure?.text].filter(Boolean).join(' · ');
+    return [dayLabel(row.hour), ledgerTitle(row.item, named), `${named(row.item.seller, row.item.sellerState)} → ${named(row.item.buyer, row.item.buyerState)}`, row.item.equipment, figure?.text].filter(Boolean).join(' · ');
   };
   return <LogList pages={list.pages} onWantedPages={list.onWantedPages} label={label} density={density} months={months}
     animate={animate && cut.follow} playhead={cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : null} reveal={reveal} columns={COLUMNS} onVisible={onVisible}
     renderRow={row => {
       const named = name(row), figure = ledgerFigure(row.item), seller = row.item.seller === null ? null : labelAt(row.hour)(row.item.seller);
-      const open = onOpen ? () => onOpen(row.item, row.hour) : undefined;
+      const open = onOpen && ledgerSelection(row.item) !== null ? () => onOpen(row.item, row.hour) : undefined;
       return <>
-        <span className="log-art" aria-hidden="true"><span className="event-feed-icon" style={{ '--event-colour': tokens.categories[PALETTE[row.item.kind] ?? 0] } as CSSProperties}>
+        <span className="log-art" aria-hidden="true"><span className="event-feed-icon" style={{ '--event-colour': tokens.categories[row.item.kind !== null ? (PALETTE[row.item.kind] ?? 0) : 0] } as CSSProperties}>
           <Icon name={ledgerIcon(row.item.kind)} /></span></span>
         <span className="log-text market-ledger-text" onClick={open}><b>{ledgerTitle(row.item, named)}</b>
           <small>{seller && <CountryFlagUrl className="log-flag" url={seller.flag} detail={seller.flagDetail} reason={seller.flagReason} pending={seller.flagPending} />}
-            {named(row.item.seller)} → {named(row.item.buyer)}{row.item.variant !== '0' ? ` · ${row.item.equipment ?? row.item.equipmentMissing ?? 'Equipment name unavailable'}` : ''}</small></span>
+            {named(row.item.seller, row.item.sellerState)} → {named(row.item.buyer, row.item.buyerState)}{row.item.variant !== '0' ? ` · ${row.item.equipment ?? row.item.equipmentMissing ?? 'Equipment design not recorded'}` : ''}</small></span>
         {figure ? <span className={`market-ledger-figure${figure.negative ? ' is-negative' : ''}`} onClick={open}>{figure.text}</span> : <span />}
       </>;
     }}
@@ -77,13 +78,13 @@ export default function MarketOccurrences({ runtime, track, kinds, tags, span, c
     tooltip={row => {
       const named = name(row), figure = ledgerFigure(row.item);
       return [{ title: ledgerTitle(row.item, named), subtitle: dayLabel(row.hour), rows: [
-        { label: 'Seller', value: named(row.item.seller) }, { label: 'Buyer', value: named(row.item.buyer) },
-        ...row.item.variant !== '0' ? [{ label: 'Equipment', value: row.item.equipment ?? row.item.equipmentMissing ?? 'Equipment name unavailable' }] : [],
+        { label: 'Seller', value: named(row.item.seller, row.item.sellerState) }, { label: 'Buyer', value: named(row.item.buyer, row.item.buyerState) },
+        ...row.item.variant !== '0' ? [{ label: 'Equipment', value: row.item.equipment ?? row.item.equipmentMissing ?? 'Equipment design not recorded' }] : [],
         ...figure ? [{ label: 'Amount', value: figure.text }] : [],
         ...row.item.reason ? [{ label: row.item.reason, tone: 'muted' as const }] : [],
-        { label: 'Contract', value: row.item.contract, tone: 'muted' as const },
+        { label: 'Contract', value: row.item.contract ?? 'Not recorded', tone: 'muted' as const },
       ] }];
     }}
-    menu={row => [...onOpen ? [{ label: 'Show contract', run: () => onOpen(row.item, row.hour) }] : [], jumpItem(runtime, track.id, row.hour)]}
+    menu={row => [...onOpen && ledgerSelection(row.item) !== null ? [{ label: 'Show contract', run: () => onOpen(row.item, row.hour) }] : [], jumpItem(runtime, track.id, row.hour)]}
     empty={list.counts ? empty ?? 'No market activity matches these settings.' : <WidgetState kind="loading" label="Loading market activity…" />} />;
 }

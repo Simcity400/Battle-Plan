@@ -1,4 +1,4 @@
-import type { PictureSample } from '../draw/notifications';
+import type { DrawSample, PictureSample } from '../draw/notifications';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { attributeCommits, takeCommits } from './commitCount.ts';
@@ -88,7 +88,9 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
 }
 
 export interface ExactRead { values: ReadonlyMap<string, string>; ranked?: boolean; ordered?: boolean }
-export type ExactPicture = (hour: number) => Promise<ExactRead | null>;
+export type ExactPicture = (hour: number, auditId?: number) => Promise<ExactRead | null>;
+export type AuditSnapshotPin = (auditId: number) => (() => void) | undefined;
+interface ReaderRegistration { readonly exact: ExactPicture; readonly pin?: AuditSnapshotPin }
 type ShownRow = NonNullable<PictureSample['rows']>[number];
 
 export function pictureError(surface: string, rows: readonly ShownRow[], exact: ExactRead | null | undefined): string | null {
@@ -109,33 +111,77 @@ export function pictureError(surface: string, rows: readonly ShownRow[], exact: 
 }
 export interface StructureRead { hour: number; rows: () => readonly string[]; exact: () => Promise<readonly string[]> }
 interface RowChange { widget: string; source: string; previous: StructureRead; current: StructureRead; placement?: number }
-type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows: NonNullable<PictureSample['rows']> };
-type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; at: number; hour: number; error: string | null };
+type AuditedPicture = Omit<PictureSample, 'hour' | 'rows'> & { hour: number; rows?: PictureSample['rows'] };
+type PictureAuditResult = { widget: string; surface: string; placement: number; owner?: number; generation?: number; at: number; hour: number; error: string | null };
+
+const readerKey = (generation: number | undefined, id: number, owner: number) => (generation ?? 0) + '/' + id + '/' + owner;
+
+function shouldAuditPicture(record: DrawSample, activeReaders?: Map<string, ReaderRegistration>): boolean {
+  if (record.t !== 'picture' || record.hour === null) return false;
+  if (record.rows) return true;
+  if (record.mode !== 'picture' || record.detached) return false;
+  return record.auditMissing === true || activeReaders?.has(readerKey(record.generation, record.placement, record.owner)) === true;
+}
 
 const READERS_HELD = 1024;
 const EXACT_READS_HELD = 64;
 
 export class PerfRecorder {
-  private readers = new Map<string, ExactPicture>();
-  private auditReaders?: Map<string, ExactPicture>;
+  private readers = new Map<string, ReaderRegistration>();
+  private auditReaders?: Map<string, ReaderRegistration>;
+  private auditActive = false;
+  private capturePins?: (() => void)[];
   private commitSequence = 0;
   private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
   private rowChanges: RowChange[] = [];
   private auditGen = 0;
-  private pictureAudit?: { gen: number; readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
+  private pictureAudit?: { gen: number; readers?: Map<string, ReaderRegistration>; pictures: AuditedPicture[]; done: boolean };
+  private auditCleanups?: (() => void)[];
+
+  private releaseCapturePins() {
+    const pins = this.capturePins;
+    if (!pins?.length) return;
+    this.capturePins = [];
+    for (const release of pins) release();
+  }
+
+  private runAuditCleanups() {
+    const pending = this.auditCleanups;
+    if (!pending?.length) return;
+    this.auditCleanups = [];
+    for (const cleanup of pending) cleanup();
+  }
+
+  deferUntilAuditDone(cleanup: () => void) {
+    if (!this.auditActive) {
+      cleanup();
+      return;
+    }
+    (this.auditCleanups ??= []).push(cleanup);
+  }
+
+  pinPicture(generation: number | undefined, id: number, owner: number, auditId: number | undefined) {
+    if (!this.auditActive || auditId === undefined) return;
+    const key = readerKey(generation, id, owner);
+    const entry = this.auditReaders?.get(key) ?? this.readers.get(key);
+    const release = entry?.pin?.(auditId);
+    if (release) (this.capturePins ??= []).push(release);
+  }
 
   structure(widget: string, source: string, previous: StructureRead, current: StructureRead, placement?: number) {
     if (this.commitAudit && JSON.stringify(previous.rows()) !== JSON.stringify(current.rows()))
       this.rowChanges.push({ widget, source, previous, current, ...placement !== undefined ? { placement } : {} });
   }
 
-  reader(id: number, owner: number, exact: ExactPicture, generation = 0): () => void {
-    const key = generation + '/' + id + '/' + owner;
+  reader(id: number, owner: number, exact: ExactPicture | null, generation = 0, pin?: AuditSnapshotPin): () => void {
+    const key = readerKey(generation, id, owner);
     this.readers.delete(key);
-    this.readers.set(key, exact);
+    if (!exact) return () => {};
+    const registration: ReaderRegistration = pin ? { exact, pin } : { exact };
+    this.readers.set(key, registration);
     if (this.readers.size > READERS_HELD) this.readers.delete(this.readers.keys().next().value!);
-    this.auditReaders?.set(key, exact);
-    return () => { if (this.readers.get(key) === exact) this.readers.delete(key); };
+    this.auditReaders?.set(key, registration);
+    return () => { if (this.readers.get(key) === registration) this.readers.delete(key); };
   }
   dropGeneration(generation: number) {
     const prefix = generation + '/';
@@ -161,10 +207,15 @@ export class PerfRecorder {
 
   async beginAudit() {
     const gen = ++this.auditGen;
+    this.auditActive = false;
     this.pictureAudit = undefined;
+    this.auditReaders = undefined;
+    this.releaseCapturePins();
+    this.runAuditCleanups();
     this.exactReads.clear();
     this.rowChanges = [];
     this.commitAudit = [];
+    this.auditActive = true;
     this.auditReaders = new Map(this.readers);
     const { capturePictures } = await import('../dashboard/pulled.ts');
     if (this.auditGen !== gen) return;
@@ -177,7 +228,6 @@ export class PerfRecorder {
       const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
       if (this.auditGen !== gen) return { done: true, results: [] };
       const readers = this.auditReaders;
-      this.auditReaders = undefined;
       const commits = this.commitAudit ?? [];
       this.commitAudit = undefined;
       const checks = new WeakMap<StructureRead, Promise<boolean>>();
@@ -217,7 +267,7 @@ export class PerfRecorder {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
         this.push(logged);
-        if (record.t === 'picture' && record.rows && record.hour !== null) pictures.push(record as AuditedPicture);
+        if (shouldAuditPicture(record, readers)) pictures.push(record as AuditedPicture);
       }
       if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
       if (this.auditGen !== gen) return { done: true, results: [] };
@@ -235,7 +285,7 @@ export class PerfRecorder {
         const logged: PerfRecord = { ...record };
         delete logged.rows;
         this.push(logged);
-        if (record.t === 'picture' && record.rows && record.hour !== null) work.pictures.push(record as AuditedPicture);
+        if (shouldAuditPicture(record, work.readers)) work.pictures.push(record as AuditedPicture);
       }
       if (this.buffered.bytes >= FLUSH_BYTES) await this.flush();
       if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
@@ -247,13 +297,24 @@ export class PerfRecorder {
       const { widget, surface, placement, owner, rows } = record;
       const hour = record.hour + record.offset;
       let error: string | null;
-      try { error = pictureError(surface, rows, await work.readers?.get((record.generation ?? 0) + '/' + placement + '/' + owner)?.(hour)); }
+      try {
+        error = rows
+          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.exact(hour, record.auditId))
+          : 'Painted picture emitted without audit rows';
+      }
       catch (cause) { error = String(cause); }
-      return { widget, surface, placement, owner, at: record.at, hour, error };
+      return { widget, surface, placement, owner, ...(record.generation !== undefined ? { generation: record.generation } : {}), at: record.at, hour, error };
     });
     if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
     const done = work.done && work.pictures.length === 0;
-    if (done) { this.pictureAudit = undefined; this.exactReads.clear(); }
+    if (done) {
+      this.pictureAudit = undefined;
+      this.auditReaders = undefined;
+      this.auditActive = false;
+      this.exactReads.clear();
+      this.releaseCapturePins();
+      this.runAuditCleanups();
+    }
     return { done, results: results.filter(entry => entry !== null) };
   }
   async auditPictures(): Promise<PictureAuditResult[]> {
@@ -567,6 +628,11 @@ export class PerfRecorder {
   async finish(): Promise<boolean> {
     await this.settleFrames();
     this.stopped = true;
+    this.auditActive = false;
+    this.auditReaders = undefined;
+    this.pictureAudit = undefined;
+    this.releaseCapturePins();
+    this.runAuditCleanups();
     if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
     attributeCommits(null);
     if (this.frameRequest) { cancelAnimationFrame(this.frameRequest); this.frameRequest = 0; }

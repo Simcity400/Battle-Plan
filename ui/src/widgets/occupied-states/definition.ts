@@ -1,6 +1,6 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
-import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../draw/tables/settings.ts';
+import { OFFERED, tableFamilyOptions, type TableBase, type TableColumnDefaults } from '../../families/table/settings.ts';
 
 export const COLUMNS: readonly TableColumnDefaults[] = [
   { key: 'state', label: 'State', as: 'plain', offered: OFFERED.text },

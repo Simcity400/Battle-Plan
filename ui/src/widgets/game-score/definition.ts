@@ -27,7 +27,7 @@ export const definition = {
   description: 'The game’s end-screen scores for every country, as a table, a race or lines.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   countries: { max: Number.MAX_SAFE_INTEGER, ranked: true, all: true },
-  minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS,
+  minSize: { w: 4, h: 6 }, defaultSize: { w: 12, h: 12 }, options: OPTIONS, playsBackDated: true,
   migrate: (_from, { options: { multiplierPrecision: _precision, split: _split, tableSort, topMeasure, ...options } = {}, ...widget }) => ({ ...widget,
     options: { ...options,
       ...(typeof topMeasure === 'string' && topMeasure ? { topMeasure: topMeasure.replace(/^.*:/, '') } : {}),

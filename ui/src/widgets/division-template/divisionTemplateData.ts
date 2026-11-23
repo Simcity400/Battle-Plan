@@ -6,7 +6,8 @@ import type { DivisionTemplatesReply, TemplateEntry, TemplateUnit } from '../../
 
 export type TemplateRow =
   | { kind: 'template'; key: string; entry: TemplateEntry }
-  | { kind: 'obsolete'; key: string; count: number; children: TemplateRow[] };
+  | { kind: 'obsolete'; key: string; count: number; children: TemplateRow[] }
+  | { kind: 'status-unknown'; key: string; count: number; reason: string; children: TemplateRow[] };
 
 const isArray = Array.isArray;
 export function validateDivisionTemplates(value: unknown): DivisionTemplatesReply {
@@ -22,10 +23,24 @@ export function validateDivisionTemplates(value: unknown): DivisionTemplatesRepl
 export const templateStructure = (reply: DivisionTemplatesReply) => JSON.stringify([reply.templates, reply.fieldedMissing, reply.warnings]);
 
 export function templateRows(reply: DivisionTemplatesReply): TemplateRow[] {
-  const current: TemplateRow[] = [], obsolete: TemplateRow[] = [];
-  for (const entry of reply.templates)
-    (entry.obsolete ? obsolete : current).push({ kind: 'template', key: entry.template, entry });
-  return obsolete.length ? [...current, { kind: 'obsolete', key: 'obsolete', count: obsolete.length, children: obsolete }] : current;
+  const current: TemplateRow[] = [], obsolete: TemplateRow[] = [], unknown: TemplateRow[] = [];
+  let unknownReason: string | null = null;
+  for (const entry of reply.templates) {
+    const row: TemplateRow = { kind: 'template', key: entry.template, entry };
+    if (entry.obsolete === true) obsolete.push(row);
+    else if (entry.obsolete === null) {
+      unknown.push(row);
+      unknownReason ??= entry.settingsMissing ?? 'Template status was not recorded.';
+    } else current.push(row);
+  }
+  const out: TemplateRow[] = [...current];
+  if (unknown.length) {
+    out.push({ kind: 'status-unknown', key: 'status-unknown', count: unknown.length, reason: unknownReason ?? 'Template status was not recorded.', children: unknown });
+  }
+  if (obsolete.length) {
+    out.push({ kind: 'obsolete', key: 'obsolete', count: obsolete.length, children: obsolete });
+  }
+  return out;
 }
 
 export const templateName = (entry: TemplateEntry) => entry.name ?? 'Template name unavailable';

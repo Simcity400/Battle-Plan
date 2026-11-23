@@ -10,6 +10,7 @@ export const NOT_READ = 'Not read yet';
 export const NO_VALUE = 'No value';
 export const NOT_RECORDED = 'Not recorded at this hour';
 export const ZERO_DIVISOR = 'Its divisor is zero at this hour';
+export const NOT_LIVE_CELL = 'Not a live cell of this reply';
 
 export type LiveOp = 'value' | 'sum' | 'difference' | 'ratio';
 export interface LiveKind { id: string; op: LiveOp; scale: number }
@@ -215,7 +216,7 @@ export function sectionValues(section: LiveSection, groups: readonly GroupValues
       const { group, row, column } = operand(at, 0);
       return group.raw?.(row, column);
     },
-    missing: key => { const at = byKey.get(key); if (at === undefined) return 'Not a live cell of this reply'; const value = evaluate(at); return typeof value === 'string' ? value : ''; },
+    missing: key => { const at = byKey.get(key); if (at === undefined) return NOT_LIVE_CELL; const value = evaluate(at); return typeof value === 'string' ? value : ''; },
   };
 }
 
