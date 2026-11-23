@@ -1,7 +1,7 @@
 use engine_land_inputs::division_land_inputs as land;
-use engine_native::{
-    carmy, carmy::DivisionSeed, carmy_manpower_values, memory::SliceMemory, walk::Outcome,
-};
+use engine_native::carmy::{self, DivisionSeed};
+use engine_native_parts::carmy_manpower_values;
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 
 struct DeniedAllocator;
 
@@ -50,7 +50,7 @@ fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
 }
 
 fn capture(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     sources: &[DivisionSeed],
     source: Outcome,
@@ -323,7 +323,7 @@ fn contributor_growth_failure_precedes_later_seed_validation_failures() {
 
 #[test]
 fn division_land_gather_uses_the_whole_census_without_fixed_batches() {
-    use engine_native::{Memory, memory::RecordLayout, memory::RecordSources};
+    use engine_native_memory::{Memory, memory::{RecordLayout, RecordSources}};
     struct Counted<'a> {
         memory: SliceMemory<'a>,
         gathers: std::cell::Cell<usize>,

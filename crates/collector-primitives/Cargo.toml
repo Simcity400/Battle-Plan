@@ -13,10 +13,10 @@ doctest = false
 test-support = []
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
-engine-native.workspace = true
 serde = { workspace = true, features = ["derive"] }
 collector-status.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Performance"] }
@@ -34,5 +34,5 @@ workspace = true
 collector-primitives = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 test-unify = { workspace = true }

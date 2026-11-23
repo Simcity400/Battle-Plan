@@ -12,9 +12,11 @@ test = false
 bench = false
 
 [features]
-test-support = ["dep:engine-executable", "dep:engine-native", "dep:engine-research", "dep:engine-focus", "engine-native/batch-fallback-test-counts"]
+test-support = ["dep:engine-executable", "dep:engine-native", "dep:engine-native-parts", "dep:engine-research", "dep:engine-focus", "engine-native-memory/batch-fallback-test-counts"]
 
 [dependencies]
+engine-native-parts = { workspace = true, optional = true }
+engine-native-memory = { workspace = true, optional = true }
 engine-sites.workspace = true
 engine-executable = { workspace = true, optional = true }
 engine-native = { workspace = true, optional = true }
@@ -30,6 +32,6 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-governance-tests = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-governance-tests = { workspace = true, features = ["engine-native-memory", "test-support"] }
+engine-native-politics = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

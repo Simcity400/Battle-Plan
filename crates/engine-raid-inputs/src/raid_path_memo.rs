@@ -1,5 +1,7 @@
 
-use crate::{Memory, cgame_state, craid_system, memory::read_slice, read, walk::Outcome};
+use engine_native_memory::{Memory, memory::read_slice, read, walk::Outcome};
+use engine_native::cgame_state;
+use engine_native_air::craid_system;
 
 pub const LAND_MEMO: usize = 0x258;
 pub const NAVAL_MEMO: usize = 0x230;
@@ -63,7 +65,7 @@ pub fn walk(
         base,
         game_state,
         dispatcher,
-        crate::walk::Buffer::Growing(rows),
+        engine_native_memory::walk::Buffer::Growing(rows),
         torn,
     )
 }
@@ -73,7 +75,7 @@ pub fn walk_buffer(
     base: usize,
     game_state: usize,
     dispatcher: Dispatcher,
-    rows: crate::walk::Buffer<'_, Row>,
+    rows: engine_native_memory::walk::Buffer<'_, Row>,
     torn: &mut u32,
 ) -> Outcome {
     match walk_rows(memory, base, game_state, dispatcher, rows, torn) {
@@ -87,7 +89,7 @@ fn walk_rows(
     base: usize,
     game_state: usize,
     dispatcher: Dispatcher,
-    rows: crate::walk::Buffer<'_, Row>,
+    rows: engine_native_memory::walk::Buffer<'_, Row>,
     torn: &mut u32,
 ) -> Result<Outcome, &'static str> {
     let memo = memo_address(memory, base, game_state, dispatcher)?;
@@ -146,7 +148,7 @@ fn table_slots(header: &[u8; HEADER]) -> Result<usize, &'static str> {
 fn copy_table(
     memory: &impl Memory,
     header: &[u8; HEADER],
-    mut rows: crate::walk::Buffer<'_, Row>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let field = |at: usize| &header[at - BUCKETS..];
     let buckets = usize::try_from(u64::from_le_bytes(field(BUCKETS)[..8].try_into().unwrap()))
@@ -225,7 +227,7 @@ fn copy_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const GAME: usize = 0x100;
     const SYSTEM: usize = 0x800;
@@ -575,7 +577,7 @@ mod tests {
     fn bench_path_memo_by_entries() {
         for entries in [1_000, 10_000, 50_000] {
             let bytes = scaled(entries);
-            let memory = crate::memory::CountingMemory::new(&bytes);
+            let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
             let mut rows = vec![Row::default(); entries];
             memory.bench(
                 &format!("RaidPathDistances {entries} entries"),

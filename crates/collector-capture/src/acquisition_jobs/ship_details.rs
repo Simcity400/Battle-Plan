@@ -12,7 +12,7 @@ pub(crate) struct ShipDetailsDispatch {
 #[derive(Default)]
 struct State {
     closed: bool,
-    countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     context: Option<ship_models::CaptureContext>,
     captured: Option<ship_models::Captured>,
     dispatched: bool,
@@ -140,7 +140,7 @@ impl collector_workers::acquisition::Publication for ShipDetailsDispatch {
 
 pub(crate) fn take_parts(
     captured: &mut ship_models::Captured,
-    countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     base: usize,
 ) -> [Option<ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
     let mut requests = [const { None }; ship_models::MAX_PARTS];

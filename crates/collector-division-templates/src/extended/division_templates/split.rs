@@ -84,7 +84,7 @@ impl WalkPart {
         let visits = &mut self.visits;
         let scratch = &mut self.scratch;
         let country_ticks = &mut self.country_ticks;
-        let mut visit_country = |country: engine_native::ccountry::Country| {
+        let mut visit_country = |country: engine_native_memory::country_identity::Country| {
             let start = qpc();
             slot.set(country.canonical_slot);
             let _reads = collector_memory::read_accounting::table(TABLES[2]);
@@ -662,7 +662,7 @@ impl Captured {
                     if let Some(reason) = garrison {
                         self.model_failures.add(reason);
                     }
-                    engine_native::walk::Buffer::Growing(&mut self.country_rows.rows)
+                    engine_native_memory::walk::Buffer::Growing(&mut self.country_rows.rows)
                         .ensure(country_len + 1)?;
                     self.country_rows.rows[country_len] = row;
                     country_len += 1;
@@ -861,14 +861,14 @@ impl Captured {
                 joined.name_bytes_len,
             ];
             let grown = (|| {
-                engine_native::walk::Buffer::Growing(&mut self.icon_rows.rows).ensure(len + rows)?;
-                engine_native::walk::Buffer::Growing(&mut self.icon_bytes.first)
+                engine_native_memory::walk::Buffer::Growing(&mut self.icon_rows.rows).ensure(len + rows)?;
+                engine_native_memory::walk::Buffer::Growing(&mut self.icon_bytes.first)
                     .ensure(at[0] + part_len[0] + extra[0])?;
-                engine_native::walk::Buffer::Growing(&mut self.counts.first)
+                engine_native_memory::walk::Buffer::Growing(&mut self.counts.first)
                     .ensure(at[1] + part_len[1] + extra[1])?;
-                engine_native::walk::Buffer::Growing(&mut self.variants.first)
+                engine_native_memory::walk::Buffer::Growing(&mut self.variants.first)
                     .ensure(at[2] + part_len[2] + extra[2])?;
-                engine_native::walk::Buffer::Growing(&mut self.name_bytes.first)
+                engine_native_memory::walk::Buffer::Growing(&mut self.name_bytes.first)
                     .ensure(at[3] + part_len[3] + extra[3])?;
                 Ok::<(), &'static str>(())
             })();

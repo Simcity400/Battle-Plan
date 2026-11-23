@@ -1,10 +1,10 @@
 use super::reference::ReferenceReads;
 use super::*;
 use crate::army_stat_changes::{MEMBERSHIP_TEST, serial};
-use engine_native::{
-    carmy, ccountry, cequipment_variant as variant, cequipment_variant_pool as pool, cstate,
-    division_panel_operands, modifier_accumulator::Value, modifier_definition as definition,
-};
+use engine_native::{carmy, cequipment_variant::{self as variant, pool as pool}, cstate};
+use engine_native_memory::modifier_cache::Value;
+use engine_native_parts::modifier_definition as definition;
+use engine_native_land::division_panel_operands;
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
@@ -80,7 +80,7 @@ impl Fixture {
                 memory.put(entries + ordinal * 16 + 8, &amount.to_le_bytes());
             }
         }
-        memory.put(0x5000, &(variant::VTABLE_RVA.0 as u64).to_le_bytes());
+        memory.put(0x5000, &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
         memory.put(
             0x5008,
             &((1_u64 << 32) | u64::from(variant::REFERENCE_TYPE)).to_le_bytes(),
@@ -302,7 +302,7 @@ fn compact_source_observations_match_the_original_field_faults_and_admission() {
     let selection = |country: bool| Selection {
         country: country.then_some((
             1,
-            Ok(ccountry::Country {
+            Ok(engine_native_memory::country_identity::Country {
                 pointer: 0xa000,
                 canonical_slot: 0,
                 id: 1,

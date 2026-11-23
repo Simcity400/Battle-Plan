@@ -1,8 +1,11 @@
 use super::*;
 use crate::rows::{CountryLinkRow, WarRelationRow};
+use engine_native_memory::{Memory, memory::SliceMemory, read, walk::Outcome};
 use engine_native::{
-    Memory, ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status, cwar_relation,
-    memory::SliceMemory, read, walk::Outcome,
+    ccountry,
+    cgame_state,
+    crelation::{self, status as crelation_status},
+    cwar_relation,
 };
 use std::collections::BTreeMap;
 
@@ -183,19 +186,19 @@ impl World {
             p64(&mut bytes, c, ccountry::VTABLE_RVA.0 as u64);
             p32(&mut bytes, c + ccountry::ID, owner as u32);
             p64(&mut bytes, c + ccountry::DIPLOMACY_STATUS, d as u64);
-            p64(&mut bytes, d, cdiplomacy_status::VTABLE_RVA.0 as u64);
-            p64(&mut bytes, d + cdiplomacy_status::COUNTRY, c as u64);
+            p64(&mut bytes, d, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+            p64(&mut bytes, d + engine_native_parts::cdiplomacy_status_layout::COUNTRY, c as u64);
             let cells: Vec<u64> = (0..slots).map(|t| status(owner, t) as u64).collect();
             vector(
                 &mut bytes,
-                d + cdiplomacy_status::RELATIONS,
+                d + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
                 matrix(owner),
                 &cells,
             );
             let owned: Vec<u64> = self.owned[owner].iter().map(|&w| war(w) as u64).collect();
             vector(
                 &mut bytes,
-                d + cdiplomacy_status::OWNED_RELATIONS,
+                d + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
                 owned_data(owner),
                 &owned,
             );
@@ -277,7 +280,7 @@ impl World {
 }
 
 fn native(memory: &impl Memory, receiver: usize, target: usize) -> bool {
-    let cells = read::<u64>(memory, diplomacy(receiver) + cdiplomacy_status::RELATIONS).unwrap();
+    let cells = read::<u64>(memory, diplomacy(receiver) + engine_native_parts::cdiplomacy_status_layout::RELATIONS).unwrap();
     let status = read::<u64>(memory, cells as usize + target * 8).unwrap();
     if status == 0 {
         return false;

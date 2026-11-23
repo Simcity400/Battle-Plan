@@ -2,8 +2,8 @@ use super::*;
 use crate::{
     ccountry::synthetic::World,
     cstate::{BASE_MODIFIERS, CONTROLLER, COUNTRY_MODIFIER_STRIDE},
-    modifier_entry,
 };
+use engine_native_parts::modifier_entry;
 
 const MODULE: usize = 0x1_4000_0000;
 const KEYS: [u32; 8] = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
@@ -51,7 +51,7 @@ fn state(
 
 fn country(world: &mut World, slot: u32, entries: &[(u32, i64)], factor: i64) {
     let object = world.object(slot);
-    accumulator(world, object + ccountry::MODIFIER_ACCUMULATOR, entries);
+    accumulator(world, object + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, entries);
     let status = world.alloc(0x600);
     world.u64(status, (MODULE + cproduction_status::VTABLE_RVA.0) as u64);
     world.put(

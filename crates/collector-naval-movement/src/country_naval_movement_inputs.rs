@@ -1,5 +1,6 @@
 use crate::table_capture::Arena;
-use engine_native::{Memory, ccountry};
+use engine_native_memory::Memory;
+use engine_native::ccountry;
 use engine_naval_history::country_naval_movement_inputs as native;
 use replay_data::rows::PacketHour;
 
@@ -209,7 +210,7 @@ impl Captured {
         if let Ok(count) = self.physical_count {
             self.navies.required = count;
             if let Err(reason) =
-                engine_native::walk::Buffer::Growing(&mut self.navies.first).ensure(count)
+                engine_native_memory::walk::Buffer::Growing(&mut self.navies.first).ensure(count)
             {
                 self.physical_count = Err(reason);
                 return reader;

@@ -2,7 +2,8 @@ use collector_naval_history::extended::naval_history::{
     Capacities,
     reserved_land_tests::{Observed, fixture, typed},
 };
-use engine_native::{ctheatre, walk::Outcome};
+use engine_native::ctheatre;
+use engine_native_memory::walk::Outcome;
 use std::cell::RefCell;
 
 #[test]

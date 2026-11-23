@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cgame_state, cstate, memory::SliceMemory, walk::Outcome};
+use crate::{cgame_state, cstate};
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 use std::cell::RefCell;
 
 fn put(bytes: &mut [u8], at: usize, value: &[u8]) {

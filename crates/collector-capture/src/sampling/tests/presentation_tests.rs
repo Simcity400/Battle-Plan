@@ -28,7 +28,7 @@ impl Gate {
 }
 
 struct Unreadable;
-impl engine_native::Memory for Unreadable {
+impl engine_native_memory::Memory for Unreadable {
     fn copy(&self, _: usize, _: &mut [u8]) -> bool {
         false
     }
@@ -52,7 +52,7 @@ fn request() -> acquisition::PresentationRequest {
         inputs: Some(
             engine_allocation::shared(collector_divisions::division_census::UnitInputs::fixture(
                 vec![engine_native::carmy::DivisionSeed::default(); 1_536],
-                engine_native::walk::Outcome::Rows { len: 1_536 },
+                engine_native_memory::walk::Outcome::Rows { len: 1_536 },
             ))
             .unwrap(),
         ),
@@ -1068,7 +1068,7 @@ fn input_publishers_without_the_status_side_join_the_census_and_submit_nothing()
         assert!(request.inputs.is_none() && request.army_stats.is_none());
         assert!(matches!(
             request.captured.outcomes()[1],
-            engine_native::walk::Outcome::Unavailable { .. }
+            engine_native_memory::walk::Outcome::Unavailable { .. }
         ));
     }
     let mut seen: Vec<_> = roles.try_iter().collect();

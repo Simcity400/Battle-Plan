@@ -14,4 +14,4 @@ Trait recalculation rebuilds the terrain and night adjusters and the army leader
 
 Division, deployment, and garrison manpower use the same embedded signed layout, with eight-byte entries. Keep positive amounts and their raw tags in occurrence order even when the tags have aliases. A negative header is invalid. A deployment can sum positive amounts into a wider value and omit the sum for an empty array.
 
-[Commander reader](../../crates/engine-native/src/carmy_leader.rs) · [Commander parity tests](../../crates/engine-native/src/carmy_leader/movement_tests.rs) · [Army-group layout](../../crates/engine-native/src/carmy_group.rs) · [Manpower layout](../../crates/engine-native/src/carmy_manpower_values.rs)
+[Commander reader](../../crates/engine-native/src/carmy_leader.rs) · [Commander parity tests](../../crates/engine-native/src/carmy_leader/movement_tests.rs) · [Army-group layout](../../crates/engine-native-parts/src/carmy_group.rs) · [Manpower layout](../../crates/engine-native-parts/src/carmy_manpower_values.rs)

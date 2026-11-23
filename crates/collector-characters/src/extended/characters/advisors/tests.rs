@@ -440,7 +440,7 @@ fn planned_country_prefix_survives_later_control_change_and_fault() {
             CHARACTERS[0] + ccharacter::COUNTRY,
             99_u32.to_le_bytes(),
         );
-        bytes[sentinel - ADDRESS + engine_native::msvc_tree_node::COLOR] ^= 1;
+        bytes[sentinel - ADDRESS + engine_native_memory::msvc_tree_node::COLOR] ^= 1;
         let source = WaveMemory::new(&bytes, fault.then_some(sentinel));
         cache.capture(&source, context(), &observer, None);
         assert_eq!(cache.sections[0].counts.planned, 0);
@@ -759,7 +759,9 @@ struct ManyAdvisors {
 #[cfg(test)]
 fn many_advisors(count: usize) -> ManyAdvisors {
     use super::super::tests::MANAGER;
-    use engine_native::{ccharacter_manager, character_advisor_node, msvc_tree_node as node};
+    use engine_native::ccharacter::manager as ccharacter_manager;
+    use engine_native_parts::character_advisor_node;
+    use engine_native_memory::msvc_tree_node as node;
     fn alloc(bytes: &mut Vec<u8>, len: usize) -> usize {
         let at = bytes.len();
         bytes.resize(at + len, 0);
@@ -1077,7 +1079,7 @@ fn quiet_hours_carry_advisor_modifier_caches_and_read_only_a_rebuilt_role() {
 fn profile_diagnostics_have_five_slots_independent_of_table_count() {
     let _globals = crate::extended::characters::test_globals();
     let section = Section::with_capacity(0, 0, 0);
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };

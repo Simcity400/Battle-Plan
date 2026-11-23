@@ -11,7 +11,7 @@ struct Traced {
 impl Memory for Traced {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.reads.borrow_mut().push(address);
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &self.bytes,
         }
@@ -28,10 +28,10 @@ fn located_at(region: usize, id: u32) -> Traced {
     );
     put(
         region,
-        &(engine_native::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(
-        region + engine_native::cstrategic_region::ID,
+        region + engine_native_parts::cstrategic_region::ID,
         &id.to_le_bytes(),
     );
     Traced {

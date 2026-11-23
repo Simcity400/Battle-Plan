@@ -155,9 +155,9 @@ fn event(
 ) -> Result<(), &'static str> {
     store.batch.room()?;
     let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .ok_or("design liveness clock unreadable")?;
-    let hour = engine_native::read(
+    let hour = engine_native_memory::read(
         memory,
         state as usize + engine_native::cgame_state::CURRENT_HOUR,
     )
@@ -206,7 +206,7 @@ pub(super) fn registered(memory: &impl Memory, base: usize, pointer: usize) {
     let Some(store) = STORE.get() else {
         return;
     };
-    let Some(handle) = engine_native::read::<u64>(memory, pointer + organisation::REFERENCE) else {
+    let Some(handle) = engine_native_memory::read::<u64>(memory, pointer + organisation::REFERENCE) else {
         unobserved!();
         return;
     };
@@ -255,14 +255,14 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
         return;
     }
     const ROSTER_BATCH: usize = 64;
-    const REFERENCE_FIELDS: [engine_native::memory::RecordField; 1] =
-        [engine_native::memory::RecordField {
+    const REFERENCE_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+        [engine_native_memory::memory::RecordField {
             source_offset: organisation::REFERENCE,
             destination_offset: 0,
             len: 8,
         }];
-    const REFERENCE_LAYOUT: engine_native::memory::RecordLayout<'static> =
-        engine_native::memory::RecordLayout::new(&REFERENCE_FIELDS, 8)
+    const REFERENCE_LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+        engine_native_memory::memory::RecordLayout::new(&REFERENCE_FIELDS, 8)
             .expect("valid record layout");
     let mut pointer_bytes = [0_u8; ROSTER_BATCH * 8];
     let mut pointers = [0_usize; ROSTER_BATCH];
@@ -273,18 +273,18 @@ pub(super) fn roster(memory: &impl Memory, base: usize, header: usize) {
         let batch_ok = array
             .slice(first, count as u32, 8)
             .ok()
-            .is_some_and(|span| engine_native::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]));
+            .is_some_and(|span| engine_native_memory::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]));
         if !batch_ok {
             for ordinal in first..first + count as u32 {
                 let pointer = array
                     .element(ordinal, 8)
-                    .and_then(|at| engine_native::read::<u64>(memory, at));
+                    .and_then(|at| engine_native_memory::read::<u64>(memory, at));
                 let Some(pointer) = pointer else {
                     unobserved!();
                     continue;
                 };
                 let Some(handle) =
-                    engine_native::read::<u64>(memory, pointer as usize + organisation::REFERENCE)
+                    engine_native_memory::read::<u64>(memory, pointer as usize + organisation::REFERENCE)
                 else {
                     unobserved!();
                     continue;
@@ -337,7 +337,7 @@ pub(super) fn refresh_context(
         }
     }
     for handle in &handles {
-        let resolved = engine_native::creference_registry::resolve(memory, base, *handle)?;
+        let resolved = engine_native_parts::creference_registry::resolve(memory, base, *handle)?;
         let designs = sources::author_designs(*handle)?;
         super::super::design_context::author(memory, base, *handle, resolved, &designs)?;
     }
@@ -368,7 +368,7 @@ unsafe extern "system-unwind" fn callback<const SITE: usize>(
         complete: false,
     };
     let base = BASE.load(Ordering::Acquire);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     if SITE == 3 {
         retired(&memory, base, a);
     }
@@ -404,7 +404,7 @@ unsafe extern "system-unwind" fn reconcile(
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[0].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(a, b, c, d, e) });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     roster(&memory, BASE.load(Ordering::Acquire), e);
     scope.complete = true;
     result

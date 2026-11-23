@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, cincoming_diplomatic_action, cpdx_array::Array, diplomatic_action_body, read,
-    walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{cincoming_diplomatic_action, diplomatic_action_body};
 
 pub const ACTIONS: usize = 0x08;
 pub const CAPACITY: usize = 0x10;
@@ -25,7 +24,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -38,7 +37,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -46,7 +45,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let mut len = 0_usize;
     let mut unread_rows = 0_u32;
@@ -108,7 +107,7 @@ struct Reader<'a, M> {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn field<T: crate::memory::Raw>(
+    fn field<T: engine_native_memory::memory::Raw>(
         &self,
         pointer: usize,
         offset: usize,
@@ -172,7 +171,8 @@ impl<M: Memory> Reader<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const COUNTRIES: usize = 0x2000;

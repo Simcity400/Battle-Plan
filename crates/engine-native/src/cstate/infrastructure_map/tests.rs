@@ -1,5 +1,5 @@
 use super::*;
-use crate::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 use std::cell::RefCell;
 
 const BASE: usize = 0x1000_0000;

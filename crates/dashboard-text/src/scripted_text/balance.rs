@@ -208,7 +208,7 @@ impl<'a> ScriptedText<'a> {
                     continue;
                 }
                 let value =
-                    if definition.flags & engine_native::modifier_definition::CLAMP_MAXIMUM != 0 {
+                    if definition.flags & engine_native_parts::modifier_definition::CLAMP_MAXIMUM != 0 {
                         modifier.value.clamp(0, 100_000)
                     } else {
                         modifier.value

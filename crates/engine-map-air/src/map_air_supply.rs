@@ -1,14 +1,23 @@
 
-use engine_native::allocation as engine_allocation;
-use engine_native::{
-    Memory, cair_base, ccountry, cdiplomacy_status,
+use engine_allocation as engine_allocation;
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince,
-    creference_registry::{Header, ScopedResolver},
-    cstrategic_region, csupply_system,
-    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
+    memory::{
+        Raw,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+    },
     read,
 };
+use engine_native::{ccountry, cprovince, ccountry_supply_system::world as csupply_system};
+use engine_native_parts::{
+    creference_registry::{Header, ScopedResolver},
+    cstrategic_region,
+};
+use engine_native_air::cair_base;
 use engine_sites::Rva;
 
 const CONSUMERS: usize = 0x1b8;
@@ -185,7 +194,7 @@ fn air_base_owner<M: Memory>(
     let Some(air_base) = resolver.resolve(memory, handle)? else {
         return Ok(country);
     };
-    let host = field::<u64>(memory, air_base, cair_base::HOST_REFERENCE)?;
+    let host = field::<u64>(memory, air_base, engine_native_parts::cair_base_layout::HOST_REFERENCE)?;
     if resolver.resolve(memory, host)?.is_some() {
         return Ok(country);
     }
@@ -223,7 +232,7 @@ fn air_base_owner<M: Memory>(
         }
     }
     let diplomacy = field::<u64>(memory, holder.pointer, ccountry::DIPLOMACY_STATUS)? as usize;
-    let relations = array(memory, diplomacy, cdiplomacy_status::RELATIONS, 8)?;
+    let relations = array(memory, diplomacy, engine_native_parts::cdiplomacy_status_layout::RELATIONS, 8)?;
     let status = relations
         .element(target.canonical_slot, 8)
         .and_then(|address| read::<u64>(memory, address))

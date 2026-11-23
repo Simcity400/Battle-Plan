@@ -1,11 +1,14 @@
 
-use crate::{
-    Memory, ccharacter::Literal, ccountry, coperation_instance, cpdx_array::Array,
-    csubject_relation::Name,
+use engine_native_memory::{
+    Memory,
+    msvc_string::Literal,
+    cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
-    operation_assigned_operative, read,
+    read,
     walk::Outcome,
 };
+use engine_native::{ccountry, crelation::subject::Name};
+use engine_native_intelligence::{coperation_instance, operation_assigned_operative};
 
 const COUNTRY_BATCH: usize = 64;
 const OP_MGR_PTR_FIELDS: [RecordField; 1] = [RecordField {
@@ -69,7 +72,7 @@ pub fn demand(
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -85,10 +88,10 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(assigned),
-        crate::walk::Buffer::Growing(descriptions),
-        crate::walk::Buffer::Growing(parts),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(assigned),
+        engine_native_memory::walk::Buffer::Growing(descriptions),
+        engine_native_memory::walk::Buffer::Growing(parts),
     )
 }
 
@@ -96,10 +99,10 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, coperation_instance::Row>,
-    mut assigned: crate::walk::Buffer<'_, operation_assigned_operative::Row>,
-    mut descriptions: crate::walk::Buffer<'_, u8>,
-    mut parts: crate::walk::Buffer<'_, coperation_instance::Part>,
+    mut output: engine_native_memory::walk::Buffer<'_, coperation_instance::Row>,
+    mut assigned: engine_native_memory::walk::Buffer<'_, operation_assigned_operative::Row>,
+    mut descriptions: engine_native_memory::walk::Buffer<'_, u8>,
+    mut parts: engine_native_memory::walk::Buffer<'_, coperation_instance::Part>,
 ) -> Walk {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
@@ -353,9 +356,12 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, coperation, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_intelligence::coperation;
+    use engine_native_memory::memory::SliceMemory;
     use coperation_instance::{Equipment, EquipmentTotal, Part, Requirement};
-    use engine_native::{cequipment_type, cequipment_variant, cequipment_variant_pool};
+    use engine_native_parts::cequipment_type;
+    use engine_native::cequipment_variant::{self, pool as cequipment_variant_pool};
 
     const BASE: usize = 0x140_000_000;
     const GAME: usize = 0x1000;
@@ -887,7 +893,7 @@ mod tests {
         u64_at(
             &mut bytes,
             VARIANT,
-            (BASE + cequipment_variant::VTABLE_RVA.0) as u64,
+            (BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64,
         );
         u64_at(&mut bytes, VARIANT + 8, VARIANT_HANDLE);
         u64_at(
@@ -932,7 +938,7 @@ mod tests {
             2,
         );
         for (index, amount) in [500_000_i64, 0].into_iter().enumerate() {
-            let entry = POOL_ITEMS + index * engine_native::equipment_entry::STRIDE;
+            let entry = POOL_ITEMS + index * engine_native_parts::equipment_entry::STRIDE;
             u64_at(&mut bytes, entry, VARIANT as u64);
             u64_at(&mut bytes, entry + 8, amount as u64);
         }
@@ -945,7 +951,7 @@ mod tests {
         u64_at(&mut bytes, POOL_TOTALS, ARCHETYPE as u64);
         u64_at(
             &mut bytes,
-            POOL_TOTALS + engine_native::allocation_equipment_row::AMOUNT,
+            POOL_TOTALS + engine_native_parts::allocation_equipment_row::AMOUNT,
             500_000,
         );
         bytes[pool + cequipment_variant_pool::ALLOW_ZERO] = 1;

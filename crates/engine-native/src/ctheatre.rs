@@ -1,16 +1,30 @@
 
-use crate::{
-    Memory, cair_group, cair_theatre, cair_wing, carmy, carmy_group, ccontroller_area, ccountry,
-    corders_group,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, ctask_force, ctheater_group, cunit,
     memory::{
-        Gathered, RecordField, RecordLayout, RecordSources, gather_records, packed_fields,
-        packed_map, packed_stride,
+        Gathered,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        gather_records,
+        packed_fields,
+        packed_map,
+        packed_stride,
     },
-    msvc_string, read, read_slice,
+    msvc_string,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native_parts::{
+    cair_group,
+    cair_theatre,
+    carmy_group,
+    ccontroller_area,
+    ctheater_group,
+};
+use crate::{carmy, ccountry, corders_group, cprovince, ctask_force, cunit};
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029f_22b8);
@@ -52,7 +66,7 @@ pub struct ReservedLandWalk {
 pub(crate) fn walk_reserved_land_headers(
     memory: &impl Memory,
     base: usize,
-    root: Result<ccountry::Country, &'static str>,
+    root: Result<engine_native_memory::country_identity::Country, &'static str>,
     output: &mut Vec<Row>,
     validate_rosters: impl FnMut(usize, u64) -> Result<(), &'static str>,
 ) -> ReservedLandWalk {
@@ -63,7 +77,7 @@ pub(crate) fn walk_reserved_land_headers(
 pub fn walk_reserved_land_headers_buffer(
     memory: &impl Memory,
     base: usize,
-    root: Result<ccountry::Country, &'static str>,
+    root: Result<engine_native_memory::country_identity::Country, &'static str>,
     mut output: Buffer<'_, Row>,
     mut validate_rosters: impl FnMut(usize, u64) -> Result<(), &'static str>,
 ) -> ReservedLandWalk {
@@ -138,11 +152,6 @@ pub struct OrdersMembership {
     pub theater_group: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct WingMembership {
-    pub wing: u64,
-    pub group: u64,
-}
 
 const NOT_ROSTER_THEATRE: &str = "unit theatre is not one of its roster country's theatres";
 
@@ -247,21 +256,6 @@ pub fn read_orders_membership(
     Ok(OrdersMembership {
         orders_group: root.handle,
         theater_group,
-    })
-}
-
-pub fn read_wing_membership(
-    memory: &impl Memory,
-    pointer: usize,
-    wing: &cair_wing::Row,
-) -> Result<WingMembership, &'static str> {
-    let group = pointer
-        .checked_add(cair_wing::GROUP_HANDLE)
-        .and_then(|address| read::<u64>(memory, address))
-        .ok_or("air wing theatre group reference unreadable")?;
-    Ok(WingMembership {
-        wing: wing.id,
-        group,
     })
 }
 
@@ -399,7 +393,7 @@ struct Reader<'a, M> {
 }
 
 impl<M: Memory> Reader<'_, M> {
-    fn field<T: crate::memory::Raw>(
+    fn field<T: engine_native_memory::memory::Raw>(
         &self,
         pointer: usize,
         offset: usize,
@@ -459,7 +453,7 @@ impl<M: Memory> Reader<'_, M> {
 
     fn land(
         &self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         countries: &ccountry::Reader<'_, M>,
         details: &mut LandDetails,
         buffers: &mut Storage<'_>,
@@ -601,7 +595,7 @@ impl<M: Memory> Reader<'_, M> {
 
     fn air(
         &self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         countries: &ccountry::Reader<'_, M>,
         buffers: &mut Storage<'_>,
         names: &mut Names<'_>,
@@ -687,7 +681,7 @@ impl<M: Memory> Reader<'_, M> {
                         .ok_or("air wing reference address overflow")?;
                     let wing =
                         read::<u64>(self.memory, address).ok_or("air wing reference unreadable")?;
-                    if wing as u32 != cair_wing::TYPE {
+                    if wing as u32 != engine_native_parts::cair_wing_layout::TYPE {
                         return Err("air group member reference is not an air wing");
                     }
                     counts[5].push(
@@ -1113,7 +1107,7 @@ impl<M: Memory> Reader<'_, M> {
         let bytes = bytes
             .get_mut(..output.len() * 8)
             .ok_or("theatre vector window exceeds its batch buffer")?;
-        if !crate::read_slice(self.memory, window.data, bytes) {
+        if !engine_native_memory::read_slice(self.memory, window.data, bytes) {
             return Err(error);
         }
         for (destination, source) in output.iter_mut().zip(bytes.chunks_exact(8)) {

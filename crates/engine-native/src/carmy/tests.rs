@@ -3,7 +3,7 @@ fn experience_pending_conversion_reads_full_template_handle_and_null_absence() {
     use super::*;
     let mut bytes = fixture();
     let run =
-        |bytes: &[u8]| pending_template(&crate::memory::SliceMemory { base: 0, bytes }, 0, A1);
+        |bytes: &[u8]| pending_template(&engine_native_memory::memory::SliceMemory { base: 0, bytes }, 0, A1);
     p64(&mut bytes, A1 + PREVIOUS_TEMPLATE, 0);
     assert_eq!(run(&bytes), Ok(0));
     p64(&mut bytes, A1 + PREVIOUS_TEMPLATE, T1 as u64);
@@ -17,7 +17,7 @@ fn experience_pending_conversion_reads_full_template_handle_and_null_absence() {
 fn icon_inputs_keep_raw_byte_and_full_alternate_template_handle() {
     use super::*;
     let mut bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -28,7 +28,7 @@ fn icon_inputs_keep_raw_byte_and_full_alternate_template_handle() {
     p64(&mut bytes, T1 + 8, handle(0xffff_ffff, 0));
     let run = |bytes: &[u8]| {
         read_icon_inputs(
-            &crate::memory::SliceMemory { base: 0, bytes },
+            &engine_native_memory::memory::SliceMemory { base: 0, bytes },
             0,
             source,
             None,
@@ -49,7 +49,7 @@ fn icon_inputs_keep_raw_byte_and_full_alternate_template_handle() {
 #[test]
 fn icon_inputs_reject_stale_army_sources_and_bad_nonnull_templates() {
     use super::*;
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -72,7 +72,7 @@ fn icon_inputs_reject_stale_army_sources_and_bad_nonnull_templates() {
         p64(&mut bytes, at, value);
         assert_eq!(
             read_icon_inputs(
-                &crate::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes
                 },
@@ -89,7 +89,7 @@ fn icon_inputs_reject_stale_army_sources_and_bad_nonnull_templates() {
 fn icon_inputs_unreadable_byte_and_bad_pointer_never_become_zero() {
     use super::*;
     let mut bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -97,7 +97,7 @@ fn icon_inputs_unreadable_byte_and_bad_pointer_never_become_zero() {
     };
     assert_eq!(
         read_icon_inputs(
-            &crate::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes[..A1 + SEPARATE_COUNTER]
             },
@@ -110,7 +110,7 @@ fn icon_inputs_unreadable_byte_and_bad_pointer_never_become_zero() {
     p64(&mut bytes, A1 + FAKE_INTEL_TEMPLATE, u64::MAX);
     assert_eq!(
         read_icon_inputs(
-            &crate::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes
             },
@@ -126,7 +126,7 @@ fn icon_inputs_unreadable_byte_and_bad_pointer_never_become_zero() {
 fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
     use super::*;
     let mut bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 25,
@@ -142,7 +142,7 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
             division: source.division,
             ..Default::default()
         }];
-        capture_division_seeds(&crate::memory::SliceMemory { base: 0, bytes }, &mut seeds);
+        capture_division_seeds(&engine_native_memory::memory::SliceMemory { base: 0, bytes }, &mut seeds);
         seeds[0]
     };
     const ALTERNATE: usize = T1 + 0x100;
@@ -155,13 +155,13 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
     for (pointer, calls_saved) in [(0, 10), (T1, 12), (ALTERNATE, 10)] {
         p64(&mut bytes, A1 + FAKE_INTEL_TEMPLATE, pointer as u64);
         let seed = seed_of(&bytes);
-        let memory = crate::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
-        let scalar = crate::read_census::ReadCensus::new(&memory);
+        let scalar = engine_native_memory::read_census::ReadCensus::new(&memory);
         let expected = read_icon_inputs(&scalar, 0, source, None).unwrap();
-        let owned = crate::read_census::ReadCensus::new(&memory);
+        let owned = engine_native_memory::read_census::ReadCensus::new(&memory);
         assert_eq!(
             read_icon_inputs(&owned, 0, source, Some(&seed)),
             Ok(expected)
@@ -170,16 +170,16 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
         assert_eq!(expected.separate_counter, 255);
     }
     let seed = seed_of(&bytes);
-    let memory = crate::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
     };
-    let owned = crate::read_census::ReadCensus::new(&memory);
+    let owned = engine_native_memory::read_census::ReadCensus::new(&memory);
     assert_eq!(
         read_icon_inputs(
             &owned,
             0,
-            crate::cequipment_variant_pool::DivisionSource {
+            crate::cequipment_variant::pool::DivisionSource {
                 country: 3,
                 ..source
             },
@@ -194,7 +194,7 @@ fn seeded_icons_reuse_identity_and_exact_standard_template_alias() {
 fn seeded_icons_keep_failed_fields_and_source_keys_without_retry() {
     use super::*;
     let bytes = fixture();
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         country: 3,
@@ -205,7 +205,7 @@ fn seeded_icons_keep_failed_fields_and_source_keys_without_retry() {
         division: source.division,
         ..Default::default()
     }];
-    let memory = crate::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
     };
@@ -220,7 +220,7 @@ fn seeded_icons_keep_failed_fields_and_source_keys_without_retry() {
             4 => seed.pointer += 1,
             _ => seed.division ^= 1 << 32,
         }
-        let owned = crate::read_census::ReadCensus::new(&memory);
+        let owned = engine_native_memory::read_census::ReadCensus::new(&memory);
         assert_eq!(
             read_icon_inputs(&owned, 0, source, Some(&seed)),
             Err("army icon source identity changed")
@@ -231,9 +231,15 @@ fn seeded_icons_keep_failed_fields_and_source_keys_without_retry() {
 
 use super::{Row, walk, walk_with};
 use crate::{
-    carmy, carmy_group, ccountry, corders_group, cprovince, creferenced_division_template, cunit,
-    memory::SliceMemory, walk::Outcome,
+    carmy,
+    ccountry,
+    corders_group,
+    cprovince,
+    creferenced_division_template,
+    cunit,
 };
+use engine_native_parts::carmy_group;
+use engine_native_memory::{memory::SliceMemory, walk::Outcome};
 const GS: usize = 0x1000;
 const COUNTRIES: usize = 0x3000;
 const LINKS: usize = 0x3100;
@@ -596,7 +602,7 @@ struct PresentationMemory {
     globals: std::collections::BTreeMap<usize, Vec<u8>>,
 }
 
-impl crate::Memory for PresentationMemory {
+impl engine_native_memory::Memory for PresentationMemory {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         if let Some((&start, bytes)) = self.globals.range(..=address).next_back()
             && let Some(source) = address
@@ -620,7 +626,7 @@ struct ObservedMovementMemory<'a> {
     fault: Option<usize>,
 }
 
-impl crate::Memory for ObservedMovementMemory<'_> {
+impl engine_native_memory::Memory for ObservedMovementMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.reads.borrow_mut().push(address);
         self.fault != Some(address) && self.source.copy(address, output)
@@ -643,7 +649,7 @@ impl<'a> ScalarBatchMemory<'a> {
         }
     }
 }
-impl crate::Memory for ScalarBatchMemory<'_> {
+impl engine_native_memory::Memory for ScalarBatchMemory<'_> {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.reads.borrow_mut().push((address, output.len()));
         if self.fault.get() == Some(address) {
@@ -654,23 +660,23 @@ impl crate::Memory for ScalarBatchMemory<'_> {
     }
     fn copy_records(
         &self,
-        sources: crate::memory::RecordSources<'_>,
-        layout: &crate::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.batches.set(self.batches.get() + 1);
         struct ScalarOnly<'a, 'b>(&'a ScalarBatchMemory<'b>);
-        impl crate::Memory for ScalarOnly<'_, '_> {
+        impl engine_native_memory::Memory for ScalarOnly<'_, '_> {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-                crate::Memory::copy(self.0, address, output)
+                engine_native_memory::Memory::copy(self.0, address, output)
             }
         }
-        crate::Memory::copy_records(&ScalarOnly(self), sources, layout, destination)
+        engine_native_memory::Memory::copy_records(&ScalarOnly(self), sources, layout, destination)
     }
 }
 
 fn scalar_tail_test_read(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     army: usize,
     kind: usize,
     packed: bool,
@@ -857,13 +863,13 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
     assert_eq!(actual, expected);
     assert_eq!(packed.batches.get(), 4);
     for (offset, width) in [
-        (crate::cunit_supply_inputs::ASKED, 8),
-        (crate::cunit_supply_inputs::RECEIVED, 16),
-        (crate::cunit_supply_inputs::ORIGINS, 16),
-        (crate::cunit_supply_inputs::FROM_STATE, 12),
-        (crate::cunit_supply_inputs::DIVISION_DEMAND, 12),
-        (crate::cunit_supply_inputs::AIRPLANE_DEMAND, 12),
-        (crate::cunit_supply_inputs::SHIP_DEMAND, 16),
+        (engine_native_parts::cunit_supply_inputs::ASKED, 8),
+        (engine_native_parts::cunit_supply_inputs::RECEIVED, 16),
+        (engine_native_parts::cunit_supply_inputs::ORIGINS, 16),
+        (engine_native_parts::cunit_supply_inputs::FROM_STATE, 12),
+        (engine_native_parts::cunit_supply_inputs::DIVISION_DEMAND, 12),
+        (engine_native_parts::cunit_supply_inputs::AIRPLANE_DEMAND, 12),
+        (engine_native_parts::cunit_supply_inputs::SHIP_DEMAND, 16),
     ] {
         assert_eq!(
             packed
@@ -886,7 +892,7 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
             .borrow()
             .iter()
             .filter(|&&(address, len)| {
-                address == 0x1c000 && len == crate::modifier_entry::STRIDE
+                address == 0x1c000 && len == engine_native_parts::modifier_entry::STRIDE
             })
             .count(),
         1,
@@ -941,7 +947,7 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
     assert!(
         packed.reads.borrow().iter().all(|&(address, _)| {
             address != 0x11000
-                && address != C1 + ccountry::MODIFIER_ACCUMULATOR
+                && address != C1 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR
                 && address != A1 + carmy::COUNTER_ATTRITION
                 && address != A1 + carmy::DEPLOYMENT_TYPE
         }),
@@ -991,7 +997,7 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
             .borrow()
             .iter()
             .filter(|&&(address, len)| {
-                address == 0x1c000 && len == crate::modifier_entry::STRIDE
+                address == 0x1c000 && len == engine_native_parts::modifier_entry::STRIDE
             })
             .count(),
         1
@@ -1008,16 +1014,15 @@ fn presentation_scalar_batches_preserve_success_trace_and_early_guards() {
 }
 
 fn presentation_fixture() -> PresentationMemory {
-    use crate::{
-        cgame_state, csub_unit_definition as stats, cunit, province_definition as definition,
-    };
+    use crate::{cgame_state, cunit, cprovince::definition as definition};
+    use engine_native_parts::csub_unit_definition as stats;
     let mut bytes = fixture();
     bytes.resize(0x20000, 0);
     for army in [A1, A2, A3] {
         p64(
             &mut bytes,
             army + carmy::ACCLIMATIZATION,
-            crate::acclimatization_data::VTABLE_RVA.0 as u64,
+            engine_native_parts::acclimatization_data::VTABLE_RVA.0 as u64,
         );
     }
     p64(&mut bytes, A1 + cunit::STAT_BLOCK, 0x11000);
@@ -1106,9 +1111,9 @@ fn normal_route_fixture() -> PresentationMemory {
         p64(b, province, cprovince::VTABLE_RVA.0 as u64);
         p32(b, province + cprovince::ID, id);
         p64(b, province + cprovince::DEFINITION, definition as u64);
-        p32(b, definition + crate::province_definition::ID, id);
+        p32(b, definition + crate::cprovince::definition::ID, id);
         p64(b, definition + 0xa8, terrain as u64);
-        b[definition + crate::province_definition::TERRAIN_FLAGS] = 1;
+        b[definition + crate::cprovince::definition::TERRAIN_FLAGS] = 1;
     }
     array(b, A1 + crate::cunit::ORDINARY_ROUTE_DATA, 0x1f000, 2);
     p32(b, 0x1f000, 2);
@@ -1120,13 +1125,13 @@ fn normal_route_fixture() -> PresentationMemory {
         T1 + creferenced_division_template::PRIORITY_UNIT,
         0x1a000,
     );
-    p64(b, 0x1a000, crate::csub_unit_definition::VTABLE_RVA.0 as u64);
+    p64(b, 0x1a000, engine_native_parts::csub_unit_definition::VTABLE_RVA.0 as u64);
     p64(b, C1 + ccountry::DIPLOMACY_STATUS, 0x1b000);
-    array(b, C1 + ccountry::MODIFIER_ACCUMULATOR, 0x1c000, 1);
+    array(b, C1 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, 0x1c000, 1);
     p32(b, 0x1c000, 0x2b);
     p64(b, 0x1c008, 10_001);
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA.0,
+        engine_native_parts::modifier_definition::TABLE_RVA.0,
         0x1d000_u64.to_le_bytes().to_vec(),
     );
     memory.globals.insert(
@@ -1278,11 +1283,11 @@ fn embark_define_refreshes_without_a_session_or_province_census_change() {
 #[test]
 fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
     let mut memory = normal_route_fixture();
-    let header = 0x12000 + crate::province_definition::NEIGHBOURS;
-    let stride = crate::province_neighbour::STRIDE;
-    let id = crate::province_neighbour::PROVINCE_ID;
-    let distance = crate::province_neighbour::MOVEMENT_DISTANCE;
-    let crossing = crate::province_neighbour::CROSSING_KIND;
+    let header = 0x12000 + crate::cprovince::definition::NEIGHBOURS;
+    let stride = engine_native_parts::province_neighbour::STRIDE;
+    let id = engine_native_parts::province_neighbour::PROVINCE_ID;
+    let distance = engine_native_parts::province_neighbour::MOVEMENT_DISTANCE;
+    let crossing = engine_native_parts::province_neighbour::CROSSING_KIND;
     array(&mut memory.bytes, header, 0x1e000, 1);
     p32(&mut memory.bytes, 0x1e000 + id, 2);
     p64(&mut memory.bytes, 0x1e000 + distance, 4_321);
@@ -1318,8 +1323,8 @@ fn adjacency_reload_refreshes_crossings_absence_and_reallocated_arrays() {
     assert!(unreadable.reads.borrow().contains(&(0x1e100 + id)));
 }
 
-fn presentation_source() -> [crate::cequipment_variant_pool::DivisionSource; 1] {
-    [crate::cequipment_variant_pool::DivisionSource {
+fn presentation_source() -> [crate::cequipment_variant::pool::DivisionSource; 1] {
+    [crate::cequipment_variant::pool::DivisionSource {
         pointer: A1,
         division: handle(9, 9000),
         template: handle(0, 52),
@@ -1338,13 +1343,13 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
     let mut cache = super::PresentationInputs::new(1).unwrap();
     let allocated = cache.allocated_bytes();
     for _ in 0..4 {
-        assert_eq!(cache.read::<u64>(&memory, P1).unwrap(), crate::read(&source, P1));
+        assert_eq!(cache.read::<u64>(&memory, P1).unwrap(), engine_native_memory::read(&source, P1));
     }
     assert_eq!(
         memory.reads.borrow().iter().filter(|&&a| a == P1).count(),
         1
     );
-    assert_eq!(cache.read::<u32>(&memory, P1).unwrap(), crate::read(&source, P1));
+    assert_eq!(cache.read::<u32>(&memory, P1).unwrap(), engine_native_memory::read(&source, P1));
     assert_eq!(cache.read::<u32>(&memory, P1 + cprovince::ID).unwrap(), Some(1));
     assert_eq!(cache.read::<u64>(&memory, 0xdead).unwrap(), None);
     assert_eq!(cache.entries.len(), 3);
@@ -1376,7 +1381,7 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
         2
     );
     let mut empty = super::PresentationInputs::new(0).unwrap();
-    assert_eq!(empty.read::<u64>(&memory, P1).unwrap(), crate::read(&source, P1));
+    assert_eq!(empty.read::<u64>(&memory, P1).unwrap(), engine_native_memory::read(&source, P1));
     empty.clear();
 }
 
@@ -1392,7 +1397,7 @@ fn shared_geometry_fixture() -> PresentationMemory {
     p32(&mut memory.bytes, 0x16004, 1);
     array(
         &mut memory.bytes,
-        0x12000 + crate::province_definition::NEIGHBOURS,
+        0x12000 + crate::cprovince::definition::NEIGHBOURS,
         0x18000,
         3,
     );
@@ -1400,22 +1405,22 @@ fn shared_geometry_fixture() -> PresentationMemory {
         p32(
             &mut memory.bytes,
             0x18000
-                + index * crate::province_neighbour::STRIDE
-                + crate::province_neighbour::PROVINCE_ID,
+                + index * engine_native_parts::province_neighbour::STRIDE
+                + engine_native_parts::province_neighbour::PROVINCE_ID,
             id,
         );
     }
     p64(
         &mut memory.bytes,
-        0x18000 + crate::province_neighbour::STRIDE + crate::province_neighbour::MOVEMENT_DISTANCE,
+        0x18000 + engine_native_parts::province_neighbour::STRIDE + engine_native_parts::province_neighbour::MOVEMENT_DISTANCE,
         200_000,
     );
     memory
 }
 
 fn owned_movement_fixture_run(
-    memory: &impl crate::Memory,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    memory: &impl engine_native_memory::Memory,
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
     output: &mut [super::MovementRow],
     paths: &mut [u32],
 ) -> super::MovementWalk {
@@ -1450,7 +1455,7 @@ fn owned_movement_fixture_run(
 
 fn movement_combat_fixture() -> (
     PresentationMemory,
-    [crate::cequipment_variant_pool::DivisionSource; 3],
+    [crate::cequipment_variant::pool::DivisionSource; 3],
 ) {
     use crate::{cland_combat as combat, cland_combatant as side, cunit};
     let mut source = presentation_fixture();
@@ -1471,7 +1476,7 @@ fn movement_combat_fixture() -> (
             1,
         );
         p64(&mut source.bytes, references, 0x16000);
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer,
             division,
             ..presentation_source()[0]
@@ -1728,12 +1733,12 @@ fn movement_combat_memo_preserves_rows_raw_owner_keys_and_first_pointer_reads() 
                 p64(
                     &mut source.bytes,
                     0x16000,
-                    crate::cland_border_war_combat::VTABLE_RVA.0 as u64,
+                    engine_native_parts::cland_border_war_combat::VTABLE_RVA.0 as u64,
                 );
                 p64(
                     &mut source.bytes,
                     0x17000,
-                    crate::cland_border_war_combatant::VTABLE_RVA.0 as u64,
+                    engine_native_parts::cland_border_war_combatant::VTABLE_RVA.0 as u64,
                 );
             }
             let direct = ScalarBatchMemory::new(&source);
@@ -2062,7 +2067,7 @@ fn owned_movement_admits_every_route_and_ignores_private_status_fault() {
     );
     let sources = [
         presentation_source()[0],
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer: A2,
             division: handle(10, 9000),
             ..presentation_source()[0]
@@ -2091,7 +2096,7 @@ fn owned_movement_admits_every_route_and_ignores_private_status_fault() {
 
 #[test]
 fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
-    use crate::csub_unit_definition as stats;
+    use engine_native_parts::csub_unit_definition as stats;
     const STATIONARY: usize = 0x19000;
     const STATS: usize = 0x11000;
     const FOREIGN_STATS: usize = 0x1b000;
@@ -2137,7 +2142,7 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
         0,
     );
     let sources = [(A1, 9), (A2, 10), (A3, 11), (STATIONARY, 12)].map(|(pointer, id)| {
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer,
             division: handle(id, 9000),
             ..presentation_source()[0]
@@ -2206,7 +2211,9 @@ fn only_moving_divisions_read_their_authenticated_stat_block_base_speed() {
 
 #[test]
 fn presentation_demand_sizes_names_and_origins_without_selected_transport_members() {
-    use crate::{carmy_combat_inputs, cname_group_member, cunit_supply_inputs, msvc_string};
+    use crate::{carmy_combat_inputs, cname_group_member};
+    use engine_native_parts::cunit_supply_inputs;
+    use engine_native_memory::msvc_string;
     const MEMBER: usize = 0x1d000;
     const ORIGINS: usize = 0x1e000;
     let mut memory = presentation_fixture();
@@ -2246,7 +2253,7 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
         source: &'a PresentationMemory,
         reads: std::cell::RefCell<Vec<usize>>,
     }
-    impl crate::Memory for Recording<'_> {
+    impl engine_native_memory::Memory for Recording<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.reads.borrow_mut().push(address);
             self.source.copy(address, output)
@@ -2274,7 +2281,7 @@ fn presentation_demand_sizes_names_and_origins_without_selected_transport_member
         byte: usize,
         reads: std::cell::Cell<usize>,
     }
-    impl crate::Memory for Changing<'_> {
+    impl engine_native_memory::Memory for Changing<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             if !self.source.copy(address, output) {
                 return false;
@@ -2445,7 +2452,7 @@ fn shared_movement_geometry_preserves_first_faults_and_unvisited_neighbor_suffix
         assert!(cache.shared.borrow().entries.is_empty());
     }
     let forbidden =
-        0x18000 + 2 * crate::province_neighbour::STRIDE + crate::province_neighbour::PROVINCE_ID;
+        0x18000 + 2 * engine_native_parts::province_neighbour::STRIDE + engine_native_parts::province_neighbour::PROVINCE_ID;
     let lazy = ObservedMovementMemory {
         source: &source,
         reads: Default::default(),
@@ -2471,7 +2478,8 @@ fn shared_movement_geometry_preserves_first_faults_and_unvisited_neighbor_suffix
 
 #[test]
 fn movement_routes_are_whole_and_keep_whole_row_capacity() {
-    use crate::{cunit, province_definition as definition, province_neighbour as neighbor};
+    use crate::{cunit, cprovince::definition as definition};
+    use engine_native_parts::province_neighbour as neighbor;
     let mut memory = presentation_fixture();
     let b = &mut memory.bytes;
     array(b, A1 + cunit::ORDINARY_ROUTE_DATA, 0x16000, 300);
@@ -2550,7 +2558,7 @@ fn movement_routes_are_whole_and_keep_whole_row_capacity() {
 
 #[test]
 fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_field() {
-    use crate::{acclimatization_category, acclimatization_data};
+    use engine_native_parts::{acclimatization_category, acclimatization_data};
     let mut memory = presentation_fixture();
     p32(
         &mut memory.bytes,
@@ -2636,7 +2644,7 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
     entry(&mut memory, 0, 0x16100, 7_499_999);
     entry(&mut memory, 1, 0x16200, 7_000_000);
     let mut unread = super::StatusPacket::with_capacities(super::StatusCapacities {
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: 1,
             entries: 1,
         },
@@ -2678,7 +2686,7 @@ fn division_status_keeps_the_model_number_and_camouflage_and_fails_only_that_fie
 
 #[test]
 fn division_status_camouflage_equals_the_full_weight_decision() {
-    use crate::{acclimatization_category, acclimatization_data};
+    use engine_native_parts::{acclimatization_category, acclimatization_data};
     let mut memory = presentation_fixture();
     memory.bytes.resize(0x40000, 0);
     let object = A1 + carmy::ACCLIMATIZATION;
@@ -2808,7 +2816,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         corders_group::REFERENCE_TYPE,
     );
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA.0,
+        engine_native_parts::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
     let groups = [
@@ -2827,7 +2835,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         &groups,
         &[],
         &mut batched,
-        &crate::modifier_definition::DefinitionMemo::default(),
+        &engine_native_parts::modifier_definition::DefinitionMemo::default(),
         &mut |_| None,
     );
     for (group, batched) in groups.into_iter().zip(batched) {
@@ -2847,10 +2855,10 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         ))
     );
     struct Counted<'a>(&'a PresentationMemory, std::cell::RefCell<Vec<usize>>);
-    impl crate::Memory for Counted<'_> {
+    impl engine_native_memory::Memory for Counted<'_> {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             self.1.borrow_mut().push(address);
-            crate::Memory::copy(self.0, address, destination)
+            engine_native_memory::Memory::copy(self.0, address, destination)
         }
     }
     let known = groups.map(|group| (group == G1).then_some(Ok(LEADER)));
@@ -2862,7 +2870,7 @@ fn batched_retreat_bans_equal_one_group_reads_including_faults() {
         &groups,
         &known,
         &mut shared,
-        &crate::modifier_definition::DefinitionMemo::default(),
+        &engine_native_parts::modifier_definition::DefinitionMemo::default(),
         &mut |_| None,
     );
     assert_eq!(shared, batched);
@@ -2900,14 +2908,14 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
         p64(b, data + 8, 1);
     }
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA.0,
+        engine_native_parts::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
     struct Fault<'a>(&'a PresentationMemory, usize);
-    impl crate::Memory for Fault<'_> {
+    impl engine_native_memory::Memory for Fault<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             !(address <= self.1 && address.saturating_add(output.len()) > self.1)
-                && crate::Memory::copy(self.0, address, output)
+                && engine_native_memory::Memory::copy(self.0, address, output)
         }
     }
     let seed = carmy::DivisionSeed {
@@ -2929,7 +2937,7 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
             &[G1],
             &[known],
             &mut output,
-            &crate::modifier_definition::DefinitionMemo::default(),
+            &engine_native_parts::modifier_definition::DefinitionMemo::default(),
             &mut |_| None,
         );
         output[0]
@@ -2991,7 +2999,7 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
         assert!(matches!(banned, Ok(Some(_))), "{fault:#x}");
         assert_eq!(
             census.handle,
-            crate::read::<u64>(&memory, LEADER + cunit_leader::TYPE),
+            engine_native_memory::read::<u64>(&memory, LEADER + cunit_leader::TYPE),
             "{fault:#x}"
         );
         assert_eq!(census.handle.is_none(), fault == leader_upper);
@@ -3010,7 +3018,8 @@ fn census_selection_keeps_each_consumers_handle_contract_under_upper_half_faults
 
 #[test]
 fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own_read() {
-    use crate::{carmy_leader, csub_unit_definition as stats, cunit, cunit_leader};
+    use crate::{carmy_leader, cunit, cunit_leader};
+    use engine_native_parts::csub_unit_definition as stats;
     const LEADER: usize = 0x20000;
     let mut memory = presentation_fixture();
     memory.bytes.resize(0x40000, 0);
@@ -3079,12 +3088,12 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         (
             carmy_leader::MOVEMENT_MODIFIER,
             0x21000,
-            (crate::modifier_keys::ARMY_SPEED_FACTOR, -10_000_i64),
+            (engine_executable::modifier_keys::ARMY_SPEED_FACTOR, -10_000_i64),
         ),
         (
             carmy_leader::SEPARATE_HQ_MOVEMENT_MODIFIER,
             0x21100,
-            (crate::modifier_keys::RIVER_CROSSING_FACTOR, 5_000),
+            (engine_executable::modifier_keys::RIVER_CROSSING_FACTOR, 5_000),
         ),
     ] {
         array(b, LEADER + block + 0x10, data, 3);
@@ -3096,7 +3105,7 @@ fn division_status_move_flags_read_exile_and_exfiltration_and_bans_are_their_own
         p64(b, data + 40, 0);
     }
     memory.globals.insert(
-        crate::modifier_definition::TABLE_RVA.0,
+        engine_native_parts::modifier_definition::TABLE_RVA.0,
         0x22000_u64.to_le_bytes().to_vec(),
     );
     assert_eq!(run(&memory), (rows, base_flags));
@@ -3373,7 +3382,7 @@ fn membership_test_packet(seeds: &[super::DivisionSeed]) -> super::StatusPacket 
 }
 
 fn signaled_membership(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     seeds: &[super::DivisionSeed],
     cache: &mut super::status_membership::Cache,
     signals: &impl crate::corders_group_member::MembershipSignals,
@@ -3726,7 +3735,7 @@ fn status_retains_first_pass_membership_growth_through_projection_and_recycling(
     }];
     super::capture_division_seeds(&memory, &mut seeds);
     let mut capacities = super::StatusCapacities::new(1);
-    capacities.modifiers = crate::modifier_accumulator::SnapshotCapacity {
+    capacities.modifiers = engine_native_parts::modifier_accumulator::SnapshotCapacity {
         nodes: 1,
         entries: 1,
     };
@@ -3775,7 +3784,7 @@ fn status_packet_preserves_raw_maxima_through_owned_projection() {
     let source = presentation_source()[0];
     p64(
         &mut memory.bytes,
-        0x11000 + crate::csub_unit_definition::MAXIMUM_STRENGTH,
+        0x11000 + engine_native_parts::csub_unit_definition::MAXIMUM_STRENGTH,
         99,
     );
     let mut seeds = [super::DivisionSeed {
@@ -3785,7 +3794,7 @@ fn status_packet_preserves_raw_maxima_through_owned_projection() {
     }];
     super::capture_division_seeds(&memory, &mut seeds);
     let mut first = super::StatusPacket::with_capacities(super::StatusCapacities {
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: 1,
             entries: 1,
         },
@@ -3801,11 +3810,11 @@ fn status_packet_preserves_raw_maxima_through_owned_projection() {
     assert_eq!(first.project(&mut first_rows), first.outcome());
     p64(
         &mut memory.bytes,
-        0x11000 + crate::csub_unit_definition::MAXIMUM_STRENGTH,
+        0x11000 + engine_native_parts::csub_unit_definition::MAXIMUM_STRENGTH,
         50,
     );
     let mut second = super::StatusPacket::with_capacities(super::StatusCapacities {
-        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: 1,
             entries: 1,
         },
@@ -3985,11 +3994,11 @@ fn exercise_level_gates_honor_ai_stop_at_maximum_and_wrapping_manpower() {
 
 #[test]
 fn attrition_counter_uses_effective_country_modifier_and_rejects_unknown_feature_gates() {
-    use crate::{modifier_definition as metadata, modifier_entry};
+    use engine_native_parts::{modifier_definition as metadata, modifier_entry};
     let mut memory = presentation_fixture();
     array(
         &mut memory.bytes,
-        C1 + ccountry::MODIFIER_ACCUMULATOR,
+        C1 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
         0x18000,
         1,
     );
@@ -4078,8 +4087,9 @@ fn attrition_counter_uses_effective_country_modifier_and_rejects_unknown_feature
 
 #[test]
 fn presentation_supporting_reads_authenticate_maxima_country_sets_and_player_fallback() {
-    use crate::{cgame_state, chuman, cland_combatant, csub_unit_definition as stats};
-    let mut memory = presentation_fixture();
+    use crate::{cgame_state, cland_combatant};
+    use engine_native_parts::csub_unit_definition as stats;
+        let mut memory = presentation_fixture();
     p64(
         &mut memory.bytes,
         0x11000 + stats::MAXIMUM_STRENGTH,
@@ -4111,8 +4121,8 @@ fn presentation_supporting_reads_authenticate_maxima_country_sets_and_player_fal
     assert!(cland_combatant::contains_country(&memory, 0, GS, 0x17000, 2).is_err());
     array(&mut memory.bytes, GS + cgame_state::HUMAN_STATUS, 0, 0);
     array(&mut memory.bytes, GS + 0xf8, 0x19000, 1);
-    p64(&mut memory.bytes, 0x19000, chuman::VTABLE_RVA.0 as u64);
-    p32(&mut memory.bytes, 0x19000 + chuman::COUNTRY_TAG, 3);
+    p64(&mut memory.bytes, 0x19000, engine_native_parts::chuman_layout::VTABLE_RVA.0 as u64);
+    p32(&mut memory.bytes, 0x19000 + engine_native_parts::chuman_layout::COUNTRY_TAG, 3);
     assert_eq!(
         cgame_state::autonomous_country(&memory, 0, GS, 1),
         Ok(false)
@@ -4226,7 +4236,7 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
         .copy_from_slice(&0x7000_1230_u64.to_le_bytes());
     bytes[POINTER + cunit::QUEUED_ACTION_COUNT..POINTER + cunit::QUEUED_ACTION_COUNT + 4]
         .copy_from_slice(&2_i32.to_le_bytes());
-    let memory = crate::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
     };
@@ -4249,7 +4259,7 @@ fn division_seeds_gather_supply_days_bypass_and_fuel() {
         (seeds[0].theatre, seeds[0].queued_actions),
         (Some(0x7000_1230), Some(2))
     );
-    let short = crate::memory::SliceMemory {
+    let short = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &bytes[..POINTER + FUEL_CANDIDATE + 4],
     };
@@ -4279,7 +4289,7 @@ fn seeded_icon_inputs_read_no_division_field() {
     bytes[pointer + cunit::ROSTER_OWNER..pointer + cunit::ROSTER_OWNER + 4]
         .copy_from_slice(&25_u32.to_le_bytes());
     bytes[pointer + SEPARATE_COUNTER] = 7;
-    let memory = crate::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &bytes,
     };
@@ -4293,7 +4303,7 @@ fn seeded_icon_inputs_read_no_division_field() {
         (seeds[0].separate_counter, seeds[0].alternate_template),
         (Some(7), Some(0))
     );
-    let source = crate::cequipment_variant_pool::DivisionSource {
+    let source = crate::cequipment_variant::pool::DivisionSource {
         pointer,
         division,
         country: 25,
@@ -4302,7 +4312,7 @@ fn seeded_icon_inputs_read_no_division_field() {
     let mut identity = vec![0_u8; 0x800];
     identity[..0x100 + cunit::ROSTER_OWNER + 4]
         .copy_from_slice(&bytes[..0x100 + cunit::ROSTER_OWNER + 4]);
-    struct Unread<'a>(crate::memory::SliceMemory<'a>);
+    struct Unread<'a>(engine_native_memory::memory::SliceMemory<'a>);
     impl Memory for Unread<'_> {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             let fields = [
@@ -4318,7 +4328,7 @@ fn seeded_icon_inputs_read_no_division_field() {
             self.0.copy(address, output)
         }
     }
-    let unread = Unread(crate::memory::SliceMemory {
+    let unread = Unread(engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &identity,
     });
@@ -4346,7 +4356,7 @@ fn seeded_icon_inputs_read_no_division_field() {
             "army alternate template pointer unreadable",
         ),
     ] {
-        let counted = crate::read_census::ReadCensus::new(&memory);
+        let counted = engine_native_memory::read_census::ReadCensus::new(&memory);
         assert_eq!(
             read_icon_inputs(&counted, base, source, Some(&failed)),
             Err(reason)
@@ -4366,7 +4376,9 @@ fn status_packet_capacity_failure_is_out_of_memory_and_vacancy_allocates_nothing
 
 #[test]
 fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph() {
-    use crate::{cstate, cunit, modifier_definition, modifier_keys as keys};
+    use crate::{cstate, cunit};
+    use engine_native_parts::modifier_definition;
+    use engine_executable::modifier_keys as keys;
     const STATE: usize = 0x1a000;
     const BUCKET: usize = 0x1b000;
     const VALUES: usize = 0x1c000;
@@ -4469,12 +4481,12 @@ mod unit_combat_reference_tests;
 #[test]
 fn a_pass_reads_each_acclimatization_category_factor_once() {
     use super::*;
-    use crate::acclimatization_data as data;
+    use engine_native_parts::acclimatization_data as data;
     struct Reads(Vec<u8>, std::cell::RefCell<Vec<usize>>);
     impl Memory for Reads {
         fn copy(&self, address: usize, output: &mut [u8]) -> bool {
             self.1.borrow_mut().push(address);
-            crate::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: CATEGORY,
                 bytes: &self.0,
             }
@@ -4523,7 +4535,7 @@ fn a_pass_reads_each_acclimatization_category_factor_once() {
 
 #[test]
 fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order() {
-    use crate::csub_unit_definition as unit;
+    use engine_native_parts::csub_unit_definition as unit;
     const UNIT: usize = 0x1a000;
     const CATEGORIES: usize = 0x2c000;
     let mut memory = normal_route_fixture();
@@ -4555,7 +4567,7 @@ fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order()
     p32(&mut memory.bytes, UNIT + unit::SPEED_MODIFIER_KEY, 0x31);
     p32(
         &mut memory.bytes,
-        UNIT + unit::CATEGORIES + crate::cpdx_array::COUNT,
+        UNIT + unit::CATEGORIES + engine_native_memory::cpdx_array::COUNT,
         5,
     );
     let mut keys = vec![7];
@@ -4569,7 +4581,7 @@ fn movement_speed_keys_read_the_priority_sub_unit_then_its_categories_in_order()
 #[test]
 fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_refusals() {
     use super::*;
-    use crate::{cdiplomacy_status as diplomacy, crelation_status as relation};
+        use crate::crelation::status as relation;
     const LAST: usize = 0x2e000;
     const DEFINITION: usize = 0x2e200;
     const DIPLOMACY: usize = 0x2d000;
@@ -4583,14 +4595,14 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     p64(b, LAST, cprovince::VTABLE_RVA.0 as u64);
     p32(b, LAST + cprovince::ID, 4);
     p64(b, LAST + cprovince::DEFINITION, DEFINITION as u64);
-    p32(b, DEFINITION + crate::province_definition::ID, 4);
-    b[DEFINITION + crate::province_definition::TERRAIN_FLAGS] = 1;
-    b[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    p32(b, DEFINITION + crate::cprovince::definition::ID, 4);
+    b[DEFINITION + crate::cprovince::definition::TERRAIN_FLAGS] = 1;
+    b[0x18600 + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
     p32(b, LAST + cprovince::CONTROLLER, 2);
     p64(b, C2 + ccountry::DIPLOMACY_STATUS, DIPLOMACY as u64);
-    p64(b, DIPLOMACY, diplomacy::VTABLE_RVA.0 as u64);
-    p64(b, DIPLOMACY + diplomacy::COUNTRY, C2 as u64);
-    array(b, DIPLOMACY + diplomacy::RELATIONS, RELATIONS, 4);
+    p64(b, DIPLOMACY, engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
+    p64(b, DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::COUNTRY, C2 as u64);
+    array(b, DIPLOMACY + engine_native_parts::cdiplomacy_status_layout::RELATIONS, RELATIONS, 4);
     p64(b, RELATIONS + 8, RELATION as u64);
     p64(b, RELATION, relation::VTABLE_RVA.0 as u64);
     p64(b, RELATION + relation::DIPLOMACY_STATUS, DIPLOMACY as u64);
@@ -4622,7 +4634,7 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
     packet.units.push(StatusUnitInputs::default());
     packet
         .maxima
-        .push(crate::csub_unit_definition::DivisionMaxima {
+        .push(engine_native_parts::csub_unit_definition::DivisionMaxima {
             organisation: 1_000_000,
             ..Default::default()
         });
@@ -4634,10 +4646,10 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         packet.units[0].movement_organisation,
         Some(Some([0, 1_000_000]))
     );
-    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAKE_FLAG;
-    source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAND_FLAG;
+    source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAKE_FLAG;
+    source.bytes[0x18600 + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAND_FLAG;
     assert_eq!(
         packet.capture_movement_organisation(&source, 0, GS, &[seed]),
         0
@@ -4646,8 +4658,8 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         packet.units[0].movement_organisation,
         Some(Some([0, 1_000_000]))
     );
-    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] =
-        crate::province_definition::LAND_FLAG;
+    source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] =
+        crate::cprovince::definition::LAND_FLAG;
     p32(&mut source.bytes, 0x1f000, 99);
     assert_eq!(
         packet.capture_movement_organisation(&source, 0, GS, &[seed]),
@@ -4668,8 +4680,8 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
         0
     );
     assert_eq!(packet.units[0].movement_organisation, Some(None));
-    source.bytes[0x18600 + crate::province_definition::TERRAIN_FLAGS] = 0;
-    source.bytes[0x12000 + crate::province_definition::TERRAIN_FLAGS] = 0;
+    source.bytes[0x18600 + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
+    source.bytes[0x12000 + crate::cprovince::definition::TERRAIN_FLAGS] = 0;
     p32(&mut source.bytes, 0x1f000, 2);
     let mut sea_header = header;
     sea_header[12..16].copy_from_slice(&1_u32.to_le_bytes());
@@ -4687,8 +4699,8 @@ fn exact_organisation_capture_keeps_hostile_later_land_edges_and_independent_ref
 }
 
 fn model_inputs_test_capture(
-    memory: &impl crate::Memory,
-    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    memory: &impl engine_native_memory::Memory,
+    sources: &[crate::cequipment_variant::pool::DivisionSource],
 ) -> (super::ModelInputsReport, Vec<super::ModelInputsRow>) {
     let mut seeds: Vec<_> = sources
         .iter()
@@ -4732,7 +4744,7 @@ fn status_model_columns(memory: &PresentationMemory) -> Option<super::ModelInput
 
 #[test]
 fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
-    use crate::{acclimatization_category, acclimatization_data};
+    use engine_native_parts::{acclimatization_category, acclimatization_data};
     let mut memory = presentation_fixture();
     p32(
         &mut memory.bytes,
@@ -4855,7 +4867,7 @@ fn model_inputs_equal_division_status_and_fail_only_their_own_field() {
 
     let sources = [
         presentation_source()[0],
-        crate::cequipment_variant_pool::DivisionSource {
+        crate::cequipment_variant::pool::DivisionSource {
             pointer: A2,
             division: handle(9, 51),
             template: handle(0, 52),

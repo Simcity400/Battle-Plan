@@ -1,5 +1,6 @@
 use super::*;
-use crate::{creference_registry as registry, memory::SliceMemory, reference_bucket};
+use engine_native_parts::{creference_registry as registry, reference_bucket};
+use engine_native_memory::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 const UNIT: usize = 0x1000;
@@ -70,8 +71,8 @@ fn fixture() -> (Image, [u8; 16]) {
             crate::cland_combat::BODY_VTABLE_RVA.0,
         ),
         (
-            crate::cland_border_war_combat::VTABLE_RVA.0,
-            crate::cland_border_war_combat::BODY_VTABLE_RVA.0,
+            engine_native_parts::cland_border_war_combat::VTABLE_RVA.0,
+            engine_native_parts::cland_border_war_combat::BODY_VTABLE_RVA.0,
         ),
         (crate::cnaval_combat::VTABLE_RVA.0, 0x02a5_6e70),
     ];
@@ -281,7 +282,7 @@ fn worker_combat_reference_arena_grows_from_the_original_count() {
     let mut rows = Vec::new();
     for count in [50, 200] {
         let mut capture =
-            CombatReferencesCapture::new_buffer(crate::walk::Buffer::Growing(&mut rows));
+            CombatReferencesCapture::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut rows));
         capture.begin(count);
         assert!(capture.failure.is_none());
         for _ in 0..count {

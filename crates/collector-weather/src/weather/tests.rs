@@ -1,5 +1,6 @@
 use super::*;
-use engine_native::{cgame_state, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::Cell;
 
 fn put(bytes: &mut [u8], address: usize, value: &[u8]) {
@@ -712,7 +713,10 @@ struct AttackWeatherMemory {
 }
 impl AttackWeatherMemory {
     fn new(fault: Option<usize>) -> Self {
-        use engine_native::{modifier_definition as definition, modifier_entry as entry};
+        use engine_native_parts::{
+            modifier_definition as definition,
+            modifier_entry as entry,
+        };
         let mut bytes = fixture();
         let root = 0x3000 + sweather_per_region::MODIFIERS;
         const VALUES: usize = 0x4a00;
@@ -894,8 +898,8 @@ fn regional_map_terms_select_the_same_complete_accumulator_bytes() {
         engine_executable::modifier_keys::BREAKTHROUGH_FACTOR,
         engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
     ];
-    let mut former_values = [engine_native::modifier_accumulator::Value::default(); 5];
-    engine_native::modifier_accumulator::lookup_many_at(
+    let mut former_values = [engine_native_memory::modifier_cache::Value::default(); 5];
+    engine_native_parts::modifier_accumulator::lookup_many_at(
         &source,
         address,
         &former,
@@ -903,8 +907,8 @@ fn regional_map_terms_select_the_same_complete_accumulator_bytes() {
     )
     .unwrap();
     let former_reads = source.reads.take();
-    let mut values = [engine_native::modifier_accumulator::Value::default(); COMBAT_KEYS.len()];
-    engine_native::modifier_accumulator::lookup_many_at(
+    let mut values = [engine_native_memory::modifier_cache::Value::default(); COMBAT_KEYS.len()];
+    engine_native_parts::modifier_accumulator::lookup_many_at(
         &source,
         address,
         &COMBAT_KEYS,
@@ -1043,7 +1047,7 @@ fn weather_regions_record_raw_combat_entries_and_no_witness() {
         2
     );
     assert_eq!(
-        source.attempts(engine_native::modifier_definition::TABLE_RVA.0),
+        source.attempts(engine_native_parts::modifier_definition::TABLE_RVA.0),
         0
     );
     let typed_source = AttackWeatherMemory::new(None);
@@ -1118,16 +1122,16 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
             .to_le_bytes()
             .into_iter()
             .enumerate()
-            .map(|(index, byte)| (engine_native::cmap::SINGLETON_RVA.0 + index, byte)),
+            .map(|(index, byte)| (engine_native_parts::cmap::SINGLETON_RVA.0 + index, byte)),
     );
     put(
         &mut source.bytes,
-        0x2800 + engine_native::cmap::WIDTH,
+        0x2800 + engine_native_parts::cmap::WIDTH,
         &12_i32.to_le_bytes(),
     );
     put(
         &mut source.bytes,
-        0x2800 + engine_native::cmap::HEIGHT,
+        0x2800 + engine_native_parts::cmap::HEIGHT,
         &12_i32.to_le_bytes(),
     );
     put(
@@ -1191,12 +1195,12 @@ fn weather_display_hint_failure_keeps_capacity_after_healthy_capture() {
     source.reads.borrow_mut().clear();
     source
         .fault_once
-        .set(Some(0x2800 + engine_native::cmap::WIDTH));
+        .set(Some(0x2800 + engine_native_parts::cmap::WIDTH));
     assert_eq!(
         display::observe_capacity(&source, 0),
         Err("weather display dimensions unreadable")
     );
-    assert_eq!(source.attempts(0x2800 + engine_native::cmap::WIDTH), 1);
+    assert_eq!(source.attempts(0x2800 + engine_native_parts::cmap::WIDTH), 1);
     assert_eq!(display::bytes_hint(), retained);
     let (captured, _) = weather_display_split(&source, 10);
     assert!(matches!(captured.outcomes()[1], Outcome::Rows { len: 1 }));

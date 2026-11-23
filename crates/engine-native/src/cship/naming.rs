@@ -85,7 +85,7 @@ fn naming_from_member(
                 let identity = read::<[u8; 16]>(memory, pointer)
                     .ok_or("ship naming equipment identity unreadable")?;
                 let full = u64::from_le_bytes(identity[8..].try_into().unwrap());
-                if engine_sites::at(base, cequipment_variant::VTABLE_RVA)
+                if engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
                     .map(|value| value as u64)
                     != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
                     || full as u32 != cequipment_variant::REFERENCE_TYPE

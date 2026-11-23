@@ -1,10 +1,10 @@
 
-use crate::{
-    Memory, ccountry,
-    cpdx_array::Array,
+use engine_native_memory::{
+    Memory, cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
     walk::Outcome,
 };
+use engine_native::ccountry;
 use engine_sites::Rva;
 
 const COUNTRY_BATCH: usize = 64;
@@ -48,14 +48,14 @@ pub fn walk(
     game_state: usize,
     rows: &mut Vec<Row>,
 ) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Growing(rows))
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Growing(rows))
 }
 
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: crate::walk::Buffer<'_, Row>,
+    rows: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     match walk_rows(memory, base, game_state, rows) {
         Ok(outcome) => outcome,
@@ -67,7 +67,7 @@ fn walk_rows(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut rows: crate::walk::Buffer<'_, Row>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let vtable = engine_sites::at(base, VTABLE_RVA).ok_or("nuke vtable address overflow")? as u64;
@@ -284,7 +284,8 @@ fn read_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const TYPE_COUNT: u32 = 2;
     const GAME: usize = 0x1000;
@@ -343,7 +344,7 @@ mod tests {
     }
 
     fn count(bytes: &[u8]) -> Outcome {
-        walk_buffer(&SliceMemory { base: 0, bytes }, 0, GAME, crate::walk::Buffer::Count)
+        walk_buffer(&SliceMemory { base: 0, bytes }, 0, GAME, engine_native_memory::walk::Buffer::Count)
     }
 
     #[test]

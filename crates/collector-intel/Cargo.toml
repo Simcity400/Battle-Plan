@@ -18,6 +18,10 @@ variable_changes = []
 conversion_check = []
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-politics.workspace = true
+engine-native-intelligence.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-events.workspace = true
@@ -43,6 +47,10 @@ collector-timing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
+engine-native-parts = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
@@ -66,6 +74,7 @@ workspace = true
 collector-intel = { workspace = true, features = ["default", "flag_changes", "opinion_changes", "test-support", "variable_changes"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

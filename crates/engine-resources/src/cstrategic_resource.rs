@@ -1,5 +1,6 @@
 
-use crate::{Memory, cstrategic_resource_database, read, walk::Outcome};
+use engine_native_memory::{Memory, read, walk::Outcome};
+use crate::cstrategic_resource_database;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29ce150);
@@ -24,13 +25,13 @@ pub struct Row {
 }
 
 pub fn walk(memory: &impl Memory, base: usize, output: &mut Vec<Row>) -> Outcome {
-    walk_buffer(memory, base, crate::walk::Buffer::Growing(output))
+    walk_buffer(memory, base, engine_native_memory::walk::Buffer::Growing(output))
 }
 
 pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let database = cstrategic_resource_database::Reader::new(memory, base)?;

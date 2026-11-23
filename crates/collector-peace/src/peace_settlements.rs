@@ -1,6 +1,6 @@
 
 use crate::hook::Hook;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_peace::{
     peace_settlement as native, peace_settlement::Action, peace_settlement::Snapshot,
     peace_settlement::Subject, peace_settlement::Transfer,
@@ -139,7 +139,7 @@ impl Storage {
         sequence: u64,
         settled: bool,
     ) -> bool {
-        use engine_native::walk::Buffer::GrowingFrom;
+        use engine_native_memory::walk::Buffer::GrowingFrom;
         let [
             events,
             winners,
@@ -198,7 +198,7 @@ impl Storage {
         hour: i32,
         sequence: u64,
     ) {
-        use engine_native::walk::Buffer::GrowingFrom;
+        use engine_native_memory::walk::Buffer::GrowingFrom;
         let [_, winners, losers, actions, transfers, subjects, name_bytes] = self.used;
         let snapshot = native::copy_bids(
             memory,
@@ -343,23 +343,23 @@ pub fn collect() {
     }
 }
 
-fn sizing_array<T: engine_native::memory::Raw>(
+fn sizing_array<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     state: usize,
     offset: usize,
-) -> Option<engine_native::cpdx_array::Array> {
+) -> Option<engine_native_memory::cpdx_array::Array> {
     let array = state
         .checked_add(offset)
-        .and_then(|at| engine_native::cpdx_array::Array::read(memory, at, size_of::<T>()))?;
+        .and_then(|at| engine_native_memory::cpdx_array::Array::read(memory, at, size_of::<T>()))?;
     if let Some(last) = array.count.checked_sub(1) {
-        engine_native::read::<T>(memory, array.element(last, size_of::<T>())?)?;
+        engine_native_memory::read::<T>(memory, array.element(last, size_of::<T>())?)?;
     }
     Some(array)
 }
 
 pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
     let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
     else {
         return Capacities::default();
     };
@@ -367,7 +367,7 @@ pub fn capacity_for_world(memory: &impl Memory, base: usize) -> Capacities {
     let countries = [
         sizing_array::<u64>(memory, state, engine_native::cgame_state::COUNTRIES),
         sizing_array::<u32>(memory, state, engine_native::cgame_state::COUNTRY_LINKS),
-        sizing_array::<[u8; engine_native::msvc_string::STRIDE]>(
+        sizing_array::<[u8; engine_native_memory::msvc_string::STRIDE]>(
             memory,
             state,
             engine_native::cgame_state::COUNTRY_TAGS,
@@ -397,7 +397,7 @@ fn resident_capacity(memory: &impl Memory, base: usize, state: usize) -> Option<
     for index in 0..roster.count {
         let pointer = roster
             .element(index, 8)
-            .and_then(|at| engine_native::read::<u64>(memory, at))?;
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))?;
         let demand = native::demand(memory, base, pointer as usize);
         if demand.failure.is_some() {
             continue;
@@ -437,22 +437,22 @@ fn drain_mode(output: &mut Storage, continuous: bool) -> Result<u64, &'static st
     if continuous {
         for (target, count) in [
             (
-                engine_native::walk::Buffer::Growing(&mut output.winners),
+                engine_native_memory::walk::Buffer::Growing(&mut output.winners),
                 storage.used[1],
             ),
             (
-                engine_native::walk::Buffer::Growing(&mut output.losers),
+                engine_native_memory::walk::Buffer::Growing(&mut output.losers),
                 storage.used[2],
             ),
         ] {
             let mut target = target;
             target.ensure(count)?;
         }
-        engine_native::walk::Buffer::Growing(&mut output.events).ensure(storage.used[0])?;
-        engine_native::walk::Buffer::Growing(&mut output.actions).ensure(storage.used[3])?;
-        engine_native::walk::Buffer::Growing(&mut output.transfers).ensure(storage.used[4])?;
-        engine_native::walk::Buffer::Growing(&mut output.subjects).ensure(storage.used[5])?;
-        engine_native::walk::Buffer::Growing(&mut output.name_bytes).ensure(storage.used[6])?;
+        engine_native_memory::walk::Buffer::Growing(&mut output.events).ensure(storage.used[0])?;
+        engine_native_memory::walk::Buffer::Growing(&mut output.actions).ensure(storage.used[3])?;
+        engine_native_memory::walk::Buffer::Growing(&mut output.transfers).ensure(storage.used[4])?;
+        engine_native_memory::walk::Buffer::Growing(&mut output.subjects).ensure(storage.used[5])?;
+        engine_native_memory::walk::Buffer::Growing(&mut output.name_bytes).ensure(storage.used[6])?;
     }
     let mut lost = LOST.swap(0, Ordering::Relaxed);
     if !continuous {
@@ -525,14 +525,14 @@ unsafe extern "system" fn observe(conference: usize) {
     if ENABLED.load(Ordering::Acquire) {
         if let Some(_lease) = Lease::try_enter() {
             if let Some(log) = unsafe { LOG.load(Ordering::Acquire).as_ref() } {
-                let memory = unsafe { engine_native::memory::LiveMemory::new() };
+                let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
                 let base = BASE.load(Ordering::Relaxed);
                 let hour = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-                    .and_then(|at| engine_native::read::<u64>(&memory, at))
+                    .and_then(|at| engine_native_memory::read::<u64>(&memory, at))
                     .and_then(|state| {
                         (state as usize).checked_add(engine_native::cgame_state::CURRENT_HOUR)
                     })
-                    .and_then(|at| engine_native::read(&memory, at));
+                    .and_then(|at| engine_native_memory::read(&memory, at));
                 unsafe { &mut *log.storage.get() }
                     .observe(&memory, base, conference, hour, sequence, true);
             } else {
@@ -878,7 +878,7 @@ mod tests {
         ENABLED.store(true, Ordering::Release);
         let f = Fixture::new(0, 1);
         let log = unsafe { &*LOG.load(Ordering::Acquire) };
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &f.bytes,
         };
@@ -1053,7 +1053,7 @@ mod tests {
             (engine_native::cgame_state::COUNTRY_LINKS, 4),
             (
                 engine_native::cgame_state::COUNTRY_TAGS,
-                engine_native::msvc_string::STRIDE,
+                engine_native_memory::msvc_string::STRIDE,
             ),
             (engine_native::cgame_state::STATES, 8),
             (engine_native::cgame_state::PEACE_CONFERENCES_DATA, 8),

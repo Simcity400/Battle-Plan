@@ -1,11 +1,8 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cgame_state, cnaval_combat_result_side as side, cnaval_combat_ship_entry as member,
-    cpdx_array::Array,
-    read,
-    walk::{Buffer, Outcome},
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use engine_native::cgame_state;
+use crate::{cnaval_combat_result_side as side, cnaval_combat_ship_entry as member};
 
 pub const SIZE: usize = 0x168;
 pub const VTABLE_RVA: Rva = Rva(0x029d_a6c0);
@@ -326,7 +323,7 @@ fn province_ordinals(
             let address = entries
                 .element(first, 8)
                 .ok_or("naval result province vector unreadable")?;
-            if !crate::read_slice(memory, address, &mut pointers[..n * 8]) {
+            if !engine_native_memory::read_slice(memory, address, &mut pointers[..n * 8]) {
                 return Err("naval result province vector unreadable");
             }
             for (offset, word) in pointers[..n * 8].chunks_exact(8).enumerate() {
@@ -429,7 +426,7 @@ fn array(
         .ok_or("naval result array unreadable or invalid")
 }
 
-fn element<T: crate::memory::Raw>(
+fn element<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     array: Array,
     index: u32,

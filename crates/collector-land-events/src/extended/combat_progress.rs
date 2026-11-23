@@ -1,6 +1,7 @@
 use collector_primitives::table_capture::{Arena, CaptureRows, grow_vec};
 use collector_projection::table_conversion::table_iter;
-use engine_native::{Memory, cland_combat, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cland_combat;
 use replay_data::{
     rows::LandCombatProgressRow, rows::LandEquipmentLoss, rows::TableId, rows::tables,
 };
@@ -68,7 +69,7 @@ collector_primitives::capacity_max!(Capacities { rows, variants });
 impl Capacities {
     pub fn presize(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-            .and_then(|address| engine_native::read::<u64>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u64>(memory, address))
             .and_then(|pointer| usize::try_from(pointer).ok())
             .filter(|pointer| *pointer != 0)
             .ok_or("land casualty sizing state unreadable")?;
@@ -226,12 +227,12 @@ impl Captured {
                 .len
                 .checked_add(1)
                 .ok_or("land loss row demand overflow")?;
-            engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
-            engine_native::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;
-            engine_native::walk::Buffer::Growing(&mut self.equipment.first)
+            engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.equipment.first)
                 .ensure(self.equipment.required)?;
-            engine_native::walk::Buffer::Growing(&mut self.pointers).ensure(count)?;
-            engine_native::walk::Buffer::Growing(&mut self.identities).ensure(count)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.pointers).ensure(count)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.identities).ensure(count)?;
             Ok::<usize, &'static str>(count)
         })();
         let count = match storage {

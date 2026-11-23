@@ -71,7 +71,7 @@ impl ReferenceReads {
             return;
         }
         if let Some((_, Ok(country))) = selection.country {
-            if let Some(accumulator) = country.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR) {
+            if let Some(accumulator) = country.pointer.checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR) {
                 self.capture_root(
                     memory,
                     store,
@@ -267,7 +267,7 @@ impl ReferenceReads {
         read.variants.clear();
         read.ready = true;
         read.result =
-            engine_native::division_panel_operands::held_variants(memory, base, seed, |entry| {
+            engine_native_land::division_panel_operands::held_variants(memory, base, seed, |entry| {
                 if engine_allocation::advisory(|| engine_allocation::reserve(&mut read.variants, 1))
                     .is_err()
                 {
@@ -414,7 +414,7 @@ impl ReferenceReads {
         read.availability = availability;
         read.values.clear();
         read.ready = true;
-        read.result = engine_native::division_panel_operands::terrain(
+        read.result = engine_native_land::division_panel_operands::terrain(
             memory,
             base,
             pointer,

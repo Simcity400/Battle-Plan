@@ -1,11 +1,20 @@
 
-use crate::{
-    Memory, cair_base, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, creference_registry, cship, cstate, cstrategic_air_manager, ctask_force, cunit,
-    memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields, packed_stride},
+    memory::{
+        Raw,
+        RecordField,
+        RecordLayout,
+        RecordSources,
+        packed_fields,
+        packed_stride,
+    },
     read,
 };
+use engine_native_air::{cair_base, cstrategic_air_manager};
+use engine_native::{cgame_state, cprovince, cship, cstate, ctask_force, cunit};
+use engine_native_parts::creference_registry;
 use engine_sites::Rva;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +70,8 @@ const BUCKET_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&BUCKET_FIE
 };
 const BASE_SPANS: [(usize, usize); 6] = [
     (0, 8),
-    (cair_base::HANDLE, 8),
-    (cair_base::HOST_REFERENCE, 8),
+    (engine_native_parts::cair_base_layout::HANDLE, 8),
+    (engine_native_parts::cair_base_layout::HOST_REFERENCE, 8),
     (cair_base::STATE, 8),
     (cair_base::PROVINCE, 8),
     (cair_base::KIND, 4),
@@ -162,8 +171,8 @@ impl Pass {
         if memory.copy_scattered(
             [
                 object,
-                at(cair_base::HANDLE),
-                at(cair_base::HOST_REFERENCE),
+                at(engine_native_parts::cair_base_layout::HANDLE),
+                at(engine_native_parts::cair_base_layout::HOST_REFERENCE),
                 at(cair_base::STATE),
                 at(cair_base::PROVINCE),
                 at(cair_base::KIND),
@@ -181,7 +190,7 @@ impl Pass {
             return Err("air base reference fields unreadable");
         }
         if u64::from_le_bytes(vtable)
-            != engine_sites::at(base, cair_base::VTABLE_RVA)
+            != engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA)
                 .ok_or("air reference module address overflow")? as u64
             || u64::from_le_bytes(stored) != handle
         {
@@ -269,7 +278,7 @@ impl Pass {
         let mut fields = [(0_u64, 0_u64, 0_u64, 0_i32); BASE_BATCH];
         let (mut state, mut province) = ([NONE; BASE_BATCH], [NONE; BASE_BATCH]);
         let (mut states, mut provinces) = (Gather::new(), Gather::new());
-        let expected = engine_sites::at(base, cair_base::VTABLE_RVA).map(|vtable| vtable as u64);
+        let expected = engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA).map(|vtable| vtable as u64);
         for index in 0..limit {
             let row = object[index];
             if row == NONE {
@@ -352,7 +361,7 @@ impl Pass {
             output[index] = Some(reference);
         }
         if limit < count {
-            crate::batch_fallback::record(crate::batch_fallback::Batch::BaseWitnesses);
+            engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::BaseWitnesses);
         }
         limit
     }
@@ -388,12 +397,12 @@ impl Pass {
             None => *self.lists[index].insert(
                 manager
                     .checked_add(offset)
-                    .and_then(|at| Array::read(memory, at, crate::cpdx_array::STRIDE))
+                    .and_then(|at| Array::read(memory, at, engine_native_memory::cpdx_array::STRIDE))
                     .ok_or(LIST_INVALID)?,
             ),
         };
         let list = lists
-            .element(state, crate::cpdx_array::STRIDE)
+            .element(state, engine_native_memory::cpdx_array::STRIDE)
             .and_then(|at| Array::read(memory, at, 4))
             .ok_or(LIST_INVALID)?;
         let Some(first) = list.element(0, 4) else {
@@ -463,7 +472,7 @@ pub fn read_host_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reference_bucket as bucket;
+    use engine_native_parts::reference_bucket as bucket;
     use std::collections::BTreeMap;
 
     const BASE: usize = 0x30_000;
@@ -476,7 +485,7 @@ mod tests {
     const LISTS: usize = 0x3c_000;
     const IDS: usize = 0x3d_000;
     const PROVINCES: usize = 0x3e_000;
-    const BASE_HANDLE: u64 = (10_u64 << 32) | cair_base::TYPE as u64;
+    const BASE_HANDLE: u64 = (10_u64 << 32) | engine_native_parts::cair_base_layout::TYPE as u64;
     const SHIP_HANDLE: u64 = (12_u64 << 32) | cship::HANDLE_TYPE as u64;
 
     #[derive(Default)]
@@ -530,9 +539,9 @@ mod tests {
         }
         fn base(&mut self, state: usize, province: usize, host: u64, kind: i32) {
             self.register(BASE_HANDLE, BASE);
-            self.u64(BASE, cair_base::VTABLE_RVA.0 as u64);
-            self.u64(BASE + cair_base::HANDLE, BASE_HANDLE);
-            self.u64(BASE + cair_base::HOST_REFERENCE, host);
+            self.u64(BASE, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+            self.u64(BASE + engine_native_parts::cair_base_layout::HANDLE, BASE_HANDLE);
+            self.u64(BASE + engine_native_parts::cair_base_layout::HOST_REFERENCE, host);
             self.u64(BASE + cair_base::STATE, state as u64);
             self.u64(BASE + cair_base::PROVINCE, province as u64);
             self.u32(BASE + cair_base::KIND, kind as u32);
@@ -545,7 +554,7 @@ mod tests {
                 LISTS,
                 8,
             );
-            self.array(LISTS + 7 * crate::cpdx_array::STRIDE, IDS, 2);
+            self.array(LISTS + 7 * engine_native_memory::cpdx_array::STRIDE, IDS, 2);
             self.u32(IDS, 23);
             self.u32(IDS + 4, 24);
             self.array(GAME + cgame_state::PROVINCES, PROVINCES, 30);
@@ -605,7 +614,7 @@ mod tests {
                 ..expected
             }))
         );
-        memory.u32(LISTS + 7 * crate::cpdx_array::STRIDE + 12, 0);
+        memory.u32(LISTS + 7 * engine_native_memory::cpdx_array::STRIDE + 12, 0);
         assert_eq!(
             read_base(&memory, 0, GAME, BASE_HANDLE),
             Ok(Some(BaseReference {
@@ -650,7 +659,7 @@ mod tests {
             read_host_owner(&memory, 0, SHIP_HANDLE),
             Ok(Host::NoTaskForce)
         );
-        memory.u64(BASE + cair_base::HANDLE, BASE_HANDLE + 1);
+        memory.u64(BASE + engine_native_parts::cair_base_layout::HANDLE, BASE_HANDLE + 1);
         assert_eq!(
             read_base(&memory, 0, GAME, BASE_HANDLE),
             Err("air base reference identity mismatch")
@@ -683,7 +692,7 @@ mod tests {
         }
 
         fn handle(id: u64) -> u64 {
-            (id << 32) | u64::from(cair_base::TYPE)
+            (id << 32) | u64::from(engine_native_parts::cair_base_layout::TYPE)
         }
 
         fn put(&mut self, offset: usize, value: &[u8]) {
@@ -709,7 +718,7 @@ mod tests {
             let vtable = |rva: Rva| ((module + rva.0) as u64).to_le_bytes();
             let capacity = 1_usize << Self::EXPONENT;
             let overflow = Self::EXPONENT as usize + 2;
-            world.pointer(0x100 + cair_base::TYPE as usize * 8, Self::TABLE);
+            world.pointer(0x100 + engine_native_parts::cair_base_layout::TYPE as usize * 8, Self::TABLE);
             world.pointer(Self::TABLE + creference_registry::ENTRIES, Self::ENTRIES);
             world.put(
                 Self::TABLE + creference_registry::COUNT,
@@ -753,7 +762,7 @@ mod tests {
                 world.put(object, &vtable(cstate::VTABLE_RVA));
                 world.put(object + cstate::ID, &(state as u32).to_le_bytes());
                 world.array(
-                    Self::LISTS + state * crate::cpdx_array::STRIDE,
+                    Self::LISTS + state * engine_native_memory::cpdx_array::STRIDE,
                     Self::IDS + state * 4,
                     1,
                 );
@@ -767,10 +776,10 @@ mod tests {
             for id in 1..=bases {
                 let handle = Self::handle(id as u64);
                 let object = Self::BASES + (id - 1) * 0x80;
-                world.put(object, &vtable(cair_base::VTABLE_RVA));
-                world.put(object + cair_base::HANDLE, &handle.to_le_bytes());
+                world.put(object, &vtable(engine_native_parts::cair_base_layout::VTABLE_RVA));
+                world.put(object + engine_native_parts::cair_base_layout::HANDLE, &handle.to_le_bytes());
                 world.put(
-                    object + cair_base::HOST_REFERENCE,
+                    object + engine_native_parts::cair_base_layout::HOST_REFERENCE,
                     &(id as u64 * 3).to_le_bytes(),
                 );
                 let state = id % Self::STATE_COUNT;
@@ -829,8 +838,8 @@ mod tests {
             }
         }
 
-        fn memory(&self) -> crate::memory::SliceMemory<'_> {
-            crate::memory::SliceMemory {
+        fn memory(&self) -> engine_native_memory::memory::SliceMemory<'_> {
+            engine_native_memory::memory::SliceMemory {
                 base: Self::WORLD,
                 bytes: &self.bytes,
             }
@@ -853,7 +862,7 @@ mod tests {
     }
 
     fn gathered(memory: &impl Memory, handles: &[u64]) -> (Witnesses, usize) {
-        use crate::batch_fallback::{Batch, count};
+        use engine_native_memory::batch_fallback::{Batch, count};
         let counted = count(Batch::BaseWitnesses);
         let mut pass = Pass::new(Scale::MODULE);
         let game = Scale::address(Scale::GAME);
@@ -895,7 +904,7 @@ mod tests {
         );
         assert_eq!(gathered(&memory, &world.handles), (expected, 0));
         let counted = |gather: bool| {
-            let memory = crate::memory::CountingMemory {
+            let memory = engine_native_memory::memory::CountingMemory {
                 inner: world.memory(),
                 calls: std::cell::Cell::new(0),
                 bytes: std::cell::Cell::new(0),
@@ -916,7 +925,7 @@ mod tests {
     }
 
     struct Faulted<'a> {
-        inner: crate::memory::SliceMemory<'a>,
+        inner: engine_native_memory::memory::SliceMemory<'a>,
         fault: usize,
         once: bool,
         met: std::cell::Cell<bool>,
@@ -949,13 +958,13 @@ mod tests {
             Scale::STATES + 7 * 0x80,
             Scale::STATES + 7 * 0x80 + cstate::ID,
             Scale::PROVINCE_OBJECTS + 8 * 0xb0,
-            Scale::LISTS + 9 * crate::cpdx_array::STRIDE,
+            Scale::LISTS + 9 * engine_native_memory::cpdx_array::STRIDE,
             Scale::PROVINCES + 10 * 8,
         ];
         for id in [1, 64, 65, 70, 128, 150] {
             faults.extend([
                 base(id),
-                base(id) + cair_base::HANDLE,
+                base(id) + engine_native_parts::cair_base_layout::HANDLE,
                 base(id) + cair_base::STATE,
                 base(id) + cair_base::KIND,
             ]);

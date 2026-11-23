@@ -1,9 +1,12 @@
 use super::*;
 use crate::extended::naval_history::naval_test_kit as kit;
-use engine_native::{
-    Memory, batch_fallback, carmy, carmy_group, corders_group, corders_group_member, cunit,
-    memory::RecordLayout, memory::RecordSources, memory::SliceMemory,
+use engine_native_memory::{
+    Memory,
+    batch_fallback,
+    memory::{RecordLayout, RecordSources, SliceMemory},
 };
+use engine_native::{carmy, corders_group, corders_group_member, cunit};
+use engine_native_parts::carmy_group;
 use std::cell::{Cell, RefCell};
 
 thread_local! {
@@ -12,7 +15,7 @@ thread_local! {
 
 pub(super) fn copy_oob_root_serial(
     job: &mut NavalJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
 ) -> bool {
@@ -124,7 +127,7 @@ pub(super) fn copy_oob_root_serial(
         let children_header = match nspan(
             log,
             memory,
-            pointer.checked_add(engine_native::carmy_group::MEMBER_DATA),
+            pointer.checked_add(engine_native_parts::carmy_group::MEMBER_DATA),
             16,
             OOB_MASK,
         ) {
@@ -355,11 +358,11 @@ type Keyed = std::collections::BTreeMap<(usize, u32), Vec<(bool, u32, Vec<u8>)>>
 
 type Air = (
     Outcome,
-    Vec<engine_native::cair_theatre::Row>,
+    Vec<engine_native_parts::cair_theatre::Row>,
     Outcome,
-    Vec<engine_native::cair_group::Row>,
+    Vec<engine_native_parts::cair_group::Row>,
     Outcome,
-    Vec<engine_native::cair_group::MemberRow>,
+    Vec<engine_native_parts::cair_group::MemberRow>,
 );
 
 #[derive(Debug, PartialEq)]

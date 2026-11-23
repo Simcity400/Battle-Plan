@@ -514,7 +514,7 @@ fn skill_tooltip(
         let definitions = definitions
             .map_err(|refusal| format!("the skill hover's offence and defence lines: {refusal}"))?;
         let block = Block {
-            values: engine_native::cland_combat::SKILL_HOVER_KEYS
+            values: engine_native_land::land_combat_details::SKILL_HOVER_KEYS
                 .into_iter()
                 .zip(values)
                 .collect(),
@@ -537,7 +537,7 @@ fn anti_air_effectiveness(
     anti_air: i64,
     defines: &super::defines::LandDefines,
 ) -> Result<i64, String> {
-    let defence = engine_native::csub_unit_definition::movement_air_defense_value(
+    let defence = engine_native_parts::csub_unit_definition::movement_air_defense_value(
         anti_air,
         defines.air_superiority[0],
         defines.air_superiority[1],

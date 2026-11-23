@@ -1,9 +1,15 @@
 use super::*;
-use engine_native::{
-    cair_base::CarrierAceSlot, cair_base::CarrierBase,
-    cair_base::CarrierCountryTerms, cair_base::CarrierDemand, cair_base::CarrierForecastSlot,
-    cair_base::CarrierIndexedCertificate, cair_base::CarrierLengths, cair_base::CarrierPool,
-    cair_base::CarrierRegistration, cair_base::CountryOccurrence,
+use engine_native_air::cair_base::{
+    CarrierAceSlot,
+    CarrierBase,
+    CarrierCountryTerms,
+    CarrierDemand,
+    CarrierForecastSlot,
+    CarrierIndexedCertificate,
+    CarrierLengths,
+    CarrierPool,
+    CarrierRegistration,
+    CountryOccurrence,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -72,7 +78,7 @@ impl Bases {
             .try_fold(0_usize, |sum, segment| {
                 let demand = match segment.carried_raw.as_deref() {
                     Some(raw) => raw.dense_count,
-                    None => engine_native::cair_base::state_country_order_demand(
+                    None => engine_native_air::cair_base::state_country_order_demand(
                         recorded.as_ref().unwrap(),
                         segment.pointer,
                     )
@@ -107,8 +113,8 @@ impl Bases {
         &mut self,
         job: &super::AirBasesJob,
         image: usize,
-        source: &[engine_native::cair_base::Row],
-        resolved: &mut [engine_native::cair_base::ResolvedLink],
+        source: &[engine_native_air::cair_base::Row],
+        resolved: &mut [engine_native_air::cair_base::ResolvedLink],
     ) -> Result<(), &'static str> {
         let log = collector_raw::raw::Recorded::build(&job.log)?;
         let recorded = crate::extended::roster_replay::RosterReplay::new(
@@ -157,7 +163,7 @@ impl Bases {
                 match &cached.countries {
                     Ok(items)
                         if self.countries[start..].len() >= items.len()
-                            && engine_native::cair_base::verify_country_occurrences(
+                            && engine_native_air::cair_base::verify_country_occurrences(
                                 countries, resolved, items,
                             ) =>
                     {
@@ -183,7 +189,7 @@ impl Bases {
                             let overlay = raw.memory(recorded);
                             engine_native::ccountry::Reader::new(&overlay, image, job.game_state)
                                 .and_then(|overlay_countries| {
-                                    engine_native::cair_base::state_country_order(
+                                    engine_native_air::cair_base::state_country_order(
                                         &overlay,
                                         image,
                                         pointer,
@@ -195,7 +201,7 @@ impl Bases {
                                     )
                                 })
                         }
-                        None => engine_native::cair_base::state_country_order(
+                        None => engine_native_air::cair_base::state_country_order(
                             recorded,
                             image,
                             pointer,

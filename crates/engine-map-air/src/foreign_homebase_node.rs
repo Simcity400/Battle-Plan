@@ -1,8 +1,13 @@
 
-use crate::{
-    Memory, ccountry_supply_system, cpdx_array::Array, csupply_system, msvc_string, read,
-    read_slice, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
 };
+use engine_native::ccountry_supply_system::{self, world as csupply_system};
 
 pub const STRIDE: usize = 0x70;
 pub const PROVINCE: usize = 0x00;
@@ -52,8 +57,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(sources),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(sources),
     )
 }
 
@@ -61,8 +66,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut sources: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut sources: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> SourceWalk {
     let result = (|| {
         let systems = csupply_system::Reader::new(memory, base, game_state)?;
@@ -128,8 +133,8 @@ pub(crate) fn read_country(
         memory,
         pointer,
         country,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(sources),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(sources),
     )
 }
 
@@ -137,8 +142,8 @@ pub(crate) fn read_country_buffer(
     memory: &impl Memory,
     pointer: usize,
     country: u32,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut sources: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut sources: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> SourceWalk {
     let result = (|| {
         if country == 0 {
@@ -274,7 +279,7 @@ fn unavailable(reason: &'static str) -> SourceWalk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const COUNTRY: usize = 0x1000;
     const RECORDS: usize = 0x1400;
@@ -372,8 +377,8 @@ mod tests {
                 },
                 COUNTRY,
                 23,
-                crate::walk::Buffer::Count,
-                crate::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             ),
             SourceWalk {
                 outcome: Outcome::Truncated {

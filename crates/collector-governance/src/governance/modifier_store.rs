@@ -1,5 +1,4 @@
 use crate::world_input_changes::{self as changes, Changes};
-use engine_native::ccountry;
 use engine_stability::cdynamic_modifier_container as container;
 use std::sync::{Mutex, MutexGuard, TryLockError};
 
@@ -67,7 +66,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
             .binary_search_by_key(&country, |held| held.country)
     }
 
-    pub fn plan(&mut self, country: ccountry::Country) -> Plan {
+    pub fn plan(&mut self, country: engine_native_memory::country_identity::Country) -> Plan {
         let certificate = self.changes.country(country.pointer);
         let walk = self.store.walks;
         let carry = match self.find(country.id) {
@@ -86,7 +85,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
     #[allow(clippy::too_many_arguments)]
     pub fn carry(
         &mut self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         rows: &mut Vec<container::Row>,
         first: usize,
         tokens: &mut Vec<u8>,
@@ -99,7 +98,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
             .expect("a carrying plan names a held country");
         let held = &self.store.held[index];
         let grown = (|| {
-            use engine_native::walk::Buffer::Growing;
+            use engine_native_memory::walk::Buffer::Growing;
             Growing(&mut *rows).ensure(first + held.rows.len())?;
             Growing(&mut *tokens).ensure(text + held.tokens.len())?;
             Growing(&mut *values).ensure(value_start + held.values.len())?;
@@ -107,7 +106,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         })();
         if let Err(reason) = grown {
             return container::Walk {
-                outcome: engine_native::walk::Outcome::Unavailable { reason },
+                outcome: engine_native_memory::walk::Outcome::Unavailable { reason },
                 token_bytes: 0,
                 values_len: 0,
                 required_token_bytes: held.tokens.len(),
@@ -119,7 +118,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
         values[value_start..value_start + held.values.len()].copy_from_slice(&held.values);
         self.carried += 1;
         container::Walk {
-            outcome: engine_native::walk::Outcome::Rows {
+            outcome: engine_native_memory::walk::Outcome::Rows {
                 len: held.rows.len(),
             },
             token_bytes: held.tokens.len(),
@@ -131,7 +130,7 @@ impl<'a, C: Changes + ?Sized> Walk<'a, C> {
 
     pub fn read(
         &mut self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         plan: Plan,
         read: Option<(&[container::Row], &[u8], &[i64])>,
     ) {
@@ -213,7 +212,7 @@ mod tests {
     fn a_country_is_carried_until_a_writer_touches_its_container() {
         let changes = Isolated::new();
         let store = Mutex::new(Store::new());
-        let country = ccountry::Country {
+        let country = engine_native_memory::country_identity::Country {
             pointer: 0x7000,
             canonical_slot: 3,
             id: 7,

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{equipment_entry, memory::SliceMemory};
+use engine_native_parts::equipment_entry;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 const BASE: usize = 0x1000;
@@ -58,7 +59,7 @@ fn fixture() -> Vec<u8> {
     for index in 0..2 {
         let variant = VARIANTS[index];
         let definition = DEFINITIONS[index];
-        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA.0 as u64);
+        word(&mut bytes, variant, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         word(&mut bytes, variant + 8, ((index as u64 + 1) << 32) | 70);
         dword(
             &mut bytes,
@@ -180,7 +181,7 @@ fn counter_flags_include_all_positive_variants_and_preserve_raw_maximum_and_airb
     word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
     word(&mut bytes, CARRIER_AIR_BASE, (BASE + 0x5800) as u64);
     word(&mut bytes, ANTI_AIR_BASE, i64::MIN as u64);
-    word(&mut bytes, 0x5800, crate::cair_base::VTABLE_RVA.0 as u64);
+    word(&mut bytes, 0x5800, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
     word(&mut bytes, 0x5808, (7 << 32) | 65);
     word(&mut bytes, 0x5860, SHIP_ID);
     let row = model(&bytes).unwrap();
@@ -422,7 +423,7 @@ fn subunit_index_preserves_signed_words_and_authenticates_the_embedded_copy() {
         word(
             &mut bytes,
             SUBUNIT_DEFINITION,
-            crate::csub_unit_definition::VTABLE_RVA.0 as u64,
+            engine_native_parts::csub_unit_definition::VTABLE_RVA.0 as u64,
         );
         dword(&mut bytes, CLASS_DATABASE_ID, token);
         bytes[DEFINITION_VALID] = valid;
@@ -468,7 +469,7 @@ fn subunit_index_guard_faults_never_retry_or_return_partial_words() {
     word(
         &mut bytes,
         SUBUNIT_DEFINITION,
-        crate::csub_unit_definition::VTABLE_RVA.0 as u64,
+        engine_native_parts::csub_unit_definition::VTABLE_RVA.0 as u64,
     );
     dword(&mut bytes, SUBUNIT_INDEX, i32::MIN as u32);
     let memory = SliceMemory {
@@ -591,7 +592,7 @@ fn model_counter_gather_matches_scalar_faults_partial_copies_and_address_overflo
 #[test]
 fn model_counter_gather_retains_four_observations_and_twenty_five_bytes() {
     let source = CounterSource(BASE);
-    let census = crate::read_census::ReadCensus::new(&source);
+    let census = engine_native_memory::read_census::ReadCensus::new(&source);
     let expected = Ok((255, i64::MIN, u64::MAX, i64::MIN + 1));
     assert_eq!(scalar_model_counters(&census, BASE), expected);
     assert_eq!((census.calls(), census.spans(), census.bytes()), (4, 4, 25));
@@ -644,7 +645,7 @@ fn organisation_pairs_keep_aliases_partial_faults_and_lazy_invalid_address_order
                 assert_eq!(*gathered.reads.borrow(), *scalar.reads.borrow());
             }
         }
-        let census = crate::read_census::ReadCensus::new(&Source);
+        let census = engine_native_memory::read_census::ReadCensus::new(&Source);
         assert!(organisation_pair::<A, B>(&census, (BASE, 8), (BASE, 0)).is_ok());
         assert_eq!(
             (census.calls(), census.spans(), census.bytes()),
@@ -675,9 +676,9 @@ fn full_model_fixture() -> Vec<u8> {
     bytes[DEFINITION_VALID] = 255;
     word(&mut bytes, MAXIMUM_STRENGTH, i64::MIN as u64);
     word(&mut bytes, CARRIER_AIR_BASE, (BASE + AIR) as u64);
-    word(&mut bytes, AIR, crate::cair_base::VTABLE_RVA.0 as u64);
-    word(&mut bytes, AIR + crate::cair_base::HANDLE, (7 << 32) | 65);
-    word(&mut bytes, AIR + crate::cair_base::HOST_REFERENCE, SHIP_ID);
+    word(&mut bytes, AIR, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+    word(&mut bytes, AIR + engine_native_parts::cair_base_layout::HANDLE, (7 << 32) | 65);
+    word(&mut bytes, AIR + engine_native_parts::cair_base_layout::HOST_REFERENCE, SHIP_ID);
     bytes
 }
 
@@ -748,12 +749,12 @@ fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
         (ANTI_AIR_BASE, 8, "ship anti-air base unreadable"),
         (AIR, 8, "ship carrier air base identity invalid"),
         (
-            AIR + crate::cair_base::HANDLE,
+            AIR + engine_native_parts::cair_base_layout::HANDLE,
             8,
             "ship air base handle unreadable",
         ),
         (
-            AIR + crate::cair_base::HOST_REFERENCE,
+            AIR + engine_native_parts::cair_base_layout::HOST_REFERENCE,
             8,
             "ship carrier air base has null handle",
         ),
@@ -800,7 +801,7 @@ fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
             base: BASE,
             bytes: &bytes,
         };
-        let census = crate::read_census::ReadCensus::new(&source);
+        let census = engine_native_memory::read_census::ReadCensus::new(&source);
         let mut memo = ModelMemo::default();
         let cold = traced_model_memo(&census, &mut memo).unwrap();
         assert_eq!(cold.hull_sprite.as_bytes(), payload);
@@ -877,7 +878,7 @@ fn model_hull_reuse_keeps_other_ship_and_selected_variant_inputs_fresh() {
         base: BASE,
         bytes: &bytes,
     };
-    let census = crate::read_census::ReadCensus::new(&source);
+    let census = engine_native_memory::read_census::ReadCensus::new(&source);
     let row_source = Row {
         id: other_id,
         task_force: PARENT_ID,
@@ -961,7 +962,7 @@ fn model_hull_changed_token_pointer_and_capture_reacquire_complete_definition() 
             base: BASE,
             bytes: &bytes,
         };
-        let census = crate::read_census::ReadCensus::new(&source);
+        let census = engine_native_memory::read_census::ReadCensus::new(&source);
         assert_eq!(
             traced_model_memo(&census, &mut memo)
                 .unwrap()
@@ -1062,7 +1063,7 @@ fn model_prefetched_groups_keep_every_primary_fault_prefix_and_guard_count() {
     assert!(traced_model(&memory).is_ok());
     assert_eq!(*memory.reads.borrow(), reads);
     assert_eq!(memory.prefetched.get(), 4);
-    let census = crate::read_census::ReadCensus::new(&source);
+    let census = engine_native_memory::read_census::ReadCensus::new(&source);
     assert!(traced_model(&census).is_ok());
     assert_eq!(
         (census.calls(), census.spans(), census.bytes()),
@@ -1268,7 +1269,7 @@ fn model_pool_lookahead_preserves_chunks_ties_and_every_positive_duplicate_read(
             Ok((selected, flags))
         );
         assert_eq!(*memory.reads.borrow(), reads, "{count} entries");
-        let census = crate::read_census::ReadCensus::new(&source);
+        let census = engine_native_memory::read_census::ReadCensus::new(&source);
         assert_eq!(
             cequipment_variant_pool::model_selection(&census, 0, pool),
             Ok((selected, flags))
@@ -1325,7 +1326,7 @@ fn selected_companion_preserves_the_original_model_read_sequence_and_fault_prefi
         (BASE + EQUIPMENT_POOL, 8),
         (BASE + EQUIPMENT_POOL + cequipment_variant_pool::ITEMS, 16),
         (BASE + BANK, 2 * equipment_entry::STRIDE),
-        (BASE + FALLBACK_SPRITE, crate::msvc_string::STRIDE),
+        (BASE + FALLBACK_SPRITE, engine_native_memory::msvc_string::STRIDE),
         (BASE + DEFINITION_VALID, 1),
         (BASE + MAXIMUM_STRENGTH, 8),
         (BASE + CARRIER_AIR_BASE, 8),
@@ -1336,7 +1337,7 @@ fn selected_companion_preserves_the_original_model_read_sequence_and_fault_prefi
         (BASE + DEFINITIONS[0], 12),
         (
             BASE + DEFINITIONS[0] + cequipment_type::HULL_SPRITE,
-            crate::msvc_string::STRIDE,
+            engine_native_memory::msvc_string::STRIDE,
         ),
     ];
     let trace = Trace::new(&memory);
@@ -1474,7 +1475,7 @@ fn native_null_model_fixture() -> Vec<u8> {
         (-1_i32) as u32,
     );
     bytes[DEFINITIONS[0] + cequipment_type::HULL_SPRITE
-        ..DEFINITIONS[0] + cequipment_type::HULL_SPRITE + crate::msvc_string::STRIDE]
+        ..DEFINITIONS[0] + cequipment_type::HULL_SPRITE + engine_native_memory::msvc_string::STRIDE]
         .fill(0);
     inline(
         &mut bytes,
@@ -1519,7 +1520,7 @@ fn registered_variant_null_type_keeps_handle_and_reads_its_actual_empty_sprite()
         spans[singleton + 2],
         (
             BASE + DEFINITIONS[0] + cequipment_type::HULL_SPRITE,
-            crate::msvc_string::STRIDE
+            engine_native_memory::msvc_string::STRIDE
         )
     );
     for ordinal in singleton..spans.len() {
@@ -1645,7 +1646,7 @@ fn model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
 #[test]
 fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     fn through_fields(memory: &impl Memory) -> Result<ModelRow, &'static str> {
         let mut fields = ShipFields::new(0);
         fields.visit(memory, BASE);
@@ -1691,7 +1692,7 @@ fn gathered_model_reads_equal_the_direct_reader_at_every_fault() {
 
 #[test]
 fn held_ships_serve_their_own_objects_without_reading_them() {
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     let bytes = full_model_fixture();
     let source = SliceMemory {
         base: BASE,
@@ -1731,7 +1732,7 @@ fn held_ships_serve_their_own_objects_without_reading_them() {
 #[test]
 fn gathered_heap_sprites_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     fn through_fields(memory: &impl Memory) -> Result<ModelRow, &'static str> {
         let mut fields = ShipFields::new(0);
         fields.visit(memory, BASE);

@@ -1,7 +1,7 @@
 
-use crate::{
-    Memory, ccountry, msvc_string, nproject_cprogram_status, read, read_slice, walk::Outcome,
-};
+use engine_native_memory::{Memory, msvc_string, read, read_slice, walk::Outcome};
+use engine_native::ccountry;
+use crate::nproject_cprogram_status;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_e080);
@@ -58,7 +58,7 @@ pub fn assignments(
         })
     };
     emit(read_timer(at(program, SCIENTIST_REFERENCE_TYPE)?, primary)?)?;
-    let supports = crate::cpdx_array::Array::read(
+    let supports = engine_native_memory::cpdx_array::Array::read(
         memory,
         at(program, SUPPORTING_SCIENTISTS)?,
         ASSIGNMENT_STRIDE,
@@ -102,7 +102,7 @@ pub struct NameWalk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -117,9 +117,9 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(candidates),
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(candidates),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -127,9 +127,9 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut candidates: crate::walk::Buffer<'_, usize>,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut candidates: engine_native_memory::walk::Buffer<'_, usize>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let mut result = NameWalk {
         outcome: Outcome::Rows { len: 0 },
@@ -467,7 +467,7 @@ fn read_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn gap_research_grants_supporting_assignments_preserve_occurrences_timers_and_null_omission() {

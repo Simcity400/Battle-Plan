@@ -1,6 +1,7 @@
 use super::{NAVAL_PACK_N, NavalJob, OOB_MASK};
 use collector_raw::raw::{RawLog, Recorded};
-use engine_native::{Memory, corders_group};
+use engine_native_memory::Memory;
+use engine_native::corders_group;
 
 pub struct OrderGroupSource<'a> {
     log: &'a RawLog<NAVAL_PACK_N>,

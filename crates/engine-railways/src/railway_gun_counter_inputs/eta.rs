@@ -1,11 +1,15 @@
 
 use engine_sites::Rva;
 use super::{EtaOperands, FreshEtaObservations, Row, at, key};
-use crate::{
-    Memory, carmy, cequipment_variant, cgame_state, cnaval_unit_transfer, cpdx_array::Array,
-    cprovince, crailway_manager, creference_registry::HeaderResolver, fixed_layout, fixed5,
-    province_definition, railway_gun_speed, read,
+use engine_native_memory::{Memory, cpdx_array::Array, fixed5, read};
+use engine_native::{
+    carmy,
+    cequipment_variant,
+    cgame_state,
+    cprovince::{self, definition as province_definition},
 };
+use crate::{cnaval_unit_transfer, crailway_manager, fixed_layout, railway_gun_speed};
+use engine_native_parts::creference_registry::HeaderResolver;
 use std::cell::OnceCell;
 
 const VARIANT: usize = 0x338;
@@ -16,7 +20,7 @@ const LAND_SCALE_RVA: Rva = Rva(0x033e_10c8);
 const NAVAL_SCALE_RVA: Rva = Rva(0x033e_2cc0);
 const RAIL_MAX_RVA: Rva = Rva(0x033e_0ae0);
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -24,7 +28,7 @@ fn field<T: crate::memory::Raw>(
     read(memory, at(pointer, offset)?).ok_or("railway gun ETA input unreadable")
 }
 
-fn global<T: crate::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -53,7 +57,7 @@ fn variant(
     };
     if handle as u32 != cequipment_variant::REFERENCE_TYPE
         || handle >> 32 == 0
-        || field::<u64>(memory, variant, 0)? != key(base, cequipment_variant::VTABLE_RVA)? as u64
+        || field::<u64>(memory, variant, 0)? != key(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)? as u64
         || field::<u64>(memory, variant, cequipment_variant::TYPE)? != handle
     {
         return Err("railway gun ETA equipment variant identity mismatch");
@@ -195,8 +199,8 @@ pub(super) fn capture(
         .and_then(|slot| super::pointer_at(memory, slot))
         .filter(|pointer| *pointer != 0)
         .ok_or("railway gun ETA arrival province absent")?;
-    if crate::cunit::registered_province(memory, base, provinces, from)? != row.province
-        || crate::cunit::registered_province(memory, base, provinces, to)? != next
+    if engine_native::cunit::registered_province(memory, base, provinces, from)? != row.province
+        || engine_native::cunit::registered_province(memory, base, provinces, to)? != next
     {
         return Err("railway gun ETA endpoint identity mismatch");
     }

@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cequipment_type, memory::SliceMemory};
+use engine_native_parts::cequipment_type;
+use engine_native_memory::memory::SliceMemory;
 
 const LINE: usize = 0x100;
 const VARIANT: usize = 0x400;

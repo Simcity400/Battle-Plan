@@ -5,7 +5,8 @@ use std::{
 };
 
 use super::{AuthenticatedRoster, Country, Reader};
-use crate::{Memory, allocation, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_allocation as allocation;
 
 type CountryResult = Result<Country, &'static str>;
 type SlotResult = Result<Option<Country>, &'static str>;
@@ -264,20 +265,20 @@ impl<'a, M: Memory> NativeReferenceContext<'a, M> {
         if let Some(observation) = self.memo.reserved.get() {
             return observation;
         }
-        let mut observation =
+        let observation =
             super::cached_reserved_observation(self.memory, self.base, self.game_state)
                 .unwrap_or_else(|| {
                     super::ReservedCountryObservation::from_result(Err(
                         "native country reference lacks shared reserved source",
                     ))
                 });
-        observation.result = observation.result.and_then(|country| {
+        let observation = observation.with_result(observation.result().and_then(|country| {
             if country.pointer == 0 || country.canonical_slot != 0 || country.id != 0 {
                 Err("native country reserved source is not physical slot zero")
             } else {
                 Ok(country)
             }
-        });
+        }));
         self.memo.reserved.set(Some(observation));
         observation
     }
@@ -427,7 +428,7 @@ impl<M: Memory> Memory for ObservedLinks<'_, '_, M> {
             if let Some(result) = *cell {
                 result
             } else {
-                let result = crate::read::<u32>(self.context.memory, address)
+                let result = engine_native_memory::read::<u32>(self.context.memory, address)
                     .ok_or("country link unreadable or outside country table");
                 *cell = Some(result);
                 self.context

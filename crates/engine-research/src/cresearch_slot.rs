@@ -8,7 +8,7 @@ pub const BANKED_DAYS: usize = 0x20;
 pub const APPLIED_DAYS: usize = 0x28;
 pub const RESEARCH_SPEED: usize = 0x38;
 pub const INDEX: usize = 0x40;
-pub use crate::cpdx_lexer::IDLE_RESEARCH_TOKEN as IDLE_HANDLE;
+pub use engine_native_memory::cpdx_lexer::IDLE_RESEARCH_TOKEN as IDLE_HANDLE;
 pub const RESEARCH_SPEED_SCALE: i64 = 100_000;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub struct Row {
 }
 
 pub(crate) fn row(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pointer: usize,
     status: usize,
@@ -52,7 +52,7 @@ pub(crate) fn row(
     let mut row = decode_raw(base, status, country, &raw, linked.as_ref())?;
     if let Some(bytes) = &linked {
         let instance = crate::ctechnology::decode_one(base, status, country, bytes)?;
-        let identity = crate::read::<[u8; 8]>(
+        let identity = engine_native_memory::read::<[u8; 8]>(
             memory,
             instance
                 .template
@@ -70,17 +70,17 @@ pub(crate) fn row(
     Ok(row)
 }
 
-pub(crate) const FIELDS: [crate::memory::RecordField; 4] = crate::memory::packed_fields([
+pub(crate) const FIELDS: [engine_native_memory::memory::RecordField; 4] = engine_native_memory::memory::packed_fields([
     (0, 12),
     (STATUS, 16),
     (RESEARCH_SPEED, 12),
     (BANKED_DAYS, 16),
 ]);
-pub(crate) const LAYOUT: crate::memory::RecordLayout<'static> =
-    crate::memory::RecordLayout::new(&FIELDS, 56).expect("valid slot record layout");
+pub(crate) const LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+    engine_native_memory::memory::RecordLayout::new(&FIELDS, 56).expect("valid slot record layout");
 
 pub fn copy_raw(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     pointer: usize,
     out: &mut Raw,
 ) -> Result<usize, &'static str> {

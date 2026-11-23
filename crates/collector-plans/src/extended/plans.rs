@@ -5,10 +5,10 @@ use collector_primitives::{
 use collector_projection::projection::{Projection, project_table, scalar_table};
 use engine_allocation::{copy_vec, owned_vec};
 use engine_land_inputs::{cfront, cfront_section};
-use engine_native::{
-    Memory, ccountry, corder_instance, corders_group, invasion_preparations,
-    modifier_definition::DefinitionMemo, order_execution, walk::Outcome,
-};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{ccountry, corder_instance, corders_group};
+use engine_native_parts::modifier_definition::DefinitionMemo;
+use engine_native_land::{invasion_preparations, order_execution};
 use replay_data::{
     rows::ArmyOrderPlanRow, rows::FrontRow, rows::InvasionPreparationRow, rows::OrderChildFront,
     rows::OrderChildFrontInputs, rows::OrdersGroupPlanRow, rows::Recorded, rows::RowCodec,
@@ -28,7 +28,7 @@ pub const TABLES: [TableId; N] = [
 ];
 
 fn project_execution(
-    inputs: order_execution::OrderExecutionInputs,
+    inputs: engine_native::corder_instance::OrderExecutionInputs,
 ) -> replay_data::rows::OrderExecutionInputs {
     replay_data::rows::OrderExecutionInputs {
         route_is_ok: inputs.route_is_ok,
@@ -1096,7 +1096,10 @@ mod orders_parts_fixture;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests {
     use super::*;
-    use engine_native::{creference_registry as registry, reference_bucket as bucket};
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
     use std::collections::BTreeMap;
 
     #[test]
@@ -1663,10 +1666,10 @@ pub mod tests {
                 calls: Cell::new(0),
             };
             let mut storage = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(64).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(64).unwrap(),
             )
             .unwrap();
-            let countries = engine_native::country_memory::Cache::prepare_shared(
+            let countries = engine_native_intelligence::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &memory,
                 kit::BASE,

@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 use engine_focus::cnational_focus_progress as focus;
-use engine_native::{Memory, ccountry, cgame_state, modifier_definition};
-use engine_native::{memory::RecordLayout, memory::RecordSources};
+use engine_native_memory::Memory;
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::modifier_definition;
+use engine_native_memory::memory::{RecordLayout, RecordSources};
 use engine_research::{
     climited_use_tech_bonus as bonus, cresearch_slot as slot, ctechnology as tech,
     ctechnology_status as status, ctechnology_template as template,
@@ -152,7 +154,7 @@ impl World {
                 c + 0x4400 + bonus::AHEAD_REDUCTION,
                 200_001_i64.to_le_bytes(),
             );
-            let accumulator = c + ccountry::MODIFIER_ACCUMULATOR;
+            let accumulator = c + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
             world.array(accumulator, c + 0x5000, 1);
             world.put(
                 c + 0x5000,
@@ -246,22 +248,22 @@ pub struct FallbackCounts {
     before: Cell<[u64; 12]>,
 }
 impl FallbackCounts {
-    const BATCHES: [engine_native::batch_fallback::Batch; 12] = [
-        engine_native::batch_fallback::Batch::GovernanceSlotPointers,
-        engine_native::batch_fallback::Batch::GovernanceSlots,
-        engine_native::batch_fallback::Batch::GovernanceAssignedTechnologies,
-        engine_native::batch_fallback::Batch::GovernanceAssignedTemplates,
-        engine_native::batch_fallback::Batch::GovernanceModifierTechnologies,
-        engine_native::batch_fallback::Batch::GovernanceModifierIdeas,
-        engine_native::batch_fallback::Batch::GovernanceModifierScripts,
-        engine_native::batch_fallback::Batch::GovernanceFocusProgress,
-        engine_native::batch_fallback::Batch::GovernanceFocusPointers,
-        engine_native::batch_fallback::Batch::GovernanceFocusDefinitions,
-        engine_native::batch_fallback::Batch::GovernanceResearchDrift,
-        engine_native::batch_fallback::Batch::GovernanceTechnologyDrift,
+    const BATCHES: [engine_native_memory::batch_fallback::Batch; 12] = [
+        engine_native_memory::batch_fallback::Batch::GovernanceSlotPointers,
+        engine_native_memory::batch_fallback::Batch::GovernanceSlots,
+        engine_native_memory::batch_fallback::Batch::GovernanceAssignedTechnologies,
+        engine_native_memory::batch_fallback::Batch::GovernanceAssignedTemplates,
+        engine_native_memory::batch_fallback::Batch::GovernanceModifierTechnologies,
+        engine_native_memory::batch_fallback::Batch::GovernanceModifierIdeas,
+        engine_native_memory::batch_fallback::Batch::GovernanceModifierScripts,
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusProgress,
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusPointers,
+        engine_native_memory::batch_fallback::Batch::GovernanceFocusDefinitions,
+        engine_native_memory::batch_fallback::Batch::GovernanceResearchDrift,
+        engine_native_memory::batch_fallback::Batch::GovernanceTechnologyDrift,
     ];
     fn snapshot() -> [u64; 12] {
-        Self::BATCHES.map(engine_native::batch_fallback::count)
+        Self::BATCHES.map(engine_native_memory::batch_fallback::count)
     }
     fn new() -> Self {
         Self {
@@ -279,7 +281,7 @@ impl FallbackCounts {
             .flat_map(|(i, batch)| {
                 std::iter::repeat_n(
                     batch.name(),
-                    (engine_native::batch_fallback::count(batch) - before[i]) as usize,
+                    (engine_native_memory::batch_fallback::count(batch) - before[i]) as usize,
                 )
             })
             .collect()
@@ -396,8 +398,8 @@ pub fn addresses(trace: &Trace<'_, impl Memory>) -> Vec<usize> {
     addresses.dedup();
     addresses
 }
-pub fn never_harsher(serial: engine_native::walk::Outcome, batched: engine_native::walk::Outcome) {
-    use engine_native::walk::Outcome;
+pub fn never_harsher(serial: engine_native_memory::walk::Outcome, batched: engine_native_memory::walk::Outcome) {
+    use engine_native_memory::walk::Outcome;
     match serial {
         Outcome::Rows { len } => assert_eq!(batched, Outcome::Rows { len }),
         Outcome::Truncated { len, unread_rows } => match batched {

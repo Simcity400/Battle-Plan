@@ -1,17 +1,28 @@
 
-use engine_native::cair_wing;
+use engine_native_air::cair_wing;
 use engine_sites::Rva;
 
 #[path = "map_air_sortie_inputs/patrol.rs"]
 pub mod patrol;
 
-use crate::{
-    Memory, air_mission, cair_base, ccountry, ccountry_air_container, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    csub_unit_definition, cweather_manager,
     memory::{RecordField, RecordLayout, RecordSources},
-    modifier_accumulator, modifier_definition, read, read_slice, sweather_per_region,
+    read,
+    read_slice,
     walk::Buffer,
+};
+use engine_native_air::{air_mission, cair_base, ccountry_air_container};
+use engine_native::{
+    ccountry,
+    cgame_state,
+    cweather_manager::{self, region_weather as sweather_per_region},
+};
+use engine_native_parts::{
+    csub_unit_definition,
+    modifier_accumulator,
+    modifier_definition,
 };
 
 pub const SORTIE_MODIFIER_KEY: u32 = 0x11;
@@ -106,7 +117,7 @@ fn normalization(
     }
 }
 
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -128,7 +139,7 @@ fn vtable(base: usize, rva: Rva) -> Result<u64, &'static str> {
         .ok_or("map sortie module address overflow")
 }
 
-fn global<T: crate::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -272,7 +283,7 @@ fn read_missions_inner(
     let gathered = memory.copy_records(RecordSources::Pointers(missions), &layout, rows)
         == missions.len() * fields.len();
     if !gathered {
-        crate::batch_fallback::record(crate::batch_fallback::Batch::MissionInputs);
+        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::MissionInputs);
         if memory.copy_records(RecordSources::Pointers(missions), &MISSION_LAYOUT, rows)
             != missions.len() * MISSION_LAYOUT.field_count()
         {
@@ -388,7 +399,7 @@ fn read_effective_aircraft(memory: &impl Memory, missions: &[usize], output: &mu
 
 pub const DEFINITION_BATCH: usize = 64;
 const POOL_DEFINITION: [RecordField; 1] = [RecordField {
-    source_offset: crate::cair_wing_pool::DEFINITION,
+    source_offset: engine_native_parts::cair_wing_pool::DEFINITION,
     destination_offset: 0,
     len: 8,
 }];
@@ -418,7 +429,7 @@ pub fn definition_air_flags_gathered(
     let count = pools.len().min(output.len()).min(DEFINITION_BATCH);
     let read = gather_definitions(memory, base, &pools[..count], output);
     if read < count {
-        crate::batch_fallback::record(crate::batch_fallback::Batch::PoolDefinitions);
+        engine_native_memory::batch_fallback::record(engine_native_memory::batch_fallback::Batch::PoolDefinitions);
     }
     read
 }
@@ -467,7 +478,7 @@ pub fn definition_air_flags(
     base: usize,
     pool: usize,
 ) -> Result<u64, &'static str> {
-    let definition = pointer(memory, pool, crate::cair_wing_pool::DEFINITION)?;
+    let definition = pointer(memory, pool, engine_native_parts::cair_wing_pool::DEFINITION)?;
     match field::<u64>(memory, definition, 0)? {
         real if real == vtable(base, csub_unit_definition::VTABLE_RVA)? => {
             field(memory, definition, csub_unit_definition::AIR_FLAGS)
@@ -612,7 +623,7 @@ pub fn weather_modifier(
     base: usize,
     regions: Array,
     region: u32,
-) -> Result<modifier_accumulator::Value, &'static str> {
+) -> Result<engine_native_memory::modifier_cache::Value, &'static str> {
     let record = regions
         .element(region, sweather_per_region::STRIDE)
         .ok_or("weather region outside its array")?;
@@ -634,11 +645,11 @@ pub fn weather_modifier(
 pub fn country_modifier(
     memory: &impl Memory,
     country: usize,
-) -> Result<modifier_accumulator::Value, &'static str> {
+) -> Result<engine_native_memory::modifier_cache::Value, &'static str> {
     modifier_accumulator::lookup_at(
         memory,
         country
-            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+            .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
             .ok_or("country modifier address overflow")?,
         SORTIE_MODIFIER_KEY,
     )
@@ -731,7 +742,7 @@ pub fn detection_overrides(
     let array = engine_sites::at(base, DETECTION_OVERRIDES_RVA)
         .and_then(|at| Array::read(memory, at, OVERRIDE_ENTRY))
         .ok_or("Air detection override vector header unreadable")?;
-    engine_native::allocation::reserve_exact(output, array.count as usize)
+    engine_allocation::reserve_exact(output, array.count as usize)
         .map_err(|_| "Air detection override allocation failed")?;
     let mut bytes = [0_u8; 64 * OVERRIDE_ENTRY];
     for first in (0..array.count).step_by(64) {
@@ -780,7 +791,7 @@ fn volunteer_hosts_buffer(
         .ok_or("country volunteer hosts invalid")?;
     output.ensure(hosts.count as usize)?;
     if let Some(output) = output.get_mut(..hosts.count as usize) {
-        crate::cpdx_array::copy_u32s(memory, hosts, output, "country volunteer hosts unreadable")?;
+        engine_native_memory::cpdx_array::copy_u32s(memory, hosts, output, "country volunteer hosts unreadable")?;
     }
     Ok(hosts.count as usize)
 }
@@ -799,16 +810,16 @@ pub fn storage_demand(
     }
     let mut missions = 0usize;
     let mut reached = 0usize;
-    crate::cstrategic_air::visit(memory, base, state, |root| {
+    engine_native_air::cstrategic_air::visit(memory, base, state, |root| {
         let active = root
             .address
-            .checked_add(crate::cstrategic_air::ALL_ACTIVE_MISSIONS)
+            .checked_add(engine_native_air::cstrategic_air::ALL_ACTIVE_MISSIONS)
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("sortie sizing active missions invalid")?;
         missions = missions
             .checked_add(active.count as usize)
             .ok_or("sortie sizing mission count overflow")?;
-        crate::cpdx_array::pointers(
+        engine_native_memory::cpdx_array::pointers(
             memory,
             active,
             "sortie sizing mission pointer unreadable",
@@ -838,7 +849,7 @@ pub fn storage_demand(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const MISSION: usize = 0x1000;
     const POOL: usize = 0x2000;
@@ -890,7 +901,7 @@ mod tests {
         put(&mut bytes, REACHED + REACHED_ENTRY, &3_u32.to_le_bytes());
         put(
             &mut bytes,
-            POOL + crate::cair_wing_pool::DEFINITION,
+            POOL + engine_native_parts::cair_wing_pool::DEFINITION,
             &(DEFINITION as u64).to_le_bytes(),
         );
         put(
@@ -1530,7 +1541,7 @@ mod tests {
     fn mission_operands_and_cas_ratios_take_one_copy() {
         let mut bytes = mission_fixture();
         put(&mut bytes, MISSION + CAS_RATIO, &(-3_i64).to_le_bytes());
-        let memory = crate::memory::CountingMemory::new(&bytes);
+        let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
         let mut rows = [Mission::default(); 2];
         assert_eq!(
             read_missions(&memory, 0, &[MISSION, MISSION], &mut rows),
@@ -1566,7 +1577,7 @@ mod tests {
                 let definition = first + (pool % definitions) * DEFINITION;
                 put(
                     &mut bytes,
-                    at + crate::cair_wing_pool::DEFINITION,
+                    at + engine_native_parts::cair_wing_pool::DEFINITION,
                     &(definition as u64).to_le_bytes(),
                 );
                 at
@@ -1589,7 +1600,7 @@ mod tests {
     }
 
     fn flags_gathered(memory: &impl Memory, pools: &[usize]) -> (Flags, usize) {
-        use crate::batch_fallback::{Batch, count};
+        use engine_native_memory::batch_fallback::{Batch, count};
         let counted = count(Batch::PoolDefinitions);
         let mut flags = Vec::new();
         let mut fallbacks = 0;
@@ -1621,7 +1632,7 @@ mod tests {
         assert!(expected.0.contains(&0) && expected.0.iter().any(|&flags| flags != 0));
         assert_eq!(flags_gathered(&memory, &pools), (expected, 0));
         let counted = |gather: bool| {
-            let memory = crate::memory::CountingMemory::new(&bytes);
+            let memory = engine_native_memory::memory::CountingMemory::new(&bytes);
             let read = if gather {
                 flags_gathered(&memory, &pools).0
             } else {
@@ -1664,7 +1675,7 @@ mod tests {
             &pools,
         );
         let definition = |pool: usize| {
-            let at = pools[pool] + crate::cair_wing_pool::DEFINITION;
+            let at = pools[pool] + engine_native_parts::cair_wing_pool::DEFINITION;
             u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize
         };
         let faulted = |fault, once| Faulted {
@@ -1675,7 +1686,7 @@ mod tests {
         };
         for pool in [0_usize, 1, 63, 64, 70, 149] {
             for fault in [
-                pools[pool] + crate::cair_wing_pool::DEFINITION,
+                pools[pool] + engine_native_parts::cair_wing_pool::DEFINITION,
                 definition(pool),
                 definition(pool) + csub_unit_definition::AIR_FLAGS,
             ] {
@@ -1826,7 +1837,7 @@ mod tests {
     type Batches = Vec<(Result<(), &'static str>, Vec<Mission>)>;
 
     fn batches(memory: &impl Memory, missions: &[usize], parent: bool) -> (Batches, u64) {
-        use crate::batch_fallback::{Batch, count};
+        use engine_native_memory::batch_fallback::{Batch, count};
         let counted = count(Batch::MissionInputs);
         let batches = missions
             .chunks(MISSION_BATCH)

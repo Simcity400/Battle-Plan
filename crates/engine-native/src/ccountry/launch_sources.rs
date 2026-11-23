@@ -1,11 +1,13 @@
+use engine_native_parts::cnaval_base_layout as naval_base_layout;
 
-use crate::{
-    Memory, cgame_state, cnaval_base,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cstate,
     memory::{RecordField, RecordLayout, RecordSources},
-    read, read_slice,
+    read,
+    read_slice,
 };
+use crate::{cgame_state, cstate};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DomainCapture {
@@ -37,12 +39,12 @@ const BASE_FIELDS: [RecordField; 3] = [
         len: 8,
     },
     RecordField {
-        source_offset: cnaval_base::HOLDER,
+        source_offset: naval_base_layout::HOLDER,
         destination_offset: 8,
         len: 8,
     },
     RecordField {
-        source_offset: cnaval_base::PROVINCE_ID,
+        source_offset: naval_base_layout::PROVINCE_ID,
         destination_offset: 16,
         len: 4,
     },
@@ -118,8 +120,8 @@ impl ReservedOwnedStates {
             memory,
             base,
             state,
-            crate::walk::Buffer::Growing(scratch),
-            crate::walk::Buffer::Growing(output),
+            engine_native_memory::walk::Buffer::Growing(scratch),
+            engine_native_memory::walk::Buffer::Growing(output),
         )
     }
 
@@ -128,8 +130,8 @@ impl ReservedOwnedStates {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        mut scratch: crate::walk::Buffer<'_, Occurrence>,
-        mut output: crate::walk::Buffer<'_, u32>,
+        mut scratch: engine_native_memory::walk::Buffer<'_, Occurrence>,
+        mut output: engine_native_memory::walk::Buffer<'_, u32>,
     ) -> DomainCapture {
         let root = self
             .root
@@ -324,8 +326,8 @@ pub(crate) fn capture_naval(
         memory,
         base,
         navy,
-        crate::walk::Buffer::Growing(scratch),
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(scratch),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -333,8 +335,8 @@ pub fn capture_naval_buffer(
     memory: &impl Memory,
     base: usize,
     navy: usize,
-    mut scratch: crate::walk::Buffer<'_, Occurrence>,
-    mut output: crate::walk::Buffer<'_, LaunchNavalBase>,
+    mut scratch: engine_native_memory::walk::Buffer<'_, Occurrence>,
+    mut output: engine_native_memory::walk::Buffer<'_, LaunchNavalBase>,
 ) -> NavalCapture {
     if navy == 0 {
         return NavalCapture {
@@ -358,11 +360,11 @@ pub fn capture_naval_buffer(
             return Err("reserved launch naval base arena exhausted");
         }
         let country = navy
-            .checked_add(cnaval_base::HOLDER_COUNTRY)
+            .checked_add(naval_base_layout::HOLDER_COUNTRY)
             .and_then(|address| read::<u32>(memory, address))
             .ok_or("reserved launch naval holder country unreadable")?;
         copy_roster(memory, source, &mut scratch[..required])?;
-        let expected = engine_sites::at(base, cnaval_base::VTABLE_RVA)
+        let expected = engine_sites::at(base, naval_base_layout::VTABLE_RVA)
             .ok_or("reserved launch module address overflow")? as u64;
         let mut next = 0;
         while next < required {

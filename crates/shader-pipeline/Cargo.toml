@@ -49,8 +49,10 @@ engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-thiserror = { workspace = true }

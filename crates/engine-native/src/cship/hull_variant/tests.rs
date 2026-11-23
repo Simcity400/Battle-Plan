@@ -30,7 +30,7 @@ impl World {
         };
         world.put(
             VARIANT,
-            &(BASE as u64 + cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(BASE as u64 + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         world.put(VARIANT + 8, &HANDLE.to_le_bytes());
         world.put(

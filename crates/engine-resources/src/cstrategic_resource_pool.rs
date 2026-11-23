@@ -1,5 +1,5 @@
 
-use crate::cpdx_array::Array;
+use engine_native_memory::cpdx_array::Array;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x29ce1e8);
@@ -16,13 +16,13 @@ pub struct StoredAmount {
 }
 
 pub fn read_into(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     pool: usize,
     output: &mut Vec<StoredAmount>,
 ) -> Result<(), &'static str> {
     let header =
-        crate::read::<[u8; 24]>(memory, pool).ok_or("faction resource pool header unreadable")?;
+        engine_native_memory::read::<[u8; 24]>(memory, pool).ok_or("faction resource pool header unreadable")?;
     let count = u32::from_le_bytes(header[20..24].try_into().unwrap());
     let source = from_header(base, header, count)?;
     crate::allocation::resize_default(output, source.count as usize)
@@ -32,7 +32,7 @@ pub fn read_into(
             .element(ordinal as u32, VALUE_STRIDE)
             .ok_or("faction resource amount address overflow")?;
         let bytes =
-            crate::read::<[u8; 12]>(memory, address).ok_or("faction resource amount unreadable")?;
+            engine_native_memory::read::<[u8; 12]>(memory, address).ok_or("faction resource amount unreadable")?;
         *value = StoredAmount {
             raw: i64::from_le_bytes(bytes[..8].try_into().unwrap()),
             token: u32::from_le_bytes(bytes[8..].try_into().unwrap()),

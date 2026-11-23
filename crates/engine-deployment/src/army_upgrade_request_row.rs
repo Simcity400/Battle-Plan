@@ -5,7 +5,7 @@ pub const REQUEST: usize = 0x08;
 pub const TOTAL: usize = 0x10;
 pub const FIXED_POINT_SCALE: i64 = 100_000;
 
-use crate::{Memory, cequipment_variant, read};
+use engine_native_memory::{Memory, read};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -32,7 +32,7 @@ pub(crate) fn row(
         country,
         army,
         ordinal,
-        equipment: cequipment_variant::identity(memory, base, pointer)?,
+        equipment: engine_native_parts::equipment_variant_identity::identity(memory, base, pointer)?,
         request_raw: i64::from_le_bytes(bytes[REQUEST..TOTAL].try_into().unwrap()),
         total_raw: i64::from_le_bytes(bytes[TOTAL..STRIDE].try_into().unwrap()),
     })

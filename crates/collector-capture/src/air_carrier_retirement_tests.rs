@@ -1,6 +1,6 @@
 use collector_air::extended::air::carrier::tests::*;
 use collector_air::sizing;
-use engine_native::cair_base::CarrierDemand;
+use engine_native_air::cair_base::CarrierDemand;
 use replay_data::rows;
 
 #[test]

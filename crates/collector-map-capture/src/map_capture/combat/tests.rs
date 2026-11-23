@@ -2,7 +2,12 @@ use super::*;
 use crate::map_capture::{MapCapacities, NoSources};
 use engine_land_inputs::cstats_observer as stats;
 use engine_native::{
-    carmy, cequipment_variant_pool as pool, cgame_state, cland_combatant as side, cprovince, cunit,
+    carmy,
+    cequipment_variant::pool as pool,
+    cgame_state,
+    cland_combatant as side,
+    cprovince,
+    cunit,
 };
 
 struct World {
@@ -166,7 +171,7 @@ impl Memory for World {
             output.copy_from_slice(&(self.state() as u64).to_le_bytes());
             true
         } else {
-            unsafe { engine_native::memory::LiveMemory::new() }.copy(address, output)
+            unsafe { engine_native_memory::memory::LiveMemory::new() }.copy(address, output)
         }
     }
 }

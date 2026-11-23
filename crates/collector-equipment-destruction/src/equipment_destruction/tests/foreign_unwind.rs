@@ -111,7 +111,7 @@ unsafe extern "system-unwind" fn invoke_damage(argument: usize) {
 unsafe extern "system" fn credit(reserves: usize, pool: usize) {
     NATIVE_CALLS.fetch_add(1, Ordering::SeqCst);
     let army = pool - carmy::EQUIPMENT_POOL;
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let handle = native::army_identity(&memory, BASE.load(Ordering::Relaxed), army).unwrap();
     assert_eq!(ACTIVE[SiteId::HqReturn as usize].load(Ordering::SeqCst), 1);
     assert!(OBSERVING.get());

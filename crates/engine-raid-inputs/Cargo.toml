@@ -10,9 +10,15 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine-native/alloc-fault-injection"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-native-air/alloc-fault-injection", "engine-native-land/alloc-fault-injection"]
 
 [dependencies]
+engine-allocation.workspace = true
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-air.workspace = true
+engine-native-intelligence.workspace = true
+engine-native-land.workspace = true
 game-model.workspace = true
 engine-sites.workspace = true
 engine-executable.workspace = true
@@ -23,6 +29,11 @@ engine-resources.workspace = true
 engine-stability.workspace = true
 
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 
 [lints]

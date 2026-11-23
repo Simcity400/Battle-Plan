@@ -1,7 +1,10 @@
 use super::{BATCH, FULL_ENTRY, Memory, RecordField, RecordLayout, field};
 pub use game_model::air_power::{Contribution, Menu};
-use engine_native::{
-    allocation, memory::gather_records, msvc_tree_node as node, read as native_read,
+use engine_allocation as allocation;
+use engine_native_memory::{
+    memory::gather_records,
+    msvc_tree_node as node,
+    read as native_read,
 };
 use std::sync::Arc;
 

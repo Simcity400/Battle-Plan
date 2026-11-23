@@ -3,20 +3,33 @@ pub const RECORDS: usize = 0x08;
 #[cfg(test)]
 pub const RECORD_COUNT: usize = 0x14;
 
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    msvc_string,
+    read,
+    read_slice,
+    walk::Outcome,
+};
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::{modifier_accumulator, modifier_definition};
 use crate::{
-    Memory, ccountry, cgame_state, cpdx_array::Array, modifier_accumulator, modifier_definition,
-    modifier_keys, msvc_string, power_balance_definition, power_balance_gfx_override,
-    power_balance_range, power_balance_record, power_balance_side, read, read_slice, walk::Outcome,
+    modifier_keys,
+    power_balance_definition,
+    power_balance_gfx_override,
+    power_balance_range,
+    power_balance_record,
+    power_balance_side,
 };
 
 use power_balance_definition::Token;
 
 pub struct Buffers<'a> {
-    pub records: crate::walk::Buffer<'a, power_balance_record::Row>,
-    pub members: crate::walk::Buffer<'a, power_balance_record::MemberRow>,
-    pub ranges: crate::walk::Buffer<'a, power_balance_range::Row>,
-    pub overrides: crate::walk::Buffer<'a, power_balance_gfx_override::Row>,
-    pub text: crate::walk::Buffer<'a, u8>,
+    pub records: engine_native_memory::walk::Buffer<'a, power_balance_record::Row>,
+    pub members: engine_native_memory::walk::Buffer<'a, power_balance_record::MemberRow>,
+    pub ranges: engine_native_memory::walk::Buffer<'a, power_balance_range::Row>,
+    pub overrides: engine_native_memory::walk::Buffer<'a, power_balance_gfx_override::Row>,
+    pub text: engine_native_memory::walk::Buffer<'a, u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,7 +191,7 @@ pub fn walk(
                     .and_then(|p| read::<u32>(memory, p))
                     .ok_or("power balance member reference unreadable")?;
                 let country = countries.resolve(raw)?;
-                let mut values = [modifier_accumulator::Value {
+                let mut values = [engine_native_memory::modifier_cache::Value {
                     raw: 0,
                     present: false,
                 }; 2];
@@ -434,7 +447,7 @@ fn copy_tokens<const N: usize>(
     memory: &impl Memory,
     sources: [Source; N],
     row_fits: bool,
-    arena: &mut crate::walk::Buffer<'_, u8>,
+    arena: &mut engine_native_memory::walk::Buffer<'_, u8>,
     used: &mut usize,
     required: &mut usize,
 ) -> Result<Option<[Token; N]>, &'static str> {
@@ -561,7 +574,7 @@ mod tests {
         m.dword(GS + 0x908, 1);
         m.qword(COUNTRY, ccountry::VTABLE_RVA.0 as u64);
         m.dword(COUNTRY + ccountry::ID, 1);
-        m.header(COUNTRY + ccountry::MODIFIER_ACCUMULATOR, MODIFIER_DATA, 2);
+        m.header(COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR, MODIFIER_DATA, 2);
         m.dword(MODIFIER_DATA, modifier_keys::POWER_BALANCE_DAILY);
         m.qword(MODIFIER_DATA + 8, i64::MIN as u64);
         m.dword(MODIFIER_DATA + 16, modifier_keys::POWER_BALANCE_WEEKLY);
@@ -616,7 +629,7 @@ mod tests {
 
     impl Output {
         fn buffers(&mut self) -> Buffers<'_> {
-            use crate::walk::Buffer;
+            use engine_native_memory::walk::Buffer;
             Buffers {
                 records: Buffer::Growing(&mut self.records),
                 members: Buffer::Growing(&mut self.members),
@@ -629,7 +642,7 @@ mod tests {
 
     #[test]
     fn worker_grows_every_power_balance_row_and_arena_from_original_mod_sized_rosters() {
-        use crate::walk::Buffer;
+        use engine_native_memory::walk::Buffer;
         let mut memory = fixture();
         let mut records = Vec::new();
         let mut members = Vec::new();

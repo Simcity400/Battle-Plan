@@ -1,16 +1,16 @@
 use super::*;
-use crate::memory::SliceMemory;
-use crate::walk::Buffer;
+use engine_native_memory::memory::SliceMemory;
+use engine_native_memory::walk::Buffer;
 use std::cell::{Cell, RefCell};
 
 #[test]
 fn portrait_tag_memo_holds_one_cell_per_country_and_expires_each_walk() {
-    let country = |slot| crate::ccountry::Country {
+    let country = |slot| engine_native_memory::country_identity::Country {
         pointer: 0x1000 + slot as usize * 0x20,
         canonical_slot: slot,
         id: slot,
     };
-    let tag = crate::msvc_string::Text::<64>::default();
+    let tag = engine_native_memory::msvc_string::Text::<64>::default();
     let mut memo = PortraitTagMemo::default();
     memo.begin(5_001);
     assert!(memo.cell(4_999).is_none());
@@ -411,7 +411,7 @@ fn native_widths_and_four_class_layouts_remain_distinct() {
         (VTABLE_RVA, KIND_BASE),
         (carmy_leader::VTABLE_RVA, KIND_ARMY),
         (cnavy_leader::VTABLE_RVA, KIND_NAVY),
-        (coperative_leader::VTABLE_RVA, KIND_OPERATIVE),
+        (engine_native_parts::coperative_leader_layout::VTABLE_RVA, KIND_OPERATIVE),
     ] {
         let bytes = fixture(vtable);
         let row = read(&memory(&bytes), IMAGE, ADDRESS, 0xf000_0001).unwrap();
@@ -595,7 +595,7 @@ fn assigned_traits_preserve_order_and_report_both_capacities_exactly() {
 
 #[test]
 fn trait_experience_is_independent_ordered_native_state() {
-    let bytes = fixture(coperative_leader::VTABLE_RVA);
+    let bytes = fixture(engine_native_parts::coperative_leader_layout::VTABLE_RVA);
     let mut rows = [TraitExperienceRow::default(); 2];
     let mut arena = [0; 10];
     let result = walk_trait_experience(

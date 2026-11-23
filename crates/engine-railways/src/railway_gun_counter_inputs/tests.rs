@@ -1,8 +1,8 @@
 use super::*;
-use crate::{
-    carmy, cland_combat, cland_combatant, cnaval_unit_transfer, memory::SliceMemory,
-    reference_bucket,
-};
+use engine_native::{carmy, cland_combat, cland_combatant};
+use crate::cnaval_unit_transfer;
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::reference_bucket;
 
 const STATE: usize = 0x1000;
 const COUNTRIES: usize = 0x2000;
@@ -317,7 +317,7 @@ impl Memory for MemoryFixture {
 }
 
 fn capture(bytes: Vec<u8>, fault: Option<usize>, rows: &mut Vec<Row>, paths: &mut Vec<u32>) -> Walk {
-    walk_impl(&MemoryFixture { bytes, fault }, 0, STATE, crate::walk::Buffer::Growing(rows), crate::walk::Buffer::Growing(paths), &mut cunit::FirstCombatMemo::new(4), None, None, None)
+    walk_impl(&MemoryFixture { bytes, fault }, 0, STATE, engine_native_memory::walk::Buffer::Growing(rows), engine_native_memory::walk::Buffer::Growing(paths), &mut cunit::FirstCombatMemo::new(4), None, None, None)
 }
 
 fn outcome(bytes: Vec<u8>, fault: Option<usize>) -> Outcome {
@@ -420,27 +420,27 @@ fn fresh_capture(image: &EtaFixture, hour: Option<i32>) -> Row {
     let mut observations = Vec::new();
     let mut name_bytes = vec![0; 3];
     let mut names = NameArena {
-        bytes: crate::walk::Buffer::Growing(&mut name_bytes),
+        bytes: engine_native_memory::walk::Buffer::Growing(&mut name_bytes),
         used: 0,
         required: 0,
         failures: 0,
     };
     let mut layout = None;
     let mut scratch = TooltipScratch {
-        guns: crate::walk::Buffer::Growing(&mut roots),
-        fresh_observations: crate::walk::Buffer::Growing(&mut observations),
+        guns: engine_native_memory::walk::Buffer::Growing(&mut roots),
+        fresh_observations: engine_native_memory::walk::Buffer::Growing(&mut observations),
         sample_hour: hour,
         named: crate::railway_gun_speed::NamedBonuses {
-            pointers: crate::walk::Buffer::Count,
+            pointers: engine_native_memory::walk::Buffer::Count,
             required: 0,
         },
         layout: &mut layout,
         layout_buffer: &mut [],
-        supply_origins: crate::walk::Buffer::Count,
+        supply_origins: engine_native_memory::walk::Buffer::Count,
         supply_origins_len: 0,
         required_supply_origins: 0,
     };
-    let walk = walk_impl(image, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(1), Some(&mut names), Some(&mut scratch), None);
+    let walk = walk_impl(image, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(1), Some(&mut names), Some(&mut scratch), None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(&*scratch.guns, &[(0, 0)]);
     assert!(
@@ -526,13 +526,13 @@ fn idle_ordinary_route_keeps_fresh_railway_domains_without_first_edge_reads() {
         let header_at = GUN + cunit::ORDINARY_ROUTE_DATA;
         put(
             &mut image.memory.bytes,
-            header_at + crate::cpdx_array::COUNT,
+            header_at + engine_native_memory::cpdx_array::COUNT,
             &0_u32.to_le_bytes(),
         );
         let header = image.memory.bytes[header_at..header_at + 16]
             .try_into()
             .unwrap();
-        let route = crate::cpdx_array::Array::from_header(header, 4)
+        let route = engine_native_memory::cpdx_array::Array::from_header(header, 4)
             .expect("valid idle ordinary-route header");
         assert_eq!(route.count, 0);
         assert_eq!(route.data, ORDINARY);
@@ -717,7 +717,7 @@ fn missing_callback_hour_preserves_legacy_eta() {
 
 #[test]
 fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
-    use crate::cunit_supply_inputs::{self as supply, Failure, Origin};
+    use engine_native_parts::cunit_supply_inputs::{self as supply, Failure, Origin};
     const SECOND_GUN: usize = 0x10000;
     const FIRST_ORIGINS: usize = 0x10500;
     const SECOND_ORIGINS: usize = 0x10600;
@@ -811,26 +811,26 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
         image.memory.fault = fault;
         image.reads.borrow_mut().clear();
         let mut names = NameArena {
-            bytes: crate::walk::Buffer::Growing(&mut name_storage),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut name_storage),
             used: 0,
             required: 0,
             failures: 0,
         };
         let mut scratch = TooltipScratch {
-            guns: crate::walk::Buffer::Growing(&mut guns),
-            fresh_observations: crate::walk::Buffer::Count,
+            guns: engine_native_memory::walk::Buffer::Growing(&mut guns),
+            fresh_observations: engine_native_memory::walk::Buffer::Count,
             sample_hour: None,
             named: crate::railway_gun_speed::NamedBonuses {
-                pointers: crate::walk::Buffer::Growing(&mut named),
+                pointers: engine_native_memory::walk::Buffer::Growing(&mut named),
                 required: 0,
             },
             layout: &mut layout,
             layout_buffer: &mut [],
-            supply_origins: crate::walk::Buffer::Growing(&mut origins),
+            supply_origins: engine_native_memory::walk::Buffer::Growing(&mut origins),
             supply_origins_len: 0,
             required_supply_origins: 0,
         };
-        let walked = walk_impl(&image, 0, STATE, crate::walk::Buffer::Growing(&mut output), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(2), Some(&mut names), Some(&mut scratch), None);
+        let walked = walk_impl(&image, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut output), engine_native_memory::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(2), Some(&mut names), Some(&mut scratch), None);
         assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
         assert_eq!((output[0].gun, output[1].gun), (GUN_HANDLE, second_handle));
         assert_eq!(
@@ -916,22 +916,22 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
     const VARIANT: usize = 0x10000;
     const NAMED_HANDLES: usize = 0x11800;
     let mut image = eta_fixture();
-    let handle = (8_u64 << 32) | crate::cequipment_variant::REFERENCE_TYPE as u64;
+    let handle = (8_u64 << 32) | engine_native::cequipment_variant::REFERENCE_TYPE as u64;
     put64(&mut image.memory.bytes, GUN + 0x338, handle);
     put64(
         &mut image.memory.bytes,
         VARIANT,
-        crate::cequipment_variant::VTABLE_RVA.0 as u64,
+        engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
     );
     put64(
         &mut image.memory.bytes,
-        VARIANT + crate::cequipment_variant::TYPE,
+        VARIANT + engine_native::cequipment_variant::TYPE,
         handle,
     );
     array(&mut image.memory.bytes, VARIANT + 0xe8, NAMED_HANDLES, 129);
     array(
         &mut image.memory.bytes,
-        GUN + crate::cunit_supply_inputs::ORIGINS,
+        GUN + engine_native_parts::cunit_supply_inputs::ORIGINS,
         0x10800,
         17,
     );
@@ -964,7 +964,7 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
             .reads
             .borrow()
             .iter()
-            .any(|(address, _)| *address == 0x10800 + crate::cunit_supply_inputs::ORIGIN_REQUESTED)
+            .any(|(address, _)| *address == 0x10800 + engine_native_parts::cunit_supply_inputs::ORIGIN_REQUESTED)
     );
     image.memory.fault = Some(VARIANT + 0xe8);
     assert_eq!(
@@ -978,7 +978,7 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
             combat_references: 0,
         }
     );
-    image.memory.fault = Some(GUN + crate::cunit_supply_inputs::ORIGINS);
+    image.memory.fault = Some(GUN + engine_native_parts::cunit_supply_inputs::ORIGINS);
     assert_eq!(
         name_demand(&image, 0, STATE).unwrap(),
         NameDemand {
@@ -1007,7 +1007,7 @@ fn stored_names_preserve_all_bytes_and_fail_independently_of_old_operands() {
         for (capacity, fault) in [(text.len(), None), (0, Some(GUN + NAME + 16)), (0, None)] {
             let mut storage = vec![0; capacity];
             let mut arena = NameArena {
-                bytes: crate::walk::Buffer::Growing(&mut storage),
+                bytes: engine_native_memory::walk::Buffer::Growing(&mut storage),
                 used: 0,
                 required: 0,
                 failures: 0,
@@ -1017,7 +1017,7 @@ fn stored_names_preserve_all_bytes_and_fail_independently_of_old_operands() {
             let walked = walk_impl(&MemoryFixture {
                     bytes: bytes.clone(),
                     fault,
-                }, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(4), Some(&mut arena), None, None);
+                }, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(4), Some(&mut arena), None, None);
             assert_eq!(walked, old_walk);
             assert_eq!(paths, old_paths);
             let name = rows[0].name.take();
@@ -1053,12 +1053,12 @@ fn names_count_full_demand_even_when_the_route_or_row_arena_is_short() {
     stored_name(&mut bytes, GUN, b"full name demand", 0x10000);
     let memory = MemoryFixture { bytes, fault: None };
     let mut arena = NameArena {
-        bytes: crate::walk::Buffer::Count,
+        bytes: engine_native_memory::walk::Buffer::Count,
         used: 0,
         required: 0,
         failures: 0,
     };
-    let walked = walk_impl(&memory, 0, STATE, crate::walk::Buffer::Count, crate::walk::Buffer::Count, &mut cunit::FirstCombatMemo::new(4), Some(&mut arena), None, None);
+    let walked = walk_impl(&memory, 0, STATE, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, &mut cunit::FirstCombatMemo::new(4), Some(&mut arena), None, None);
     assert!(matches!(
         walked.outcome,
         Outcome::Truncated {
@@ -1144,7 +1144,7 @@ fn theatre_and_queued_orders_are_field_local() {
 }
 
 fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
-    use crate::read_counts::{CountedMemory, ReadCounts};
+    use engine_native_memory::read_counts::{CountedMemory, ReadCounts};
     array(
         &mut bytes,
         COUNTRY + ccountry::RAILWAY_UNITS,
@@ -1157,7 +1157,7 @@ fn read_calls(mut bytes: Vec<u8>, guns: usize) -> u64 {
     let mut rows = vec![Row::default(); guns];
     let mut paths = vec![0; 3 * guns];
     ReadCounts::take_current();
-    let result = walk_impl(&CountedMemory::new(MemoryFixture { bytes, fault: None }), 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(4), None, None, None);
+    let result = walk_impl(&CountedMemory::new(MemoryFixture { bytes, fault: None }), 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut paths), &mut cunit::FirstCombatMemo::new(4), None, None, None);
     let reads = ReadCounts::take_current();
     assert_eq!(result.outcome, Outcome::Rows { len: guns });
     reads.copy_calls + reads.scattered_calls + reads.record_calls + reads.plan_calls
@@ -1449,20 +1449,20 @@ fn the_first_combat_answer_is_shared_through_the_capture_memo() {
         fault: None,
     };
     let mut rows = vec![Row::default(); 1];
-    let walk = walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None);
+    let walk = walk_impl(&memory, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None);
     assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
     assert_eq!(memo.entries.len(), 1);
     let mut bytes = fixture();
     put64(&mut bytes, SIDE, 0);
     let memory = MemoryFixture { bytes, fault: None };
     assert_eq!(
-        super::walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None).outcome,
+        super::walk_impl(&memory, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 3]), &mut memo, None, None, None).outcome,
         Outcome::Rows { len: 1 }
     );
     assert_eq!((rows[0].combat_role, rows[0].combat_province), (1, 2));
     let mut fresh = cunit::FirstCombatMemo::new(4);
     assert!(matches!(
-        super::walk_impl(&memory, 0, STATE, crate::walk::Buffer::Growing(&mut rows), crate::walk::Buffer::Growing(&mut vec![0; 3]), &mut fresh, None, None, None).outcome,
+        super::walk_impl(&memory, 0, STATE, engine_native_memory::walk::Buffer::Growing(&mut rows), engine_native_memory::walk::Buffer::Growing(&mut vec![0; 3]), &mut fresh, None, None, None).outcome,
         Outcome::Unavailable { .. }
     ));
     assert!(fresh.entries.is_empty());

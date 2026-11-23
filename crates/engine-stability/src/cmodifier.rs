@@ -17,39 +17,39 @@ pub struct Snapshot {
 }
 
 pub fn read_into(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     modifier: usize,
     output: &mut Snapshot,
 ) -> Result<(), &'static str> {
     let expected = engine_sites::at(base, VTABLE_RVA)
         .ok_or("faction modifier vtable address overflow")? as u64;
-    if crate::read::<u64>(memory, modifier) != Some(expected) {
+    if engine_native_memory::read::<u64>(memory, modifier) != Some(expected) {
         return Err("faction slot modifier vtable mismatch");
     }
     let source = modifier
         .checked_add(ACCUMULATOR)
         .and_then(|address| {
-            crate::cpdx_array::Array::read(memory, address, crate::modifier_entry::STRIDE)
+            engine_native_memory::cpdx_array::Array::read(memory, address, engine_native_parts::modifier_entry::STRIDE)
         })
         .ok_or("faction slot modifier entries unreadable or invalid")?;
     crate::allocation::resize_default(&mut output.entries, source.count as usize)
         .map_err(|_| "faction slot modifier storage allocation failed")?;
     for (ordinal, entry) in output.entries.iter_mut().enumerate() {
         let address = source
-            .element(ordinal as u32, crate::modifier_entry::STRIDE)
+            .element(ordinal as u32, engine_native_parts::modifier_entry::STRIDE)
             .ok_or("faction slot modifier address overflow")?;
-        let key = crate::read(
+        let key = engine_native_memory::read(
             memory,
             address
-                .checked_add(crate::modifier_entry::KEY)
+                .checked_add(engine_native_parts::modifier_entry::KEY)
                 .ok_or("faction modifier key address overflow")?,
         )
         .ok_or("faction slot modifier key unreadable")?;
-        let raw = crate::read(
+        let raw = engine_native_memory::read(
             memory,
             address
-                .checked_add(crate::modifier_entry::VALUE)
+                .checked_add(engine_native_parts::modifier_entry::VALUE)
                 .ok_or("faction modifier value address overflow")?,
         )
         .ok_or("faction slot modifier value unreadable")?;
@@ -58,10 +58,10 @@ pub fn read_into(
     let address = modifier
         .checked_add(DISPLAY_NAME)
         .ok_or("faction modifier name address overflow")?;
-    let name = crate::msvc_string::Descriptor::read(memory, address)?;
+    let name = engine_native_memory::msvc_string::Descriptor::read(memory, address)?;
     name.copy_buffer(
         memory,
-        &mut crate::walk::Buffer::Growing(&mut output.name),
+        &mut engine_native_memory::walk::Buffer::Growing(&mut output.name),
         0,
     )?;
     output.name.truncate(name.len);

@@ -1,11 +1,14 @@
+pub mod definition;
+pub mod controller_areas;
+pub mod buildings;
 use engine_sites::Rva;
-use crate::{
-    Memory, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cstate,
     memory::{RecordField, RecordLayout, RecordSources},
     walk::Outcome,
 };
+use crate::{cgame_state, cstate};
 
 mod identity_batch;
 pub use identity_batch::IdentityBatch;
@@ -23,7 +26,7 @@ pub struct UnitOrderWalk {
     pub required: usize,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn walk_unit_order(
     memory: &impl Memory,
     base: usize,
@@ -35,7 +38,7 @@ pub fn walk_unit_order(
 }
 
 pub fn count_unit_order_with_land(memory: &impl Memory, base: usize, state: usize, land: impl FnMut(u32, u64) -> Result<(), &'static str>) -> UnitOrderWalk {
-    unit_order(memory, base, state, crate::walk::Buffer::Count, crate::walk::Buffer::Count, |_| None, land, None)
+    unit_order(memory, base, state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count, |_| None, land, None)
 }
 
 pub fn walk_unit_order_with_land(
@@ -68,8 +71,8 @@ pub fn walk_unit_order_with_known(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(handles),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(handles),
         known,
         land,
         None,
@@ -91,8 +94,8 @@ pub fn walk_unit_order_listed(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(handles),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(handles),
         known,
         land,
         Some(listed),
@@ -100,7 +103,7 @@ pub fn walk_unit_order_listed(
 }
 
 pub fn unit_order_header(memory: &impl Memory, state: usize) -> Option<[u8; 16]> {
-    crate::read::<[u8; 16]>(memory, state.checked_add(cgame_state::PROVINCES)?)
+    engine_native_memory::read::<[u8; 16]>(memory, state.checked_add(cgame_state::PROVINCES)?)
 }
 
 pub fn unit_order_slots(
@@ -113,7 +116,7 @@ pub fn unit_order_slots(
     let provinces = Array::from_header(header, 8)
         .filter(|a| a.count > 1)
         .ok_or("province order census invalid")?;
-    crate::allocation::reserve(slots, provinces.count as usize - 1)
+    engine_allocation::reserve(slots, provinces.count as usize - 1)
         .map_err(|_| "province order slot allocation failed")?;
     let mut bytes = [0u8; CHUNK * 8];
     for first in (1..provinces.count).step_by(CHUNK) {
@@ -121,7 +124,7 @@ pub fn unit_order_slots(
         let at = provinces
             .element(first, 8)
             .ok_or("province order slot unreadable")?;
-        if !crate::read_slice(memory, at, &mut bytes[..n * 8]) {
+        if !engine_native_memory::read_slice(memory, at, &mut bytes[..n * 8]) {
             return Err("province order slot unreadable");
         }
         slots.extend(
@@ -138,8 +141,8 @@ fn unit_order(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, UnitOrderRow>,
-    mut handles: crate::walk::Buffer<'_, u64>,
+    mut output: engine_native_memory::walk::Buffer<'_, UnitOrderRow>,
+    mut handles: engine_native_memory::walk::Buffer<'_, u64>,
     known: impl Fn(usize) -> Option<KnownUnit>,
     mut land: impl FnMut(u32, u64) -> Result<(), &'static str>,
     listed: Option<&[u32]>,
@@ -151,7 +154,7 @@ fn unit_order(
             .checked_add(cgame_state::PROVINCES)
             .ok_or("province order root overflow")?;
         let header =
-            crate::read::<[u8; 16]>(memory, root).ok_or("province order root unreadable")?;
+            engine_native_memory::read::<[u8; 16]>(memory, root).ok_or("province order root unreadable")?;
         let provinces = Array::from_header(header, 8)
             .filter(|a| a.count > 1)
             .ok_or("province order census invalid")?;
@@ -161,7 +164,7 @@ fn unit_order(
         let mut missing = 0u32;
         let vtable = engine_sites::at(base, VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let mut registry = crate::creference_registry::HeaderResolver::default();
+        let mut registry = engine_native_parts::creference_registry::HeaderResolver::default();
         let mut pointer_bytes = [0u8; BATCH_ROWS * 8];
         let mut pointers = [0usize; BATCH_ROWS];
         let mut fields = [0u8; BATCH_ROWS * UNIT_ORDER_ROW_BYTES];
@@ -266,7 +269,7 @@ fn unit_order(
                     ranges[lane] = [used, arrays[lane].count as usize];
                     for first in (0..arrays[lane].count).step_by(64) {
                         let n = (arrays[lane].count - first).min(64) as usize;
-                        if !crate::read_slice(
+                        if !engine_native_memory::read_slice(
                             memory,
                             arrays[lane]
                                 .element(first, 8)
@@ -281,10 +284,10 @@ fn unit_order(
                                 let unit = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
                                 census[slot] = known(unit);
                                 if unit != 0 && census[slot].is_none() {
-                                    crate::prefetch::span(unit, 32);
+                                    engine_native_memory::prefetch::span(unit, 32);
                                     if let Some(backlink) = unit.checked_add(crate::cunit::LOCATION)
                                     {
-                                        crate::prefetch::span(backlink, 8);
+                                        engine_native_memory::prefetch::span(backlink, 8);
                                     }
                                 }
                             }
@@ -308,7 +311,7 @@ fn unit_order(
                                     || match location {
                                         Some(location) => location != pointer,
                                         None => {
-                                            crate::read::<u64>(
+                                            engine_native_memory::read::<u64>(
                                                 memory,
                                                 unit.checked_add(crate::cunit::LOCATION)
                                                     .ok_or("province unit backlink overflow")?,
@@ -380,9 +383,9 @@ pub fn walk_direct_combats(
         memory,
         base,
         state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(handles),
-        crate::walk::Buffer::Growing(kinds),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(handles),
+        engine_native_memory::walk::Buffer::Growing(kinds),
         listed,
     )
 }
@@ -391,9 +394,9 @@ pub fn walk_direct_combats_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    output: crate::walk::Buffer<'_, DirectCombatsRow>,
-    handles: crate::walk::Buffer<'_, u64>,
-    kinds: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, DirectCombatsRow>,
+    handles: engine_native_memory::walk::Buffer<'_, u64>,
+    kinds: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> DirectCombatsWalk {
     walk_direct_combats_listed(memory, base, state, output, handles, kinds, None)
 }
@@ -402,9 +405,9 @@ fn walk_direct_combats_listed(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: crate::walk::Buffer<'_, DirectCombatsRow>,
-    mut handles: crate::walk::Buffer<'_, u64>,
-    mut kinds: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, DirectCombatsRow>,
+    mut handles: engine_native_memory::walk::Buffer<'_, u64>,
+    mut kinds: engine_native_memory::walk::Buffer<'_, u8>,
     listed: Option<&[u32]>,
 ) -> DirectCombatsWalk {
     let mut used = 0usize;
@@ -419,7 +422,7 @@ fn walk_direct_combats_listed(
             .ok_or("module address overflow")? as u64;
         let classes = [
             crate::cland_combat::VTABLE_RVA,
-            crate::cland_border_war_combat::VTABLE_RVA,
+            engine_native_parts::cland_border_war_combat::VTABLE_RVA,
             crate::cnaval_combat::VTABLE_RVA,
         ]
         .map(|rva| engine_sites::at(base, rva).map(|address| address as u64));
@@ -503,11 +506,11 @@ fn walk_direct_combats_listed(
                 for entry in 0..combats.count {
                     let combat = combats
                         .element(entry, 8)
-                        .and_then(|address| crate::read::<u64>(memory, address))
+                        .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                         .and_then(|pointer| usize::try_from(pointer).ok())
                         .filter(|&pointer| pointer != 0)
                         .ok_or("province combat pointer unreadable or null")?;
-                    let header = crate::read::<[u8; 0x20]>(memory, combat)
+                    let header = engine_native_memory::read::<[u8; 0x20]>(memory, combat)
                         .ok_or("province combat header unreadable")?;
                     let class = u64::from_le_bytes(header[..8].try_into().expect("eight bytes"));
                     let kind = classes
@@ -598,7 +601,7 @@ pub const BORDER_CONFLICT_NONZERO_QWORD: usize = 0xb0;
 pub const OWNER_AREA: usize = 0xd8;
 pub const BORDER_WAR_SIDE_GROUP: usize = 0x4e8;
 
-pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cbuilding_status::ACTIVE_BUILDINGS;
+pub const MOVEMENT_BUILDINGS: usize = BUILDING_STATUS + crate::cprovince::buildings::ACTIVE_BUILDINGS;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {
@@ -653,9 +656,9 @@ pub struct Capture {
     pub conflicts: Vec<ConflictRow>,
     pub groups: Vec<u64>,
     pub conflict_walk: ConflictWalk,
-    pub areas: Vec<crate::controller_areas::Pointers>,
-    pub area_nodes: crate::controller_areas::Output,
-    pub area_store: Option<Box<crate::controller_areas::Store>>,
+    pub areas: Vec<crate::cprovince::controller_areas::Pointers>,
+    pub area_nodes: crate::cprovince::controller_areas::Output,
+    pub area_store: Option<Box<crate::cprovince::controller_areas::Store>>,
     pub province_store: Option<Box<carry::RowStore>>,
 }
 
@@ -666,12 +669,12 @@ impl Capture {
         groups: usize,
     ) -> std::io::Result<Self> {
         Ok(Self {
-            rows: crate::allocation::filled(rows, Row::default())?,
-            conflicts: crate::allocation::filled(conflicts, ConflictRow::default())?,
-            groups: crate::allocation::filled(groups, 0)?,
+            rows: engine_allocation::filled(rows, Row::default())?,
+            conflicts: engine_allocation::filled(conflicts, ConflictRow::default())?,
+            groups: engine_allocation::filled(groups, 0)?,
             conflict_walk: ConflictWalk::default(),
-            areas: crate::allocation::filled(rows, crate::controller_areas::Pointers::default())?,
-            area_nodes: crate::controller_areas::Output::default(),
+            areas: engine_allocation::filled(rows, crate::cprovince::controller_areas::Pointers::default())?,
+            area_nodes: crate::cprovince::controller_areas::Output::default(),
             area_store: None,
             province_store: None,
         })
@@ -687,7 +690,7 @@ impl Capture {
         self.rows.capacity() * size_of::<Row>()
             + self.conflicts.capacity() * size_of::<ConflictRow>()
             + self.groups.capacity() * size_of::<u64>()
-            + self.areas.capacity() * size_of::<crate::controller_areas::Pointers>()
+            + self.areas.capacity() * size_of::<crate::cprovince::controller_areas::Pointers>()
             + self.area_nodes.allocated_bytes()
     }
 
@@ -701,12 +704,12 @@ impl Capture {
             memory,
             base,
             game_state,
-            crate::walk::Buffer::Growing(&mut self.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.rows),
             ConflictBuffers {
-                rows: crate::walk::Buffer::Growing(&mut self.conflicts),
-                groups: crate::walk::Buffer::Growing(&mut self.groups),
+                rows: engine_native_memory::walk::Buffer::Growing(&mut self.conflicts),
+                groups: engine_native_memory::walk::Buffer::Growing(&mut self.groups),
             },
-            crate::walk::Buffer::Growing(&mut self.areas),
+            engine_native_memory::walk::Buffer::Growing(&mut self.areas),
             None,
         );
         self.conflict_walk = conflicts;
@@ -736,12 +739,12 @@ impl Capture {
             memory,
             base,
             game_state,
-            crate::walk::Buffer::Growing(rows),
+            engine_native_memory::walk::Buffer::Growing(rows),
             ConflictBuffers {
-                rows: crate::walk::Buffer::Growing(conflicts),
-                groups: crate::walk::Buffer::Growing(groups),
+                rows: engine_native_memory::walk::Buffer::Growing(conflicts),
+                groups: engine_native_memory::walk::Buffer::Growing(groups),
             },
-            crate::walk::Buffer::Growing(areas),
+            engine_native_memory::walk::Buffer::Growing(areas),
             hour.as_mut(),
         );
         *conflict_walk = walk;
@@ -767,8 +770,8 @@ impl Capture {
 }
 
 struct ConflictBuffers<'a> {
-    rows: crate::walk::Buffer<'a, ConflictRow>,
-    groups: crate::walk::Buffer<'a, u64>,
+    rows: engine_native_memory::walk::Buffer<'a, ConflictRow>,
+    groups: engine_native_memory::walk::Buffer<'a, u64>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -786,7 +789,7 @@ pub struct Names {
 }
 
 pub fn count_names(memory: &impl Memory, base: usize, game_state: usize) -> Names {
-    walk_names_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_names_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_names(
@@ -800,8 +803,8 @@ pub fn walk_names(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     )
 }
 
@@ -809,10 +812,10 @@ pub fn walk_names_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, NameRow>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, NameRow>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Names {
-    use crate::{msvc_string, read, read_slice};
+    use engine_native_memory::{msvc_string, read, read_slice};
 
     let mut used = 0_usize;
     let mut required = 0_usize;
@@ -1004,7 +1007,7 @@ impl StateCache {
                 .checked_next_power_of_two()
                 .ok_or("province state cache extent overflow")?
         };
-        crate::allocation::default_vec(slots)
+        engine_allocation::default_vec(slots)
             .map(Self)
             .map_err(|_| "province state cache allocation failed")
     }
@@ -1319,17 +1322,17 @@ const MOVEMENT_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_FIELDS, MOVEMENT_BYTES).expect("valid record layout");
 const DEFINITION_FIELDS: [RecordField; 3] = [
     RecordField {
-        source_offset: crate::province_definition::ID,
+        source_offset: crate::cprovince::definition::ID,
         destination_offset: 0,
         len: 4,
     },
     RecordField {
-        source_offset: crate::province_definition::TERRAIN_FLAGS,
+        source_offset: crate::cprovince::definition::TERRAIN_FLAGS,
         destination_offset: 16,
         len: 1,
     },
     RecordField {
-        source_offset: crate::province_definition::PORT_SEA,
+        source_offset: crate::cprovince::definition::PORT_SEA,
         destination_offset: 20,
         len: 4,
     },
@@ -1338,12 +1341,12 @@ const DEFINITION_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&DEFINITION_FIELDS, 24).expect("valid record layout");
 const BUILDING_FIELDS: [RecordField; 2] = [
     RecordField {
-        source_offset: crate::cbuilding::HEALTHY_LEVEL,
+        source_offset: engine_native_parts::cbuilding::HEALTHY_LEVEL,
         destination_offset: 0,
         len: 2,
     },
     RecordField {
-        source_offset: crate::cbuilding::TEMPLATE,
+        source_offset: engine_native_parts::cbuilding::TEMPLATE,
         destination_offset: 8,
         len: 8,
     },
@@ -1380,8 +1383,8 @@ impl MovementBatch {
             return Ok(weight);
         }
         let weight = template
-            .checked_add(crate::cbuilding_template::MOVEMENT_FORT_WEIGHT)
-            .and_then(|address| crate::read::<i32>(memory, address))
+            .checked_add(engine_native_parts::cbuilding_template::MOVEMENT_FORT_WEIGHT)
+            .and_then(|address| engine_native_memory::read::<i32>(memory, address))
             .ok_or("province building fort weight unreadable")?;
         self.weights.insert(template, weight);
         Ok(weight)
@@ -1519,10 +1522,10 @@ pub(crate) fn walk(
     game_state: usize,
     output: &mut Vec<Row>,
 ) -> Outcome {
-    walk_with_conflicts_buffer(memory, base, game_state, crate::walk::Buffer::Growing(output), ConflictBuffers {
-            rows: crate::walk::Buffer::Count,
-            groups: crate::walk::Buffer::Count,
-        }, crate::walk::Buffer::Count, None)
+    walk_with_conflicts_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Growing(output), ConflictBuffers {
+            rows: engine_native_memory::walk::Buffer::Count,
+            groups: engine_native_memory::walk::Buffer::Count,
+        }, engine_native_memory::walk::Buffer::Count, None)
     .0
 }
 
@@ -1530,9 +1533,9 @@ fn walk_with_conflicts_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
     mut conflicts: ConflictBuffers<'_>,
-    mut areas: crate::walk::Buffer<'_, crate::controller_areas::Pointers>,
+    mut areas: engine_native_memory::walk::Buffer<'_, crate::cprovince::controller_areas::Pointers>,
     carry: Option<&mut carry::Hour<'_>>,
 ) -> (Outcome, ConflictWalk) {
     let mut conflict = ConflictState::default();
@@ -1590,7 +1593,7 @@ pub fn conflict_group_demand(
     let vtable = engine_sites::at(base, VTABLE_RVA)
         .ok_or("module address overflow")? as u64;
     let mut required = 0_usize;
-    crate::cpdx_array::pointers(
+    engine_native_memory::cpdx_array::pointers(
         memory,
         array
             .slice(1, array.count - 1, 8)
@@ -1600,17 +1603,17 @@ pub fn conflict_group_demand(
             if pointer == 0 {
                 return Ok(());
             }
-            if crate::read::<u64>(memory, pointer) != Some(vtable)
+            if engine_native_memory::read::<u64>(memory, pointer) != Some(vtable)
                 || pointer
                     .checked_add(ID)
-                    .and_then(|address| crate::read::<u32>(memory, address))
+                    .and_then(|address| engine_native_memory::read::<u32>(memory, address))
                     != Some(slot + 1)
             {
                 return Err("border conflict demand identity mismatch");
             }
             let size = pointer
                 .checked_add(BORDER_CONFLICT_NONZERO_QWORD)
-                .and_then(|address| crate::read::<u64>(memory, address))
+                .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                 .and_then(|size| usize::try_from(size).ok())
                 .ok_or("border conflict demand size unreadable")?;
             required = size
@@ -1663,10 +1666,10 @@ fn border_conflict_groups(
     memory: &impl Memory,
     base: usize,
     province: usize,
-    output: &mut crate::walk::Buffer<'_, u64>,
+    output: &mut engine_native_memory::walk::Buffer<'_, u64>,
     start: usize,
 ) -> Result<usize, &'static str> {
-    use crate::{memory::read, msvc_tree_node as node};
+    use engine_native_memory::{memory::read, msvc_tree_node as node};
     let at = |pointer: usize, offset: usize| {
         pointer
             .checked_add(offset)
@@ -1696,15 +1699,15 @@ fn border_conflict_groups(
     };
     let combats = [
         expected(crate::cland_combat::VTABLE_RVA)?,
-        expected(crate::cland_border_war_combat::VTABLE_RVA)?,
+        expected(engine_native_parts::cland_border_war_combat::VTABLE_RVA)?,
     ];
     let sides = [
         expected(crate::cland_combatant::VTABLE_RVA)?,
-        expected(crate::cland_border_war_combatant::VTABLE_RVA)?,
+        expected(engine_native_parts::cland_border_war_combatant::VTABLE_RVA)?,
     ];
     let groups = [
         expected(crate::corders_group::VTABLE_RVA)?,
-        expected(crate::carmy_group::VTABLE_RVA)?,
+        expected(engine_native_parts::carmy_group::VTABLE_RVA)?,
     ];
     let tree_error = |error| {
         use node::SetError::*;
@@ -1731,7 +1734,7 @@ fn border_conflict_groups(
             }
             let reference = read::<u64>(memory, at(side, BORDER_WAR_SIDE_GROUP)?)
                 .ok_or("border conflict side reference unreadable")?;
-            let Some(group) = crate::creference_registry::resolve(memory, base, reference)? else {
+            let Some(group) = engine_native_parts::creference_registry::resolve(memory, base, reference)? else {
                 continue;
             };
             let vtable =
@@ -1771,7 +1774,7 @@ fn fort_bunker<'a, M: Memory>(
 ) -> Option<i64> {
     let state = province
         .checked_add(STATE)
-        .and_then(|address| crate::read::<u64>(memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(memory, address))
         .and_then(|state| usize::try_from(state).ok())?;
     if state == 0 {
         return Some(0);
@@ -1790,7 +1793,7 @@ fn fort_bunker<'a, M: Memory>(
         game_state,
         state,
         country.id,
-        crate::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
+        engine_executable::modifier_keys::LAND_BUNKER_EFFECTIVENESS_FACTOR,
     )
     .ok()
 }
@@ -1800,8 +1803,8 @@ fn walk_rows(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    areas: &mut crate::walk::Buffer<'_, crate::controller_areas::Pointers>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    areas: &mut engine_native_memory::walk::Buffer<'_, crate::cprovince::controller_areas::Pointers>,
     conflicts: &mut ConflictBuffers<'_>,
     conflict: &mut ConflictState,
     carry: Option<&mut carry::Hour<'_>>,
@@ -1864,7 +1867,7 @@ fn read_rows(
     game_state: usize,
     array: Array,
     output: &mut [Row],
-    areas: &mut [crate::controller_areas::Pointers],
+    areas: &mut [crate::cprovince::controller_areas::Pointers],
     conflicts: &mut ConflictBuffers<'_>,
     conflict: &mut ConflictState,
     states: &mut StateCache,
@@ -1933,7 +1936,7 @@ fn read_rows(
             row.move_gate = fields.move_gate;
             row.port_sea = fields.port_sea;
             if let Some(slot) = areas.get_mut(admitted + index) {
-                *slot = crate::controller_areas::Pointers {
+                *slot = crate::cprovince::controller_areas::Pointers {
                     province: pointer,
                     definition: fields.definition,
                     controller: fields.controller_area,
@@ -1977,7 +1980,7 @@ struct GeometryProvince {
     definition: Option<Result<usize, &'static str>>,
     authenticated_id: Option<u32>,
     validated_definition: Option<usize>,
-    fields: crate::province_definition::GeometryFields,
+    fields: crate::cprovince::definition::GeometryFields,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2024,7 +2027,7 @@ pub struct GeometryPacket {
     indices:
         std::collections::HashMap<usize, usize, std::hash::BuildHasherDefault<ProvincePairHasher>>,
     provinces: Vec<GeometryProvince>,
-    neighbours: Vec<crate::province_neighbour::GeometryFields>,
+    neighbours: Vec<engine_native_parts::province_neighbour::GeometryFields>,
     counters: GeometryCounters,
     held: HeldIdentities,
     holding: bool,
@@ -2098,10 +2101,10 @@ impl GeometryPacket {
         let neighbours = capacities
             .neighbour_entries
             .saturating_sub(self.neighbours.len());
-        crate::allocation::reserve_map(&mut self.slots, slots)?;
-        crate::allocation::reserve_map(&mut self.indices, indices)?;
-        crate::allocation::reserve_exact(&mut self.provinces, provinces)?;
-        crate::allocation::reserve_exact(&mut self.neighbours, neighbours)?;
+        engine_allocation::reserve_map(&mut self.slots, slots)?;
+        engine_allocation::reserve_map(&mut self.indices, indices)?;
+        engine_allocation::reserve_exact(&mut self.provinces, provinces)?;
+        engine_allocation::reserve_exact(&mut self.neighbours, neighbours)?;
         self.capacities = capacities;
         Ok(())
     }
@@ -2130,7 +2133,7 @@ impl GeometryPacket {
     pub fn allocated_bytes(&self) -> usize {
         self.provinces.capacity() * std::mem::size_of::<GeometryProvince>()
             + self.neighbours.capacity()
-                * std::mem::size_of::<crate::province_neighbour::GeometryFields>()
+                * std::mem::size_of::<engine_native_parts::province_neighbour::GeometryFields>()
             + self.slots.capacity()
                 * (std::mem::size_of::<(u32, Result<usize, &'static str>)>() + 1)
             + self.indices.capacity() * (std::mem::size_of::<(usize, usize)>() + 1)
@@ -2163,7 +2166,7 @@ impl GeometryPacket {
         self.base = base;
         self.root = state
             .checked_add(cgame_state::PROVINCES)
-            .and_then(|address| crate::read(memory, address))
+            .and_then(|address| engine_native_memory::read(memory, address))
             .and_then(|header| Array::from_header(header, 8))
             .ok_or("unit geometry province root invalid");
         if let Ok(root) = self.root {
@@ -2206,7 +2209,7 @@ impl GeometryPacket {
                 self.root.and_then(|array| {
                     array
                         .element(id, 8)
-                        .and_then(|address| crate::read::<u64>(memory, address))
+                        .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                         .map(|pointer| pointer as usize)
                         .ok_or("unit geometry province outside census or unreadable")
                 })
@@ -2333,7 +2336,7 @@ impl GeometryPacket {
         if self.holding && id != 0 {
             self.held_counts[1] = self.held_counts[1].saturating_add(1);
             let ids = &mut self.held.ids;
-            if crate::allocation::advisory(|| crate::allocation::reserve_map(&mut *ids, 1)).is_ok()
+            if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut *ids, 1)).is_ok()
             {
                 ids.insert(pointer, id);
             }
@@ -2460,7 +2463,7 @@ impl GeometryPacket {
         let definition_id = geometry_memo(
             &mut self.counters,
             &mut self.provinces[index].fields.id,
-            || geometry_field(memory, definition, crate::province_definition::ID),
+            || geometry_field(memory, definition, crate::cprovince::definition::ID),
         )?;
         if definition_id != id {
             return Err("unit geometry province definition mismatch");
@@ -2479,7 +2482,7 @@ impl GeometryPacket {
                 geometry_field(
                     memory,
                     definition,
-                    crate::province_definition::TERRAIN_FLAGS,
+                    crate::cprovince::definition::TERRAIN_FLAGS,
                 )
             },
         )
@@ -2490,9 +2493,9 @@ impl GeometryPacket {
         let header = geometry_memo(
             &mut self.counters,
             &mut self.provinces[index].fields.neighbours,
-            || geometry_field(memory, definition, crate::province_definition::NEIGHBOURS),
+            || geometry_field(memory, definition, crate::cprovince::definition::NEIGHBOURS),
         )?;
-        let array = Array::from_header(header, crate::province_neighbour::STRIDE)
+        let array = Array::from_header(header, engine_native_parts::province_neighbour::STRIDE)
             .ok_or("unit geometry adjacency header invalid")?;
         Ok((index, array))
     }
@@ -2525,7 +2528,7 @@ impl GeometryPacket {
         let mut previous: Option<usize> = None;
         for slot in 0..neighbours.count as usize {
             let address = neighbours
-                .element(slot as u32, crate::province_neighbour::STRIDE)
+                .element(slot as u32, engine_native_parts::province_neighbour::STRIDE)
                 .ok_or("unit geometry adjacency overflow")?;
             let index = if let Some(index) = link {
                 index
@@ -2536,7 +2539,7 @@ impl GeometryPacket {
                     .max(self.neighbours.len().saturating_add(1));
                 let index = self.neighbours.len();
                 self.neighbours
-                    .push(crate::province_neighbour::GeometryFields::default());
+                    .push(engine_native_parts::province_neighbour::GeometryFields::default());
                 if let Some(previous) = previous {
                     self.neighbours[previous].next = Some(index);
                 } else {
@@ -2546,7 +2549,7 @@ impl GeometryPacket {
                 index
             };
             let id = geometry_memo(&mut self.counters, &mut self.neighbours[index].id, || {
-                geometry_field(memory, address, crate::province_neighbour::PROVINCE_ID)
+                geometry_field(memory, address, engine_native_parts::province_neighbour::PROVINCE_ID)
             })?;
             if id == target {
                 return Ok(Some((index, slot, address)));
@@ -2569,7 +2572,7 @@ impl GeometryPacket {
         geometry_memo(
             &mut self.counters,
             &mut self.neighbours[index].crossing,
-            || geometry_field(memory, address, crate::province_neighbour::CROSSING_KIND),
+            || geometry_field(memory, address, engine_native_parts::province_neighbour::CROSSING_KIND),
         )
         .map(Some)
     }
@@ -2623,14 +2626,14 @@ impl Default for MovementProvince {
             controller: Ok(0),
             controller_area: Ok(0),
             strategic_region: Ok(0),
-            terrain_flags: Ok(crate::province_definition::LAND_FLAG),
+            terrain_flags: Ok(crate::cprovince::definition::LAND_FLAG),
         }
     }
 }
 impl MovementProvince {
     pub fn land(self) -> Result<bool, &'static str> {
         self.terrain_flags
-            .map(|flags| flags & crate::province_definition::LAND_FLAG != 0)
+            .map(|flags| flags & crate::cprovince::definition::LAND_FLAG != 0)
     }
 }
 
@@ -2643,36 +2646,36 @@ pub fn movement_province(
     let entry = provinces
         .element(id, 8)
         .ok_or("movement province outside the province array")?;
-    let pointer = crate::read::<u64>(memory, entry)
+    let pointer = engine_native_memory::read::<u64>(memory, entry)
         .and_then(|pointer| usize::try_from(pointer).ok())
         .ok_or("movement province entry unreadable")?;
     let field = |offset: usize| -> Result<u64, &'static str> {
         pointer
             .checked_add(offset)
-            .and_then(|address| crate::read::<u64>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u64>(memory, address))
             .ok_or("movement province field unreadable")
     };
     if pointer == 0
         || Some(field(0)?) != engine_sites::at(base, VTABLE_RVA).map(|p| p as u64)
         || pointer
             .checked_add(ID)
-            .and_then(|address| crate::read::<u32>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u32>(memory, address))
             != Some(id)
     {
         return Err("movement province identity mismatch");
     }
     let terrain_flags = field(DEFINITION).and_then(|definition| {
         (definition as usize)
-            .checked_add(crate::province_definition::TERRAIN_FLAGS)
+            .checked_add(crate::cprovince::definition::TERRAIN_FLAGS)
             .filter(|_| definition != 0)
-            .and_then(|address| crate::read::<u8>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u8>(memory, address))
             .ok_or("movement province definition flags unreadable")
     });
     Ok(MovementProvince {
         state: field(STATE).map(|value| value as usize),
         controller: pointer
             .checked_add(CONTROLLER)
-            .and_then(|address| crate::read::<u32>(memory, address))
+            .and_then(|address| engine_native_memory::read::<u32>(memory, address))
             .ok_or("movement province controller unreadable"),
         controller_area: field(CONTROLLER_AREA).map(|value| value as usize),
         strategic_region: field(STRATEGIC_REGION).map(|value| value as usize),
@@ -2722,7 +2725,7 @@ const MOVEMENT_PROVINCE_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&MOVEMENT_PROVINCE_FIELDS, MOVEMENT_PROVINCE_BYTES)
         .expect("valid record layout");
 const TERRAIN_FLAG_FIELDS: [RecordField; 1] = [RecordField {
-    source_offset: crate::province_definition::TERRAIN_FLAGS,
+    source_offset: crate::cprovince::definition::TERRAIN_FLAGS,
     destination_offset: 0,
     len: 1,
 }];
@@ -3056,14 +3059,14 @@ pub fn movement_provinces_with_pointers(
     }
 }
 
-fn geometry_field<T: crate::memory::Raw>(
+fn geometry_field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
 ) -> Result<T, &'static str> {
     pointer
         .checked_add(offset)
-        .and_then(|address| crate::read(memory, address))
+        .and_then(|address| engine_native_memory::read(memory, address))
         .ok_or("unit geometry field unreadable")
 }
 
@@ -3078,3 +3081,10 @@ mod direct_combat_tests;
 
 #[cfg(all(test, windows, target_env = "msvc", target_arch = "x86_64"))]
 mod bench;
+
+pub fn invasion_provinces(memory: &impl Memory, game_state: usize) -> Result<Array, &'static str> {
+    game_state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|address| Array::read(memory, address, 8))
+        .ok_or("invasion preparation array unreadable or invalid")
+}

@@ -48,6 +48,10 @@ wing_changes = []
 world_input_changes = []
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-politics.workspace = true
+engine-native-air.workspace = true
 engine-sites.workspace = true
 engine-air-history.workspace = true
 engine-allocation.workspace = true
@@ -77,6 +81,10 @@ crossbeam-queue = "0.3"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
+engine-native-parts = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-research.workspace = true
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 collector-test-support.workspace = true
@@ -102,6 +110,7 @@ workspace = true
 collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "order_membership_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

@@ -56,12 +56,12 @@ impl Header {
         let base = module as usize;
         // SAFETY: every read below copies a bounded range of the collector image into an owned
         // buffer, and a range that cannot be read withholds the header.
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let copy = |offset: usize, len: usize| {
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(len).ok()?;
             bytes.resize(len, 0);
-            engine_native::read_slice(&memory, base.checked_add(offset)?, &mut bytes)
+            engine_native_memory::read_slice(&memory, base.checked_add(offset)?, &mut bytes)
                 .then_some(bytes)
         };
         let dos = copy(0, 64).ok_or("worker_sampler collector DOS header unreadable")?;

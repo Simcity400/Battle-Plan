@@ -3,7 +3,8 @@ pub const STRIDE: usize = 0x08;
 pub const SOURCE_COUNTRY_LINK: usize = 0x00;
 pub const COUNT: usize = 0x04;
 
-use crate::{Memory, carmy_manpower_values, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use engine_native_parts::carmy_manpower_values;
 
 pub fn visit(
     memory: &impl Memory,
@@ -37,7 +38,7 @@ pub fn visit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn every_native_source_and_signed_amount_is_retained_with_capacity_count() {

@@ -608,7 +608,7 @@ fn positive_id_sources_record_but_authenticated_nulls_and_membership_absence_do_
             for kind in [
                 engine_projects::nproject_cproject::REFERENCE_TYPE,
                 79,
-                engine_native::craid_instance::REFERENCE_TYPE_VALUE,
+                engine_native_air::craid_instance::REFERENCE_TYPE_VALUE,
             ] {
                 assert!(eval.decoded_carrier(kind, 9000).unwrap().is_none());
             }

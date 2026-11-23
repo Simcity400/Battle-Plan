@@ -7,7 +7,7 @@ use crate::{
     table_conversion::table,
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, cpdx_lexer, cpdx_lexer::TOKEN_NAME_STRIDE, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_lexer::{self, TOKEN_NAME_STRIDE}, walk::Outcome};
 use replay_data::{rows, rows::TableId, rows::TableRows, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
 
@@ -593,7 +593,7 @@ impl LexicalJob {
                 return None;
             }
             let inline = u64::from_le_bytes(header[24..].try_into().ok()?)
-                == engine_native::msvc_string::INLINE_CAPACITY;
+                == engine_native_memory::msvc_string::INLINE_CAPACITY;
             if !inline {
                 let end = text.source().checked_add(text.len())?.checked_add(1)?;
                 if overlaps(text.source(), end, before.table(), table_end)
@@ -625,7 +625,7 @@ impl LexicalJob {
             let address = before.table() + index * TOKEN_NAME_STRIDE;
             let text = cpdx_lexer::TokenText::from_header(address, header).ok()?;
             let inline = u64::from_le_bytes(header[24..].try_into().ok()?)
-                == engine_native::msvc_string::INLINE_CAPACITY;
+                == engine_native_memory::msvc_string::INLINE_CAPACITY;
             if !text.is_empty() {
                 let start = if inline {
                     packet.header.start()?
@@ -748,7 +748,7 @@ fn copy_token_text(
         return false;
     }
     let inline = u64::from_le_bytes(header[24..].try_into().unwrap())
-        == engine_native::msvc_string::INLINE_CAPACITY;
+        == engine_native_memory::msvc_string::INLINE_CAPACITY;
     if !text.is_empty() && !inline {
         packet.payload = job.take_payload(memory, text.source(), text.len());
         if packet.payload.start().is_none() {
@@ -871,13 +871,19 @@ pub mod lexical_test_kit {
         Capacities, Captured, LexicalCopyContext, LexicalCopyReport, LexicalJob,
         copy_lexical_refresh,
     };
-    use engine_native::{cpdx_lexer, msvc_string};
-    use engine_native::{
-        cpdx_lexer::DYNAMIC_CAPACITY_RVA, cpdx_lexer::DYNAMIC_COUNT_RVA,
-        cpdx_lexer::DYNAMIC_TOKENS_RVA, cpdx_lexer::INITIALIZED_RVA, cpdx_lexer::MAX_TOKEN_ID_RVA,
-        cpdx_lexer::STATIC_MAX_TOKEN_ID_RVA, cpdx_lexer::TOKEN_ALLOCATION_RVA,
-        cpdx_lexer::TOKEN_CAPACITY_RVA, cpdx_lexer::TOKEN_NAMES_RVA, cpdx_lexer::WRITER_FLAG_RVA,
-        cpdx_lexer::witness_offset,
+    use engine_native_memory::{cpdx_lexer, msvc_string};
+    use engine_native_memory::cpdx_lexer::{
+        DYNAMIC_CAPACITY_RVA,
+        DYNAMIC_COUNT_RVA,
+        DYNAMIC_TOKENS_RVA,
+        INITIALIZED_RVA,
+        MAX_TOKEN_ID_RVA,
+        STATIC_MAX_TOKEN_ID_RVA,
+        TOKEN_ALLOCATION_RVA,
+        TOKEN_CAPACITY_RVA,
+        TOKEN_NAMES_RVA,
+        WRITER_FLAG_RVA,
+        witness_offset,
     };
 
     pub const BASE: usize = 0x140000000;
@@ -964,7 +970,7 @@ pub mod lexical_test_kit {
         }
     }
 
-    impl engine_native::Memory for KitMemory {
+    impl engine_native_memory::Memory for KitMemory {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
             if destination.is_empty() {
                 return true;
@@ -1041,12 +1047,12 @@ pub mod lexical_test_kit {
                 && !captured.raw_mode
                 && if crate::allocation::failed() {
                     outcome
-                        == engine_native::walk::Outcome::Unavailable {
+                        == engine_native_memory::walk::Outcome::Unavailable {
                             reason: "collector allocation failed",
                         }
                 } else {
                     expected.is_some_and(|(rows, text)| {
-                        outcome == engine_native::walk::Outcome::Rows { len: rows }
+                        outcome == engine_native_memory::walk::Outcome::Rows { len: rows }
                             && captured.text.len == text
                     })
                 }
@@ -1587,7 +1593,7 @@ mod tests {
         }
 
         fn copy_witness(log: &mut RawLog<1>, memory: &impl Memory, base: usize) -> Option<Witness> {
-            use engine_native::cpdx_lexer::*;
+            use engine_native_memory::cpdx_lexer::*;
             let writer = base.checked_add(WRITER_FLAG_RVA.0)?;
             let mut flag = [0u8; 4];
             let start = log.take(memory, writer, 4, 0x01)?;
@@ -1665,7 +1671,7 @@ mod tests {
             header: &[u8; 32],
             address: usize,
         ) -> bool {
-            use engine_native::msvc_string;
+            use engine_native_memory::msvc_string;
             let len = u64::from_le_bytes(header[16..24].try_into().unwrap());
             let capacity = u64::from_le_bytes(header[24..32].try_into().unwrap());
             if capacity < msvc_string::INLINE_CAPACITY || len > capacity {
@@ -1765,7 +1771,7 @@ mod tests {
         }
     }
 
-    use engine_native::{cpdx_lexer::*, memory::SliceMemory};
+    use engine_native_memory::{cpdx_lexer::*, memory::SliceMemory};
     use std::cell::Cell;
     struct MemoryFixture {
         header: [u8; 64],

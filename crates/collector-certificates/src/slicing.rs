@@ -134,7 +134,7 @@ pub const FAMILIES: [SliceFamily; 16] = [
 ];
 
 pub fn scan_countries(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     base: usize,
     game_state: usize,
     hour: i32,

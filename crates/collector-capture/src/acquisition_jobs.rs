@@ -30,8 +30,8 @@ mod presentation;
 pub(crate) mod ship_details;
 pub(crate) mod variant_workers;
 #[cfg(feature = "acquisition_profile")]
-use engine_native::memory::CountedMemory;
-use engine_native::memory::LiveMemory;
+use engine_native_memory::memory::CountedMemory;
+use engine_native_memory::memory::LiveMemory;
 pub(crate) use presentation::{
     FinalInputsDispatch, PresentationDispatch, PresentationFanIn, PresentationInputs,
 };
@@ -47,7 +47,7 @@ use std::{
 };
 
 pub(crate) struct RawRequest<J, C> {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: C,
     pub payload: J,
 }
@@ -63,7 +63,7 @@ pub(crate) struct WorldPart<J, C> {
     pub payload: J,
 }
 pub(crate) struct WorldRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub construction: Option<
         WorldPart<construction::ConstructionRestJob, construction::ConstructionRestCopyContext>,
     >,
@@ -80,7 +80,7 @@ pub(crate) type EconomyRequest =
     RawRequest<economy::EconomyRestJob, economy::EconomyRestCopyContext>;
 pub(crate) struct GovernanceRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub captured: governance::Captured,
     pub buildings: construction::Buildings,
@@ -91,14 +91,14 @@ pub(crate) struct GovernanceRequest {
     pub(crate) focus_fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
 }
 pub(crate) struct BuildingsPart {
-    countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     context: governance::CaptureContext,
     buildings: construction::Buildings,
     store: Option<Box<construction::BuildingStore>>,
     ticks: u64,
 }
 impl BuildingsPart {
-    fn capture(&mut self, memory: &impl engine_native::Memory) {
+    fn capture(&mut self, memory: &impl engine_native_memory::Memory) {
         let cached = self.countries.roster_view(memory);
         self.ticks = self.buildings.capture_carried(
             &cached,
@@ -167,7 +167,7 @@ fn variant_read_plan(hour: i32, force_full: bool, recovery: bool) -> (bool, bool
     )
 }
 pub(crate) struct ResearchRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: governance::CaptureContext,
     pub(crate) part: governance::ResearchPart,
     pub(crate) fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
@@ -178,19 +178,19 @@ pub(crate) struct ResearchReport {
 }
 pub(crate) struct IntelResidualRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
     pub flags: Option<Box<intel::FlagStore>>,
 }
 pub(crate) struct ScriptVariablesRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub(crate) part: intel::VariablePart,
     pub store: Option<Box<intel::VariableStore>>,
 }
 pub(crate) struct SupplyTrainsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: supply_trains::CaptureContext,
     pub(crate) part: usize,
     pub nodes: supply_trains::Part,
@@ -202,10 +202,10 @@ pub(crate) struct CharacterPortraitsRequest {
     pub(crate) part: usize,
     pub captured: character_portraits::Part,
     pub census:
-        Option<engine_allocation::SharedBox<engine_native::ccharacter_manager::PortraitCensus>>,
+        Option<engine_allocation::SharedBox<engine_native::ccharacter::manager::PortraitCensus>>,
 }
 pub(crate) struct OrdinaryRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -225,7 +225,7 @@ impl OrdinaryRequest {
 }
 pub(crate) struct OrdinaryPartRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -244,7 +244,7 @@ impl OrdinaryPartRequest {
     }
 }
 pub(crate) struct SlowRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -253,7 +253,7 @@ pub(crate) struct SlowRequest {
     pub stores: crate::extended::SlowStores,
 }
 pub(crate) struct AirRelationsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub(crate) part: usize,
@@ -262,10 +262,10 @@ pub(crate) struct AirRelationsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AirRelationsReport;
 pub(crate) struct AirMissionsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
-    pub parent: engine_native::walk::Outcome,
+    pub parent: engine_native_memory::walk::Outcome,
     pub pack: Box<collector_air::extended::air::Captured>,
     pub(crate) histories: Vec<collector_air_histories::air_histories::Staging>,
     pub(crate) mission_store: Option<Box<collector_air::extended::air::MissionStore>>,
@@ -279,7 +279,7 @@ impl AirMissionsRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AirMissionsReport;
 pub(crate) struct AirHistoriesRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub(crate) part: usize,
@@ -290,7 +290,7 @@ pub(crate) struct AirHistoriesReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SlowReport;
 pub(crate) struct StabilityRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -301,7 +301,7 @@ pub(crate) struct StabilityRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct StabilityReport;
 pub(crate) struct ProductionDailyRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -311,7 +311,7 @@ pub(crate) struct ProductionDailyRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ProductionDailyReport;
 pub(crate) struct IndustrialOrganisationsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -323,7 +323,7 @@ pub(crate) struct IndustrialOrganisationsReport {
     pub ticks: [u64; collector_production_daily::industrial_organisations::N],
 }
 pub(crate) struct ProductionModifierPartRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -339,7 +339,7 @@ pub(crate) struct ProductionModifierPartReport {
     pub ticks: u64,
 }
 pub(crate) struct WarOverviewRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -414,7 +414,7 @@ impl NaviesBeginPart {
 }
 pub(crate) struct RaidStateRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -427,7 +427,7 @@ pub(crate) struct RaidStateRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidStateReport;
 pub(crate) struct RaidLaunchRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -438,7 +438,7 @@ pub(crate) struct RaidLaunchRequest {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RaidLaunchReport;
 pub(crate) struct RaidTargetsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -450,7 +450,7 @@ pub(crate) struct RaidTargetsReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub base: usize,
@@ -465,7 +465,7 @@ pub(crate) struct LateReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ScoresRailsReport;
 pub(crate) struct AirSupplyRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub capture: Box<engine_map_air::map_air_supply::Capture>,
@@ -515,7 +515,7 @@ pub(crate) struct DivisionModelInputsRequest {
 pub(crate) struct DivisionModelInputsReport;
 pub(crate) struct ScoresRailsRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
@@ -526,7 +526,7 @@ pub(crate) struct ScoresRailsRequest {
     pub(crate) rail_store: Option<Box<naval_history::RailStore>>,
 }
 pub(crate) struct OrdersRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub orders: collector_divisions::orders::Orders,
@@ -534,13 +534,13 @@ pub(crate) struct OrdersRequest {
     pub(crate) group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
-    fn stitch(&mut self, memory: &impl engine_native::Memory) {
+    fn stitch(&mut self, memory: &impl engine_native_memory::Memory) {
         if self.orders.failed() {
             return;
         }
         let part_ticks = self.orders.stitch();
         if self.orders.failed() {
-            if let engine_native::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
+            if let engine_native_memory::walk::Outcome::Unavailable { reason } = self.orders.rows.outcome {
                 self.plans.fail(reason);
             }
             return;
@@ -599,7 +599,7 @@ pub(crate) struct GatedRequest {
     pub packs: Box<crate::extended::GatedPacks>,
     pub(crate) project_fingerprints:
         Option<Box<collector_certificates::slicing::SliceFingerprints>>,
-    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
 }
 pub(crate) struct GatedProjectsRequest {
     pub workers: variant_workers::Dispatch,
@@ -609,7 +609,7 @@ pub(crate) struct GatedProjectsRequest {
     pub force_full: bool,
     pub captured: projects::Captured,
     pub(crate) fingerprints: Box<collector_certificates::slicing::SliceFingerprints>,
-    pub countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    pub countries: Option<engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>>,
     pub recorded: bool,
     pub ticks: [u64; projects::N],
 }
@@ -642,8 +642,8 @@ impl GatedRequest {
 impl GatedProjectsRequest {
     fn capture(
         &mut self,
-        memory: &impl engine_native::Memory,
-        roster: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
+        roster: &impl engine_native_memory::Memory,
         changes: &dyn collector_observers::country_input_changes::Changes,
     ) {
         let _phase = collector_memory::terminal::enter(collector_memory::terminal::Phase::Extended);
@@ -737,7 +737,7 @@ pub(crate) struct ProvinceUnitOrderRequest {
 pub(crate) type ProvincesRequest = GatherRequest<engine_native::cprovince::Capture>;
 pub(crate) type ProvincesReport = GatherReport;
 pub(crate) struct ShipModelsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub game_state: usize,
     pub captured: ship_models::Captured,
@@ -745,13 +745,13 @@ pub(crate) struct ShipModelsRequest {
     pub details: Option<Arc<ShipDetailsDispatch>>,
 }
 pub(crate) struct ShipModelDetailsRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: ship_models::CaptureContext,
     pub(crate) part: usize,
     pub captured: ship_models::Captured,
 }
 pub(crate) struct PresentationRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub captured: division_presentation::Captured,
     pub dispatch: PresentationDispatch,
@@ -808,7 +808,7 @@ impl PresentationRequest {
     }
 }
 pub(crate) struct PresentationStatusRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
@@ -819,7 +819,7 @@ pub(crate) struct PresentationStatusRequest {
 
 pub(crate) struct PresentationSpeedTermsRequest {
     pub workers: variant_workers::Dispatch,
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
@@ -833,14 +833,14 @@ impl PresentationSpeedTermsRequest {
 }
 
 pub(crate) struct PresentationMovementRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs:
         Option<engine_allocation::SharedBox<collector_divisions::division_census::UnitInputs>>,
     pub pass: division_presentation::MovementPass,
 }
 pub(crate) struct IntelRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub context: fog::IntelCopyContext,
     pub payload: fog::IntelJob,
     pub inputs:
@@ -874,7 +874,7 @@ pub(crate) type DivisionsRequest =
     RawRequest<sampling::DivisionsJob, sampling::DivisionsCopyContext>;
 
 pub(crate) struct DivisionPartRequest {
-    pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    pub countries: engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
     pub slots: (u32, u32),
@@ -1276,8 +1276,8 @@ impl Default for SharedCalibration {
 }
 pub(crate) fn run_world(
     request: &mut WorldRequest,
-    memory: &impl engine_native::Memory,
-    production_memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
+    production_memory: &impl engine_native_memory::Memory,
 ) -> WorldReport {
     let started = collector_primitives::clock::qpc();
     let production = request
@@ -1307,7 +1307,7 @@ pub(crate) fn run_world(
 
 fn run_world_shared(
     request: &mut WorldRequest,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
 ) -> WorldReport {
     let started = collector_primitives::clock::qpc();
     let snapshot = engine_allocation::SharedBox::clone(&request.countries);
@@ -1321,7 +1321,7 @@ fn run_world_shared(
 
 fn run_economy_shared(
     request: &mut EconomyRequest,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
 ) -> economy::EconomyRestCopyReport {
     let cached = request.countries.view(memory);
     // SAFETY: Admitted economy acquisition runs while market observer storage lives.
@@ -1329,7 +1329,7 @@ fn run_economy_shared(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -> Report {
+pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native_memory::Memory) -> Report {
     if let Job::ObserverBoundary(request) = job {
         return Report::ObserverBoundary(request.capture());
     }
@@ -1338,7 +1338,7 @@ pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine_native::Memory) -
 
 fn run_with_memory(
     job: &mut Job,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     calibration: &SharedCalibration,
 ) -> Report {
     let started = collector_primitives::clock::qpc();
@@ -2249,7 +2249,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine_native::walk::Outcome::Unavailable {
+                        engine_native_memory::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2293,7 +2293,7 @@ fn run_with_memory(
         Job::Presentation(request) => {
             let cached = request.countries.roster_view(memory);
             let inputs = request.inputs.as_deref();
-            let missing = engine_native::walk::Outcome::Unavailable {
+            let missing = engine_native_memory::walk::Outcome::Unavailable {
                 reason: "acquisition source not supplied",
             };
             let sources = || production::Sources {
@@ -2362,7 +2362,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine_native::walk::Outcome::Unavailable {
+                        engine_native_memory::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2382,7 +2382,7 @@ fn run_with_memory(
                 production::Sources {
                     rows: inputs.map_or(&[], |inputs| inputs.seeds()),
                     outcome: inputs.map_or(
-                        engine_native::walk::Outcome::Unavailable {
+                        engine_native_memory::walk::Outcome::Unavailable {
                             reason: "acquisition source not supplied",
                         },
                         |inputs| inputs.outcome(),
@@ -2396,7 +2396,7 @@ fn run_with_memory(
             let divisions = Some(if let Some(reason) = request.input_failure {
                 engine_visibility::unit_viewer_entry::DivisionSources {
                     entries: &[],
-                    outcome: engine_native::walk::Outcome::Unavailable { reason },
+                    outcome: engine_native_memory::walk::Outcome::Unavailable { reason },
                 }
             } else {
                 request
@@ -2405,7 +2405,7 @@ fn run_with_memory(
                     .map(|inputs| inputs.intel_sources())
                     .unwrap_or(engine_visibility::unit_viewer_entry::DivisionSources {
                         entries: &[],
-                        outcome: engine_native::walk::Outcome::Unavailable {
+                        outcome: engine_native_memory::walk::Outcome::Unavailable {
                             reason: "division input acquisition not supplied",
                         },
                     })
@@ -2993,7 +2993,7 @@ mod tests {
         self, Capture,
         fixtures::{ReadTrace, copies},
     };
-    use engine_native::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     use replay_data::rows::TableId;
 
     #[test]
@@ -3012,21 +3012,21 @@ mod tests {
     }
 
     fn country_snapshot(
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         cells: usize,
-    ) -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
+    ) -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache> {
         let mut storage = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(cells).unwrap(),
         )
         .unwrap();
-        engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000)
+        engine_native_intelligence::country_memory::Cache::prepare_shared(&mut storage, memory, 0, 0x1000)
             .unwrap()
     }
 
-    fn empty_country_snapshot() -> engine_allocation::SharedBox<engine_native::country_memory::Cache>
+    fn empty_country_snapshot() -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>
     {
         country_snapshot(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &empty_memory(),
             },
@@ -3127,7 +3127,7 @@ mod tests {
     #[test]
     fn presentation_stages_have_distinct_roles_and_complete_chain_slots() {
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         let context = division_presentation::CaptureContext {
@@ -3218,14 +3218,14 @@ mod tests {
             let mut batch = Batch::new(&pool);
             request.captured = division_presentation::Captured::vacant();
             request.captured.prepare_status_holding(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
                 },
                 context,
                 production::Sources {
                     rows: &[],
-                    outcome: engine_native::walk::Outcome::Rows { len: 0 },
+                    outcome: engine_native_memory::walk::Outcome::Rows { len: 0 },
                 },
                 None,
             );
@@ -3331,7 +3331,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3392,7 +3392,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3449,7 +3449,7 @@ mod tests {
             crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
         let countries = empty_country_snapshot();
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3474,7 +3474,7 @@ mod tests {
 
     fn run_counted(
         job: &mut Job,
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
     ) -> (Report, read_accounting::TableCounts) {
         let reads = Capture::new();
         let report = run_for_test(job, memory);
@@ -3482,16 +3482,16 @@ mod tests {
     }
 
     fn snapshot_at(
-        memory: &impl engine_native::Memory,
+        memory: &impl engine_native_memory::Memory,
         cells: usize,
         base: usize,
         game_state: usize,
-    ) -> engine_allocation::SharedBox<engine_native::country_memory::Cache> {
+    ) -> engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache> {
         let mut storage = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(cells).unwrap(),
         )
         .unwrap();
-        engine_native::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
+        engine_native_intelligence::country_memory::Cache::prepare_shared(&mut storage, memory, base, game_state)
             .unwrap()
     }
 
@@ -3538,10 +3538,10 @@ mod tests {
 
     #[test]
     fn the_score_walk_resolves_countries_through_the_hours_snapshot() {
-        use engine_native::{
-            ccountry, cgame_state, cstrategic_air, cstrategic_air_manager, cstrategic_region,
-            memory::SliceMemory,
-        };
+        use engine_native::{ccountry, cgame_state};
+        use engine_native_parts::cstrategic_region;
+        use engine_native_memory::memory::SliceMemory;
+        use engine_native_air::{cstrategic_air, cstrategic_air_manager};
         use engine_raid_inputs::raid_air_scores::COMBAT_DELAY_RVA;
         const MEMORY: usize = 0x1000_0000;
         const BASE: usize = MEMORY + 0x100 - COMBAT_DELAY_RVA.0;
@@ -3631,7 +3631,7 @@ mod tests {
             };
             let (native, native_reads) = run(0);
             let (loaned, loaned_reads) = run(1 << 12);
-            assert_eq!(native, engine_native::walk::Outcome::Unavailable { reason });
+            assert_eq!(native, engine_native_memory::walk::Outcome::Unavailable { reason });
             assert_eq!(loaned, native, "alias {alias}");
             assert!(
                 loaned_reads.copy_calls < native_reads.copy_calls,
@@ -3649,7 +3649,7 @@ mod tests {
         assert_eq!(Role::Economy.read_anchor(), TableId::ProvinceSupply);
         assert_eq!(Role::World.read_anchor(), TableId::ProvinceSupply);
         let bytes = empty_memory();
-        let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+        let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         });
@@ -3678,13 +3678,14 @@ mod tests {
 
     #[test]
     fn intel_roster_view_preserves_aliases_native_reads_and_first_faults() {
-        use engine_native::{Memory, ccountry, cgame_state, cunit, walk::Outcome};
+        use engine_native_memory::{Memory, walk::Outcome};
+        use engine_native::{ccountry, cgame_state, cunit};
         use engine_visibility::unit_viewer_entry;
         use fog::intel_test_kit as kit;
         use std::cell::RefCell;
 
         struct Traced<'a> {
-            source: engine_native::memory::SliceMemory<'a>,
+            source: engine_native_memory::memory::SliceMemory<'a>,
             reads: &'a RefCell<Vec<(usize, usize)>>,
             faults: &'a [usize],
         }
@@ -3715,7 +3716,7 @@ mod tests {
         let mut bytes = kit::fixture();
         bytes[kit::C0 + ccountry::ID..kit::C0 + ccountry::ID + 4]
             .copy_from_slice(&2_u32.to_le_bytes());
-        let links = engine_native::read::<u64>(
+        let links = engine_native_memory::read::<u64>(
             &kit::memory(&bytes),
             kit::GAME_STATE + cgame_state::COUNTRY_LINKS,
         )
@@ -3735,10 +3736,10 @@ mod tests {
                 faults: &[],
             };
             let mut storage = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(cells).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(cells).unwrap(),
             )
             .unwrap();
-            let countries = engine_native::country_memory::Cache::prepare_shared(
+            let countries = engine_native_intelligence::country_memory::Cache::prepare_shared(
                 &mut storage,
                 &seed,
                 kit::BASE,
@@ -3892,7 +3893,7 @@ mod tests {
     #[test]
     fn world_single_payload_matches_direct_copy_and_returns_storage() {
         let bytes = empty_memory();
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -3903,7 +3904,7 @@ mod tests {
             collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
                 run_world_shared(
                     request,
-                    &engine_native::memory::SliceMemory {
+                    &engine_native_memory::memory::SliceMemory {
                         base: 0,
                         bytes: &bytes,
                     },
@@ -3956,7 +3957,7 @@ mod tests {
         for workers in [0, 1] {
             let bytes = empty_memory();
             let mut direct = economy_request();
-            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+            let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &bytes,
             });
@@ -3981,7 +3982,7 @@ mod tests {
                         runner_trace.record((), || {
                             run_economy_shared(
                                 request,
-                                &CountedMemory::new(engine_native::memory::SliceMemory {
+                                &CountedMemory::new(engine_native_memory::memory::SliceMemory {
                                     base: 0,
                                     bytes: &bytes,
                                 }),
@@ -4027,7 +4028,7 @@ mod tests {
                         runner_trace.record((), || {
                             run_world_shared(
                                 request,
-                                &CountedMemory::new(engine_native::memory::SliceMemory {
+                                &CountedMemory::new(engine_native_memory::memory::SliceMemory {
                                     base: 0,
                                     bytes: &bytes,
                                 }),
@@ -4166,7 +4167,7 @@ mod tests {
                         };
                         let key = request.payload.rows.as_ptr() as usize;
                         runner_trace.record(key, || {
-                            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+                            let memory = CountedMemory::new(engine_native_memory::memory::SliceMemory {
                                 base: memory_base,
                                 bytes: &bytes,
                             });
@@ -4226,7 +4227,7 @@ mod tests {
                     };
                     assert_eq!(
                         report.result,
-                        engine_native::walk::Outcome::Unavailable { reason }
+                        engine_native_memory::walk::Outcome::Unavailable { reason }
                     );
                     expected[TableId::Provinces.index()] += reads;
                 }
@@ -4331,7 +4332,7 @@ mod tests {
             for index in [13, 14] {
                 assert_eq!(
                     pack.outcomes()[index],
-                    engine_native::walk::Outcome::Unavailable { reason }
+                    engine_native_memory::walk::Outcome::Unavailable { reason }
                 );
             }
             assert_eq!(read_accounting::snapshot(), read_accounting::ZERO);
@@ -4420,8 +4421,8 @@ mod tests {
 
     #[test]
     fn the_model_witness_job_reads_the_census_under_its_own_role() {
-        use engine_native::walk::Outcome;
-        let memory = engine_native::memory::SliceMemory {
+        use engine_native_memory::walk::Outcome;
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

@@ -1,7 +1,8 @@
 #![cfg(feature = "visibility_changes")]
 use super::*;
 use crate::country_input_changes::Domain;
-use engine_native::{ccountry, cgame_state, modifier_definition as definition};
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::modifier_definition as definition;
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -72,7 +73,7 @@ impl World {
     fn raw(&mut self, slot: usize, raw: Option<i64>) {
         let data = ENTRIES + slot * 0x100;
         self.header(
-            object(slot) + ccountry::MODIFIER_ACCUMULATOR,
+            object(slot) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             data,
             u32::from(raw.is_some()),
         );
@@ -128,7 +129,7 @@ impl Memory for Counted<'_> {
         self.trace.borrow_mut().push(address);
         if output.len() == 16
             && address
-                .checked_sub(OBJECTS + ccountry::MODIFIER_ACCUMULATOR)
+                .checked_sub(OBJECTS + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                 .is_some_and(|offset| offset.is_multiple_of(0x1000))
         {
             self.reads.set(self.reads.get() + 1);
@@ -285,7 +286,7 @@ fn a_replaced_census_object_and_forced_refresh_read_again() {
     let mut store = Store::new();
     capture(&mut store, &world, &domain);
     let replaced = object(20);
-    for offset in [0, ccountry::ID, ccountry::MODIFIER_ACCUMULATOR] {
+    for offset in [0, ccountry::ID, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR] {
         let bytes = world.spans.get(&(object(1) + offset)).unwrap().clone();
         world.spans.insert(replaced + offset, bytes);
     }
@@ -327,7 +328,7 @@ fn a_full_read_keeps_metadata_before_the_next_country_and_does_not_retry_a_one_s
     let trace = memory.trace.borrow();
     let first = trace
         .iter()
-        .position(|&address| address == object(1) + ccountry::MODIFIER_ACCUMULATOR)
+        .position(|&address| address == object(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .unwrap();
     let definition = trace
         .iter()
@@ -335,12 +336,12 @@ fn a_full_read_keeps_metadata_before_the_next_country_and_does_not_retry_a_one_s
         .unwrap();
     let second = trace
         .iter()
-        .position(|&address| address == object(2) + ccountry::MODIFIER_ACCUMULATOR)
+        .position(|&address| address == object(2) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
         .unwrap();
     assert!(first < definition && definition < second);
     drop(trace);
     domain.boundary(true);
-    let failed = object(1) + ccountry::MODIFIER_ACCUMULATOR;
+    let failed = object(1) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
     memory.fault.set(Some(failed));
     memory.trace.borrow_mut().clear();
     let ((outcome, _), _, _) = store.capture(
@@ -375,7 +376,7 @@ fn a_full_read_keeps_metadata_before_the_next_country_and_does_not_retry_a_one_s
         !memory
             .trace
             .borrow()
-            .contains(&(object(2) + ccountry::MODIFIER_ACCUMULATOR))
+            .contains(&(object(2) + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR))
     );
     assert!(store.epoch.is_none());
 }

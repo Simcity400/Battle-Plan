@@ -1,5 +1,5 @@
-use crate::batch_fallback::{self, Batch};
-use crate::memory::{Memory, RecordLayout, RecordSources};
+use engine_native_memory::batch_fallback::{self, Batch};
+use engine_native_memory::memory::{Memory, RecordLayout, RecordSources};
 use std::cell::{Cell, RefCell};
 
 const PENDING: u8 = 0;
@@ -674,18 +674,18 @@ impl<M: Memory> Memory for View<'_, '_, M> {
     }
 }
 
-const POINTER_FIELDS: [crate::memory::RecordField; 1] = crate::memory::packed_fields([(0, 8)]);
+const POINTER_FIELDS: [engine_native_memory::memory::RecordField; 1] = engine_native_memory::memory::packed_fields([(0, 8)]);
 pub const POINTER_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&POINTER_FIELDS, 8).expect("valid pointer layout");
 
-const ASSIGNED_FIELDS: [crate::memory::RecordField; 7] = [
+const ASSIGNED_FIELDS: [engine_native_memory::memory::RecordField; 7] = [
     crate::ctechnology::FIELDS[0],
     crate::ctechnology::FIELDS[1],
     crate::ctechnology::FIELDS[2],
     crate::ctechnology::FIELDS[3],
     crate::ctechnology::FIELDS[4],
     crate::ctechnology::FIELDS[5],
-    crate::memory::RecordField {
+    engine_native_memory::memory::RecordField {
         source_offset: crate::ctechnology::APPLIED_SPEED_BONUS,
         destination_offset: 56,
         len: 24,
@@ -694,21 +694,21 @@ const ASSIGNED_FIELDS: [crate::memory::RecordField; 7] = [
 const ASSIGNED_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ASSIGNED_FIELDS, 80).unwrap();
 const TECHNOLOGY_LAYOUT: RecordLayout<'static> =
     RecordLayout::new(&crate::ctechnology::FIELDS, 56).unwrap();
-const TEMPLATE_FIELDS: [crate::memory::RecordField; 3] = crate::memory::packed_fields([
+const TEMPLATE_FIELDS: [engine_native_memory::memory::RecordField; 3] = engine_native_memory::memory::packed_fields([
     (crate::ctechnology_template::ID, 32),
     (crate::ctechnology_template::DATABASE_INDEX, 8),
     (crate::ctechnology_template::YEAR, 16),
 ]);
 const TEMPLATE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&TEMPLATE_FIELDS, 56).unwrap();
-const IDENTITY_FIELDS: [crate::memory::RecordField; 1] =
-    crate::memory::packed_fields([(crate::ctechnology_template::DATABASE_INDEX, 8)]);
+const IDENTITY_FIELDS: [engine_native_memory::memory::RecordField; 1] =
+    engine_native_memory::memory::packed_fields([(crate::ctechnology_template::DATABASE_INDEX, 8)]);
 const IDENTITY_LAYOUT: RecordLayout<'static> = RecordLayout::new(&IDENTITY_FIELDS, 8).unwrap();
 
 pub(crate) struct Assignments([Records<'static>; 4]);
 impl Assignments {
     pub(crate) fn gather(
         memory: &impl Memory,
-        roster: crate::cpdx_array::Array,
+        roster: engine_native_memory::cpdx_array::Array,
         len: usize,
         inputs: bool,
     ) -> Self {
@@ -764,7 +764,7 @@ impl Assignments {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{RecordField, SliceMemory};
+    use engine_native_memory::memory::{RecordField, SliceMemory};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
@@ -913,7 +913,7 @@ mod tests {
 
     #[test]
     fn partial_batch_alias_lookup_uses_earliest_completed_duplicate_and_scattered_keeps_cached() {
-        const PAIR_FIELDS: [RecordField; 2] = crate::memory::packed_fields([(0, 8), (0x20, 8)]);
+        const PAIR_FIELDS: [RecordField; 2] = engine_native_memory::memory::packed_fields([(0, 8), (0x20, 8)]);
         const PAIR_LAYOUT: RecordLayout<'static> = RecordLayout::new(&PAIR_FIELDS, 16).unwrap();
 
         let mut bytes = vec![0_u8; 0x1000];
@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn view_retry_memoization_uses_zero_allocations_records_failures_and_handles_overlaps() {
-        const PAIR_FIELDS: [RecordField; 2] = crate::memory::packed_fields([(0, 8), (0x20, 8)]);
+        const PAIR_FIELDS: [RecordField; 2] = engine_native_memory::memory::packed_fields([(0, 8), (0x20, 8)]);
         const PAIR_LAYOUT: RecordLayout<'static> = RecordLayout::new(&PAIR_FIELDS, 16).unwrap();
 
         let mut bytes = vec![0_u8; 0x1000];
@@ -1091,7 +1091,7 @@ mod tests {
         assert_eq!(u64::from_le_bytes(check), 22);
 
         const OVERLAP_SRC_FIELDS: [RecordField; 2] =
-            crate::memory::packed_fields([(0x4c, 4), (0x40, 16)]);
+            engine_native_memory::memory::packed_fields([(0x4c, 4), (0x40, 16)]);
         const OVERLAP_SRC_LAYOUT: RecordLayout<'static> =
             RecordLayout::new(&OVERLAP_SRC_FIELDS, 20).unwrap();
         put(&mut bytes, 0x1040, 0x1111_2222_3333_4444);
@@ -1280,7 +1280,7 @@ mod tests {
             before_4
         );
 
-        const WIDE_FIELDS: [RecordField; 1] = crate::memory::packed_fields([(0, 12)]);
+        const WIDE_FIELDS: [RecordField; 1] = engine_native_memory::memory::packed_fields([(0, 12)]);
         const WIDE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&WIDE_FIELDS, 12).unwrap();
         let mut wide_bytes = vec![0_u8; 0x1000];
         wide_bytes[0x300..0x30c].copy_from_slice(b"0123456789ab");

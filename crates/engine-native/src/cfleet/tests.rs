@@ -1,5 +1,6 @@
 use super::*;
-use crate::{cunit, memory::SliceMemory};
+use crate::cunit;
+use engine_native_memory::memory::SliceMemory;
 
 struct OriginalCounterMemory<'a> {
     bytes: &'a [u8],
@@ -25,13 +26,13 @@ impl Memory for OriginalCounterMemory<'_> {
 fn original_counter_fixture() -> Vec<u8> {
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
-    put64(&mut bytes, root, crate::cnaval_mission::VTABLE_RVA.0 as u64);
+    put64(&mut bytes, root, engine_native_parts::cnaval_mission::VTABLE_RVA.0 as u64);
     put64(
         &mut bytes,
-        root + crate::cnaval_mission::TASK_FORCE,
+        root + engine_native_parts::cnaval_mission::TASK_FORCE,
         TASK as u64,
     );
-    bytes[root + crate::cnaval_mission::IS_IN_REGIONS] = 255;
+    bytes[root + engine_native_parts::cnaval_mission::IS_IN_REGIONS] = 255;
     put64(
         &mut bytes,
         TASK + cunit::RECEIVED_SUPPLY_RATIO,
@@ -254,7 +255,7 @@ fn growing_counter_names_follow_original_headers_on_first_and_later_publications
             reads: Default::default(),
         };
         let mut names = crate::cname_group_member::Names {
-            bytes: crate::walk::Buffer::Growing(&mut text),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut text),
             len: 0,
             required: 0,
         };
@@ -346,7 +347,7 @@ fn original_counter_borrower_reports_a_failed_prefix() {
 
 #[test]
 fn healthy_read_accounting_partitions_fleet_graph_without_changing_its_read_trace() {
-    use crate::memory::{CountedMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, ReadCounts};
     use std::cell::RefCell;
 
     struct Traced<'a> {
@@ -732,16 +733,16 @@ fn foreign_task_force_is_recorded_with_its_own_owners() {
 
 #[test]
 fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_per_call() {
-    let calls = |bytes: &[u8], ships: crate::walk::Buffer<'_, cship::Row>| {
-        let memory = crate::memory::CountingMemory::new(bytes);
+    let calls = |bytes: &[u8], ships: engine_native_memory::walk::Buffer<'_, cship::Row>| {
+        let memory = engine_native_memory::memory::CountingMemory::new(bytes);
         let mut fleets = vec![Row::default(); 1];
         let mut tasks = vec![ctask_force::Row::default(); 1];
         let capture = walk_named(
             &memory,
             0,
             GS,
-            crate::walk::Buffer::Growing(&mut fleets),
-            crate::walk::Buffer::Growing(&mut tasks),
+            engine_native_memory::walk::Buffer::Growing(&mut fleets),
+            engine_native_memory::walk::Buffer::Growing(&mut tasks),
             ships,
             |_| 0,
             |_, _| {},
@@ -752,18 +753,18 @@ fn ship_census_reads_a_run_of_ships_in_one_guarded_call_and_its_roster_a_page_pe
     };
     let bytes = fixture();
     let mut ships = Vec::new();
-    let (read, with_bodies) = calls(&bytes, crate::walk::Buffer::Growing(&mut ships));
+    let (read, with_bodies) = calls(&bytes, engine_native_memory::walk::Buffer::Growing(&mut ships));
     assert_eq!(read, Outcome::Rows { len: 2 });
     assert_eq!(
         ships.iter().map(|ship| ship.roster_ordinal).collect::<Vec<_>>(),
         [0, 1],
         "roster order is kept"
     );
-    let (_, roster_only) = calls(&bytes, crate::walk::Buffer::Count);
+    let (_, roster_only) = calls(&bytes, engine_native_memory::walk::Buffer::Count);
     assert_eq!(with_bodies - roster_only, 1, "one call per run of ships");
     let mut empty = fixture();
     array(&mut empty, TASK + ctask_force::SHIPS, 0, 0);
-    let (_, no_roster) = calls(&empty, crate::walk::Buffer::Count);
+    let (_, no_roster) = calls(&empty, engine_native_memory::walk::Buffer::Count);
     assert_eq!(roster_only - no_roster, 1, "one call per roster page");
 
     struct Faulting<'a> {
@@ -910,7 +911,7 @@ fn naval_broken_headers_and_location_registry_are_not_empty_data() {
 fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
     const REGIONS: usize = 0xb300;
     const REGION: usize = 0xb400;
-    use crate::{cnaval_mission as mission, cstrategic_region};
+    use engine_native_parts::{cnaval_mission as mission, cstrategic_region};
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
     put64(&mut bytes, root, mission::VTABLE_RVA.0 as u64);
@@ -950,7 +951,7 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
     let mut fleets = vec![CounterRow::default(); 1];
     let mut rosters = vec![0_u64; 1];
     let mut tasks = vec![ctask_force::CounterRow::default(); 1];
-    let census = crate::read_census::ReadCensus::new(&memory);
+    let census = engine_native_memory::read_census::ReadCensus::new(&memory);
     let walk = walk_counter_inputs(
         &census,
         0,
@@ -1050,7 +1051,8 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
 
 #[test]
 fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order() {
-    use crate::{cname_group_member::Names, cnaval_mission};
+    use crate::cname_group_member::Names;
+    use engine_native_parts::cnaval_mission;
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
     put64(&mut bytes, root, cnaval_mission::VTABLE_RVA.0 as u64);
@@ -1085,7 +1087,7 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
     for capacity in [0, 6] {
         let mut owned = vec![0; capacity];
         let mut names = Names {
-            bytes: crate::walk::Buffer::Growing(&mut owned),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut owned),
             len: 0,
             required: 0,
         };
@@ -1115,7 +1117,7 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
     }
     put64(&mut bytes, name + 24, 1);
     let mut names = Names {
-        bytes: crate::walk::Buffer::Count,
+        bytes: engine_native_memory::walk::Buffer::Count,
         len: 0,
         required: 0,
     };
@@ -1172,7 +1174,7 @@ fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order()
 
 #[test]
 fn missions_are_authenticated_by_the_counter_walk_and_the_mission_collector() {
-    use crate::cnaval_mission as mission;
+    use engine_native_parts::cnaval_mission as mission;
     const REGIONS: usize = 0xb300;
     const REGION: usize = 0xb400;
     const ACCESSIBLE: usize = 0xb500;
@@ -1182,7 +1184,7 @@ fn missions_are_authenticated_by_the_counter_walk_and_the_mission_collector() {
     put64(&mut bytes, root + mission::TASK_FORCE, TASK as u64);
     array(&mut bytes, GS + cgame_state::STRATEGIC_REGIONS, REGIONS, 2);
     put64(&mut bytes, REGIONS + 8, REGION as u64);
-    put32(&mut bytes, REGION + crate::cstrategic_region::ID, 1);
+    put32(&mut bytes, REGION + engine_native_parts::cstrategic_region::ID, 1);
     array(
         &mut bytes,
         root + mission::ACCESSIBLE_REGIONS,
@@ -1216,7 +1218,8 @@ fn missions_are_authenticated_by_the_counter_walk_and_the_mission_collector() {
 
 #[test]
 fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scalar_fragments() {
-    use crate::{cname_group_member::Names, cnaval_mission, cunit_supply_inputs as supply};
+    use crate::cname_group_member::Names;
+    use engine_native_parts::{cnaval_mission, cunit_supply_inputs as supply};
     let mut bytes = fixture();
     let root = TASK + ctask_force::NAVAL_MISSION;
     put64(&mut bytes, root, cnaval_mission::VTABLE_RVA.0 as u64);
@@ -1268,13 +1271,13 @@ fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scala
         {
             let mut name_bytes = vec![0; 4];
             let mut names = Names {
-                bytes: crate::walk::Buffer::Growing(&mut name_bytes),
+                bytes: engine_native_memory::walk::Buffer::Growing(&mut name_bytes),
                 len: 0,
                 required: 0,
             };
             let mut origin_bytes = Vec::new();
             let mut origins = ctask_force::SupplyOrigins {
-                origins: crate::walk::Buffer::Growing(&mut origin_bytes),
+                origins: engine_native_memory::walk::Buffer::Growing(&mut origin_bytes),
                 len: 0,
                 required: 0,
             };
@@ -1328,7 +1331,8 @@ fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scala
 
 #[test]
 fn optional_supply_preserves_legacy_trace_and_never_reads_an_unadmitted_prefix() {
-    use crate::{cname_group_member::Names, cnaval_mission, cunit_supply_inputs as supply};
+    use crate::cname_group_member::Names;
+    use engine_native_parts::{cnaval_mission, cunit_supply_inputs as supply};
     struct Traced<'a> {
         bytes: &'a [u8],
         denied: Option<usize>,
@@ -1408,13 +1412,13 @@ fn optional_supply_preserves_legacy_trace_and_never_reads_an_unadmitted_prefix()
     );
     let mut origin_bytes = vec![];
     let mut origins = ctask_force::SupplyOrigins {
-        origins: crate::walk::Buffer::Growing(&mut origin_bytes),
+        origins: engine_native_memory::walk::Buffer::Growing(&mut origin_bytes),
         len: 0,
         required: 0,
     };
     let mut name_bytes = vec![0; 4];
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(&mut name_bytes),
+        bytes: engine_native_memory::walk::Buffer::Growing(&mut name_bytes),
         len: 0,
         required: 0,
     };
@@ -1515,7 +1519,7 @@ fn worker_naval_population_jump_grows_without_repeating_native_reads() {
 
 #[test]
 fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publication() {
-    use crate::cunit_supply_inputs as supply;
+    use engine_native_parts::cunit_supply_inputs as supply;
     use ctask_force::port_mission::{Collector, ReferenceAnswer, Searcher};
     const COUNT: usize = 3;
     const BLOCK: usize = 0x1000;
@@ -1570,16 +1574,16 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
         put64(
             &mut bytes,
             task + ctask_force::NAVAL_MISSION,
-            crate::cnaval_mission::VTABLE_RVA.0 as u64,
+            engine_native_parts::cnaval_mission::VTABLE_RVA.0 as u64,
         );
         put64(
             &mut bytes,
-            task + ctask_force::NAVAL_MISSION + crate::cnaval_mission::TASK_FORCE,
+            task + ctask_force::NAVAL_MISSION + engine_native_parts::cnaval_mission::TASK_FORCE,
             task as u64,
         );
         put32(
             &mut bytes,
-            task + ctask_force::NAVAL_MISSION + crate::cnaval_mission::ENGAGEMENT_RULE,
+            task + ctask_force::NAVAL_MISSION + engine_native_parts::cnaval_mission::ENGAGEMENT_RULE,
             2,
         );
     }
@@ -1632,7 +1636,7 @@ fn growing_task_force_supply_and_port_arenas_capture_every_owner_before_publicat
             reads: Default::default(),
         };
         let mut supply = ctask_force::SupplyOrigins {
-            origins: crate::walk::Buffer::Growing(&mut origin_rows),
+            origins: engine_native_memory::walk::Buffer::Growing(&mut origin_rows),
             len: 0,
             required: 0,
         };
@@ -1895,11 +1899,11 @@ fn census_walk_in(memory: &impl Memory, batched: bool, count: bool) -> Walked {
     }
 }
 
-fn buffer_of<T>(rows: &mut Vec<T>, count: bool) -> crate::walk::Buffer<'_, T> {
+fn buffer_of<T>(rows: &mut Vec<T>, count: bool) -> engine_native_memory::walk::Buffer<'_, T> {
     if count {
-        crate::walk::Buffer::Count
+        engine_native_memory::walk::Buffer::Count
     } else {
-        crate::walk::Buffer::Growing(rows)
+        engine_native_memory::walk::Buffer::Growing(rows)
     }
 }
 
@@ -1939,7 +1943,7 @@ fn batched_ship_census_keeps_lasting_faults_and_is_never_harsher_under_one_touch
             once,
             failures: Default::default(),
         };
-        use crate::batch_fallback::{Batch, count};
+        use engine_native_memory::batch_fallback::{Batch, count};
         let (fleet_fallbacks, task_fallbacks) =
             (count(Batch::FleetGathers), count(Batch::TaskForceGathers));
         assert_eq!(
@@ -2128,16 +2132,16 @@ fn certified_fleet_region_payload_keeps_occurrences_and_authenticates_each_refer
     put64(
         &mut bytes,
         region,
-        crate::cstrategic_region::VTABLE_RVA.0 as u64,
+        engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64,
     );
-    put32(&mut bytes, region + crate::cstrategic_region::ID, 7);
+    put32(&mut bytes, region + engine_native_parts::cstrategic_region::ID, 7);
     let other = 0x600;
     put64(
         &mut bytes,
         other,
-        crate::cstrategic_region::VTABLE_RVA.0 as u64,
+        engine_native_parts::cstrategic_region::VTABLE_RVA.0 as u64,
     );
-    put32(&mut bytes, other + crate::cstrategic_region::ID, 3);
+    put32(&mut bytes, other + engine_native_parts::cstrategic_region::ID, 3);
     for (at, pointer) in [region, other, region].into_iter().enumerate() {
         put64(&mut bytes, 0x100 + at * 8, pointer as u64);
     }

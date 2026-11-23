@@ -1,8 +1,7 @@
 use crate::army_stat_changes::{self, Changes, Counts};
-use engine_native::{
-    Memory, carmy::DivisionSeed, csub_unit_definition as stats,
-    csub_unit_definition::DivisionMaxima, walk::Outcome,
-};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::carmy::DivisionSeed;
+use engine_native_parts::csub_unit_definition::{self as stats, DivisionMaxima};
 use replay_data::{
     rows::AttackStats, rows::AttackTerrain, rows::DivisionAttackInputs, rows::DivisionAttackStats,
     rows::DivisionMovementStats, rows::PacketHour,
@@ -751,7 +750,7 @@ impl Captured {
             if officer_ready {
                 let receiver = seed
                     .pointer
-                    .checked_add(engine_native::unit_history::OFFICER);
+                    .checked_add(engine_native_land::unit_history::OFFICER);
                 let quiet = receiver.filter(|_| prepared.is_none_or(|p| !p.acquired[2])).and_then(
                     |receiver| store.officer.quiet(seed, receiver, &observations.history),
                 );
@@ -774,7 +773,7 @@ impl Captured {
                                 })
                                 .and_then(|p| p.officer)
                                 .unwrap_or_else(|| {
-                                    engine_native::unit_history::officer_experience(
+                                    engine_native_land::unit_history::officer_experience(
                                         memory,
                                         base,
                                         seed.pointer,
@@ -820,7 +819,7 @@ impl Captured {
                                 })
                                 .and_then(|p| p.career)
                                 .unwrap_or_else(|| {
-                                    engine_native::unit_history::career_counter(memory, seed.pointer)
+                                    engine_native_land::unit_history::career_counter(memory, seed.pointer)
                                 })
                         })
                     }
@@ -888,7 +887,7 @@ impl Captured {
                             })
                             .and_then(|p| p.experience)
                             .unwrap_or_else(|| {
-                                engine_native::read::<i64>(
+                                engine_native_memory::read::<i64>(
                                     memory,
                                     seed.pointer
                                         .checked_add(engine_native::carmy::EXPERIENCE)
@@ -1084,7 +1083,7 @@ impl Captured {
                 .any(|seed| witnessed(hour, seed.division >> 32))
         {
             self.terrains.clear();
-            if engine_native::cterrain_database::terrain_attacks(memory, base, &mut self.terrains)
+            if engine_native_parts::cterrain_database::terrain_attacks(memory, base, &mut self.terrains)
                 .is_err()
             {
                 self.terrains.clear();

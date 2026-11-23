@@ -13,6 +13,7 @@ doctest = false
 test-support = ["collector-extended-support/test-support", "collector-lifetime/test-support", "collector-observers/test-support", "collector-primitives/test-support"]
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-air-history.workspace = true
 engine-allocation.workspace = true
 engine-events.workspace = true
@@ -27,6 +28,7 @@ collector-primitives.workspace = true
 collector-projection.workspace = true
 
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true
 engine-production.workspace = true
 engine-scripts.workspace = true
@@ -48,6 +50,7 @@ collector-hooks = { workspace = true, features = ["test-support"] }
 collector-ledger-tables = { workspace = true, features = ["test-support"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

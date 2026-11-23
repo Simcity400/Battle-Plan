@@ -6,7 +6,7 @@ use engine_characters::{
     character_inputs::Occupant, character_inputs::OperativeRow, character_inputs::Trait,
     character_inputs::TraitRow,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

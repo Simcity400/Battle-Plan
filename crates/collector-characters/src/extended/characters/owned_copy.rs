@@ -1185,7 +1185,7 @@ pub(super) fn copy_leaders(
     if dead.leaders {
         return true;
     }
-    let expected = match engine_sites::at(base, ccountry_leader::VTABLE_RVA) {
+    let expected = match engine_sites::at(base, engine_native_parts::ccountry_leader_layout::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => {
             dead.leaders = true;
@@ -1243,7 +1243,7 @@ pub(super) fn copy_leaders(
             return !job.log.overflowed;
         };
         if pool_u64(job, header) != expected
-            || pool_u64(job, header + ccountry_leader::CHARACTER) != pointer as u64
+            || pool_u64(job, header + engine_native_parts::ccountry_leader_layout::CHARACTER) != pointer as u64
         {
             dead.leaders = true;
             return true;
@@ -1435,12 +1435,12 @@ pub(super) fn copy_advisors(
         let header = job.log.bytes[cache_header..cache_header + 16]
             .try_into()
             .unwrap();
-        let Some(array) = Array::from_header(header, engine_native::modifier_entry::STRIDE) else {
+        let Some(array) = Array::from_header(header, engine_native_parts::modifier_entry::STRIDE) else {
             dead.advisors = true;
             return true;
         };
         let required = (array.count as usize)
-            .checked_mul(engine_native::modifier_entry::STRIDE)
+            .checked_mul(engine_native_parts::modifier_entry::STRIDE)
             .and_then(|bytes| job.advisor_demand.bytes.checked_add(bytes));
         match required {
             Some(bytes) => job.advisor_demand.bytes = bytes,
@@ -1452,8 +1452,8 @@ pub(super) fn copy_advisors(
             if take_or_kill(
                 job,
                 memory,
-                array.element(first, engine_native::modifier_entry::STRIDE),
-                count * engine_native::modifier_entry::STRIDE,
+                array.element(first, engine_native_parts::modifier_entry::STRIDE),
+                count * engine_native_parts::modifier_entry::STRIDE,
                 MASK_ADVISORS,
                 &mut dead.advisors,
             )
@@ -1481,13 +1481,13 @@ pub(super) fn parse_unit_identity(
             cunit_leader::VTABLE_RVA,
             carmy_leader::VTABLE_RVA,
             cnavy_leader::VTABLE_RVA,
-            coperative_leader::VTABLE_RVA,
+            engine_native_parts::coperative_leader_layout::VTABLE_RVA,
         ],
     )? {
         cunit_leader::VTABLE_RVA => cunit_leader::KIND_BASE,
         carmy_leader::VTABLE_RVA => cunit_leader::KIND_ARMY,
         cnavy_leader::VTABLE_RVA => cunit_leader::KIND_NAVY,
-        coperative_leader::VTABLE_RVA => cunit_leader::KIND_OPERATIVE,
+        engine_native_parts::coperative_leader_layout::VTABLE_RVA => cunit_leader::KIND_OPERATIVE,
         _ => return None,
     };
     if pool_u32(job, start + cunit_leader::TYPE) != cunit_leader::REFERENCE_TYPE {
@@ -1899,7 +1899,7 @@ impl<M: Memory> Memory for AppendedCopy<'_, M> {
 fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize, unit: usize) {
     use engine_native::cname_group_member as naming;
     let member = unit
-        .checked_add(coperative_leader::CODENAME)
+        .checked_add(engine_native_parts::coperative_leader_layout::CODENAME)
         .and_then(|member| job.log.take(memory, member, naming::INPUT_SPAN, MASK_UNITS));
     let Some(start) = member else { return };
     let mut bytes = [0_u8; naming::INPUT_SPAN];
@@ -1922,7 +1922,7 @@ fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize
                 memory,
                 mask: MASK_UNITS,
             };
-            override_shown = match unit.checked_add(coperative_leader::CODENAME) {
+            override_shown = match unit.checked_add(engine_native_parts::coperative_leader_layout::CODENAME) {
                 Some(member) => {
                     match naming::operative_group_is_null(&source, base, member, &bytes) {
                         Ok(null) => null,
@@ -2518,7 +2518,7 @@ pub(super) fn copy_census_leaders(
     let needs = |occurrence: census::Occurrence| {
         census::map_head(occurrence.leaders()).is_none_or(|(_, count)| count != 0)
     };
-    let omissible = engine_sites::at(base, ccountry_leader::VTABLE_RVA).is_some();
+    let omissible = engine_sites::at(base, engine_native_parts::ccountry_leader_layout::VTABLE_RVA).is_some();
     let mut heads = [0; SENTINEL_BATCH];
     let mut sentinels = [0; SENTINEL_BATCH * SENTINEL];
     let mut next = 0;

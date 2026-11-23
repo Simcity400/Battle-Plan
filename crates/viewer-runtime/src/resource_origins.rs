@@ -10,7 +10,7 @@ use dashboard_text::state_resources::{
 pub use dashboard_text::state_resources::{
     ResourceOperands, building_grants_from, grant_lists, grant_of, resource_operands,
 };
-pub const INFRASTRUCTURE_TOKEN: u32 = engine_native::cbuilding_database::INFRASTRUCTURE_TOKEN;
+pub const INFRASTRUCTURE_TOKEN: u32 = engine_native_parts::cbuilding_database::INFRASTRUCTURE_TOKEN;
 use content_reader_layers::ResolvedLayers;
 use content_reader_key_names::buildings::Buildings;
 use content_reader_defines::defines::Defines;

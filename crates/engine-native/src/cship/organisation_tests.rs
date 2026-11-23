@@ -1,9 +1,7 @@
 use super::*;
-use crate::{
-    ccountry, cgame_state,
-    modifier_accumulator::{self, Value},
-    modifier_definition as md,
-};
+use crate::{ccountry, cgame_state};
+use engine_native_parts::{modifier_accumulator, modifier_definition as md};
+use engine_native_memory::modifier_cache::Value;
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -130,7 +128,10 @@ fn fixture() -> Fixture {
 }
 
 fn support_fixture() -> Fixture {
-    use crate::{creference_registry as registry, reference_bucket as bucket};
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
     let mut f = fixture();
     let handle = (2_u64 << 32) | 7;
     f.array(TASK + 0x728, 0x12000, 1);
@@ -153,7 +154,7 @@ fn support_fixture() -> Fixture {
     f.word(cell + 16, 0x17000);
     f.word(0x17000, (IMAGE + crate::ccharacter::VTABLE_RVA.0) as u64);
     f.word(0x17000 + crate::ccharacter::UNIT_LEADER, 0x18000);
-    f.word(0x18000, (IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64);
+    f.word(0x18000, (IMAGE + engine_native_parts::cnavy_leader::VTABLE_RVA.0) as u64);
     f.dword(0x18000 + crate::cunit_leader::CATEGORY, 2);
     for (index, offset) in [0xf70, 0xf80, 0xfa0, 0xf90].into_iter().enumerate() {
         let definition = 0x1a000 + index * 0x200;
@@ -179,7 +180,10 @@ const LEADER: usize = 0x2e000;
 const CLASS_ROWS: usize = 0x30000;
 
 fn shared_sources_fixture() -> Fixture {
-    use crate::{creference_registry as registry, reference_bucket as bucket};
+    use engine_native_parts::{
+        creference_registry as registry,
+        reference_bucket as bucket,
+    };
     let mut f = fixture();
     f.put(PROVINCE, &vec![0; 0x20000]);
     f.word(TASK + cunit::LOCATION, PROVINCE as u64);
@@ -187,7 +191,7 @@ fn shared_sources_fixture() -> Fixture {
     f.word(PROVINCE + 0xc8, PROVINCE_DEFINITION as u64);
     f.word(PROVINCE_DEFINITION + 0x30, TERRAIN_SOURCE as u64);
     f.word(TERRAIN_SOURCE + 0x130, TERRAIN as u64);
-    f.word(TERRAIN, (IMAGE + crate::cterrain_type::VTABLE_RVA.0) as u64);
+    f.word(TERRAIN, (IMAGE + engine_native_parts::cterrain_type::VTABLE_RVA.0) as u64);
     f.put(TERRAIN + 0x10, &[1]);
     f.dword(SHIP + CLASS_DATABASE_ID, 9);
     f.word(TERRAIN + 0x1b8, TERRAIN_BUCKET as u64);
@@ -227,7 +231,7 @@ fn shared_sources_fixture() -> Fixture {
     f.put(cell + bucket::DISTANCE, &[1]);
     f.word(cell + 8, handle);
     f.word(cell + 16, LEADER as u64);
-    f.word(LEADER, (IMAGE + crate::cnavy_leader::VTABLE_RVA.0) as u64);
+    f.word(LEADER, (IMAGE + engine_native_parts::cnavy_leader::VTABLE_RVA.0) as u64);
     f.modifier(
         LEADER + 0x418,
         0x33000,
@@ -299,7 +303,7 @@ fn current_task_terms(memory: &impl Memory, memo: &mut OrganisationMemo) -> Task
 
 #[test]
 fn organisation_certified_operands_match_direct_after_task_terms_change() {
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     for factor in [100000_i64, 25000, -1, i64::MIN, i64::MAX] {
         let mut f = weather_fixture();
         f.word(SHIP + 0x270, factor as u64);
@@ -473,7 +477,7 @@ fn organisation_certified_operands_decline_newly_reached_ship_selectors() {
 
 #[test]
 fn organisation_certified_operands_apply_current_own_only_feature_eligibility() {
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     let mut f = fixture();
     f.modifier(SHIP + 0x750, 0x6100, &[(0x1bb, -50000)]);
     f.array(SHIP + 0x918, 0x6300, 1);
@@ -603,7 +607,7 @@ fn organisation_weather_packet_preserves_every_ship_factor_and_critical_operand(
 #[test]
 fn organisation_weather_packet_removes_graph_reads_and_thirteen_existing_snapshot_lookups() {
     let f = weather_fixture();
-    let census = crate::read_census::ReadCensus::new(&f);
+    let census = engine_native_memory::read_census::ReadCensus::new(&f);
     let snapshot = Snapshotted {
         source: &census,
         arena: RefCell::new(modifier_accumulator::SnapshotArena::new(
@@ -755,7 +759,7 @@ fn organisation_weather_packet_rejects_changed_location_and_definition_sources()
 
 #[test]
 fn organisation_shared_selectors_remove_complete_scans_without_replacing_ship_terms() {
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     let mut f = shared_sources_fixture();
     let mut memo = OrganisationMemo::default();
     let expected = organisation_maximum(10_000_000, [100159, 10169, 20183]);
@@ -1043,7 +1047,7 @@ fn organisation_memo_reacquires_mutable_terms_and_never_retains_failed_support()
 }
 
 const NATIVE_KEYS: [u32; 4] = [0x46, 0x47, 0x27e, 0x1bb];
-const ACCUMULATOR: usize = COUNTRY + ccountry::MODIFIER_ACCUMULATOR;
+const ACCUMULATOR: usize = COUNTRY + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
 const ENTRIES: usize = 0x6000;
 const METADATA: usize = 0x9000;
 
@@ -1109,7 +1113,7 @@ fn organisation_batch_keeps_native_order_and_removes_three_full_censuses() {
             &f,
             IMAGE,
             ACCUMULATOR,
-            &crate::modifier_definition::DefinitionMemo::default()
+            &engine_native_parts::modifier_definition::DefinitionMemo::default()
         ),
         scalar
     );
@@ -1146,7 +1150,7 @@ fn organisation_batch_preserves_every_mixed_hook_pattern_and_metadata_order() {
                 &memory,
                 IMAGE,
                 ACCUMULATOR,
-                &crate::modifier_definition::DefinitionMemo::default()
+                &engine_native_parts::modifier_definition::DefinitionMemo::default()
             ),
             Ok(expected),
             "hook mask {mask}"
@@ -1184,7 +1188,7 @@ fn organisation_batch_absence_skips_metadata_but_present_zero_does_not() {
                 &f,
                 IMAGE,
                 ACCUMULATOR,
-                &crate::modifier_definition::DefinitionMemo::default()
+                &engine_native_parts::modifier_definition::DefinitionMemo::default()
             ),
             Ok([0; 4])
         );
@@ -1196,7 +1200,7 @@ fn organisation_batch_absence_skips_metadata_but_present_zero_does_not() {
             &f,
             IMAGE,
             ACCUMULATOR,
-            &crate::modifier_definition::DefinitionMemo::default()
+            &engine_native_parts::modifier_definition::DefinitionMemo::default()
         ),
         Err("modifier metadata table unreadable or null")
     );
@@ -1213,7 +1217,7 @@ fn organisation_batch_absence_skips_metadata_but_present_zero_does_not() {
             &memory,
             IMAGE,
             ACCUMULATOR,
-            &crate::modifier_definition::DefinitionMemo::default()
+            &engine_native_parts::modifier_definition::DefinitionMemo::default()
         ),
         Ok([0; 4])
     );
@@ -1230,7 +1234,7 @@ fn organisation_batch_hook_errors_stop_in_order_even_after_a_direct_census() {
                 &memory,
                 IMAGE,
                 ACCUMULATOR,
-                &crate::modifier_definition::DefinitionMemo::default()
+                &engine_native_parts::modifier_definition::DefinitionMemo::default()
             ),
             Err("snapshot fault")
         );
@@ -1275,7 +1279,7 @@ fn organisation_batch_metadata_failure_precedes_later_hook_failure() {
                     &memory,
                     IMAGE,
                     ACCUMULATOR,
-                    &crate::modifier_definition::DefinitionMemo::default()
+                    &engine_native_parts::modifier_definition::DefinitionMemo::default()
                 ),
                 Err("modifier selector unreadable")
             );
@@ -1326,7 +1330,7 @@ fn organisation_batch_rejects_bad_headers_suffixes_and_entry_faults_before_metad
                 &f,
                 IMAGE,
                 ACCUMULATOR,
-                &crate::modifier_definition::DefinitionMemo::default()
+                &engine_native_parts::modifier_definition::DefinitionMemo::default()
             ),
             Err(expected)
         );
@@ -1376,7 +1380,7 @@ fn organisation_batch_preserves_metadata_rules_and_full_graph_fixed5_results() {
                 &f,
                 IMAGE,
                 ACCUMULATOR,
-                &crate::modifier_definition::DefinitionMemo::default()
+                &engine_native_parts::modifier_definition::DefinitionMemo::default()
             ),
             Ok([100000, if enabled { -1 } else { 0 }, 20000, -50000])
         );
@@ -1385,7 +1389,7 @@ fn organisation_batch_preserves_metadata_rules_and_full_graph_fixed5_results() {
                 &f,
                 IMAGE,
                 ACCUMULATOR,
-                &crate::modifier_definition::DefinitionMemo::default()
+                &engine_native_parts::modifier_definition::DefinitionMemo::default()
             ),
             scalar_values(&f)
         );
@@ -1554,7 +1558,7 @@ fn organisation_doctrine_uses_native_map_size_and_deep_successors() {
 #[test]
 fn gathered_organisation_reads_equal_the_direct_reader_at_every_fault() {
     use super::gathered::FaultAt;
-    use crate::read_census::ReadCensus;
+    use engine_native_memory::read_census::ReadCensus;
     fn through_fields(memory: &impl Memory) -> Result<i64, &'static str> {
         let mut fields = ShipFields::new(IMAGE);
         fields.visit(memory, SHIP);

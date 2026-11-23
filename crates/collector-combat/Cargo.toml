@@ -13,6 +13,11 @@ doctest = false
 test-support = ["collector-memory/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-politics.workspace = true
+engine-native-naval.workspace = true
+engine-native-land.workspace = true
 engine-allocation.workspace = true
 engine-executable.workspace = true
 engine-land-inputs.workspace = true
@@ -27,6 +32,7 @@ collector-primitives.workspace = true
 collector-projection.workspace = true
 
 [dev-dependencies]
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 collector-memory = { workspace = true, features = ["test-support"] }
@@ -45,6 +51,7 @@ collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-observers = { workspace = true, features = ["advisor_changes", "advisor_pool_changes", "air_base_carry_changes", "appearance_changes", "area_changes", "census_changes", "character_changes", "counter_changes", "country_input_changes", "default", "focus_changes", "naval_tree_changes", "opinion_changes", "order_membership_changes", "political_status_changes", "projects_changes", "province_changes", "province_combat_changes", "raid_changes", "rail_changes", "retreat_ban_changes", "roster_changes", "ship_model_changes", "technology_changes", "territory_changes", "test-support", "unit_leader_changes", "unit_leader_trait_changes", "visibility_changes", "war_changes", "weather_changes", "wing_changes", "world_input_changes"] }
 collector-timing = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

@@ -1,8 +1,7 @@
 use super::*;
-use engine_native::{
-    ccountry_database, cdiplomacy_status, cgame_state, memory::CountedMemory, memory::LiveMemory,
-    memory::SliceMemory, msvc_string,
-};
+use engine_native_parts::ccountry_database;
+use engine_native::cgame_state;
+use engine_native_memory::{memory::{CountedMemory, LiveMemory, SliceMemory}, msvc_string};
 use replay_data::rows::RowCodec;
 use std::{hint::black_box, time::Instant};
 
@@ -86,7 +85,7 @@ impl World {
             put(
                 &mut bytes,
                 diplomacy,
-                &((module + cdiplomacy_status::VTABLE_RVA.0) as u64).to_le_bytes(),
+                &((module + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64).to_le_bytes(),
             );
             for offset in [
                 ccountry::COSMETIC_TAG,
@@ -105,7 +104,7 @@ impl World {
             let payload = subjects + index * SUBJECTS_PER_COUNTRY * 4;
             array(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::SUBJECTS,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::SUBJECTS,
                 payload,
                 if populated { SUBJECTS_PER_COUNTRY } else { 0 },
             );

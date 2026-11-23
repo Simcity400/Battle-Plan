@@ -1,8 +1,6 @@
 use super::*;
-use crate::{
-    certified_read::{Certified, Decision},
-    corders_group_member::MembershipSignals,
-};
+use engine_native_memory::certified_read::{Certified, Decision};
+use crate::corders_group_member::MembershipSignals;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {
@@ -176,9 +174,9 @@ impl Cache {
         self.next.clear();
         self.lookup.clear();
         if available {
-            available = crate::allocation::advisory(|| {
+            available = engine_allocation::advisory(|| {
                 if self.next.capacity() < count {
-                    crate::allocation::reserve(&mut self.next, count)
+                    engine_allocation::reserve(&mut self.next, count)
                 } else {
                     Ok(())
                 }
@@ -313,7 +311,7 @@ static CARRIED: AtomicU64 = AtomicU64::new(0);
 static WORK: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 #[cfg(feature = "order_membership_oracle")]
 fn measure() -> [u64; 3] {
-    let counts = crate::memory::ReadCounts::take_current();
+    let counts = engine_native_memory::memory::ReadCounts::take_current();
     counts.add_current();
     [counts.bytes, counts.spans, engine_allocation::growths()]
 }

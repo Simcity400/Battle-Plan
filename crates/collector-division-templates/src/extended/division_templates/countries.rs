@@ -27,7 +27,7 @@ impl Entry {
 }
 
 pub(super) struct Visit {
-    country: engine_native::ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     entry: Entry,
     result: Result<(CountryRow, bool), &'static str>,
 }
@@ -139,7 +139,7 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         changes: &dyn Changes,
     ) -> Result<CountryRow, &'static str> {
         let mut scratch = std::mem::take(&mut self.scratch);
@@ -153,7 +153,7 @@ impl Store {
         memory: &impl Memory,
         base: usize,
         state: usize,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         changes: &dyn Changes,
         scratch: &mut Vec<GarrisonTemplateSelection>,
     ) -> Visit {
@@ -230,7 +230,7 @@ fn read_entry(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    country: engine_native::ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     changes: &dyn Changes,
 ) -> Result<(CountryRow, bool), &'static str> {
     {
@@ -258,7 +258,7 @@ fn read_entry(
             let manager = country
                 .pointer
                 .checked_add(engine_native::ccountry::DEPLOYMENT_MANAGER)
-                .and_then(|at| engine_native::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .and_then(|at| usize::try_from(at).ok())
                 .ok_or("deployment status pointer unreadable or null")?;
             entry.manager = manager;
@@ -280,7 +280,7 @@ fn read_entry(
             let occupation = country
                 .pointer
                 .checked_add(engine_native::ccountry::OCCUPATION_STATUS)
-                .and_then(|at| engine_native::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .and_then(|at| usize::try_from(at).ok())
                 .filter(|&at| at != 0);
             occupation_changed = occupation != entry.occupation;
@@ -386,7 +386,7 @@ mod tests {
         }
         let watches = Watches::enabled(16);
         let mut store = Store::default();
-        let country = engine_native::ccountry::Country {
+        let country = engine_native_memory::country_identity::Country {
             id: 1,
             pointer: 0x1000,
             canonical_slot: 1,

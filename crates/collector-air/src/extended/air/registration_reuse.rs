@@ -1,7 +1,10 @@
 use engine_allocation as allocation;
-use engine_native::{
-    cair_base::DenseEntry, cair_base::HeldBase, cair_base::RegistrationReuse,
-    cair_base::RegistrationRow, cair_base::WalkedBase,
+use engine_native_air::cair_base::{
+    DenseEntry,
+    HeldBase,
+    RegistrationReuse,
+    RegistrationRow,
+    WalkedBase,
 };
 use std::collections::HashMap;
 

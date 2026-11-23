@@ -1,7 +1,7 @@
 
-pub use engine_native::memory::is_canonical_range;
+pub use engine_native_memory::memory::is_canonical_range;
 use crate::raw_plan::{Attempt, CapturePlan, Observations, Request};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::cell::RefCell;
 use std::sync::Mutex;
 
@@ -438,7 +438,7 @@ impl<const N: usize> RawLog<N> {
         let Some(outcome) = outcome else {
             return false;
         };
-        use engine_native::read_plan::Outcome;
+        use engine_native_memory::read_plan::Outcome;
         match outcome {
             Outcome::Complete => {
                 let completed = compiled.requests.len();
@@ -506,7 +506,7 @@ impl<const N: usize> RawLog<N> {
         if let Some(observations) = &self.bytes.observations {
             observations.borrow_mut().hint(address, len);
         }
-        engine_native::prefetch::span(address, len);
+        engine_native_memory::prefetch::span(address, len);
     }
 
     pub fn planned_capture_requires_no_retry(&self) -> bool {
@@ -1117,14 +1117,14 @@ impl<const N: usize> RawLog<N> {
                 })
                 .count()
         };
-        let fields = [engine_native::memory::RecordField {
+        let fields = [engine_native_memory::memory::RecordField {
             source_offset: 0,
             destination_offset: 0,
             len: width,
         }];
-        let layout = engine_native::memory::RecordLayout::new(&fields, width)?;
+        let layout = engine_native_memory::memory::RecordLayout::new(&fields, width)?;
         let completed = memory.copy_records(
-            engine_native::memory::RecordSources::Strided {
+            engine_native_memory::memory::RecordSources::Strided {
                 base: address,
                 stride: width,
                 count: admitted,
@@ -1170,8 +1170,8 @@ impl<const N: usize> RawLog<N> {
     pub fn take_records(
         &mut self,
         memory: &impl Memory,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         mask: u32,
     ) -> Option<(usize, usize)> {
         if !self.allow_unplanned_operation() || self.overflowed {
@@ -1274,7 +1274,7 @@ pub fn lowest_table(mask: u32) -> usize {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn allocation_exercise() -> bool {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let bytes = [7_u8; 64];
     let memory = SliceMemory {
         base: 0x1000,

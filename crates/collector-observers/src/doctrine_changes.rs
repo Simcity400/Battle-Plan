@@ -1,7 +1,7 @@
 use crate::{hook::Hook, watch_registry::WatchRegistry};
 pub use engine_mutations::doctrine_mutations::Domain;
 use engine_mutations::doctrine_mutations::{DOMAINS, SITES};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod pending;

@@ -221,7 +221,7 @@ fn zero_roster_reuses_a_registry_authenticated_type53_root_with_id_word_zero() {
     p64(&mut bytes, OOB_GROUP + corders_group::HANDLE, handle);
     p64(
         &mut bytes,
-        0x61000 + engine_native::reference_bucket::TYPE,
+        0x61000 + engine_native_parts::reference_bucket::TYPE,
         handle,
     );
     p64(
@@ -369,7 +369,7 @@ fn optional_batch_never_promotes_incomplete_positive_theatres() {
 
 #[test]
 fn ambiguous_prior_header_refuses_instead_of_selecting_or_retrying_an_occurrence() {
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &[0; 16],
     };
@@ -422,13 +422,13 @@ fn failed_selected_root_alias_survives_cold_and_cached_copy_and_decode() {
                 fault,
                 attempts: std::cell::Cell::new(0),
             };
-            let mut cache = engine_native::country_memory::Cache::try_with_capacity(128)
+            let mut cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(128)
                 .expect("reserved-land fixture cache allocation");
             if cached {
                 let view = cache.prepare(&source, kit::BASE, kit::GAME_STATE);
                 assert_eq!(
                     view.seed_status(),
-                    engine_native::country_memory::SeedStatus::Unavailable { reason }
+                    engine_native_intelligence::country_memory::SeedStatus::Unavailable { reason }
                 );
             }
             let mut job = NavalJob::fixture();

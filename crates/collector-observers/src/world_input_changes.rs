@@ -4,7 +4,7 @@ use crate::{
 };
 pub use engine_mutations::world_input_mutations::Domain;
 use engine_mutations::{world_input_mutations::DOMAINS, world_input_mutations::MUTATIONS};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -89,12 +89,12 @@ unsafe fn invoke<const SITE: usize>(args: [usize; 4]) -> usize {
         before: [None, None],
     };
     if receiver != 0 && matches!(site, Forward::DesignMove | Forward::DesignClone) {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Acquire);
-        call.before[0] = engine_native::cequipment_variant::identity(&memory, base, args[0]).ok();
+        call.before[0] = engine_native_parts::equipment_variant_identity::identity(&memory, base, args[0]).ok();
         if site == Forward::DesignMove {
             call.before[1] =
-                engine_native::cequipment_variant::identity(&memory, base, args[1]).ok();
+                engine_native_parts::equipment_variant_identity::identity(&memory, base, args[1]).ok();
         }
     }
     unsafe { invoke_forwarder(receiver, Some(site), call, original) }

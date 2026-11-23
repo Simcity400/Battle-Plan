@@ -1,6 +1,7 @@
 use crate::hook::Hook;
 use engine_mutations::{opinion_mutations::MUTATIONS, opinion_mutations::RELATIONS};
-use engine_native::{Memory, crelation_status::Mark};
+use engine_native_memory::Memory;
+use engine_native::crelation::status::Mark;
 use std::{
     ops::Range,
     ptr,
@@ -78,14 +79,14 @@ pub fn invalidate() {
 #[doc = " The opinion a live status holds. The receiver is the status the native"]
 #[doc = " writer is about to read and write."]
 fn opinion(status: usize) -> i32 {
-    let address = status.wrapping_add(engine_native::crelation_status::OPINION);
+    let address = status.wrapping_add(engine_native::crelation::status::OPINION);
     unsafe { std::ptr::read_volatile(address as *const i32) }
 }
 
 #[doc = " The owning diplomacy of a live status the native writer is writing. Only"]
 #[doc = " the status constructor writes it (`engine_native::crelation_status::DIPLOMACY_STATUS`)."]
 fn diplomacy(status: usize) -> usize {
-    let address = status.wrapping_add(engine_native::crelation_status::DIPLOMACY_STATUS);
+    let address = status.wrapping_add(engine_native::crelation::status::DIPLOMACY_STATUS);
     unsafe { std::ptr::read_volatile(address as *const usize) }
 }
 
@@ -301,8 +302,8 @@ pub fn store_lent() {
 }
 
 pub fn record(
-    counts: engine_native::crelation_status::BaselineCounts,
-    previous: &mut engine_native::crelation_status::BaselineCounts,
+    counts: engine_native::crelation::status::BaselineCounts,
+    previous: &mut engine_native::crelation::status::BaselineCounts,
 ) {
     let now = [
         counts.full_walks,
@@ -735,7 +736,7 @@ mod tests {
     fn unrecognised_prologues_degrade_to_full_reads() {
         let _lock = test_lock();
         let bytes = vec![0_u8; 0x10];
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };
@@ -757,12 +758,12 @@ mod tests {
         let _lock = test_lock();
         let mut status = [0_i32; 0x400];
         let address = status.as_mut_ptr() as usize;
-        let at = engine_native::crelation_status::OPINION / 4;
+        let at = engine_native::crelation::status::OPINION / 4;
         observe_for_test(true);
         install_for_test();
         let mut consumed = cursor();
         let (mut output, mut required) = ([Mark::default(); 4], 0);
-        status[engine_native::crelation_status::DIPLOMACY_STATUS / 4..][..2]
+        status[engine_native::crelation::status::DIPLOMACY_STATUS / 4..][..2]
             .copy_from_slice(&[0x5678, 0x1234]);
         let drained = |consumed: &mut u64, output: &mut [Mark], required: &mut usize| {
             drain(consumed, output, required).map(|(_, marks)| marks)

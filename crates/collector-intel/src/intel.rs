@@ -18,12 +18,28 @@ use engine_intelligence::{
     agency_operation_buffers, ccountry_intel_network, ccountry_operation_manager,
     ccountry_operation_token_manager, strategic_operatives,
 };
+use engine_native_memory::{Memory, cpdx_array::Array, read, read_slice, walk::Outcome};
 use engine_native::{
-    Memory, agency_upgrade_levels, ccharacter, ccharacter_manager, ccountry, ccountry_intel,
-    ccryptology, ccurrent_autonomy_status, cdiplomacy_status, cgame_state, cintelligence_agency,
-    coperation_instance, coperative_leader, cpdx_array::Array, crelation_status, cstate,
-    csubject_relation, csubject_relation::Name, cwar_relation, operation_assigned_operative,
-    operative_missions, read, read_slice, walk::Outcome,
+    ccharacter::{self, manager as ccharacter_manager},
+    ccountry,
+    cgame_state,
+    crelation::{
+        status as crelation_status,
+        subject::{self as csubject_relation, Name},
+    },
+    cstate,
+    cwar_relation,
+};
+use engine_native_politics::{ccurrent_autonomy_status, cdiplomacy_status};
+use engine_native_intelligence::{
+    agency_upgrade_levels,
+    ccountry_intel,
+    ccryptology,
+    cintelligence_agency,
+    coperation_instance,
+    coperative_leader,
+    operation_assigned_operative,
+    operative_missions,
 };
 use engine_scripts::{cflag_manager, cscript_flag, cvariables};
 use replay_data::{
@@ -101,15 +117,15 @@ pub fn network_summary_boundary(invalidate: bool) {
         NETWORK_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
-static ROOT_OUT_KEY: std::sync::Mutex<engine_native::modifier_definition::NamedKey> =
+static ROOT_OUT_KEY: std::sync::Mutex<engine_native_parts::modifier_definition::NamedKey> =
     std::sync::Mutex::new(operative_missions::root_out_key());
-static OFFER_SPEED_KEY: std::sync::Mutex<engine_native::modifier_definition::NamedKey> =
+static OFFER_SPEED_KEY: std::sync::Mutex<engine_native_parts::modifier_definition::NamedKey> =
     std::sync::Mutex::new(agency_operation_buffers::speed_key());
 
 fn with_held_key<R>(
-    held: &std::sync::Mutex<engine_native::modifier_definition::NamedKey>,
-    fresh: engine_native::modifier_definition::NamedKey,
-    walk: impl FnOnce(&mut engine_native::modifier_definition::NamedKey) -> R,
+    held: &std::sync::Mutex<engine_native_parts::modifier_definition::NamedKey>,
+    fresh: engine_native_parts::modifier_definition::NamedKey,
+    walk: impl FnOnce(&mut engine_native_parts::modifier_definition::NamedKey) -> R,
 ) -> R {
     match held.try_lock() {
         Ok(mut key) => walk(&mut key),
@@ -168,8 +184,8 @@ pub fn operative_mission_demand(
             memory,
             base,
             state,
-            engine_native::walk::Buffer::Count,
-            engine_native::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
+            engine_native_memory::walk::Buffer::Count,
             key,
         )
     })
@@ -528,8 +544,8 @@ fn flag_demand(memory: &impl Memory, base: usize, state: usize) -> Outcome {
         memory,
         base,
         state,
-        engine_native::walk::Buffer::Count,
-        engine_native::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
         None,
         Some(&mut scopes),
     );
@@ -2282,13 +2298,13 @@ impl Captured {
                         let _reads = read_accounting::table(TABLES[15]);
                         if grow_vec(
                             &mut buffer.scratch,
-                            engine_native::country_intel_row::STRIDE,
+                            engine_native_intelligence::country_intel_row::STRIDE,
                         ) {
                             ccountry_intel::walk_with_reserved_visit(
                                 memory,
                                 base,
                                 state,
-                                engine_native::walk::Buffer::Growing(&mut buffer.rows.rows),
+                                engine_native_memory::walk::Buffer::Growing(&mut buffer.rows.rows),
                                 &mut buffer.scratch,
                                 &mut |owner, root, country| {
                                     if !source_error {
@@ -3971,9 +3987,9 @@ fn walk_variables(
             return walk;
         }
         let (scopes, entries, names) = (
-            engine_native::walk::Buffer::Growing(scopes),
-            engine_native::walk::Buffer::Growing(entries),
-            engine_native::walk::Buffer::Growing(names),
+            engine_native_memory::walk::Buffer::Growing(scopes),
+            engine_native_memory::walk::Buffer::Growing(entries),
+            engine_native_memory::walk::Buffer::Growing(names),
         );
         match reuse.as_mut() {
             Some(reuse) => {
@@ -4171,8 +4187,8 @@ fn walk_flags(
         memory,
         base,
         state,
-        engine_native::walk::Buffer::Growing(output),
-        engine_native::walk::Buffer::Growing(scratch),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(scratch),
         reuse,
         None,
     )
@@ -4182,8 +4198,8 @@ fn walk_flags_buffer(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    mut output: engine_native::walk::Buffer<'_, ScopedFlag>,
-    mut scratch: engine_native::walk::Buffer<'_, cscript_flag::Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, ScopedFlag>,
+    mut scratch: engine_native_memory::walk::Buffer<'_, cscript_flag::Row>,
     mut reuse: Option<FlagReuse<'_>>,
     mut scopes: Option<&mut usize>,
 ) -> Outcome {
@@ -4256,7 +4272,7 @@ fn walk_flags_buffer(
                         memory,
                         base,
                         head,
-                        engine_native::walk::Buffer::Count,
+                        engine_native_memory::walk::Buffer::Count,
                     ),
                     available,
                 )
@@ -4746,7 +4762,7 @@ fn select_marked(
         let owner = baseline.owner(mark.diplomacy).or_else(|| {
             let country = read::<u64>(
                 memory,
-                mark.diplomacy.checked_add(cdiplomacy_status::COUNTRY)?,
+                mark.diplomacy.checked_add(engine_native_parts::cdiplomacy_status_layout::COUNTRY)?,
             )?;
             let country = usize::try_from(country)
                 .ok()
@@ -5100,7 +5116,7 @@ fn copy_capitulation_pass(
         let _ = capspan(
             log,
             memory,
-            diplomacy.checked_add(cdiplomacy_status::COUNTRY),
+            diplomacy.checked_add(engine_native_parts::cdiplomacy_status_layout::COUNTRY),
             8,
             M_CAPITULATION,
         );
@@ -5121,7 +5137,7 @@ fn copy_capitulation_pass(
         let goals = capspan(
             log,
             memory,
-            diplomacy.checked_add(cdiplomacy_status::OWNED_WARGOALS),
+            diplomacy.checked_add(engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS),
             16,
             M_CAPITULATION,
         );
@@ -5142,7 +5158,7 @@ fn copy_capitulation_pass(
 }
 
 fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals: Array) {
-    let Some(vtable) = engine_sites::at(base, engine_native::cwar_goal::VTABLE_RVA) else {
+    let Some(vtable) = engine_sites::at(base, engine_native::cwar_relation::goals::VTABLE_RVA) else {
         return;
     };
     for ordinal in 0..goals.count {
@@ -5164,7 +5180,7 @@ fn copy_war_goals(log: &mut RawLog<1>, memory: &impl Memory, base: usize, goals:
         if capspan(
             log,
             memory,
-            goal.checked_add(engine_native::cwar_goal::RECIPIENT),
+            goal.checked_add(engine_native::cwar_relation::goals::RECIPIENT),
             4,
             M_CAPITULATION,
         )
@@ -5259,10 +5275,9 @@ impl Captured {
 #[cfg(any(test, feature = "test-support"))]
 pub mod relations_test_kit {
     use super::*;
-    use engine_native::{
-        cdiplomacy_status, cgame_state, cguarantee_relation, cmarket_access_rights_relation,
-        crelation, memory::SliceMemory,
-    };
+        use engine_native::{cgame_state, crelation};
+    use engine_native_parts::{cguarantee_relation, cmarket_access_rights_relation};
+    use engine_native_memory::memory::SliceMemory;
 
     pub const BASE: usize = 0;
     pub const GS: usize = 0x1000;
@@ -5291,7 +5306,7 @@ pub mod relations_test_kit {
         let relations: Vec<u64> = relations.iter().map(|&r| r as u64).collect();
         array(
             bytes,
-            DIPLOMACY[owner] + cdiplomacy_status::OWNED_RELATIONS,
+            DIPLOMACY[owner] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
             0x3400 + owner * 0x40,
             &relations,
         );
@@ -5335,17 +5350,17 @@ pub mod relations_test_kit {
             p64(
                 &mut bytes,
                 diplomacy,
-                (BASE + cdiplomacy_status::VTABLE_RVA.0) as u64,
+                (BASE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
             );
             p64(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::COUNTRY,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
                 country as u64,
             );
             let slots: Vec<u64> = (0..4).map(|t| status(owner, t) as u64).collect();
             array(
                 &mut bytes,
-                diplomacy + cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
                 matrix_data(owner),
                 &slots,
             );
@@ -5544,7 +5559,7 @@ pub fn intel_shadow_fixture(value: i64) -> Captured {
         unreachable!("a new frame holds its own buffer")
     };
     for (index, row) in buffer.rows.rows.iter_mut().enumerate() {
-        *row = engine_native::country_intel_row::Row {
+        *row = engine_native_intelligence::country_intel_row::Row {
             owner_country: 7,
             target_index: index as u32,
             army: value,
@@ -6176,7 +6191,7 @@ mod tests {
                 false
             }
         }
-        let memory = engine_native::memory::CountedMemory::new(Unreadable);
+        let memory = engine_native_memory::memory::CountedMemory::new(Unreadable);
         let mut captured = Captured::with_capacities(&Capacities::default());
         for hour in 0..24 {
             let accounting = read_accounting::Capture::new();
@@ -6480,13 +6495,13 @@ mod tests {
         );
     }
 
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     use replay_data::rows::TableSchema;
 
     fn small() -> (Capacities, Captured) {
         let capacities = Capacities {
             rows: [3; N],
-            intel_scratch: 2 * engine_native::country_intel_row::STRIDE,
+            intel_scratch: 2 * engine_native_intelligence::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
@@ -6593,8 +6608,8 @@ mod tests {
         );
         put(
             &mut bytes,
-            AGENCY + cintelligence_agency::NAME + engine_native::msvc_string::CAPACITY,
-            &engine_native::msvc_string::INLINE_CAPACITY.to_le_bytes(),
+            AGENCY + cintelligence_agency::NAME + engine_native_memory::msvc_string::CAPACITY,
+            &engine_native_memory::msvc_string::INLINE_CAPACITY.to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -8179,7 +8194,7 @@ mod tests {
         assert_eq!(direct.tuple_rows[0].ordinal, 0);
         assert_eq!(direct.tuple_rows[1].ordinal, 1);
         let mut intel = relations_kit::intel_captured(16, 16);
-        let memory = engine_native::memory::CountedMemory::new(memory);
+        let memory = engine_native_memory::memory::CountedMemory::new(memory);
         let native = read_accounting::Capture::new();
         let (report, _) = relations_kit::split(&memory, &mut intel);
         let counts = native.finish();
@@ -8320,7 +8335,7 @@ mod tests {
 
     #[test]
     fn relations_job_matches_faults_with_identical_reasons() {
-        use engine_native::{csubject_relation, cwar_relation};
+        use engine_native::{crelation::subject as csubject_relation, cwar_relation};
         let valid = relations_kit::opinionated_fixture();
         type Fault = (&'static str, fn(&mut Vec<u8>));
         let cases: &[Fault] = &[
@@ -8345,7 +8360,7 @@ mod tests {
                 |bytes: &mut Vec<u8>| {
                     relations_kit::p32(
                         bytes,
-                        relations_kit::DIPLOMACY[0] + cdiplomacy_status::RELATIONS + 12,
+                        relations_kit::DIPLOMACY[0] + engine_native_parts::cdiplomacy_status_layout::RELATIONS + 12,
                         2,
                     );
                 },
@@ -8412,7 +8427,8 @@ mod tests {
 
     #[test]
     fn relations_war_and_subject_elements_are_skipped_but_consume_ordinals() {
-        use engine_native::{cguarantee_relation, csubject_relation, cwar_relation};
+        use engine_native_parts::cguarantee_relation;
+        use engine_native::{crelation::subject as csubject_relation, cwar_relation};
         let mut bytes = relations_kit::fixture();
         relations_kit::relation(
             &mut bytes,
@@ -8443,8 +8459,8 @@ mod tests {
         relations_kit::relation(
             &mut bytes,
             market,
-            engine_native::cmarket_access_rights_relation::VTABLE_RVA,
-            engine_native::cmarket_access_rights_relation::TYPE,
+            engine_native_parts::cmarket_access_rights_relation::VTABLE_RVA,
+            engine_native_parts::cmarket_access_rights_relation::TYPE,
             1,
             3,
         );
@@ -8482,7 +8498,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (cguarantee_relation::TYPE, 1),
-                (engine_native::cmarket_access_rights_relation::TYPE, 3),
+                (engine_native_parts::cmarket_access_rights_relation::TYPE, 3),
             ]
         );
         let mut intel = relations_kit::intel_captured(16, 16);
@@ -8986,11 +9002,11 @@ mod tests {
         cap_put(
             &mut bytes,
             CAP_DIPLO,
-            &(cdiplomacy_status::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::COUNTRY,
+            CAP_DIPLO + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             &(CAP_COUNTRY as u64).to_le_bytes(),
         );
         cap_put(&mut bytes, CAP_DIPLO + cdiplomacy_status::CAPITULATED, &[1]);
@@ -9005,7 +9021,7 @@ mod tests {
     fn cap_capacities() -> Capacities {
         let mut capacities = Capacities {
             rows: [2; N],
-            intel_scratch: 2 * engine_native::country_intel_row::STRIDE,
+            intel_scratch: 2 * engine_native_intelligence::country_intel_row::STRIDE,
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
@@ -9154,7 +9170,7 @@ mod tests {
         bytes.resize(0x5000 - CAP_GAME + 0x1000, 0);
         cap_array(
             &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::OWNED_WARGOALS,
+            CAP_DIPLO + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS,
             0x4400,
             2,
         );
@@ -9165,11 +9181,11 @@ mod tests {
             cap_put(
                 &mut bytes,
                 goal,
-                &(engine_native::cwar_goal::VTABLE_RVA.0 as u64).to_le_bytes(),
+                &(engine_native::cwar_relation::goals::VTABLE_RVA.0 as u64).to_le_bytes(),
             );
             cap_put(
                 &mut bytes,
-                goal + engine_native::cwar_goal::RECIPIENT,
+                goal + engine_native::cwar_relation::goals::RECIPIENT,
                 &recipient.to_le_bytes(),
             );
         }
@@ -9223,7 +9239,7 @@ mod tests {
         bytes.resize(0x5000 - CAP_GAME + 0x1000, 0);
         cap_array(
             &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::OWNED_WARGOALS,
+            CAP_DIPLO + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS,
             0x4400,
             1,
         );
@@ -9231,11 +9247,11 @@ mod tests {
         cap_put(
             &mut bytes,
             0x4500,
-            &(engine_native::cwar_goal::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native::cwar_relation::goals::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
-            0x4500 + engine_native::cwar_goal::RECIPIENT,
+            0x4500 + engine_native::cwar_relation::goals::RECIPIENT,
             &7_u32.to_le_bytes(),
         );
         let memory = Hole {
@@ -9296,7 +9312,7 @@ mod tests {
         bytes.resize(0x5000 - CAP_GAME + 0x1000, 0);
         cap_array(
             &mut bytes,
-            CAP_DIPLO + cdiplomacy_status::OWNED_WARGOALS,
+            CAP_DIPLO + engine_native_parts::cdiplomacy_status_layout::OWNED_WARGOALS,
             0x4400,
             1,
         );
@@ -9304,11 +9320,11 @@ mod tests {
         cap_put(
             &mut bytes,
             0x4500,
-            &(engine_native::cwar_goal::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native::cwar_relation::goals::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         cap_put(
             &mut bytes,
-            0x4500 + engine_native::cwar_goal::RECIPIENT,
+            0x4500 + engine_native::cwar_relation::goals::RECIPIENT,
             &7_u32.to_le_bytes(),
         );
         let trace = || Trace {

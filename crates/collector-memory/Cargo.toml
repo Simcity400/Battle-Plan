@@ -10,16 +10,16 @@ license.workspace = true
 doctest = false
 
 [features]
-acquisition_profile = ["engine-native/acquisition_profile", "dep:collector-status", "dep:serde"]
-alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-native/alloc-fault-injection"]
+acquisition_profile = ["engine-native-memory/acquisition_profile", "dep:collector-status", "dep:serde"]
+alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-native-memory/alloc-fault-injection"]
 test-support = ["dep:collector-test-support"]
 
 [dependencies]
+engine-native-memory.workspace = true
 collector-status = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 engine-sites.workspace = true
 engine-allocation.workspace = true
-engine-native.workspace = true
 replay-data.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 collector-test-support = { workspace = true, optional = true }
@@ -37,7 +37,7 @@ workspace = true
 collector-memory = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

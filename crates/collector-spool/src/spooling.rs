@@ -12,7 +12,8 @@ use collector_projection::projection::{
 use collector_projection::table_conversion::table_iter;
 use collector_status::status::status;
 use collector_workers::spool_phases::{HELPER, PhaseObserver, Steps, retry_cause};
-use engine_native::{cgame_state::Clock, walk::Outcome};
+use engine_native::cgame_state::Clock;
+use engine_native_memory::walk::Outcome;
 #[cfg(test)]
 use replay_capture_spool::spool::SegmentedSpool;
 use replay_recording::control::ControlRecord;
@@ -3782,7 +3783,7 @@ pub fn campaign_name(bytes: &[u8]) -> io::Result<String> {
 pub(crate) use collector_projection::table_conversion::{table, unavailable};
 
 fn area_node(
-    nodes: &engine_native::controller_areas::Output,
+    nodes: &engine_native::cprovince::controller_areas::Output,
     province: &engine_native::cprovince::Row,
 ) -> Option<replay_data::rows::ControllerAreaNode> {
     let node = nodes.nodes.get(province.area_node? as usize)?;
@@ -3793,7 +3794,7 @@ fn area_node(
 }
 
 fn area_node_equal(
-    nodes: &engine_native::controller_areas::Output,
+    nodes: &engine_native::cprovince::controller_areas::Output,
     province: &engine_native::cprovince::Row,
     previous: &ProvinceRow,
 ) -> bool {
@@ -4530,7 +4531,7 @@ pub unsafe fn spool_allocation_fixture(
 pub fn campaign_frame(campaign: &[u8], signal: i64, hour: i32) -> Captured {
     let mut frame = captured(hour);
     let clock = frame.clock.as_mut().unwrap();
-    clock.campaign_id = engine_native::capture_text::Owned {
+    clock.campaign_id = engine_native_memory::capture_text::Owned {
         bytes: campaign.to_vec(),
         len: campaign.len(),
     };
@@ -4577,8 +4578,8 @@ pub mod write_behind_tests;
 const ID: &[u8] = b"21b7cc84-3028-4f65-8e0d-adf2f37ca1a6";
 
 #[cfg(any(test, feature = "test-support"))]
-fn owned_text(bytes: &[u8]) -> engine_native::capture_text::Owned {
-    engine_native::capture_text::Owned {
+fn owned_text(bytes: &[u8]) -> engine_native_memory::capture_text::Owned {
+    engine_native_memory::capture_text::Owned {
         bytes: bytes.to_vec(),
         len: bytes.len(),
     }
@@ -5885,7 +5886,7 @@ mod tests {
                         for &table in &exclusive_tables {
                             assert_eq!(
                                 frame.table_reads[table.index()],
-                                engine_native::memory::ReadCounts::ZERO,
+                                engine_native_memory::memory::ReadCounts::ZERO,
                                 "{fixture:?} hour {hour} {table:?}"
                             );
                         }
@@ -6264,7 +6265,7 @@ mod tests {
         assert_eq!(resumed["last_error"], failed["last_error"]);
     }
 
-    use engine_native::msvc_string::Text;
+    use engine_native_memory::msvc_string::Text;
     use replay_capture_spool::spool::{SegmentSink, recover_prefix};
     use replay_frame::{branches::BranchReason, branches::Parentage};
     use std::{cell::RefCell, io::Write, rc::Rc};
@@ -6732,12 +6733,12 @@ mod tests {
         source.factions_result = Outcome::Rows { len: 1 };
         source.faction_names[..6].copy_from_slice(&[0, 0, b'A', 0, 255, b'B']);
         source.faction_names_len = 6;
-        source.faction_members[0] = engine_native::cfaction_system::MemberRow {
+        source.faction_members[0] = engine_native::cfaction::system::MemberRow {
             country: 9,
             faction: u64::MAX,
             ordinal: 0,
         };
-        source.faction_members[1] = engine_native::cfaction_system::MemberRow {
+        source.faction_members[1] = engine_native::cfaction::system::MemberRow {
             country: 1,
             faction: u64::MAX,
             ordinal: 1,

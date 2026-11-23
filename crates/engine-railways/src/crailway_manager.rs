@@ -1,13 +1,15 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cprovince, cprovince_railway_info as info,
     memory::{RecordField, RecordLayout, RecordSources},
-    rail_neighbor as edge, read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
 };
+use engine_native::{cgame_state, cprovince};
+use crate::{cprovince_railway_info as info, rail_neighbor as edge};
 
 pub mod fresh_inputs;
 pub mod selected_inputs;
@@ -84,7 +86,7 @@ fn railway_percentage_from_ids(
         if eta_read::<u64>(memory, node, info::PROVINCE_RECORD)? != definition as u64
             || eta_read::<u64>(memory, node, info::BUILDING_STATUS)?
                 != eta_address(from.0, cprovince::BUILDING_STATUS)? as u64
-            || eta_read::<u32>(memory, definition, crate::province_definition::ID)? != from.1
+            || eta_read::<u32>(memory, definition, engine_native::cprovince::definition::ID)? != from.1
         {
             return Err("ETA railway province backlink mismatch");
         }
@@ -101,17 +103,17 @@ fn railway_percentage_from_ids(
                     let efficiency = if building == 0 {
                         0
                     } else {
-                        eta_vtable(memory, base, building, crate::cbuilding::VTABLE_RVA)?;
-                        if eta_read::<u64>(memory, building, crate::cbuilding::BUILDING_STATUS)?
+                        eta_vtable(memory, base, building, engine_native_parts::cbuilding::VTABLE_RVA)?;
+                        if eta_read::<u64>(memory, building, engine_native_parts::cbuilding::BUILDING_STATUS)?
                             != eta_address(from.0, cprovince::BUILDING_STATUS)? as u64
                         {
                             return Err("ETA rail building backlink mismatch");
                         }
-                        let level = eta_read::<i16>(memory, building, crate::cbuilding::LEVEL)?;
+                        let level = eta_read::<i16>(memory, building, engine_native_parts::cbuilding::LEVEL)?;
                         let healthy =
-                            eta_read::<i16>(memory, building, crate::cbuilding::HEALTHY_LEVEL)?;
+                            eta_read::<i16>(memory, building, engine_native_parts::cbuilding::HEALTHY_LEVEL)?;
                         let partial = if level != 0 && level != healthy {
-                            eta_read::<i64>(memory, building, crate::cbuilding::PARTIAL_HEALTH)?
+                            eta_read::<i64>(memory, building, engine_native_parts::cbuilding::PARTIAL_HEALTH)?
                         } else {
                             0
                         };
@@ -137,7 +139,7 @@ fn eta_address(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .ok_or("ETA railway address overflow")
 }
 
-fn eta_read<T: crate::memory::Raw>(
+fn eta_read<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -156,7 +158,7 @@ fn eta_key(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("ETA railway address overflow")
 }
 
-fn eta_global<T: crate::memory::Raw>(
+fn eta_global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -259,10 +261,12 @@ fn eta_state_infrastructure(
     game_state: usize,
     state: usize,
 ) -> Result<i64, &'static str> {
-    use crate::{
-        cbuilding as building, cbuilding_database as database, cbuilding_status as status,
-        cbuilding_template as template, cstate,
+    use engine_native_parts::{
+        cbuilding as building,
+        cbuilding_database as database,
+        cbuilding_template as template,
     };
+    use engine_native::{cprovince::buildings as status, cstate};
     eta_vtable(memory, base, state, cstate::VTABLE_RVA)?;
     let states = eta_array(memory, game_state, cgame_state::STATES, 8)?;
     let state_id = eta_read::<u32>(memory, state, cstate::ID)?;
@@ -355,7 +359,7 @@ pub fn cooldown_list(
         .ok_or("rail cooldown list unreadable or invalid")?;
     crate::allocation::resize_default(ids, list.count as usize)
         .map_err(|_| "rail cooldown list allocation failed")?;
-    crate::cpdx_array::copy_u32s(memory, list, ids, "rail cooldown list unreadable")
+    engine_native_memory::cpdx_array::copy_u32s(memory, list, ids, "rail cooldown list unreadable")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1183,7 +1187,7 @@ const COOLDOWN_FIELD: [RecordField; 1] = [RecordField {
     len: 4,
 }];
 const DEFINITION_ID_FIELD: [RecordField; 1] = [RecordField {
-    source_offset: crate::province_definition::ID,
+    source_offset: engine_native::cprovince::definition::ID,
     destination_offset: 0,
     len: 4,
 }];

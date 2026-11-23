@@ -5,7 +5,8 @@ use collector_states::{
         tests::{NoReads, STATE, memory, request_layout},
     },
 };
-use engine_native::{Memory, cgame_state, cstate, memory::SliceMemory, walk::Outcome};
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
+use engine_native::{cgame_state, cstate};
 use std::{
     cell::Cell,
     sync::{

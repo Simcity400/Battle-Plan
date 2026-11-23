@@ -1,7 +1,7 @@
 use collector_hooks::hook::{Hook, Registers, Tap};
 use collector_primitives::shared_lane::SharedLane;
 use engine_land_inputs::{combat_log_events as native, combat_log_sites as sites};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     cell::Cell,
     ops::Range,
@@ -243,11 +243,11 @@ impl Drop for Call {
         SIGNAL.set(self.previous_signal);
     }
 }
-fn memory() -> engine_native::memory::LiveMemory {
-    unsafe { engine_native::memory::LiveMemory::new() }
+fn memory() -> engine_native_memory::memory::LiveMemory {
+    unsafe { engine_native_memory::memory::LiveMemory::new() }
 }
 fn signal() -> Option<i64> {
-    engine_native::read(
+    engine_native_memory::read(
         &memory(),
         engine_sites::at(
             BASE.load(SeqCst),
@@ -303,7 +303,7 @@ fn observe(result: Result<(), &'static str>) {
 }
 fn equipment_enabled() -> bool {
     match engine_sites::at(BASE.load(SeqCst), engine_dlc::dlc_feature_state::MASK_RVA)
-        .and_then(|p| engine_native::read::<u32>(&memory(), p))
+        .and_then(|p| engine_native_memory::read::<u32>(&memory(), p))
     {
         Some(mask) => mask & engine_dlc::dlc_feature_state::EQUIPMENT_LOSSES_MASK != 0,
         None => {
@@ -446,7 +446,7 @@ unsafe extern "system-unwind" fn group_create(array: usize, element: usize) {
             let manager = array
                 .checked_sub(engine_land_inputs::ncombat_log_cmanager::GROUPS)
                 .ok_or("combat log manager address underflow")?;
-            let result = engine_native::read::<u64>(&m, element)
+            let result = engine_native_memory::read::<u64>(&m, element)
                 .ok_or("combat log new group pointer unreadable")?
                 as usize;
             let identity = "combat log creation identity differs";
@@ -458,22 +458,22 @@ unsafe extern "system-unwind" fn group_create(array: usize, element: usize) {
                 engine_land_inputs::ncombat_log_corders_group_logs::VTABLE_RVA,
             )
             .ok_or(identity)?;
-            if engine_native::read::<u64>(&m, manager) != Some(manager_vtable as u64)
-                || engine_native::read::<u64>(&m, result) != Some(logs_vtable as u64)
+            if engine_native_memory::read::<u64>(&m, manager) != Some(manager_vtable as u64)
+                || engine_native_memory::read::<u64>(&m, result) != Some(logs_vtable as u64)
             {
                 return Err(identity);
             }
-            let country = engine_native::read::<u32>(
+            let country = engine_native_memory::read::<u32>(
                 &m,
                 manager + engine_land_inputs::ncombat_log_cmanager::COUNTRY,
             )
             .ok_or("combat log manager country unreadable")?;
-            let reference = engine_native::read::<u64>(
+            let reference = engine_native_memory::read::<u64>(
                 &m,
                 result + engine_land_inputs::ncombat_log_corders_group_logs::GROUP,
             )
             .ok_or("combat log group reference unreadable")?;
-            let count = engine_native::read::<u32>(&m, array + 12)
+            let count = engine_native_memory::read::<u32>(&m, array + 12)
                 .and_then(|n| n.checked_sub(1))
                 .ok_or("combat log appended group count invalid")?;
             emit(native::Fact {

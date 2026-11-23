@@ -1,10 +1,9 @@
 use super::*;
 #[cfg(test)]
-use engine_native::memory::CountedMemory;
-use engine_native::{
-    ccountry, cgame_state, csub_unit_definition as subunit,
-    memory::SliceMemory,
-};
+use engine_native_memory::memory::CountedMemory;
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::csub_unit_definition as subunit;
+use engine_native_memory::memory::SliceMemory;
 
 pub struct Fixture {
     pub bytes: Vec<u8>,
@@ -473,7 +472,7 @@ fn country_template_cache_quiet_hours_read_and_allocate_nothing_and_membership_i
         0x8000 + occupation::SECONDARY_BASE,
         occupation::SECONDARY_VTABLE_RVA.0 as u64,
     );
-    let country = ccountry::Country {
+    let country = engine_native_memory::country_identity::Country {
         pointer: 0x3000,
         canonical_slot: 1,
         id: 1,
@@ -1641,7 +1640,7 @@ fn tracked_variant_replacement_with_an_unchanged_header_invalidates_template_cor
     let pointers = [0x7500_usize, 0x7700, 0x7900];
     let handles = [21_u64, 22, 23].map(|id| (id << 32) | u64::from(variant::REFERENCE_TYPE));
     for (&pointer, handle) in pointers.iter().zip(handles) {
-        source.bytes[pointer..][..8].copy_from_slice(&(variant::VTABLE_RVA.0 as u64).to_le_bytes());
+        source.bytes[pointer..][..8].copy_from_slice(&(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes());
         source.bytes[pointer + 8..][..8].copy_from_slice(&handle.to_le_bytes());
     }
     let header = 0x5000 + native::EXCLUDED_VARIANT_DATA;

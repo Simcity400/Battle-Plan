@@ -14,6 +14,9 @@ export-types = ["dashboard-base/export-types"]
 test-support = ["dashboard-base/test-support"]
 
 [dependencies]
+engine-native-memory.workspace = true
+engine-native-air.workspace = true
+engine-native-intelligence.workspace = true
 content-reader-defines.workspace = true
 content-reader-key-names.workspace = true
 content-reader-military.workspace = true
@@ -32,7 +35,6 @@ dashboard-follow = { path = "../dashboard-follow" }
 dashboard-query = { workspace = true }
 dashboard-text = { workspace = true }
 engine-intelligence = { workspace = true }
-engine-native = { workspace = true }
 game-model = { workspace = true }
 replay-columnar = { workspace = true }
 replay-data = { workspace = true }
@@ -67,7 +69,7 @@ content-reader-gui = { workspace = true, features = ["test-support"] }
 content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-mesh = { workspace = true, features = ["layer-fixtures"] }
 content-reader-politics = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 playhead = { path = "../playhead", features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
@@ -77,8 +79,10 @@ replay-identity = { workspace = true, features = ["test-support"] }
 replay-tools = { workspace = true, features = ["default", "journal"] }
 shader-pipeline = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-log = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-once_cell = { workspace = true }
 unify-smallvec = { workspace = true }
 unify-uuid = { workspace = true }

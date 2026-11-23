@@ -1,5 +1,6 @@
 
-use crate::{Memory, cpdx_array::Array, cstrategic_resource, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::cstrategic_resource;
 use engine_sites::Rva;
 
 pub const SINGLETON_RVA: Rva = Rva(0x33dd4d0);

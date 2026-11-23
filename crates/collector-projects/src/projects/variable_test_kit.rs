@@ -80,7 +80,7 @@ impl Memory for Fixture {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.set(self.reads.get() + 1);
         !self.refuse.get()
-            && engine_native::memory::SliceMemory {
+            && engine_native_memory::memory::SliceMemory {
                 base: self.pointer,
                 bytes: &self.bytes.borrow(),
             }

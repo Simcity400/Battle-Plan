@@ -1,8 +1,6 @@
 use collector_missions::mission_changes::{Changes, Counts};
 use engine_allocation as allocation;
-use engine_native::{
-    cair_regional_mission::Carry, cair_regional_mission::Registration, cair_regional_mission::Root,
-};
+use engine_native_air::cair_regional_mission::{Carry, Registration, Root};
 use std::ops::Range;
 mod order;
 pub use order::OrderLabel;
@@ -198,8 +196,8 @@ impl<'a> MissionReuse<'a> {
     pub unsafe fn finish_with_order(
         self,
         complete: bool,
-        memory: &impl engine_native::Memory,
-        wings: &[engine_native::cair_regional_mission::WingIdentity],
+        memory: &impl engine_native_memory::Memory,
+        wings: &[engine_native_air::cair_regional_mission::WingIdentity],
         output: &mut Vec<OrderLabel>,
     ) {
         self.store.finish(complete);

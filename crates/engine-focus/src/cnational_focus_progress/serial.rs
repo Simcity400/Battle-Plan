@@ -5,9 +5,9 @@ pub fn walk_buffer(
     base: usize,
     country: usize,
     country_id: u32,
-    mut rows: crate::walk::Buffer<'_, Row>,
-    mut completed: crate::walk::Buffer<'_, CompletedRow>,
-    tokens: crate::walk::Buffer<'_, u8>,
+    mut rows: engine_native_memory::walk::Buffer<'_, Row>,
+    mut completed: engine_native_memory::walk::Buffer<'_, CompletedRow>,
+    tokens: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> FocusWalk {
     let mut arena = Tokens {
         bytes: tokens,
@@ -61,7 +61,7 @@ fn summary(
     country: usize,
     country_id: u32,
     root: usize,
-    output: &mut crate::walk::Buffer<'_, Row>,
+    output: &mut engine_native_memory::walk::Buffer<'_, Row>,
     arena: &mut Tokens<'_>,
 ) -> Result<Outcome, &'static str> {
     let tree = read::<u64>(memory, at(country, ccountry::FOCUS_TREE)?)
@@ -137,7 +137,7 @@ fn completed_rows(
     memory: &impl Memory,
     country_id: u32,
     root: usize,
-    output: &mut crate::walk::Buffer<'_, CompletedRow>,
+    output: &mut engine_native_memory::walk::Buffer<'_, CompletedRow>,
     arena: &mut Tokens<'_>,
 ) -> Result<Outcome, &'static str> {
     let roster = Array::read(memory, at(root, COMPLETED_DATA)?, COMPLETED_STRIDE)

@@ -4,7 +4,7 @@ fn access_raw(
     candidate: bool,
     observe: impl FnOnce(
         &mut Store,
-        &engine_native::memory::LiveMemory,
+        &engine_native_memory::memory::LiveMemory,
         usize,
         u64,
     ) -> Result<(), &'static str>,
@@ -19,7 +19,7 @@ fn access_raw(
         if !store.decisions.matches(generation) {
             return;
         }
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         if let Err(reason) = observe(store, &memory, owner.base, generation) {
             store.decisions.invalidate();
             store.reject(reason);
@@ -51,7 +51,7 @@ fn country(memory: &impl Memory, base: usize, status: usize) -> Result<usize, &'
     let expected = engine_sites::at(base, engine_decisions::cdecision_status::VTABLE_RVA)
         .ok_or("decision writer owner status differs")? as u64;
     let Some(country_addr) = status.checked_add(engine_decisions::cdecision_status::COUNTRY) else {
-        if engine_native::read::<u64>(memory, status) != Some(expected) {
+        if engine_native_memory::read::<u64>(memory, status) != Some(expected) {
             return Err("decision writer owner status differs");
         }
         return Err("decision writer owner unreadable");
@@ -200,7 +200,7 @@ pub fn taken_erase(status: usize, definition: usize, ordinal: Option<u32>, swap:
             Some(0),
         );
         value.actor = world.country_object(country(memory, base, status)?)?;
-        value.token = engine_native::msvc_string::Descriptor::read(
+        value.token = engine_native_memory::msvc_string::Descriptor::read(
             memory,
             definition + engine_decisions::cdecision::TOKEN,
         )?;
@@ -220,7 +220,7 @@ pub fn candidates(
         let owner = world.country_object(country_ptr)?;
         let hour = world.hour()?;
         for &(definition, target, root) in items {
-            let token = engine_native::msvc_string::Descriptor::read(
+            let token = engine_native_memory::msvc_string::Descriptor::read(
                 memory,
                 definition + engine_decisions::cdecision::TOKEN,
             )?;
@@ -267,7 +267,7 @@ pub fn ignored(country: usize, token: usize, ignored: bool) {
                 ordinal: 0,
                 political_power: None,
             },
-            engine_native::msvc_string::Descriptor::read(memory, token)?,
+            engine_native_memory::msvc_string::Descriptor::read(memory, token)?,
             None,
         )
     });

@@ -387,10 +387,12 @@ fn wing_fixture(bytes: &[u8]) -> (Fixture, Folder) {
 }
 
 fn set_wing_name(f: &mut Fixture, bytes: &[u8]) {
-    use engine_native::{
-        raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,
-        raid_tooltip_operands::REFERENCES, raid_tooltip_operands::WING_NAME,
-        raid_tooltip_operands::WING_RESOLVED,
+    use engine_native_air::raid_tooltip_operands::{
+        ARMY_RESOLVED,
+        NAME,
+        REFERENCES,
+        WING_NAME,
+        WING_RESOLVED,
     };
     let values = [
         (REFERENCES, 0, 0),
@@ -574,10 +576,13 @@ fn active_raid_wing_names_share_stored_text_language_and_utf8_rules() {
 fn active_raid_wing_name_table_refuses_capture_and_join_faults() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use engine_native::{
-        raid_tooltip_operands::ARMY_RESOLVED, raid_tooltip_operands::NAME,
-        raid_tooltip_operands::REFERENCES, raid_tooltip_operands::UNREADABLE,
-        raid_tooltip_operands::WING_NAME, raid_tooltip_operands::WING_RESOLVED,
+    use engine_native_air::raid_tooltip_operands::{
+        ARMY_RESOLVED,
+        NAME,
+        REFERENCES,
+        UNREADABLE,
+        WING_NAME,
+        WING_RESOLVED,
     };
     let (mut f, _folder) = wing_fixture(b"");
     let frame = f.frame.clone();
@@ -678,7 +683,7 @@ fn unit_name_refuses_other_wings_ended_raids_and_unread_tables() {
     if let TableView::Complete(TableRows::Raids(rows)) =
         &mut *f.frame.tables[TableId::Raids.index()]
     {
-        rows[0].phase = engine_native::craid_instance::PHASE_ENDED;
+        rows[0].phase = engine_native_air::craid_instance::PHASE_ENDED;
     }
     f.with_renderer(&mut fresh(), Content::default(), |renderer| {
         assert!(
@@ -729,7 +734,7 @@ fn active_raids_must_agree_on_one_wing_name() {
                 .map(|mut row| {
                     row.raid = other;
                     if !same
-                        && row.kind == engine_native::raid_tooltip_operands::WING_NAME
+                        && row.kind == engine_native_air::raid_tooltip_operands::WING_NAME
                         && row.key == 0
                     {
                         row.raw = i64::from_le_bytes(*b"Else\0\0\0\0");
@@ -793,7 +798,7 @@ fn active_raid_wing_names_have_no_country_or_wing_cap() {
                 .flat_map(|index| {
                     prototype.iter().cloned().map(move |mut row| {
                         row.raid = RAID + ((index as u64) << 32);
-                        if row.kind == engine_native::raid_tooltip_operands::REFERENCES
+                        if row.kind == engine_native_air::raid_tooltip_operands::REFERENCES
                             && row.key == 1
                         {
                             row.raw = (WING + ((index as u64) << 32)) as i64;

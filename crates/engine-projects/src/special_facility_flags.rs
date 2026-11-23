@@ -1,8 +1,7 @@
 
-use crate::{
-    Memory, ccountry, cgraphical_map, cin_game_idler, cpdx_array::Array, nproject_cprogram,
-    nproject_cprogram_status, read, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::ccountry;
+use crate::{cgraphical_map, cin_game_idler, nproject_cprogram, nproject_cprogram_status};
 
 pub const FACILITY_FLAG: usize = 0x175b;
 
@@ -13,7 +12,7 @@ pub struct Row {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -26,7 +25,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -34,7 +33,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         let graphics = province_graphics(memory, base)?;
@@ -133,7 +132,8 @@ fn province_graphics(memory: &impl Memory, base: usize) -> Result<Array, &'stati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const GAME: usize = 0x1000;
     const COUNTRIES: usize = 0x2000;

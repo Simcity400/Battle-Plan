@@ -1,10 +1,17 @@
 
-use crate::{
-    Memory, ccountry, cgame_state, cpdx_array::Array, cstrategic_operative as strategic,
-    cstrategic_operative_manager as manager,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
     memory::{Raw, RecordField, RecordLayout, RecordSources, packed_fields},
-    operation_token_map, read, read_slice,
+    read,
+    read_slice,
     walk::Outcome,
+};
+use engine_native::{ccountry, cgame_state};
+use crate::{
+    cstrategic_operative as strategic,
+    cstrategic_operative_manager as manager,
+    operation_token_map,
 };
 
 pub const ENTRY_HASH: usize = 0x00;
@@ -49,7 +56,7 @@ pub struct Walk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> Walk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -63,8 +70,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(entries),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(entries),
     )
 }
 
@@ -72,8 +79,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut entries: crate::walk::Buffer<'_, Entry>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut entries: engine_native_memory::walk::Buffer<'_, Entry>,
 ) -> Walk {
     const BATCH: usize = 64;
     const OBJECT_FIELDS: [RecordField; 10] = packed_fields([

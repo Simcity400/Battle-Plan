@@ -13,9 +13,9 @@ pub const PHASE_NAMES: [&str; 4] = [
 ];
 use collector_observers::naval_tree_changes as changes;
 use collector_projection::certified::{Snapshot, Store as Rows};
-use engine_native::{
-    Memory, carmy::DivisionSeed, carmy_leader, ccountry, modifier_breakdown, read,
-};
+use engine_native_memory::{Memory, read};
+use engine_native::{carmy::DivisionSeed, carmy_leader, ccountry};
+use engine_native_politics::modifier_breakdown;
 use replay_data::rows::{DivisionPanelSourceRow, SharedDivisionPanelSourceRow};
 use std::sync::{Arc, OnceLock};
 type RowSnapshot = Snapshot<SharedDivisionPanelSourceRow>;
@@ -150,7 +150,7 @@ impl SourceSnapshot {
 }
 #[derive(Clone, Copy)]
 pub struct Selection {
-    country: Option<(u32, Result<ccountry::Country, &'static str>)>,
+    country: Option<(u32, Result<engine_native_memory::country_identity::Country, &'static str>)>,
     movement: Option<carmy_leader::MovementPreparation>,
     commander: Option<(usize, Result<u64, &'static str>)>,
     province: Result<usize, &'static str>,
@@ -161,13 +161,13 @@ pub struct Selection {
 pub struct Preparation {
     memo: carmy_leader::LeaderMemo,
     memo_used: bool,
-    countries: Map<u32, Result<ccountry::Country, &'static str>>,
+    countries: Map<u32, Result<engine_native_memory::country_identity::Country, &'static str>>,
     commanders: Map<usize, u64>,
     provinces: Map<usize, Option<(u32, usize)>>,
     route_provinces: Map<u32, usize>,
-    last_country: Option<(u32, Result<ccountry::Country, &'static str>)>,
+    last_country: Option<(u32, Result<engine_native_memory::country_identity::Country, &'static str>)>,
     last_province: Option<(usize, bool, Option<(u32, usize)>)>,
-    roster: Option<engine_native::cpdx_array::Array>,
+    roster: Option<engine_native_memory::cpdx_array::Array>,
     reads: NativeReads,
     local_province_refusal: bool,
 }
@@ -205,7 +205,7 @@ impl Preparation {
     pub fn allocated_bytes(&self) -> usize {
         self.memo.allocated_bytes()
             + self.reads.allocated_bytes()
-            + table_bytes::<u32, Result<ccountry::Country, &'static str>>(self.countries.capacity())
+            + table_bytes::<u32, Result<engine_native_memory::country_identity::Country, &'static str>>(self.countries.capacity())
             + table_bytes::<usize, u64>(self.commanders.capacity())
             + table_bytes::<usize, Option<(u32, usize)>>(self.provinces.capacity())
             + table_bytes::<u32, usize>(self.route_provinces.capacity())
@@ -325,7 +325,7 @@ impl Preparation {
                     (receiver, handle)
                 }),
         };
-        let province = engine_native::division_panel_operands::selected_province_cached(
+        let province = engine_native_land::division_panel_operands::selected_province_cached(
             memory,
             &mut self.roster,
             state,
@@ -481,7 +481,7 @@ struct Held {
 }
 pub struct Store {
     roots: Table<(u8, u64), Held>,
-    countries: Table<u32, (u64, Result<ccountry::Country, &'static str>, bool)>,
+    countries: Table<u32, (u64, Result<engine_native_memory::country_identity::Country, &'static str>, bool)>,
     leaders: Table<usize, (u64, u64, u8)>,
     rows: Rows<SharedDivisionPanelSourceRow>,
     turn: u64,
@@ -881,7 +881,7 @@ impl Store {
                         country.pointer,
                         country
                             .pointer
-                            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                            .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                             .ok_or("division source country overflow")?,
                         reads,
                     )?;
@@ -971,7 +971,7 @@ impl Store {
             let context_result = (|| {
                 let province = match prepared {
                     Some(prepared) => prepared.province,
-                    None => engine_native::division_panel_operands::selected_province_in(
+                    None => engine_native_land::division_panel_operands::selected_province_in(
                         memory,
                         &mut roster,
                         state,
@@ -997,7 +997,7 @@ impl Store {
                     Some(context) => *context,
                     None => {
                         let context = prepared.and_then(|p| p.context).unwrap_or_else(|| {
-                            engine_native::division_panel_operands::province_state(
+                            engine_native_land::division_panel_operands::province_state(
                                 memory, base, province,
                             )
                         })?;
@@ -1294,7 +1294,7 @@ impl Store {
                 }
                 observed.result
             } else {
-                engine_native::division_panel_operands::terrain(
+                engine_native_land::division_panel_operands::terrain(
                     memory,
                     base,
                     pointer,
@@ -1415,7 +1415,7 @@ impl Store {
                 scratch.extend_from_slice(&observed.variants);
                 return observed.result;
             }
-            let count = engine_native::division_panel_operands::held_variants(
+            let count = engine_native_land::division_panel_operands::held_variants(
                 memory,
                 base,
                 seed,
@@ -1742,7 +1742,7 @@ mod tests {
     }
     #[test]
     fn unchanged_contexts_and_changed_new_removed_divisions_match_fresh_publication() {
-        use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
+        use engine_native::{carmy, cequipment_variant::pool as pool, cgame_state};
         use replay_data::rows::tables;
         let _serial = serial(&MEMBERSHIP_TEST);
         const DIVISIONS: usize = 64;
@@ -2172,7 +2172,7 @@ mod tests {
 
     #[test]
     fn a_store_of_an_earlier_world_is_staged_as_empty_and_admitted_without_pool_reads() {
-        use engine_native::{carmy, cequipment_variant_pool as pool, cgame_state};
+        use engine_native::{carmy, cequipment_variant::pool as pool, cgame_state};
         use replay_data::rows::tables;
         let _serial = serial(&MEMBERSHIP_TEST);
         const DIVISIONS: usize = 64;
@@ -2313,7 +2313,7 @@ mod tests {
 
     #[test]
     fn repeated_dirty_refusals_keep_rows_and_membership_allocations() {
-        use engine_native::{carmy, cequipment_variant_pool};
+        use engine_native::{carmy, cequipment_variant::pool as cequipment_variant_pool};
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(1, 0, 0);
         operands::presize();
@@ -2362,7 +2362,7 @@ mod tests {
 
     #[test]
     fn a_pool_clear_replaces_refused_membership_with_successful_empty_membership() {
-        use engine_native::{carmy, cequipment_variant_pool};
+        use engine_native::{carmy, cequipment_variant::pool as cequipment_variant_pool};
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(1, 0, 0);
         operands::presize();
@@ -2454,7 +2454,8 @@ mod tests {
 
     #[test]
     fn first_multi_entry_failures_withdraw_all_ordinals_and_publication_checks_the_rows() {
-        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        use engine_native::cequipment_variant as variant;
+        use engine_native_land::division_panel_operands;
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
@@ -2474,13 +2475,13 @@ mod tests {
             let put = |bytes: &mut [u8], at: usize, value: u64| {
                 bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
             };
-            put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
+            put(&mut world.bytes, pointer, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
             put(&mut world.bytes, pointer + 8, handle);
             let terrain = pointer + division_panel_operands::VARIANT_TERRAIN_ATTRITION;
             put(&mut world.bytes, terrain, values as u64);
             put(
                 &mut world.bytes,
-                terrain + engine_native::cpdx_array::CAPACITY,
+                terrain + engine_native_memory::cpdx_array::CAPACITY,
                 (count << 32) | count,
             );
             for ordinal in 0..count {
@@ -2585,7 +2586,8 @@ mod tests {
 
     #[test]
     fn source_invalidation_replaces_carried_terrain_and_quiet_values_need_no_reads() {
-        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        use engine_native::cequipment_variant as variant;
+        use engine_native_land::division_panel_operands;
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
@@ -2603,13 +2605,13 @@ mod tests {
         let put = |bytes: &mut [u8], at: usize, value: u64| {
             bytes[at..at + 8].copy_from_slice(&value.to_le_bytes())
         };
-        put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
+        put(&mut world.bytes, pointer, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, pointer + 8, handle);
         let terrain = pointer + division_panel_operands::VARIANT_TERRAIN_ATTRITION;
         put(&mut world.bytes, terrain, values as u64);
         put(
             &mut world.bytes,
-            terrain + engine_native::cpdx_array::CAPACITY,
+            terrain + engine_native_memory::cpdx_array::CAPACITY,
             (1u64 << 32) | 1,
         );
         put(&mut world.bytes, values, 5);
@@ -2756,7 +2758,8 @@ mod tests {
 
     #[test]
     fn an_equal_terrain_reread_allocates_nothing_and_each_change_publishes_only_its_rows() {
-        use engine_native::{cequipment_variant as variant, division_panel_operands};
+        use engine_native::cequipment_variant as variant;
+        use engine_native_land::division_panel_operands;
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(0, 1, 0);
         operands::presize();
@@ -2778,11 +2781,11 @@ mod tests {
         let resize = |bytes: &mut [u8], count: u64| {
             put(
                 bytes,
-                terrain + engine_native::cpdx_array::CAPACITY,
+                terrain + engine_native_memory::cpdx_array::CAPACITY,
                 (count << 32) | count,
             )
         };
-        put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
+        put(&mut world.bytes, pointer, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, pointer + 8, handle);
         put(&mut world.bytes, terrain, values as u64);
         resize(&mut world.bytes, 3);
@@ -2887,7 +2890,7 @@ mod tests {
 
     #[test]
     fn retirement_reauthenticates_only_affected_pools_before_following_variants() {
-        use engine_native::{cequipment_variant as variant, cequipment_variant_pool as pool};
+        use engine_native::cequipment_variant::{self as variant, pool as pool};
         let _serial = serial(&MEMBERSHIP_TEST);
         operands::demand(2, 1, 0);
         operands::presize();
@@ -2933,7 +2936,7 @@ mod tests {
             .copy_from_slice(&1u32.to_le_bytes());
         put(&mut world.bytes, entries, pointer as u64);
         put(&mut world.bytes, entries + 8, 1);
-        put(&mut world.bytes, pointer, variant::VTABLE_RVA.0 as u64);
+        put(&mut world.bytes, pointer, engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64);
         put(&mut world.bytes, pointer + 8, handle);
         let mut store = Store::default();
         store.retire_memberships().unwrap();

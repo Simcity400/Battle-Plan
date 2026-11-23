@@ -1,4 +1,5 @@
-use crate::{Memory, cnaval_combatant::field};
+use engine_native_memory::Memory;
+use crate::cnaval_combatant::field;
 use engine_sites::Rva;
 pub const VTABLE_RVA: Rva = Rva(0x02ab_2d48);
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -9,7 +10,7 @@ pub struct Row {
     pub maximum_strength: i64,
     pub maximum_organisation: i64,
 }
-pub(crate) fn read(
+pub fn read(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
@@ -24,7 +25,7 @@ pub(crate) fn read(
     }
     let variant = field::<u64>(memory, pointer, 0x18)? as usize;
     if field::<u64>(memory, variant, 0)?
-        != engine_sites::at(base, crate::cequipment_variant::VTABLE_RVA)
+        != engine_sites::at(base, engine_native_parts::equipment_variant_identity::VTABLE_RVA)
             .ok_or("convoy variant module overflow")? as u64
     {
         return Err("convoy ship variant identity mismatch");
@@ -46,7 +47,7 @@ pub(crate) fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn convoy_speed_comes_from_stored_variant_at_208() {
@@ -60,7 +61,7 @@ mod tests {
         put(
             &mut bytes,
             0x200,
-            crate::cequipment_variant::VTABLE_RVA.0 as u64,
+            engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, 0x408, 321_000);
         let memory = SliceMemory {

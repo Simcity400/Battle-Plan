@@ -42,18 +42,18 @@ pub(super) fn presize(
         LIVE_ROLES[2].fetch_max(total_rows, std::sync::atomic::Ordering::Relaxed);
         super::advisors::remember_definition_demand(demand);
     }
-    let leaders = engine_native::ccountry_leader::walk(
+    let leaders = engine_native_politics::ccountry_leader::walk(
         memory,
         base,
         state,
-        engine_native::walk::Buffer::Count,
+        engine_native_memory::walk::Buffer::Count,
     );
     let leaders = match leaders {
-        engine_native::walk::Outcome::Rows { len } => Ok(len),
-        engine_native::walk::Outcome::Truncated { len, unread_rows } => len
+        engine_native_memory::walk::Outcome::Rows { len } => Ok(len),
+        engine_native_memory::walk::Outcome::Truncated { len, unread_rows } => len
             .checked_add(unread_rows as usize)
             .ok_or("country leader demand overflow"),
-        engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
+        engine_native_memory::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     if let Ok(leaders) = leaders {
         raise(&mut capacity.rows[1], rows(leaders, 1));
@@ -90,8 +90,8 @@ pub(super) fn presize(
             .ok_or("unit leader sizing count overflow")?;
         let text = (|| {
             let demand =
-                cunit_leader::read_text(memory, pointer, engine_native::walk::Buffer::Count);
-            if let engine_native::walk::Outcome::Unavailable { reason } = demand.outcome {
+                cunit_leader::read_text(memory, pointer, engine_native_memory::walk::Buffer::Count);
+            if let engine_native_memory::walk::Outcome::Unavailable { reason } = demand.outcome {
                 return Err(reason);
             }
             unit_bytes = unit_bytes

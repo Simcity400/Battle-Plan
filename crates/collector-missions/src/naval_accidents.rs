@@ -1,4 +1,4 @@
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_naval_history::cnaval_accident_report as native;
 use replay_data::rows::NavalAccidentReportRow;
 use std::sync::{Mutex, MutexGuard};

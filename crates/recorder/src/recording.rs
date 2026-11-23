@@ -23,10 +23,7 @@ use std::{
     ffi::OsString,
     fs::{self, File},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use windows_sys::Win32::System::{
@@ -865,7 +862,7 @@ pub(crate) struct AllocationFault {
 }
 
 #[cfg(feature = "alloc-fault-injection")]
-fn allocation_fault(value: &OsStr) -> Result<AllocationFault, String> {
+fn allocation_fault(value: &std::ffi::OsStr) -> Result<AllocationFault, String> {
     let (phase, ordinal) = value
         .to_str()
         .and_then(|value| value.split_once(':'))
@@ -2170,7 +2167,7 @@ pub(crate) fn capture(
                 .map_err(|withheld| withheld.to_string())
                 .and_then(|()| {
                     engine_native::cgame_state::clock_sites(base)
-                        .and_then(|()| engine_native::command_inputs::idler_sites(base))
+                        .and_then(|()| engine_native_air::command_inputs::idler_sites(base))
                         .map_err(str::to_owned)
                 });
             if let Err(withheld) = readable {
@@ -5437,6 +5434,7 @@ fn save_waiting_with(locked: &WaitingLock, names: &mut WaitingNames) -> Result<S
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     #[test]
     fn failed_cli_timestamp_never_blocks_detach_or_invents_the_controller_poll_time() {
         let root = crate::test_support::allocation_test_directory("stop-timestamp-failure");

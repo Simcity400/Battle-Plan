@@ -7,7 +7,7 @@ use engine_events::{
     event_feed_sites::CountryIdentity, event_feed_sites::provenance as native,
     event_feed_sites::provenance::Caller,
 };
-use engine_native::{Memory, memory::LiveMemory};
+use engine_native_memory::{Memory, memory::LiveMemory};
 use replay_data::{
     event_feed_rows::EventFeedCause, event_feed_rows::EventFeedCountry,
     event_feed_rows::EventFeedRoute, event_feed_rows::EventFeedSource,

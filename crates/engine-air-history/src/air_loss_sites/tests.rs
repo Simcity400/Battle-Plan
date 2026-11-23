@@ -1,5 +1,8 @@
 use super::*;
-use crate::{cgame_state, cstrategic_air_manager, cstrategic_region, memory::SliceMemory};
+use engine_native::cgame_state;
+use engine_native_air::cstrategic_air_manager;
+use engine_native_parts::cstrategic_region;
+use engine_native_memory::memory::SliceMemory;
 
 const BASE: usize = 0x0001_4000_0000;
 const GAME: usize = 0x10000;
@@ -281,7 +284,7 @@ fn air_loss_current_record_reads_the_selected_words_in_one_copy() {
     let mut f = Fixture::new();
     f.value(30, 7);
     f.value(31, 9);
-    let memory = crate::memory::CountingMemory {
+    let memory = engine_native_memory::memory::CountingMemory {
         inner: f.memory(),
         calls: std::cell::Cell::new(0),
         bytes: std::cell::Cell::new(0),
@@ -300,7 +303,7 @@ fn air_loss_after_an_existing_history_reads_only_the_witnesses_and_words() {
     let snapshot = f.before(0, 1);
     f.value(30, 100_000);
     f.value(31, 100_000);
-    let memory = crate::memory::CountingMemory {
+    let memory = engine_native_memory::memory::CountingMemory {
         inner: f.memory(),
         calls: std::cell::Cell::new(0),
         bytes: std::cell::Cell::new(0),
@@ -334,8 +337,8 @@ fn air_loss_family_selection_keeps_native_priority_unknown_and_content_flags() {
     let mut f = Fixture::new();
     const WING: usize = 0x19100;
     const DEFINITION: usize = 0x1a000;
-    f.pointer(WING, BASE + cair_wing::VTABLE_RVA.0);
-    f.pointer(WING + cair_wing::POOL, POOL);
+    f.pointer(WING, BASE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
+    f.pointer(WING + engine_native_parts::cair_wing_layout::POOL, POOL);
     f.pointer(POOL + cair_wing_pool::DEFINITION, DEFINITION);
     f.pointer(DEFINITION, BASE + csub_unit_definition::VTABLE_RVA.0);
     for (flags, own, credited) in [
@@ -377,12 +380,12 @@ fn air_loss_family_selection_keeps_native_priority_unknown_and_content_flags() {
         selected_family(&f.memory(), BASE, WING, 0),
         Err("air loss definition vtable unreadable")
     );
-    f.pointer(WING + cair_wing::POOL, 0);
+    f.pointer(WING + engine_native_parts::cair_wing_layout::POOL, 0);
     assert_eq!(
         selected_family(&f.memory(), BASE, WING, 0),
         Err("air loss writer object vtable unreadable or mismatched")
     );
-    f.pointer(WING + cair_wing::POOL, usize::MAX);
+    f.pointer(WING + engine_native_parts::cair_wing_layout::POOL, usize::MAX);
     assert_eq!(
         selected_family(&f.memory(), BASE, WING, 0),
         Err("air loss writer object vtable unreadable or mismatched")
@@ -482,8 +485,8 @@ impl ScaleFixture {
             f.array(pool + cair_wing_pool::WINGS, first + 0x720, 1);
             f.pointer(first + 0x720, address + wing);
             f.pointer(pool + cair_wing_pool::DEFINITION, address + 0x2000);
-            f.pointer(wing, BASE + cair_wing::VTABLE_RVA.0);
-            f.pointer(wing + cair_wing::POOL, address + pool);
+            f.pointer(wing, BASE + engine_native_parts::cair_wing_layout::VTABLE_RVA.0);
+            f.pointer(wing + engine_native_parts::cair_wing_layout::POOL, address + pool);
             f.airs.push(address + air);
             f.wings.push(address + wing);
             f.values.push(address + values);
@@ -605,8 +608,8 @@ fn air_loss_gathered_call_equals_the_serial_reads() {
             assert_eq!(f.call(&f.memory(), ordinal, enemy, cause), Some(serial));
         }
     }
-    fn counting(f: &ScaleFixture) -> crate::memory::CountingMemory<'_> {
-        crate::memory::CountingMemory {
+    fn counting(f: &ScaleFixture) -> engine_native_memory::memory::CountingMemory<'_> {
+        engine_native_memory::memory::CountingMemory {
             inner: f.memory(),
             calls: std::cell::Cell::new(0),
             bytes: std::cell::Cell::new(0),
@@ -616,7 +619,7 @@ fn air_loss_gathered_call_equals_the_serial_reads() {
     f.serial(&memory, 0, 0, 1).unwrap();
     let serial = memory.calls.get();
     let memory = counting(&f);
-    crate::ccountry::Reader::new(&memory, BASE, game)
+    engine_native::ccountry::Reader::new(&memory, BASE, game)
         .unwrap()
         .resolve(1)
         .unwrap();
@@ -667,7 +670,7 @@ fn air_loss_gathered_faults_fall_back_to_the_serial_reads() {
 #[test]
 #[ignore = "release synthetic guarded-read cost; not gameplay wall time"]
 fn air_loss_live_memory_five_thousand_country_cost() {
-    use crate::memory::{CountedMemory, LiveMemory, ReadCounts};
+    use engine_native_memory::memory::{CountedMemory, LiveMemory, ReadCounts};
 
     let f = ScaleFixture::new(5_000);
     let memory = CountedMemory::new(unsafe { LiveMemory::new() });

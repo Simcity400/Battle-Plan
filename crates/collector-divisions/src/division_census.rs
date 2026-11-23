@@ -1,7 +1,19 @@
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    memory::{RecordField, RecordLayout, RecordSources},
+    read,
+    walk::Outcome,
+};
 use engine_native::{
-    Memory, carmy, carmy_leader, ccountry, cequipment_variant_pool::DivisionSource, cgame_state,
-    cpdx_array::Array, cprovince, creferenced_division_template, ctheatre, memory::RecordField,
-    memory::RecordLayout, memory::RecordSources, read, walk::Outcome,
+    carmy,
+    carmy_leader,
+    ccountry,
+    cequipment_variant::pool::DivisionSource,
+    cgame_state,
+    cprovince,
+    creferenced_division_template,
+    ctheatre,
 };
 
 use engine_allocation::SharedBox;
@@ -404,7 +416,7 @@ impl Census {
     pub fn install_rows(&self, output: &mut Vec<carmy::Row>) -> Outcome {
         let outcome = self.outcome();
         let len = outcome.len();
-        if let Err(reason) = engine_native::walk::Buffer::Growing(output).ensure(len) {
+        if let Err(reason) = engine_native_memory::walk::Buffer::Growing(output).ensure(len) {
             return Outcome::Unavailable { reason };
         }
         output[..len].copy_from_slice(&self.rows[..len]);
@@ -631,7 +643,7 @@ impl Census {
         let reader = ccountry::Reader::new(memory, base, state)?;
         let [countries, links] = reader.arrays();
         self.required_counts = links.count as usize;
-        engine_native::walk::Buffer::Growing(&mut self.counts).ensure(self.required_counts)?;
+        engine_native_memory::walk::Buffer::Growing(&mut self.counts).ensure(self.required_counts)?;
 
         let countries = Countries { countries, links };
         let mut found = false;
@@ -1214,7 +1226,7 @@ impl CoreIdentities {
         let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
         let normal = engine_sites::at(self.base, engine_native::corders_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let army = engine_sites::at(self.base, engine_native::carmy_group::VTABLE_RVA)
+        let army = engine_sites::at(self.base, engine_native_parts::carmy_group::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
         if vtable != normal && vtable != army {
             return Err("division orders group vtable mismatch");

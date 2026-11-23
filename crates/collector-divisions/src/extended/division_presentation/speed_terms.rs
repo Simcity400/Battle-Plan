@@ -1,8 +1,12 @@
 use engine_executable::modifier_keys as keys;
-use engine_native::{
-    Memory, carmy::DivisionSeed, ccountry, cpdx_array::Array, cprovince,
-    modifier_accumulator as accumulator, modifier_accumulator::Value, walk::Outcome,
+use engine_native_memory::{
+    Memory,
+    cpdx_array::Array,
+    modifier_cache::Value,
+    walk::Outcome,
 };
+use engine_native::{carmy::DivisionSeed, ccountry, cprovince};
+use engine_native_parts::modifier_accumulator as accumulator;
 use engine_naval_history::{
     cnaval_unit_transfer::SpeedCache, cnaval_unit_transfer::TransportRegion,
 };
@@ -89,7 +93,7 @@ fn state_keys(branch: u8) -> ([u32; 2], usize) {
 #[derive(Clone, Copy)]
 struct HeldCountry {
     owner: u32,
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     start: usize,
     len: usize,
 }
@@ -1032,7 +1036,7 @@ impl SpeedTerms {
             };
         let combat_at = |list: Array, index: u32| {
             list.element(index, 8)
-                .and_then(|at| engine_native::read::<u64>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                 .map(|pointer| pointer as usize)
                 .ok_or("division combat reference unreadable")
         };
@@ -1168,7 +1172,7 @@ impl SpeedTerms {
                     Some(id) => id,
                     None => location
                         .checked_add(cprovince::ID)
-                        .and_then(|address| engine_native::read::<u32>(memory, address)),
+                        .and_then(|address| engine_native_memory::read::<u32>(memory, address)),
                 }
                 .ok_or("division location id unreadable"),
             };
@@ -2003,7 +2007,7 @@ impl SpeedTerms {
                     None => country.and_then(|country| {
                         let at = country
                             .pointer
-                            .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                            .checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
                             .ok_or("country accumulator address overflow")?;
                         let at_values = values.len();
                         let mut key_buf = [0_u32; 64];
@@ -2199,7 +2203,7 @@ impl SpeedTerms {
                             located.push((pointer, id));
                             continue;
                         }
-                        match engine_native::cstrategic_region::id(memory, base, pointer) {
+                        match engine_native_parts::cstrategic_region::id(memory, base, pointer) {
                             Ok(Some(id)) => {
                                 if engine_allocation::advisory(|| {
                                     engine_allocation::reserve_map(&mut held.regions, 1)
@@ -2221,7 +2225,7 @@ impl SpeedTerms {
                 });
             } else {
                 for &pointer in pointers.iter() {
-                    match engine_native::cstrategic_region::id(memory, base, pointer) {
+                    match engine_native_parts::cstrategic_region::id(memory, base, pointer) {
                         Ok(Some(id)) => {
                             self.regions.push(TransportRegion { id, pointer });
                             located.push((pointer, id));
@@ -2369,7 +2373,7 @@ fn copy_route(
     values.clear();
     reserve(values, len)?;
     values.resize(len, 0);
-    if engine_native::cpdx_array::copy_u32s(memory, path, values, "division route unreadable")
+    if engine_native_memory::cpdx_array::copy_u32s(memory, path, values, "division route unreadable")
         .is_ok()
     {
         arena.extend(values.iter().copied().map(Ok));
@@ -2377,7 +2381,7 @@ fn copy_route(
         for index in 0..path.count {
             arena.push(
                 path.element(index, 4)
-                    .and_then(|at| engine_native::read::<u32>(memory, at))
+                    .and_then(|at| engine_native_memory::read::<u32>(memory, at))
                     .ok_or("division route position unreadable"),
             );
         }

@@ -12,4 +12,4 @@ An exile row is possible only for a committed division whose template has origin
 
 An acquisition pass shares the country census, definition metadata, and template width terms. It reads the division's identity, ownership, base speed, and template pointer separately. Capture width terms in template order, retaining the first read that failed. Each division checks its own name arena between the template's width count and payload reads.
 
-[Combat input reader](../../crates/engine-native/src/carmy_combat_inputs.rs) · [Combat input parity tests](../../crates/engine-native/src/carmy_combat_inputs/tests.rs)
+[Combat input reader](../../crates/engine-native/src/carmy_combat_inputs.rs) · [Combat input parity tests](../../crates/engine-native-land/src/division_combat_inputs/tests.rs)

@@ -1,5 +1,7 @@
 use super::*;
-use crate::{ccountry, cgame_state, memory::SliceMemory, supply_companion};
+use crate::{ccountry, cgame_state};
+use engine_native_memory::memory::SliceMemory;
+use engine_native_parts::supply_companion;
 
 const GAME: usize = 0x1000;
 const ROOT: usize = 0x2000;
@@ -317,7 +319,7 @@ fn map(
     positions
 }
 fn train_fixture() -> Vec<u8> {
-    use crate::{supply_node as node, supply_parent_map, supply_route};
+    use engine_native_land::{supply_node as node, supply_parent_map, supply_route};
     let mut bytes = fixture();
     bytes.resize(0x20000, 0);
     let companion = 0x6000 + supply_companion::STRIDE;
@@ -380,9 +382,9 @@ fn train_fixture() -> Vec<u8> {
         3,
     );
     for i in 0..3_u32 {
-        let at = 0xa000 + i as usize * node::STRIDE;
+        let at = 0xa000 + i as usize * engine_native_parts::supply_node_layout::STRIDE;
         put(&mut bytes, at, &i.to_le_bytes());
-        put(&mut bytes, at + node::PROVINCE, &(i + 1).to_le_bytes());
+        put(&mut bytes, at + engine_native_parts::supply_node_layout::PROVINCE, &(i + 1).to_le_bytes());
         put(&mut bytes, at + node::KIND, &(i + 2).to_le_bytes());
         put(&mut bytes, at + node::FLAG, &[if i == 1 { 255 } else { 0 }]);
         put(
@@ -496,11 +498,11 @@ impl Memory for TrainMemory<'_> {
             destination.copy_from_slice(&cost.to_le_bytes());
             return true;
         }
-        if address == crate::supply_route::EMPTY_RVA.0 + crate::supply_route::FROM {
+        if address == engine_native_land::supply_route::EMPTY_RVA.0 + engine_native_land::supply_route::FROM {
             destination.fill(0);
             return true;
         }
-        if address == crate::creference_registry::LOW_ROOTS_RVA.0 + 70 * 8 {
+        if address == engine_native_parts::creference_registry::LOW_ROOTS_RVA.0 + 70 * 8 {
             destination.copy_from_slice(&0x11000_u64.to_le_bytes());
             return true;
         }
@@ -526,9 +528,9 @@ impl<'a> TrainMemory<'a> {
 fn train_nodes_preserve_native_identity_values_parent_edges_and_count_raw_read_work() {
     let bytes = train_fixture();
     let memory = TrainMemory::new(&bytes);
-    let mut nodes = vec![crate::supply_node::Row::default(); 3];
+    let mut nodes = vec![engine_native_land::supply_node::Row::default(); 3];
     let mut paths = vec![0; 3];
-    let report = crate::supply_node::walk(&memory, 0, GAME, &mut nodes, &mut paths);
+    let report = engine_native_land::supply_node::walk(&memory, 0, GAME, &mut nodes, &mut paths);
     assert_eq!(report.outcome, Outcome::Rows { len: 3 });
     assert_eq!((report.paths, report.required_paths), (3, 3));
     assert_eq!(
@@ -550,8 +552,13 @@ fn train_nodes_preserve_native_identity_values_parent_edges_and_count_raw_read_w
 
 #[test]
 fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
-    use crate::{
-        supply_node::{self as node, ProvinceCheck, ProvinceObservation, ProvinceRole},
+    use engine_native_land::{
+        supply_node::{
+            self as node,
+            ProvinceCheck,
+            ProvinceObservation,
+            ProvinceRole,
+        },
         supply_parent_map,
     };
     let observation = |index, province, role, check| ProvinceObservation {
@@ -576,7 +583,7 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
         let mut bytes = train_fixture();
         put(
             &mut bytes,
-            0xa000 + 2 * node::STRIDE + node::PROVINCE,
+            0xa000 + 2 * engine_native_parts::supply_node_layout::STRIDE + engine_native_parts::supply_node_layout::PROVINCE,
             &province.to_le_bytes(),
         );
         let (report, rows) = walk(&bytes, 3);
@@ -713,7 +720,7 @@ fn unresolved_province_ids_are_recorded_as_the_games_null_province() {
 
 #[test]
 fn node_routes_are_acquired_only_after_the_first_positive_parent() {
-    use crate::{supply_node as node, supply_route};
+    use engine_native_land::{supply_node as node, supply_route};
     use std::cell::Cell;
 
     struct Traced<'a> {
@@ -785,7 +792,7 @@ fn node_routes_are_acquired_only_after_the_first_positive_parent() {
 
 #[test]
 fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() {
-    use crate::{supply_node as node, supply_parent_map, supply_route};
+    use engine_native_land::{supply_node as node, supply_parent_map, supply_route};
     use std::cell::{Cell, RefCell};
 
     struct Traced<'a> {
@@ -888,7 +895,7 @@ fn repeated_global_edges_keep_rows_path_occurrences_pressure_and_first_faults() 
 
 #[test]
 fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
-    use crate::supply_route::{self as route, InnerMemo};
+    use engine_native_land::supply_route::{self as route, InnerMemo};
     use std::cell::{Cell, RefCell};
     struct Traced<'a> {
         source: TrainMemory<'a>,
@@ -943,7 +950,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
             memo,
             parent,
             province,
-            crate::walk::Buffer::Growing(&mut path),
+            engine_native_memory::walk::Buffer::Growing(&mut path),
         );
         (result, path)
     };
@@ -1004,7 +1011,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
         &mut retained,
         2,
         3,
-        crate::walk::Buffer::Growing(&mut path),
+        engine_native_memory::walk::Buffer::Growing(&mut path),
     )
     .unwrap();
     assert_eq!((row.from, row.to, row.len, need), (2, 3, 2, 2));
@@ -1012,7 +1019,7 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
 }
 #[test]
 fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
-    use crate::{supply_node as node, supply_parent_map};
+    use engine_native_land::{supply_node as node, supply_parent_map};
     let mut bytes = train_fixture();
     header(&mut bytes, GAME + cgame_state::PROVINCES, 0x18000, 5, 5);
     put(&mut bytes, 0x18000 + 4 * 8, &0x1a000_u64.to_le_bytes());
@@ -1031,7 +1038,7 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
         0x1a000 + crate::cprovince::CONTROLLER,
         &1_u32.to_le_bytes(),
     );
-    put(&mut bytes, 0xa000 + node::PROVINCE, &4_u32.to_le_bytes());
+    put(&mut bytes, 0xa000 + engine_native_parts::supply_node_layout::PROVINCE, &4_u32.to_le_bytes());
     let companion = 0x6000 + supply_companion::STRIDE;
     let parents = map(
         &mut bytes,
@@ -1064,7 +1071,7 @@ fn parent_chains_record_each_node_less_vertex_once_and_stop_at_nodes() {
 
 #[test]
 fn parent_vertex_membership_keeps_sorted_rows_cycles_and_country_scope() {
-    use crate::{supply_node as node, supply_parent_map};
+    use engine_native_land::{supply_node as node, supply_parent_map};
     let mut memo = node::ProvinceMemo::with_scratch().unwrap();
     for high in [6_u32, 65536] {
         for terminal in [4_i32, high as i32, -1] {
@@ -1099,7 +1106,7 @@ fn parent_vertex_membership_keeps_sorted_rows_cycles_and_country_scope() {
                     &1_u32.to_le_bytes(),
                 );
             }
-            put(&mut bytes, 0xa000 + node::PROVINCE, &4_u32.to_le_bytes());
+            put(&mut bytes, 0xa000 + engine_native_parts::supply_node_layout::PROVINCE, &4_u32.to_le_bytes());
             for slot in [1, 2] {
                 let companion = 0x6000 + slot * supply_companion::STRIDE;
                 header(
@@ -1159,7 +1166,7 @@ fn train_inventory_preserves_empty_countries_order_counts_access_and_whole_row_p
     let bytes = train_fixture();
     let memory = TrainMemory::new(&bytes);
     let mut rows = vec![TrainRow::default(); 2];
-    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut access = vec![0; 3];
     let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(
@@ -1332,7 +1339,7 @@ fn census(n: u32) -> Vec<u8> {
 
 #[test]
 fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_success() {
-    use crate::supply_node as node;
+    use engine_native_land::supply_node as node;
     let mut nodes = vec![node::Row::default(); 3];
     let mut paths = vec![0; 3];
     let bytes = train_fixture();
@@ -1362,7 +1369,7 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
         0,
         GAME,
         &mut vec![TrainRow::default(); 2],
-        &mut vec![crate::supply_train_entry::Row::default(); 2],
+        &mut vec![crate::ccountry_supply_system::train_entry::Row::default(); 2],
         &mut vec![0; 3],
         &mut vec![[0; 2]; 2],
     );
@@ -1383,7 +1390,7 @@ fn train_inputs_reject_bad_identity_map_path_and_reference_without_prefix_succes
 fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
     let bytes = train_fixture();
     let mut baseline = vec![TrainRow::default(); 2];
-    let mut baseline_entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut baseline_entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut baseline_access = vec![0; 3];
     let mut baseline_runs = vec![[0; 2]; 2];
     assert_eq!(
@@ -1411,7 +1418,7 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
         let mut memory = TrainMemory::new(&bytes);
         memory.reject = Some(address + 1);
         let mut rows = vec![TrainRow::default(); 2];
-        let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+        let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
         let mut access = vec![0; 3];
         let mut runs = vec![[0; 2]; 2];
         let report = walk_trains(
@@ -1440,11 +1447,11 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
             std::array::from_fn(|index| u32::from(index == field))
         );
         assert_eq!(
-            crate::supply_node::walk(
+            engine_native_land::supply_node::walk(
                 &memory,
                 0,
                 GAME,
-                &mut vec![crate::supply_node::Row::default(); 3],
+                &mut vec![engine_native_land::supply_node::Row::default(); 3],
                 &mut vec![0; 3],
             )
             .outcome,
@@ -1455,7 +1462,8 @@ fn supply_vehicle_faults_keep_inventory_payloads_and_independent_scalars() {
 
 #[test]
 fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() {
-    use crate::{cequipment_variant as variant, creference_registry as registry};
+    use crate::cequipment_variant as variant;
+    use engine_native_parts::creference_registry as registry;
     let mut bytes = train_fixture();
     let handle = (1234_u64 << 32) | 70;
     for entry in [0xf000, 0xf018] {
@@ -1477,7 +1485,7 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
     put(
         &mut bytes,
         0x14000,
-        &(variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     put(&mut bytes, 0x14008, &handle.to_le_bytes());
     put(
@@ -1486,7 +1494,7 @@ fn allocated_trains_authenticate_full_variants_and_keep_duplicate_entry_order() 
         &0x15000_u64.to_le_bytes(),
     );
     let mut rows = vec![TrainRow::default(); 2];
-    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut access = vec![0; 3];
     let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(
@@ -1527,10 +1535,10 @@ fn node_capacity_never_returns_a_complete_prefix() {
         0x6320 + supply_companion::ROUTES_SUBTYPE_ZERO + 12,
         &1_u32.to_le_bytes(),
     );
-    let mut nodes = vec![crate::supply_node::Row::default(); 3];
+    let mut nodes = vec![engine_native_land::supply_node::Row::default(); 3];
     let mut paths = vec![0; 3];
     let report =
-        crate::supply_node::walk(&TrainMemory::new(&bytes), 0, GAME, &mut nodes, &mut paths);
+        engine_native_land::supply_node::walk(&TrainMemory::new(&bytes), 0, GAME, &mut nodes, &mut paths);
     assert_eq!(report.outcome, Outcome::Rows { len: 3 });
 }
 
@@ -1545,7 +1553,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
         let systems = links + slots * 4;
         let companions = systems + slots * 8;
         let node_list = GAME + bytes.len();
-        let province_table = node_list + NODES * crate::supply_node::STRIDE;
+        let province_table = node_list + NODES * engine_native_parts::supply_node_layout::STRIDE;
         let province = province_table + 16;
         let empty_parents = province + 0x100;
         bytes.resize(empty_parents + 24 - GAME, 0);
@@ -1573,11 +1581,11 @@ fn selected_supply_walks_partition_a_census_by_country() {
         );
         put(&mut bytes, empty_parents + 12, &[255]);
         for index in 0..NODES {
-            let node = node_list + index * crate::supply_node::STRIDE;
+            let node = node_list + index * engine_native_parts::supply_node_layout::STRIDE;
             put(&mut bytes, node, &(index as u32).to_le_bytes());
             put(
                 &mut bytes,
-                node + crate::supply_node::PROVINCE,
+                node + engine_native_parts::supply_node_layout::PROVINCE,
                 &1_u32.to_le_bytes(),
             );
         }
@@ -1592,7 +1600,7 @@ fn selected_supply_walks_partition_a_census_by_country() {
             );
             put(
                 &mut bytes,
-                companion + crate::supply_parent_map::HEADER,
+                companion + engine_native_land::supply_parent_map::HEADER,
                 &(empty_parents as u64).to_le_bytes(),
             );
         }
@@ -1602,9 +1610,9 @@ fn selected_supply_walks_partition_a_census_by_country() {
         };
         let mut whole_nodes = Vec::new();
         let mut whole_paths = Vec::new();
-        let mut memo = crate::supply_node::ProvinceMemo::default();
+        let mut memo = engine_native_land::supply_node::ProvinceMemo::default();
         memo.begin(&memory, 0, GAME);
-        let whole = crate::supply_node::walk_part(
+        let whole = engine_native_land::supply_node::walk_part(
             &memory,
             0,
             GAME,
@@ -1650,9 +1658,9 @@ fn selected_supply_walks_partition_a_census_by_country() {
             let select = |country: u32| country % 24 == slice;
             let mut nodes = Vec::new();
             let mut paths = Vec::new();
-            let mut memo = crate::supply_node::ProvinceMemo::default();
+            let mut memo = engine_native_land::supply_node::ProvinceMemo::default();
             memo.begin(&memory, 0, GAME);
-            let report = crate::supply_node::walk_part_selected(
+            let report = engine_native_land::supply_node::walk_part_selected(
                 &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo, &select,
             );
             let expected: Vec<_> = whole_nodes
@@ -1720,20 +1728,20 @@ fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_wal
     );
     put(
         &mut bytes,
-        0xa000 + crate::supply_node::PROVINCE,
+        0xa000 + engine_native_parts::supply_node_layout::PROVINCE,
         &3_u32.to_le_bytes(),
     );
     let memory = TrainMemory::new(&bytes);
-    let mut expected_rows = vec![crate::supply_node::Row::default(); 3];
+    let mut expected_rows = vec![engine_native_land::supply_node::Row::default(); 3];
     let mut expected_paths = vec![0; 3];
     let expected =
-        crate::supply_node::walk(&memory, 0, GAME, &mut expected_rows, &mut expected_paths);
+        engine_native_land::supply_node::walk(&memory, 0, GAME, &mut expected_rows, &mut expected_paths);
     assert_eq!(expected.outcome, Outcome::Rows { len: 3 });
     let mut rows = Vec::new();
     let mut paths = Vec::new();
-    let mut memo = crate::supply_node::ProvinceMemo::default();
+    let mut memo = engine_native_land::supply_node::ProvinceMemo::default();
     memo.begin(&memory, 0, GAME);
-    let captured = crate::supply_node::walk_part(
+    let captured = engine_native_land::supply_node::walk_part(
         &memory, 0, GAME, 0, 1, &mut rows, &mut paths, &mut memo,
     );
     assert_eq!(captured.outcome, expected.outcome);
@@ -1743,7 +1751,7 @@ fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_wal
     assert_eq!(
         rows.iter()
             .take(3)
-            .filter(|row| row.index & crate::supply_node::VERTEX != 0)
+            .filter(|row| row.index & engine_native_land::supply_node::VERTEX != 0)
             .count(),
         2
     );
@@ -1751,7 +1759,7 @@ fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_wal
 
 #[test]
 fn required_trucks_witness_withholds_reset_and_unverified_cache() {
-    use crate::supply_node as node;
+    use engine_native_land::supply_node as node;
     let mut bytes = train_fixture();
     let companion_one = 0x6000 + supply_companion::STRIDE;
     let companion_two = 0x6000 + 2 * supply_companion::STRIDE;
@@ -1767,34 +1775,34 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
 
     header(&mut bytes, 0x5000 + HUB_SETTINGS_DATA, 0x7000, 2, 2);
     put(&mut bytes, 0x7000 + supply_node_record::PROVINCE, &1_u32.to_le_bytes());
-    put(&mut bytes, 0x7000 + supply_node_record::NODE_TYPE, &node::KIND_SUPPLY_HUB.to_le_bytes());
+    put(&mut bytes, 0x7000 + supply_node_record::NODE_TYPE, &engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB.to_le_bytes());
     header(&mut bytes, 0x7000 + supply_node_record::MOTORIZATION_DATA, 0x8000, 1, 1);
     put(&mut bytes, 0x8000, &1_u32.to_le_bytes());
     put(&mut bytes, 0x8004, &[1_u8]);
 
     put(&mut bytes, 0x7028 + supply_node_record::PROVINCE, &2_u32.to_le_bytes());
-    put(&mut bytes, 0x7028 + supply_node_record::NODE_TYPE, &node::KIND_NAVAL_BASE.to_le_bytes());
+    put(&mut bytes, 0x7028 + supply_node_record::NODE_TYPE, &engine_native_parts::supply_node_layout::KIND_NAVAL_BASE.to_le_bytes());
     header(&mut bytes, 0x7028 + supply_node_record::MOTORIZATION_DATA, 0x8020, 1, 1);
     put(&mut bytes, 0x8020, &1_u32.to_le_bytes());
     put(&mut bytes, 0x8024, &[0_u8]);
 
-    header(&mut bytes, 0xa000 + node::STRIDE + node::MOTORIZATION_OVERRIDES, 0x16000, 1, 1);
+    header(&mut bytes, 0xa000 + engine_native_parts::supply_node_layout::STRIDE + engine_native_parts::supply_node_layout::MOTORIZATION_OVERRIDES, 0x16000, 1, 1);
     put(&mut bytes, 0x16000, &1_i32.to_le_bytes());
     put(&mut bytes, 0x16004, &2_i32.to_le_bytes());
 
     header(&mut bytes, companion_two + supply_companion::NODES, 0x16200, 2, 2);
-    for (idx, (prov, kind)) in [(4_u32, node::KIND_SUPPLY_HUB), (5, node::KIND_SUPPLY_HUB)]
+    for (idx, (prov, kind)) in [(4_u32, engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB), (5, engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB)]
         .into_iter()
         .enumerate()
     {
-        let at = 0x16200 + idx * node::STRIDE;
+        let at = 0x16200 + idx * engine_native_parts::supply_node_layout::STRIDE;
         put(&mut bytes, at, &(idx as u32).to_le_bytes());
-        put(&mut bytes, at + node::PROVINCE, &prov.to_le_bytes());
+        put(&mut bytes, at + engine_native_parts::supply_node_layout::PROVINCE, &prov.to_le_bytes());
         put(&mut bytes, at + node::KIND, &kind.to_le_bytes());
     }
     header(&mut bytes, 0x5300 + HUB_SETTINGS_DATA, 0x16500, 1, 1);
     put(&mut bytes, 0x16500 + supply_node_record::PROVINCE, &4_u32.to_le_bytes());
-    put(&mut bytes, 0x16500 + supply_node_record::NODE_TYPE, &node::KIND_SUPPLY_HUB.to_le_bytes());
+    put(&mut bytes, 0x16500 + supply_node_record::NODE_TYPE, &engine_native_parts::supply_node_layout::KIND_SUPPLY_HUB.to_le_bytes());
     header(&mut bytes, 0x16500 + supply_node_record::MOTORIZATION_DATA, 0x16600, 1, 1);
     put(&mut bytes, 0x16600, &1_u32.to_le_bytes());
     put(&mut bytes, 0x16604, &[2_u8]);
@@ -1825,7 +1833,7 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
 
     let run = |memory: &TrainMemory<'_>| {
         let mut rows = vec![TrainRow::default(); 2];
-        let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+        let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
         let mut access = vec![0; 3];
         let mut runs = vec![[0; 2]; 2];
         let report = walk_trains(memory, 0, GAME, &mut rows, &mut entries, &mut access, &mut runs);
@@ -1934,7 +1942,7 @@ fn required_trucks_witness_withholds_reset_and_unverified_cache() {
     }
     let _ = engine_sites::take_taint();
     let mut rows = vec![TrainRow::default(); 2];
-    let mut entries = vec![crate::supply_train_entry::Row::default(); 2];
+    let mut entries = vec![crate::ccountry_supply_system::train_entry::Row::default(); 2];
     let mut access = vec![0; 3];
     let mut runs = vec![[0; 2]; 2];
     let report = walk_trains(

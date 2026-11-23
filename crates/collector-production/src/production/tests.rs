@@ -4,7 +4,7 @@ use super::*;
 fn production_daily_groups_skip_native_reads_outside_their_slots() {
     use production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::CountedMemory::new(engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
@@ -50,7 +50,7 @@ fn production_daily_groups_skip_native_reads_outside_their_slots() {
                     assert_eq!(ticks[index], 0);
                     assert_eq!(
                         counts[TABLES[index].index()],
-                        engine_native::memory::ReadCounts::ZERO
+                        engine_native_memory::memory::ReadCounts::ZERO
                     );
                 }
             }
@@ -64,7 +64,7 @@ fn production_daily_groups_skip_native_reads_outside_their_slots() {
 fn variant_census_reads_only_its_daily_slot_or_an_explicit_recovery() {
     use production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine_native::memory::CountedMemory::new(engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::CountedMemory::new(engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     });
@@ -101,7 +101,7 @@ fn variant_census_reads_only_its_daily_slot_or_an_explicit_recovery() {
                 assert_eq!(ticks[index], 0);
                 assert_eq!(
                     counts[table.index()],
-                    engine_native::memory::ReadCounts::ZERO
+                    engine_native_memory::memory::ReadCounts::ZERO
                 );
             }
         }
@@ -895,7 +895,7 @@ fn variant_loan_retains_buffers_and_adopts_worker_observations() {
 fn production_rest_split_copy_matches_direct_walk() {
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -929,7 +929,7 @@ fn production_rest_split_copy_skips_reserved_aliases_and_copies_each_country_onc
         put(0x2000 + slot * 8, &(RESERVED as u64).to_le_bytes());
     }
     put(RESERVED, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -954,7 +954,7 @@ impl Memory for DefinedMemory<'_> {
             destination.copy_from_slice(&(index as i32 + 3).to_le_bytes());
             return true;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: production_rest_test_kit::BASE,
             bytes: self.0,
         }
@@ -981,14 +981,14 @@ fn production_rest_split_copy_stages_line_maximums_defines_and_efficiencies() {
         (line.max_factories, line.efficiency_raw),
         (150, (40..52).sum::<i64>() * 32_768 / 12)
     );
-    let flag = at(kit::EQUIPMENT_TYPE + engine_native::cequipment_type::MAX_MIL_FACTORIES + 4);
+    let flag = at(kit::EQUIPMENT_TYPE + engine_native_parts::cequipment_type::MAX_MIL_FACTORIES + 4);
     bytes[flag] = 0;
     let (_, line) = row(&bytes);
     assert_eq!(line.max_factories, 3);
     assert_eq!(line.efficiency_raw, (40 + 41 + 42) * 32_768 / 3);
     let vtable = at(kit::PLINE);
     bytes[vtable..vtable + 8].copy_from_slice(
-        &(engine_native::cnaval_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
+        &(engine_native_parts::cnaval_production_line::VTABLE_RVA.0 as u64).to_le_bytes(),
     );
     let flags = at(kit::VARIANT + cequipment_variant::CLASSIFIER_FLAGS);
     bytes[flags..flags + 8]
@@ -1021,7 +1021,7 @@ impl Memory for PlanFixtureMemory<'_> {
             }
             return false;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: production_rest_test_kit::BASE,
             bytes: self.bytes,
         }
@@ -1041,7 +1041,7 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     use super::production_rest_test_kit as kit;
     let mut bytes = kit::fixture();
     let mut job = production_rest_test_kit::job();
-    let initial = engine_native::memory::SliceMemory {
+    let initial = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1050,7 +1050,7 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     job.log.prepare_read_plan();
     let cost = kit::PLINE + cproduction_line::COST - kit::BASE;
     bytes[cost..cost + 8].copy_from_slice(&999_i64.to_le_bytes());
-    let memory = engine_native::memory::CountedMemory::new(PlanFixtureMemory {
+    let memory = engine_native_memory::memory::CountedMemory::new(PlanFixtureMemory {
         bytes: &bytes,
         calls: Default::default(),
         fail: None,
@@ -1066,11 +1066,11 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     );
     let planned_calls = memory.0.calls.take();
     let mut expected_counts = read_accounting::ZERO;
-    expected_counts[TABLES[0].index()] = engine_native::memory::ReadCounts {
+    expected_counts[TABLES[0].index()] = engine_native_memory::memory::ReadCounts {
         plan_calls: 1,
         spans: planned_calls.iter().filter(|&&(_, len)| len != 0).count() as u64,
         bytes: planned_calls.iter().map(|&(_, len)| len as u64).sum(),
-        ..engine_native::memory::ReadCounts::ZERO
+        ..engine_native_memory::memory::ReadCounts::ZERO
     };
     assert!(expected_counts[TABLES[0].index()].spans > 0);
     assert_eq!(planned_counts, expected_counts);
@@ -1108,7 +1108,7 @@ fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
     use super::production_rest_test_kit as kit;
     let mut bytes = kit::fixture();
     let mut job = production_rest_test_kit::job();
-    let initial = engine_native::memory::SliceMemory {
+    let initial = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1154,7 +1154,7 @@ fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
 fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1186,7 +1186,7 @@ fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
         kit::assert_matches_direct(&captured, &direct);
     }
     let bytes = kit::many_rows_fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -1215,7 +1215,7 @@ fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
 fn production_rest_split_copy_matches_direct_walk_under_truncation() {
     use super::production_rest_test_kit as kit;
     let bytes = kit::fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };

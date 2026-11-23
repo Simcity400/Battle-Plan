@@ -6,7 +6,7 @@ use collector_characters::extended::characters::{
     characters_test_kit as kit,
     tests::{ADDRESS, IMAGE},
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 
 #[test]
 fn advisor_modifier_sizing_survives_an_unreadable_political_census() {

@@ -1,7 +1,7 @@
 
 use crate::rows::ModifierDefinitionRow;
 pub use game_model::fixed5::power;
-use engine_native::modifier_definition::Operands;
+use engine_native_parts::modifier_definition::Operands;
 
 const SCALE: i64 = 100_000;
 const REFUSED: i64 = 0xffff_ffff;
@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(effective(&plain, None, None), Ok(0));
         assert_eq!(effective(&plain, None, Some(-7)), Ok(-7));
         let clamped = ModifierDefinitionRow {
-            flags: engine_native::modifier_definition::CLAMP_MAXIMUM,
+            flags: engine_native_parts::modifier_definition::CLAMP_MAXIMUM,
             ..plain.clone()
         };
         assert_eq!(effective(&clamped, None, Some(-7)), Ok(0));

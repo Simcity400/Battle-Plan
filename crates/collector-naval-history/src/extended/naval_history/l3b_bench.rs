@@ -2,7 +2,7 @@ use super::*;
 use collector_extended_support::bench_world::{self, Shape, World};
 
 fn time_copies(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     world: &World,
     job: &mut NavalJob,
 ) -> [(f64, f64); 3] {
@@ -31,7 +31,7 @@ fn time_copies(
     [theatres, oob, census]
 }
 
-fn census_roots(memory: &impl engine_native::Memory, world: &World, job: &mut NavalJob) {
+fn census_roots(memory: &impl engine_native_memory::Memory, world: &World, job: &mut NavalJob) {
     let mut roots = vec![corders_group::Root::default(); world.groups as usize];
     let outcome = corders_group::walk_roots(memory, world.base, &mut roots);
     job.capture_roots(&roots, outcome);
@@ -50,8 +50,8 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
                 },
             );
             let slice = world.slice();
-            let mut countries_cache = engine_native::country_memory::Cache::try_with_capacity(
-                engine_native::country_memory::Cache::cells_for_countries(
+            let mut countries_cache = engine_native_intelligence::country_memory::Cache::try_with_capacity(
+                engine_native_intelligence::country_memory::Cache::cells_for_countries(
                     countries as usize + 1,
                     collector_primitives::country_slots::MIN_COUNTRY_CELLS,
                 ),

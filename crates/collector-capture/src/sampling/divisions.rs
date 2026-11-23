@@ -1,5 +1,5 @@
 use super::{Captured, elapsed, extended, qpc};
-use engine_native::walk::Outcome;
+use engine_native_memory::walk::Outcome;
 
 #[derive(Debug, Default)]
 pub struct DivisionsJob {
@@ -12,7 +12,7 @@ pub struct DivisionsJob {
     pub(super) core_finished: bool,
     pub(super) overflowed: bool,
     pub(super) capacity_charge: collector_primitives::raw_memory::Charge,
-    pub(super) source_packet: Vec<engine_native::cequipment_variant_pool::DivisionSource>,
+    pub(super) source_packet: Vec<engine_native::cequipment_variant::pool::DivisionSource>,
     pub slots: Option<(u32, u32)>,
     pub(crate) join_capacity: collector_divisions::division_census::JoinCapacity,
 }
@@ -119,7 +119,7 @@ impl Default for DivisionsCopyContext {
 }
 fn copy_divisions_inputs_pass(
     job: &mut DivisionsJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     context: DivisionsCopyContext,
 ) {
     let _reads = collector_memory::read_accounting::table(replay_data::rows::TableId::Divisions);
@@ -143,7 +143,7 @@ fn copy_divisions_inputs_pass(
 }
 
 pub(crate) fn copy_divisions_inputs_refresh(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> bool {
@@ -153,7 +153,7 @@ pub(crate) fn copy_divisions_inputs_refresh(
 
 fn copy_divisions_core_pass(
     job: &mut DivisionsJob,
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     context: DivisionsCopyContext,
 ) {
     let _reads = collector_memory::read_accounting::table(replay_data::rows::TableId::Divisions);
@@ -174,7 +174,7 @@ fn copy_divisions_core_pass(
         return;
     }
     let (sources, outcome) = job.census.sources();
-    if engine_native::walk::Buffer::Growing(&mut job.source_packet)
+    if engine_native_memory::walk::Buffer::Growing(&mut job.source_packet)
         .ensure(sources.len())
         .is_err()
     {
@@ -206,7 +206,7 @@ fn divisions_copy_report(payload: &DivisionsJob) -> DivisionsCopyReport {
 }
 
 pub(crate) fn copy_divisions_core_refresh(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> DivisionsCopyReport {
@@ -219,7 +219,7 @@ pub(crate) fn copy_divisions_core_refresh(
 /// Run only in an isolated fixture that owns the collector's process-wide read accounting. No live
 /// attachment may consume the fixture's Divisions verdicts.
 pub unsafe fn copy_divisions_refresh(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     ctx: DivisionsCopyContext,
     payload: &mut DivisionsJob,
 ) -> DivisionsCopyReport {

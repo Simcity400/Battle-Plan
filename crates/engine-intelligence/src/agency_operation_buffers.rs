@@ -1,14 +1,11 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cgame_state, coperation_instance,
-    cpdx_array::Array,
-    read,
-    walk::{Buffer, Outcome},
-};
-use engine_native::{
-    coperation, cprovince, creference_registry, cstate, modifier_definition::NamedKey,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::{Buffer, Outcome}};
+use engine_native::{ccountry, cgame_state};
+use engine_native_intelligence::coperation_instance;
+use engine_native_intelligence::coperation;
+use engine_native::{cprovince, cstate};
+use engine_native_parts::{creference_registry, modifier_definition::NamedKey};
 
 pub const BUFFER_RVA: Rva = Rva(0x033e_b190);
 pub const BUCKET_OFFSETS: [usize; 5] = [0x00, 0x48, 0x18, 0x30, 0x60];
@@ -63,7 +60,7 @@ pub fn walk(
     )
 }
 
-fn word<T: engine_native::memory::Raw>(
+fn word<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     object: usize,
     offset: usize,
@@ -74,7 +71,7 @@ fn word<T: engine_native::memory::Raw>(
         .ok_or("agency operation buffer field unreadable")
 }
 
-fn global<T: engine_native::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -253,9 +250,10 @@ fn map_extent(mask: u32, overflow: u8) -> Result<usize, &'static str> {
 }
 
 fn offer_duration<M: Memory>(memory: &M, base: usize, countries: &ccountry::Reader<'_, M>, owner: u32, definition: usize, token: u32, target: u32, speed_key: u32) -> Result<i32, &'static str> {
-    use engine_native::{cintelligence_agency, modifier_accumulator};
+    use engine_native_intelligence::cintelligence_agency;
+    use engine_native_parts::modifier_accumulator;
     let owner = countries.resolve(owner)?;
-    let speed = modifier_accumulator::lookup_effective_at(memory, base, owner.pointer.checked_add(ccountry::MODIFIER_ACCUMULATOR).ok_or("operation owner accumulator overflow")?, speed_key)?.effective;
+    let speed = modifier_accumulator::lookup_effective_at(memory, base, owner.pointer.checked_add(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR).ok_or("operation owner accumulator overflow")?, speed_key)?.effective;
     let multiplier = if word::<u8>(memory, definition, HAS_TIME_MULTIPLIER)? != 0 {
         word::<i64>(memory, definition, TIME_MULTIPLIER)?
     } else {
@@ -403,7 +401,8 @@ fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{ccountry::synthetic::World, creference_registry::test_support::Fixture};
+    use engine_native::ccountry::synthetic::World;
+    use engine_native_parts::creference_registry::test_support::Fixture;
 
     fn fixture(buckets: [&[u64]; 4]) -> (World, Fixture) {
         let mut world = World::new(0, 1, ccountry::CAPITAL + 8);

@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 
 pub const VTABLE_RVA: Rva = Rva(0x02aa_4860);
 pub const REFERENCE_TYPE_ID: u32 = 4_713;

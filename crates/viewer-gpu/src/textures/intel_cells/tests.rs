@@ -309,12 +309,12 @@ fn intel_cells_allocation_failure_is_retryable_but_structural_refusal_is_retaine
     let error = cache
         .get_or_init_with(|| {
             let mut storage = Vec::<u8>::new();
-            engine_native::allocation::reserve_exact(&mut storage, usize::MAX)?;
+            engine_allocation::reserve_exact(&mut storage, usize::MAX)?;
             unreachable!("an unaddressable reservation cannot succeed")
         })
         .err()
         .unwrap();
-    assert!(engine_native::allocation::is_allocation_error(&error));
+    assert!(engine_allocation::is_allocation_error(&error));
     assert!(cache.cells.get().is_none());
     let ready = cache.get_or_init().unwrap();
     assert_eq!(

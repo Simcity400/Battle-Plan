@@ -1,6 +1,9 @@
+use engine_native_memory::{Memory, memory::SliceMemory, walk::Outcome};
 use engine_native::{
-    Memory, ccountry, cdiplomacy_status, cgame_state, crelation, crelation_status, cwar_relation,
-    memory::SliceMemory, walk::Outcome,
+    ccountry,
+    cgame_state,
+    crelation::{self, status as crelation_status},
+    cwar_relation,
 };
 
 pub const BASE: usize = 0;
@@ -92,16 +95,16 @@ pub fn fixture() -> Vec<u8> {
             C[owner] + ccountry::DIPLOMACY_STATUS,
             D[owner] as u64,
         );
-        p64(&mut bytes, D[owner], cdiplomacy_status::VTABLE_RVA.0 as u64);
+        p64(&mut bytes, D[owner], engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0 as u64);
         p64(
             &mut bytes,
-            D[owner] + cdiplomacy_status::COUNTRY,
+            D[owner] + engine_native_parts::cdiplomacy_status_layout::COUNTRY,
             C[owner] as u64,
         );
         let slots: Vec<u64> = (0..5).map(|target| status(owner, target) as u64).collect();
         header(
             &mut bytes,
-            D[owner] + cdiplomacy_status::RELATIONS,
+            D[owner] + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
             M[owner],
             5,
         );
@@ -117,21 +120,21 @@ pub fn fixture() -> Vec<u8> {
     }
     header(
         &mut bytes,
-        D[0] + cdiplomacy_status::OWNED_RELATIONS,
+        D[0] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         O[0],
         3,
     );
     entries64(&mut bytes, O[0], &[WAR1 as u64, OTHER as u64, WAR2 as u64]);
     header(
         &mut bytes,
-        D[1] + cdiplomacy_status::OWNED_RELATIONS,
+        D[1] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         O[1],
         2,
     );
     entries64(&mut bytes, O[1], &[WAR1 as u64, RETIRED as u64]);
     header(
         &mut bytes,
-        D[2] + cdiplomacy_status::OWNED_RELATIONS,
+        D[2] + engine_native_parts::cdiplomacy_status_layout::OWNED_RELATIONS,
         O[2],
         1,
     );

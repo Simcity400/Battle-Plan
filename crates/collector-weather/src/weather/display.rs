@@ -68,7 +68,7 @@ impl DisplayCapture {
         self.clear();
         self.header = grid.and_then(|header| {
             self.required = header.edge_bytes()?;
-            engine_native::walk::Buffer::Growing(&mut self.bytes).ensure(self.required)?;
+            engine_native_memory::walk::Buffer::Growing(&mut self.bytes).ensure(self.required)?;
             header.read_edges(memory, &mut self.bytes)?;
             Ok(header)
         });

@@ -69,7 +69,7 @@ fn install_resource_rows<R: Copy + Default>(
             reason: "economy resource payload missing",
         };
     };
-    if engine_native::walk::Buffer::Growing(output)
+    if engine_native_memory::walk::Buffer::Growing(output)
             .ensure(outcome.len())
             .is_err()
     {
@@ -116,7 +116,7 @@ fn acquire_resource_group(
         ctx.base,
         ctx.game_state,
         descriptors,
-        engine_native::walk::Buffer::Growing(&mut owned.resources),
+        engine_native_memory::walk::Buffer::Growing(&mut owned.resources),
         |country, resources| {
             collector_observers::market_changes::held::discover_country(
                 memory,
@@ -140,8 +140,8 @@ fn acquire_resource_group(
         ctx.base,
         ctx.game_state,
         descriptors,
-        engine_native::walk::Buffer::Growing(&mut owned.exchanges),
-        engine_native::walk::Buffer::Growing(&mut owned.scratch),
+        engine_native_memory::walk::Buffer::Growing(&mut owned.exchanges),
+        engine_native_memory::walk::Buffer::Growing(&mut owned.scratch),
     ));
     ticks[8] = elapsed(started);
 }
@@ -177,7 +177,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::Growing(&mut self.experience.rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.experience.rows),
                 ),
                 self.experience.rows.len(),
             );
@@ -195,7 +195,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::Growing(&mut self.hubs.rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.hubs.rows),
                 ),
                 self.hubs.rows.len(),
             );
@@ -204,7 +204,7 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::Growing(&mut self.disrupted.rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.disrupted.rows),
                 ),
                 self.disrupted.rows.len(),
             );
@@ -215,8 +215,8 @@ impl Captured {
                 &recorded,
                 base,
                 job.game_state,
-                engine_native::walk::Buffer::Growing(&mut self.foreign.rows),
-                engine_native::walk::Buffer::Growing(&mut self.sources.first),
+                engine_native_memory::walk::Buffer::Growing(&mut self.foreign.rows),
+                engine_native_memory::walk::Buffer::Growing(&mut self.sources.first),
             );
             self.foreign.outcome = bounded(first.outcome, self.foreign.rows.len());
             self.sources.len = first.bytes_len;
@@ -272,8 +272,8 @@ impl Captured {
                     &recorded,
                     base,
                     job.game_state,
-                    engine_native::walk::Buffer::Growing(&mut self.purchases.rows),
-                    engine_native::walk::Buffer::Growing(&mut self.purchase_scratch),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.purchases.rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut self.purchase_scratch),
                 ),
                 self.purchases.rows.len(),
             );
@@ -721,7 +721,7 @@ fn copy_economy_province_supply(
         let province_data = espan(
             log,
             memory,
-            root.checked_add(engine_native::csupply_system::PROVINCE_DATA),
+            root.checked_add(engine_native::ccountry_supply_system::world::PROVINCE_DATA),
             16,
             M_E_SUPPLY,
         );
@@ -729,14 +729,14 @@ fn copy_economy_province_supply(
             let _ = espan(
                 log,
                 memory,
-                root.checked_add(engine_native::csupply_system::COUNTRY_SYSTEM_DATA),
+                root.checked_add(engine_native::ccountry_supply_system::world::COUNTRY_SYSTEM_DATA),
                 16,
                 M_E_SUPPLY_ROOT,
             );
             let _ = espan(
                 log,
                 memory,
-                root.checked_add(engine_native::csupply_system::COUNTRY_COMPANION_DATA),
+                root.checked_add(engine_native::ccountry_supply_system::world::COUNTRY_COMPANION_DATA),
                 16,
                 M_E_SUPPLY_ROOT,
             );
@@ -785,7 +785,7 @@ fn copy_economy_supply_details(
     if root == 0 {
         return;
     }
-    let systems_header = match root.checked_add(engine_native::csupply_system::COUNTRY_SYSTEM_DATA)
+    let systems_header = match root.checked_add(engine_native::ccountry_supply_system::world::COUNTRY_SYSTEM_DATA)
     {
         Some(p) => log.spans.iter().rev().find_map(|span| {
             if span.addr == p && span.len == 16 && span.ok {
@@ -1023,7 +1023,7 @@ fn copy_economy_market_contracts(
             let count = |pool| {
                 e_pool_u32(
                     log,
-                    start + pool + engine_native::cequipment_variant_pool::COUNT,
+                    start + pool + engine_native::cequipment_variant::pool::COUNT,
                 ) as usize
             };
             event_demand = event_demand.and_then(|total| {

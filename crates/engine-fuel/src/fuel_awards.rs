@@ -1,8 +1,13 @@
-use crate::{
-    Memory, cair_base, ccountry, ccountry_air_container, ccountry_fuel_status as fuel, cfleet,
-    cgame_state, cpdx_array::Array, creference_registry, cstrategic_air, cstrategic_air_manager,
-    cunit, msvc_string, read,
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, read};
+use engine_native_air::{
+    cair_base,
+    ccountry_air_container,
+    cstrategic_air,
+    cstrategic_air_manager,
 };
+use engine_native::{ccountry, cfleet, cgame_state, cunit};
+use crate::ccountry_fuel_status as fuel;
+use engine_native_parts::creference_registry;
 use engine_sites::Rva;
 
 pub const BEGIN: Rva = Rva(0x0117_e3a3);
@@ -48,7 +53,7 @@ pub fn quantity(raw: i64) -> i64 {
     (raw % 100_000) * 0x4000_0000 / 0xc350_0000 + (raw / 100_000) * 0x8000
 }
 
-fn value<T: crate::memory::Raw>(
+fn value<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -58,7 +63,7 @@ fn value<T: crate::memory::Raw>(
         .and_then(|p| read(memory, p))
         .ok_or("fuel award operand unreadable or overflowed")
 }
-fn global<T: crate::memory::Raw>(
+fn global<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     base: usize,
     key: Rva,
@@ -101,7 +106,7 @@ fn fields<const N: usize>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Located {
     pub owner: usize,
-    pub country: ccountry::Country,
+    pub country: engine_native_memory::country_identity::Country,
 }
 
 pub fn start(memory: &impl Memory, base: usize, status: usize) -> Result<Started, &'static str> {
@@ -528,7 +533,7 @@ pub fn air_held(
     pointer: usize,
     container: usize,
     consuming: u32,
-    held: Option<&ccountry::Country>,
+    held: Option<&engine_native_memory::country_identity::Country>,
 ) -> Result<(Recipient, bool), &'static str> {
     air_held_with(memory, base, pointer, container, consuming, held, None)
 }
@@ -547,7 +552,7 @@ pub fn air_held_with(
     if pointer == 0 || container == 0 {
         return Err(MISMATCH);
     }
-    let expected_base = engine_sites::at(base, cair_base::VTABLE_RVA).ok_or(MISMATCH)?;
+    let expected_base = engine_sites::at(base, engine_native_parts::cair_base_layout::VTABLE_RVA).ok_or(MISMATCH)?;
     let expected_container =
         engine_sites::at(base, ccountry_air_container::VTABLE_RVA).ok_or(MISMATCH)?;
     let (
@@ -561,9 +566,9 @@ pub fn air_held_with(
     let scattered_ok = (|| -> Option<()> {
         let addresses = [
             pointer,
-            pointer.checked_add(cair_base::HANDLE)?,
+            pointer.checked_add(engine_native_parts::cair_base_layout::HANDLE)?,
             pointer.checked_add(cair_base::COUNTRY_CONTAINERS)?,
-            pointer.checked_add(cair_base::HOST_REFERENCE)?,
+            pointer.checked_add(engine_native_parts::cair_base_layout::HOST_REFERENCE)?,
             container,
             container.checked_add(ccountry_air_container::COUNTRY)?,
         ];
@@ -594,9 +599,9 @@ pub fn air_held_with(
             Some(u64::from_le_bytes(host_bytes)),
         )
     } else {
-        auth(memory, base, pointer, cair_base::VTABLE_RVA)?;
+        auth(memory, base, pointer, engine_native_parts::cair_base_layout::VTABLE_RVA)?;
         auth(memory, base, container, ccountry_air_container::VTABLE_RVA)?;
-        let reference = value::<u64>(memory, pointer, cair_base::HANDLE)?;
+        let reference = value::<u64>(memory, pointer, engine_native_parts::cair_base_layout::HANDLE)?;
         let owner = value::<u32>(memory, container, ccountry_air_container::COUNTRY)?;
         (reference, owner, None, None)
     };
@@ -684,7 +689,7 @@ pub fn stored_name(
         0 => (value::<u64>(
             memory,
             pointer,
-            crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
+            engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER,
         )? as usize)
             .checked_add(0x60)
             .ok_or("fuel recipient name address overflow")?,

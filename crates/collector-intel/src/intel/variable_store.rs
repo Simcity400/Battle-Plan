@@ -1,8 +1,7 @@
 use crate::variable_changes::{Changes, Counts, Taken};
 use engine_allocation as allocation;
-use engine_native::{
-    Memory, ccountry, cgame_state, cpdx_array::Array, cstate, walk::Buffer, walk::Outcome,
-};
+use engine_native_memory::{Memory, cpdx_array::Array, walk::{Buffer, Outcome}};
+use engine_native::{ccountry, cgame_state, cstate};
 use engine_scripts::{
     cvariables, cvariables::HEADER, cvariables::Row, cvariables::Scope, cvariables::ScopeRow,
     cvariables::ScopeWalk, cvariables::Store, cvariables::VariableCarry,
@@ -30,7 +29,7 @@ impl Witness {
         self.states.clear();
         let Some(global) = state
             .checked_add(cgame_state::GLOBAL_VARIABLES)
-            .and_then(|at| engine_native::read::<u64>(memory, at))
+            .and_then(|at| engine_native_memory::read::<u64>(memory, at))
             .and_then(|pointer| usize::try_from(pointer).ok())
         else {
             return false;

@@ -4,7 +4,7 @@ use crate::{
 };
 type Clock = engine_native::cgame_state::Clock<u64>;
 use engine_air_history::air_loss_sites as native;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::{
@@ -258,7 +258,7 @@ unsafe extern "system" fn pre(
         if LEDGER.poisoned.load(Ordering::SeqCst) || crate::allocation::failed() {
             LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
         } else {
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             let mut token = None;
             let result = (|| {
@@ -295,18 +295,18 @@ unsafe extern "system" fn pre(
                     });
                 }
                 SERIAL_FALLBACKS.fetch_add(1, Ordering::Relaxed);
-                let region_id = engine_native::cstrategic_region::id(&memory, base, region)?
+                let region_id = engine_native_parts::cstrategic_region::id(&memory, base, region)?
                     .ok_or("air loss region unexpectedly null")?;
                 let claimed = LEDGER.claim((receiver, region_id as usize))?;
                 token = Some(claimed);
                 let game = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-                    .and_then(|a| engine_native::read::<u64>(&memory, a))
+                    .and_then(|a| engine_native_memory::read::<u64>(&memory, a))
                     .and_then(|p| usize::try_from(p).ok())
                     .filter(|p| *p != 0)
                     .ok_or("air loss game root unreadable")?;
                 let hour = game
                     .checked_add(engine_native::cgame_state::CURRENT_HOUR)
-                    .and_then(|a| engine_native::read::<i32>(&memory, a))
+                    .and_then(|a| engine_native_memory::read::<i32>(&memory, a))
                     .ok_or("air loss native hour unreadable")?;
                 let family = native::selected_family(&memory, base, wing, enemy as u8)?;
                 let snapshot = native::before(
@@ -358,7 +358,7 @@ unsafe extern "system" fn post(context: *mut CallContext) {
             {
                 return Err("air loss native world changed during original");
             }
-            let memory = unsafe { engine_native::memory::LiveMemory::new() };
+            let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
             let base = BASE.load(Ordering::Relaxed);
             let singleton = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
                 .ok_or("air loss game root changed during native call")?;

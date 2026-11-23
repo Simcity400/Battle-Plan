@@ -1,6 +1,7 @@
 use crate::ship_model_changes::Changes;
 use engine_allocation as allocation;
-use engine_native::{Memory, cship};
+use engine_native_memory::Memory;
+use engine_native::cship;
 
 #[derive(Clone, Copy)]
 struct Entry {

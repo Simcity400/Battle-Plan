@@ -10,8 +10,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-allocation.workspace = true
-engine-native.workspace = true
 foldhash = "0.2"
 replay-data.workspace = true
 replay-frame = { workspace = true, features = ["capture"] }
@@ -31,7 +31,7 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-memory = { workspace = true, features = ["test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

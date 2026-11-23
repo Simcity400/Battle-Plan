@@ -30,10 +30,10 @@ impl<const N: usize> Snapshot<N> {
             .into(),
         })
     }
-    pub fn outcomes(&self) -> [engine_native::walk::Outcome; N] {
+    pub fn outcomes(&self) -> [engine_native_memory::walk::Outcome; N] {
         self.tables.each_ref().map(|table| match table {
-            Ok(rows) => engine_native::walk::Outcome::Rows { len: rows.len() },
-            Err(reason) => engine_native::walk::Outcome::Unavailable { reason },
+            Ok(rows) => engine_native_memory::walk::Outcome::Rows { len: rows.len() },
+            Err(reason) => engine_native_memory::walk::Outcome::Unavailable { reason },
         })
     }
     pub fn insert(&self, ids: [TableId; N], tables: &mut [TableInput]) {

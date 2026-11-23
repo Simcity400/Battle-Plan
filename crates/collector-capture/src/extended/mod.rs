@@ -9,7 +9,8 @@ use collector_primitives::clock::qpc;
 use collector_primitives::table_capture::grow_capacity;
 use collector_primitives::table_capture::grow_vec;
 use engine_allocation::{filled, owned_vec};
-use engine_native::{Memory, cequipment_variant_pool::DivisionSource, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cequipment_variant::pool::DivisionSource;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use replay_data::scope::CaptureMode;
@@ -1503,7 +1504,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_presentation_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1591,7 +1592,7 @@ impl Captured {
 
     pub(crate) fn take_research_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1711,7 +1712,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_governance_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -1858,7 +1859,7 @@ impl Captured {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn take_supply_trains_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         hour: i32,
@@ -2144,7 +2145,7 @@ impl Captured {
 
     pub(crate) fn take_air_relations_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         part: usize,
@@ -2173,7 +2174,7 @@ impl Captured {
 
     pub(crate) fn take_air_missions_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         mission_store: Option<Box<air::MissionStore>>,
@@ -2213,7 +2214,7 @@ impl Captured {
 
     pub(crate) fn take_air_histories_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         part: usize,
@@ -2288,7 +2289,7 @@ impl Captured {
 
     pub(crate) fn take_orders_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         orders: &mut Orders,
         base: usize,
         game_state: usize,
@@ -2322,7 +2323,7 @@ impl Captured {
 
     pub(crate) fn take_ship_models_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
         state: usize,
         census: ShipCensus,
@@ -2362,7 +2363,7 @@ impl Captured {
 
     pub(crate) fn take_ship_model_parts(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         base: usize,
     ) -> [Option<crate::acquisition_jobs::ShipModelDetailsRequest>; ship_models::MAX_PARTS] {
         if self.ship_models_report.is_some() || self.ship_models.has_terminal_failure() {
@@ -2416,7 +2417,7 @@ impl Captured {
 
     pub(crate) fn take_intel_residual_request(
         &mut self,
-        countries: &engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+        countries: &engine_allocation::SharedBox<engine_native_intelligence::country_memory::Cache>,
         context: intel::CaptureContext,
         flags: Option<Box<intel::FlagStore>>,
         variables: Option<Box<intel::VariableStore>>,
@@ -2671,7 +2672,7 @@ impl Captured {
             army_upgrade_request_row, carmy_upgrades_requests, cupgrade_delivery,
         };
         self.production.division_equipment.rows =
-            vec![engine_native::cequipment_variant_pool::DivisionRow::default(); lens[1]];
+            vec![engine_native::cequipment_variant::pool::DivisionRow::default(); lens[1]];
         self.production.groups.rows = vec![carmy_upgrades_requests::Row::default(); lens[2]];
         self.production.requests.rows = vec![army_upgrade_request_row::Row::default(); lens[3]];
         self.production.deliveries.rows = vec![cupgrade_delivery::Row::default(); lens[4]];
@@ -2741,7 +2742,7 @@ impl Captured {
     ) -> [u64; TABLE_COUNT] {
         if self.ordinary_ticks.is_none() && self.ordinary_failure.is_none() {
             let countries = engine_allocation::shared(
-                engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+                engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
             )
             .unwrap();
             self.capture_ordinary_inline(
@@ -2769,7 +2770,7 @@ impl Captured {
             ));
         }
         let countries = engine_allocation::shared(
-            engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
+            engine_native_intelligence::country_memory::Cache::try_with_capacity(0).unwrap(),
         )
         .unwrap();
         if self.intel_residual_report.is_none() {

@@ -1,5 +1,6 @@
-use crate::{Memory, allocation, cpdx_array::Array, read};
-use engine_native::{cgame_date, msvc_tree_node::Cursor};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
+use crate::allocation;
+use engine_native_memory::{cgame_date, msvc_tree_node::Cursor};
 use engine_scripts::{cflag_manager, cscript_flag, cvariables};
 use engine_sites::Rva;
 
@@ -71,7 +72,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .checked_add(offset)
         .ok_or("organisation detail address overflow")
 }
-fn field<T: engine_native::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -127,7 +128,7 @@ pub fn capture_policies_selected(
     output: &mut Vec<Policy>,
     fresh_cached: bool,
 ) -> Result<(), &'static str> {
-    let policies = Array::read(memory, at(status, crate::cproduction_status::POLICIES)?, 8)
+    let policies = Array::read(memory, at(status, engine_native::cproduction_status::POLICIES)?, 8)
         .ok_or("organisation country policy array invalid")?;
     let fresh_cached = fresh_cached || output.len() != policies.count as usize;
     resize(output, policies.count as usize)?;
@@ -139,7 +140,7 @@ pub fn capture_policies_selected(
                 .ok_or("organisation country policy address overflow")?,
             0,
         )?;
-        let mut identity = [0_u8; crate::cproduction_status::POLICY_TOKEN + 4];
+        let mut identity = [0_u8; engine_native::cproduction_status::POLICY_TOKEN + 4];
         let mut scalars = [0_u8; POLICY_DAYS + 4 - POLICY_COST];
         if memory.copy_scattered(
             [pointer, at(pointer, POLICY_COST)?],
@@ -149,13 +150,13 @@ pub fn capture_policies_selected(
             return Err("organisation policy fields unreadable");
         }
         if u64::from_le_bytes(identity[..8].try_into().unwrap())
-            != engine_sites::at(base, crate::cproduction_status::POLICY_VTABLE_RVA)
+            != engine_sites::at(base, engine_native::cproduction_status::POLICY_VTABLE_RVA)
                 .ok_or("organisation policy module overflow")? as u64
         {
             return Err("organisation policy vtable mismatch");
         }
         let token = u32::from_le_bytes(
-            identity[crate::cproduction_status::POLICY_TOKEN..][..4]
+            identity[engine_native::cproduction_status::POLICY_TOKEN..][..4]
                 .try_into()
                 .unwrap(),
         );
@@ -166,10 +167,10 @@ pub fn capture_policies_selected(
             output.country = field(memory, pointer, POLICY_COUNTRY)?;
             output.cached_score_raw = field(memory, pointer, POLICY_CACHED_SCORE)?;
             let name =
-                engine_native::msvc_string::Descriptor::read(memory, at(pointer, POLICY_NAME)?)?;
+                engine_native_memory::msvc_string::Descriptor::read(memory, at(pointer, POLICY_NAME)?)?;
             name.copy_buffer(
                 memory,
-                &mut crate::walk::Buffer::Growing(&mut output.name),
+                &mut engine_native_memory::walk::Buffer::Growing(&mut output.name),
                 0,
             )?;
             output.name.truncate(name.len);
@@ -182,10 +183,10 @@ pub fn policy_cost_modifier(
     base: usize,
     country: usize,
 ) -> Result<i64, &'static str> {
-    crate::modifier_accumulator::requested_effective_at(
+    engine_native_parts::modifier_accumulator::requested_effective_at(
         memory,
         base,
-        at(country, crate::ccountry::MODIFIER_ACCUMULATOR)?,
+        at(country, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
         crate::modifier_keys::MILITARY_INDUSTRIAL_ORGANIZATION_POLICY_COST,
     )
 }
@@ -355,7 +356,7 @@ pub fn capture_selected(
             let status = pointer_field(memory, fields[1], TECHNOLOGY_STATUS)?;
             let owner = pointer_field(memory, status, TECHNOLOGY_STATUS_COUNTRY)?;
             Some(Technology {
-                country: field(memory, owner, crate::ccountry::ID)?,
+                country: field(memory, owner, engine_native::ccountry::ID)?,
                 handle: field(memory, fields[1], TECHNOLOGY_HANDLE)?,
                 index: field(memory, template, TECHNOLOGY_TEMPLATE_INDEX)?,
                 token: field(memory, template, TECHNOLOGY_TEMPLATE_TOKEN)?,
@@ -368,10 +369,10 @@ pub fn capture_selected(
             let vtable = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
                 .map_err(|_| "organisation line pointer overflow")?;
             let candidates = [
-                engine_native::cmilitary_production_line::VTABLE_RVA,
-                engine_native::cnaval_production_line::VTABLE_RVA,
-                engine_native::cship_refit_production_line::VTABLE_RVA,
-                engine_native::crailway_gun_production_line::VTABLE_RVA,
+                engine_native_parts::cmilitary_production_line::VTABLE_RVA,
+                engine_native_parts::cnaval_production_line::VTABLE_RVA,
+                engine_native_parts::cship_refit_production_line::VTABLE_RVA,
+                engine_native_parts::crailway_gun_production_line::VTABLE_RVA,
             ];
             if engine_sites::which(base, vtable, &candidates).is_none() {
                 return Err("organisation task line identity mismatch");
@@ -386,11 +387,11 @@ pub fn capture_selected(
             base,
             cvariables::Scope::Global,
             at(pointer, VARIABLES)?,
-            crate::walk::Buffer::Growing(entries),
-            crate::walk::Buffer::Growing(names),
+            engine_native_memory::walk::Buffer::Growing(entries),
+            engine_native_memory::walk::Buffer::Growing(names),
             &mut cvariables::Fresh,
         )?;
-        let crate::walk::Outcome::Rows { len } = variables.outcome else {
+        let engine_native_memory::walk::Outcome::Rows { len } = variables.outcome else {
             return Err("organisation variable store incomplete");
         };
         row.variables.seed = seed;
@@ -415,8 +416,8 @@ pub fn capture_selected(
     }
     if fresh.flags {
         match cflag_manager::walk(memory, base, at(pointer, FLAGS)?, &mut row.flags) {
-            crate::walk::Outcome::Rows { len } => row.flags.truncate(len),
-            crate::walk::Outcome::Unavailable { reason } => return Err(reason),
+            engine_native_memory::walk::Outcome::Rows { len } => row.flags.truncate(len),
+            engine_native_memory::walk::Outcome::Unavailable { reason } => return Err(reason),
             _ => return Err("organisation flag store incomplete"),
         }
     }

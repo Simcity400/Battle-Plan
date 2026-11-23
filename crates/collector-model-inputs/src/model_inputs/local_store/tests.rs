@@ -1,20 +1,21 @@
 use super::*;
 use crate::local_subunit_changes::Watches;
 use engine_deployment::cdeployment_status;
-use engine_native::{ccountry, cequipment_type, cgame_state, csub_unit_definition};
+use engine_native::{ccountry, cgame_state};
+use engine_native_parts::{cequipment_type, csub_unit_definition};
 
 struct World(Vec<u8>);
 const STATE: usize = 0x1000;
 const DATABASE: usize = 0x9800;
 const ARCHETYPE: usize = 0xa000;
 const GLOBAL: usize = 0xb000;
-impl engine_native::Memory for World {
+impl engine_native_memory::Memory for World {
     fn copy(&self, at: usize, output: &mut [u8]) -> bool {
         if at == csub_unit_definition::DATABASE_RVA.0 && output.len() == 8 {
             output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
             return true;
         }
-        engine_native::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &self.0,
         }

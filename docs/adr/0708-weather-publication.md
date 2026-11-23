@@ -6,4 +6,4 @@ Retain signed fixed-point temperature and snow words at full width, including a 
 
 Read the manager's clock and display arrays in physical province slot order. Join them only when the authenticated arrays agree with the province count. A clock record commits both words only after the whole exact record copies. Province static modifiers retain list order, raw remaining days and authenticated definition names. A nonpositive days value denotes a non-expiring entry. A failed list copy drops the partial list. The typed and owned-copy paths share exact decoding, keeping original field-failure order. Fixed batches avoid allocating on the game thread.
 
-[Province weather](../../crates/engine-native/src/sweather_per_province.rs) · [Region weather](../../crates/engine-native/src/sweather_per_region.rs)
+[Province weather](../../crates/engine-native/src/cweather_manager/province_weather.rs) · [Region weather](../../crates/engine-native/src/cweather_manager/region_weather.rs)

@@ -1,12 +1,22 @@
 
-use crate::{
-    Memory, ccountry, ccryptology, cgame_state, cintelligence_agency as agency,
-    coperative_leader as operative, cpdx_array::Array, cstrategic_operative as strategic,
-    cstrategic_operative_manager as manager,
+use engine_native_memory::{
+    Memory, cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources, packed_fields},
-    modifier_accumulator, modifier_definition, modifier_keys, operative_action as action, read,
-    read_slice, walk::Outcome,
+    read, read_slice, walk::Outcome,
 };
+use engine_native::{ccountry, cgame_state};
+use engine_native_intelligence::{
+    ccryptology,
+    cintelligence_agency as agency,
+    coperative_leader as operative,
+    operative_action as action,
+};
+use crate::{
+    cstrategic_operative as strategic,
+    cstrategic_operative_manager as manager,
+    modifier_keys,
+};
+use engine_native_parts::modifier_accumulator;
 use engine_sites::Rva;
 
 const MISSIONS: usize = 0x28;
@@ -45,7 +55,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
 fn site(base: usize, key: Rva) -> Result<usize, &'static str> {
     engine_sites::at(base, key).ok_or("raid intel address overflow")
 }
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -94,20 +104,20 @@ pub const KEYS: [u32; 2] = [
 pub type RawAnswer = Option<i64>;
 
 pub trait Carry {
-    fn held(&mut self, country: &ccountry::Country, header: &[u8; 16]) -> Option<[RawAnswer; 2]>;
-    fn read(&mut self, country: &ccountry::Country, header: &[u8; 16], answers: [RawAnswer; 2]);
+    fn held(&mut self, country: &engine_native_memory::country_identity::Country, header: &[u8; 16]) -> Option<[RawAnswer; 2]>;
+    fn read(&mut self, country: &engine_native_memory::country_identity::Country, header: &[u8; 16], answers: [RawAnswer; 2]);
 }
 
 pub struct NoCarry;
 impl Carry for NoCarry {
-    fn held(&mut self, _: &ccountry::Country, _: &[u8; 16]) -> Option<[RawAnswer; 2]> {
+    fn held(&mut self, _: &engine_native_memory::country_identity::Country, _: &[u8; 16]) -> Option<[RawAnswer; 2]> {
         None
     }
-    fn read(&mut self, _: &ccountry::Country, _: &[u8; 16], _: [RawAnswer; 2]) {}
+    fn read(&mut self, _: &engine_native_memory::country_identity::Country, _: &[u8; 16], _: [RawAnswer; 2]) {}
 }
 
 const ACCUMULATOR_ENTRIES: usize = 1024;
-const STRIDE: usize = crate::modifier_entry::STRIDE;
+const STRIDE: usize = engine_native_parts::modifier_entry::STRIDE;
 
 #[derive(Clone, Copy)]
 enum Loaded {
@@ -117,7 +127,7 @@ enum Loaded {
 }
 
 struct Accumulator<'b> {
-    country: ccountry::Country,
+    country: engine_native_memory::country_identity::Country,
     entries: &'b mut [u8; ACCUMULATOR_ENTRIES * STRIDE],
     prefetched_header: Option<[u8; 16]>,
     loaded: Option<Loaded>,
@@ -125,7 +135,7 @@ struct Accumulator<'b> {
 
 impl<'b> Accumulator<'b> {
     fn new(
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         entries: &'b mut [u8; ACCUMULATOR_ENTRIES * STRIDE],
         prefetched_header: Option<[u8; 16]>,
     ) -> Self {
@@ -138,7 +148,7 @@ impl<'b> Accumulator<'b> {
     }
 
     fn address(&self) -> Result<usize, &'static str> {
-        at(self.country.pointer, ccountry::MODIFIER_ACCUMULATOR)
+        at(self.country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)
     }
 
     fn load(
@@ -209,7 +219,7 @@ impl<'b> Accumulator<'b> {
                 let operands = match defs[key] {
                     Some(operands) => operands,
                     None => {
-                        let operands = modifier_definition::operands(memory, base, KEYS[key])?;
+                        let operands = engine_native_parts::modifier_definition::operands(memory, base, KEYS[key])?;
                         defs[key] = Some(operands);
                         operands
                     }
@@ -278,7 +288,7 @@ fn contribution(
     if object == 0 {
         return Err("raid intel object vtable mismatch");
     }
-    let expected_op = site(base, operative::VTABLE_RVA)? as u64;
+    let expected_op = site(base, engine_native_parts::coperative_leader_layout::VTABLE_RVA)? as u64;
     let mission = at(object, operative::ACTION)?;
     let mut op_vtable = [0u8; 8];
     let mut op_id = [0u8; 8];
@@ -327,7 +337,7 @@ fn contribution(
             implementation,
             at(
                 implementation,
-                crate::operative_action_implementation::TARGET_COUNTRY,
+                engine_native_intelligence::operative_action_implementation::TARGET_COUNTRY,
             )?,
         ],
         &mut [&mut mission_vtable, &mut target_bytes],
@@ -359,7 +369,7 @@ fn contribution(
         if database != 0 {
             let bound = pointer(memory, database, NATIONALITY_MODIFIER)?;
             if bound != 0 {
-                authenticate(memory, base, bound, crate::cstatic_modifier::VTABLE_RVA)?;
+                authenticate(memory, base, bound, engine_native_parts::cstatic_modifier::VTABLE_RVA)?;
                 context = modifier(
                     memory,
                     base,
@@ -514,8 +524,8 @@ pub fn walk(
         memory,
         base,
         game,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(operatives),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(operatives),
         carry,
     )
 }
@@ -524,8 +534,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    operatives: crate::walk::Buffer<'_, Operative>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    operatives: engine_native_memory::walk::Buffer<'_, Operative>,
 ) -> Walk {
     walk_carrying(memory, base, game, output, operatives, &mut NoCarry)
 }
@@ -534,8 +544,8 @@ fn walk_carrying(
     memory: &impl Memory,
     base: usize,
     game: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut operatives: crate::walk::Buffer<'_, Operative>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut operatives: engine_native_memory::walk::Buffer<'_, Operative>,
     carry: &mut impl Carry,
 ) -> Walk {
     const BATCH: usize = 64;
@@ -974,8 +984,9 @@ fn walk_carrying(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        creference_registry as registry, modifier_definition as definition,
+    use engine_native_parts::{
+        creference_registry as registry,
+        modifier_definition as definition,
         reference_bucket as bucket,
     };
     use std::collections::BTreeMap;
@@ -1078,7 +1089,7 @@ mod tests {
             f.u64(crypto, ccryptology::VTABLE_RVA.0 as u64);
             f.u64(crypto + ccryptology::OWNER_COUNTRY, f.country as u64);
             f.accumulator(
-                f.country + ccountry::MODIFIER_ACCUMULATOR,
+                f.country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
                 &[(DEFENSE, -125000), (CRYPTO, 249999)],
             );
             f.block(definition::TABLE_RVA.0, 8);
@@ -1099,7 +1110,7 @@ mod tests {
             f.put(cell + bucket::DISTANCE, &[1]);
             f.u64(cell + 8, HANDLE);
             f.u64(cell + 16, f.operative as u64);
-            f.u64(f.operative, operative::VTABLE_RVA.0 as u64);
+            f.u64(f.operative, engine_native_parts::coperative_leader_layout::VTABLE_RVA.0 as u64);
             f.u64(f.operative + operative::IDENTITY, HANDLE);
             f.u32(
                 f.operative + operative::ACTION + action::VARIANT,
@@ -1111,7 +1122,7 @@ mod tests {
             );
             f.u64(f.mission, MISSION_VTABLE_RVA.0 as u64);
             f.u32(
-                f.mission + crate::operative_action_implementation::TARGET_COUNTRY,
+                f.mission + engine_native_intelligence::operative_action_implementation::TARGET_COUNTRY,
                 slots as u32,
             );
             f.accumulator(
@@ -1123,7 +1134,7 @@ mod tests {
             f.block(STATIC_DATABASE_RVA.0, 8);
             f.u64(STATIC_DATABASE_RVA.0, (end + 0x600) as u64);
             f.u64(end + 0x600 + NATIONALITY_MODIFIER, (end + 0x800) as u64);
-            f.u64(end + 0x800, crate::cstatic_modifier::VTABLE_RVA.0 as u64);
+            f.u64(end + 0x800, engine_native_parts::cstatic_modifier::VTABLE_RVA.0 as u64);
             f.accumulator(
                 end + 0x800 + crate::cmodifier::ACCUMULATOR,
                 &[(DEFENSE, -33333)],
@@ -1183,7 +1194,7 @@ mod tests {
             }
         }
         let mut f = Fixture::new(1);
-        let entries = f.country + ccountry::MODIFIER_ACCUMULATOR + 0x20;
+        let entries = f.country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x20;
         let counted = Counted(&f, std::cell::Cell::new(0), entries);
         let mut rows = vec![Row::default()];
         let walk = walk(&counted, 0, GAME, &mut rows, &mut vec![Operative::default(); 2], &mut NoCarry);
@@ -1194,7 +1205,7 @@ mod tests {
         );
         assert_eq!(counted.1.get(), 1);
         f.accumulator(
-            f.country + ccountry::MODIFIER_ACCUMULATOR,
+            f.country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR,
             &[(CRYPTO, 249999), (DEFENSE, -125000)],
         );
         assert_eq!(
@@ -1217,7 +1228,7 @@ mod tests {
             }
         }
         let mut f = Fixture::new(1);
-        let header = f.country + ccountry::MODIFIER_ACCUMULATOR;
+        let header = f.country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         let data = header + 0x20;
         f.accumulator(
             header,
@@ -1273,7 +1284,7 @@ mod tests {
         impl Carry for Holding {
             fn held(
                 &mut self,
-                country: &ccountry::Country,
+                country: &engine_native_memory::country_identity::Country,
                 header: &[u8; 16],
             ) -> Option<[RawAnswer; 2]> {
                 self.asked.push(country.id);
@@ -1281,12 +1292,12 @@ mod tests {
                     .filter(|(held, _)| held == header)
                     .map(|(_, answers)| answers)
             }
-            fn read(&mut self, _: &ccountry::Country, header: &[u8; 16], answers: [RawAnswer; 2]) {
+            fn read(&mut self, _: &engine_native_memory::country_identity::Country, header: &[u8; 16], answers: [RawAnswer; 2]) {
                 self.read.push((*header, answers));
             }
         }
         let f = Fixture::new(1);
-        let header = f.country + ccountry::MODIFIER_ACCUMULATOR;
+        let header = f.country + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         let entries = header + 0x20;
         let counted = Counted {
             fixture: &f,

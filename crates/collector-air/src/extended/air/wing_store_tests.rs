@@ -4,7 +4,8 @@ use engine_mutations::{
     air_wing_equipment_mutations::MUTATIONS, air_wing_equipment_mutations::Receiver,
     air_wing_equipment_mutations::pools,
 };
-use engine_native::{cequipment_variant, cequipment_variant_pool, memory::SliceMemory};
+use engine_native::cequipment_variant::{self, pool as cequipment_variant_pool};
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const REGION: usize = 0x800;
@@ -54,7 +55,7 @@ fn world() -> Vec<u8> {
         put(
             &mut bytes,
             variant,
-            &(cequipment_variant::VTABLE_RVA.0 as u64).to_le_bytes(),
+            &(engine_native_parts::equipment_variant_identity::VTABLE_RVA.0 as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -147,7 +148,7 @@ fn settle_selected(
             &memory,
             0,
             &source,
-            engine_native::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
             start,
             Some(&mut reuse),
         );

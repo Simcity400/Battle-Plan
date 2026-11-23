@@ -4,7 +4,7 @@ use crate::{
     output_hooks,
     output_log::{DrainCounters, Log, Reserved, Spill},
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_sites::Rva;
 use engine_production::{
     construction_ic_sites::BUILDING_COMPLETE, construction_ic_sites::BUILDING_RESET,
@@ -207,7 +207,7 @@ pub unsafe fn invalidate() {
 
 fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     let base = BASE.load(Ordering::Relaxed);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let operands =
         match engine_production::construction_ic_sites::operands(&memory, base, line, railway) {
             Ok(operands) => operands,
@@ -300,7 +300,7 @@ fn observe_completion(line: usize, caller: usize, result: u8, railway: bool) {
     if result == 0 || caller != RETURNS[1].load(Ordering::Relaxed) {
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let event =
         match engine_production::construction_ic_sites::completion(&memory, base, line, railway) {
             Ok(event) => event,
@@ -317,7 +317,7 @@ fn observe_linked_completion(status: usize, line: usize, caller: usize) {
     if caller != RETURNS[2].load(Ordering::Relaxed) {
         return;
     }
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match engine_production::construction_ic_sites::linked_completion(&memory, base, status, line) {
         Ok(event) => append_completion(event, false, true),
         Err(reason) => refuse(reason),
@@ -325,7 +325,7 @@ fn observe_linked_completion(status: usize, line: usize, caller: usize) {
 }
 
 fn observe_count_reset(line: usize) {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     match engine_production::construction_ic_sites::count_reset(
         &memory,
         BASE.load(Ordering::Relaxed),
@@ -756,9 +756,8 @@ mod growth_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_native::{
-        ccountry, cgame_state, cgame_state::SINGLETON_RVA, cproduction_line, cproduction_status,
-    };
+    use engine_native::{ccountry, cgame_state::{self, SINGLETON_RVA}, cproduction_status};
+    use engine_native_parts::cproduction_line;
     use engine_production::{
         construction_ic_sites::CIC_BANK_DRAW, construction_ic_sites::INSTANT_CONSTRUCTION,
         construction_ic_sites::INVALID_REFERENCE, construction_ic_sites::LINE_HANDLE,
@@ -886,7 +885,8 @@ mod tests {
             owner.state[cgame_state::COUNTRY_LINKS / 8] = owner.links.as_ptr() as u64;
             owner.state[cgame_state::COUNTRY_LINKS / 8 + 1] = 8 | 8 << 32;
             owner.state[cgame_state::LOCAL_PLAYER_COUNTRY / 8] = u64::from(playing);
-            use engine_native::{cbuilding, cbuilding_status, cstate};
+            use engine_native_parts::cbuilding;
+            use engine_native::{cprovince::buildings as cbuilding_status, cstate};
             owner.map[1] = owner.map_state.as_ptr() as u64;
             for field in [cgame_state::STATES, cgame_state::PROVINCES] {
                 owner.state[field / 8] = owner.map.as_ptr() as u64;

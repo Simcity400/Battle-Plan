@@ -4,7 +4,8 @@ use crate::{
     rows::{TableId, tables},
 };
 use engine_executable::modifier_keys as keys;
-use engine_native::{cbuilding_database, cpdx_lexer};
+use engine_native_parts::cbuilding_database;
+use engine_native_memory::cpdx_lexer;
 use engine_research::cresearch_slot;
 
 #[derive(Clone, Copy, Debug)]
@@ -382,11 +383,11 @@ pub const PARADROP_TRANSPORT: Family = Family {
     tables: &[],
 };
 
-const NAVAL_MISSION_KEYS: [u32; engine_native::naval_mission_inputs::COUNTRY_KEYS.len() + 1] = {
-    let mut out = [0; engine_native::naval_mission_inputs::COUNTRY_KEYS.len() + 1];
+const NAVAL_MISSION_KEYS: [u32; engine_native_naval::naval_mission_inputs::COUNTRY_KEYS.len() + 1] = {
+    let mut out = [0; engine_native_naval::naval_mission_inputs::COUNTRY_KEYS.len() + 1];
     let mut index = 0;
-    while index < engine_native::naval_mission_inputs::COUNTRY_KEYS.len() {
-        out[index] = engine_native::naval_mission_inputs::COUNTRY_KEYS[index];
+    while index < engine_native_naval::naval_mission_inputs::COUNTRY_KEYS.len() {
+        out[index] = engine_native_naval::naval_mission_inputs::COUNTRY_KEYS[index];
         index += 1;
     }
     out[index] = keys::SPOTTING_CHANCE_AGAINST;
@@ -441,8 +442,8 @@ pub const RAID_SUCCESS: Family = Family {
         keys::ACE_EFFECTIVENESS_FACTOR,
     ],
     tokens: &[
-        engine_native::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
-        engine_native::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+        engine_native_air::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+        engine_native_air::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
     ],
     tables: &[TableId::RaidTooltipOperands],
 };

@@ -10,7 +10,10 @@ pub(super) struct CensusCheck {
 }
 
 fn produces(kind: u8, purpose: OutputPurpose) -> bool {
-    use engine_native::cequipment_production_line::{KIND_MILITARY, KIND_SHIP_REFIT};
+    use engine_native::cproduction_status::equipment_line::{
+        KIND_MILITARY,
+        KIND_SHIP_REFIT,
+    };
     match purpose {
         OutputPurpose::Refit => kind == KIND_SHIP_REFIT,
         OutputPurpose::Converted => kind == KIND_MILITARY,

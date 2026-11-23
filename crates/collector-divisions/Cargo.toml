@@ -13,9 +13,13 @@ doctest = false
 default = ["province_unit_changes"]
 acquisition_profile = ["engine-native/acquisition_profile", "collector-memory/acquisition_profile"]
 province_unit_changes = []
-test-support = ["dep:collector-test-support", "engine-native/layout-fixtures"]
+test-support = ["dep:engine-native-air", "engine-native-air/layout-fixtures", "dep:collector-test-support", "engine-native/layout-fixtures", "engine-native-parts/layout-fixtures"]
 
 [dependencies]
+engine-native-air = { workspace = true, optional = true }
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-land.workspace = true
 engine-deployment.workspace = true
 collector-test-support = { workspace = true, optional = true }
 collector-certificates.workspace = true
@@ -48,6 +52,9 @@ serde = { workspace = true, features = ["derive"] }
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Kernel", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_SystemInformation", "Win32_System_SystemServices"] }
 
 [dev-dependencies]
+engine-native-air = { workspace = true, features = ["test-support"] }
+engine-native-politics = { workspace = true, features = ["test-support"] }
+engine-native-intelligence = { workspace = true, features = ["test-support"] }
 replay-capture-spool.workspace = true
 collector-certificates = { workspace = true, features = ["test-support"] }
 collector-combat = { workspace = true, features = ["test-support"] }
@@ -79,6 +86,7 @@ collector-observers = { workspace = true, features = ["advisor_changes", "adviso
 collector-raw = { workspace = true, features = ["test-support"] }
 collector-workers = { workspace = true, features = ["default", "executor_join_help", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

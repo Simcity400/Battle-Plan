@@ -15,11 +15,18 @@ use engine_deployment::{
     cupgrade_delivery, manpower_value_entry,
 };
 use engine_equipment::{cequipment_upgrades_instance, equipment_module_container};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, walk::Outcome};
+use engine_native_parts::{carmy_manpower_values, cproduction_line, equipment_entry};
 use engine_native::{
-    Memory, carmy_manpower_values, ccountry, cequipment_production_license,
-    cequipment_production_line, cequipment_variant, cequipment_variant_pool, cgame_state,
-    cname_group_member, cpdx_array::Array, cproduction_line, cproduction_status, equipment_entry,
-    msvc_string, walk::Outcome,
+    ccountry,
+    cproduction_status::{
+        equipment_license as cequipment_production_license,
+        equipment_line as cequipment_production_line,
+        self,
+    },
+    cequipment_variant::{self, pool as cequipment_variant_pool},
+    cgame_state,
+    cname_group_member,
 };
 use replay_data::{rows, rows::TableId, rows::tables};
 use replay_frame::{frame::TableInput, frame::TableView};
@@ -125,7 +132,7 @@ impl Capacities {
                 .checked_add(ccountry::DIVISIONS)
                 .and_then(|at| Array::read(memory, at, 8))
                 .ok_or("division detail sizing roster unreadable or invalid")?;
-            engine_native::cpdx_array::pointers(
+            engine_native_memory::cpdx_array::pointers(
                 memory,
                 roster,
                 "division detail sizing pointer unreadable",
@@ -141,8 +148,8 @@ impl Capacities {
                     let (Some(primary), Some(secondary)) = army_vtables else {
                         return Err("division detail sizing army identity invalid");
                     };
-                    if engine_native::read::<u64>(memory, pointer) != Some(primary as u64)
-                        || engine_native::read::<u64>(
+                    if engine_native_memory::read::<u64>(memory, pointer) != Some(primary as u64)
+                        || engine_native_memory::read::<u64>(
                             memory,
                             at(engine_native::carmy::SECONDARY_BASE)?,
                         ) != Some(secondary as u64)
@@ -150,7 +157,7 @@ impl Capacities {
                         return Err("division detail sizing army identity invalid");
                     }
                     let division =
-                        engine_native::read::<u64>(memory, at(engine_native::cunit::HANDLE)?)
+                        engine_native_memory::read::<u64>(memory, at(engine_native::cunit::HANDLE)?)
                             .filter(|value| *value != 0)
                             .ok_or("division detail sizing handle unreadable or null")?;
                     let source = [cequipment_variant_pool::DivisionSource {
@@ -925,7 +932,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::Growing(rows),
+                    engine_native_memory::walk::Buffer::Growing(rows),
                 )
             });
             ticks[0] = elapsed(begin);
@@ -936,7 +943,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::Growing(rows),
+                    engine_native_memory::walk::Buffer::Growing(rows),
                 )
             });
             ticks[1] = elapsed(begin);
@@ -983,15 +990,15 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::Growing(rows),
+                    engine_native_memory::walk::Buffer::Growing(rows),
                 )
             });
             let records = cproduction_status::walk_license_records_buffer(
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::Growing(&mut self.license_records.rows),
-                engine_native::walk::Buffer::Growing(&mut self.license_handles.first),
+                engine_native_memory::walk::Buffer::Growing(&mut self.license_records.rows),
+                engine_native_memory::walk::Buffer::Growing(&mut self.license_handles.first),
             );
             self.license_records.outcome = records.outcome;
             self.license_handles.len = records.handles_len;
@@ -1023,12 +1030,12 @@ impl Captured {
             memory,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.conveyors.rows),
-            engine_native::walk::Buffer::Growing(&mut self.deployment_lines.rows),
-            engine_native::walk::Buffer::Growing(&mut self.deployment_manpower.rows),
-            engine_native::walk::Buffer::Growing(&mut self.deployment_equipment.rows),
-            engine_native::walk::Buffer::Growing(&mut self.conveyor_name_bytes.first),
-            engine_native::walk::Buffer::Growing(&mut self.line_custom_name_bytes.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.conveyors.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.deployment_lines.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.deployment_manpower.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.deployment_equipment.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.conveyor_name_bytes.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.line_custom_name_bytes.first),
         )
     }
 
@@ -1051,7 +1058,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.lines.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.lines.rows),
         );
         decode_ticks[0] += elapsed(started);
         let started = qpc();
@@ -1059,7 +1066,7 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.stockpiles.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.stockpiles.rows),
         );
         decode_ticks[1] += elapsed(started);
         let started = qpc();
@@ -1067,14 +1074,14 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.licenses.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.licenses.rows),
         );
         let result = cproduction_status::walk_license_records_buffer(
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.license_records.rows),
-            engine_native::walk::Buffer::Growing(&mut self.license_handles.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.license_records.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.license_handles.first),
         );
         self.license_records.outcome = result.outcome;
         self.license_handles.len = result.handles_len;
@@ -1085,12 +1092,12 @@ impl Captured {
             &recorded,
             base,
             game_state,
-            engine_native::walk::Buffer::Growing(&mut self.conveyors.rows),
-            engine_native::walk::Buffer::Growing(&mut self.deployment_lines.rows),
-            engine_native::walk::Buffer::Growing(&mut self.deployment_manpower.rows),
-            engine_native::walk::Buffer::Growing(&mut self.deployment_equipment.rows),
-            engine_native::walk::Buffer::Growing(&mut self.conveyor_name_bytes.first),
-            engine_native::walk::Buffer::Growing(&mut self.line_custom_name_bytes.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.conveyors.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.deployment_lines.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.deployment_manpower.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.deployment_equipment.rows),
+            engine_native_memory::walk::Buffer::Growing(&mut self.conveyor_name_bytes.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.line_custom_name_bytes.first),
         );
         self.conveyors.outcome = walked.conveyors;
         self.deployment_lines.outcome = walked.lines;

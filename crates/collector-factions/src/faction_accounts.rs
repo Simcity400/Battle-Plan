@@ -1,6 +1,7 @@
 use crate::faction_companion_changes::Changes;
 use engine_allocation as allocation;
-use engine_native::{Memory, cfaction_member_status as native, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native_parts::cfaction_member_status as native;
 use replay_data::rows::{FactionAccountRow, TableRows, tables};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Account {
@@ -98,7 +99,7 @@ impl Store {
         state: usize,
         force: bool,
         changes: &impl Changes,
-        members: &[engine_native::cfaction_system::MemberRow],
+        members: &[engine_native::cfaction::system::MemberRow],
     ) {
         let retry = self.failure.take().is_some();
         let before = changes.quiet(FAMILY);
@@ -150,13 +151,13 @@ impl Store {
                 );
                 let system = state
                     .checked_add(engine_native::cgame_state::FACTION_SYSTEM)
-                    .and_then(|at| engine_native::read::<u64>(memory, at))
+                    .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                     .and_then(|value| usize::try_from(value).ok())
                     .filter(|value| *value != 0)
                     .ok_or("faction member accounting system unavailable")?;
-                let vtable = engine_sites::at(base, engine_native::cfaction_system::VTABLE_RVA)
+                let vtable = engine_sites::at(base, engine_native::cfaction::system::VTABLE_RVA)
                     .ok_or("faction member accounting system vtable mismatch")?;
-                if engine_native::read::<u64>(memory, system) != Some(vtable as u64) {
+                if engine_native_memory::read::<u64>(memory, system) != Some(vtable as u64) {
                     return Err("faction member accounting system vtable mismatch");
                 }
                 self.header = system
@@ -586,10 +587,10 @@ mod tests {
         );
         bytes[0x4000 + engine_native::ccountry::ID..0x4004 + engine_native::ccountry::ID]
             .copy_from_slice(&9u32.to_le_bytes());
-        let accumulator = 0x4000 + engine_native::ccountry::MODIFIER_ACCUMULATOR;
+        let accumulator = 0x4000 + engine_native_memory::country_identity::MODIFIER_ACCUMULATOR;
         put(&mut bytes, accumulator, 0x6000);
-        bytes[accumulator + engine_native::modifier_accumulator::COUNT
-            ..accumulator + engine_native::modifier_accumulator::COUNT + 4]
+        bytes[accumulator + engine_native_parts::modifier_accumulator::COUNT
+            ..accumulator + engine_native_parts::modifier_accumulator::COUNT + 4]
             .copy_from_slice(&2i32.to_le_bytes());
         for (ordinal, (key, raw)) in [(0x48u32, 25_000i64), (0x288u32, -17_000i64)]
             .into_iter()
@@ -620,7 +621,7 @@ mod tests {
     impl Memory for Counted<'_> {
         fn copy(&self, address: usize, out: &mut [u8]) -> bool {
             self.reads.set(self.reads.get() + 1);
-            engine_native::memory::SliceMemory {
+            engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: self.bytes,
             }
@@ -640,7 +641,7 @@ mod tests {
         put(
             &mut bytes,
             SYSTEM,
-            engine_native::cfaction_system::VTABLE_RVA.0 as u64,
+            engine_native::cfaction::system::VTABLE_RVA.0 as u64,
         );
         put(&mut bytes, SYSTEM + native::ACCOUNTS, ACCOUNTS as u64);
         put(
@@ -738,7 +739,7 @@ mod tests {
                     // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
                     unsafe {
                         store.acquire(
-                            &engine_native::memory::SliceMemory { base: 0, bytes },
+                            &engine_native_memory::memory::SliceMemory { base: 0, bytes },
                             0,
                             STATE,
                             false,
@@ -874,7 +875,7 @@ mod tests {
                 // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
                 unsafe {
                     store.acquire(
-                        &engine_native::memory::SliceMemory { base: 0, bytes },
+                        &engine_native_memory::memory::SliceMemory { base: 0, bytes },
                         0,
                         STATE,
                         false,
@@ -930,7 +931,7 @@ mod tests {
         // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
         unsafe {
             store.acquire(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 },
@@ -945,7 +946,7 @@ mod tests {
         // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
         unsafe {
             store.acquire(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 },
@@ -961,7 +962,7 @@ mod tests {
         // SAFETY: Unit test holds `TEST_LOCK` and owns this local fixture store.
         unsafe {
             store.acquire(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &bytes,
                 },

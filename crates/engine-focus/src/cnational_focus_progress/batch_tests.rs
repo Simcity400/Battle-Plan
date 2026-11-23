@@ -15,9 +15,9 @@ fn capture(
             0,
             World::country(country),
             country,
-            crate::walk::Buffer::Growing(&mut rows),
-            crate::walk::Buffer::Growing(&mut completed),
-            crate::walk::Buffer::Growing(&mut tokens),
+            engine_native_memory::walk::Buffer::Growing(&mut rows),
+            engine_native_memory::walk::Buffer::Growing(&mut completed),
+            engine_native_memory::walk::Buffer::Growing(&mut tokens),
         )
     } else {
         walk(
@@ -129,9 +129,9 @@ fn governance_batch_focus_truncation_keeps_serial_arenas_and_demand() {
                     0,
                     World::country(1),
                     1,
-                    crate::walk::Buffer::Growing(&mut before_rows),
-                    crate::walk::Buffer::Growing(&mut before_completed),
-                    crate::walk::Buffer::Growing(&mut before_tokens),
+                    engine_native_memory::walk::Buffer::Growing(&mut before_rows),
+                    engine_native_memory::walk::Buffer::Growing(&mut before_completed),
+                    engine_native_memory::walk::Buffer::Growing(&mut before_tokens),
                 );
                 let new = walk(
                     &world,

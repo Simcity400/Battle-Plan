@@ -4,7 +4,8 @@ use crate::{
     table_conversion::{table, table_iter, unavailable},
 };
 use engine_allocation::collect_vec;
-use engine_native::{Memory, ccountry_supply_system, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry_supply_system;
 use engine_projects::special_facility_flags;
 use replay_data::{
     rows::FacilityMapFlagRow, rows::FloatingHarborDeploymentRow, rows::TableId, rows::tables,

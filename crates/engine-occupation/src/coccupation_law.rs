@@ -6,7 +6,7 @@ pub const NAME: usize = 0x10;
 pub const DATABASE_RVA: Rva = Rva(0x033d_d3e0);
 pub const DATABASE_FALLBACK: usize = 0x48;
 
-use crate::{Memory, msvc_string, read, read_slice};
+use engine_native_memory::{Memory, msvc_string, read, read_slice};
 
 pub(crate) fn fallback(memory: &impl Memory, base: usize) -> Result<Literal, &'static str> {
     let database = engine_sites::at(base, DATABASE_RVA)
@@ -71,13 +71,13 @@ pub(crate) fn literal(
 }
 
 pub(crate) struct Names<'a> {
-    bytes: crate::walk::Buffer<'a, u8>,
+    bytes: engine_native_memory::walk::Buffer<'a, u8>,
     pub len: usize,
     pub required: usize,
 }
 
 impl<'a> Names<'a> {
-    pub fn new_buffer(bytes: crate::walk::Buffer<'a, u8>) -> Self {
+    pub fn new_buffer(bytes: engine_native_memory::walk::Buffer<'a, u8>) -> Self {
         Self {
             bytes,
             len: 0,
@@ -115,7 +115,7 @@ impl<'a> Names<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     #[test]
     fn literal_law_bytes_are_preserved_and_capacity_omits_whole_tokens() {
@@ -130,7 +130,7 @@ mod tests {
         };
         let token = literal(&memory, 0, 0x1000).unwrap();
         let mut arena = Vec::new();
-        let mut names = Names::new_buffer(crate::walk::Buffer::Growing(&mut arena));
+        let mut names = Names::new_buffer(engine_native_memory::walk::Buffer::Growing(&mut arena));
         assert_eq!(names.copy(&memory, token, true), Ok(Some(0)));
         assert_eq!((names.len, names.required), (4, 4));
         assert_eq!(arena[..4], [b'l', 0, 255, b'w']);

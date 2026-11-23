@@ -1,6 +1,7 @@
 
 use super::RawLog;
-use engine_native::{Memory, ccountry, cpdx_array::Array};
+use engine_native_memory::{Memory, cpdx_array::Array};
+use engine_native::ccountry;
 
 pub struct CountrySlots {
     countries: Array,
@@ -144,7 +145,8 @@ fn u32_at<const N: usize>(
 mod tests {
     use super::*;
     use crate::raw::Recorded;
-    use engine_native::{cgame_state, memory::SliceMemory};
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x1_4000_0000;
     const STATE: usize = 0x1000;

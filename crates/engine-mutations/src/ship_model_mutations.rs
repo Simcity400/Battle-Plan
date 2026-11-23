@@ -17,7 +17,7 @@ pub const MUTATIONS: [MutationSite; 10] = [
     },
     MutationSite {
         name: "add_carrier_air_base",
-        rva: crate::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA,
+        rva: engine_native_air::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA,
     },
     MutationSite {
         name: "destroy_air_base",
@@ -62,7 +62,7 @@ mod tests {
         }
         assert_eq!(
             MUTATIONS[3].rva,
-            crate::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA
+            engine_native_air::cstrategic_air_manager::ADD_CARRIER_AIR_BASE_RVA
         );
     }
 }

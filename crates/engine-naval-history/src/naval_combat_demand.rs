@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, cpdx_array::Array, read};
+use engine_native_memory::{Memory, cpdx_array::Array, read};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -14,7 +14,7 @@ fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
         .filter(|_| pointer != 0)
         .ok_or("naval demand pointer overflow")
 }
-fn field<T: crate::memory::Raw>(
+fn field<T: engine_native_memory::memory::Raw>(
     memory: &impl Memory,
     pointer: usize,
     offset: usize,
@@ -102,7 +102,7 @@ impl<M: Memory> Memory for Headers<'_, M> {
 impl<M: Memory> Headers<'_, M> {
     fn validate(&self) -> Result<(), &'static str> {
         for &(address, header) in &*self.observed.borrow() {
-            if crate::read::<[u8; 16]>(self.memory, address) != Some(header) {
+            if engine_native_memory::read::<[u8; 16]>(self.memory, address) != Some(header) {
                 return Err("naval demand selecting header changed");
             }
         }
@@ -123,7 +123,8 @@ fn demand_advisory(
     base: usize,
     game_state: usize,
 ) -> Result<Demand, &'static str> {
-    use crate::{cfex_group, cgame_state, cnaval_combat, cnaval_combatant};
+    use engine_native_parts::cfex_group;
+    use engine_native::{cgame_state, cnaval_combat, cnaval_combatant};
     let headers = Headers {
         memory,
         observed: RefCell::default(),
@@ -133,7 +134,7 @@ fn demand_advisory(
     let roster = Array::read(memory, roster_at, 8).ok_or("naval demand registry invalid")?;
     let mut demand = Demand::default();
     let mut groups = HashSet::new();
-    let mut doctrine_keys = crate::naval_ship_modifier_inputs::DoctrineKeys::default();
+    let mut doctrine_keys = engine_native::cship::modifier_sources::DoctrineKeys::default();
     for index in 0..roster.count {
         let combat = element(memory, roster, index)?;
         if field::<u64>(memory, combat, 0)? != key(base, cnaval_combat::VTABLE_RVA)? as u64 {
@@ -146,18 +147,18 @@ fn demand_advisory(
         let handle: u64 = field(memory, combat, cnaval_combat::HANDLE)?;
         add(&mut demand.rows, 1)?;
         let province = pointer(memory, combat, cnaval_combat::PROVINCE)?;
-        let region = pointer(memory, province, crate::cprovince::STRATEGIC_REGION)?;
+        let region = pointer(memory, province, engine_native::cprovince::STRATEGIC_REGION)?;
         if region != 0 {
-            let template = pointer(memory, region, crate::cstrategic_region::TEMPLATE)?;
+            let template = pointer(memory, region, engine_native_parts::cstrategic_region::TEMPLATE)?;
             let capacity = field::<i32>(
                 memory,
                 template,
-                crate::cstrategic_region::TEMPLATE_MODIFIERS_CAPACITY,
+                engine_native_parts::cstrategic_region::TEMPLATE_MODIFIERS_CAPACITY,
             )?;
             let count = field::<i32>(
                 memory,
                 template,
-                crate::cstrategic_region::TEMPLATE_MODIFIERS_COUNT,
+                engine_native_parts::cstrategic_region::TEMPLATE_MODIFIERS_COUNT,
             )?;
             if count < 0 || capacity < count {
                 return Err("naval demand custom sea count invalid");
@@ -165,18 +166,18 @@ fn demand_advisory(
             add(&mut demand.custom_sea, count as usize)?;
         }
         for &side in &sides {
-            crate::cnaval_combatant::side(memory, base, side, combat, false)?;
+            engine_native::cnaval_combatant::side(memory, base, side, combat, false)?;
             add(
                 &mut demand.side_units,
                 array(memory, side, cnaval_combatant::UNITS)?.count as usize,
             )?;
             add(
                 &mut demand.damage_sources,
-                cnaval_combatant::damage_source_demand(memory, side)?,
+                engine_native_naval::naval_side_details::damage_source_demand(memory, side)?,
             )?;
             for offset in [
-                crate::naval_combat_summary_inputs::COUNTRY_COUNT,
-                crate::naval_combat_summary_inputs::SECONDARY_COUNTRIES + 0x10,
+                engine_native_parts::naval_side_layout::COUNTRY_COUNT,
+                engine_native_naval::naval_combat_summary_inputs::SECONDARY_COUNTRIES + 0x10,
             ] {
                 let count = usize::try_from(field::<i32>(memory, side, offset)?)
                     .map_err(|_| "naval demand country count negative")?;
@@ -187,8 +188,8 @@ fn demand_advisory(
                 add(&mut demand.commanders, 1)?;
                 let timed = Array::read(
                     memory,
-                    at(commander, crate::cunit_leader::TIMED_TRAIT_DATA)?,
-                    crate::cunit_leader::TIMED_TRAIT_STRIDE,
+                    at(commander, engine_native::cunit_leader::TIMED_TRAIT_DATA)?,
+                    engine_native::cunit_leader::TIMED_TRAIT_STRIDE,
                 )
                 .ok_or("naval demand commander timed traits invalid")?;
                 add(&mut demand.commander_timed_traits, timed.count as usize)?;
@@ -226,7 +227,7 @@ fn demand_advisory(
                 for index in 0..members.count {
                     let member = element(memory, members, index)?;
                     for (offset, stride, lane) in [
-                        (crate::cfex_member::DAMAGE_ENTRIES, 0x20, 0),
+                        (engine_native::cfex_member::DAMAGE_ENTRIES, 0x20, 0),
                         (0x150, 8, 1),
                         (0x168, 8, 1),
                         (0x180, 8, 2),
@@ -243,9 +244,9 @@ fn demand_advisory(
                             count,
                         )?;
                     }
-                    let handle = field(memory, member, crate::cfex_member::SHIP_HANDLE)?;
-                    if let Some(ship) = crate::creference_registry::resolve(memory, base, handle)? {
-                        use crate::naval_ship_modifier_inputs::visit_sources;
+                    let handle = field(memory, member, engine_native::cfex_member::SHIP_HANDLE)?;
+                    if let Some(ship) = engine_native_parts::creference_registry::resolve(memory, base, handle)? {
+                        use engine_native_naval::naval_ship_modifier_inputs::visit_sources;
                         let context = visit_sources::<false>(
                             memory,
                             base,
@@ -306,7 +307,7 @@ fn count_planes(
                     .ok_or("naval demand wing address overflow")?,
                 0,
             )?;
-            if let Some(wing) = crate::naval_air_efficiency_inputs::wing(memory, base, handle)? {
+            if let Some(wing) = engine_native_naval::naval_air_efficiency_inputs::wing(memory, base, handle)? {
                 let kills = Array::read(memory, at(wing, 0x9f8)?, 16)
                     .ok_or("naval demand wing kills invalid")?;
                 add(&mut demand.plane_kills, kills.count as usize)?;
@@ -339,24 +340,24 @@ fn count_base(
     if handle == 0 {
         return Ok(());
     }
-    let Some(pointer) = crate::creference_registry::resolve(memory, base, handle)? else {
+    let Some(pointer) = engine_native_parts::creference_registry::resolve(memory, base, handle)? else {
         return Ok(());
     };
-    if field::<u64>(memory, pointer, 0)? != key(base, crate::cair_base::VTABLE_RVA)? as u64
-        || field::<u64>(memory, pointer, crate::cair_base::HANDLE)? != handle
+    if field::<u64>(memory, pointer, 0)? != key(base, engine_native_parts::cair_base_layout::VTABLE_RVA)? as u64
+        || field::<u64>(memory, pointer, engine_native_parts::cair_base_layout::HANDLE)? != handle
     {
         return Err("naval demand dense base identity mismatch");
     }
     add(&mut demand.dense_bases, 1)?;
-    let containers = array(memory, pointer, crate::cair_base::REGISTERED_CONTAINERS)?;
+    let containers = array(memory, pointer, engine_native_air::cair_base::REGISTERED_CONTAINERS)?;
     for index in 0..containers.count {
         let container = element(memory, containers, index)?;
-        let pools = array(memory, container, crate::ccountry_air_container::POOLS)?;
+        let pools = array(memory, container, engine_native_air::ccountry_air_container::POOLS)?;
         for index in 0..pools.count {
             let pool = element(memory, pools, index)?;
             add(
                 &mut demand.dense_wings,
-                array(memory, pool, crate::cair_wing_pool::WINGS)?.count as usize,
+                array(memory, pool, engine_native_parts::cair_wing_pool::WINGS)?.count as usize,
             )?;
         }
     }
@@ -366,7 +367,7 @@ fn count_base(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modifier_definition;
+    use engine_native_parts::modifier_definition;
     use std::cell::Cell;
 
     struct Leaves {
@@ -448,7 +449,7 @@ mod tests {
 
     #[test]
     fn naval_header_demand_scales_from_the_mixed_combat_registry() {
-        use crate::{cgame_state, cnaval_combat, cnaval_combatant};
+        use engine_native::{cgame_state, cnaval_combat, cnaval_combatant};
         const IMAGE: usize = 0x1400_0000;
         struct Combats {
             count: usize,
@@ -486,7 +487,7 @@ mod tests {
                         bytes[..8].copy_from_slice(&vtable.to_le_bytes());
                     }
                     0x400_0000 => {
-                        let vtable = (IMAGE + crate::cland_combat::VTABLE_RVA.0) as u64;
+                        let vtable = (IMAGE + engine_native::cland_combat::VTABLE_RVA.0) as u64;
                         bytes[..8].copy_from_slice(&vtable.to_le_bytes());
                     }
                     0x200_0018 | 0x300_0018 => {

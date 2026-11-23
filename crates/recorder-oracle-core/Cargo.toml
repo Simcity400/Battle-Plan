@@ -10,9 +10,9 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-parts.workspace = true
 content-reader-defines.workspace = true
 content-reader-key-names.workspace = true
-engine-native.workspace = true
 replay-data.workspace = true
 replay-frame.workspace = true
 content-reader-save.workspace = true
@@ -32,11 +32,14 @@ content-reader-map = { workspace = true, features = ["test-support"] }
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-regions = { workspace = true, features = ["test-support"] }
 content-reader-states = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 recorder-derive-framework = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "recording", "test-support"] }
 replay-capture-spool = { workspace = true, features = ["journal", "test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
+unify-bitflags-2 = { workspace = true }
+unify-bytemuck = { workspace = true }
+unify-num-traits = { workspace = true }
 unify-smallvec = { workspace = true }

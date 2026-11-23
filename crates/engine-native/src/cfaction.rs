@@ -1,11 +1,16 @@
+pub mod system;
 
 use engine_sites::Rva;
-use crate::{
-    Memory, cfaction_system, cfaction_template,
+use engine_native_memory::{
+    Memory,
     memory::{RecordField, RecordLayout, RecordSources},
-    msvc_string, read, read_slice,
+    msvc_string,
+    read,
+    read_slice,
     walk::Outcome,
 };
+use crate::cfaction::system as cfaction_system;
+use engine_native_parts::cfaction_template;
 
 pub const VTABLE_RVA: Rva = Rva(0x029e_2b58);
 
@@ -52,16 +57,16 @@ pub fn manpower_into(
     let pool = faction
         .checked_add(MANPOWER_POOL)
         .ok_or("faction manpower pool address overflow")?;
-    let expected = engine_sites::at(base, crate::carmy_manpower_values::VTABLE_RVA)
+    let expected = engine_sites::at(base, engine_native_parts::carmy_manpower_values::VTABLE_RVA)
         .ok_or("faction manpower vtable address overflow")? as u64;
     if read::<u64>(memory, pool) != Some(expected) {
         return Err("faction manpower pool vtable mismatch");
     }
     let source = pool
-        .checked_add(crate::carmy_manpower_values::DATA)
-        .and_then(|address| crate::cpdx_array::Array::read(memory, address, 8))
+        .checked_add(engine_native_parts::carmy_manpower_values::DATA)
+        .and_then(|address| engine_native_memory::cpdx_array::Array::read(memory, address, 8))
         .ok_or("faction manpower contribution array unreadable or invalid")?;
-    crate::allocation::resize_default(output, source.count as usize)
+    engine_allocation::resize_default(output, source.count as usize)
         .map_err(|_| "faction manpower contribution allocation failed")?;
     for (ordinal, contribution) in output.iter_mut().enumerate() {
         let address = source
@@ -86,7 +91,7 @@ pub struct AdvisorRow {
 }
 
 pub fn count_advisors(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
-    walk_advisors_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_advisors_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk_advisors(
@@ -100,8 +105,8 @@ pub fn walk_advisors(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(bytes),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(bytes),
     )
 }
 
@@ -109,8 +114,8 @@ pub fn walk_advisors_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, AdvisorRow>,
-    mut bytes: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, AdvisorRow>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     let result = (|| {
         let roster = cfaction_system::roster(memory, base, game_state)?;
@@ -125,7 +130,7 @@ pub fn walk_advisors_buffer(
             let slots = pointer
                 .checked_add(ADVISOR_SLOTS)
                 .and_then(|address| {
-                    crate::cpdx_array::Array::read(memory, address, ADVISOR_SLOT_STRIDE)
+                    engine_native_memory::cpdx_array::Array::read(memory, address, ADVISOR_SLOT_STRIDE)
                 })
                 .ok_or("faction advisor slots unreadable or invalid")?;
             for ordinal in 0..slots.count {
@@ -143,8 +148,8 @@ pub fn walk_advisors_buffer(
                 let string = advisor
                     .checked_add(crate::cadvisor::IDEA_TOKEN)
                     .ok_or("faction advisor address overflow")?;
-                let literal = crate::ccharacter::Literal::read(memory, string)?;
-                crate::ccharacter::Literal::validate(memory, [&literal])?;
+                let literal = engine_native_memory::msvc_string::Literal::read(memory, string)?;
+                engine_native_memory::msvc_string::Literal::validate(memory, [&literal])?;
                 let end = bytes_len
                     .checked_add(literal.len)
                     .ok_or("faction advisor byte count overflow")?;
@@ -157,7 +162,7 @@ pub fn walk_advisors_buffer(
                         .ok_or("faction advisor byte count overflow")?;
                     continue;
                 }
-                crate::ccharacter::Literal::copy_all(
+                engine_native_memory::msvc_string::Literal::copy_all(
                     memory,
                     [&literal],
                     &mut bytes[bytes_len..end],
@@ -209,7 +214,7 @@ pub struct NameWalk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, game_state: usize) -> NameWalk {
-    walk_buffer(memory, base, game_state, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, game_state, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -223,8 +228,8 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
     )
 }
 
@@ -232,8 +237,8 @@ fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    names: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    names: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> NameWalk {
     walk_buffer_with(memory, base, game_state, output, names, |_, _| {}).0
 }
@@ -250,8 +255,8 @@ pub fn walk_with(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(names),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(names),
         visit,
     )
 }
@@ -260,8 +265,8 @@ fn walk_buffer_with(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut names: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut names: engine_native_memory::walk::Buffer<'_, u8>,
     mut visit: impl FnMut(usize, u64),
 ) -> (NameWalk, bool) {
     let mut roster_complete = false;
@@ -463,7 +468,8 @@ fn literal(memory: &impl Memory, pointer: usize) -> Result<(usize, usize), &'sta
 #[cfg(test)]
 mod advisor_tests {
     use super::*;
-    use crate::{cadvisor, cgame_state, memory::SliceMemory};
+    use crate::{cadvisor, cgame_state};
+    use engine_native_memory::memory::SliceMemory;
 
     const GS: usize = 0x1000;
     const SYSTEM: usize = 0x1800;

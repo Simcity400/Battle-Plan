@@ -1,7 +1,8 @@
 use collector_certificates::watch_registry::WatchRegistry;
 use collector_hooks::hook::Hook;
 use engine_mutations::navy_ledger_mutations::MUTATIONS as LEDGER_WRITERS;
-use engine_native::{Memory, naval_mine_inputs as mines};
+use engine_native_memory::Memory;
+use engine_native_naval::naval_mine_inputs as mines;
 use engine_sites::Rva;
 use std::{
     ops::Range,
@@ -316,15 +317,15 @@ unsafe fn original(index: usize, a: usize, b: usize, c: usize, d: usize) -> usiz
 fn event_slice(index: usize, navy: usize, second: usize) -> Option<usize> {
     #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
     {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         let count = mines::event_count(&memory, navy)?;
         if index == 2 {
             mines::event_decay_slice(&memory, BASE.load(Ordering::Acquire))
         } else {
             let region = if index == 0 {
-                engine_native::read::<u32>(
+                engine_native_memory::read::<u32>(
                     &memory,
-                    second.checked_add(engine_native::cstrategic_region::ID)?,
+                    second.checked_add(engine_native_parts::cstrategic_region::ID)?,
                 )?
             } else {
                 u32::try_from(second).ok()?

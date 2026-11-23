@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 const BASE: usize = 0x1_4000_0000;
@@ -108,7 +108,7 @@ fn naval_world() -> Vec<u8> {
         put(
             &mut bytes,
             hit,
-            &((BASE + crate::naval_combat_hit::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native_naval::naval_combat_hit::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, hit + 8, &(index as u32 * 3).to_le_bytes());
         let name: Vec<u8> = (0..(index % 3) * 9)
@@ -134,7 +134,7 @@ fn air_world() -> Vec<u8> {
         put(
             &mut bytes,
             at,
-            &((BASE + crate::cequipment_variant::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native_parts::equipment_variant_identity::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(&mut bytes, at + 8, &(0x1000 + variant as u64).to_le_bytes());
     }
@@ -144,7 +144,7 @@ fn air_world() -> Vec<u8> {
         put(
             &mut bytes,
             hit,
-            &((BASE + crate::naval_combat_air_hit::VTABLE_RVA.0) as u64).to_le_bytes(),
+            &((BASE + engine_native_naval::naval_combat_air_hit::VTABLE_RVA.0) as u64).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -200,7 +200,7 @@ fn append<T: Clone + Default>(
     memory: &World<'_>,
     batched: bool,
     stride: usize,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
     read: ReadFn<T>,
     read_entry: EntryReadFn<T>,
 ) -> Appended<T> {
@@ -259,7 +259,7 @@ fn append<T: Clone + Default>(
 fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
     read: ReadFn<T>,
     read_entry: EntryReadFn<T>,
 ) {
@@ -297,7 +297,7 @@ fn check<T: Clone + Default + PartialEq + std::fmt::Debug>(
 fn check_once<T: Clone + Default + PartialEq + std::fmt::Debug>(
     bytes: &[u8],
     stride: usize,
-    object: Option<&'static [crate::memory::RecordField]>,
+    object: Option<&'static [engine_native_memory::memory::RecordField]>,
     read: ReadFn<T>,
     read_entry: EntryReadFn<T>,
 ) {
@@ -335,29 +335,29 @@ fn naval_read(
     memory: &World<'_>,
     base: usize,
     entry: usize,
-) -> Result<crate::naval_combat_hit::Row, &'static str> {
-    crate::naval_combat_hit::read(memory, base, entry)
+) -> Result<engine_native_naval::naval_combat_hit::Row, &'static str> {
+    engine_native_naval::naval_combat_hit::read(memory, base, entry)
 }
 fn naval_entry(
     memory: &EntryMemory<'_, World<'_>>,
     base: usize,
     entry: usize,
-) -> Result<crate::naval_combat_hit::Row, &'static str> {
-    crate::naval_combat_hit::read(memory, base, entry)
+) -> Result<engine_native_naval::naval_combat_hit::Row, &'static str> {
+    engine_native_naval::naval_combat_hit::read(memory, base, entry)
 }
 fn air_read(
     memory: &World<'_>,
     base: usize,
     entry: usize,
-) -> Result<crate::naval_combat_air_hit::Row, &'static str> {
-    crate::naval_combat_air_hit::read(memory, base, entry)
+) -> Result<engine_native_naval::naval_combat_air_hit::Row, &'static str> {
+    engine_native_naval::naval_combat_air_hit::read(memory, base, entry)
 }
 fn air_entry(
     memory: &EntryMemory<'_, World<'_>>,
     base: usize,
     entry: usize,
-) -> Result<crate::naval_combat_air_hit::Row, &'static str> {
-    crate::naval_combat_air_hit::read(memory, base, entry)
+) -> Result<engine_native_naval::naval_combat_air_hit::Row, &'static str> {
+    engine_native_naval::naval_combat_air_hit::read(memory, base, entry)
 }
 fn damage_read(
     memory: &World<'_>,
@@ -379,7 +379,7 @@ fn naval_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     check(
         &naval_world(),
         8,
-        Some(&crate::naval_combat_hit::RECORD),
+        Some(&engine_native_naval::naval_combat_hit::RECORD),
         naval_read,
         naval_entry,
     );
@@ -390,7 +390,7 @@ fn air_hit_runs_keep_the_parent_walks_result_under_every_lasting_fault() {
     check(
         &air_world(),
         8,
-        Some(&crate::naval_combat_air_hit::RECORD),
+        Some(&engine_native_naval::naval_combat_air_hit::RECORD),
         air_read,
         air_entry,
     );
@@ -412,7 +412,7 @@ fn naval_hit_runs_are_never_harsher_under_faults_that_clear() {
     check_once(
         &naval_world(),
         8,
-        Some(&crate::naval_combat_hit::RECORD),
+        Some(&engine_native_naval::naval_combat_hit::RECORD),
         naval_read,
         naval_entry,
     );
@@ -423,7 +423,7 @@ fn air_hit_runs_are_never_harsher_under_faults_that_clear() {
     check_once(
         &air_world(),
         8,
-        Some(&crate::naval_combat_air_hit::RECORD),
+        Some(&engine_native_naval::naval_combat_air_hit::RECORD),
         air_read,
         air_entry,
     );

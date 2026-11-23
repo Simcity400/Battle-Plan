@@ -1,8 +1,11 @@
 use super::*;
-use crate::{
-    acclimatization_category as category, acclimatization_data as data,
-    acclimatization_entry as entry, csub_unit_definition as stats, memory::LiveMemory,
+use engine_native_parts::{
+    acclimatization_category as category,
+    acclimatization_data as data,
+    acclimatization_entry as entry,
+    csub_unit_definition as stats,
 };
+use engine_native_memory::memory::LiveMemory;
 use std::{hint::black_box, time::Instant};
 
 const IMAGE_BYTES: usize = 0x0346_0000;
@@ -65,7 +68,7 @@ impl World {
         arena.vector(state + cgame_state::COUNTRIES, slots, countries + 1);
         arena.vector(state + cgame_state::COUNTRY_LINKS, links, countries + 1);
         for slot in 1..=countries {
-            let country = arena.alloc(ccountry::MODIFIER_ACCUMULATOR + 0x40);
+            let country = arena.alloc(engine_native_memory::country_identity::MODIFIER_ACCUMULATOR + 0x40);
             arena.word(country, (base + ccountry::VTABLE_RVA.0) as u64);
             arena.put(country + ccountry::ID, &(slot as u32).to_le_bytes());
             arena.word(slots + slot * 8, country as u64);
@@ -230,7 +233,7 @@ fn bench_division_status_and_maxima() {
             let memory = unsafe { LiveMemory::new() };
             let mut packet = StatusPacket::with_capacities(StatusCapacities {
                 acclimatization_categories: 2,
-                modifiers: crate::modifier_accumulator::SnapshotCapacity {
+                modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
                     nodes: countries,
                     entries: 0,
                 },

@@ -5,7 +5,7 @@ use crate::{
 use engine_mutations::air_wing_equipment_mutations::{
     ATTACHMENT_COVERAGE, MAP_MUTATIONS, MISSION, MUTATIONS, TRAINING_STOP, pools,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -409,9 +409,9 @@ map_writer!(raid_lifetime, 3, |raid, _| raid.wrapping_add(
     engine_mutations::air_wing_equipment_mutations::RAID_LIFETIME_KEY
 ));
 map_writer!(append_incoming, 4, |base, _| base
-    .wrapping_add(engine_native::cair_base::INCOMING_WINGS));
+    .wrapping_add(engine_native_air::cair_base::INCOMING_WINGS));
 map_writer!(erase_incoming, 5, |base, _| base
-    .wrapping_add(engine_native::cair_base::INCOMING_WINGS));
+    .wrapping_add(engine_native_air::cair_base::INCOMING_WINGS));
 
 #[cfg(test)]
 mod map_flag_tests {
@@ -421,7 +421,7 @@ mod map_flag_tests {
         let watches = Watches::enabled(4);
         let base = 0x1000usize;
         let pool = base + engine_mutations::air_wing_equipment_mutations::POOL;
-        let key = base + engine_native::cair_base::INCOMING_WINGS;
+        let key = base + engine_native_air::cair_base::INCOMING_WINGS;
         let equipment = watches.sequence(pool);
         let incoming = watches.registry.sequence(key);
         drop(watches.registry.notify(key));
@@ -441,7 +441,7 @@ mod map_flag_tests {
             let lifetime_key =
                 wing + engine_mutations::air_wing_equipment_mutations::RAID_LIFETIME_KEY;
             assert!(watches.registry.sequence(lifetime_key).is_some());
-            let incoming_key = wing + engine_native::cair_base::INCOMING_WINGS;
+            let incoming_key = wing + engine_native_air::cair_base::INCOMING_WINGS;
             let incoming = watches.registry.sequence(incoming_key);
             drop(watches.registry.notify(wing + TRAINING_STOP));
             assert_eq!(watches.sequence(pool), equipment);

@@ -1,6 +1,6 @@
 
 use super::{RawLog, Span, is_canonical_range};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::cell::RefCell;
 
 pub struct Recorded<'a> {
@@ -378,7 +378,7 @@ impl Memory for Recorded<'_> {
         &self,
         address: usize,
         len: usize,
-    ) -> Option<engine_native::memory::SliceMemory<'_>> {
+    ) -> Option<engine_native_memory::memory::SliceMemory<'_>> {
         if !self.index.has_bulk || address == 0 || len == 0 || !is_canonical_range(address, len) {
             return None;
         }
@@ -411,7 +411,7 @@ impl Memory for Recorded<'_> {
             .bytes
             .get(start..start.checked_add(span.len as usize)?)?;
         let offset = address - span.addr;
-        Some(engine_native::memory::SliceMemory {
+        Some(engine_native_memory::memory::SliceMemory {
             base: address,
             bytes: source.get(offset..offset.checked_add(len)?)?,
         })

@@ -12,4 +12,4 @@ The command reader authenticates the in-game idler before reading its pause stat
 
 The relation variants share the base relation field reader. A relation's type word and class identity distinguish it from the others, so an offer never stands in for an access grant. The air-base and docking-rights offer constructors allocate the same object size. The null tactic's explicit singleton denotes absence of a preferred tactic.
 
-[Operations](../../crates/engine-native/src/coperation_instance.rs) · [Operative census](../../crates/engine-native/src/coperative_leader.rs) · [Command ownership](../../crates/engine-native/src/command_inputs/owners.rs)
+[Operations](../../crates/engine-native-intelligence/src/coperation_instance.rs) · [Operative census](../../crates/engine-native-intelligence/src/coperative_leader.rs) · [Command ownership](../../crates/engine-native-air/src/command_inputs/owners.rs)

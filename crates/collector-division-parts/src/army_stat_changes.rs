@@ -5,7 +5,7 @@ use crate::{
 };
 use collector_observers::unit_history_changes;
 use engine_mutations::army_stat_mutations::MUTATIONS;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -73,7 +73,7 @@ fn roster_members(
     country: usize,
     mut visit: impl FnMut(usize),
 ) -> Option<()> {
-    let roster = engine_native::cpdx_array::Array::read(
+    let roster = engine_native_memory::cpdx_array::Array::read(
         memory,
         country.checked_add(engine_native::ccountry::DIVISIONS)?,
         8,
@@ -85,7 +85,7 @@ fn roster_members(
     while first < roster.count {
         let count = ((roster.count - first) as usize).min(ROSTER_BATCH);
         let span = roster.slice(first, count as u32, 8).ok()?;
-        if !engine_native::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]) {
+        if !engine_native_memory::read_slice(memory, span.data, &mut pointer_bytes[..count * 8]) {
             return None;
         }
         let mut live = 0_usize;
@@ -554,7 +554,7 @@ unsafe extern "system" fn refresh_country_names(
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[REFRESH_COUNTRY_NAMES].load(Ordering::Acquire)) };
     let result = timing.original(|| unsafe { original(first, country, third, fourth) });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     WATCHES.refreshed_country_names(&memory, country);
     drop(running);
     result
@@ -579,8 +579,8 @@ mod tests {
             let army = 0x1000 + index * 0x1000;
             for receiver in [
                 army,
-                army + engine_native::unit_history::OFFICER,
-                army + engine_native::unit_history::DIVISION_HISTORY,
+                army + engine_native_land::unit_history::OFFICER,
+                army + engine_native_land::unit_history::DIVISION_HISTORY,
                 0x1000_0000 + index * 0x1000,
             ] {
                 assert!(unit_history_changes::sequence(receiver).is_some());
@@ -588,7 +588,7 @@ mod tests {
             assert!(WATCHES.experience.sequence(army).is_some());
             assert!(WATCHES.progression.sequence(army).is_some());
         }
-        let receiver = 0x1000 + engine_native::unit_history::OFFICER;
+        let receiver = 0x1000 + engine_native_land::unit_history::OFFICER;
         let held = unit_history_changes::sequence(receiver).unwrap();
         boundary(false);
         assert_eq!(unit_history_changes::sequence(receiver), Some(held));
@@ -708,7 +708,7 @@ mod tests {
         }
         put(0x1000 + NAME_GROUP_MEMBER, &0x9100_u64.to_le_bytes());
         put(0x2000 + NAME_GROUP_MEMBER, &0x9200_u64.to_le_bytes());
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &bytes,
         };

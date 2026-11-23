@@ -241,7 +241,7 @@ fn native_retained_name_supports_heap_length_without_a_chosen_limit() {
     memory.span(member, 0x80);
     memory.span(payload, 8193);
     memory.put(
-        army + crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
+        army + engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER,
         &(member as u64).to_le_bytes(),
     );
     memory.put(member + 0x60, &(payload as u64).to_le_bytes());
@@ -282,7 +282,7 @@ fn live_census_includes_null_air_countries_and_all_name_bytes() {
         memory.array(country + ccountry::DIVISIONS, roster, 1);
         memory.put(roster, &(division as u64).to_le_bytes());
         memory.put(
-            division + crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
+            division + engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER,
             &(member as u64).to_le_bytes(),
         );
         memory.put(member + 0x60, b"recorded");

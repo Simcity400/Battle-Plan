@@ -1,12 +1,16 @@
 
-use crate::{
-    Memory, ccountry,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources},
-    nproject_cprogram_status, nproject_cproject_pool,
+    walk::{Buffer, Outcome},
+};
+use engine_native::ccountry;
+use crate::{
+    nproject_cprogram_status,
+    nproject_cproject_pool,
     nproject_cproject_state_machine::{self as machine, State},
     nproject_sproject_history as history,
-    walk::{Buffer, Outcome},
 };
 use engine_sites::Rva;
 
@@ -41,7 +45,7 @@ pub fn pending_reward_ordinal(
 ) -> Result<u32, &'static str> {
     let definition = project
         .checked_add(DEFINITION_DATA)
-        .and_then(|at| crate::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|pointer| *pointer != 0)
         .ok_or("pending reward template unreadable")?;
@@ -50,7 +54,7 @@ pub fn pending_reward_ordinal(
         .ok_or("pending reward template address invalid")?;
     let expected = engine_sites::at(base, TEMPLATE_VTABLE_RVA)
         .ok_or("pending reward template identity mismatch")?;
-    if crate::read::<u64>(memory, template) != Some(expected as u64) {
+    if engine_native_memory::read::<u64>(memory, template) != Some(expected as u64) {
         return Err("pending reward template identity mismatch");
     }
     let rewards = definition
@@ -61,7 +65,7 @@ pub fn pending_reward_ordinal(
         let address = rewards
             .element(ordinal, 16)
             .ok_or("pending reward template occurrence invalid")?;
-        let pointer = crate::read::<u64>(memory, address)
+        let pointer = engine_native_memory::read::<u64>(memory, address)
             .ok_or("pending reward template occurrence unreadable")?;
         if pointer == pending as u64 {
             return Ok(ordinal);
@@ -125,7 +129,7 @@ fn for_each_pool<M: Memory>(
     select: &mut dyn FnMut(u32) -> bool,
     mut visit: impl FnMut(
         &ccountry::Reader<'_, M>,
-        ccountry::Country,
+        engine_native_memory::country_identity::Country,
         Array,
     ) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
@@ -602,9 +606,12 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+    use engine_native::cgame_state;
+    use engine_native_memory::memory::SliceMemory;
     use crate::{
-        cgame_state, memory::SliceMemory, nproject_cproject_state_machine,
-        nproject_cprototype_project_state as prototype, nproject_csimple_project_state as simple,
+        nproject_cproject_state_machine,
+        nproject_cprototype_project_state as prototype,
+        nproject_csimple_project_state as simple,
         nproject_sproject_context,
     };
 

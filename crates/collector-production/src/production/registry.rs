@@ -1,7 +1,8 @@
 
 use super as production;
 use crate::table_capture::CaptureRows;
-use engine_native::{Memory, cequipment_variant, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cequipment_variant;
 use replay_data::rows::TableId;
 
 pub struct Registry {

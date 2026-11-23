@@ -5,7 +5,8 @@ use crate::{
     world_input_changes::{self as changes, Changes, Domain, Held, Plan},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, cprovince, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::cprovince;
 use replay_data::{rows::ProvinceNameRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 use std::sync::Mutex;
@@ -119,8 +120,8 @@ impl Captured {
         {
             let (rows, bytes) = held.carried(Domain::ProvinceNames);
             let ensured = (
-                engine_native::walk::Buffer::Growing(&mut self.names.rows).ensure(rows.len()),
-                engine_native::walk::Buffer::Growing(&mut self.bytes.first).ensure(bytes.len()),
+                engine_native_memory::walk::Buffer::Growing(&mut self.names.rows).ensure(rows.len()),
+                engine_native_memory::walk::Buffer::Growing(&mut self.bytes.first).ensure(bytes.len()),
             );
             self.names.outcome = match ensured {
                 (Ok(_), Ok(_)) => {
@@ -236,7 +237,7 @@ mod tests {
             assert!(actual_capacity == grown);
         }
     }
-    use engine_native::{memory::CountedMemory, memory::SliceMemory};
+    use engine_native_memory::memory::{CountedMemory, SliceMemory};
 
     #[test]
     fn names_are_read_every_hour_and_preserve_native_failure() {

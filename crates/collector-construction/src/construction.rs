@@ -8,10 +8,20 @@ use crate::{
 use engine_allocation::{copy_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine_deployment::manpower_value_entry;
 use engine_intelligence::{ccountry_collaboration_data, ccountry_collaboration_status};
+use engine_native_memory::{Memory, cpdx_array::Array, msvc_string, walk::Outcome};
+use engine_native_parts::{
+    carmy_manpower_values,
+    cbuilding,
+    cproduction_line,
+    cstate_template,
+};
 use engine_native::{
-    Memory, carmy_manpower_values, cbuilding, cbuilding_status, ccountry, cgame_state,
-    cpdx_array::Array, cproduction_line, cproduction_status, cprovince,
-    creferenced_division_template, cstate, cstate_template, msvc_string, walk::Outcome,
+    cprovince::{buildings as cbuilding_status, self},
+    ccountry,
+    cgame_state,
+    cproduction_status,
+    creferenced_division_template,
+    cstate,
 };
 use engine_occupation::{
     ccountry_occupation_data, ccountry_occupation_status, coccupation_law, cresistance,
@@ -436,7 +446,7 @@ impl Captured {
                     memory,
                     base,
                     game_state,
-                    engine_native::walk::Buffer::Growing(output),
+                    engine_native_memory::walk::Buffer::Growing(output),
                 )
             })
         });
@@ -447,9 +457,9 @@ impl Captured {
             base,
             game_state,
             cbuilding_production_line::BuffersBuffer {
-                buildings: engine_native::walk::Buffer::Growing(&mut self.building_construction.rows),
-                railways: engine_native::walk::Buffer::Growing(&mut self.railway_construction.rows),
-                route_provinces: engine_native::walk::Buffer::Growing(&mut self.routes.first),
+                buildings: engine_native_memory::walk::Buffer::Growing(&mut self.building_construction.rows),
+                railways: engine_native_memory::walk::Buffer::Growing(&mut self.railway_construction.rows),
+                route_provinces: engine_native_memory::walk::Buffer::Growing(&mut self.routes.first),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -464,16 +474,16 @@ impl Captured {
             base,
             game_state,
             ccountry_occupation_status::BuffersBuffer {
-                settings: engine_native::walk::Buffer::Growing(&mut self.settings.rows),
-                laws: engine_native::walk::Buffer::Growing(&mut self.laws.rows),
-                group_laws: engine_native::walk::Buffer::Growing(&mut self.group_laws.rows),
-                garrisons: engine_native::walk::Buffer::Growing(&mut self.garrisons.rows),
-                manpower: engine_native::walk::Buffer::Growing(&mut self.assigned_manpower.rows),
-                reserve_manpower: engine_native::walk::Buffer::Growing(&mut self.reserve_manpower.rows),
-                names: engine_native::walk::Buffer::Growing(&mut self.law_bytes.first),
-                equipment: engine_native::walk::Buffer::Growing(&mut self.equipment.first),
+                settings: engine_native_memory::walk::Buffer::Growing(&mut self.settings.rows),
+                laws: engine_native_memory::walk::Buffer::Growing(&mut self.laws.rows),
+                group_laws: engine_native_memory::walk::Buffer::Growing(&mut self.group_laws.rows),
+                garrisons: engine_native_memory::walk::Buffer::Growing(&mut self.garrisons.rows),
+                manpower: engine_native_memory::walk::Buffer::Growing(&mut self.assigned_manpower.rows),
+                reserve_manpower: engine_native_memory::walk::Buffer::Growing(&mut self.reserve_manpower.rows),
+                names: engine_native_memory::walk::Buffer::Growing(&mut self.law_bytes.first),
+                equipment: engine_native_memory::walk::Buffer::Growing(&mut self.equipment.first),
             },
-            engine_native::walk::Buffer::Growing(&mut self.occupied.first),
+            engine_native_memory::walk::Buffer::Growing(&mut self.occupied.first),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -498,7 +508,7 @@ impl Captured {
                 memory,
                 base,
                 game_state,
-                engine_native::walk::Buffer::Growing(output),
+                engine_native_memory::walk::Buffer::Growing(output),
             )
         });
         ticks

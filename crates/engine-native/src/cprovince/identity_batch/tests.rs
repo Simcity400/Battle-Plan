@@ -1,6 +1,6 @@
 use super::*;
 use crate::cprovince::{GeometryCapacities, GeometryPacket};
-use crate::memory::RecordSources;
+use engine_native_memory::memory::RecordSources;
 use std::cell::Cell;
 
 const STATE: usize = 0x1000;
@@ -23,7 +23,7 @@ impl Memory for Source<'_> {
             out.fill(0xff);
             return false;
         }
-        crate::memory::SliceMemory {
+        engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: self.bytes,
         }
@@ -187,11 +187,11 @@ fn batched_province_persistent_fault_keeps_serial_reason_prefix_and_memos() {
 fn batched_province_one_shot_refuses_no_more_and_counts_fallback() {
     let (bytes, pointers) = world(65);
     for at in [pointers[20] + crate::cprovince::ID, SLOTS + 21 * 8] {
-        let before = crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionProvinces);
+        let before = engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionProvinces);
         let actual = capture(&bytes, &pointers, true, Some(at), true);
         let serial = capture(&bytes, &pointers, false, Some(at), true);
         assert_eq!(
-            crate::batch_fallback::count(crate::batch_fallback::Batch::DivisionProvinces),
+            engine_native_memory::batch_fallback::count(engine_native_memory::batch_fallback::Batch::DivisionProvinces),
             before + 1
         );
         assert!(actual.ids.len() >= serial.ids.len());

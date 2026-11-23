@@ -1,5 +1,6 @@
 use engine_allocation as allocation;
-use engine_native::{creferenced_division_template as native, walk::Outcome};
+use engine_native::creferenced_division_template as native;
+use engine_native_memory::walk::Outcome;
 
 fn text(arena: &[u8], span: native::Span) -> Option<&[u8]> {
     arena.get(span.start..span.start.checked_add(span.len)?)
@@ -16,7 +17,7 @@ fn append(bytes: &mut Vec<u8>, value: &[u8]) -> Result<native::Span, &'static st
 }
 
 pub fn derive(
-    memory: &impl engine_native::Memory,
+    memory: &impl engine_native_memory::Memory,
     icons: &[native::IconRow],
     outcome: Outcome,
     names: &[u8],

@@ -15,6 +15,9 @@ default = ["politics_capture"]
 politics_capture = []
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-politics.workspace = true
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-decisions.workspace = true
@@ -37,6 +40,7 @@ collector-timing.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug", "Win32_System_Memory", "Win32_System_Threading"] }
 
 [dev-dependencies]
+engine-native-politics = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts"] }
 collector-test-support.workspace = true
 serde_json.workspace = true
@@ -56,6 +60,7 @@ workspace = true
 collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-politics = { workspace = true, features = ["default", "politics_capture", "test-support"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

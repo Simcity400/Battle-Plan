@@ -13,7 +13,7 @@ use engine_mutations::{
     country_input_mutations::Receiver, country_input_mutations::SYNC_RESEARCH_SLOTS,
     country_input_mutations::Tables,
 };
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -338,7 +338,7 @@ impl Drop for Part<'_> {
 }
 
 fn name(receiver: Receiver, first: usize, second: usize, visit: &mut dyn FnMut(u32)) -> bool {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     sites::countries(
         &memory,
         BASE.load(Ordering::Relaxed),
@@ -692,7 +692,7 @@ impl Changes for Observer {
 pub fn drifts(memory: &impl Memory, country: usize) -> bool {
     country
         .checked_add(engine_native::ccountry::OWNED_STATE_COUNT)
-        .and_then(|address| engine_native::read::<i32>(memory, address))
+        .and_then(|address| engine_native_memory::read::<i32>(memory, address))
         .is_none_or(|count| count >= 1)
 }
 
@@ -1353,7 +1353,7 @@ unsafe extern "system" fn remove_unit_leader(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[REMOVE_UNIT_LEADER].load(Ordering::Acquire)) };
     DOMAIN.remove_leader(
@@ -1481,7 +1481,7 @@ unsafe extern "system" fn sync_research_slots(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[SYNC_RESEARCH_SLOTS].load(Ordering::Acquire)) };
     DOMAIN.sync(
@@ -1498,7 +1498,7 @@ unsafe extern "system" fn faction_sharing_base(
     fourth: usize,
 ) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::CountryInputChanges);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let original: unsafe extern "system" fn(usize, usize, usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[FACTION_SHARING_BASE].load(Ordering::Acquire)) };
     DOMAIN.rebase(

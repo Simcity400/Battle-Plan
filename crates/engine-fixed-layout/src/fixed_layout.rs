@@ -1,7 +1,6 @@
 
-use crate::{
-    Memory, cbuilding_database, cpdx_lexer, modifier_definition as definition, msvc_string, read,
-};
+use engine_native_memory::{Memory, cpdx_lexer, msvc_string, read};
+use engine_native_parts::{cbuilding_database, modifier_definition as definition};
 
 pub use crate::build::FIXED_MODIFIER_GAP as GAP;
 
@@ -13,8 +12,8 @@ pub struct Token {
 
 pub const TOKEN_IDS: &[u32] = &[
     cbuilding_database::INFRASTRUCTURE_TOKEN,
-    crate::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
-    crate::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
+    engine_native_air::raid_tooltip_operands::NUCLEAR_BOMB_TOKEN,
+    engine_native_air::raid_tooltip_operands::THERMONUCLEAR_BOMB_TOKEN,
     cpdx_lexer::IDLE_RESEARCH_TOKEN,
     cpdx_lexer::FIXED15_TOKEN,
     cpdx_lexer::MAXIMUM_SPEED_TOKEN,

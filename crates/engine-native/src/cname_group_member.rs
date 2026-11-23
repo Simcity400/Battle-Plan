@@ -1,6 +1,6 @@
 
 use engine_sites::Rva;
-use crate::{Memory, msvc_string, read, read_slice};
+use engine_native_memory::{Memory, msvc_string, read, read_slice};
 
 pub const VTABLE_RVA: Rva = Rva(0x029b_3c88);
 pub const TYPE: usize = 0x08;
@@ -133,7 +133,7 @@ pub enum Naming {
 }
 
 pub struct Names<'a> {
-    pub bytes: crate::walk::Buffer<'a, u8>,
+    pub bytes: engine_native_memory::walk::Buffer<'a, u8>,
     pub len: usize,
     pub required: usize,
 }
@@ -150,7 +150,7 @@ pub fn cached_name_growing(
     required: &mut usize,
 ) -> Result<Option<Span>, &'static str> {
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(bytes),
+        bytes: engine_native_memory::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
     };
@@ -185,7 +185,7 @@ pub fn cached_name_demand(
     pointer: usize,
 ) -> Result<usize, &'static str> {
     let mut names = Names {
-        bytes: crate::walk::Buffer::Count,
+        bytes: engine_native_memory::walk::Buffer::Count,
         len: 0,
         required: 0,
     };
@@ -202,7 +202,7 @@ pub struct GroupKeys {
     templates: Vec<Entry<u64>>,
     keys: Vec<Entry<usize>>,
     generation: u32,
-    registry: crate::creference_registry::HeaderResolver,
+    registry: engine_native_parts::creference_registry::HeaderResolver,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -229,18 +229,18 @@ impl GroupKeys {
                 Ok(0)
             } else {
                 n.checked_next_power_of_two()
-                    .ok_or_else(crate::allocation::oom)
+                    .ok_or_else(engine_allocation::oom)
             }
         };
         Ok(Self {
-            templates: crate::allocation::filled(size(templates)?, Entry::default())?,
-            keys: crate::allocation::filled(size(groups)?, Entry::default())?,
+            templates: engine_allocation::filled(size(templates)?, Entry::default())?,
+            keys: engine_allocation::filled(size(groups)?, Entry::default())?,
             generation: 1,
             registry: Default::default(),
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_capacity(templates: usize, groups: usize) -> Self {
         Self::try_with_capacity(templates, groups).unwrap()
     }
@@ -347,7 +347,7 @@ const CACHED: StringErrors = [
 ];
 
 
-pub(crate) fn copy_string(
+pub fn copy_string(
     memory: &impl Memory,
     header: &[u8],
     names: &mut Names<'_>,
@@ -407,8 +407,8 @@ pub(crate) fn copy_string(
     names.required = demand(names.required, len)?;
     if len > free {
         match &mut names.bytes {
-            crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => return Ok(None),
-            crate::walk::Buffer::GrowingFrom(bytes, offset) => {
+            engine_native_memory::walk::Buffer::Count | engine_native_memory::walk::Buffer::Exact(_) => return Ok(None),
+            engine_native_memory::walk::Buffer::GrowingFrom(bytes, offset) => {
                 msvc_string::copy_growing(
                     memory,
                     source,
@@ -420,7 +420,7 @@ pub(crate) fn copy_string(
                 )?;
                 return Ok(Some((start, len)));
             }
-            crate::walk::Buffer::Growing(bytes) => {
+            engine_native_memory::walk::Buffer::Growing(bytes) => {
                 msvc_string::copy_growing(
                     memory,
                     source,
@@ -526,7 +526,7 @@ fn copy_string_into(
             let end = at
                 .checked_add(text.len())
                 .ok_or("division name arena overflow")?;
-            crate::walk::grow(bytes, end)?;
+            engine_native_memory::walk::grow(bytes, end)?;
             bytes[at..end].copy_from_slice(text);
             return Ok(text.len());
         }
@@ -581,13 +581,13 @@ impl Default for MemberBatch {
 
 impl MemberBatch {
     pub fn capture(&mut self, memory: &impl Memory, selected: &[usize]) {
-        const FIELDS: [crate::memory::RecordField; 1] = [crate::memory::RecordField {
+        const FIELDS: [engine_native_memory::memory::RecordField; 1] = [engine_native_memory::memory::RecordField {
             source_offset: 0,
             destination_offset: 0,
             len: INPUT_SPAN,
         }];
-        const LAYOUT: crate::memory::RecordLayout<'static> =
-            crate::memory::RecordLayout::new(&FIELDS, INPUT_SPAN).expect("valid member layout");
+        const LAYOUT: engine_native_memory::memory::RecordLayout<'static> =
+            engine_native_memory::memory::RecordLayout::new(&FIELDS, INPUT_SPAN).expect("valid member layout");
         self.rows.fill(usize::MAX);
         let mut pointers = [0_usize; 64];
         let mut len = 0;
@@ -598,13 +598,13 @@ impl MemberBatch {
                 len += 1;
             }
         }
-        crate::memory::gather_records_once(
+        engine_native_memory::memory::gather_records_once(
             memory,
             &pointers[..len],
             &LAYOUT,
             &mut self.bytes[..len * INPUT_SPAN],
             &mut self.complete,
-            crate::batch_fallback::Batch::DivisionNaming,
+            engine_native_memory::batch_fallback::Batch::DivisionNaming,
         );
     }
 
@@ -636,7 +636,7 @@ pub fn inputs_growing(
     required: &mut usize,
 ) -> Result<Naming, &'static str> {
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(bytes),
+        bytes: engine_native_memory::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
     };
@@ -659,7 +659,7 @@ pub fn held_cached_name(
     let end = start
         .checked_add(text.len())
         .ok_or("division name arena overflow")?;
-    let mut arena = crate::walk::Buffer::Growing(bytes);
+    let mut arena = engine_native_memory::walk::Buffer::Growing(bytes);
     arena.ensure(end)?;
     arena[start..end].copy_from_slice(text);
     Ok(Some((start, text.len())))
@@ -680,7 +680,7 @@ pub fn cached_name_from_member(
     }
     let header = &member[CACHED_NAME..CACHED_NAME + msvc_string::STRIDE];
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(bytes),
+        bytes: engine_native_memory::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
     };
@@ -698,7 +698,7 @@ pub fn raw_override_from_member(
     required: &mut usize,
 ) -> Result<Option<Span>, &'static str> {
     let mut names = Names {
-        bytes: crate::walk::Buffer::Growing(bytes),
+        bytes: engine_native_memory::walk::Buffer::Growing(bytes),
         len: *len,
         required: *required,
     };
@@ -777,7 +777,7 @@ pub(crate) fn codename_inputs_buffer(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    buffer: crate::walk::Buffer<'_, u8>,
+    buffer: engine_native_memory::walk::Buffer<'_, u8>,
     len: &mut usize,
     required: &mut usize,
     heap: &mut [bool; 2],
@@ -878,9 +878,9 @@ fn place_string(
         .ok_or("division name demand overflow")?;
     if len > free {
         let (output, at) = match &mut names.bytes {
-            crate::walk::Buffer::Count | crate::walk::Buffer::Exact(_) => return Ok(None),
-            crate::walk::Buffer::GrowingFrom(output, offset) => (output, *offset + start),
-            crate::walk::Buffer::Growing(output) => (output, start),
+            engine_native_memory::walk::Buffer::Count | engine_native_memory::walk::Buffer::Exact(_) => return Ok(None),
+            engine_native_memory::walk::Buffer::GrowingFrom(output, offset) => (output, *offset + start),
+            engine_native_memory::walk::Buffer::Growing(output) => (output, start),
         };
         msvc_string::place(
             bytes,
@@ -895,7 +895,7 @@ fn place_string(
     Ok(Some((start, len)))
 }
 
-pub(crate) fn read_inputs(
+pub fn read_inputs(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
@@ -1167,7 +1167,7 @@ fn template_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     struct Guard {
         bytes: Vec<u8>,
@@ -1201,7 +1201,7 @@ mod tests {
     fn run(memory: &impl Memory, arena: usize) -> (Result<Naming, &'static str>, Vec<u8>, usize) {
         let mut bytes = vec![0; arena];
         let mut names = Names {
-            bytes: crate::walk::Buffer::Growing(&mut bytes),
+            bytes: engine_native_memory::walk::Buffer::Growing(&mut bytes),
             len: 0,
             required: 0,
         };
@@ -1217,7 +1217,7 @@ mod tests {
     }
     fn count(memory: &impl Memory) -> (Result<Naming, &'static str>, usize) {
         let mut names = Names {
-            bytes: crate::walk::Buffer::Count,
+            bytes: engine_native_memory::walk::Buffer::Count,
             len: 0,
             required: 0,
         };

@@ -100,7 +100,13 @@ impl FlyAircraft {
         {
             self.bake = Some(Bake {
                 assets: Arc::clone(assets),
-                outcome: start(Arc::clone(assets), name.clone(), repaint),
+                outcome: start(
+                    {
+                        let (assets, name) = (Arc::clone(assets), name.clone());
+                        move || assets.player(&name)
+                    },
+                    repaint,
+                ),
                 name,
             });
         }
@@ -118,17 +124,22 @@ impl FlyAircraft {
 }
 
 fn start(
-    assets: Arc<AircraftAssets>,
-    name: String,
+    bake: impl FnOnce() -> Result<PlayerAircraft, String> + Send + 'static,
     repaint: impl Fn() + Send + 'static,
 ) -> Outcome {
     let (send, receive) = mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("fly aircraft".into())
         .spawn_carried(move || {
+            let finish = Finish {
+                send: Some(send),
+                repaint,
+            };
             viewer_runtime::worker_priority::enter(viewer_runtime::worker_priority::Class::Normal);
-            let _ = send.send(assets.player(&name));
-            repaint();
+            let outcome = bake();
+            if let Some(send) = &finish.send {
+                let _ = send.send(outcome);
+            }
         });
     match spawned {
         Ok(_) => Outcome::Waiting(receive),
@@ -138,5 +149,17 @@ fn start(
     }
 }
 
+struct Finish<F: Fn()> {
+    send: Option<mpsc::Sender<Result<PlayerAircraft, String>>>,
+    repaint: F,
+}
+
+impl<F: Fn()> Drop for Finish<F> {
+    fn drop(&mut self) {
+        self.send.take();
+        (self.repaint)();
+    }
+}
+
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

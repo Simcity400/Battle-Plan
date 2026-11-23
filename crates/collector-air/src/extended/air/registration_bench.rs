@@ -1,10 +1,14 @@
 use super::*;
 use crate::extended::fog;
 use collector_observers::air_base_carry_changes::Watches;
-use engine_native::{
-    cair_base, cair_wing, cair_wing_pool, ccountry, ccountry_air_container, cgame_state, cprovince,
-    cstate, cstrategic_air_manager,
+use engine_native_air::{
+    cair_base,
+    cair_wing,
+    ccountry_air_container,
+    cstrategic_air_manager,
 };
+use engine_native_parts::cair_wing_pool;
+use engine_native::{ccountry, cgame_state, cprovince, cstate};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -92,12 +96,12 @@ fn build(shape: &Shape) -> Vec<u8> {
     for index in 0..shape.bases {
         let id = index as u32 + 1;
         let base = world.alloc(cair_base::SIZE);
-        let handle = (u64::from(id) << 32) | u64::from(cair_base::TYPE);
+        let handle = (u64::from(id) << 32) | u64::from(engine_native_parts::cair_base_layout::TYPE);
         let state = world.alloc(cstate::ID + 8);
         let province = world.alloc(cprovince::STATE + 8);
         world.put64(roster + id as usize * 8, base as u64);
-        world.put64(base, cair_base::VTABLE_RVA.0 as u64);
-        world.put64(base + cair_base::HANDLE, handle);
+        world.put64(base, engine_native_parts::cair_base_layout::VTABLE_RVA.0 as u64);
+        world.put64(base + engine_native_parts::cair_base_layout::HANDLE, handle);
         world.put64(base + cair_base::STATE, state as u64);
         world.put64(base + cair_base::PROVINCE, province as u64);
         world.put32(base + cair_base::CAPACITY, 100);
@@ -138,16 +142,16 @@ fn build(shape: &Shape) -> Vec<u8> {
                 for wing_index in 0..shape.wings {
                     let wing = world.alloc(0x40);
                     world.put64(wings + wing_index * 8, wing as u64);
-                    world.put64(wing, cair_wing::VTABLE_RVA.0 as u64);
+                    world.put64(wing, engine_native_parts::cair_wing_layout::VTABLE_RVA.0 as u64);
                     world.put64(
-                        wing + cair_wing::SECONDARY,
-                        cair_wing::SECONDARY_VTABLE_RVA.0 as u64,
+                        wing + engine_native_parts::cair_wing_layout::SECONDARY,
+                        engine_native_parts::cair_wing_layout::SECONDARY_VTABLE_RVA.0 as u64,
                     );
                     world.put64(
-                        wing + cair_wing::REFERENCE_TYPE,
-                        (wing_id << 32) | u64::from(cair_wing::TYPE),
+                        wing + engine_native_parts::cair_wing_layout::REFERENCE_TYPE,
+                        (wing_id << 32) | u64::from(engine_native_parts::cair_wing_layout::TYPE),
                     );
-                    world.put64(wing + cair_wing::POOL, pool as u64);
+                    world.put64(wing + engine_native_parts::cair_wing_layout::POOL, pool as u64);
                     wing_id += 1;
                 }
             }

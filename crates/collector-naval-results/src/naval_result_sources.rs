@@ -1,7 +1,7 @@
 use collector_hooks::hook::Hook;
 type Clock = engine_native::cgame_state::Clock<u64>;
 use collector_primitives::spill_stack::SpillStack;
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use engine_naval_history::naval_result_sources as native;
 use std::{
     collections::HashMap,
@@ -331,9 +331,9 @@ pub fn boundary(clock: Option<Clock>) {
     log(Event::Boundary { transition });
 }
 pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
-    drain_buffer(engine_native::walk::Buffer::Growing(output))
+    drain_buffer(engine_native_memory::walk::Buffer::Growing(output))
 }
-fn drain_buffer(mut output: engine_native::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
+fn drain_buffer(mut output: engine_native_memory::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("naval result sources hooks unavailable (see status unhooked)");
     }
@@ -446,7 +446,7 @@ unsafe extern "system-unwind" fn constructor(pointer: usize, caller: usize) -> u
     } else if generation != collector_lifetime::world_lifetime::generation() {
         Err("naval result source native world changed during constructor")
     } else {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         native::creation_hour(&memory, base).map(|hour| Birth { hour, kind })
     };
     log(Event::Birth { pointer, birth });
@@ -480,7 +480,7 @@ unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
     let input = if generation != collector_lifetime::world_lifetime::generation() {
         Err("naval result source native world changed during original")
     } else {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         native::read_inputs(&memory, BASE.load(Ordering::Relaxed), result, combat)
     };
     log(Event::Result {

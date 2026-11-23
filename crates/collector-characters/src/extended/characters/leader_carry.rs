@@ -503,8 +503,8 @@ pub(super) fn held_rows_into<R: Copy + Default>(
     bytes: &mut Vec<u8>,
     from: usize,
 ) -> Result<super::Stored, &'static str> {
-    engine_native::walk::grow(rows, at + held.len())?;
-    engine_native::walk::grow(bytes, from + text.len())?;
+    engine_native_memory::walk::grow(rows, at + held.len())?;
+    engine_native_memory::walk::grow(bytes, from + text.len())?;
     rows[at..at + held.len()].copy_from_slice(held);
     bytes[from..from + text.len()].copy_from_slice(text);
     Ok(super::Stored {
@@ -517,8 +517,8 @@ pub(super) fn held_rows_into<R: Copy + Default>(
 pub(super) fn held_rows<R: Copy + Default>(
     held: &[R],
     text: &[u8],
-    mut rows: engine_native::walk::Buffer<'_, R>,
-    mut bytes: engine_native::walk::Buffer<'_, u8>,
+    mut rows: engine_native_memory::walk::Buffer<'_, R>,
+    mut bytes: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> ReadResult {
     let fits = rows
         .ensure(held.len())

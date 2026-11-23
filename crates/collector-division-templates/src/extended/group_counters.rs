@@ -6,7 +6,8 @@ use collector_projection::projection::{Projection, project_table};
 #[cfg(test)]
 use collector_projection::table_conversion::table;
 use engine_allocation::{default_vec, owned_vec};
-use engine_native::{Memory, carmy_leader, corders_group, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{carmy_leader, corders_group};
 use replay_data::{
     rows::CommanderAttackStats, rows::CommanderMovementStats, rows::OrdersGroupCounterInputRow,
     rows::Recorded, rows::TableId, rows::Witnessed, rows::tables,
@@ -74,7 +75,7 @@ fn commander(
     let leader = root
         .pointer()
         .checked_add(corders_group::LEADER)
-        .and_then(|address| engine_native::read::<u64>(memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(memory, address))
         .and_then(|leader| usize::try_from(leader).ok())?;
     if leader == 0 {
         return Some(None);
@@ -175,7 +176,7 @@ impl Captured {
         let source = corders_group::walk_roots(memory, base, &mut self.roots);
         if !matches!(source, Outcome::Unavailable { .. })
             && let Err(reason) =
-                engine_native::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())
+                engine_native_memory::walk::Buffer::Growing(&mut self.rows.rows).ensure(source.len())
         {
             return Outcome::Unavailable { reason };
         }
@@ -357,7 +358,7 @@ impl Captured {
 mod tests {
     use super::*;
 
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     #[test]
     fn missing_registry_and_capacity_pressure_preserve_primary_rows() {
         let memory = SliceMemory {

@@ -776,7 +776,7 @@ fn mark_design(memory: &impl Memory, base: usize, pointer: usize, published: boo
         if !published {
             return;
         }
-        let identity = match native::identity(memory, base, pointer) {
+        let identity = match engine_native_parts::equipment_variant_identity::identity(memory, base, pointer) {
             Ok(identity) => identity,
             Err(reason) => {
                 store.batch.failure = Some(reason);
@@ -866,9 +866,9 @@ fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: us
         return;
     }
     let hour = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|address| engine_native::read::<u64>(memory, address))
+        .and_then(|address| engine_native_memory::read::<u64>(memory, address))
         .and_then(|state| (state as usize).checked_add(engine_native::cgame_state::CURRENT_HOUR))
-        .and_then(|address| engine_native::read::<i32>(memory, address));
+        .and_then(|address| engine_native_memory::read::<i32>(memory, address));
     let Some(hour) = hour else {
         store.batch.failure = Some("variant removal hour unreadable");
         return;
@@ -1082,12 +1082,12 @@ fn target(
         Receiver::Command => {
             let Some(handle) = first
                 .checked_add(native::mutations::COMMAND_VARIANT)
-                .and_then(|p| engine_native::read::<u64>(memory, p))
+                .and_then(|p| engine_native_memory::read::<u64>(memory, p))
             else {
                 unknown_receiver!();
                 return 0;
             };
-            match engine_native::creference_registry::resolve(memory, base, handle) {
+            match engine_native_parts::creference_registry::resolve(memory, base, handle) {
                 Ok(pointer) => pointer.unwrap_or(0),
                 Err(_) => {
                     unknown_receiver!();
@@ -1107,14 +1107,14 @@ fn version_owner(
     let origin = |pointer: usize| {
         pointer
             .checked_add(native::ORIGIN_LINK)
-            .and_then(|p| engine_native::read::<i32>(memory, p))
+            .and_then(|p| engine_native_memory::read::<i32>(memory, p))
             .ok_or("variant version origin unreadable")
     };
     let licensed = origin(pointer)? > 0;
     for _ in 0..=population {
         let parent = pointer
             .checked_add(native::PARENT)
-            .and_then(|p| engine_native::read::<u64>(memory, p))
+            .and_then(|p| engine_native_memory::read::<u64>(memory, p))
             .ok_or("variant version ancestry unreadable")? as usize;
         if parent == 0 {
             return if licensed {
@@ -1148,7 +1148,7 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
             for ordinal in 0..array.count {
                 let Some(pointer) = array
                     .element(ordinal, 8)
-                    .and_then(|p| engine_native::read::<u64>(memory, p))
+                    .and_then(|p| engine_native_memory::read::<u64>(memory, p))
                 else {
                     unobserved!();
                     return;
@@ -1208,7 +1208,7 @@ unsafe fn around_with_identities<const SITE: usize>(
         collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::VariantChanges);
     let flight = DESIGN_GATE.enter(true);
     let base = BASE.load(Ordering::Acquire);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let pointer = target(&memory, base, MUTATIONS[SITE].receiver, first, second);
     if pointer == 0
         && !matches!(
@@ -1302,7 +1302,7 @@ unsafe fn around_with_identities<const SITE: usize>(
     let before = MUTATIONS[SITE]
         .witness
         .and_then(|offset| pointer.checked_add(offset))
-        .and_then(|p| engine_native::read::<u16>(&memory, p));
+        .and_then(|p| engine_native_memory::read::<u16>(&memory, p));
     if MUTATIONS[SITE].witness.is_some() && before.is_none() {
         unobserved!();
     }
@@ -1326,7 +1326,7 @@ unsafe fn around_with_identities<const SITE: usize>(
         && MUTATIONS[SITE].witness.is_none_or(|offset| {
             let after = pointer
                 .checked_add(offset)
-                .and_then(|p| engine_native::read::<u16>(&memory, p));
+                .and_then(|p| engine_native_memory::read::<u16>(&memory, p));
             if after.is_none() {
                 unobserved!();
             }
@@ -1660,7 +1660,7 @@ pub(super) fn drain(
     hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
 ) -> Result<usize, &'static str> {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     drain_with(&memory, base, hour, output)
 }
 #[cfg(test)]
@@ -2331,7 +2331,7 @@ impl Captured {
         base: usize,
         hour: i32,
         context: impl FnOnce(
-            &engine_native::memory::LiveMemory,
+            &engine_native_memory::memory::LiveMemory,
         ) -> Result<
             (
                 super::design_context::Snapshot,
@@ -2341,7 +2341,7 @@ impl Captured {
         >,
         speculation: Option<&mut Speculation<'_>>,
     ) {
-        let memory = unsafe { engine_native::memory::LiveMemory::new() };
+        let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
         self.fog = super::design_fog::capture(&memory, base);
         self.liveness = liveness::Observation::refused();
         let result = drain_speculating(
@@ -2614,7 +2614,7 @@ fn decode_events(
             }
             Kind::SourceRemoved | Kind::ProviderReset(_) => sources::decode(
                 event,
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0,
                     bytes: &[],
                 },

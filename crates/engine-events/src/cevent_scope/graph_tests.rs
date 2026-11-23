@@ -29,7 +29,7 @@ impl Image {
         self.bytes[at..at + 8].copy_from_slice(&(value as u64).to_le_bytes());
     }
 }
-impl crate::Memory for Image {
+impl engine_native_memory::Memory for Image {
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
         self.reads.borrow_mut().push((address, output.len()));
         if self

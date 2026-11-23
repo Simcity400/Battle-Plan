@@ -2,16 +2,16 @@
 use super::*;
 
 pub fn display_grid_size(memory: &impl Memory, base: usize) -> Result<[u32; 2], &'static str> {
-    let map = engine_sites::at(base, crate::cmap::SINGLETON_RVA)
+    let map = engine_sites::at(base, engine_native_parts::cmap::SINGLETON_RVA)
         .and_then(|address| read::<u64>(memory, address))
         .and_then(|pointer| usize::try_from(pointer).ok())
         .filter(|&pointer| pointer != 0)
         .ok_or("weather display map absent or unreadable")?;
     let address = map
-        .checked_add(crate::cmap::WIDTH)
+        .checked_add(engine_native_parts::cmap::WIDTH)
         .ok_or("weather display dimensions overflow")?;
     let mut bytes = [0; 8];
-    if !crate::read_slice(memory, address, &mut bytes) {
+    if !engine_native_memory::read_slice(memory, address, &mut bytes) {
         return Err("weather display dimensions unreadable");
     }
     let dimensions = [
@@ -76,7 +76,7 @@ impl DisplayGrid {
                 .checked_mul(height - 1)
                 .and_then(|offset| plane.checked_add(offset))
                 .ok_or("weather display edge address overflow")?;
-            if !crate::read_slice(memory, row, &mut bytes[height - 1..]) {
+            if !engine_native_memory::read_slice(memory, row, &mut bytes[height - 1..]) {
                 return Err("weather display edge row unreadable");
             }
         }
@@ -198,9 +198,9 @@ mod tests {
         }
         fn grid() -> Self {
             let mut source = Self::default();
-            source.put(crate::cmap::SINGLETON_RVA.0, &0x2800_u64.to_le_bytes());
-            source.put(0x2800 + crate::cmap::WIDTH, &12_i32.to_le_bytes());
-            source.put(0x2800 + crate::cmap::HEIGHT, &8_i32.to_le_bytes());
+            source.put(engine_native_parts::cmap::SINGLETON_RVA.0, &0x2800_u64.to_le_bytes());
+            source.put(0x2800 + engine_native_parts::cmap::WIDTH, &12_i32.to_le_bytes());
+            source.put(0x2800 + engine_native_parts::cmap::HEIGHT, &8_i32.to_le_bytes());
             source.put(0x2000, &(VTABLE_RVA.0 as u64).to_le_bytes());
             source.put(
                 0x2000 + DISPLAY_REFRESH_INTERVAL,
@@ -262,10 +262,10 @@ mod tests {
             Err("weather display edge capacity exhausted")
         );
         let mut odd = Source::grid();
-        odd.put(0x2800 + crate::cmap::WIDTH, &18_i32.to_le_bytes());
-        odd.put(0x2800 + crate::cmap::HEIGHT, &10_i32.to_le_bytes());
+        odd.put(0x2800 + engine_native_parts::cmap::WIDTH, &18_i32.to_le_bytes());
+        odd.put(0x2800 + engine_native_parts::cmap::HEIGHT, &10_i32.to_le_bytes());
         assert_eq!(display_grid_size(&odd, 0), Ok([4, 2]));
-        odd.put(0x2800 + crate::cmap::HEIGHT, &3_i32.to_le_bytes());
+        odd.put(0x2800 + engine_native_parts::cmap::HEIGHT, &3_i32.to_le_bytes());
         assert_eq!(
             display_grid_size(&odd, 0),
             Err("weather display grid has no cells")

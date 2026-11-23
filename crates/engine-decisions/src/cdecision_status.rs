@@ -1,11 +1,18 @@
 
 use engine_sites::Rva;
-use crate::{
-    Memory, ccountry, cdecision, cdecision_cooldown,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    ctargeted_decision::{self, TargetKind},
-    ctimed_decision, read, read_slice,
+    read,
+    read_slice,
     walk::{Buffer, Outcome},
+};
+use engine_native::ccountry;
+use crate::{
+    cdecision,
+    cdecision_cooldown,
+    ctargeted_decision::{self, TargetKind},
+    ctimed_decision,
 };
 
 pub const VTABLE_RVA: Rva = Rva(0x0286_8760);
@@ -247,7 +254,7 @@ pub struct Walk {
 }
 
 pub fn count(memory: &impl Memory, base: usize, country: usize) -> Walk {
-    walk_buffer(memory, base, country, crate::walk::Buffer::Count, crate::walk::Buffer::Count)
+    walk_buffer(memory, base, country, engine_native_memory::walk::Buffer::Count, engine_native_memory::walk::Buffer::Count)
 }
 
 pub fn walk(
@@ -261,8 +268,8 @@ pub fn walk(
         memory,
         base,
         country,
-        crate::walk::Buffer::Growing(output),
-        crate::walk::Buffer::Growing(tokens),
+        engine_native_memory::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(tokens),
     )
 }
 
@@ -270,8 +277,8 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     country: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    tokens: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    tokens: engine_native_memory::walk::Buffer<'_, u8>,
 ) -> Walk {
     walk_inner(memory, base, country, output, tokens, None)
 }
@@ -281,8 +288,8 @@ pub fn walk_with_description_demand_buffer(
     base: usize,
     game_state: usize,
     country: usize,
-    output: crate::walk::Buffer<'_, Row>,
-    tokens: crate::walk::Buffer<'_, u8>,
+    output: engine_native_memory::walk::Buffer<'_, Row>,
+    tokens: engine_native_memory::walk::Buffer<'_, u8>,
     demand: crate::border_effect_demand::Demand<'_>,
 ) -> Walk {
     walk_inner(
@@ -299,8 +306,8 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     country: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
-    mut tokens: crate::walk::Buffer<'_, u8>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
+    mut tokens: engine_native_memory::walk::Buffer<'_, u8>,
     demand: Option<(usize, crate::border_effect_demand::Demand<'_>)>,
 ) -> Walk {
     let mut counts = None;

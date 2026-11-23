@@ -1,5 +1,6 @@
 
-use crate::{Memory, sair_wing_combat_data::Key};
+use engine_native_memory::Memory;
+use crate::sair_wing_combat_data::Key;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x02a9_9980);

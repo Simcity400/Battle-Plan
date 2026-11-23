@@ -6,7 +6,8 @@ use crate::{
     table_conversion::unavailable,
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, ccountry, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::ccountry;
 use replay_data::{
     rows::CountryAppearanceRow, rows::ReservedCountryNamingRow, rows::TableId, rows::tables,
 };
@@ -79,7 +80,7 @@ pub struct Capacities {
     launch_states: usize,
     reverse_visibility: usize,
     launch: naval::LaunchCapacities,
-    raw: engine_native::raw_country_observations::Capacity,
+    raw: engine_native_memory::raw_country_observations::Capacity,
 }
 
 collector_primitives::capacity_max!(Capacities {
@@ -102,7 +103,7 @@ impl Capacities {
             ..Default::default()
         }
     }
-    fn raw_capacity(&self) -> engine_native::raw_country_observations::Capacity {
+    fn raw_capacity(&self) -> engine_native_memory::raw_country_observations::Capacity {
         let mut raw = self.raw;
         raw.links = raw.links.max(self.rows).max(self.country_array);
         let active = raw.links != 0 || self.rows != 0;
@@ -155,13 +156,13 @@ struct Preacquired {
     ticks: Option<[u64; N]>,
 }
 pub struct Captured {
-    pub raw: engine_native::raw_country_observations::Journal,
+    pub raw: engine_native_memory::raw_country_observations::Journal,
     preacquired: Option<Preacquired>,
     rows: CaptureRows<
         ccountry::AppearanceRow<
-            engine_native::capture_text::Owned,
-            engine_native::capture_text::Owned,
-            engine_native::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
+            engine_native_memory::capture_text::Owned,
         >,
     >,
     subject_starts: Vec<usize>,
@@ -199,9 +200,9 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         let raw = capacity.raw_capacity();
         Self {
-            raw: engine_native::raw_country_observations::Journal::try_new(raw)
+            raw: engine_native_memory::raw_country_observations::Journal::try_new(raw)
                 .map_err(crate::allocation::io)
-                .unwrap_or_else(|_| engine_native::raw_country_observations::Journal::vacant()),
+                .unwrap_or_else(|_| engine_native_memory::raw_country_observations::Journal::vacant()),
             preacquired: None,
             rows: CaptureRows::new(capacity.rows),
             subject_starts: owned_vec(engine_allocation::default_vec(capacity.rows)),
@@ -262,7 +263,7 @@ impl Captured {
         self.land_theatre_count = count;
     }
 
-    fn naming_span(&self, name: engine_native::csubject_relation::Name) -> Option<&[u8]> {
+    fn naming_span(&self, name: engine_native::crelation::subject::Name) -> Option<&[u8]> {
         self.naming
             .first
             .get(..self.naming.len)?
@@ -301,7 +302,7 @@ impl Captured {
                         + row.old_names.as_ref().map_or(0, |names| {
                             names
                                 .iter()
-                                .map(engine_native::capture_text::Owned::allocated_bytes)
+                                .map(engine_native_memory::capture_text::Owned::allocated_bytes)
                                 .sum::<usize>()
                         })
                 })
@@ -461,7 +462,7 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[1]);
         let begin = qpc();
         self.raw.table(
-            engine_native::raw_country_observations::Source::AppearanceOriginal,
+            engine_native_memory::raw_country_observations::Source::AppearanceOriginal,
             self.rows.outcome,
         );
         self.reserved = ccountry::read_reserved_naming_observed(
@@ -472,7 +473,7 @@ impl Captured {
             &mut self.raw,
         );
         self.raw.table(
-            engine_native::raw_country_observations::Source::ReservedTag,
+            engine_native_memory::raw_country_observations::Source::ReservedTag,
             self.reserved.outcome,
         );
         if let Some(control) = self.reserved.launch_states.take() {
@@ -642,7 +643,7 @@ impl Captured {
         let used = self.naming.len;
         let row = &mut self.rows.rows[index];
         if row.original_tag_reference <= 0 {
-            row.original_tag = Some(engine_native::csubject_relation::Name {
+            row.original_tag = Some(engine_native::crelation::subject::Name {
                 start: used,
                 len: 0,
             });
@@ -666,7 +667,7 @@ impl Captured {
         self.naming.first[used..end].copy_from_slice(bytes);
         self.naming.required = required;
         self.naming.len = end;
-        row.original_tag = Some(engine_native::csubject_relation::Name {
+        row.original_tag = Some(engine_native::crelation::subject::Name {
             start: used,
             len: bytes.len(),
         });
@@ -717,7 +718,7 @@ impl Captured {
                             true
                         }
                         Some(_) => false,
-                        None => engine_native::cpdx_array::copy_u32s(
+                        None => engine_native_memory::cpdx_array::copy_u32s(
                             memory,
                             subjects,
                             destination,

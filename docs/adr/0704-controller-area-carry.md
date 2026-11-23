@@ -10,4 +10,4 @@ Read contacts as an ordered list. A node marked for deferred removal may already
 
 The synthetic fixtures exercise quiet carry with a poisoned area, a new epoch, bounded and unbounded movement, deferred removal, mismatched membership, and contact targets without labels.
 
-[Area walk and store](../../crates/engine-native/src/controller_areas.rs) · [Area tests](../../crates/engine-native/src/controller_areas/tests.rs)
+[Area walk and store](../../crates/engine-native/src/cprovince/controller_areas.rs) · [Area tests](../../crates/engine-native/src/cprovince/controller_areas/tests.rs)

@@ -35,7 +35,7 @@ pub(super) fn capture(memory: &impl Memory, base: usize, job: &mut WeatherJob) {
             .element(slot, sweather_per_region::STRIDE)
             .and_then(|record| record.checked_add(sweather_per_region::MODIFIERS))
             .and_then(|root| {
-                engine_native::modifier_breakdown::printed_nodes(memory, base, root, 0x11).ok()
+                engine_native_politics::modifier_breakdown::printed_nodes(memory, base, root, 0x11).ok()
             })
             .and_then(|nodes| rows::printed_tree(&nodes).ok())
     };

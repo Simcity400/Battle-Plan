@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{clock::qpc, table_capture::CaptureRows, table_conversion::table};
-use engine_native::{Memory, cequipment_variant_pool as pool, cship, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{cequipment_variant::pool as pool, cship};
 use replay_data::{rows::DivisionEquipmentRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 
@@ -178,7 +179,7 @@ mod tests {
 
     #[test]
     fn only_a_known_mark_admits_rows_and_the_daily_hour_is_empty() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

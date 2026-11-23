@@ -6,4 +6,4 @@ An authenticated railway gun or task force reads one footer. A division census b
 
 A selected-unit capture skips all reads for a carried footer, including its origin witness. Off-hour origin hints observe the header for sizing only and cannot supply payload or scalar values.
 
-[Supply readers](../../crates/engine-native/src/cunit_supply_inputs.rs) · [Supply reader fixtures](../../crates/engine-native/src/cunit_supply_inputs/tests.rs)
+[Supply readers](../../crates/engine-native-parts/src/cunit_supply_inputs.rs) · [Supply reader fixtures](../../crates/engine-native-parts/src/cunit_supply_inputs/tests.rs)

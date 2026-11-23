@@ -492,7 +492,7 @@ impl Process {
 
 pub struct ProcessMemory<'a>(pub &'a Handle);
 
-impl engine_native::Memory for ProcessMemory<'_> {
+impl engine_native_memory::Memory for ProcessMemory<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let mut read = 0;
         (unsafe {

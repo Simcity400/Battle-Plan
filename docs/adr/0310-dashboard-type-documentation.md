@@ -4,4 +4,4 @@ The dashboard TypeScript contract includes field and variant documentation in th
 
 Each original line remains a separate `doc` attribute in the same order. The generator formats a single multiline value differently from a sequence of values. Decisions about why a field is timed, withheld, or encoded a particular way are recorded in the relevant subsystem ADRs.
 
-[Dashboard type export](../../crates/dashboard/src/lib.rs) · [Generated contract](../../ui/src/generated/dashboard.ts) · [Export check](../../tools/smoke.ps1)
+[Dashboard type export](../../crates/dashboard/src/contract.rs) · [Generated contract](../../ui/src/generated/dashboard.ts) · [Export check](../../tools/smoke.ps1)

@@ -2,7 +2,8 @@ use crate::division_census::UnitInputs;
 use collector_extended_support::outcomes::elapsed;
 use collector_primitives::{clock::qpc, table_capture::CaptureRows};
 use collector_projection::table_conversion::table;
-use engine_native::{Memory, carmy, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::carmy;
 use replay_data::rows::{DivisionCamouflage, DivisionModelInputRow, TableId, tables};
 use replay_frame::frame::TableView;
 

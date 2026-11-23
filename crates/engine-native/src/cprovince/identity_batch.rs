@@ -1,4 +1,4 @@
-use crate::{
+use engine_native_memory::{
     Memory,
     cpdx_array::Array,
     memory::{RecordField, RecordLayout},
@@ -69,13 +69,13 @@ impl IdentityBatch {
                 self.len += 1;
             }
         }
-        crate::memory::gather_records_once(
+        engine_native_memory::memory::gather_records_once(
             memory,
             &self.pointers[..self.len],
             &LAYOUT,
             &mut self.identities[..self.len * 12],
             &mut self.complete,
-            crate::batch_fallback::Batch::DivisionProvinces,
+            engine_native_memory::batch_fallback::Batch::DivisionProvinces,
         );
         let mut addresses = [0_usize; 64];
         for row in 0..self.len {
@@ -96,13 +96,13 @@ impl IdentityBatch {
                 self.slot_len += 1;
             }
         }
-        crate::memory::gather_records_once(
+        engine_native_memory::memory::gather_records_once(
             memory,
             &addresses[..self.slot_len],
             &SLOT_LAYOUT,
             &mut self.slots[..self.slot_len * 8],
             &mut self.slot_complete,
-            crate::batch_fallback::Batch::DivisionProvinces,
+            engine_native_memory::batch_fallback::Batch::DivisionProvinces,
         );
     }
 

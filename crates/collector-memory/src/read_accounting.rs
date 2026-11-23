@@ -1,5 +1,5 @@
 
-use engine_native::memory::ReadCounts;
+use engine_native_memory::memory::ReadCounts;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use std::{
@@ -141,7 +141,7 @@ impl Drop for Scope {
 #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
 mod counted {
     use super::*;
-    use engine_native::read_counts::{ReadChange, ReadObserver};
+    use engine_native_memory::read_counts::{ReadChange, ReadObserver};
 
     thread_local! {
         static COUNTS: RefCell<TableCounts> = const { RefCell::new(ZERO) };
@@ -237,7 +237,7 @@ pub use counted::{Capture, merge, snapshot, snapshot_into};
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures {
     use super::{Capture, ReadCounts, TableCounts, ZERO};
-    use engine_native::{Memory, memory::CountedMemory, memory::SliceMemory};
+    use engine_native_memory::{Memory, memory::{CountedMemory, SliceMemory}};
     use std::{collections::HashMap, hash::Hash, sync::Mutex};
 
     pub struct ReadTrace<K>(Mutex<HashMap<K, TableCounts>>);
@@ -314,10 +314,7 @@ mod tests {
         read(3);
         let census_reads = ReadCounts::take_current();
         read(7);
-        use engine_native::{
-            Memory,
-            memory::{CountedMemory, SliceMemory},
-        };
+        use engine_native_memory::{Memory, memory::{CountedMemory, SliceMemory}};
 
         let memory = CountedMemory::new(SliceMemory {
             base: 0,

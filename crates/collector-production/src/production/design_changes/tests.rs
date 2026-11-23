@@ -139,7 +139,7 @@ fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
                 output.copy_from_slice(&(kit::BASE as u64).to_le_bytes());
                 true
             } else {
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: kit::BASE,
                     bytes: self.0,
                 }
@@ -187,7 +187,7 @@ fn variant_version_ceiling_observes_only_its_native_ancestry_owner() {
     };
     parent(&mut bytes, 0x1000, 0x1800);
     parent(&mut bytes, 0x1800, 0x2000);
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
@@ -198,14 +198,14 @@ fn variant_version_ceiling_observes_only_its_native_ancestry_owner() {
     );
     origin(&mut bytes, 0x1000, 9);
     origin(&mut bytes, 0x1800, 9);
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
     assert_eq!(version_owner(&memory, 0x1000, 3).unwrap(), 0x1800);
     origin(&mut bytes, 0x2000, 9);
     parent(&mut bytes, 0x2000, 0x1000);
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0x1000,
         bytes: &bytes,
     };
@@ -225,7 +225,7 @@ fn input(hour: i32) -> replay_frame::frame::FrameInput {
 fn cold_and_post_gap_keyframes_publish_fresh_designs_or_named_refusals() {
     use std::sync::Arc;
     let bytes = fixture();
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
     };
@@ -627,7 +627,7 @@ fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
 fn variant_site_authentication_without_dependency_baselines_never_admits_carry() {
     assert!(native::mutations::WRITER_AUDIT_REFUSAL.is_none());
     assert!(held::certified().is_none());
-    let memory = engine_native::memory::SliceMemory {
+    let memory = engine_native_memory::memory::SliceMemory {
         base: 0,
         bytes: &[],
     };
@@ -828,7 +828,7 @@ fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
         assert!(store.batch.events.iter().all(|event| event.removed));
         assert!(repair::pending());
         assert_eq!(
-            engine_native::read::<u8>(&space.memory(), destination + native::HIGHLIGHT),
+            engine_native_memory::read::<u8>(&space.memory(), destination + native::HIGHLIGHT),
             Some(1)
         );
     }

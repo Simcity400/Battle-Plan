@@ -10,11 +10,14 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["engine-native/test-support"]
-alloc-fault-injection = ["engine-mutations/alloc-fault-injection", "engine-focus/alloc-fault-injection", "engine-events/alloc-fault-injection", "engine-visibility/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-railways/alloc-fault-injection", "engine-raid-inputs/alloc-fault-injection", "engine-production/alloc-fault-injection", "engine-occupation/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-stability/alloc-fault-injection", "engine-scripts/alloc-fault-injection", "engine-resources/alloc-fault-injection", "engine-projects/alloc-fault-injection", "engine-power-balance/alloc-fault-injection", "engine-peace/alloc-fault-injection", "engine-naval-history/alloc-fault-injection", "engine-map-air/alloc-fault-injection", "engine-intelligence/alloc-fault-injection", "engine-fuel/alloc-fault-injection", "engine-fixed-layout/alloc-fault-injection", "engine-equipment/alloc-fault-injection", "engine-dlc/alloc-fault-injection", "engine-deployment/alloc-fault-injection", "engine-decisions/alloc-fault-injection", "engine-characters/alloc-fault-injection", "engine-air-history/alloc-fault-injection", "engine-native/alloc-fault-injection"]
-batch-fallback-test-counts = ["engine-native/batch-fallback-test-counts"]
+test-support = ["engine-native/test-support", "engine-native-air/test-support", "engine-native-memory/test-support", "engine-native-parts/test-support"]
+alloc-fault-injection = ["engine-mutations/alloc-fault-injection", "engine-focus/alloc-fault-injection", "engine-events/alloc-fault-injection", "engine-visibility/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-research/alloc-fault-injection", "engine-railways/alloc-fault-injection", "engine-raid-inputs/alloc-fault-injection", "engine-production/alloc-fault-injection", "engine-occupation/alloc-fault-injection", "engine-land-inputs/alloc-fault-injection", "engine-stability/alloc-fault-injection", "engine-scripts/alloc-fault-injection", "engine-resources/alloc-fault-injection", "engine-projects/alloc-fault-injection", "engine-power-balance/alloc-fault-injection", "engine-peace/alloc-fault-injection", "engine-naval-history/alloc-fault-injection", "engine-map-air/alloc-fault-injection", "engine-intelligence/alloc-fault-injection", "engine-fuel/alloc-fault-injection", "engine-fixed-layout/alloc-fault-injection", "engine-equipment/alloc-fault-injection", "engine-dlc/alloc-fault-injection", "engine-deployment/alloc-fault-injection", "engine-decisions/alloc-fault-injection", "engine-characters/alloc-fault-injection", "engine-air-history/alloc-fault-injection", "engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-native-air/alloc-fault-injection"]
+batch-fallback-test-counts = ["engine-native-memory/batch-fallback-test-counts"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-air.workspace = true
 engine-mutations.workspace = true
 engine-focus.workspace = true
 engine-events.workspace = true
@@ -46,6 +49,9 @@ engine-native.workspace = true
 engine-executable.workspace = true
 
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
+engine-native-memory = { workspace = true, features = ["test-support"] }
+engine-native-air = { workspace = true, features = ["test-support"] }
 engine-native = { workspace = true, features = ["test-support"] }
 
 [lints]
@@ -57,4 +63,5 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

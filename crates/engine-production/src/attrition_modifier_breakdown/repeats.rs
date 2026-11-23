@@ -1,9 +1,10 @@
 
-use crate::{
+use engine_native_memory::{
     Memory,
     memory::{RecordLayout, RecordSources},
-    modifier_accumulator::{self, Value},
+    modifier_cache::Value,
 };
+use engine_native_parts::modifier_accumulator;
 use std::cell::RefCell;
 
 #[derive(Clone, Copy, Default)]
@@ -127,7 +128,7 @@ impl<M: Memory> Memory for Repeats<'_, M> {
         self.inner.copy_records(sources, layout, destination)
     }
 
-    fn modifier_definitions(&self) -> Option<&crate::modifier_definition::PassDefinitions> {
+    fn modifier_definitions(&self) -> Option<&engine_native_memory::modifier_cache::PassDefinitions> {
         self.inner.modifier_definitions()
     }
 

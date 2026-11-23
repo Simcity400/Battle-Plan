@@ -10,8 +10,8 @@ license.workspace = true
 doctest = false
 
 [dependencies]
+engine-native-memory.workspace = true
 engine-allocation.workspace = true
-engine-native.workspace = true
 [dev-dependencies]
 collector-test-support.workspace = true
 
@@ -24,5 +24,5 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
-engine-native = { workspace = true, features = ["batch-fallback-test-counts", "layout-fixtures", "test-support"] }
+engine-native-memory = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 test-unify = { workspace = true }

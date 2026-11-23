@@ -6,7 +6,7 @@ pub const YEAR: usize = 0x3d8;
 pub const MAX_LEVEL: usize = 0x3dc;
 pub const RESEARCH_COST: usize = 0x3e0;
 
-use crate::{Memory, msvc_string, read, walk::Outcome};
+use engine_native_memory::{Memory, msvc_string, read, walk::Outcome};
 
 pub const HEADER_BYTES: usize = 56;
 pub fn copy_header(

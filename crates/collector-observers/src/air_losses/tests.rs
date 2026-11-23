@@ -1,9 +1,8 @@
 use super::*;
 use engine_air_history::{cloop_history, loop_history_record_fields, loop_history_window};
-use engine_native::{
-    cair_wing, cair_wing_pool, ccountry, cgame_state, cstrategic_air, cstrategic_region,
-    csub_unit_definition,
-};
+use engine_native_air::cstrategic_air;
+use engine_native_parts::{cair_wing_pool, cstrategic_region, csub_unit_definition};
+use engine_native::{ccountry, cgame_state};
 use std::sync::Mutex;
 #[cfg(feature = "tap-foreign-probe")]
 mod foreign_unwind;
@@ -334,9 +333,9 @@ impl World {
             Self::REGION,
             (world.base() + cstrategic_region::VTABLE_RVA.0) as u64,
         );
-        world.word(Self::WING, (world.base() + cair_wing::VTABLE_RVA.0) as u64);
+        world.word(Self::WING, (world.base() + engine_native_parts::cair_wing_layout::VTABLE_RVA.0) as u64);
         world.word(
-            Self::WING + cair_wing::POOL,
+            Self::WING + engine_native_parts::cair_wing_layout::POOL,
             world.pointer(Self::POOL) as u64,
         );
         world.word(Self::WING + 0x100, world.pointer(Self::VALUES) as u64);
@@ -554,7 +553,7 @@ fn hook_cost_air_losses() {
             });
         }
     });
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let (base, game) = (world.base(), world.pointer(World::GAME));
     let reads = crate::test_support::per_call_ns(COUNTRIES, || {
         for country in 1..=COUNTRIES {

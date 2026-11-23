@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const DATABASE: usize = 0x1000;
@@ -138,7 +138,7 @@ fn fresh_state_fraction_uses_exact_native_maximum_and_signed_healthy_level() {
     memory.infrastructure();
     let source = memory.state(0);
     let game_state = 0xb0000;
-    memory.array(game_state + crate::cgame_state::STATES, 0xb1000, 2);
+    memory.array(game_state + engine_native::cgame_state::STATES, 0xb1000, 2);
     memory.put(0xb1008, (source.pointer as u64).to_le_bytes());
     let mut output = [StateFractionRow::default(); 1];
     for (preferred, fallback, global, healthy, expected) in [

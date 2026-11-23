@@ -4,7 +4,7 @@ use crate::{
     table_conversion::{table, unavailable},
 };
 use engine_allocation::{copy_vec, owned_vec};
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_production::nindustrial_organisation_corganisation as native;
 use replay_data::{
     cadence::{SKIPPED_REASON, should_walk},
@@ -338,7 +338,7 @@ fn ensure<T: Default>(rows: &mut Vec<T>, index: usize) -> Result<(), &'static st
     Ok(())
 }
 impl<M: Memory> native::Visitor for DetailsVisitor<'_, M> {
-    fn country(&mut self, identity: &engine_native::ccountry::Country, status: usize) {
+    fn country(&mut self, identity: &engine_native_memory::country_identity::Country, status: usize) {
         if self.policies_failure.is_some() {
             return;
         }
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn walks_only_on_the_production_lines_slot_or_a_full_hour() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };

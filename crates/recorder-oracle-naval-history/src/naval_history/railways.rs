@@ -37,7 +37,7 @@ pub fn compare_railway_buildings(
             continue;
         };
         let name = *names
-            .get(&engine_native::cbuilding_template::RAIL_WAY_TOKEN)
+            .get(&engine_native_parts::cbuilding_template::RAIL_WAY_TOKEN)
             .ok_or_else(|| invalid("railway building token has no recorded spelling"))?;
         let Some(expected) = saved.province_buildings.get(&(row.province, name.to_vec())) else {
             report.difference(&label, health, "absent from saved province buildings");
@@ -95,7 +95,7 @@ fn compare_selected_building(
         return Ok(());
     };
     let name = *names
-        .get(&engine_native::cbuilding_template::RAIL_WAY_TOKEN)
+        .get(&engine_native_parts::cbuilding_template::RAIL_WAY_TOKEN)
         .ok_or_else(|| invalid("railway building token has no recorded spelling"))?;
     report.compared("RailCooldowns.selection.building_level", 1);
     if let Some(expected) = saved.province_buildings.get(&(row.province, name.to_vec())) {

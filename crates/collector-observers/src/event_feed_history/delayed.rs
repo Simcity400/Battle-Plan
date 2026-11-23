@@ -368,7 +368,7 @@ impl Store {
         generation: u64,
         state: usize,
         hour: i32,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
     ) {
         if self.failure.is_some() || self.observation(generation).is_err() {
             return;
@@ -397,7 +397,7 @@ impl Store {
             let instance = country
                 .pointer
                 .checked_add(engine_native::ccountry::SURRENDER_TARGET)
-                .and_then(|at| engine_native::read::<u32>(memory, at))
+                .and_then(|at| engine_native_memory::read::<u32>(memory, at))
                 .ok_or("delayed-event country surrender target unreadable")?;
             Ok::<_, &'static str>(CountryIdentity {
                 reference: country.id,
@@ -465,7 +465,7 @@ impl Store {
         generation: u64,
         state: usize,
         hour: i32,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         owner: CountryIdentity,
         cut: super::Cut,
     ) -> Result<(), &'static str> {
@@ -513,7 +513,7 @@ impl Store {
     pub(super) fn prepared_delayed_demand(
         &self,
         source: &Self,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         completed: bool,
     ) -> usize {
         self.delayed
@@ -527,7 +527,7 @@ impl Store {
     pub(super) fn merge_delayed_owner(
         &mut self,
         source: &Self,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         labels: &mut [u32],
     ) -> Result<(), &'static str> {
         for slot in source.delayed.slots.iter().filter(|slot| slot.pointer != 0) {
@@ -538,7 +538,7 @@ impl Store {
     }
     pub(super) fn prepared_delayed_failure(
         &mut self,
-        country: engine_native::ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
     ) -> bool {
         if let Some(entry) = self
             .delayed

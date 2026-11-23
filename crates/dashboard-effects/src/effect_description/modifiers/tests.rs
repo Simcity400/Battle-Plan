@@ -319,7 +319,7 @@ fn scale_wraps_and_truncates_after_the_getter_clamp_before_zero_filtering() {
         ),
         "> Attack: \u{11}R-0.00002\u{11}!"
     );
-    definitions(&mut fixture)[0].flags |= engine_native::modifier_definition::CLAMP_MAXIMUM;
+    definitions(&mut fixture)[0].flags |= engine_native_parts::modifier_definition::CLAMP_MAXIMUM;
     assert_eq!(
         describe(
             &fixture,

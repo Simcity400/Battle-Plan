@@ -1,5 +1,5 @@
 use super::*;
-use engine_native::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 
 #[test]
 fn carried_splice_keeps_order_offsets_aliases_masks_and_bulk_without_read_charges() {
@@ -105,16 +105,16 @@ fn growth_prepares_scattered_and_record_storage_before_native_reads() {
         log.take_scattered(&memory, [0x1000, 0x1004], [4, 4], [1, 1]),
         Some(([0, 4], 2))
     );
-    let fields = [engine_native::memory::RecordField {
+    let fields = [engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: 4,
     }];
-    let layout = engine_native::memory::RecordLayout::new(&fields, 4).unwrap();
+    let layout = engine_native_memory::memory::RecordLayout::new(&fields, 4).unwrap();
     assert_eq!(
         log.take_records(
             &memory,
-            engine_native::memory::RecordSources::Strided {
+            engine_native_memory::memory::RecordSources::Strided {
                 base: 0x1008,
                 stride: 4,
                 count: 32
@@ -663,14 +663,14 @@ fn raw_specialization_frozen_array(
             0
         }
     });
-    let fields = [engine_native::memory::RecordField {
+    let fields = [engine_native_memory::memory::RecordField {
         source_offset: 0,
         destination_offset: 0,
         len: width,
     }];
     let completed = memory.copy_records(
-        engine_native::memory::RecordSources::Pointers(&guarded[..count]),
-        &engine_native::memory::RecordLayout::new(&fields, width).unwrap(),
+        engine_native_memory::memory::RecordSources::Pointers(&guarded[..count]),
+        &engine_native_memory::memory::RecordLayout::new(&fields, width).unwrap(),
         &mut log.bytes.storage[start..end],
     );
     debug_assert!(completed <= count);
@@ -1223,8 +1223,8 @@ fn array_chunk_coalesces_exact_success_prefix_without_retry() {
         }
         fn copy_records(
             &self,
-            sources: engine_native::memory::RecordSources<'_>,
-            layout: &engine_native::memory::RecordLayout<'_>,
+            sources: engine_native_memory::memory::RecordSources<'_>,
+            layout: &engine_native_memory::memory::RecordLayout<'_>,
             destination: &mut [u8],
         ) -> usize {
             self.calls.set(self.calls.get() + 1);
@@ -2298,9 +2298,12 @@ impl Memory for FailAll {
 
 #[test]
 fn record_gathers_stage_each_field_and_replay_to_the_same_fault() {
-    use engine_native::{
-        memory::CountedMemory, memory::ReadCounts, memory::RecordField, memory::RecordLayout,
-        memory::RecordSources,
+    use engine_native_memory::memory::{
+        CountedMemory,
+        ReadCounts,
+        RecordField,
+        RecordLayout,
+        RecordSources,
     };
     struct Fault<'a>(SliceMemory<'a>);
     impl Memory for Fault<'_> {

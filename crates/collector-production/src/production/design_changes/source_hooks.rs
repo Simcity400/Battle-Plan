@@ -78,9 +78,9 @@ pub(super) fn enabled() -> bool {
 }
 fn clock(memory: &impl Memory, base: usize) -> Result<i32, &'static str> {
     let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
+        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
         .ok_or("design source clock unreadable")?;
-    engine_native::read(
+    engine_native_memory::read(
         memory,
         state as usize + engine_native::cgame_state::CURRENT_HOUR,
     )
@@ -99,8 +99,8 @@ fn direct(
     if size > native::BONUS_IDEA {
         let idea = u64_at(log, header + native::BONUS_IDEA) as usize;
         if idea != 0 {
-            let header = take(log, memory, idea, engine_native::cidea::TOKEN + 32)?;
-            string(log, memory, header + engine_native::cidea::TOKEN)?;
+            let header = take(log, memory, idea, engine_native_parts::cidea::TOKEN + 32)?;
+            string(log, memory, header + engine_native_parts::cidea::TOKEN)?;
         }
     }
     Ok(())
@@ -210,7 +210,7 @@ pub(super) fn materialize(
                 Kind::Source => direct(&mut log, memory, base, event.pointer)?,
                 Kind::Provider(owner) => {
                     let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-                        .and_then(|at| engine_native::read::<u64>(memory, at))
+                        .and_then(|at| engine_native_memory::read::<u64>(memory, at))
                         .ok_or("design provider world unreadable")? as usize;
                     let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
                     let country = countries.resolve(owner)?;
@@ -279,7 +279,7 @@ unsafe fn around<const SITE: usize>(
         complete: false,
     };
     let base = BASE.load(Ordering::Acquire);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let source = (SITE <= 1 || SITE == 3)
         .then(|| a.checked_sub(BONUS_BODY))
         .flatten();
@@ -312,7 +312,7 @@ unsafe fn around<const SITE: usize>(
                         .slice(first, count as u32, 8)
                         .ok()
                         .is_some_and(|span| {
-                            engine_native::read_slice(&memory, span.data, &mut bytes[..count * 8])
+                            engine_native_memory::read_slice(&memory, span.data, &mut bytes[..count * 8])
                         });
                     if batch_ok {
                         for chunk in bytes[..count * 8].chunks_exact(8) {

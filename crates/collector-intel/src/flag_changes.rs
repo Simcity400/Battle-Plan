@@ -3,7 +3,7 @@ use crate::{
     watch_registry::{Notification, WatchRegistry},
 };
 use engine_mutations::{script_flag_mutations::MUTATIONS, script_flag_mutations::manager};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -302,7 +302,7 @@ callback!(set_playthrough_flag, 1, (manager_, token, value, duration));
 callback!(read_flags, 2, (manager_, reader));
 unsafe extern "system" fn daily_flags(manager_: usize) -> usize {
     let timing = crate::hook_timing::enter(crate::hook_timing::Family::FlagChanges);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let _notification = engine_scripts::cflag_manager::daily_expiry_writes(&memory, manager_)
         .then(|| WATCHES.notify(manager(MUTATIONS[3].1, manager_), 3));
     let original: unsafe extern "system" fn(usize) -> usize =

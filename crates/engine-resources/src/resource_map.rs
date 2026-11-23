@@ -1,13 +1,15 @@
 
-use crate::{
-    Memory, allocation, ccountry, ccountry_resources, cgame_state,
+use engine_native_memory::{
+    Memory,
     cpdx_array::Array,
-    cresource_exchange, cstate, cstrategic_resource,
     memory::{RecordField, RecordLayout, RecordSources},
-    modifier_accumulator, read,
+    read,
     walk::{Buffer, Outcome},
 };
-use engine_native::modifier_definition;
+use crate::{allocation, ccountry_resources, cresource_exchange, cstrategic_resource};
+use engine_native::{ccountry, cgame_state, cstate};
+use engine_native_parts::modifier_accumulator;
+use engine_native_parts::modifier_definition;
 use engine_sites::Rva;
 
 fn effective(
@@ -573,14 +575,14 @@ impl<M: Memory> Walk<'_, M> {
         Ok(self.countries.resolve(link)?.id)
     }
 
-    fn country_resources(&self, country: ccountry::Country) -> Result<usize, &'static str> {
+    fn country_resources(&self, country: engine_native_memory::country_identity::Country) -> Result<usize, &'static str> {
         crate::ccountry_resources::resources(self.memory, self.base, self.countries, country)
     }
 
     fn exchange(
         &self,
         client: usize,
-        importer: ccountry::Country,
+        importer: engine_native_memory::country_identity::Country,
     ) -> Result<(usize, u32), &'static str> {
         let (_, ends) = cresource_exchange::authenticate(
             self.memory,
@@ -653,7 +655,7 @@ impl<M: Memory> Walk<'_, M> {
         origin: usize,
         list: u8,
         ordinal: u32,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
     ) -> Result<(OriginRow, usize), &'static str> {
         let memory = self.memory;
         if pointer(memory, origin, "origin vtable unreadable")?
@@ -925,7 +927,7 @@ impl<M: Memory> Walk<'_, M> {
 
     fn country_clients(
         &self,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         resources: usize,
         supply_systems: usize,
         table: &mut Table,
@@ -1327,7 +1329,7 @@ pub fn walk_buffer(
             let oil = effective(
                 memory,
                 base,
-                at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?,
+                at(country.pointer, engine_native_memory::country_identity::MODIFIER_ACCUMULATOR)?,
                 PRODUCTION_OIL_FACTOR,
                 &oil_metadata,
             )?;
@@ -1566,11 +1568,11 @@ pub fn walk_regional(
             let country = scratch[start].0;
             let end = start + scratch[start..].partition_point(|&(id, _)| id == country);
             let resolved = countries.resolve(country)?;
-            let navy = crate::cstrategic_navy_manager::navy(memory, base, game_state, resolved)?;
-            let records = crate::cstrategic_navy::regional_convoys(memory, base, navy)?;
+            let navy = engine_native_naval::cstrategic_navy_manager::navy(memory, base, game_state, resolved)?;
+            let records = engine_native_naval::cstrategic_navy::regional_convoys(memory, base, navy)?;
             for &(_, region) in &scratch[start..end] {
                 let efficiency =
-                    crate::cstrategic_navy::regional_convoy_efficiency(memory, records, region)?;
+                    engine_native_naval::cstrategic_navy::regional_convoy_efficiency(memory, records, region)?;
                 push(
                     &mut output,
                     &mut len,
@@ -1598,7 +1600,7 @@ pub fn walk_region_weights(
     game_state: usize,
     mut output: Buffer<'_, RegionWeightRow>,
 ) -> Outcome {
-    use engine_native::cstrategic_region as region;
+    use engine_native_parts::cstrategic_region as region;
     const BATCH: usize = 64;
     const FIELDS: [RecordField; 3] = [
         RecordField {

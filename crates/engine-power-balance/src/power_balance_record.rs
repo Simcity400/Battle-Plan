@@ -53,7 +53,7 @@ impl MemberRow {
 }
 
 fn apply_flags(raw: i64, flags: u32) -> i64 {
-    if flags & crate::modifier_definition::CLAMP_MAXIMUM != 0 {
+    if flags & engine_native_parts::modifier_definition::CLAMP_MAXIMUM != 0 {
         raw.clamp(0, FIXED_POINT_SCALE)
     } else {
         raw

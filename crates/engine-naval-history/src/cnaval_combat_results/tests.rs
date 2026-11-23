@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::SliceMemory;
+use engine_native_memory::memory::SliceMemory;
 use std::cell::RefCell;
 
 const BASE: usize = 0x1_4000_0000;
@@ -401,7 +401,7 @@ fn province_ordinals_read_each_bucket_once() {
                 base: 0,
                 bytes: &bytes,
             };
-            let census = crate::read_census::ReadCensus::new(&memory);
+            let census = engine_native_memory::read_census::ReadCensus::new(&memory);
             let started = std::time::Instant::now();
             assert_eq!(
                 province_ordinals(&census, 0x1000, &mut rows, &mut slots),

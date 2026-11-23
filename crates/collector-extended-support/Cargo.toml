@@ -10,9 +10,12 @@ license.workspace = true
 doctest = false
 
 [features]
-test-support = ["collector-memory/test-support", "engine-native/test-support"]
+test-support = ["collector-memory/test-support", "engine-native/test-support", "engine-native-air/test-support", "engine-native-memory/test-support", "engine-native-parts/test-support"]
 
 [dependencies]
+engine-native-parts.workspace = true
+engine-native-memory.workspace = true
+engine-native-air.workspace = true
 engine-allocation.workspace = true
 engine-land-inputs.workspace = true
 engine-native.workspace = true
@@ -25,6 +28,7 @@ collector-status.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+engine-native-parts = { workspace = true, features = ["test-support"] }
 collector-test-support.workspace = true
 
 [lints]
@@ -38,6 +42,7 @@ collector-extended-support = { workspace = true, features = ["test-support"] }
 collector-primitives = { workspace = true, features = ["test-support"] }
 engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-executable = { workspace = true, features = ["test-support"] }
+engine-native-land = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["capture", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

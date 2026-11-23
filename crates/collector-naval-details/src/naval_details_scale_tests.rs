@@ -59,8 +59,8 @@ impl Memory for Singles<'_> {
 
     fn copy_records(
         &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
+        sources: engine_native_memory::memory::RecordSources<'_>,
+        layout: &engine_native_memory::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
         self.source.copy_records(sources, layout, destination)
@@ -144,11 +144,11 @@ fn cold_and_later_terrain_names_keep_mod_heap_bytes_in_publication() {
             let diplomacy = memory.allocate(0x400);
             memory.u64(
                 diplomacy,
-                (IMAGE + engine_native::cdiplomacy_status::VTABLE_RVA.0) as u64,
+                (IMAGE + engine_native_parts::cdiplomacy_status_layout::VTABLE_RVA.0) as u64,
             );
             let relations = memory.allocate(8);
             memory.array(
-                diplomacy + engine_native::cdiplomacy_status::RELATIONS,
+                diplomacy + engine_native_parts::cdiplomacy_status_layout::RELATIONS,
                 relations,
                 1,
             );
@@ -157,7 +157,7 @@ fn cold_and_later_terrain_names_keep_mod_heap_bytes_in_publication() {
                 diplomacy as u64,
             );
         }
-        assert!(engine_native::msvc_string::read_text::<256>(&memory, TERRAIN + 0x18).is_none());
+        assert!(engine_native_memory::msvc_string::read_text::<256>(&memory, TERRAIN + 0x18).is_none());
         captured.reset();
         captured.capture(&memory, IMAGE, STATE);
         assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });

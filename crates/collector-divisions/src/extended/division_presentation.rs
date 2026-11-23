@@ -8,9 +8,13 @@ use collector_projection::{
     table_conversion::unavailable,
 };
 use engine_allocation::{copy_vec, owned_vec};
+use engine_native_memory::{Memory, walk::Outcome};
 use engine_native::{
-    Memory, carmy, carmy::DivisionSeed, ccountry, cname_group_member,
-    corders_group_member::MembershipCapacity, cprovince, walk::Outcome,
+    carmy::{self, DivisionSeed},
+    ccountry,
+    cname_group_member,
+    corders_group_member::MembershipCapacity,
+    cprovince,
 };
 use engine_naval_history::cnaval_unit_transfer::SpeedInputs as TransportInputs;
 use replay_data::rows::{
@@ -354,7 +358,7 @@ impl Capacities {
         let mut groups = cname_group_member::GroupKeys::try_with_capacity(count, count)
             .map_err(|_| "division name sizing allocation failed")?;
         let mut names = cname_group_member::Names {
-            bytes: engine_native::walk::Buffer::Count,
+            bytes: engine_native_memory::walk::Buffer::Count,
             len: 0,
             required: 0,
         };
@@ -363,7 +367,7 @@ impl Capacities {
         let outcome = carmy::walk_with(memory, base, state, &mut rows, |army, _| {
             let result = army
                 .checked_add(engine_native::carmy_combat_inputs::NAME_GROUP_MEMBER)
-                .and_then(|address| engine_native::read::<u64>(memory, address))
+                .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                 .and_then(|member| usize::try_from(member).ok())
                 .filter(|member| *member != 0)
                 .ok_or("division name sizing member unavailable");
@@ -415,7 +419,7 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
         manpower: 0,
         acclimatization_categories: 0,
         thresholds: 0,
-        modifiers: engine_native::modifier_accumulator::SnapshotCapacity {
+        modifiers: engine_native_parts::modifier_accumulator::SnapshotCapacity {
             nodes: c.status,
             entries: 0,
         },
@@ -619,7 +623,7 @@ pub struct Captured {
     movement_packet: carmy::MovementPacket,
     transport: movement_carry::Transport,
     transport_inputs: Vec<(usize, Option<TransportInputs>)>,
-    order_transport: engine_native::order_execution::UnitPacket,
+    order_transport: engine_native_land::order_execution::UnitPacket,
     member_index: Vec<(u64, u32, u32)>,
     member_keys: Vec<u64>,
     geometry: cprovince::GeometryPacket,
@@ -696,7 +700,7 @@ impl Captured {
             movement_packet: carmy::MovementPacket::vacant(),
             transport: Default::default(),
             transport_inputs: Vec::new(),
-            order_transport: engine_native::order_execution::UnitPacket::vacant(),
+            order_transport: engine_native_land::order_execution::UnitPacket::vacant(),
             member_index: Vec::new(),
             member_keys: Vec::new(),
             geometry: cprovince::GeometryPacket::vacant(),
@@ -759,7 +763,7 @@ impl Captured {
             movement_packet,
             transport: Default::default(),
             transport_inputs: Vec::new(),
-            order_transport: engine_native::order_execution::UnitPacket::vacant(),
+            order_transport: engine_native_land::order_execution::UnitPacket::vacant(),
             member_index: Vec::new(),
             member_keys: Vec::new(),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
@@ -1027,7 +1031,7 @@ impl Captured {
 
     pub fn install_order_transport(
         &mut self,
-        execution: &mut engine_native::order_execution::Prepared,
+        execution: &mut engine_native_land::order_execution::Prepared,
     ) {
         self.order_transport.reset();
         execution.swap_units(&mut self.order_transport);
@@ -1791,7 +1795,7 @@ impl Captured {
         let rows = &sources.rows[..outcome.len()];
         self.supply_grace =
             engine_sites::at(base, engine_land_inputs::carmy_attrition::SUPPLY_GRACE_RVA)
-                .and_then(|address| engine_native::read::<i32>(memory, address));
+                .and_then(|address| engine_native_memory::read::<i32>(memory, address));
         if !grow_vec(&mut self.status.rows, rows.len()) {
             self.fail_owned_capture("presentation row allocation failed");
             return 0;
@@ -2893,9 +2897,9 @@ impl Captured {
         row: &carmy::StatusRow,
         index: usize,
     ) -> (
-        Option<engine_native::cunit_supply_inputs::Inputs>,
-        Option<engine_native::cunit_supply_inputs::Failure>,
-        Option<&[engine_native::cunit_supply_inputs::Origin]>,
+        Option<engine_native_parts::cunit_supply_inputs::Inputs>,
+        Option<engine_native_parts::cunit_supply_inputs::Failure>,
+        Option<&[engine_native_parts::cunit_supply_inputs::Origin]>,
     ) {
         match self.daily_status.sample(index) {
             Some(sample) => (sample.inputs, sample.failure, sample.origins()),
@@ -2953,7 +2957,10 @@ pub mod tests {
     fn template_registry(
         world: &mut scale_fixture::World,
     ) -> (Box<[u8; 32]>, Vec<u8>, Box<[u8; 40]>) {
-        use engine_native::{creference_registry as registry, reference_bucket as bucket};
+        use engine_native_parts::{
+            creference_registry as registry,
+            reference_bucket as bucket,
+        };
         let word = |offset| u64::from_le_bytes(world.bytes[offset..offset + 8].try_into().unwrap());
         let templates: std::collections::BTreeSet<_> = world
             .armies
@@ -3058,8 +3065,8 @@ pub mod tests {
             ships: 0,
         });
         let mut registry = template_registry(&mut world);
-        registry.0[engine_native::creference_registry::COUNT
-            ..engine_native::creference_registry::COUNT + 4]
+        registry.0[engine_native_parts::creference_registry::COUNT
+            ..engine_native_parts::creference_registry::COUNT + 4]
             .copy_from_slice(&u32::MAX.to_le_bytes());
         let mut members = division_name_members(&mut world);
         members[0][cname_group_member::FLAG_A] = 0;
@@ -3072,7 +3079,7 @@ pub mod tests {
             .enumerate()
             .map(|(index, &army)| DivisionSeed {
                 pointer: army,
-                division: engine_native::read(&memory, army + engine_native::cunit::HANDLE)
+                division: engine_native_memory::read(&memory, army + engine_native::cunit::HANDLE)
                     .unwrap(),
                 name_member: Some(members[index].as_ptr() as usize),
                 ..Default::default()
@@ -3438,7 +3445,7 @@ pub mod tests {
             .enumerate()
             .map(|(index, &army)| DivisionSeed {
                 pointer: army,
-                division: engine_native::read(&memory, army + engine_native::cunit::HANDLE)
+                division: engine_native_memory::read(&memory, army + engine_native::cunit::HANDLE)
                     .unwrap(),
                 name_member: Some(members[index].as_ptr() as usize),
                 ..Default::default()
@@ -3533,7 +3540,7 @@ pub mod tests {
             .iter()
             .map(|&pointer| DivisionSeed {
                 pointer,
-                division: engine_native::read(&memory, pointer + engine_native::cunit::HANDLE)
+                division: engine_native_memory::read(&memory, pointer + engine_native::cunit::HANDLE)
                     .unwrap(),
                 ..Default::default()
             })
@@ -3654,7 +3661,7 @@ pub mod tests {
             ..Capacities::default()
         });
         captured.capture_naming(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             },
@@ -3709,7 +3716,7 @@ pub mod tests {
             member[cname_group_member::FLAG_B] = 1;
         }
         let template =
-            engine_native::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE)
+            engine_native_memory::read::<u64>(&world.live(), world.armies[0] + carmy::STANDARD_TEMPLATE)
                 .unwrap() as usize;
         let offset = template - world.base + cname_group_member::TEMPLATE_NAME_GROUP;
         world.bytes[offset..offset + 8].fill(0);
@@ -3830,7 +3837,7 @@ pub mod tests {
                         return false;
                     }
                 }
-                engine_native::memory::SliceMemory {
+                engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: self.bytes,
                 }
@@ -3888,7 +3895,7 @@ pub mod tests {
             ..Capacities::default()
         };
         let mut captured = Captured::with_capacities(&capacity);
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0x1000,
             bytes: &bytes,
         };
@@ -4475,7 +4482,7 @@ pub mod tests {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
         struct PanicAt<'a> {
-            memory: engine_native::memory::SliceMemory<'a>,
+            memory: engine_native_memory::memory::SliceMemory<'a>,
             address: usize,
         }
         impl Memory for PanicAt<'_> {
@@ -4518,7 +4525,7 @@ pub mod tests {
             });
             capture.reserve_sources(1);
             capture.capture_owned(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
                 },
@@ -4526,7 +4533,7 @@ pub mod tests {
                 sources(),
             );
             let memory = PanicAt {
-                memory: engine_native::memory::SliceMemory {
+                memory: engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
                 },
@@ -5174,7 +5181,7 @@ pub mod tests {
         let seeds = [seed];
         capture.movement.rows[0].division = 999;
         capture.capture(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0x1000,
                 bytes: &bytes,
             },
@@ -5233,7 +5240,7 @@ pub mod tests {
                 word.copy_from_slice(&(index as u32 + 1).to_le_bytes());
             }
             capture.capture_owned(
-                &engine_native::memory::SliceMemory {
+                &engine_native_memory::memory::SliceMemory {
                     base: 0x1000,
                     bytes: &bytes,
                 },
@@ -5306,7 +5313,7 @@ pub mod tests {
             strength_factor: 57_038,
             supply_grace_maximum: i64::MAX,
             supply_grace_remaining: i64::MIN,
-            supply: Some(engine_native::cunit_supply_inputs::Inputs {
+            supply: Some(engine_native_parts::cunit_supply_inputs::Inputs {
                 asked: 123_456,
                 disruption: 4,
                 ..Default::default()
@@ -5548,7 +5555,7 @@ pub mod tests {
             reason: "census failed",
         };
         capture.capture(
-            &engine_native::memory::SliceMemory {
+            &engine_native_memory::memory::SliceMemory {
                 base: 0,
                 bytes: &[],
             },

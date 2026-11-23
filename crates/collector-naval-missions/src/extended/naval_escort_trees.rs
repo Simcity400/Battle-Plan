@@ -1,5 +1,6 @@
 use engine_executable::modifier_keys;
-use engine_native::{Memory, ccountry};
+use engine_native_memory::Memory;
+use engine_native::ccountry;
 use engine_naval_history::naval_modifier_trees as native;
 use replay_data::rows::{ModifierBreakdownNode, Recorded};
 use std::sync::Mutex;
@@ -36,7 +37,7 @@ impl Trees {
         &mut self,
         memory: &impl Memory,
         image: usize,
-        country: ccountry::Country,
+        country: engine_native_memory::country_identity::Country,
         demanded: bool,
         certificate: Option<(u64, u64)>,
     ) -> Option<[usize; 2]> {
@@ -103,11 +104,11 @@ mod tests {
     use super::*;
     #[test]
     fn undemanded_and_uncertified_sources_never_touch_memory() {
-        let memory = engine_native::memory::SliceMemory {
+        let memory = engine_native_memory::memory::SliceMemory {
             base: 0,
             bytes: &[],
         };
-        let country = ccountry::Country {
+        let country = engine_native_memory::country_identity::Country {
             pointer: usize::MAX,
             canonical_slot: 0,
             id: 0,

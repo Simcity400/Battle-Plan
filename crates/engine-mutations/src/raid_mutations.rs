@@ -272,8 +272,8 @@ pub const FIRST_ROUTE_SITE: usize = 29;
 pub const ORIGIN_ROUTE_SITE: usize = 34;
 pub const ORIGIN_OWNER: usize = 0x18;
 
-pub fn origin_route_kind(memory: &impl crate::Memory, origin: usize) -> Option<u8> {
-    crate::read(
+pub fn origin_route_kind(memory: &impl engine_native_memory::Memory, origin: usize) -> Option<u8> {
+    engine_native_memory::read(
         memory,
         origin
             .checked_add(crate::cresource_origin::DELIVERY_ROUTE)?
@@ -282,7 +282,7 @@ pub fn origin_route_kind(memory: &impl crate::Memory, origin: usize) -> Option<u
 }
 
 pub fn route_country(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     receiver: Receiver,
     first: usize,
     second: usize,
@@ -293,7 +293,7 @@ pub fn route_country(
         Receiver::RouteSender => Some(second),
         _ => None,
     };
-    link.and_then(|address| crate::read::<u32>(memory, address))
+    link.and_then(|address| engine_native_memory::read::<u32>(memory, address))
         .map(|raw| (raw != 0).then_some(raw))
         .ok_or(Unreadable)
 }
@@ -309,12 +309,12 @@ const CAPACITY_PAIR_COUNT: usize = 0xc;
 const CAPACITY_PAIR_VALUE: usize = 8;
 
 pub fn daily_unchanged(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     module: usize,
     air: usize,
     pairs: usize,
 ) -> Option<u64> {
-    use engine_native::{
+    use engine_native_memory::{
         cpdx_array::Array,
         memory::{RecordField, RecordLayout, RecordSources},
         read, read_slice,
@@ -323,12 +323,12 @@ pub fn daily_unchanged(
     const LINK_CACHE: usize = 512;
     const BASE_FIELDS: [RecordField; 2] = [
         RecordField {
-            source_offset: crate::cair_base::COUNTRY_CONTAINERS,
+            source_offset: engine_native_air::cair_base::COUNTRY_CONTAINERS,
             destination_offset: 0,
             len: 16,
         },
         RecordField {
-            source_offset: crate::cair_base::STATE,
+            source_offset: engine_native_air::cair_base::STATE,
             destination_offset: 16,
             len: 8,
         },
@@ -343,7 +343,7 @@ pub fn daily_unchanged(
     const PTR_LAYOUT: RecordLayout<'static> =
         RecordLayout::new(&PTR_FIELDS, 8).expect("valid pointer layout");
     const CAP_FIELDS: [RecordField; 1] = [RecordField {
-        source_offset: crate::ccountry_air_container::CAPACITY_RAW,
+        source_offset: engine_native_air::ccountry_air_container::CAPACITY_RAW,
         destination_offset: 0,
         len: 8,
     }];
@@ -352,11 +352,11 @@ pub fn daily_unchanged(
 
     let game = read::<u64>(
         memory,
-        engine_sites::at(module, crate::cgame_state::SINGLETON_RVA)?,
+        engine_sites::at(module, engine_native::cgame_state::SINGLETON_RVA)?,
     )? as usize;
     let links = Array::read(
         memory,
-        game.checked_add(crate::cgame_state::COUNTRY_LINKS)?,
+        game.checked_add(engine_native::cgame_state::COUNTRY_LINKS)?,
         4,
     )?;
     let cached_links = (links.count as usize).min(LINK_CACHE);
@@ -374,7 +374,7 @@ pub fn daily_unchanged(
             read::<u32>(memory, links.element(raw, 4)?)
         }
     };
-    let own = read::<u32>(memory, air.checked_add(crate::cstrategic_air::COUNTRY)?)?;
+    let own = read::<u32>(memory, air.checked_add(engine_native_air::cstrategic_air::COUNTRY)?)?;
     let own_slot = resolve_slot(own);
     let air_bases = read::<[u8; 16]>(memory, air.checked_add(DAILY_BASES)?)?;
     let bases = u64::from_le_bytes(air_bases[..8].try_into().unwrap()) as usize;
@@ -518,15 +518,15 @@ pub fn daily_unchanged(
 pub struct Unreadable;
 
 pub fn state(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     receiver: Receiver,
     first: usize,
     third: usize,
 ) -> Result<Option<u32>, Unreadable> {
     let id = |state: usize| {
         state
-            .checked_add(crate::cstate::ID)
-            .and_then(|address| crate::read::<u32>(memory, address))
+            .checked_add(engine_native::cstate::ID)
+            .and_then(|address| engine_native_memory::read::<u32>(memory, address))
             .filter(|&id| id != 0)
             .map(Some)
             .ok_or(Unreadable)
@@ -534,22 +534,22 @@ pub fn state(
     match receiver {
         Receiver::State => id(first),
         Receiver::StatePool => id(first
-            .checked_sub(crate::cstate::RESOURCE_POOL)
+            .checked_sub(engine_native::cstate::RESOURCE_POOL)
             .ok_or(Unreadable)?),
         Receiver::OriginState if third == 0 => Ok(None),
         Receiver::OriginState => id(third),
         Receiver::Origin => {
             let state = first
                 .checked_add(crate::cresource_origin::STATE)
-                .and_then(|address| crate::read::<u64>(memory, address))
+                .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .ok_or(Unreadable)?;
             if state == 0 { Ok(None) } else { id(state) }
         }
         Receiver::Province => {
             let state = first
-                .checked_add(crate::cprovince::STATE)
-                .and_then(|address| crate::read::<u64>(memory, address))
+                .checked_add(engine_native::cprovince::STATE)
+                .and_then(|address| engine_native_memory::read::<u64>(memory, address))
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .ok_or(Unreadable)?;
             if state == 0 { Ok(None) } else { id(state) }
@@ -558,10 +558,10 @@ pub fn state(
     }
 }
 
-pub fn country(memory: &impl crate::Memory, resources: usize) -> Option<u32> {
+pub fn country(memory: &impl engine_native_memory::Memory, resources: usize) -> Option<u32> {
     resources
         .checked_add(crate::ccountry_resources::OWNER)
-        .and_then(|address| crate::read::<u32>(memory, address))
+        .and_then(|address| engine_native_memory::read::<u32>(memory, address))
         .filter(|&raw| raw != 0)
 }
 
@@ -573,67 +573,67 @@ pub const FIRST_CLAIM_SITE: usize = 25;
 pub const FIRST_STRATEGIC_LOCATION_SITE: usize = 27;
 
 pub fn site_country(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     receiver: Receiver,
     first: usize,
     second: usize,
     third: usize,
 ) -> Result<Option<u32>, Unreadable> {
     let link = match receiver {
-        Receiver::StrategicAir => first.checked_add(crate::cstrategic_air::COUNTRY),
+        Receiver::StrategicAir => first.checked_add(engine_native_air::cstrategic_air::COUNTRY),
         Receiver::CountryTag => Some(second),
         Receiver::PoolCapacity => Some(third),
         _ => None,
     };
-    link.and_then(|address| crate::read::<u32>(memory, address))
+    link.and_then(|address| engine_native_memory::read::<u32>(memory, address))
         .map(|raw| (raw != 0).then_some(raw))
         .ok_or(Unreadable)
 }
 
 pub fn pool_capacity(
-    memory: &impl crate::Memory,
+    memory: &impl engine_native_memory::Memory,
     module: usize,
     base: usize,
     tag: usize,
 ) -> Option<i64> {
-    let raw = crate::read::<u32>(memory, tag)?;
+    let raw = engine_native_memory::read::<u32>(memory, tag)?;
     let slot = if raw == 0 {
         0
     } else {
-        let game = crate::read::<u64>(
+        let game = engine_native_memory::read::<u64>(
             memory,
-            engine_sites::at(module, crate::cgame_state::SINGLETON_RVA)?,
+            engine_sites::at(module, engine_native::cgame_state::SINGLETON_RVA)?,
         )?;
-        let links = crate::cpdx_array::Array::read(
+        let links = engine_native_memory::cpdx_array::Array::read(
             memory,
             usize::try_from(game)
                 .ok()?
-                .checked_add(crate::cgame_state::COUNTRY_LINKS)?,
+                .checked_add(engine_native::cgame_state::COUNTRY_LINKS)?,
             4,
         )?;
-        crate::read::<u32>(memory, links.element(raw, 4)?)?
+        engine_native_memory::read::<u32>(memory, links.element(raw, 4)?)?
     };
-    let containers = crate::cpdx_array::Array::read(
+    let containers = engine_native_memory::cpdx_array::Array::read(
         memory,
-        base.checked_add(crate::cair_base::COUNTRY_CONTAINERS)?,
+        base.checked_add(engine_native_air::cair_base::COUNTRY_CONTAINERS)?,
         8,
     )?;
-    let container = crate::read::<u64>(memory, containers.element(slot, 8)?)?;
+    let container = engine_native_memory::read::<u64>(memory, containers.element(slot, 8)?)?;
     if container == 0 {
         return None;
     }
-    crate::read::<i64>(
+    engine_native_memory::read::<i64>(
         memory,
         usize::try_from(container)
             .ok()?
-            .checked_add(crate::ccountry_air_container::CAPACITY_RAW)?,
+            .checked_add(engine_native_air::ccountry_air_container::CAPACITY_RAW)?,
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     struct Daily(Vec<u8>);
     impl Daily {
@@ -666,7 +666,7 @@ mod tests {
         }
         fn capacity(&mut self, base: usize, slot: usize, value: i64) {
             self.put(
-                Self::container(base, slot) + crate::ccountry_air_container::CAPACITY_RAW,
+                Self::container(base, slot) + engine_native_air::ccountry_air_container::CAPACITY_RAW,
                 &value.to_le_bytes(),
             );
         }
@@ -674,7 +674,7 @@ mod tests {
             let mut f = Self(vec![0; 0xa000]);
             f.word(Self::AT, Self::GAME as u64);
             f.array(
-                Self::GAME + crate::cgame_state::COUNTRY_LINKS,
+                Self::GAME + engine_native::cgame_state::COUNTRY_LINKS,
                 Self::LINKS,
                 4,
             );
@@ -683,7 +683,7 @@ mod tests {
             }
             f.array(Self::AIR + 0x10, Self::BASES, 2);
             f.put(
-                Self::AIR + crate::cstrategic_air::COUNTRY,
+                Self::AIR + engine_native_air::cstrategic_air::COUNTRY,
                 &1_u32.to_le_bytes(),
             );
             f.word(Self::PAIRS, Self::VECTORS as u64);
@@ -691,7 +691,7 @@ mod tests {
                 let base = Self::base(index);
                 f.word(Self::BASES + index * 8, base as u64);
                 let containers = base + 0x100;
-                f.array(base + crate::cair_base::COUNTRY_CONTAINERS, containers, 4);
+                f.array(base + engine_native_air::cair_base::COUNTRY_CONTAINERS, containers, 4);
                 for slot in 1..4 {
                     f.word(containers + slot * 8, Self::container(index, slot) as u64);
                     f.capacity(index, slot, 100_000);
@@ -703,7 +703,7 @@ mod tests {
                     f.put(at + 8, &100_000_i64.to_le_bytes());
                 }
             }
-            f.word(Self::base(1) + crate::cair_base::STATE, 0x77);
+            f.word(Self::base(1) + engine_native_air::cair_base::STATE, 0x77);
             f
         }
         fn unchanged(&self) -> Option<u64> {
@@ -713,7 +713,7 @@ mod tests {
             };
             daily_unchanged(
                 &memory,
-                Self::AT - crate::cgame_state::SINGLETON_RVA.0,
+                Self::AT - engine_native::cgame_state::SINGLETON_RVA.0,
                 Self::AIR,
                 Self::PAIRS,
             )
@@ -817,7 +817,7 @@ mod tests {
         let base = 0x1000;
         let mut bytes = vec![0_u8; 0x2000];
         let state = 0x400;
-        bytes[state + crate::cstate::ID..][..4].copy_from_slice(&42_u32.to_le_bytes());
+        bytes[state + engine_native::cstate::ID..][..4].copy_from_slice(&42_u32.to_le_bytes());
         let origin = 0x100;
         bytes[origin + crate::cresource_origin::STATE..][..8]
             .copy_from_slice(&((base + state) as u64).to_le_bytes());
@@ -837,7 +837,7 @@ mod tests {
             super::state(
                 &memory,
                 Receiver::StatePool,
-                at(state) + crate::cstate::RESOURCE_POOL,
+                at(state) + engine_native::cstate::RESOURCE_POOL,
                 0
             ),
             Ok(Some(42))
@@ -871,7 +871,7 @@ mod tests {
     fn site_list_receivers_name_their_country() {
         let base = 0x1000;
         let mut bytes = vec![0_u8; 0x400];
-        bytes[0x100 + crate::cstrategic_air::COUNTRY..][..4].copy_from_slice(&9_u32.to_le_bytes());
+        bytes[0x100 + engine_native_air::cstrategic_air::COUNTRY..][..4].copy_from_slice(&9_u32.to_le_bytes());
         bytes[0x300..0x304].copy_from_slice(&5_u32.to_le_bytes());
         let memory = SliceMemory {
             base,
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn the_pool_capacity_is_the_tag_slots_container_word() {
         let module = 0x1000;
-        let base = module + crate::cgame_state::SINGLETON_RVA.0;
+        let base = module + engine_native::cgame_state::SINGLETON_RVA.0;
         let mut bytes = vec![0_u8; 0x2000];
         let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
         let array = |data: usize, count: u32| {
@@ -933,15 +933,15 @@ mod tests {
             header
         };
         put(0, &((base + 0x100) as u64).to_le_bytes());
-        put(0x100 + crate::cgame_state::COUNTRY_LINKS, &array(0x800, 8));
+        put(0x100 + engine_native::cgame_state::COUNTRY_LINKS, &array(0x800, 8));
         put(0x800 + 7 * 4, &2_u32.to_le_bytes());
         put(
-            0x1000 + crate::cair_base::COUNTRY_CONTAINERS,
+            0x1000 + engine_native_air::cair_base::COUNTRY_CONTAINERS,
             &array(0x1100, 4),
         );
         put(0x1100 + 2 * 8, &((base + 0x1200) as u64).to_le_bytes());
         put(
-            0x1200 + crate::ccountry_air_container::CAPACITY_RAW,
+            0x1200 + engine_native_air::ccountry_air_container::CAPACITY_RAW,
             &50_000_i64.to_le_bytes(),
         );
         put(0x1800, &7_u32.to_le_bytes());

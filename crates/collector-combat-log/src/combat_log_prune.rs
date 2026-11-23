@@ -3,7 +3,7 @@ use collector_primitives::spill_stack::SpillStack;
 use engine_land_inputs::{
     ncombat_log_cmanager as native, ncombat_log_cmanager::PRUNE_RVA, ncombat_log_cmanager::Row,
 };
-use engine_native::{Memory, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
 use std::{
     cell::UnsafeCell,
     ops::Range,
@@ -167,7 +167,7 @@ fn spilled(required: usize) {
 #[inline(never)]
 fn observe(manager: usize) {
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let mut inline = [Row::default(); 256];
     let outcome = match native::deleted_logs(&memory, base, manager, &mut inline) {
@@ -179,7 +179,7 @@ fn observe(manager: usize) {
         base,
         engine_native::cgame_state::PLAY_SESSION_STARTED_AT_RVA,
     )
-    .and_then(|address| engine_native::read::<i64>(&memory, address)) else {
+    .and_then(|address| engine_native_memory::read::<i64>(&memory, address)) else {
         return failed_read();
     };
     match outcome {
@@ -662,7 +662,8 @@ mod tests {
     #[ignore = "synthetic per-call hook measurement"]
     fn hook_cost_combat_log_prune() {
         use engine_land_inputs::ncombat_log_corders_group_logs as logs;
-        use engine_native::{corders_group, creference_registry as registry, reference_bucket};
+        use engine_native::corders_group;
+        use engine_native_parts::{creference_registry as registry, reference_bucket};
         const CALLS: usize = 10_000;
         const MANAGER: usize = 0x100;
         const POINTERS: usize = 0x200;

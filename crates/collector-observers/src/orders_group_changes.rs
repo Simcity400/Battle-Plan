@@ -3,7 +3,7 @@ use crate::{
     watch_registry::{Notification, Running, WatchRegistry},
 };
 use engine_mutations::orders_group_mutations::{DAILY_UPDATE, MUTATIONS, Receiver};
-use engine_native::Memory;
+use engine_native_memory::Memory;
 use std::{
     mem::ManuallyDrop,
     ops::Range,
@@ -236,7 +236,7 @@ impl Drop for Hooks {
 }
 
 fn trains_to_maximum(group: usize) -> bool {
-    let memory = unsafe { engine_native::memory::LiveMemory::new() };
+    let memory = unsafe { engine_native_memory::memory::LiveMemory::new() };
     [
         engine_native::corders_group::TRAINING,
         engine_native::corders_group::STOP_AT_MAXIMUM,
@@ -245,7 +245,7 @@ fn trains_to_maximum(group: usize) -> bool {
     .all(|offset| {
         group
             .checked_add(offset)
-            .and_then(|at| engine_native::read::<u8>(&memory, at))
+            .and_then(|at| engine_native_memory::read::<u8>(&memory, at))
             != Some(0)
     })
 }

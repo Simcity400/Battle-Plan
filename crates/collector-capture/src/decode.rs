@@ -833,7 +833,7 @@ pub(crate) fn hand_ready(shared: &Shared, index: usize, elapsed: i64) {
 
 #[cfg(any(test, feature = "test-support"))]
 fn exercise_projects() -> Option<ProjectsJob> {
-    use engine_native::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
     let bytes = [7_u8; 64];
     let memory = SliceMemory {
         base: 0x1000,
@@ -872,7 +872,7 @@ pub unsafe fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> b
         && shared.frames.slot(index).completed.load(Ordering::Acquire) != 0
         && PROJECTS.iter().all(|table| {
             outcomes[table.index()]
-                == engine_native::walk::Outcome::Unavailable {
+                == engine_native_memory::walk::Outcome::Unavailable {
                     reason: ALLOCATION_REASON,
                 }
         })
@@ -883,8 +883,8 @@ pub unsafe fn allocation_exercise(shared: &Shared, index: usize, hour: i32) -> b
 pub struct RefusalHour {
     pub terminal: bool,
     pub published: bool,
-    pub projects: [engine_native::walk::Outcome; PROJECTS.len()],
-    pub capitulation: engine_native::walk::Outcome,
+    pub projects: [engine_native_memory::walk::Outcome; PROJECTS.len()],
+    pub capitulation: engine_native_memory::walk::Outcome,
 }
 
 #[cfg(all(any(test, feature = "test-support"), feature = "alloc-fault-injection"))]
@@ -1019,7 +1019,7 @@ fn fail_family(frame: &mut sampling::Captured, family: Family, reason: &'static 
             .fail_projects_capture(true, reason),
         Family::Lexical => frame.extended.lexical_pilot().fail_lexical_capture(reason),
         Family::Divisions => {
-            frame.divisions_result = engine_native::walk::Outcome::Unavailable { reason };
+            frame.divisions_result = engine_native_memory::walk::Outcome::Unavailable { reason };
             frame.extended.install_failed_division_counts(reason);
             frame.extended.fail_division_details(reason);
             frame.extended.set_divisions_raw_mode(false);

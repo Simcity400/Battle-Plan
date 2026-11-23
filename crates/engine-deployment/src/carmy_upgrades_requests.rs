@@ -13,7 +13,8 @@ pub const DELIVERIES_DATA: usize = 0x48;
 pub const DELIVERY_ENTRY_STRIDE: usize = 0x08;
 pub const IN_ARMY_REQUESTS: usize = 0x70;
 
-use crate::{Memory, cequipment_variant_pool::DivisionSource, read};
+use engine_native_memory::{Memory, read};
+use engine_native::cequipment_variant::pool::DivisionSource;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Row {

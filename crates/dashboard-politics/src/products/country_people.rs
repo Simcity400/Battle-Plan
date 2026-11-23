@@ -187,7 +187,7 @@ pub fn election_date(last: i32, interval: i32) -> i32 {
 }
 
 pub fn next_election(last: i32, interval: Option<i32>, cache: Option<Option<i32>>) -> Option<i32> {
-    if engine_native::cpolitical_status::needs_election_cache(last) {
+    if engine_native_politics::cpolitical_status::needs_election_cache(last) {
         cache.flatten()
     } else {
         interval.map(|interval| election_date(last, interval))

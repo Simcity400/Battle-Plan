@@ -1,5 +1,6 @@
 
-use crate::{Memory, cgame_state, cpdx_array::Array, read, walk::Outcome};
+use engine_native_memory::{Memory, cpdx_array::Array, read, walk::Outcome};
+use engine_native::cgame_state;
 use engine_sites::Rva;
 
 pub const VTABLE_RVA: Rva = Rva(0x029c_da28);
@@ -33,7 +34,7 @@ pub fn walk(
         memory,
         base,
         game_state,
-        crate::walk::Buffer::Growing(output),
+        engine_native_memory::walk::Buffer::Growing(output),
     )
 }
 
@@ -41,7 +42,7 @@ pub fn walk_buffer(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    mut output: crate::walk::Buffer<'_, Row>,
+    mut output: engine_native_memory::walk::Buffer<'_, Row>,
 ) -> Outcome {
     let result = (|| {
         if base == 0 || game_state == 0 {
@@ -116,7 +117,7 @@ pub fn walk_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SliceMemory;
+    use engine_native_memory::memory::SliceMemory;
 
     const BASE: usize = 0x140000000;
     const GAME: usize = 0x1000;
@@ -204,7 +205,7 @@ mod tests {
                 &SliceMemory { base: GAME, bytes },
                 BASE,
                 GAME,
-                crate::walk::Buffer::Count,
+                engine_native_memory::walk::Buffer::Count,
             ),
             Outcome::Truncated {
                 len: 0,

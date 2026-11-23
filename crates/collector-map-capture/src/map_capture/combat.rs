@@ -1,7 +1,8 @@
 use super::{MAP_TABLES, MapCaptured, elapsed, qpc};
 use collector_land_events::extended::combat_progress;
 use collector_primitives::table_capture::CaptureRows;
-use engine_native::{Memory, cland_combat, cnaval_combat, cnaval_combatant, walk::Outcome};
+use engine_native_memory::{Memory, walk::Outcome};
+use engine_native::{cland_combat, cnaval_combat, cnaval_combatant};
 use replay_data::rows::TableId;
 
 #[derive(Clone, Copy, Default)]
