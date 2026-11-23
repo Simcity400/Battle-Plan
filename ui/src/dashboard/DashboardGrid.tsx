@@ -521,9 +521,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     {missing.length > 0 && runtime.tracks.some((track) => effective.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label || 'Campaign').join(', ')} unavailable</div>}
     <WidgetFrameContext.Provider value={frameValue}>
       <HeldFailureNotices failures={failures} />
+      <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
       <div ref={contentRef} className="dash-widget-content">
         <div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
-          <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
           {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${wording.subject}…`} /> : <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
             <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
           </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>}

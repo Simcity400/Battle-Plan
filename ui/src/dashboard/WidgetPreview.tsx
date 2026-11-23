@@ -98,8 +98,8 @@ export default function WidgetPreview({ definition, initial, runtime }: {
       </header>
       <WidgetFrameContext.Provider value={frameValue}>
         <HeldFailureNotices failures={failures} />
+        <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
         <div className="dash-widget-content"><div className="dash-widget-scaled">
-          <div className="dash-widget-caption-slot" ref={setCaptionSlot} hidden={hasBodyState || undefined} />
           <HeldFailuresContext.Provider value={failures}>
             <WidgetBody key={`${definition.kind}:${JSON.stringify(initial?.options ?? {})}`} widget={widget} runtime={runtime} headerSlot={summary} countrySlot={country} />
           </HeldFailuresContext.Provider>

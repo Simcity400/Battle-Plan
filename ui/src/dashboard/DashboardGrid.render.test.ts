@@ -231,6 +231,9 @@ test('header order, view switch slot, narrow drop order, and settings section or
     assert.deepEqual(mapSections, ['campaign', 'countries', 'time', 'size', 'options', 'map', 'factionColours', 'axes', 'interaction']);
     assert.equal(SECTION_TITLES.factionColours, 'Colours');
     assert.equal(SECTION_TITLES.map, 'Map');
+    const captionPos = rangeHtml.indexOf('dash-widget-caption-slot');
+    const contentPos = rangeHtml.indexOf('dash-widget-content');
+    assert.ok(captionPos > 0 && contentPos > captionPos, 'caption slot sits outside and before the widget content box');
   } finally { await vite.close(); }
 });
 
@@ -300,10 +303,13 @@ test('a widget header draws its kind\'s own icon and colour, and an image in its
     assert.doesNotMatch(header(grid(), 'first'), /<svg/);
 
     styles['navy-size'] = { icon: 'anchor', colour: '#00ff00' };
-    const definition = { kind: 'navy-size', icon: 'grid', title: 'Navy size', defaultSize: { w: 4, h: 8 } } as never;
+    const definition = { kind: 'navy-size', icon: 'grid', title: 'Navy size', defaultSize: { w: 4, h: 8 }, timeModes: ['follow'], defaultTime: 'follow', data: true } as never;
     const preview = renderToStaticMarkup(createElement(WidgetIconsContext.Provider, { value: icons },
       createElement(Preview, { definition, runtime: { ...runtime, tracks: [], campaignTracks: [] } as WidgetRuntime })));
     assert.ok(preview.includes(renderToStaticMarkup(createElement(Icon, { name: 'anchor', style: { color: '#00ff00' } }))), 'the catalogue preview draws the kind\'s icon');
+    const livePreview = renderToStaticMarkup(createElement(WidgetIconsContext.Provider, { value: icons },
+      createElement(Preview, { definition, runtime })));
+    assert.ok(livePreview.indexOf('dash-widget-caption-slot') > 0 && livePreview.indexOf('dash-widget-content') > livePreview.indexOf('dash-widget-caption-slot'), 'preview caption slot sits before content');
   } finally { await vite.close(); }
 });
 
