@@ -1,6 +1,6 @@
 
 use crate::{
-    projection::{Projection, project_table, scalar_table},
+    projection::{Projection, Witness, project_table, scalar_table},
     raw::RawLog,
     read_accounting,
     sampling::qpc,
@@ -245,6 +245,8 @@ pub(crate) struct RailPart {
     rail_levels: Arena<i32>,
     rail_hour: Option<i32>,
     edges: CaptureRows<rail_neighbor::Row>,
+    rail_clean: Option<std::sync::Arc<rail_store::CleanRails>>,
+    rail_witness: Option<Witness>,
     ticks: u64,
 }
 
@@ -257,6 +259,8 @@ impl RailPart {
             rail_levels: Arena::new(0),
             rail_hour: None,
             edges: CaptureRows::new(0),
+            rail_clean: None,
+            rail_witness: None,
             ticks: 0,
         }
     }
@@ -275,6 +279,8 @@ impl RailPart {
         self.rail_levels.reset();
         self.rail_hour = None;
         self.edges.reset();
+        self.rail_clean = None;
+        self.rail_witness = None;
     }
 
     pub(crate) fn capture(
@@ -296,8 +302,68 @@ impl RailPart {
                     &crate::rail_changes::Observer,
                     |list| crailway_manager::cooldown_list(memory, base, game_state, list),
                 );
-                let complete = self.walk(memory, base, game_state, &mut reuse);
-                reuse.finish(complete);
+                let clean_hit = crailway_manager::read_header(memory, base, game_state)
+                    .ok()
+                    .and_then(|header| reuse.clean_hit(header));
+                if let Some(clean) = clean_hit {
+                    self.cooldowns.outcome = Outcome::Rows {
+                        len: clean.cooldowns.len(),
+                    };
+                    self.edges.outcome = Outcome::Rows {
+                        len: clean.edges.len(),
+                    };
+                    self.rail_buildings.outcome = Outcome::Rows {
+                        len: clean.buildings.len(),
+                    };
+                    self.rail_buildings_required = clean.buildings_required;
+                    self.rail_levels.len = clean.levels.len();
+                    self.rail_levels.required = clean.levels_required;
+                    self.rail_witness = Some(clean.witness);
+                    self.rail_clean = Some(clean);
+                    reuse.finish_with_clean(true, |_| None);
+                } else {
+                    let complete = self.walk(memory, base, game_state, &mut reuse);
+                    let cooldowns_slice = self.cooldowns.rows.get(..self.cooldowns.outcome.len());
+                    let edges_slice = self.edges.rows.get(..self.edges.outcome.len());
+                    let buildings_slice = self
+                        .rail_buildings
+                        .rows
+                        .get(..self.rail_buildings.outcome.len());
+                    let levels_slice = self.rail_levels.first.get(..self.rail_levels.len);
+                    let buildings_required = self.rail_buildings_required;
+                    let levels_required = self.rail_levels.required;
+                    self.rail_witness = reuse.finish_with_clean(complete, |witness| {
+                        let cooldowns = cooldowns_slice?;
+                        let edges = edges_slice?;
+                        let buildings = buildings_slice?;
+                        let levels = levels_slice?;
+                        if !cooldowns
+                            .windows(2)
+                            .all(|pair| pair[0].province < pair[1].province)
+                        {
+                            return None;
+                        }
+                        engine_allocation::advisory(|| {
+                            let mut c = engine_allocation::vec(cooldowns.len()).ok()?;
+                            c.extend_from_slice(cooldowns);
+                            let mut e = engine_allocation::vec(edges.len()).ok()?;
+                            e.extend_from_slice(edges);
+                            let mut b = engine_allocation::vec(buildings.len()).ok()?;
+                            b.extend_from_slice(buildings);
+                            let mut l = engine_allocation::vec(levels.len()).ok()?;
+                            l.extend_from_slice(levels);
+                            Some(rail_store::CleanRails {
+                                witness,
+                                cooldowns: c,
+                                edges: e,
+                                buildings: b,
+                                levels: l,
+                                buildings_required,
+                                levels_required,
+                            })
+                        })
+                    });
+                }
             }
             None => {
                 self.walk(memory, base, game_state, &mut crailway_manager::Fresh);
@@ -364,6 +430,8 @@ pub struct Captured {
     rail_levels: Arena<i32>,
     rail_hour: Option<i32>,
     edges: CaptureRows<rail_neighbor::Row>,
+    rail_clean: Option<std::sync::Arc<rail_store::CleanRails>>,
+    rail_witness: Option<Witness>,
     land: CaptureRows<ctheatre::Row>,
     reserved_land_count: Option<u32>,
     reserved_land_required_rows: usize,
@@ -437,6 +505,8 @@ impl Captured {
             self.cooldowns.fail(failed(self.active[2], reason));
             self.rail_buildings.fail(failed(self.active[2], reason));
             self.edges.fail(failed(self.active[3], reason));
+            self.rail_clean = None;
+            self.rail_witness = None;
         }
         if !self.raw_mode {
             self.land.fail(failed(self.active[4], reason));
@@ -479,6 +549,8 @@ impl Captured {
             rail_levels: Arena::new(capacity.rail_levels),
             rail_hour: None,
             edges: CaptureRows::new(capacity.rows[3]),
+            rail_clean: None,
+            rail_witness: None,
             land: CaptureRows::new(capacity.rows[4]),
             reserved_land_count: None,
             reserved_land_required_rows: 0,
@@ -560,6 +632,8 @@ impl Captured {
             self.rail_levels.reset();
             self.rail_hour = None;
             self.edges.reset();
+            self.rail_clean = None;
+            self.rail_witness = None;
         }
         self.land.reset();
         self.reserved_land_count = None;
@@ -660,10 +734,13 @@ impl Captured {
         hint: usize,
         province: u32,
     ) -> Option<&crailway_manager::fresh_inputs::RailwayBuildingRow> {
-        let captured = self
-            .rail_buildings
-            .rows
-            .get(..self.rail_buildings.outcome.len())?;
+        let captured = match self.rail_clean.as_deref() {
+            Some(clean) => clean.buildings.as_slice(),
+            None => self
+                .rail_buildings
+                .rows
+                .get(..self.rail_buildings.outcome.len())?,
+        };
         if let Some(row) = captured.get(hint)
             && row.province == province
         {
@@ -705,11 +782,14 @@ impl Captured {
     ) -> Option<rows::RailwaySelectionInputs> {
         self.rail_hour?;
         let selected = self.railway_row_at(hint, province)?.selection?;
+        let levels_slice = match self.rail_clean.as_deref() {
+            Some(clean) => clean.levels.as_slice(),
+            None => self.rail_levels.first.get(..self.rail_levels.len)?,
+        };
         let levels = selected.levels.ok().and_then(|span| {
             span.first
                 .checked_add(span.len)
-                .filter(|&end| end <= self.rail_levels.len)
-                .and_then(|end| self.rail_levels.first.get(span.first..end))
+                .and_then(|end| levels_slice.get(span.first..end))
                 .map(|values| owned_vec(copy_vec(values)))
         });
         Some(rows::RailwaySelectionInputs {
@@ -721,17 +801,38 @@ impl Captured {
 
     fn rail_cooldowns_input(
         &self,
-        projection: Option<&mut Projection<'_>>,
+        mut projection: Option<&mut Projection<'_>>,
         outcome: Outcome,
     ) -> TableInput {
-        let base = self.cooldowns.rows.as_ptr() as usize;
+        let retain_witness = self.rail_witness.filter(|_| self.rail_hour.is_some());
+        if let Some(projection) = projection.as_deref()
+            && matches!(outcome, Outcome::Rows { .. })
+            && !replay_data::cadence::is_staggered(TableId::RailCooldowns)
+            && let Some(input) = projection.republish_uniform_optional_i32::<tables::RailCooldowns>(
+                retain_witness,
+                3,
+                self.rail_hour,
+            )
+        {
+            return input;
+        }
+        let (cooldown_rows, captured, rail_levels) = match self.rail_clean.as_deref() {
+            Some(clean) => (
+                clean.cooldowns.as_slice(),
+                Some(clean.buildings.as_slice()),
+                Some(clean.levels.as_slice()),
+            ),
+            None => (
+                self.cooldowns.rows.as_slice(),
+                self.rail_buildings
+                    .rows
+                    .get(..self.rail_buildings.outcome.len()),
+                self.rail_levels.first.get(..self.rail_levels.len),
+            ),
+        };
+        let base = cooldown_rows.as_ptr() as usize;
         let stride = size_of::<cprovince_railway_info::Row>();
-        let captured = self
-            .rail_buildings
-            .rows
-            .get(..self.rail_buildings.outcome.len());
         let rail_hour = self.rail_hour;
-        let rail_levels = self.rail_levels.first.get(..self.rail_levels.len);
         let entry_of = |r: &cprovince_railway_info::Row| {
             let hint = (r as *const cprovince_railway_info::Row as usize - base) / stride;
             captured.and_then(|captured| {
@@ -808,17 +909,17 @@ impl Captured {
                 building_bound: rows::Recorded::Value(Some(r.building_bound)),
             }
         };
-        if let Some(projection) = projection.as_deref()
+        let input = if let Some(projection) = projection.as_deref()
             && matches!(outcome, Outcome::Rows { .. })
             && !replay_data::cadence::is_staggered(TableId::RailCooldowns)
-            && let Some(source) = self.cooldowns.rows.get(..outcome.len())
+            && let Some(source) = cooldown_rows.get(..outcome.len())
             && source
                 .windows(2)
                 .all(|pair| pair[0].province < pair[1].province)
             && let Some((token, previous)) =
                 projection.slice_baseline_rows::<tables::RailCooldowns>()
         {
-            return projection.timed(TableId::RailCooldowns, || {
+            projection.timed(TableId::RailCooldowns, || {
                 let target_hour = rows::Recorded::Value(rail_hour);
                 let mut all_same_hour = true;
                 let mut keys = Vec::new();
@@ -885,19 +986,58 @@ impl Captured {
                         TableRows::RailCooldowns(changed),
                     )),
                 }
-            });
+            })
+        } else {
+            project_table::<tables::RailCooldowns, _>(
+                projection.as_deref_mut(),
+                outcome,
+                cooldown_rows,
+                |r| u128::from(r.province),
+                |r, previous| {
+                    previous.selection_hour == rows::Recorded::Value(rail_hour)
+                        && non_hour_equal(r, previous)
+                },
+                convert,
+            )
+        };
+        if let Some(projection) = projection.as_deref() {
+            projection.retain(TableId::RailCooldowns, retain_witness, &input);
         }
-        project_table::<tables::RailCooldowns, _>(
-            projection,
+        input
+    }
+
+    fn rail_edges_input(
+        &self,
+        mut projection: Option<&mut Projection<'_>>,
+        outcome: Outcome,
+    ) -> TableInput {
+        if let Some(projection) = projection.as_deref()
+            && matches!(outcome, Outcome::Rows { .. })
+            && !replay_data::cadence::is_staggered(TableId::RailEdges)
+            && let Some(input) = projection.republish::<tables::RailEdges>(self.rail_witness)
+        {
+            return input;
+        }
+        let edge = |r: &rail_neighbor::Row| rows::RailEdgeRow {
+            from: r.from_province,
+            to: r.to_province,
+            level: r.level,
+        };
+        let rows = match self.rail_clean.as_deref() {
+            Some(clean) => clean.edges.as_slice(),
+            None => self.edges.rows.as_slice(),
+        };
+        let input = scalar_table::<tables::RailEdges, _>(
+            projection.as_deref_mut(),
             outcome,
-            &self.cooldowns.rows,
-            |r| u128::from(r.province),
-            |r, previous| {
-                previous.selection_hour == rows::Recorded::Value(rail_hour)
-                    && non_hour_equal(r, previous)
-            },
-            convert,
-        )
+            rows,
+            |r| RowCodec::key(&edge(r)),
+            edge,
+        );
+        if let Some(projection) = projection.as_deref() {
+            projection.retain(TableId::RailEdges, self.rail_witness, &input);
+        }
+        input
     }
 
     pub fn set_order_sources(
@@ -1205,6 +1345,8 @@ impl Captured {
         std::mem::swap(&mut self.rail_levels, &mut part.rail_levels);
         std::mem::swap(&mut self.rail_hour, &mut part.rail_hour);
         std::mem::swap(&mut self.edges, &mut part.edges);
+        std::mem::swap(&mut self.rail_clean, &mut part.rail_clean);
+        std::mem::swap(&mut self.rail_witness, &mut part.rail_witness);
     }
 
     pub(crate) fn install_rails(&mut self, part: &mut RailPart) {
@@ -1471,11 +1613,6 @@ impl Captured {
             convoys: r.convoys,
             ordinal: r.ordinal,
         };
-        let edge = |r: &rail_neighbor::Row| rows::RailEdgeRow {
-            from: r.from_province,
-            to: r.to_province,
-            level: r.level,
-        };
         let land = |r: &ctheatre::Row| rows::LandTheatreRow {
             id: r.id,
             owner: r.owner,
@@ -1545,13 +1682,7 @@ impl Captured {
                 convoy,
             ),
             self.rail_cooldowns_input(projection.as_deref_mut(), outcomes[2]),
-            scalar_table::<tables::RailEdges, _>(
-                projection.as_deref_mut(),
-                outcomes[3],
-                &self.edges.rows,
-                |r| RowCodec::key(&edge(r)),
-                edge,
-            ),
+            self.rail_edges_input(projection.as_deref_mut(), outcomes[3]),
             scalar_table::<tables::LandTheatres, _>(
                 projection.as_deref_mut(),
                 outcomes[4],

@@ -20,6 +20,13 @@ pub(crate) fn beside_readers() -> usize {
         .clamp(3, crate::acquisition::MAX_WORKERS)
 }
 
+pub(crate) fn hurried_readers() -> usize {
+    crate::acquisition::usable_cpus()
+        .saturating_mul(5)
+        .div_ceil(8)
+        .clamp(4, crate::acquisition::MAX_WORKERS)
+}
+
 const IDLE: u32 = 0;
 const REQUESTED: u32 = 1;
 const STOP: u32 = 2;

@@ -120,10 +120,44 @@ impl Held {
     }
 }
 
+#[derive(Default, Clone)]
+struct FastBuildHasher;
+
+struct FastHasher(u64);
+
+impl std::hash::BuildHasher for FastBuildHasher {
+    type Hasher = FastHasher;
+    fn build_hasher(&self) -> Self::Hasher {
+        FastHasher(0)
+    }
+}
+
+impl std::hash::Hasher for FastHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(byte)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+    fn write_u32(&mut self, value: u32) {
+        self.0 = (self.0.rotate_left(5) ^ u64::from(value)).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    fn write_u64(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (self.0.rotate_left(5) ^ value as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+type FastMap<K, V> = std::collections::HashMap<K, V, FastBuildHasher>;
+
 #[derive(Default)]
 struct HeldCrossings {
     world: Option<u64>,
-    answers: std::collections::HashMap<(u32, u32), Option<u8>>,
+    answers: FastMap<(u32, u32), Option<u8>>,
     charge: crate::raw_memory::Charge,
 }
 #[cfg(not(test))]
@@ -150,9 +184,9 @@ fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
 #[derive(Default)]
 struct HeldMap {
     provinces_key: Option<(u64, usize, Array)>,
-    provinces: std::collections::HashMap<u32, cprovince::StaticMovementProvince>,
+    provinces: Vec<Option<cprovince::StaticMovementProvince>>,
     regions_key: Option<(u64, usize)>,
-    regions: std::collections::HashMap<usize, u32>,
+    regions: FastMap<usize, u32>,
     charge: crate::raw_memory::Charge,
 }
 #[cfg(not(test))]
@@ -180,7 +214,7 @@ impl HeldMap {
     fn update_charge(&mut self) {
         self.charge.set(crate::raw_memory::Capacity {
             index_vectors: (self.provinces.capacity()
-                * (size_of::<(u32, cprovince::StaticMovementProvince)>() + 1)
+                * size_of::<Option<cprovince::StaticMovementProvince>>()
                 + self.regions.capacity() * (size_of::<(usize, u32)>() + 1))
                 as u64,
             ..Default::default()
@@ -191,8 +225,8 @@ impl HeldMap {
 #[derive(Default)]
 struct Hostility {
     provinces: Option<Array>,
-    destinations: std::collections::HashMap<u32, Option<i32>>,
-    pairs: std::collections::HashMap<(u32, u32), bool>,
+    destinations: FastMap<u32, Option<i32>>,
+    pairs: FastMap<(u32, u32), bool>,
 }
 
 impl Hostility {
@@ -372,7 +406,7 @@ pub(super) struct SpeedTerms {
     observed_entries: owned::Entries,
     observed_rows: owned::Rows,
     combats: Vec<Result<CombatOperands, &'static str>>,
-    combat_index: std::collections::HashMap<usize, usize>,
+    combat_index: FastMap<usize, usize>,
     hostility: Hostility,
     attackers: Vec<usize>,
     regions: Vec<TransportRegion>,
@@ -409,7 +443,7 @@ impl Default for SpeedTerms {
             observed_entries: owned::Entries::default(),
             observed_rows: owned::Rows::default(),
             combats: Vec::new(),
-            combat_index: std::collections::HashMap::new(),
+            combat_index: FastMap::default(),
             hostility: Hostility::default(),
             attackers: Vec::new(),
             regions: Vec::new(),
@@ -628,6 +662,7 @@ impl SpeedTerms {
         result
     }
 
+    #[cfg(test)]
     pub(super) fn acquire(
         &mut self,
         memory: &impl Memory,
@@ -635,6 +670,18 @@ impl SpeedTerms {
         game: usize,
         rows: &[DivisionSeed],
         outcome: Outcome,
+    ) -> [u64; N] {
+        self.acquire_with(memory, base, game, rows, outcome, None)
+    }
+
+    pub(super) fn acquire_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game: usize,
+        rows: &[DivisionSeed],
+        outcome: Outcome,
+        parallel: Option<ParallelRunner<'_>>,
     ) -> [u64; N] {
         self.reset();
         match owned::Loan::take() {
@@ -645,7 +692,7 @@ impl SpeedTerms {
             }
         }
         self.settle_pending = true;
-        self.capture_current(memory, base, game, rows, outcome)
+        self.capture_current_with(memory, base, game, rows, outcome, parallel)
     }
 
     pub(super) fn decode(&mut self) -> u64 {
@@ -675,6 +722,7 @@ impl SpeedTerms {
         self.observed_rows.clear();
     }
 
+    #[cfg(test)]
     fn capture_current(
         &mut self,
         memory: &impl Memory,
@@ -682,6 +730,18 @@ impl SpeedTerms {
         game: usize,
         rows: &[DivisionSeed],
         outcome: Outcome,
+    ) -> [u64; N] {
+        self.capture_current_with(memory, base, game, rows, outcome, None)
+    }
+
+    fn capture_current_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game: usize,
+        rows: &[DivisionSeed],
+        outcome: Outcome,
+        parallel: Option<ParallelRunner<'_>>,
     ) -> [u64; N] {
         use crate::sampling::qpc;
         let mut ticks = [0_u64; N];
@@ -712,6 +772,145 @@ impl SpeedTerms {
         if let Err(reason) = prepared {
             self.outcomes = [Outcome::Unavailable { reason }; N];
             self.held.clear();
+            return ticks;
+        }
+        if let Some(parallel) = parallel
+            && !self.movers.is_empty()
+        {
+            let shared = std::sync::Arc::new(PreparedInputs {
+                movers: std::mem::take(&mut self.movers),
+                route: std::mem::take(&mut self.route),
+                provinces: std::mem::take(&mut self.provinces),
+                state_facts: std::mem::take(&mut self.state_facts),
+                templates: std::mem::take(&mut self.templates),
+                keys: std::mem::take(&mut self.keys),
+                combat_demand: std::mem::take(&mut self.combat_demand),
+            });
+            let entries_work = SpeedTermsEntriesWork {
+                shared: std::sync::Arc::clone(&shared),
+                game,
+                take,
+                held: std::mem::take(&mut self.held),
+                observed_entries: std::mem::take(&mut self.observed_entries),
+                entries: std::mem::take(&mut self.entries),
+                counts: self.counts[2],
+                outcome: UNCAPTURED,
+                ticks: 0,
+            };
+            let aux_work = SpeedTermsAuxWork {
+                shared: std::sync::Arc::clone(&shared),
+                game,
+                settle_pending: self.settle_pending,
+                crossings: std::mem::take(&mut self.crossings),
+                access: std::mem::take(&mut self.access),
+                rivers: std::mem::take(&mut self.rivers),
+                transport: std::mem::take(&mut self.transport),
+                observed_access: std::mem::take(&mut self.observed_rows.access),
+                observed_access_areas: std::mem::take(&mut self.observed_rows.access_areas),
+                observed_access_ready: std::mem::take(&mut self.observed_rows.access_ready),
+                observed_rivers: std::mem::take(&mut self.observed_rows.rivers),
+                observed_transport: std::mem::take(&mut self.observed_rows.transport),
+                regions: std::mem::take(&mut self.regions),
+                transport_demand: std::mem::take(&mut self.transport_demand),
+                speed_cache: std::mem::take(&mut self.speed_cache),
+                wanted_rivers: std::mem::take(&mut self.scratch.wanted_rivers),
+                pointers: std::mem::take(&mut self.scratch.pointers),
+                located: std::mem::take(&mut self.scratch.located),
+                wanted_transport: std::mem::take(&mut self.scratch.wanted_transport),
+                indices: std::mem::take(&mut self.scratch.indices),
+                counts: [self.counts[1], self.counts[3], self.counts[4]],
+                outcomes: [UNCAPTURED; 3],
+                ticks: [0; 3],
+            };
+            let mut parent_ticks = 0_u64;
+            let (entries_out, aux_out) = parallel(entries_work, aux_work, &mut || {
+                {
+                    let _reads = crate::read_accounting::table(TableId::DivisionStatus);
+                    self.combat_captured = self
+                        .capture_combat_with(memory, base, seeds, &shared.combat_demand)
+                        .is_ok();
+                    if !self.combat_captured {
+                        self.combat.clear();
+                        self.combat_order.clear();
+                        self.counts[COMBAT] = [0, 0, seeds.len() as u64];
+                    }
+                }
+                self.outcomes[0] = {
+                    let _reads = crate::read_accounting::table(TABLES[0]);
+                    self.capture_states_from(
+                        memory,
+                        base,
+                        game,
+                        &mut countries,
+                        &shared.movers,
+                        &shared.provinces,
+                        &shared.state_facts,
+                    )
+                };
+                parent_ticks = qpc().saturating_sub(start).max(0) as u64;
+            });
+            ticks[0] = parent_ticks;
+            match entries_out {
+                Some(entries_work) => {
+                    self.held = entries_work.held;
+                    self.observed_entries = entries_work.observed_entries;
+                    self.entries = entries_work.entries;
+                    self.counts[2] = entries_work.counts;
+                    self.outcomes[2] = entries_work.outcome;
+                    ticks[2] = entries_work.ticks;
+                }
+                None => {
+                    owned::forget();
+                    self.outcomes[2] = Outcome::Unavailable {
+                        reason: "unit speed entries acquisition stopped before reading",
+                    };
+                }
+            }
+            match aux_out {
+                Some(aux_work) => {
+                    self.crossings = aux_work.crossings;
+                    self.access = aux_work.access;
+                    self.rivers = aux_work.rivers;
+                    self.transport = aux_work.transport;
+                    self.observed_rows.access = aux_work.observed_access;
+                    self.observed_rows.access_areas = aux_work.observed_access_areas;
+                    self.observed_rows.access_ready = aux_work.observed_access_ready;
+                    self.observed_rows.rivers = aux_work.observed_rivers;
+                    self.observed_rows.transport = aux_work.observed_transport;
+                    self.regions = aux_work.regions;
+                    self.transport_demand = aux_work.transport_demand;
+                    self.speed_cache = aux_work.speed_cache;
+                    self.scratch.wanted_rivers = aux_work.wanted_rivers;
+                    self.scratch.pointers = aux_work.pointers;
+                    self.scratch.located = aux_work.located;
+                    self.scratch.wanted_transport = aux_work.wanted_transport;
+                    self.scratch.indices = aux_work.indices;
+                    self.counts[1] = aux_work.counts[0];
+                    self.counts[3] = aux_work.counts[1];
+                    self.counts[4] = aux_work.counts[2];
+                    self.outcomes[1] = aux_work.outcomes[0];
+                    self.outcomes[3] = aux_work.outcomes[1];
+                    self.outcomes[4] = aux_work.outcomes[2];
+                    ticks[1] = aux_work.ticks[0];
+                    ticks[3] = aux_work.ticks[1];
+                    ticks[4] = aux_work.ticks[2];
+                }
+                None => {
+                    let reason = "division speed terms auxiliary acquisition stopped before reading";
+                    self.outcomes[1] = Outcome::Unavailable { reason };
+                    self.outcomes[3] = Outcome::Unavailable { reason };
+                    self.outcomes[4] = Outcome::Unavailable { reason };
+                }
+            }
+            if let Ok(prepared) = std::sync::Arc::try_unwrap(shared) {
+                self.movers = prepared.movers;
+                self.route = prepared.route;
+                self.provinces = prepared.provinces;
+                self.state_facts = prepared.state_facts;
+                self.templates = prepared.templates;
+                self.keys = prepared.keys;
+                self.combat_demand = prepared.combat_demand;
+            }
             return ticks;
         }
         {
@@ -783,6 +982,19 @@ impl SpeedTerms {
         base: usize,
         seeds: &[DivisionSeed],
     ) -> Result<(), &'static str> {
+        let demand = std::mem::take(&mut self.combat_demand);
+        let result = self.capture_combat_with(memory, base, seeds, &demand);
+        self.combat_demand = demand;
+        result
+    }
+
+    fn capture_combat_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        seeds: &[DivisionSeed],
+        combat_demand: &[(u64, Result<bool, &'static str>)],
+    ) -> Result<(), &'static str> {
         let list =
             |seed: &DivisionSeed, demand: Result<bool, &'static str>| -> Result<Option<Array>, &'static str> {
                 if demand == Ok(false) || seed.withdrawal.is_some_and(|value| value != 0) {
@@ -820,7 +1032,7 @@ impl SpeedTerms {
                 self.combat.push((seed.division, Some(None)));
                 continue;
             }
-            let demand = memo(&self.combat_demand, seed.division).unwrap_or(Ok(false));
+            let demand = memo(combat_demand, seed.division).unwrap_or(Ok(false));
             let value = (|| -> Result<Option<i64>, &'static str> {
                 let Some(list) = list(seed, demand)? else {
                     return Ok(None);
@@ -992,7 +1204,7 @@ impl SpeedTerms {
                             held.provinces_key = Some(key);
                         }
                         for (slot, &id) in ids.iter().enumerate() {
-                            if let Some(&entry) = held.provinces.get(&id) {
+                            if let Some(entry) = held.provinces.get(id as usize).copied().flatten() {
                                 cached_provinces.push((slot, entry));
                                 cached_pointers.push(entry.pointer);
                             } else {
@@ -1032,6 +1244,18 @@ impl SpeedTerms {
                         let mut index = 0;
                         held_map(|held| {
                             let store = held.provinces_key == Some(key);
+                            if store {
+                                let target = provinces.count as usize;
+                                let missing = target.saturating_sub(held.provinces.len());
+                                if missing != 0
+                                    && engine_allocation::advisory(|| {
+                                        engine_allocation::reserve(&mut held.provinces, missing)
+                                    })
+                                    .is_ok()
+                                {
+                                    held.provinces.resize(target, None);
+                                }
+                            }
                             cprovince::movement_provinces_with_pointers(
                                 memory,
                                 base,
@@ -1045,20 +1269,14 @@ impl SpeedTerms {
                                         && let (Some(pointer), Ok(facts)) = (pointer, facts)
                                         && let (Ok(state), Ok(strategic_region)) =
                                             (facts.state, facts.strategic_region)
-                                        && engine_allocation::advisory(|| {
-                                            engine_allocation::reserve_map(&mut held.provinces, 1)
-                                        })
-                                        .is_ok()
+                                        && let Some(entry) = held.provinces.get_mut(id as usize)
                                     {
-                                        held.provinces.insert(
-                                            id,
-                                            cprovince::StaticMovementProvince {
-                                                pointer,
-                                                state,
-                                                strategic_region,
-                                                terrain_flags: facts.terrain_flags,
-                                            },
-                                        );
+                                        *entry = Some(cprovince::StaticMovementProvince {
+                                            pointer,
+                                            state,
+                                            strategic_region,
+                                            terrain_flags: facts.terrain_flags,
+                                        });
                                     }
                                     self.provinces[slot].1 = facts;
                                 },
@@ -1267,10 +1485,6 @@ impl SpeedTerms {
         self.capture_states_with(memory, base, game, &mut countries)
     }
 
-    #[allow(
-        clippy::type_complexity,
-        reason = "block memo tuple pairs state movement key with inputs result"
-    )]
     fn capture_states_with<'a, M: Memory>(
         &mut self,
         memory: &'a M,
@@ -1278,20 +1492,53 @@ impl SpeedTerms {
         game: usize,
         countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
     ) -> Outcome {
+        let movers = std::mem::take(&mut self.movers);
+        let provinces = std::mem::take(&mut self.provinces);
+        let state_facts = std::mem::take(&mut self.state_facts);
+        let outcome = self.capture_states_from(
+            memory,
+            base,
+            game,
+            countries,
+            &movers,
+            &provinces,
+            &state_facts,
+        );
+        self.movers = movers;
+        self.provinces = provinces;
+        self.state_facts = state_facts;
+        outcome
+    }
+
+    #[allow(
+        clippy::type_complexity,
+        clippy::too_many_arguments,
+        reason = "shares state-term capture between serial and parallel prepared-input slices"
+    )]
+    fn capture_states_from<'a, M: Memory>(
+        &mut self,
+        memory: &'a M,
+        base: usize,
+        game: usize,
+        countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+        movers: &[Mover],
+        provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+        state_facts: &[(usize, Result<(u32, u32), &'static str>)],
+    ) -> Outcome {
         let result = (|| -> Result<usize, &'static str> {
             let wanted = &mut self.scratch.wanted_states;
             wanted.clear();
-            reserve(wanted, self.movers.len())?;
-            for mover in self.movers.iter().filter(|mover| mover.land == Ok(true)) {
+            reserve(wanted, movers.len())?;
+            for mover in movers.iter().filter(|mover| mover.land == Ok(true)) {
                 let key =
                     (|| -> Result<Option<(u32, u32, u32, usize, u32, bool)>, &'static str> {
-                        let province = province(&self.provinces, mover.location?)?;
+                        let province = province(provinces, mover.location?)?;
                         let state = province.state?;
                         if state == 0 {
                             return Ok(None);
                         }
                         let (id, controller) =
-                            memo(&self.state_facts, state).ok_or("movement state unread")??;
+                            memo(state_facts, state).ok_or("movement state unread")??;
                         Ok(Some((
                             id,
                             mover.roster.ok_or("division roster unreadable")?,
@@ -2048,10 +2295,748 @@ fn copy_route(
     Ok((start, len))
 }
 
+#[derive(Default)]
 struct Take {
     epoch: Option<u64>,
     complete: bool,
     marked: Vec<u32>,
+}
+
+struct PreparedInputs {
+    movers: Vec<Mover>,
+    route: Vec<Result<u32, &'static str>>,
+    provinces: Vec<(u32, Result<cprovince::MovementProvince, &'static str>)>,
+    state_facts: Vec<(usize, Result<(u32, u32), &'static str>)>,
+    templates: Vec<(usize, Result<(usize, usize), &'static str>)>,
+    keys: Vec<u32>,
+    combat_demand: Vec<(u64, Result<bool, &'static str>)>,
+}
+
+pub(crate) type ParallelRunner<'a> = &'a mut dyn FnMut(
+    SpeedTermsEntriesWork,
+    SpeedTermsAuxWork,
+    &mut dyn FnMut(),
+) -> (Option<SpeedTermsEntriesWork>, Option<SpeedTermsAuxWork>);
+
+pub(crate) struct SpeedTermsEntriesWork {
+    shared: std::sync::Arc<PreparedInputs>,
+    game: usize,
+    take: Take,
+    held: owned::Loan,
+    observed_entries: owned::Entries,
+    entries: Vec<CountryUnitSpeedEntryRow>,
+    counts: [u64; 3],
+    outcome: Outcome,
+    ticks: u64,
+}
+
+impl SpeedTermsEntriesWork {
+    pub(crate) fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+        let _reads = crate::read_accounting::table(TABLES[2]);
+        let start = crate::sampling::qpc();
+        let countries = ccountry::Reader::new(memory, base, self.game);
+        let take = std::mem::take(&mut self.take);
+        self.outcome = acquire_entries_into(
+            memory,
+            &countries,
+            take,
+            &self.shared.movers,
+            &self.shared.templates,
+            &self.shared.keys,
+            EntriesParts {
+                held: &self.held,
+                observed: &mut self.observed_entries,
+                entries: &mut self.entries,
+                counts: &mut self.counts,
+            },
+        );
+        self.ticks = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
+    }
+}
+
+struct EntriesParts<'a> {
+    held: &'a owned::Loan,
+    observed: &'a mut owned::Entries,
+    entries: &'a mut Vec<CountryUnitSpeedEntryRow>,
+    counts: &'a mut [u64; 3],
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares entry acquisition between serial SpeedTerms and parallel SpeedTermsEntriesWork"
+)]
+fn acquire_entries_into(
+    memory: &impl Memory,
+    countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
+    take: Take,
+    movers: &[Mover],
+    templates: &[(usize, Result<(usize, usize), &'static str>)],
+    keys: &[u32],
+    parts: EntriesParts<'_>,
+) -> Outcome {
+    let arrays = countries.as_ref().ok().map(|reader| reader.arrays());
+    let certified = take.complete
+        && take.epoch.is_some()
+        && take.epoch == parts.held.epoch
+        && arrays == Some(parts.held.arrays);
+    let counts = Counts {
+        marked: take.marked.len() as u64,
+        full: !certified,
+        ..Counts::default()
+    };
+    parts.observed.clear();
+    let mut wanted = std::mem::take(&mut parts.observed.wanted);
+    let mut values = std::mem::take(&mut parts.observed.values);
+    let mut observed = std::mem::take(&mut parts.observed.countries);
+    let result = (|| -> Result<usize, &'static str> {
+        for mover in movers.iter().filter(|mover| mover.land == Ok(true)) {
+            let Some(owner) = mover.owner else {
+                parts.counts[2] += 1;
+                continue;
+            };
+            let span = mover
+                .template
+                .ok_or("division template unreadable")
+                .and_then(|template| memo(templates, template).ok_or("division template unread")?);
+            match span {
+                Ok((start, len)) => {
+                    reserve(&mut wanted, len)?;
+                    wanted.extend(keys[start..start + len].iter().map(|&key| (owner, key)));
+                }
+                Err(_) => parts.counts[2] += 1,
+            }
+        }
+        wanted.sort_unstable();
+        wanted.dedup();
+        reserve(parts.entries, wanted.len())?;
+        reserve(&mut values, wanted.len())?;
+
+        let mut first = 0;
+        while first < wanted.len() {
+            reserve(&mut observed, 1)?;
+            let owner = wanted[first].0;
+            let end = first + wanted[first..].partition_point(|&(known, _)| known == owner);
+            let start = first;
+            let group = &wanted[first..end];
+            first = end;
+            let country = countries
+                .as_ref()
+                .map_err(|reason| *reason)
+                .and_then(|reader| reader.resolve(owner));
+            let held = country.ok().filter(|_| certified).and_then(|country| {
+                let at = parts
+                    .held
+                    .countries
+                    .binary_search_by_key(&owner, |held| held.owner)
+                    .ok()?;
+                let held = parts.held.countries[at];
+                let held_keys = &parts.held.keys[held.start..held.start + held.len];
+                (held.country == country
+                    && take.marked.binary_search(&country.id).is_err()
+                    && group.iter().all(|(_, key)| held_keys.binary_search(key).is_ok()))
+                .then_some(held)
+            });
+            let read = match held {
+                Some(_) => Ok(values.len()),
+                None => country.and_then(|country| {
+                    let at = country
+                        .pointer
+                        .checked_add(ccountry::MODIFIER_ACCUMULATOR)
+                        .ok_or("country accumulator address overflow")?;
+                    let at_values = values.len();
+                    let mut key_buf = [0_u32; 64];
+                    let mut val_buf = [Value::default(); 64];
+                    let mut offset = 0;
+                    while offset < group.len() {
+                        let count = (group.len() - offset).min(64);
+                        let slice = &group[offset..offset + count];
+                        for (dst, &(_, key)) in key_buf[..count].iter_mut().zip(slice) {
+                            *dst = key;
+                        }
+                        if accumulator::lookup_requested_many_at(
+                            memory,
+                            at,
+                            &key_buf[..count],
+                            &mut val_buf[..count],
+                        )
+                        .is_ok()
+                        {
+                            values.extend(val_buf[..count].iter().copied().map(Ok));
+                        } else {
+                            values.extend(slice.iter().map(|&(_, key)| {
+                                accumulator::lookup_requested_at(memory, at, key)
+                            }));
+                        }
+                        offset += count;
+                    }
+                    Ok(at_values)
+                }),
+            };
+            observed.push(owned::Country {
+                owner,
+                country,
+                held,
+                start,
+                end,
+                read,
+            });
+        }
+        Ok(wanted.len())
+    })();
+    parts.observed.wanted = wanted;
+    parts.observed.values = values;
+    parts.observed.countries = observed;
+    parts.observed.epoch = take.epoch;
+    parts.observed.arrays = arrays;
+    parts.observed.complete = take.complete;
+    parts.observed.counts = counts;
+    parts.observed.result = Some(result.map(|_| ()));
+    parts.observed.pending = true;
+    result.map_or_else(
+        |reason| Outcome::Unavailable { reason },
+        |len| Outcome::Rows { len },
+    )
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "holds disjoint output and scratch buffers for parallel access/river/transport worker"
+)]
+pub(crate) struct SpeedTermsAuxWork {
+    shared: std::sync::Arc<PreparedInputs>,
+    game: usize,
+    settle_pending: bool,
+    crossings: cprovince::GeometryPacket,
+    access: Vec<CoreSupplyAccessRow>,
+    rivers: Vec<RiverRelationRow>,
+    transport: Vec<OwnerTransportSpeedRow>,
+    observed_access: Vec<(u32, u32)>,
+    observed_access_areas: Vec<((u32, usize), Result<bool, &'static str>)>,
+    observed_access_ready: bool,
+    observed_rivers: Vec<((u32, u32), Result<Option<i64>, &'static str>)>,
+    observed_transport: Vec<(
+        (u32, u32),
+        Result<engine_naval_history::cnaval_unit_transfer::SpeedInputs, &'static str>,
+    )>,
+    regions: Vec<TransportRegion>,
+    transport_demand: Vec<(u32, usize)>,
+    speed_cache: SpeedCache,
+    wanted_rivers: Vec<(u32, u32)>,
+    pointers: Vec<usize>,
+    located: Vec<(usize, u32)>,
+    wanted_transport: Vec<(u32, usize)>,
+    indices: Vec<usize>,
+    counts: [[u64; 3]; 3],
+    outcomes: [Outcome; 3],
+    ticks: [u64; 3],
+}
+
+impl SpeedTermsAuxWork {
+    pub(crate) fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+        let game = self.game;
+        let mut countries = None;
+        let mut at = crate::sampling::qpc();
+        self.outcomes[0] = {
+            let _reads = crate::read_accounting::table(TABLES[1]);
+            capture_access_into(
+                memory,
+                base,
+                game,
+                &mut countries,
+                &self.shared.movers,
+                &self.shared.provinces,
+                AccessParts {
+                    access: &mut self.access,
+                    wanted: &mut self.observed_access,
+                    areas: &mut self.observed_access_areas,
+                    ready: &mut self.observed_access_ready,
+                    counts: &mut self.counts[0],
+                },
+            )
+        };
+        let now = crate::sampling::qpc();
+        self.ticks[0] = now.saturating_sub(at).max(0) as u64;
+        at = now;
+        let countries = countries.get_or_insert_with(|| ccountry::Reader::new(memory, base, game));
+        self.outcomes[1] = {
+            let _reads = crate::read_accounting::table(TABLES[3]);
+            capture_rivers_into(
+                memory,
+                base,
+                game,
+                countries,
+                &self.shared.movers,
+                &self.shared.route,
+                &self.shared.provinces,
+                RiversParts {
+                    crossings: &mut self.crossings,
+                    wanted: &mut self.wanted_rivers,
+                    rivers: &mut self.rivers,
+                    observed: &mut self.observed_rivers,
+                    counts: &mut self.counts[1],
+                },
+            )
+        };
+        let now = crate::sampling::qpc();
+        self.ticks[1] = now.saturating_sub(at).max(0) as u64;
+        at = now;
+        self.outcomes[2] = {
+            let _reads = crate::read_accounting::table(TABLES[4]);
+            capture_transport_into(
+                memory,
+                base,
+                game,
+                &self.shared.movers,
+                &self.shared.route,
+                &self.shared.provinces,
+                TransportParts {
+                    demand: &mut self.transport_demand,
+                    pointers: &mut self.pointers,
+                    regions: &mut self.regions,
+                    located: &mut self.located,
+                    wanted: &mut self.wanted_transport,
+                    indices: &mut self.indices,
+                    cache: &mut self.speed_cache,
+                    transport: &mut self.transport,
+                    observed: &mut self.observed_transport,
+                    counts: &mut self.counts[2],
+                },
+            )
+        };
+        let now = crate::sampling::qpc();
+        self.ticks[2] = now.saturating_sub(at).max(0) as u64;
+        self.regions.clear();
+        let _ = self.settle_pending;
+    }
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "borrows disjoint access buffers for shared serial and parallel helper"
+)]
+struct AccessParts<'a> {
+    access: &'a mut Vec<CoreSupplyAccessRow>,
+    wanted: &'a mut Vec<(u32, u32)>,
+    areas: &'a mut Vec<((u32, usize), Result<bool, &'static str>)>,
+    ready: &'a mut bool,
+    counts: &'a mut [u64; 3],
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares core supply access capture between serial and parallel paths"
+)]
+fn capture_access_into<'a, M: Memory>(
+    memory: &'a M,
+    base: usize,
+    game: usize,
+    countries: &mut Option<Result<ccountry::Reader<'a, M>, &'static str>>,
+    movers: &[Mover],
+    provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    parts: AccessParts<'_>,
+) -> Outcome {
+    parts.wanted.clear();
+    parts.areas.clear();
+    *parts.ready = false;
+    let result = (|| -> Result<usize, &'static str> {
+        reserve(parts.wanted, movers.len())?;
+        for mover in movers.iter().filter(|mover| mover.land == Ok(true)) {
+            match (mover.noncore, mover.location) {
+                (Some(false), _) => {}
+                (Some(true), Ok(province)) => match mover.owner {
+                    Some(owner) => parts.wanted.push((owner, province)),
+                    None => parts.counts[2] += 1,
+                },
+                _ => parts.counts[2] += 1,
+            }
+        }
+        parts.wanted.sort_unstable();
+        parts.wanted.dedup();
+        reserve(parts.areas, parts.wanted.len())?;
+        for &(owner, province) in parts.wanted.iter() {
+            if let Ok(facts) = self::province(provinces, province)
+                && let Ok(area) = facts.controller_area
+            {
+                parts.areas.push(((owner, area), Ok(false)));
+            }
+        }
+        parts.areas.sort_unstable_by_key(|entry| entry.0);
+        parts.areas.dedup_by_key(|entry| entry.0);
+        if !parts.areas.is_empty() {
+            let mut first_unhooked = parts.areas.len();
+            for (index, ((owner, area), access)) in parts.areas.iter_mut().enumerate() {
+                if let Some(result) = memory.core_supply_access(base, game, *owner, *area) {
+                    *access = result;
+                } else {
+                    first_unhooked = index;
+                    break;
+                }
+            }
+            if first_unhooked < parts.areas.len() {
+                let reader =
+                    countries.get_or_insert_with(|| ccountry::Reader::new(memory, base, game));
+                match reader {
+                    Ok(reader) => {
+                        let mut cache =
+                            ccountry::CoreSupplyAccessCache::new(memory, base, game, reader);
+                        for ((owner, area), access) in &mut parts.areas[first_unhooked..] {
+                            *access = cache.has_access(*owner, *area);
+                        }
+                    }
+                    Err(reason) => {
+                        for ((owner, area), access) in &mut parts.areas[first_unhooked..] {
+                            *access = memory
+                                .core_supply_access(base, game, *owner, *area)
+                                .unwrap_or(Err(*reason));
+                        }
+                    }
+                }
+            }
+        }
+        reserve(parts.access, parts.wanted.len())?;
+        *parts.ready = true;
+        Ok(parts.access.len() + parts.wanted.len())
+    })();
+    match result {
+        Ok(len) => Outcome::Rows { len },
+        Err(reason) => {
+            parts.access.clear();
+            Outcome::Unavailable { reason }
+        }
+    }
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "borrows disjoint river buffers for shared serial and parallel helper"
+)]
+struct RiversParts<'a> {
+    crossings: &'a mut cprovince::GeometryPacket,
+    wanted: &'a mut Vec<(u32, u32)>,
+    rivers: &'a mut Vec<RiverRelationRow>,
+    observed: &'a mut Vec<((u32, u32), Result<Option<i64>, &'static str>)>,
+    counts: &'a mut [u64; 3],
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares river relation capture between serial and parallel paths"
+)]
+fn capture_rivers_into(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
+    movers: &[Mover],
+    route_arena: &[Result<u32, &'static str>],
+    provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    parts: RiversParts<'_>,
+) -> Outcome {
+    if !movers.iter().any(|mover| mover.land == Ok(true)) {
+        return Outcome::Rows { len: 0 };
+    }
+    let mut ready: Option<Result<(), &'static str>> = None;
+    let result = held_crossings(|held| {
+        let world = crate::world_lifetime::generation();
+        if held.world != Some(world) || world == u64::MAX {
+            held.answers.clear();
+            held.world = (world != u64::MAX).then_some(world);
+        }
+        let result = capture_rivers_with_crossings_into(
+            memory,
+            base,
+            countries,
+            movers,
+            route_arena,
+            provinces,
+            parts.wanted,
+            parts.rivers,
+            parts.observed,
+            parts.counts,
+            |from, to| {
+                if let Some(&answer) = held.answers.get(&(from, to)) {
+                    return Ok(answer);
+                }
+                let begun = *ready.get_or_insert_with(|| parts.crossings.begin(memory, base, game));
+                let answer =
+                    begun.and_then(|()| parts.crossings.acquire_crossing(memory, from, to))?;
+                if held.world.is_some()
+                    && engine_allocation::advisory(|| {
+                        engine_allocation::reserve_map(&mut held.answers, 1)
+                    })
+                    .is_ok()
+                {
+                    held.answers.insert((from, to), answer);
+                }
+                Ok(answer)
+            },
+        );
+        held.charge.set(crate::raw_memory::Capacity {
+            index_vectors: (held.answers.capacity() * (size_of::<((u32, u32), Option<u8>)>() + 1))
+                as u64,
+            ..Default::default()
+        });
+        result
+    });
+    if ready.is_some() {
+        parts.crossings.clear();
+    }
+    match result {
+        Ok(len) => Outcome::Rows { len },
+        Err(reason) => {
+            parts.rivers.clear();
+            Outcome::Unavailable { reason }
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "shares crossing walk between serial and parallel river capture"
+)]
+fn capture_rivers_with_crossings_into(
+    memory: &impl Memory,
+    base: usize,
+    countries: &Result<ccountry::Reader<'_, impl Memory>, &'static str>,
+    movers: &[Mover],
+    route_arena: &[Result<u32, &'static str>],
+    provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    wanted: &mut Vec<(u32, u32)>,
+    rivers: &mut Vec<RiverRelationRow>,
+    observed: &mut Vec<((u32, u32), Result<Option<i64>, &'static str>)>,
+    counts: &mut [u64; 3],
+    mut crossing: impl FnMut(u32, u32) -> Result<Option<u8>, &'static str>,
+) -> Result<usize, &'static str> {
+    wanted.clear();
+    for mover in movers.iter().filter(|mover| mover.land == Ok(true)) {
+        let Ok(route) = route(route_arena, mover) else {
+            counts[2] += 1;
+            continue;
+        };
+        let mut from_id = mover.location;
+        for (index, &to_id) in route.iter().enumerate() {
+            let edge = (|| -> Result<Option<(u32, u32)>, &'static str> {
+                let from_id = from_id?;
+                let to_id = to_id?;
+                if index != 0 && from_id == to_id {
+                    return Ok(None);
+                }
+                let from = province(provinces, from_id)?;
+                let to = province(provinces, to_id)?;
+                if !from.land()? || !to.land()? {
+                    return Ok(None);
+                }
+                match crossing(from_id, to_id)? {
+                    Some(1..=3) => Ok(Some((
+                        mover.owner.ok_or("division speed owner unreadable")?,
+                        to.controller?,
+                    ))),
+                    _ => Ok(None),
+                }
+            })();
+            match edge {
+                Ok(Some(key)) => {
+                    reserve(wanted, 1)?;
+                    wanted.push(key);
+                }
+                Ok(None) => {}
+                Err(_) => counts[2] += 1,
+            }
+            from_id = to_id;
+        }
+    }
+    wanted.sort_unstable();
+    wanted.dedup();
+    reserve(rivers, wanted.len())?;
+    reserve(observed, wanted.len())?;
+    let mut owner: Option<(u32, Result<ccountry::Country, &'static str>)> = None;
+    for &(raw, controller) in wanted.iter() {
+        let country = match owner {
+            Some((known, country)) if known == raw => country,
+            _ => {
+                let country = countries
+                    .as_ref()
+                    .map_err(|reason| *reason)
+                    .and_then(|reader| reader.resolve(raw));
+                owner = Some((raw, country));
+                country
+            }
+        };
+        let entry = countries
+            .as_ref()
+            .map_err(|reason| *reason)
+            .and_then(|reader| {
+                ccountry::river_crossing_against_with(memory, base, reader, country?, controller)
+            });
+        observed.push(((raw, controller), entry));
+    }
+    Ok(rivers.len() + observed.len())
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "borrows disjoint transport buffers for shared serial and parallel helper"
+)]
+struct TransportParts<'a> {
+    demand: &'a mut Vec<(u32, usize)>,
+    pointers: &'a mut Vec<usize>,
+    regions: &'a mut Vec<TransportRegion>,
+    located: &'a mut Vec<(usize, u32)>,
+    wanted: &'a mut Vec<(u32, usize)>,
+    indices: &'a mut Vec<usize>,
+    cache: &'a mut SpeedCache,
+    transport: &'a mut Vec<OwnerTransportSpeedRow>,
+    observed: &'a mut Vec<(
+        (u32, u32),
+        Result<engine_naval_history::cnaval_unit_transfer::SpeedInputs, &'static str>,
+    )>,
+    counts: &'a mut [u64; 3],
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shares transport speed capture between serial and parallel paths"
+)]
+fn capture_transport_into(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    movers: &[Mover],
+    route_arena: &[Result<u32, &'static str>],
+    provinces: &[(u32, Result<cprovince::MovementProvince, &'static str>)],
+    parts: TransportParts<'_>,
+) -> Outcome {
+    let result = (|| -> Result<usize, &'static str> {
+        parts.demand.clear();
+        for mover in movers {
+            let rows = append_transport_demand(parts.demand, route_arena, provinces, mover);
+            match rows {
+                Ok(refused) => parts.counts[2] += refused,
+                Err(ALLOCATION) => return Err(ALLOCATION),
+                Err(_) => {
+                    parts.counts[2] += 1;
+                }
+            }
+        }
+        parts.demand.sort_unstable();
+        parts.demand.dedup();
+        parts.pointers.clear();
+        reserve(parts.pointers, parts.demand.len())?;
+        parts
+            .pointers
+            .extend(parts.demand.iter().map(|&(_, region)| region));
+        parts.pointers.sort_unstable();
+        parts.pointers.dedup();
+        parts.regions.clear();
+        reserve(parts.regions, parts.pointers.len())?;
+        parts.located.clear();
+        reserve(parts.located, parts.pointers.len())?;
+        let world = crate::world_lifetime::token()
+            .filter(|_| crate::world_input_changes::map_content_stable());
+        if let Some(world) = world {
+            let key = (world, base);
+            held_map(|held| {
+                if held.regions_key != Some(key) {
+                    held.regions.clear();
+                    held.regions_key = Some(key);
+                }
+                let mut inserted = false;
+                for &pointer in parts.pointers.iter() {
+                    if let Some(&id) = held.regions.get(&pointer) {
+                        parts.regions.push(TransportRegion { id, pointer });
+                        parts.located.push((pointer, id));
+                        continue;
+                    }
+                    match engine_native::cstrategic_region::id(memory, base, pointer) {
+                        Ok(Some(id)) => {
+                            if engine_allocation::advisory(|| {
+                                engine_allocation::reserve_map(&mut held.regions, 1)
+                            })
+                            .is_ok()
+                            {
+                                held.regions.insert(pointer, id);
+                                inserted = true;
+                            }
+                            parts.regions.push(TransportRegion { id, pointer });
+                            parts.located.push((pointer, id));
+                        }
+                        Ok(None) | Err(_) => parts.counts[2] += 1,
+                    }
+                }
+                if inserted {
+                    held.update_charge();
+                }
+            });
+        } else {
+            for &pointer in parts.pointers.iter() {
+                match engine_native::cstrategic_region::id(memory, base, pointer) {
+                    Ok(Some(id)) => {
+                        parts.regions.push(TransportRegion { id, pointer });
+                        parts.located.push((pointer, id));
+                    }
+                    Ok(None) | Err(_) => parts.counts[2] += 1,
+                }
+            }
+        }
+        parts.regions.sort_unstable_by_key(|region| region.id);
+        parts.regions.dedup_by_key(|region| region.id);
+        parts.wanted.clear();
+        reserve(parts.wanted, parts.demand.len())?;
+        for &(owner, pointer) in parts.demand.iter() {
+            let Some(id) = memo(parts.located, pointer) else {
+                continue;
+            };
+            let index = parts
+                .regions
+                .binary_search_by_key(&id, |region| region.id)
+                .map_err(|_| "division transport region unlocated")?;
+            parts.wanted.push((owner, index));
+        }
+        parts.wanted.sort_unstable();
+        parts.wanted.dedup();
+        reserve(parts.transport, parts.wanted.len())?;
+        reserve(parts.observed, parts.wanted.len())?;
+        if parts.wanted.is_empty() {
+            return Ok(0);
+        }
+        parts.cache.begin(parts.regions.len())?;
+        parts.indices.clear();
+        reserve(parts.indices, parts.regions.len())?;
+        let mut first = 0;
+        while first < parts.wanted.len() {
+            let owner = parts.wanted[first].0;
+            let end =
+                first + parts.wanted[first..].partition_point(|&(known, _)| known == owner);
+            parts.indices.clear();
+            parts
+                .indices
+                .extend(parts.wanted[first..end].iter().map(|&(_, index)| index));
+            first = end;
+            engine_naval_history::cnaval_unit_transfer::movement_speeds_inputs(
+                memory,
+                base,
+                game,
+                owner,
+                parts.regions,
+                parts.indices,
+                parts.cache,
+                |region, speed| {
+                    parts.observed.push(((owner, region.id), speed));
+                },
+            );
+        }
+        Ok(parts.transport.len() + parts.observed.len())
+    })();
+    match result {
+        Ok(len) => Outcome::Rows { len },
+        Err(reason) => {
+            parts.transport.clear();
+            Outcome::Unavailable { reason }
+        }
+    }
 }
 
 #[cfg(test)]

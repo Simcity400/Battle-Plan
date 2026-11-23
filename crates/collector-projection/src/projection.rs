@@ -188,6 +188,41 @@ impl<'a> Projection<'a> {
         Some(TableInput::ComparedEqual(token))
     }
 
+    pub fn republish_uniform_optional_i32<S: TableSchema>(
+        &self,
+        witness: Option<Witness>,
+        column: usize,
+        value: Option<i32>,
+    ) -> Option<TableInput> {
+        let witness = witness?;
+        let mut order = self.scratch.table(S::ID);
+        let order = &mut *order;
+        let held = order.held.as_mut()?;
+        if held.branch != self.branch
+            || held.hour.checked_add(1) != Some(self.hour)
+            || held.witness != Some(witness)
+        {
+            return None;
+        }
+        let (token, _) =
+            self.encoder
+                .slice_baseline(S::ID, self.branch, self.hour, self.force)?;
+        if self.encoder.committed::<S>()?.0 != held.hour {
+            return None;
+        }
+        held.hour = self.hour;
+        order.republished = order.republished.saturating_add(1);
+        Some(TableInput::UniformOptionalI32 {
+            token,
+            column,
+            value,
+            update: std::sync::Arc::new(replay_data::sliced::SliceUpdate::keyed(
+                Vec::new(),
+                S::wrap(Vec::new()),
+            )),
+        })
+    }
+
     pub fn retain(&self, table: TableId, witness: Option<Witness>, input: &TableInput) {
         let complete = matches!(
             input,

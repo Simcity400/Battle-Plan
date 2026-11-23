@@ -670,6 +670,40 @@ pub fn walk_with_selection_carried(
     outcomes
 }
 
+pub fn read_header(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<RailHeader, &'static str> {
+    let manager = game_state
+        .checked_add(cgame_state::RAIL_MANAGER)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("rail manager unreadable or null")?;
+    let manager_vtable =
+        engine_sites::at(base, VTABLE_RVA).ok_or("module address overflow")?;
+    if read::<u64>(memory, manager) != Some(manager_vtable as u64) {
+        return Err("rail manager vtable mismatch");
+    }
+    let rail = manager
+        .checked_add(PROVINCE_INFO_TABLE)
+        .and_then(|p| Array::read(memory, p, PROVINCE_INFO_STRIDE))
+        .ok_or("rail province array unreadable or invalid")?;
+    let provinces = game_state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|p| Array::read(memory, p, 8))
+        .ok_or("rail source province array unreadable or invalid")?;
+    if provinces.count < 2 || rail.count != provinces.count {
+        return Err("rail table extent differs from province table");
+    }
+    Ok(RailHeader {
+        manager,
+        rail,
+        provinces,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk_inner(
     memory: &impl Memory,
@@ -686,28 +720,11 @@ fn walk_inner(
     let mut building_progress = Progress::default();
     let mut building_required = 0;
     let result = (|| {
-        let manager = game_state
-            .checked_add(cgame_state::RAIL_MANAGER)
-            .and_then(|p| read::<u64>(memory, p))
-            .and_then(|p| usize::try_from(p).ok())
-            .filter(|&p| p != 0)
-            .ok_or("rail manager unreadable or null")?;
-        let manager_vtable = engine_sites::at(base, VTABLE_RVA)
-            .ok_or("module address overflow")?;
-        if read::<u64>(memory, manager) != Some(manager_vtable as u64) {
-            return Err("rail manager vtable mismatch");
-        }
-        let rail = manager
-            .checked_add(PROVINCE_INFO_TABLE)
-            .and_then(|p| Array::read(memory, p, PROVINCE_INFO_STRIDE))
-            .ok_or("rail province array unreadable or invalid")?;
-        let provinces = game_state
-            .checked_add(cgame_state::PROVINCES)
-            .and_then(|p| Array::read(memory, p, 8))
-            .ok_or("rail source province array unreadable or invalid")?;
-        if provinces.count < 2 || rail.count != provinces.count {
-            return Err("rail table extent differs from province table");
-        }
+        let RailHeader {
+            manager,
+            rail,
+            provinces,
+        } = read_header(memory, base, game_state)?;
         province_output.ensure(rail.count as usize)?;
         if let Some(output) = building_output.as_mut() {
             output.ensure(rail.count as usize)?;

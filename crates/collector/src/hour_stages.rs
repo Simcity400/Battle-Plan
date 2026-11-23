@@ -104,9 +104,10 @@ pub(crate) enum Part {
     RaidStateWait,
     IntelResidualWait,
     OrdinaryNaviesWait,
+    PresentationSpeedTermsWait,
 }
 
-const PARTS: [&str; 23] = [
+const PARTS: [&str; 24] = [
     "settle_sources",
     "settle_certify",
     "settle_daily",
@@ -130,6 +131,7 @@ const PARTS: [&str; 23] = [
     "raid_state_wait",
     "intel_residual_wait",
     "ordinary_navies_wait",
+    "presentation_speed_terms_wait",
 ];
 
 pub(crate) fn record_part(part: Part, started: i64, ended: i64) {

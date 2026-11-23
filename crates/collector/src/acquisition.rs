@@ -1140,7 +1140,9 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         self.shared.work_ready.notify_one();
     }
     pub(crate) fn hold_pace(&self) {
+        let target = crate::capture_point::hurried_readers();
         if self.shared.called_up.load(Ordering::Acquire)
+            && self.shared.regulars.load(Ordering::Acquire) == target
             && self.shared.priority.load(Ordering::Acquire) == THREAD_PRIORITY_ABOVE_NORMAL
             && self.shared.away.load(Ordering::Acquire) == 0
         {
@@ -1152,7 +1154,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             let prev_regulars = self.shared.regulars.load(Ordering::Acquire);
             self.pace(
                 state,
-                usize::MAX,
+                target,
                 THREAD_PRIORITY_ABOVE_NORMAL,
                 true,
                 None,
@@ -1160,7 +1162,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             (prev_regulars, clear_away)
         };
         if let Ok(threads) = self.threads.try_lock() {
-            let limit = prev_regulars.min(threads.len());
+            let limit = prev_regulars.min(target).min(threads.len());
             for thread in threads.iter().take(limit) {
                 if !self.shared.called_up.load(Ordering::Acquire) {
                     break;

@@ -389,6 +389,8 @@ fn source_outcome(sources: &Sources<'_, DivisionSeed>) -> Outcome {
     }
 }
 
+pub(crate) use speed_terms::{SpeedTermsAuxWork, SpeedTermsEntriesWork};
+
 pub(crate) struct SpeedTermsPass {
     terms: speed_terms::SpeedTerms,
 }
@@ -399,6 +401,7 @@ impl SpeedTermsPass {
         self.terms.allocated_bytes()
     }
 
+    #[cfg(test)]
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -406,10 +409,26 @@ impl SpeedTermsPass {
         state: usize,
         sources: Sources<'_, DivisionSeed>,
     ) -> CaptureReport {
+        self.capture_with_parallel(memory, base, state, sources, None)
+    }
+
+    pub(crate) fn capture_with_parallel(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        sources: Sources<'_, DivisionSeed>,
+        parallel: Option<speed_terms::ParallelRunner<'_>>,
+    ) -> CaptureReport {
         let mut report = CaptureReport::default();
-        let terms = self
-            .terms
-            .acquire(memory, base, state, sources.rows, source_outcome(&sources));
+        let terms = self.terms.acquire_with(
+            memory,
+            base,
+            state,
+            sources.rows,
+            source_outcome(&sources),
+            parallel,
+        );
         report.ticks[7..].copy_from_slice(&terms);
         report
     }

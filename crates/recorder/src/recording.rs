@@ -427,7 +427,7 @@ impl FinalizingAhead {
             let origin = std::time::Instant::now();
             let idle_since_ms = std::sync::atomic::AtomicU64::new(0);
             packing.set_gate(move || {
-                const IDLE_QUIET_MS: u64 = 250;
+                const IDLE_QUIET_MS: u64 = 1000;
                 const POLL_MS: u64 = 11;
                 loop {
                     if gate_stop.load(Ordering::Acquire)
@@ -469,6 +469,7 @@ impl FinalizingAhead {
             .spawn(move || {
                 let _pass_progress = progress_io::passes(&session);
                 packing.run(|| {
+                packing.wait_for_game();
                 let localisation = content_reader_localisation::localisation::read(&layers, &language)
                     .inspect_err(|error| {
                         eprintln!("Countries are named by tag: the localisation could not be read: {error}");

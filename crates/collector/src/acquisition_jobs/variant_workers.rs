@@ -43,6 +43,14 @@ pub(crate) enum Work {
         countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     },
     NaviesBegin(Box<super::NaviesBeginPart>),
+    SpeedTermsEntries {
+        part: Box<division_presentation::SpeedTermsEntriesWork>,
+        countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    },
+    SpeedTermsAux {
+        part: Box<division_presentation::SpeedTermsAuxWork>,
+        countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    },
 }
 impl Work {
     pub(super) fn role(&self) -> Role {
@@ -58,6 +66,9 @@ impl Work {
             Self::Rails(_) => Role::ScoresRails,
             Self::IntelResidualAux { .. } => Role::IntelResidual,
             Self::NaviesBegin(_) => Role::OrdinaryNavies,
+            Self::SpeedTermsEntries { .. } | Self::SpeedTermsAux { .. } => {
+                Role::PresentationSpeedTerms
+            }
             _ => Role::Variants,
         }
     }
@@ -124,6 +135,14 @@ impl Work {
                 part.capture(&cached);
             }
             Self::NaviesBegin(part) => part.capture(memory, base),
+            Self::SpeedTermsEntries { part, countries } => {
+                let cached = countries.roster_view(memory);
+                part.capture(&cached, base);
+            }
+            Self::SpeedTermsAux { part, countries } => {
+                let cached = countries.roster_view(memory);
+                part.capture(&cached, base);
+            }
         }
     }
 }

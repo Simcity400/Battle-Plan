@@ -64,7 +64,8 @@ fn level(free: usize) -> u32 {
 }
 fn priority(level: u32) -> i32 {
     match level {
-        TICK | TICK_DECODE => THREAD_PRIORITY_IDLE,
+        TICK => THREAD_PRIORITY_IDLE,
+        TICK_DECODE => THREAD_PRIORITY_LOWEST,
         TICK_PRESSED => THREAD_PRIORITY_NORMAL,
         2 => THREAD_PRIORITY_HIGHEST,
         1 => THREAD_PRIORITY_ABOVE_NORMAL,

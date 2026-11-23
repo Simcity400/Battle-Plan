@@ -749,6 +749,7 @@ impl PresentationRequest {
 
     pub(crate) fn take_speed_terms(&mut self) -> PresentationSpeedTermsRequest {
         PresentationSpeedTermsRequest {
+            workers: Default::default(),
             countries: engine_allocation::SharedBox::clone(&self.countries),
             context: self.context,
             inputs: self.inputs.clone(),
@@ -794,6 +795,7 @@ pub(crate) struct PresentationStatusRequest {
 }
 
 pub(crate) struct PresentationSpeedTermsRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: division_presentation::CaptureContext,
     pub inputs: Option<engine_allocation::SharedBox<crate::division_census::UnitInputs>>,
@@ -2642,10 +2644,47 @@ fn run_with_memory(
             Report::Presentation(report)
         }
         Job::PresentationSpeedTerms(request) => {
-            let cached = request.countries.roster_view(memory);
-            let inputs = request.inputs.as_deref();
-            let context = request.context;
-            Report::PresentationSpeedTerms(request.pass.capture(
+            let PresentationSpeedTermsRequest {
+                workers,
+                countries,
+                context,
+                inputs,
+                pass,
+            } = request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let cached = countries.roster_view(memory);
+            let inputs = inputs.as_deref();
+            let context = *context;
+            let mut runner = |entries: division_presentation::SpeedTermsEntriesWork,
+                              aux: division_presentation::SpeedTermsAuxWork,
+                              run: &mut dyn FnMut()| {
+                let (out0, out1) = workers.beside_pair(
+                    variant_workers::Work::SpeedTermsEntries {
+                        part: Box::new(entries),
+                        countries: engine_allocation::SharedBox::clone(countries),
+                    },
+                    variant_workers::Work::SpeedTermsAux {
+                        part: Box::new(aux),
+                        countries: engine_allocation::SharedBox::clone(countries),
+                    },
+                    memory,
+                    context.base,
+                    crate::hour_stages::Part::PresentationSpeedTermsWait,
+                    run,
+                );
+                (
+                    match out0 {
+                        Some(variant_workers::Work::SpeedTermsEntries { part, .. }) => Some(*part),
+                        _ => None,
+                    },
+                    match out1 {
+                        Some(variant_workers::Work::SpeedTermsAux { part, .. }) => Some(*part),
+                        _ => None,
+                    },
+                )
+            };
+            Report::PresentationSpeedTerms(pass.capture_with_parallel(
                 &cached,
                 context.base,
                 context.game_state,
@@ -2658,6 +2697,7 @@ fn run_with_memory(
                         |inputs| inputs.outcome(),
                     ),
                 },
+                Some(&mut runner),
             ))
         }
         Job::PresentationMovement(request) => {
@@ -2853,6 +2893,9 @@ impl Pool {
                     .workers
                     .arm_at(self, Role::OrdinaryNavies.priority())
             }
+            Some(Job::PresentationSpeedTerms(request)) => request
+                .workers
+                .arm_at(self, Role::PresentationSpeedTerms.priority()),
             _ => {}
         }
         let role = request.as_ref().map(Job::role);
