@@ -31,9 +31,18 @@ pub(crate) enum Work {
         rest: Box<projects::RestAux>,
         countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
     },
+    ProjectsRestPaths {
+        rest: Box<projects::RestPaths>,
+        countries: Option<engine_allocation::SharedBox<engine_native::country_memory::Cache>>,
+    },
     Buildings(Box<super::BuildingsPart>),
     RaidStateInputs(Box<super::RaidStateInputsPart>),
     Rails(Box<super::RailsPart>),
+    IntelResidualAux {
+        part: Box<intel::ResidualAux>,
+        countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    },
+    NaviesBegin(Box<super::NaviesBeginPart>),
 }
 impl Work {
     pub(super) fn role(&self) -> Role {
@@ -41,10 +50,14 @@ impl Work {
             Self::Technology(_) => Role::Governance,
             Self::Projects { .. } => Role::GatedProjects,
             Self::TemplateWalk(_) => Role::Templates,
-            Self::ProjectsRestPrimary { .. } | Self::ProjectsRestAux { .. } => Role::GatedProjects,
+            Self::ProjectsRestPrimary { .. }
+            | Self::ProjectsRestAux { .. }
+            | Self::ProjectsRestPaths { .. } => Role::GatedProjects,
             Self::Buildings(_) => Role::Governance,
             Self::RaidStateInputs(_) => Role::RaidState,
             Self::Rails(_) => Role::ScoresRails,
+            Self::IntelResidualAux { .. } => Role::IntelResidual,
+            Self::NaviesBegin(_) => Role::OrdinaryNavies,
             _ => Role::Variants,
         }
     }
@@ -95,9 +108,22 @@ impl Work {
                     rest.capture(memory, base);
                 }
             }
+            Self::ProjectsRestPaths { rest, countries } => {
+                if let Some(countries) = countries {
+                    let roster = countries.roster_view(memory);
+                    rest.capture(&roster, base);
+                } else {
+                    rest.capture(memory, base);
+                }
+            }
             Self::Buildings(part) => part.capture(memory),
             Self::RaidStateInputs(part) => part.capture(memory, base),
             Self::Rails(part) => part.capture(memory, base),
+            Self::IntelResidualAux { part, countries } => {
+                let cached = countries.view(memory);
+                part.capture(&cached);
+            }
+            Self::NaviesBegin(part) => part.capture(memory, base),
         }
     }
 }
@@ -345,6 +371,89 @@ impl Dispatch {
         second.capture(memory, base);
         run();
         (Some(first), Some(second))
+    }
+    pub(super) fn beside_triple(
+        &self,
+        mut first: Work,
+        mut second: Work,
+        mut third: Work,
+        memory: &impl engine_native::Memory,
+        base: usize,
+        wait: crate::hour_stages::Part,
+        run: &mut dyn FnMut(),
+    ) -> (Option<Work>, Option<Work>, Option<Work>) {
+        let lanes = self.lanes();
+        let executor = self.executor.upgrade().filter(|_| lanes > 1);
+        let fanout = self
+            .calibration
+            .as_ref()
+            .and_then(|calibration| Fanout::enter(&calibration.cold_parents, lanes));
+        let tickets = engine_allocation::advisory(|| engine_allocation::vec(3).ok());
+        if let (Some(executor), Some(_fanout), Some(tickets)) = (executor, fanout, tickets) {
+            let mut pending = Children {
+                executor: &executor,
+                calibration: self.calibration.as_deref().unwrap(),
+                tickets,
+            };
+            let mut submit = |work: Work| -> (Option<usize>, Option<Work>) {
+                let role = work.role();
+                let mut request = Some(Job::VariantPart(Request { base, part: work }));
+                // SAFETY: this parent drains every submitted child before returning its live lease.
+                let submitted = unsafe {
+                    executor.submit_with_priority(&mut request, self.priority, true, true)
+                };
+                note_dispatch(&pending.calibration.roles[role as usize], submitted.is_ok());
+                match submitted {
+                    Ok(ticket) => {
+                        let index = pending.tickets.len();
+                        pending.tickets.push(Some(ticket));
+                        (Some(index), None)
+                    }
+                    Err(_) => {
+                        let Some(Job::VariantPart(request)) = request else {
+                            unreachable!()
+                        };
+                        (None, Some(request.part))
+                    }
+                }
+            };
+            let (t0, mut local0) = submit(first);
+            let (t1, mut local1) = submit(second);
+            let (t2, mut local2) = submit(third);
+            for local in [&mut local0, &mut local1, &mut local2] {
+                if let Some(work) = local.as_mut() {
+                    work.capture(memory, base);
+                }
+            }
+            run();
+            let waited = sampling::qpc();
+            for ticket in pending.tickets.iter().flatten() {
+                executor.run_unclaimed_child(*ticket);
+            }
+            let mut collect = |slot: Option<usize>, fallback: Option<Work>| -> Option<Work> {
+                let Some(index) = slot else {
+                    return fallback;
+                };
+                let mut completed = None;
+                executor.finish_worker_into(pending.tickets[index].take().unwrap(), &mut completed);
+                let completed = completed?;
+                account_completion(pending.calibration, &completed);
+                match (completed.report, completed.request) {
+                    (Ok(Report::VariantPart), Job::VariantPart(request)) => Some(request.part),
+                    _ => None,
+                }
+            };
+            let out0 = collect(t0, local0);
+            let out1 = collect(t1, local1);
+            let out2 = collect(t2, local2);
+            crate::hour_stages::record_part(wait, waited, sampling::qpc());
+            return (out0, out1, out2);
+        }
+        first.capture(memory, base);
+        second.capture(memory, base);
+        third.capture(memory, base);
+        run();
+        (Some(first), Some(second), Some(third))
     }
     pub(crate) fn lanes(&self) -> usize {
         self.workers

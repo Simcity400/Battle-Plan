@@ -40,9 +40,9 @@ pub(crate) use collector_division_parts::unit_combat_references;
 use packs::ORDINARY_TABLES;
 pub(crate) use packs::{
     CharacterInputRoles, CharacterInputsRequest, FinalInputsReport, FinalInputsRequest, GatedPacks,
-    LatePacks, NavalMissionLoan, ORDINARY_PARTS, OrdinaryPacks, OrdinaryPart, ProductionDailyPacks,
-    RaidLaunchPacks, RaidStatePacks, RaidStateStores, RaidTargetPacks, ScoresRailsParts, SlowPacks,
-    SlowStores, StabilityPacks, WarOverviewPacks,
+    LatePacks, NavalMissionLoan, NaviesBegin, ORDINARY_PARTS, OrdinaryPacks, OrdinaryPart,
+    ProductionDailyPacks, RaidLaunchPacks, RaidStatePacks, RaidStateStores, RaidTargetPacks,
+    ScoresRailsParts, SlowPacks, SlowStores, StabilityPacks, WarOverviewPacks,
 };
 pub(crate) use production::registry::Registry;
 
@@ -2272,6 +2272,7 @@ impl Captured {
         let part = captured.take_variables();
         (
             crate::acquisition_jobs::IntelResidualRequest {
+                workers: Default::default(),
                 countries: engine_allocation::SharedBox::clone(countries),
                 context,
                 captured,

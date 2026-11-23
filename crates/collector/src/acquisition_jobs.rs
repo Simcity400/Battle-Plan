@@ -163,6 +163,7 @@ pub(crate) struct ResearchReport {
     pub ticks: [u64; 3],
 }
 pub(crate) struct IntelResidualRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub context: intel::CaptureContext,
     pub captured: intel::Captured,
@@ -209,6 +210,7 @@ impl OrdinaryRequest {
     }
 }
 pub(crate) struct OrdinaryPartRequest {
+    pub workers: variant_workers::Dispatch,
     pub countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
     pub base: usize,
     pub game_state: usize,
@@ -379,6 +381,19 @@ impl RailsPart {
             self.hour,
             self.store.as_deref_mut(),
         );
+    }
+}
+pub(crate) struct NaviesBeginPart {
+    countries: engine_allocation::SharedBox<engine_native::country_memory::Cache>,
+    game_state: usize,
+    hour: i32,
+    begin: crate::extended::NaviesBegin,
+}
+impl NaviesBeginPart {
+    fn capture(&mut self, memory: &impl engine_native::Memory, base: usize) {
+        let cached = self.countries.roster_view(memory);
+        self.begin
+            .capture(&cached, base, self.game_state, self.hour);
     }
 }
 pub(crate) struct RaidStateRequest {
@@ -616,21 +631,25 @@ impl GatedProjectsRequest {
             let (base, game_state, hour, force_full) =
                 (self.base, self.game_state, self.hour, self.force_full);
             self.captured.reset();
-            let (rest_primary, rest_aux) = self
+            let (rest_primary, rest_aux, rest_paths) = self
                 .captured
                 .take_rest(game_state, hour, force_full)
-                .into_parts();
+                .into_triple();
             let workers = &self.workers;
             let countries = &self.countries;
             let (captured, fingerprints, ticks) =
                 (&mut self.captured, &mut self.fingerprints, &mut self.ticks);
-            let (returned_primary, returned_aux) = workers.beside_pair(
+            let (returned_primary, returned_aux, returned_paths) = workers.beside_triple(
                 variant_workers::Work::ProjectsRestPrimary {
                     rest: Box::new(rest_primary),
                     countries: countries.clone(),
                 },
                 variant_workers::Work::ProjectsRestAux {
                     rest: Box::new(rest_aux),
+                    countries: countries.clone(),
+                },
+                variant_workers::Work::ProjectsRestPaths {
+                    rest: Box::new(rest_paths),
                     countries: countries.clone(),
                 },
                 memory,
@@ -664,9 +683,14 @@ impl GatedProjectsRequest {
                 Some(variant_workers::Work::ProjectsRestAux { rest, .. }) => Some(*rest),
                 _ => None,
             };
-            let rest = self.captured.restore_rest_split(
+            let paths = match returned_paths {
+                Some(variant_workers::Work::ProjectsRestPaths { rest, .. }) => Some(*rest),
+                _ => None,
+            };
+            let rest = self.captured.restore_rest_triple(
                 primary,
                 aux,
+                paths,
                 "project family rest acquisition stopped before reading",
             );
             for (ticks, rest) in self.ticks.iter_mut().zip(rest) {
@@ -1963,13 +1987,44 @@ fn run_with_memory(
             })
         }
         Job::IntelResidual(request) => {
-            let cached = request.countries.view(memory);
-            Report::IntelResidual(request.captured.capture_residual(
-                &cached,
-                request.context,
-                request.flags.as_deref_mut(),
-                None,
-            ))
+            let context = request.context;
+            let aux = request.captured.take_residual_aux(context);
+            let IntelResidualRequest {
+                workers,
+                countries,
+                captured,
+                flags,
+                ..
+            } = request;
+            let workers = &*workers;
+            let countries = &*countries;
+            let mut report = intel::CaptureReport::default();
+            let returned = workers.beside(
+                variant_workers::Work::IntelResidualAux {
+                    part: Box::new(aux),
+                    countries: engine_allocation::SharedBox::clone(countries),
+                },
+                memory,
+                context.base,
+                crate::hour_stages::Part::IntelResidualWait,
+                &mut || {
+                    let cached = countries.view(memory);
+                    report = captured.capture_residual(&cached, context, flags.as_deref_mut(), None);
+                },
+            );
+            let aux = match returned {
+                Some(variant_workers::Work::IntelResidualAux { part, .. }) => Some(*part),
+                _ => None,
+            };
+            let aux_ticks = captured.restore_residual_aux(
+                aux,
+                context,
+                "residual Intel auxiliary acquisition stopped before reading",
+            );
+            for (dst, src) in report.ticks.iter_mut().zip(aux_ticks) {
+                *dst += src;
+            }
+            Report::IntelResidual(report)
         }
         Job::ScriptVariables(request) => {
             let cached = request.countries.view(memory);
@@ -2020,14 +2075,69 @@ fn run_with_memory(
             Report::Ordinary(OrdinaryReport)
         }
         Job::OrdinaryPart(request) => {
-            let cached = request.countries.roster_view(memory);
-            request.part.capture(
-                &cached,
-                request.base,
-                request.game_state,
-                request.hour,
-                request.fresh_modifier_guard,
-            );
+            let OrdinaryPartRequest {
+                workers,
+                countries,
+                base,
+                game_state,
+                hour,
+                fresh_modifier_guard,
+                part,
+            } = request;
+            if let crate::extended::OrdinaryPart::Navies(packs) = part {
+                let base = *base;
+                let game_state = *game_state;
+                let hour = *hour;
+                let begin = packs.take_navies();
+                let force_full = packs.force_full();
+                let has_fingerprints = packs.has_fingerprints();
+                let countries = &*countries;
+                let workers = &*workers;
+                let worker_part = NaviesBeginPart {
+                    countries: engine_allocation::SharedBox::clone(countries),
+                    game_state,
+                    hour,
+                    begin,
+                };
+                let mut walk_result = Err("naval mission walk did not run");
+                let returned = workers.beside(
+                    variant_workers::Work::NaviesBegin(Box::new(worker_part)),
+                    memory,
+                    base,
+                    crate::hour_stages::Part::OrdinaryNaviesWait,
+                    &mut || {
+                        let _allocation_phase =
+                            crate::allocation::enter(crate::allocation::Phase::Extended);
+                        let cached = countries.roster_view(memory);
+                        walk_result = packs.naval_mission_inputs.begin_walk(
+                            &cached,
+                            base,
+                            game_state,
+                            hour,
+                            force_full,
+                            has_fingerprints,
+                        );
+                    },
+                );
+                match returned {
+                    Some(variant_workers::Work::NaviesBegin(worker_part)) => {
+                        let cached = countries.roster_view(memory);
+                        packs.finish_navies(
+                            &cached,
+                            base,
+                            game_state,
+                            worker_part.begin,
+                            walk_result,
+                        );
+                    }
+                    _ => {
+                        packs.fail_navies("physical navy acquisition stopped before reading");
+                    }
+                }
+            } else {
+                let cached = countries.roster_view(memory);
+                part.capture(&cached, *base, *game_state, *hour, *fresh_modifier_guard);
+            }
             Report::OrdinaryPart(OrdinaryReport)
         }
         Job::Slow(request) => {
@@ -2733,6 +2843,16 @@ impl Pool {
             Some(Job::Templates(request)) => request
                 .workers
                 .arm_at(self, Role::Templates.priority()),
+            Some(Job::IntelResidual(request)) => request
+                .workers
+                .arm_at(self, Role::IntelResidual.priority()),
+            Some(Job::OrdinaryPart(request))
+                if matches!(request.part, crate::extended::OrdinaryPart::Navies(_)) =>
+            {
+                request
+                    .workers
+                    .arm_at(self, Role::OrdinaryNavies.priority())
+            }
             _ => {}
         }
         let role = request.as_ref().map(Job::role);

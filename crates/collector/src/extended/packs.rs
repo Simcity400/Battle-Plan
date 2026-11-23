@@ -192,6 +192,7 @@ impl Captured {
             part.swap(self);
             part.begin(&mut naval_missions);
             crate::acquisition_jobs::OrdinaryPartRequest {
+                workers: Default::default(),
                 countries: engine_allocation::SharedBox::clone(countries),
                 base,
                 game_state: state,
@@ -1313,6 +1314,92 @@ pub(crate) struct OrdinaryNavyPacks {
     naval_missions: Option<NavalMissionLoan>,
     ticks: [u64; TABLE_COUNT],
     failure: Option<&'static str>,
+}
+
+pub(crate) struct NaviesBegin {
+    navies: country_counters::Navies,
+    launch: super::country_naval_movement_inputs::Launch,
+}
+
+impl NaviesBegin {
+    pub(crate) fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+    ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+        let mut reader = self
+            .navies
+            .begin(memory, base, game_state, hour, &mut self.launch);
+        reader.clear();
+    }
+}
+
+impl OrdinaryNavyPacks {
+    pub(crate) fn take_navies(&mut self) -> NaviesBegin {
+        let navies = self
+            .navies
+            .take()
+            .expect("the navy part holds the physical navy pass");
+        let launch = std::mem::replace(
+            &mut self.launch,
+            super::country_naval_movement_inputs::Launch::new(Default::default()),
+        );
+        NaviesBegin { navies, launch }
+    }
+
+    pub(crate) fn has_fingerprints(&self) -> bool {
+        self.naval_missions
+            .as_ref()
+            .is_some_and(|missions| missions.fingerprints.is_some())
+    }
+
+    pub(crate) fn force_full(&self) -> bool {
+        self.naval_missions
+            .as_ref()
+            .is_some_and(|missions| missions.force_full)
+    }
+
+    pub(crate) fn finish_navies<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        mut begin: NaviesBegin,
+        walk_result: Result<(bool, u64), &'static str>,
+    ) {
+        let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
+        let mut ticks = [0; TABLE_COUNT];
+        let naval_missions = self.naval_missions.get_or_insert_with(Default::default);
+        scatter(
+            &naval_mission_inputs::TABLES,
+            self.naval_mission_inputs.finish_with_navies(
+                memory,
+                base,
+                game_state,
+                naval_missions.force_full,
+                naval_missions.fingerprints.as_deref_mut(),
+                begin.navies.holder(),
+                crate::navy_ledger_changes::Skip::current(),
+                walk_result,
+            ),
+            &mut ticks,
+        );
+        crate::navy_ledger_changes::record(self.naval_mission_inputs.ledger_counts());
+        begin.navies.finish();
+        ticks[country_counters::TABLES[0].index()] += begin.navies.ticks();
+        self.navies = Some(begin.navies);
+        self.launch = begin.launch;
+        self.ticks = ticks;
+    }
+
+    pub(crate) fn fail_navies(&mut self, reason: &'static str) {
+        self.navies = Some(country_counters::Navies::vacant());
+        self.ticks = [0; TABLE_COUNT];
+        self.failure.get_or_insert(reason);
+    }
 }
 
 impl OrdinaryPart {

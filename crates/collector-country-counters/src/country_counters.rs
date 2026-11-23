@@ -31,6 +31,13 @@ pub struct Navies {
 }
 
 impl Navies {
+    pub fn vacant() -> Self {
+        Self {
+            holder: naval::Captured::new(Default::default()),
+            ticks: None,
+        }
+    }
+
     pub fn allocated_bytes(&self) -> usize {
         self.holder.allocated_bytes()
     }

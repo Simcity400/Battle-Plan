@@ -1514,10 +1514,6 @@ pub struct RestAux {
     raid_intel: CaptureRows<engine_raid_inputs::raid_intel_inputs::Row>,
     agency_defense: Vec<Option<super::agency_defense::Tree>>,
     counteroperatives: Arena<engine_raid_inputs::raid_intel_inputs::Operative>,
-    scientists: CaptureRows<scientist_roster::Row>,
-    scientist_skills: CaptureRows<scientist_roster::SkillRow>,
-    scientist_names: Vec<u8>,
-    raid_paths: [CaptureRows<raid_path_memo::Row>; 2],
     raid_speeds: CaptureRows<raid_speed_inputs::Row>,
     raid_transports: Arena<i64>,
     raid_equipment: CaptureRows<raid_equipment::Row>,
@@ -1526,6 +1522,17 @@ pub struct RestAux {
     raid_equipment_archetype_tokens: Arena<u32>,
     raid_equipment_archetype_amounts: Arena<i64>,
     speed_memo: engine_native::modifier_definition::DefinitionMemo,
+}
+
+pub struct RestPaths {
+    game_state: usize,
+    hour: i32,
+    force_full: bool,
+    ticks: [u64; N],
+    scientists: CaptureRows<scientist_roster::Row>,
+    scientist_skills: CaptureRows<scientist_roster::SkillRow>,
+    scientist_names: Vec<u8>,
+    raid_paths: [CaptureRows<raid_path_memo::Row>; 2],
     scientist_injury_read: bool,
     torn_memo_reads: u32,
 }
@@ -1533,16 +1540,18 @@ pub struct RestAux {
 pub struct Rest {
     primary: RestPrimary,
     aux: RestAux,
+    paths: RestPaths,
 }
 
 impl Rest {
-    pub fn into_parts(self) -> (RestPrimary, RestAux) {
-        (self.primary, self.aux)
+    pub fn into_triple(self) -> (RestPrimary, RestAux, RestPaths) {
+        (self.primary, self.aux, self.paths)
     }
 
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
         self.primary.capture(memory, base);
         self.aux.capture(memory, base);
+        self.paths.capture(memory, base);
     }
 }
 
@@ -1578,13 +1587,6 @@ impl Captured {
             raid_intel: std::mem::replace(&mut self.raid_intel, CaptureRows::new(0)),
             agency_defense: std::mem::take(&mut self.agency_defense),
             counteroperatives: std::mem::replace(&mut self.counteroperatives, Arena::new(0)),
-            scientists: std::mem::replace(&mut self.scientists, CaptureRows::new(0)),
-            scientist_skills: std::mem::replace(&mut self.scientist_skills, CaptureRows::new(0)),
-            scientist_names: std::mem::take(&mut self.scientist_names),
-            raid_paths: std::mem::replace(
-                &mut self.raid_paths,
-                [CaptureRows::new(0), CaptureRows::new(0)],
-            ),
             raid_speeds: std::mem::replace(&mut self.raid_speeds, CaptureRows::new(0)),
             raid_transports: std::mem::replace(&mut self.raid_transports, Arena::new(0)),
             raid_equipment: std::mem::replace(&mut self.raid_equipment, CaptureRows::new(0)),
@@ -1605,20 +1607,38 @@ impl Captured {
                 Arena::new(0),
             ),
             speed_memo: std::mem::take(&mut self.speed_memo),
+        };
+        let paths = RestPaths {
+            game_state,
+            hour,
+            force_full,
+            ticks: [0; N],
+            scientists: std::mem::replace(&mut self.scientists, CaptureRows::new(0)),
+            scientist_skills: std::mem::replace(&mut self.scientist_skills, CaptureRows::new(0)),
+            scientist_names: std::mem::take(&mut self.scientist_names),
+            raid_paths: std::mem::replace(
+                &mut self.raid_paths,
+                [CaptureRows::new(0), CaptureRows::new(0)],
+            ),
             scientist_injury_read: std::mem::take(&mut self.scientist_injury_read),
             torn_memo_reads: self.raid_reads.torn_memo_reads,
         };
-        Rest { primary, aux }
+        Rest {
+            primary,
+            aux,
+            paths,
+        }
     }
 
     pub fn restore_rest(&mut self, rest: Rest) -> [u64; N] {
-        self.restore_rest_split(Some(rest.primary), Some(rest.aux), "")
+        self.restore_rest_triple(Some(rest.primary), Some(rest.aux), Some(rest.paths), "")
     }
 
-    pub fn restore_rest_split(
+    pub fn restore_rest_triple(
         &mut self,
         primary: Option<RestPrimary>,
         aux: Option<RestAux>,
+        paths: Option<RestPaths>,
         reason: &'static str,
     ) -> [u64; N] {
         self.rest_lent = false;
@@ -1648,10 +1668,6 @@ impl Captured {
                 self.raid_intel = aux.raid_intel;
                 self.agency_defense = aux.agency_defense;
                 self.counteroperatives = aux.counteroperatives;
-                self.scientists = aux.scientists;
-                self.scientist_skills = aux.scientist_skills;
-                self.scientist_names = aux.scientist_names;
-                self.raid_paths = aux.raid_paths;
                 self.raid_speeds = aux.raid_speeds;
                 self.raid_transports = aux.raid_transports;
                 self.raid_equipment = aux.raid_equipment;
@@ -1660,13 +1676,25 @@ impl Captured {
                 self.raid_equipment_archetype_tokens = aux.raid_equipment_archetype_tokens;
                 self.raid_equipment_archetype_amounts = aux.raid_equipment_archetype_amounts;
                 self.speed_memo = aux.speed_memo;
-                self.scientist_injury_read = aux.scientist_injury_read;
-                self.raid_reads.torn_memo_reads = aux.torn_memo_reads;
                 for (dst, src) in ticks.iter_mut().zip(aux.ticks) {
                     *dst += src;
                 }
             }
             None => self.fail_rest_aux(reason),
+        }
+        match paths {
+            Some(paths) => {
+                self.scientists = paths.scientists;
+                self.scientist_skills = paths.scientist_skills;
+                self.scientist_names = paths.scientist_names;
+                self.raid_paths = paths.raid_paths;
+                self.scientist_injury_read = paths.scientist_injury_read;
+                self.raid_reads.torn_memo_reads = paths.torn_memo_reads;
+                for (dst, src) in ticks.iter_mut().zip(paths.ticks) {
+                    *dst += src;
+                }
+            }
+            None => self.fail_rest_paths(reason),
         }
         ticks
     }
@@ -1860,6 +1888,15 @@ impl RestAux {
             self.counteroperatives.len = read.operatives.min(self.counteroperatives.first.len());
             ticks[17] = elapsed(begin);
         }
+        self.ticks = ticks;
+    }
+}
+
+impl RestPaths {
+    pub fn capture(&mut self, memory: &impl Memory, base: usize) {
+        let (game_state, hour, force_full) = (self.game_state, self.hour, self.force_full);
+        let active = TABLES.map(|table| replay_data::cadence::should_walk(table, hour, force_full));
+        let mut ticks = [0; N];
         if active[12] {
             let _reads = read_accounting::table(TABLES[12]);
             let begin = qpc();
@@ -1962,21 +1999,26 @@ impl Captured {
     }
 
     fn fail_rest_aux(&mut self, reason: &'static str) {
-        self.scientist_injury_read = false;
         let failed = Outcome::Unavailable { reason };
         self.raid_intel.outcome = failed;
+        self.raid_speeds.outcome = failed;
+        self.raid_equipment.outcome = failed;
+    }
+
+    fn fail_rest_paths(&mut self, reason: &'static str) {
+        self.scientist_injury_read = false;
+        let failed = Outcome::Unavailable { reason };
         self.scientists.outcome = failed;
         self.scientist_skills.outcome = failed;
         for memo in &mut self.raid_paths {
             memo.outcome = failed;
         }
-        self.raid_speeds.outcome = failed;
-        self.raid_equipment.outcome = failed;
     }
 
     pub fn fail_rest(&mut self, reason: &'static str) {
         self.rest_lent = false;
         self.fail_rest_primary(reason);
         self.fail_rest_aux(reason);
+        self.fail_rest_paths(reason);
     }
 }

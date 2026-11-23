@@ -703,7 +703,10 @@ impl Captured {
         ticks
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "shared entry point matching acquire_with_navies and split walk/finish"
+    )]
     fn capture_impl<M: Memory>(
         &mut self,
         memory: &M,
@@ -711,17 +714,45 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
-        mut fingerprints: Option<&mut SliceFingerprints>,
+        fingerprints: Option<&mut SliceFingerprints>,
         holder: &mut super::country_naval_movement_inputs::Captured,
         skip: LedgerSkip,
     ) -> [u64; N] {
+        let walk_result = self.begin_walk(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints.is_some(),
+        );
+        self.finish_with_navies(
+            memory,
+            base,
+            game_state,
+            force_full,
+            fingerprints,
+            holder,
+            skip,
+            walk_result,
+        )
+    }
+
+    pub(crate) fn begin_walk<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        has_fingerprints: bool,
+    ) -> Result<(bool, u64), &'static str> {
         self.reset();
         self.empty_headquarters
             .get_or_insert_with(|| Arc::new(Vec::new()));
         self.ledger_counts = LedgerCounts::default();
         self.selection
-            .reset_hooked(hour, force_full || fingerprints.is_none());
-        let mut ticks = [0; N];
+            .reset_hooked(hour, force_full || !has_fingerprints);
         let started = qpc();
         let mut census_complete = false;
         let walked = {
@@ -739,8 +770,38 @@ impl Captured {
                 };
             })
         };
-        ticks[0] = elapsed(started);
-        let countries = match walked {
+        let walk_ticks = elapsed(started);
+        match walked {
+            Ok(_) => Ok((census_complete, walk_ticks)),
+            Err(reason) => {
+                self.fail_all(reason);
+                Err(reason)
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "completes split capture with navy holder and walk result"
+    )]
+    pub(crate) fn finish_with_navies<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        force_full: bool,
+        mut fingerprints: Option<&mut SliceFingerprints>,
+        holder: &mut super::country_naval_movement_inputs::Captured,
+        skip: LedgerSkip,
+        walk_result: Result<(bool, u64), &'static str>,
+    ) -> [u64; N] {
+        let mut ticks = [0; N];
+        let (census_complete, walk_ticks) = match walk_result {
+            Ok(values) => values,
+            Err(_) => return ticks,
+        };
+        ticks[0] = walk_ticks;
+        let countries = match ccountry::Reader::new(memory, base, game_state) {
             Ok(countries) => countries,
             Err(reason) => {
                 self.fail_all(reason);
@@ -1606,14 +1667,20 @@ impl Captured {
         let count = holder.physical_count()?;
         let lifetime = crate::world_lifetime::token();
         crate::naval_map_changes::prepare(count);
-        let mine_ready = self.mine_cache.prepare(lifetime, count);
-        let accident_ready = self.accident_cache.prepare(lifetime, count);
-        if let Err(reason) = mine_ready {
-            self.mines_outcome = Outcome::Unavailable { reason };
-        }
-        if let Err(reason) = accident_ready {
-            self.accidents_outcome = Outcome::Unavailable { reason };
-        }
+        let mut mine_session = match self.mine_cache.begin(lifetime, count) {
+            Ok(session) => Some(session),
+            Err(reason) => {
+                self.mines_outcome = Outcome::Unavailable { reason };
+                None
+            }
+        };
+        let mut accident_session = match self.accident_cache.begin(lifetime, count) {
+            Ok(session) => Some(session),
+            Err(reason) => {
+                self.accidents_outcome = Outcome::Unavailable { reason };
+                None
+            }
+        };
         let census = &mut self.census.first[..self.census.len];
         census.sort_unstable_by_key(|member| member.task);
         let mut len = 0_usize;
@@ -1632,10 +1699,10 @@ impl Captured {
                 return Err("country navy absent or unreadable");
             }
             let begin = qpc();
-            if mine_ready.is_ok() {
+            if let Some(session) = mine_session.as_mut() {
                 let _reads = crate::read_accounting::table(TABLES[4]);
                 let rows = &mut self.mines;
-                let result = self.mine_cache.country(memory, pointer, owner.id, |row| {
+                let result = session.country(memory, index, pointer, owner.id, |row| {
                     if rows.len() == rows.capacity() {
                         reserve(rows, 1).map_err(|_| "naval mine output allocation failed")?;
                     }
@@ -1648,31 +1715,19 @@ impl Captured {
             }
             self.map_ticks[0] = self.map_ticks[0].saturating_add(elapsed(begin));
             let begin = qpc();
-            if accident_ready.is_ok() {
+            if let Some(session) = accident_session.as_mut() {
                 let _reads = crate::read_accounting::table(TABLES[5]);
-                let certificate = crate::naval_map_changes::accident_token(pointer);
                 let rows = &mut self.accidents;
-                let result = self.accident_cache.country(
-                    memory,
-                    base,
-                    pointer,
-                    owner.id,
-                    certificate,
-                    |row| {
-                        if rows.len() == rows.capacity() {
-                            reserve(rows, 1)
-                                .map_err(|_| "naval accident output allocation failed")?;
-                        }
-                        rows.push(row);
-                        Ok(())
-                    },
-                );
+                let result = session.country(memory, base, index, pointer, owner.id, |row| {
+                    if rows.len() == rows.capacity() {
+                        reserve(rows, 1)
+                            .map_err(|_| "naval accident output allocation failed")?;
+                    }
+                    rows.push(row);
+                    Ok(())
+                });
                 if let Err(reason) = result {
                     self.accidents_outcome = Outcome::Unavailable { reason };
-                } else if certificate != crate::naval_map_changes::accident_token(pointer) {
-                    self.accidents_outcome = Outcome::Unavailable {
-                        reason: "naval accident writer changed during acquisition",
-                    };
                 }
             }
             self.map_ticks[1] = self.map_ticks[1].saturating_add(elapsed(begin));
@@ -1817,6 +1872,16 @@ impl Captured {
             if holdable {
                 hold_navy(hold, fresh);
             }
+        }
+        if let Some(session) = mine_session
+            && let Err(reason) = session.finish()
+        {
+            self.mines_outcome = Outcome::Unavailable { reason };
+        }
+        if let Some(session) = accident_session
+            && let Err(reason) = session.finish()
+        {
+            self.accidents_outcome = Outcome::Unavailable { reason };
         }
         for slot in (u32::try_from(count).unwrap_or(u32::MAX).max(1))..countries.count() {
             if countries.at(slot)?.is_some() {

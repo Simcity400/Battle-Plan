@@ -437,7 +437,7 @@ fn a_thread_keeps_off_the_whole_physical_core_of_the_game_processor() {
     assert_eq!(eight.physical_cores, 8);
     assert_eq!(
         background_sets(Some(&eight), Some(0)),
-        Some(&[268, 269, 270, 271][..])
+        Some(&[270, 271][..])
     );
     assert_eq!(for_role(TICKING, Role::Decode.slot()), TICK_DECODE);
     assert_eq!(for_role(TICKING, Role::Spool.slot()), TICK);

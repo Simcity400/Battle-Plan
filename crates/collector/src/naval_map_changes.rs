@@ -107,6 +107,9 @@ pub(crate) fn mine_slice(navy: usize, part: usize) -> Option<(u64, u64)> {
         .then(|| MINES.sequence(slice_key(navy, part)))
         .flatten()
 }
+pub(crate) fn accident_quiet() -> Option<(u64, u64)> {
+    ACCIDENTS.quiet()
+}
 pub(crate) fn accident_token(navy: usize) -> Option<(u64, u64)> {
     ACCIDENTS.sequence(navy)
 }

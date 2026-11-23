@@ -185,7 +185,7 @@ struct Held {
     row: Option<(cship::ModelRow, Terms)>,
     organisation: Option<cship::OrganisationOperands>,
     terms_identity: u64,
-    at: (u64, usize),
+    row_version: u64,
 }
 
 type Terms = (cship::TaskTerms, Option<(u64, u64)>);
@@ -220,7 +220,7 @@ struct Hot {
     modifier_guard: u16,
     criticals: bool,
     roster_ordinal: u32,
-    at: (u64, usize),
+    row_version: u64,
 }
 
 struct Variant {
@@ -447,7 +447,7 @@ impl ShipStore {
             modifier_guard: held.organisation.map_or(0, |own| own.modifier_guard()),
             criticals: held.organisation.is_some_and(|own| own.has_criticals()),
             roster_ordinal: held.row.as_ref().map_or(0, |(row, _)| row.roster_ordinal),
-            at: held.at,
+            row_version: held.row_version,
         })
     }
 
@@ -708,7 +708,7 @@ pub struct Captured {
     range: usize,
     shared: bool,
     rows_serial: u64,
-    previous_serial: u64,
+    row_versions: Vec<u64>,
     unchanged_rows: usize,
     witness: Option<u64>,
 }
@@ -804,7 +804,7 @@ impl Captured {
             range: 0,
             shared: false,
             rows_serial: 0,
-            previous_serial: 0,
+            row_versions: owned_vec(filled(capacity.rows, 0)),
             unchanged_rows: 0,
             witness: None,
         }
@@ -850,6 +850,7 @@ impl Captured {
                     .sum::<usize>()
             })
             + self.seeds.capacity() * std::mem::size_of::<Seed>()
+            + self.row_versions.capacity() * std::mem::size_of::<u64>()
             + self.modifiers.borrow().allocated_bytes()
             + self.model.allocated_bytes()
             + self.store.allocated_bytes()
@@ -864,6 +865,11 @@ impl Captured {
     pub fn grow(&mut self, capacity: &mut Capacities) {
         grow_capacity(&mut capacity.rows, self.required_rows);
         self.rows.grow(&mut capacity.rows);
+        if self.row_versions.len() < capacity.rows
+            && resize_default(&mut self.row_versions, capacity.rows).is_err()
+        {
+            return;
+        }
         if self.seeds.len() < capacity.rows
             && resize_default(&mut self.seeds, capacity.rows).is_err()
         {
@@ -935,6 +941,11 @@ impl Captured {
         {
             self.terminal_failure = Some(reason);
         }
+        if self.row_versions.len() < self.rows.rows.len()
+            && resize_default(&mut self.row_versions, self.rows.rows.len()).is_err()
+        {
+            self.terminal_failure = Some("ship model version allocation failed");
+        }
         let rows = part_rows(self.seed_len);
         for part in &mut self.extra {
             for result in [
@@ -944,6 +955,11 @@ impl Captured {
                 if let Err(reason) = result {
                     self.terminal_failure = Some(reason);
                 }
+            }
+            if part.row_versions.len() < part.rows.rows.len()
+                && resize_default(&mut part.row_versions, part.rows.rows.len()).is_err()
+            {
+                self.terminal_failure = Some("ship model version allocation failed");
             }
         }
         self.parent = parent;
@@ -1420,7 +1436,14 @@ impl Captured {
             None
         };
         let len = self.len;
-        if hot.at == (self.previous_serial, len)
+        let old_version = hot.row_version;
+        let next_version = if organisation.is_some() || air_capacity.is_some() {
+            self.rows_serial
+        } else {
+            old_version
+        };
+        if old_version != 0
+            && self.row_versions.get(len).copied() == Some(old_version)
             && self
                 .rows
                 .rows
@@ -1433,6 +1456,7 @@ impl Captured {
             if let Some(kind) = air_capacity {
                 self.rows.rows[len].air_capacity_kind = kind;
             }
+            self.row_versions[len] = next_version;
             self.record_kept(source.roster_ordinal);
         } else {
             #[cfg(any(test, feature = "test-support"))]
@@ -1446,11 +1470,15 @@ impl Captured {
                 row.air_capacity_kind = kind;
             }
             self.record(|_| Ok(row));
+            if self.len != len && len < self.row_versions.len() {
+                self.row_versions[len] = next_version;
+            }
         }
         if self.len != len {
             let unchanged =
                 hot.roster_ordinal == source.roster_ordinal && air_capacity.is_none();
-            hot.at = (self.rows_serial, len);
+            hot.row_version = next_version;
+            held.row_version = next_version;
             hot.roster_ordinal = source.roster_ordinal;
             if let Some(kind) = air_capacity {
                 held.row.as_mut().expect("a carried row").0.air_capacity_kind = kind;
@@ -1459,7 +1487,6 @@ impl Captured {
                 let (row, kept) = held.row.as_mut().expect("a carried row");
                 row.maximum_organisation = organisation;
                 *kept = *terms;
-                held.at = hot.at;
                 held.terms_identity = carrying.terms_identity;
                 held.organisation = self
                     .doctrine
@@ -1526,7 +1553,7 @@ impl Captured {
         }
         let taken = taken.map(|(hot, mut held)| {
             held.slots = observation.map_or(hot.slots, |(_, slots)| slots);
-            held.at = hot.at;
+            held.row_version = hot.row_version;
             #[cfg(any(test, feature = "test-support"))]
             carry_cost(|cost| cost.cold_ship_bytes += std::mem::size_of::<cship::HeldShip>());
             held
@@ -1705,7 +1732,14 @@ impl Captured {
                 None
             };
             let len = self.len;
-            if held.at == (self.previous_serial, len)
+            let old_version = held.row_version;
+            let next_version = if air_capacity.is_some() {
+                self.rows_serial
+            } else {
+                old_version
+            };
+            if old_version != 0
+                && self.row_versions.get(len).copied() == Some(old_version)
                 && self
                     .rows
                     .rows
@@ -1715,6 +1749,7 @@ impl Captured {
                 if let Some(kind) = air_capacity {
                     self.rows.rows[len].air_capacity_kind = kind;
                 }
+                self.row_versions[len] = next_version;
                 self.record_kept(row.roster_ordinal);
             } else {
                 #[cfg(any(test, feature = "test-support"))]
@@ -1725,6 +1760,9 @@ impl Captured {
                     carried.air_capacity_kind = kind;
                 }
                 self.record(|_| Ok(carried));
+                if self.len != len && len < self.row_versions.len() {
+                    self.row_versions[len] = next_version;
+                }
             }
             if self.len != len {
                 carrying.counts.rows_carried += 1;
@@ -1738,7 +1776,7 @@ impl Captured {
                         kept.air_capacity_kind = kind;
                     }
                 }
-                held.at = (self.rows_serial, len);
+                held.row_version = next_version;
                 if !self.store.keep_held(held) {
                     carrying.counts.uncertified += 1;
                 }
@@ -1791,6 +1829,10 @@ impl Captured {
                 carry_cost(|cost| cost.row_clones += 1);
                 (self.rows.rows[self.len - 1].clone(), terms)
             });
+        let row_version = self.rows_serial;
+        if self.len - 1 < self.row_versions.len() {
+            self.row_versions[self.len - 1] = row_version;
+        }
         if let Some(mut held) = carry {
             carrying.counts.carried += 1;
             carrying.counts.models_carried += u64::from(model_carry);
@@ -1798,7 +1840,7 @@ impl Captured {
             held.row = made;
             held.organisation = self.doctrine.organisation_operands(pointer);
             held.terms_identity = carrying.terms_identity;
-            held.at = (self.rows_serial, self.len - 1);
+            held.row_version = row_version;
             if !self.store.keep_held(held) {
                 carrying.counts.uncertified += 1;
             }
@@ -1827,7 +1869,6 @@ impl Captured {
             slots[0] = slot;
             Some((certificate, slots))
         });
-        let at = (self.rows_serial, self.len - 1);
         let kept = observation.is_some_and(|(certificate, slots)| {
             let [experience_at, medals_at] = read.accumulators();
             let boxed = match stale {
@@ -1843,7 +1884,7 @@ impl Captured {
                     spare.row = made;
                     spare.organisation = self.doctrine.organisation_operands(pointer);
                     spare.terms_identity = carrying.terms_identity;
-                    spare.at = at;
+                    spare.row_version = row_version;
                     Ok(spare)
                 }
                 None => engine_allocation::boxed(Held {
@@ -1857,7 +1898,7 @@ impl Captured {
                     row: made,
                     organisation: self.doctrine.organisation_operands(pointer),
                     terms_identity: carrying.terms_identity,
-                    at,
+                    row_version,
                 }),
             };
             boxed.is_ok_and(|held| self.store.keep(held, [experience, medals]))
@@ -2034,6 +2075,9 @@ impl Captured {
             Ok(row) => {
                 self.row_heap_bytes.take();
                 self.rows.rows[self.len] = row;
+                if self.len < self.row_versions.len() {
+                    self.row_versions[self.len] = 0;
+                }
                 self.len += 1;
             }
             Err(reason) => self.failure = Some(reason),
@@ -2143,7 +2187,6 @@ impl Captured {
         changes: &dyn Changes,
     ) -> CaptureReport {
         self.context = Some(context);
-        self.previous_serial = self.rows_serial;
         self.rows_serial = SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         self.shared = ship_model_changes::CARRY && changes.shared_store();
         if self.shared {

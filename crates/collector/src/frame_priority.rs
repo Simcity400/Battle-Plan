@@ -64,8 +64,7 @@ fn level(free: usize) -> u32 {
 }
 fn priority(level: u32) -> i32 {
     match level {
-        TICK => THREAD_PRIORITY_IDLE,
-        TICK_DECODE => THREAD_PRIORITY_LOWEST,
+        TICK | TICK_DECODE => THREAD_PRIORITY_IDLE,
         TICK_PRESSED => THREAD_PRIORITY_NORMAL,
         2 => THREAD_PRIORITY_HIGHEST,
         1 => THREAD_PRIORITY_ABOVE_NORMAL,
@@ -231,11 +230,7 @@ impl Cores {
             let mut chosen = [false; GROUP_PROCESSORS];
             let mut picked = 0;
             if cores.physical_cores >= BACKGROUND_CORES_MIN_PHYSICAL {
-                let limit = if cores.physical_cores >= 8 {
-                    2
-                } else {
-                    BACKGROUND_CORES_COUNT
-                };
+                let limit = BACKGROUND_CORES_COUNT;
                 for &candidate in unique.iter() {
                     if candidate != core {
                         chosen[candidate] = true;
@@ -411,7 +406,7 @@ impl Pipeline {
             return 0;
         }
         if self.ticking.load(Ordering::SeqCst) != 0 {
-            return if self.free_count() <= 1 {
+            return if self.free_count() == 0 {
                 TICKING | PRESSED
             } else {
                 TICKING
