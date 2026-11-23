@@ -8,7 +8,10 @@ use content_reader_military::special_projects::{Catalog, Project};
 use content_reader_localisation::localisation::Argument;
 use replay_lanes::lanes::{self, Cell, History, Keys, Step};
 use replay_columnar::manifest::Status;
-use replay_data::rows::{TableId, tables};
+use replay_data::{
+    cadence::STAGGER_PERIOD,
+    rows::{TableId, tables},
+};
 use replay_frame::frame::{DecodedFrame, Rowset};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,12 +23,12 @@ use std::{
 use ts_rs::TS;
 
 pub mod details;
-mod fold;
+mod facts;
 mod incremental;
 #[cfg(test)]
 mod tests;
 
-use fold::{Entry, Fold, Observed, Person, Row};
+use facts::{Entry, Facts, Person, Program, Row};
 
 const ITERATIONS_KEY: &str = "ONGOING_PROJECT_BREAKTHROUGHS_NUMBER";
 const PLACEHOLDER_ICON: &str = "GFX_PLACEHOLDER_sp_project_icon";
@@ -35,7 +38,7 @@ const CHARACTER_REFERENCE: u32 = 73;
 
 const PROJECT_COLUMNS: [usize; 6] = [0, 1, 2, 4, 9, 12];
 const HISTORY_COLUMNS: [usize; 3] = [0, 1, 2];
-const SCIENTIST_COLUMNS: [usize; 1] = [3];
+const PROGRAM_COLUMNS: [usize; 3] = [0, 2, 3];
 
 pub struct SpecialProjects;
 
@@ -48,15 +51,6 @@ pub struct SpecialProjectsParams {
     pub hour: Option<i32>,
     pub branch_id: String,
     pub country: Country,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
-#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectDate {
-    pub hour: i32,
-    #[doc = " False: it happened by this hour, not at it."]
-    pub exact: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -80,10 +74,10 @@ pub struct ProjectPresentation {
     pub specialization_name: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
-    #[doc = " Its index in `people`."]
+    #[doc = " Its index in `people`: the scientist the program read names, no one, or why it is unknown."]
     pub scientist: u32,
-    #[doc = " A completed project loses its program: the last hour its scientist was seen assigned."]
-    pub scientist_as_of: Option<i32>,
+    #[doc = " Where the program is not read now or names no one: the last scientist observed, its index in `people`."]
+    pub last_scientist: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -100,27 +94,77 @@ pub enum ProjectState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct SpecialProjectRun {
+pub struct ProjectStatus {
+    #[doc = " Hours the list was published with this status."]
     pub first_hour: i32,
     pub last_hour: i32,
+    #[doc = " The first Projects read that showed this status."]
+    pub read_hour: i32,
     #[doc = " Its index in `presentations`."]
     pub presentation: u32,
     #[doc = " Prototype progress, percent, clamped to -100..=100."]
     pub progress: i32,
     pub state: ProjectState,
-    pub completion: Option<ProjectDate>,
-    pub cancellation: Option<ProjectDate>,
-    #[doc = " History entries less the completion's; none where the history was not recorded."]
+    #[doc = " Choices after the last completion in the history read current at these hours; none where that read is not usable, or lists fewer entries than an earlier one."]
     pub iterations: Option<i32>,
+    #[doc = " The program read the scientist comes from; none where no program read names the assignment."]
+    pub scientist_read: Option<i32>,
+    #[doc = " The program read that last named `lastScientist`."]
+    pub last_scientist_read: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "export-types"), derive(TS))]
 #[serde(rename_all = "camelCase")]
-pub struct ProjectEpisode {
+pub struct OwnerRead {
+    #[doc = " The Projects read of a raw owner that supplied the list at these hours."]
+    pub owner: u32,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub read_hour: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectEntry {
+    pub ordinal: u32,
+    #[doc = " The game's date of the choice or completion."]
+    pub date: i32,
+    pub completion: bool,
+    #[doc = " The history read that first listed it."]
+    pub read_hour: i32,
+    #[doc = " A completion dated within the campaign, the country's custody and its read."]
+    pub counted: bool,
+    #[doc = " A counted completion's name: its index in `presentations`, from the completed Projects row usable at the read that first listed it, where nothing follows it in that read; none otherwise."]
+    pub presentation: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAttempt {
+    #[doc = " A new attempt history proves: its first entry, the read proving it and, where it is proven by a changed entry, the earlier read it changed."]
+    pub ordinal: u32,
+    pub date: i32,
+    pub read_hour: i32,
+    pub since_read: Option<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(any(test, feature = "export-types"), derive(TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRecord {
     pub id: String,
-    pub start: ProjectDate,
-    pub runs: Vec<SpecialProjectRun>,
+    #[doc = " The project's raw owner id and its id within it, as the project detail products key it."]
+    pub owner: u32,
+    pub local: u32,
+    #[doc = " The first usable Projects read of the project, published or not, and its state; for a project seen only in history, its first history read and an unknown state."]
+    pub first_read: i32,
+    pub first_state: ProjectState,
+    pub statuses: Vec<ProjectStatus>,
+    pub entries: Vec<ProjectEntry>,
+    pub attempts: Vec<ProjectAttempt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -131,14 +175,20 @@ pub struct SpecialProjectsReply {
     pub tag: String,
     #[doc = " The tag's holders over the branch."]
     pub identities: Vec<CountryIdentityRun>,
+    #[doc = " The hours the tag's holder is unknown: whether it had projects is unknown."]
+    pub unresolved: Vec<HourSpan>,
     #[doc = " The hours the holders' projects were recorded."]
     pub available: Vec<HourSpan>,
-    pub projects: Vec<ProjectEpisode>,
+    #[doc = " The hours the holders' projects were read only in part: no list is shown for them."]
+    pub partial: Vec<HourSpan>,
+    pub projects: Vec<ProjectRecord>,
+    #[doc = " Each owner's Projects read at the published hours, by owner then hour."]
+    pub reads: Vec<OwnerRead>,
     pub presentations: Vec<ProjectPresentation>,
     pub people: Vec<ProjectPerson>,
     #[doc = " The game's text for each iteration count shown, none where it cannot be made."]
     pub iteration_texts: BTreeMap<i32, Option<String>>,
-    #[doc = " Why nothing is shown, apart from a country with no projects."]
+    #[doc = " Why nothing is shown at any hour; the hours outside `available` say for themselves why they show nothing."]
     pub unavailable: Option<String>,
     pub warnings: Vec<String>,
 }
@@ -376,9 +426,10 @@ fn number(cell: Cell) -> Option<i64> {
     }
 }
 
-fn project_row(local: u32, cells: &[Cell]) -> Option<Row> {
+fn project_row(owner: u32, local: u32, cells: &[Cell]) -> Option<Row> {
     let value = |at: usize| cells.get(at).copied().and_then(number);
     Some(Row {
+        owner,
         local,
         definition: value(0)? as u32,
         program: value(1)? as u64,
@@ -391,13 +442,16 @@ fn project_row(local: u32, cells: &[Cell]) -> Option<Row> {
 
 fn history_entry(ordinal: u32, cells: &[Cell]) -> Option<Entry> {
     let value = |at: usize| cells.get(at).copied().and_then(number);
-    let (reward, option, date) = (value(0)? as u32, value(1)? as u32, value(2)? as i32);
-    Some(Entry { ordinal, completion: reward == fold::COMPLETION_MARKER && option == fold::COMPLETION_MARKER, date })
+    Some(Entry { ordinal, reward: value(0)? as u32, option: value(1)? as u32, date: value(2)? as i32 })
+}
+
+fn statuses(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32, kept: impl Fn(Status) -> bool) -> io::Result<Vec<(i32, i32)>> {
+    let runs = dashboard_query::cost::storage(|| lanes::statuses(query.replay.recording(), run, table, first, last))?;
+    Ok(runs.into_iter().filter(|run| kept(run.status)).map(|run| (run.first, run.last)).collect())
 }
 
 fn available(query: &Query<'_>, run: u32, table: TableId, first: i32, last: i32) -> io::Result<Vec<(i32, i32)>> {
-    let runs = dashboard_query::cost::storage(|| lanes::statuses(query.replay.recording(), run, table, first, last))?;
-    Ok(runs.into_iter().filter(|run| matches!(run.status, Status::Complete | Status::Truncated { .. })).map(|run| (run.first, run.last)).collect())
+    statuses(query, run, table, first, last, |status| status == Status::Complete)
 }
 
 fn within(spans: &[(i32, i32)], hour: i32) -> bool {
@@ -420,6 +474,15 @@ fn uncovered(spans: &[(i32, i32)], first: i32, last: i32) -> Vec<(i32, i32)> {
     out
 }
 
+pub(super) fn held_from(query: &Query<'_>, tag: &Country, slot: u32, id: u32, hour: i32) -> Option<i32> {
+    let held = |at: i32| query.holders.at(tag, at).filter(|run| run.holder == (Holder::Found { slot, id }));
+    let mut since = held(hour)?.first;
+    while let Some(run) = since.checked_sub(1).and_then(held) {
+        since = run.first;
+    }
+    Some(since)
+}
+
 fn owner_ids(links: &RunLinks, slot: u32, first: i32, last: i32) -> BTreeMap<u32, Vec<(i32, i32)>> {
     let mut out: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
     for (&raw, runs) in &links.slots {
@@ -431,29 +494,65 @@ fn owner_ids(links: &RunLinks, slot: u32, first: i32, last: i32) -> BTreeMap<u32
     }
     for spans in out.values_mut() {
         spans.sort_unstable();
+        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(spans.len());
+        for &(a, b) in spans.iter() {
+            facts::extend(&mut merged, a, b);
+        }
+        *spans = merged;
     }
     out
 }
 
-fn person(program: u64, scientist: Option<Option<&[Cell]>>) -> Person {
+pub(super) struct Custody {
+    held_from: i32,
+    owners: BTreeMap<u32, Vec<(i32, i32)>>,
+}
+
+impl Custody {
+    pub(super) fn new(links: &RunLinks, slot: u32, held_from: i32, through: i32) -> Self {
+        Self { held_from, owners: owner_ids(links, slot, held_from, through) }
+    }
+
+    pub(super) fn held(&self, raw: u32, from: i32, through: i32) -> bool {
+        self.held_from <= from && from <= through && self.owners.get(&raw).is_some_and(|spans| spans.iter().any(|&(first, last)| first <= from && through <= last))
+    }
+
+    pub(super) fn usable(&self, raw: u32, read: Option<i32>, complete: &[(i32, i32)], hour: i32) -> Option<i32> {
+        read.filter(|&read| current(read, hour) && within(complete, read) && self.held(raw, read, hour))
+    }
+
+    fn linked(&self, hour: i32) -> impl Iterator<Item = u32> + '_ {
+        self.owners.iter().filter(move |(_, spans)| within(spans, hour)).map(|(&raw, _)| raw)
+    }
+}
+
+pub(super) struct Assignment {
+    pub owner: Option<u32>,
+    pub active: Option<u32>,
+    pub scientist: Option<u64>,
+}
+
+pub(super) fn assignment(owner: u32, local: u32, program: u64, read: Option<(i32, Option<Assignment>)>) -> Program {
     if program == 0 {
-        return Person::Unassigned;
+        return Program::Unassigned;
     }
     if program as u32 != PROGRAM_REFERENCE {
-        return Person::Unknown("The project's program reference has an unknown native type.".into());
+        return Program::Unknown("The project's program reference has an unknown native type.".into());
     }
     let id = (program >> 32) as u32;
-    let Some(Some(cells)) = scientist else { return Person::Unknown(format!("Program {id} was not recorded.")) };
-    let Some(scientist) = cells.first().copied().and_then(number).map(|value| value as u64) else {
-        return Person::Unknown(format!("Program {id}'s scientist was not recorded."));
-    };
-    if scientist == 0 {
-        Person::Unassigned
-    } else if scientist as u32 != CHARACTER_REFERENCE {
-        Person::Unknown("The scientist reference has an unknown native type.".into())
-    } else {
-        Person::Character((scientist >> 32) as u32)
+    let Some((read, Some(cells))) = read else { return Program::Unread(id) };
+    if cells.owner != Some(owner) || cells.active != Some(local) {
+        return Program::Unknown(format!("Program {id} was read for another project."));
     }
+    match cells.scientist {
+        Some(scientist) => Program::Read { read, scientist },
+        None => Program::Unread(id),
+    }
+}
+
+fn program_cells(cells: &[Cell]) -> Assignment {
+    let value = |at: usize| cells.get(at).copied().and_then(number);
+    Assignment { owner: value(0).and_then(|owner| u32::try_from(owner).ok()), active: value(1).and_then(|local| u32::try_from(local).ok()), scientist: value(2).map(|scientist| scientist as u64) }
 }
 
 struct Piece {
@@ -462,29 +561,43 @@ struct Piece {
     last: i32,
     slot: u32,
     id: u32,
+    held_from: i32,
+    opened: i32,
+}
+
+impl Piece {
+    fn reach(&self) -> i32 {
+        self.first.saturating_sub(STAGGER_PERIOD - 1).max(self.held_from).max(self.opened)
+    }
 }
 
 struct PieceRows {
     projects: Vec<History>,
     histories: Vec<History>,
     programs: History,
-    owners: BTreeMap<u32, Vec<(i32, i32)>>,
-    projects_available: Vec<(i32, i32)>,
-    history_available: Vec<(i32, i32)>,
+    reads: History,
+    owners: Vec<u32>,
+    custody: Custody,
+    projects_complete: Vec<(i32, i32)>,
+    projects_partial: Vec<(i32, i32)>,
+    history_complete: Vec<(i32, i32)>,
+    roster: Vec<(i32, i32)>,
+    program_reads: Vec<(i32, i32)>,
 }
 
 fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<PieceRows> {
     let recording = query.replay.recording();
-    let owners = owner_ids(links, piece.slot, piece.first, piece.last);
+    let custody = Custody::new(links, piece.slot, piece.held_from, piece.last);
+    let owners: Vec<u32> = custody.owners.iter().filter(|(_, spans)| spans.iter().any(|&(_, last)| last >= piece.reach())).map(|(&raw, _)| raw).collect();
     let mut projects = Vec::new();
     let mut histories = Vec::new();
-    for &raw in owners.keys() {
+    for &raw in &owners {
         let raw = u128::from(raw);
         projects.push(dashboard_query::cost::storage(|| {
-            lanes::history(recording, piece.run, TableId::Projects, &PROJECT_COLUMNS, Keys::Range(raw << 32, raw << 32 | u128::from(u32::MAX)), piece.first, piece.last)
+            lanes::history(recording, piece.run, TableId::Projects, &PROJECT_COLUMNS, Keys::Range(raw << 32, raw << 32 | u128::from(u32::MAX)), piece.reach(), piece.last)
         })?);
         histories.push(dashboard_query::cost::storage(|| {
-            lanes::history(recording, piece.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::Range(raw << 64, raw << 64 | u128::from(u64::MAX)), piece.first, piece.last)
+            lanes::history(recording, piece.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::Range(raw << 64, raw << 64 | u128::from(u64::MAX)), piece.reach(), piece.last)
         })?);
     }
     let mut programs: BTreeSet<u128> = BTreeSet::new();
@@ -499,50 +612,58 @@ fn read_piece(query: &Query<'_>, links: &RunLinks, piece: &Piece) -> io::Result<
             }
         }
     }
+    let reads: Vec<u128> = owners.iter().flat_map(|&raw| [read_key(TableId::Projects, raw), read_key(TableId::ProjectHistory, raw)]).collect();
+    let sample = read_columns()?;
+    let reads = dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::SliceReads, &sample, Keys::These(&reads), piece.first, piece.last))?;
     let programs: Vec<u128> = programs.into_iter().collect();
-    let programs = if programs.is_empty() {
-        History::default()
+    let (programs, program_reads) = if programs.is_empty() {
+        (History::default(), Vec::new())
     } else {
-        dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::ProjectPrograms, &SCIENTIST_COLUMNS, Keys::These(&programs), piece.first, piece.last))?
+        (
+            dashboard_query::cost::storage(|| lanes::history(recording, piece.run, TableId::ProjectPrograms, &PROGRAM_COLUMNS, Keys::These(&programs), piece.reach(), piece.last))?,
+            dashboard_query::cost::storage(|| lanes::complete_reads(recording, piece.run, TableId::ProjectPrograms, piece.reach(), piece.last))?,
+        )
     };
-    at_hour::count_rows(|| projects.iter().chain(&histories).chain([&programs]).flat_map(|h| &h.keys).map(|(_, steps)| steps.len() as u64).sum());
+    at_hour::count_rows(|| projects.iter().chain(&histories).chain([&programs, &reads]).flat_map(|h| &h.keys).map(|(_, steps)| steps.len() as u64).sum());
     Ok(PieceRows {
         projects,
         histories,
         programs,
+        reads,
         owners,
-        projects_available: available(query, piece.run, TableId::Projects, piece.first, piece.last)?,
-        history_available: available(query, piece.run, TableId::ProjectHistory, piece.first, piece.last)?,
+        custody,
+        projects_complete: available(query, piece.run, TableId::Projects, piece.reach(), piece.last)?,
+        projects_partial: statuses(query, piece.run, TableId::Projects, piece.first, piece.last, |status| matches!(status, Status::Truncated { .. }))?,
+        history_complete: available(query, piece.run, TableId::ProjectHistory, piece.reach(), piece.last)?,
+        roster: available(query, piece.run, TableId::CountryLinks, piece.first, piece.last)?,
+        program_reads,
     })
 }
 
-fn boundaries(first: i32, last: i32, histories: &[&History], spans: &[&[(i32, i32)]]) -> Vec<i32> {
-    let mut hours = vec![first];
-    for history in histories {
-        for (_, steps) in &history.keys {
-            hours.extend(steps.iter().map(|step| step.hour));
-        }
-    }
-    for spans in spans {
-        for &(a, b) in *spans {
-            hours.push(a);
-            hours.extend(b.checked_add(1));
-        }
-    }
-    hours.retain(|hour| (first..=last).contains(hour));
-    hours.sort_unstable();
-    hours.dedup();
-    hours
+pub(super) fn read_columns() -> io::Result<[usize; 1]> {
+    Ok([dashboard_declare::field(TableId::SliceReads, "sample_hour")?])
 }
 
-fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut Vec<(i32, i32)>, cancelled: &AtomicBool) -> io::Result<()> {
-    let mut histories: Vec<&History> = read.projects.iter().chain(&read.histories).collect();
-    histories.push(&read.programs);
-    let mut spans: Vec<&[(i32, i32)]> = read.owners.values().map(Vec::as_slice).collect();
-    spans.extend([read.projects_available.as_slice(), read.history_available.as_slice()]);
-    let hours = boundaries(piece.first, piece.last, &histories, &spans);
+pub(super) fn read_key(table: TableId, raw: u32) -> u128 {
+    (table.index() as u128) << 32 | u128::from(raw)
+}
+
+pub(super) fn current(read: i32, hour: i32) -> bool {
+    read <= hour && hour - read < STAGGER_PERIOD
+}
+
+pub(super) fn sample(cells: Option<&[Cell]>) -> Option<i32> {
+    cells.and_then(|cells| cells.first().copied()).and_then(number).and_then(|hour| i32::try_from(hour).ok())
+}
+
+fn last_read(reads: &[(i32, i32)], hour: i32) -> Option<i32> {
+    let at = reads.partition_point(|read| read.0 <= hour);
+    at.checked_sub(1).map(|at| reads[at].1.min(hour)).filter(|&read| current(read, hour))
+}
+
+fn see_piece(facts: &mut Facts, piece: &Piece, read: &PieceRows, cancelled: &AtomicBool) -> io::Result<()> {
     let mut projects: Vec<(u32, u32, Cursor<'_>)> = Vec::new();
-    for (history, &raw) in read.projects.iter().zip(read.owners.keys()) {
+    for (history, &raw) in read.projects.iter().zip(&read.owners) {
         projects.extend(history.keys.iter().map(|(key, steps)| (raw, *key as u32, Cursor::new(steps))));
     }
     let mut entries: Vec<(u32, u32, u32, Cursor<'_>)> = Vec::new();
@@ -552,64 +673,91 @@ fn fold_piece(fold: &mut Fold, piece: &Piece, read: &PieceRows, observed: &mut V
         }
     }
     let mut programs: HashMap<u32, Cursor<'_>> = read.programs.keys.iter().map(|(key, steps)| (*key as u32, Cursor::new(steps))).collect();
-    for (at, &first) in hours.iter().enumerate() {
+    let mut stamps: HashMap<u128, Cursor<'_>> = read.reads.keys.iter().map(|(key, steps)| (*key, Cursor::new(steps))).collect();
+    let custody = &read.custody;
+    for hour in piece.first..=piece.last {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let last = hours.get(at + 1).map_or(piece.last, |next| next - 1);
-        if !within(&read.projects_available, first) {
-            continue;
-        }
-        let history_known = within(&read.history_available, first);
-        let mut history: HashMap<(u32, u32), Vec<Entry>> = HashMap::new();
+        let linked: Vec<u32> = custody.linked(hour).collect();
+        let mut usable = |table: TableId, complete: &[(i32, i32)], raw: u32| custody.usable(raw, sample(stamps.get_mut(&read_key(table, raw)).and_then(|cursor| cursor.at(hour))), complete, hour);
+        let projects_read: BTreeMap<u32, i32> = linked.iter().filter_map(|&raw| Some((raw, usable(TableId::Projects, &read.projects_complete, raw)?))).collect();
+        let histories_read: BTreeMap<u32, i32> = linked.iter().filter_map(|&raw| Some((raw, usable(TableId::ProjectHistory, &read.history_complete, raw)?))).collect();
+        let mut listed: BTreeMap<(u32, u32), Vec<Entry>> = BTreeMap::new();
         for (owner, project, ordinal, cursor) in &mut entries {
-            if let Some(entry) = cursor.at(first).and_then(|cells| history_entry(*ordinal, cells))
-                && history_known
+            if let Some(&stamp) = histories_read.get(owner)
+                && let Some(entry) = cursor.at(stamp).and_then(|cells| history_entry(*ordinal, cells))
             {
-                history.entry((*owner, *project)).or_default().push(entry);
+                listed.entry((*owner, *project)).or_default().push(entry);
             }
         }
-        let mut rows: Vec<(u32, Row, Option<Option<&[Cell]>>)> = Vec::new();
+        let program_read = last_read(&read.program_reads, hour);
+        let mut rows: Vec<(Row, Program, i32)> = Vec::new();
         for (raw, local, cursor) in &mut projects {
             let (raw, local) = (*raw, *local);
-            let linked = read.owners.get(&raw).is_some_and(|spans| within(spans, first));
-            if let Some(row) = cursor.at(first).and_then(|cells| project_row(local, cells))
-                && linked
+            if let Some(&stamp) = projects_read.get(&raw)
+                && let Some(row) = cursor.at(stamp).and_then(|cells| project_row(raw, local, cells))
             {
-                let program = (row.program as u32 == PROGRAM_REFERENCE).then(|| (row.program >> 32) as u32);
-                let scientist = program.map(|id| programs.get_mut(&id).and_then(|cursor| cursor.at(first)));
-                rows.push((raw, row, scientist));
+                let cells = program_read.filter(|&at| custody.held(raw, at, hour)).map(|at| (at, programs.get_mut(&((row.program >> 32) as u32)).and_then(|cursor| cursor.at(at)).map(program_cells)));
+                let program = assignment(raw, local, row.program, cells);
+                rows.push((row, program, stamp));
             }
         }
-        let shown: Vec<Observed<'_>> = rows
-            .iter()
-            .map(|(raw, row, scientist)| Observed {
-                row,
-                history: history_known.then(|| history.get(&(*raw, row.local)).map_or(&[][..], Vec::as_slice)),
-                person: person(row.program, *scientist),
-            })
-            .collect();
-        fold.observe((piece.slot, piece.id), first, last, &shown);
-        match observed.last_mut() {
-            Some(span) if span.1.checked_add(1) == Some(first) => span.1 = last,
-            _ => observed.push((first, last)),
+        let shown: Vec<facts::Read<'_>> = rows.iter().map(|(row, program, stamp)| facts::Read { row, read: *stamp, program: program.clone() }).collect();
+        let published = within(&read.roster, hour) && projects_read.len() == linked.len();
+        if !published && within(&read.projects_partial, hour) {
+            facts::extend(&mut facts.partial, hour, hour);
         }
+        facts.hour(&facts::Hour {
+            country: (piece.slot, piece.id),
+            at: hour,
+            held: &|raw, from, through| custody.held(raw, from, through),
+            projects: &projects_read,
+            histories: &histories_read,
+            listed: &listed,
+            reads: &shown,
+            published,
+        });
     }
     Ok(())
 }
 
-fn pieces(query: &Query<'_>, country: &Country, through: i32) -> (Vec<Piece>, Vec<CountryIdentityRun>) {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Holding {
+    identities: Vec<CountryIdentityRun>,
+    unresolved: Vec<(i32, i32)>,
+}
+
+fn pieces(query: &Query<'_>, country: &Country, from: i32, through: i32) -> (Vec<Piece>, Holding) {
     let mut pieces = Vec::new();
     let mut identities: Vec<CountryIdentityRun> = Vec::new();
-    for run in query.holders.within(country, query.timeline.first, through) {
-        let Holder::Found { slot, id } = run.holder else { continue };
+    let mut unknown: Vec<(i32, i32)> =
+        query.holders.unknown.iter().map(|&(first, last, _)| (first.max(from), last.min(through))).filter(|(first, last)| first <= last).collect();
+    for run in query.holders.within(country, from, through) {
+        let Holder::Found { slot, id } = run.holder else {
+            unknown.push((run.first, run.last));
+            continue;
+        };
+        let Some(held_from) = held_from(query, country, slot, id, run.first) else {
+            unknown.push((run.first, run.last));
+            continue;
+        };
         match identities.last_mut() {
             Some(held) if (held.slot, held.country_id) == (slot, id) && held.last_hour.checked_add(1) == Some(run.first) => held.last_hour = run.last,
             _ => identities.push(CountryIdentityRun { first_hour: run.first, last_hour: run.last, slot, country_id: id }),
         }
         for stretch in query.timeline.within(run.first, run.last) {
-            pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id });
+            let opened = query.replay.recording().run(stretch.run).map_or(stretch.first, |run| run.first_hour);
+            pieces.push(Piece { run: stretch.run, first: stretch.first, last: stretch.last, slot, id, held_from, opened });
         }
     }
-    (pieces, identities)
+    unknown.sort_unstable();
+    let mut unresolved: Vec<(i32, i32)> = Vec::new();
+    for (first, last) in unknown {
+        match unresolved.last_mut() {
+            Some(held) if held.1.saturating_add(1) >= first => held.1 = held.1.max(last),
+            _ => unresolved.push((first, last)),
+        }
+    }
+    (pieces, Holding { identities, unresolved })
 }
 
 fn links_of<'l>(query: &Query<'_>, held: &'l mut HashMap<u32, RunLinks>, run: u32) -> io::Result<&'l RunLinks> {
@@ -691,18 +839,10 @@ fn reply(source: &Source, params: &SpecialProjectsParams, load: &LoadContext, ca
 }
 
 fn reply_through(query: Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, through: i32, cancelled: &AtomicBool) -> io::Result<SpecialProjectsReply> {
-    let (pieces, identities) = pieces(&query, &params.country, through);
-    let mut fold = Fold::new(query.timeline.first);
-    let mut observed: Vec<(i32, i32)> = Vec::new();
-    let mut links: HashMap<u32, RunLinks> = HashMap::new();
-    for piece in &pieces {
-        dashboard_text::metadata::check_cancel(cancelled)?;
-        let run_links = links_of(&query, &mut links, piece.run)?;
-        let read = read_piece(&query, run_links, piece)?;
-        fold_piece(&mut fold, piece, &read, &mut observed, cancelled)?;
-    }
+    let mut follow = incremental::Follow::new(query.timeline.first);
+    follow.to(&query, &params.country, through, cancelled)?;
     let tag = query.holders.name(&params.country, through);
-    present(&query, params, content, &fold, observed, identities, &tag, cancelled, &mut None)
+    present(&query, params, content, &follow, &tag, cancelled, &mut None)
 }
 
 type Spelling = (BTreeMap<u32, i32>, BTreeMap<u32, i32>, Spelled, Refusals, BTreeMap<String, u64>);
@@ -722,17 +862,28 @@ fn respell(held: Option<(&BTreeMap<u32, i32>, &BTreeMap<u32, i32>)>, definitions
     if new_definitions.is_empty() && new_characters.is_empty() { Respell::Kept } else { Respell::Added(new_definitions, new_characters) }
 }
 
-fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, fold: &Fold, observed: Vec<(i32, i32)>, identities: Vec<CountryIdentityRun>, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
+fn spans(spans: &[(i32, i32)]) -> Vec<HourSpan> {
+    spans.iter().map(|&(first, last)| HourSpan { first_hour: first, last_hour: last }).collect()
+}
+
+fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectContent, follow: &incremental::Follow, tag: &str, cancelled: &AtomicBool, cache: &mut Option<Spelling>) -> io::Result<SpecialProjectsReply> {
+    let facts = &follow.facts;
     let mut naming = Naming::new(content);
     let mut definitions: BTreeMap<u32, i32> = BTreeMap::new();
     let mut characters: BTreeMap<u32, i32> = BTreeMap::new();
-    for run in fold.episodes.iter().flat_map(|episode| &episode.runs) {
-        let look = &fold.looks[run.presentation as usize];
-        let first = definitions.entry(look.definition).or_insert(run.first_hour);
-        *first = (*first).min(run.first_hour);
-        if let Person::Character(id) = look.person {
-            let first = characters.entry(id).or_insert(run.first_hour);
-            *first = (*first).min(run.first_hour);
+    for run in facts.projects.iter().flat_map(|project| &project.runs) {
+        let look = &facts.looks[run.look as usize];
+        let first = definitions.entry(look.definition).or_insert(run.first);
+        *first = (*first).min(run.first);
+        for id in [match look.person { Person::Character(id) => Some(id), _ => None }, look.last].into_iter().flatten() {
+            let first = characters.entry(id).or_insert(run.first);
+            *first = (*first).min(run.first);
+        }
+    }
+    for kept in facts.evidence.values().flat_map(|evidence| &evidence.entries) {
+        if let Some(definition) = kept.definition {
+            let first = definitions.entry(definition).or_insert(kept.read);
+            *first = (*first).min(kept.read);
         }
     }
     match respell(cache.as_ref().map(|(defs, chars, ..)| (defs, chars)), &definitions, &characters) {
@@ -757,48 +908,87 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
     let mut people = Interned::new();
     let mut presentations = Interned::new();
     let mut names = HashMap::new();
-    let mut projects = fold.episodes.clone();
-    for episode in &mut projects {
-        let mut runs: Vec<SpecialProjectRun> = Vec::with_capacity(episode.runs.len());
-        for mut run in std::mem::take(&mut episode.runs) {
-            let look = &fold.looks[run.presentation as usize];
-            let hour = run.first_hour;
-            let name = names.entry((look.definition, hour)).or_insert_with(|| {
-                let slot = query.holders.at(&params.country, hour).and_then(|run| match run.holder {
-                    Holder::Found { slot, .. } => Some(slot),
-                    Holder::Unresolved => None,
-                });
-                naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, tag, &mut |key| match slot {
-                    Some(slot) => scoped_at(query, content, key, hour, slot),
-                    None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
-                })
+    let mut shown = |look: &facts::Look, hour: i32, naming: &mut Naming<'_>| {
+        let name = names.entry((look.definition, hour)).or_insert_with(|| {
+            let slot = query.holders.at(&params.country, hour).and_then(|run| match run.holder {
+                Holder::Found { slot, .. } => Some(slot),
+                Holder::Unresolved => None,
             });
-            let person = match &look.person {
-                Person::Character(id) => spelled.people.get(id).cloned().unwrap_or_else(|| unread_person(&look.person)),
-                other => unread_person(other),
-            };
-            run.presentation = presentations.id(ProjectPresentation { name: name.name.clone(), specialization: name.specialization.clone(),
-                specialization_name: name.specialization_name.clone(), icon: name.icon.clone(), icon_missing: name.icon_missing.clone(),
-                scientist: people.id(person), scientist_as_of: look.as_of });
-            match runs.last_mut() {
-                Some(held) if held.last_hour.checked_add(1) == Some(run.first_hour) && fold::same(held, &run) => held.last_hour = run.last_hour,
-                _ => runs.push(run),
-            }
-        }
-        episode.runs = runs;
+            naming.definition(spelled.tokens.get(&look.definition).map(String::as_str), look.definition, tag, &mut |key| match slot {
+                Some(slot) => scoped_at(query, content, key, hour, slot),
+                None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
+            })
+        });
+        let person = |person: &Person| match person {
+            Person::Character(id) => spelled.people.get(id).cloned().unwrap_or_else(|| unread_person(person)),
+            other => unread_person(other),
+        };
+        let scientist = people.id(person(&look.person));
+        let last_scientist = look.last.map(|id| people.id(person(&Person::Character(id))));
+        presentations.id(ProjectPresentation {
+            name: name.name.clone(),
+            specialization: name.specialization.clone(),
+            specialization_name: name.specialization_name.clone(),
+            icon: name.icon.clone(),
+            icon_missing: name.icon_missing.clone(),
+            scientist,
+            last_scientist,
+        })
+    };
+    let none = facts::Evidence::default();
+    let mut record = |country: (u32, u32), owner: u32, local: u32, first: (i32, ProjectState), runs: &[facts::Run], evidence: &facts::Evidence, naming: &mut Naming<'_>| {
+        let statuses: Vec<ProjectStatus> = runs
+            .iter()
+            .map(|run| ProjectStatus {
+                first_hour: run.first,
+                last_hour: run.last,
+                read_hour: run.read,
+                presentation: shown(&facts.looks[run.look as usize], run.first, naming),
+                progress: run.progress,
+                state: run.state,
+                iterations: run.iterations,
+                scientist_read: run.scientist_read,
+                last_scientist_read: run.last_scientist_read,
+            })
+            .collect();
+        let unnamed = |definition| facts::Look { definition, person: Person::Unknown("A history entry names no scientist.".into()), last: None };
+        let entries = evidence
+            .entries
+            .iter()
+            .map(|kept| ProjectEntry {
+                ordinal: kept.entry.ordinal,
+                date: kept.entry.date,
+                completion: kept.entry.completion(),
+                read_hour: kept.read,
+                counted: kept.counted,
+                presentation: kept.definition.map(|definition| shown(&unnamed(definition), kept.read, naming)),
+            })
+            .collect();
+        let attempts = evidence.attempts.iter().map(|attempt| ProjectAttempt { ordinal: attempt.entry.ordinal, date: attempt.entry.date, read_hour: attempt.read, since_read: attempt.since }).collect();
+        ProjectRecord { id: format!("{}:{}:{owner}:{local}", country.0, country.1), owner, local, first_read: first.0, first_state: first.1, statuses, entries, attempts }
+    };
+    let mut projects = Vec::with_capacity(facts.projects.len());
+    for project in &facts.projects {
+        let evidence = facts.evidence_of(project).unwrap_or(&none);
+        projects.push(record(project.country, project.owner, project.local, project.first, &project.runs, evidence, &mut naming));
     }
-    let counts: BTreeSet<i32> = projects.iter().flat_map(|episode| &episode.runs).filter_map(|run| run.iterations).collect();
+    for (&(slot, id, owner, local), evidence) in facts.unlisted() {
+        let first = evidence.entries.iter().map(|kept| kept.read).min().unwrap_or(i32::MAX);
+        projects.push(record((slot, id), owner, local, (first, ProjectState::Unknown), &[], evidence, &mut naming));
+    }
+    let counts: BTreeSet<i32> = projects.iter().flat_map(|project| &project.statuses).filter_map(|status| status.iterations).collect();
     let iteration_texts: BTreeMap<i32, Option<String>> = counts.into_iter().map(|count| (count, naming.iterations(count))).collect();
     let mut warnings = content.definitions.warnings.clone();
-    warnings.extend(fold.warnings.iter().map(|(reason, count)| format!("{reason} ({count} observations).")));
+    warnings.extend(facts.warnings.iter().map(|(reason, count)| format!("{reason} ({count} reads).")));
     warnings.extend(naming.warnings());
     if !projects.is_empty() {
         warnings.push("Project icons and portraits are visual assets outside content hash coverage.".into());
     }
-    let unavailable = if identities.is_empty() {
+    let Holding { identities, unresolved } = follow.holding.clone();
+    let unavailable = if identities.is_empty() && !unresolved.is_empty() {
+        Some("Who held this tag was not recorded.".into())
+    } else if identities.is_empty() {
         Some("No country held this tag in the recording.".into())
-    } else if observed.is_empty() {
-        Some("Projects were not recorded for this country.".into())
     } else if content.definitions.projects.is_empty() {
         Some("The recorded content has no readable special-project definitions.".into())
     } else {
@@ -808,8 +998,11 @@ fn present(query: &Query<'_>, params: &SpecialProjectsParams, content: &ProjectC
         branch_id: params.branch_id.clone(),
         tag: tag.to_owned(),
         identities,
-        available: observed.into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }).collect(),
+        unresolved: spans(&unresolved),
+        available: spans(&facts.observed),
+        partial: spans(&facts.partial),
         projects,
+        reads: facts.reads.iter().flat_map(|(&owner, spans)| spans.iter().map(move |&(first_hour, last_hour, read_hour)| OwnerRead { owner, first_hour, last_hour, read_hour })).collect(),
         presentations: presentations.values,
         people: people.values,
         iteration_texts,
@@ -858,12 +1051,14 @@ impl Product for SpecialProjects {
     fn types() -> Vec<String> {
         vec![
             SpecialProjectsParams::decl(),
-            ProjectDate::decl(),
             ProjectPerson::decl(),
             ProjectPresentation::decl(),
             ProjectState::decl(),
-            SpecialProjectRun::decl(),
-            ProjectEpisode::decl(),
+            ProjectStatus::decl(),
+            OwnerRead::decl(),
+            ProjectEntry::decl(),
+            ProjectAttempt::decl(),
+            ProjectRecord::decl(),
             SpecialProjectsReply::decl(),
         ]
     }
@@ -880,6 +1075,7 @@ pub struct ProjectCompletion {
     pub observed_hour: i32,
     pub owner: u32,
     pub project: u32,
+    pub ordinal: u32,
     pub name: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
@@ -891,69 +1087,85 @@ pub struct Completions {
     pub warnings: Vec<String>,
 }
 
-pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Counted {
+    tag: String,
+    slot: u32,
+    owner: u32,
+    local: u32,
+    entry: Entry,
+    read: i32,
+    definition: Option<u32>,
+}
+
+fn counted(query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<(Vec<Counted>, Vec<HourSpan>)> {
     let recording = query.replay.recording();
-    let content = content(source, load)?;
-    let names = country_ids::Names::new(&query.holders);
-    let mut found: BTreeMap<u128, (u32, i32, i32)> = BTreeMap::new();
     let mut unrecorded: Vec<HourSpan> = Vec::new();
+    let mut links: HashMap<u32, RunLinks> = HashMap::new();
+    let mut tags: BTreeSet<String> = BTreeSet::new();
     for stretch in query.timeline.within(from, to) {
         dashboard_text::metadata::check_cancel(cancelled)?;
         let held = available(query, stretch.run, TableId::ProjectHistory, stretch.first, stretch.last)?;
         unrecorded.extend(uncovered(&held, stretch.first, stretch.last).into_iter().map(|(first, last)| HourSpan { first_hour: first, last_hour: last }));
         let history = dashboard_query::cost::storage(|| lanes::history(recording, stretch.run, TableId::ProjectHistory, &HISTORY_COLUMNS, Keys::All, stretch.first, stretch.last))?;
+        let run_links = links_of(query, &mut links, stretch.run)?;
         for (key, steps) in &history.keys {
             for step in steps {
                 let Some(entry) = step.cells.as_deref().and_then(|cells| history_entry(*key as u32, cells)) else { continue };
-                if entry.completion && (from..=to).contains(&entry.date) {
-                    found.entry(*key).or_insert((stretch.run, entry.date, step.hour));
+                if !entry.completion() || !(from..=to).contains(&entry.date) {
+                    continue;
                 }
+                let Some(slot) = run_links.slot_at((key >> 64) as u32, step.hour) else { continue };
+                let holds = |runs: &[dashboard_query::identity::HolderRun]| {
+                    runs.iter().any(|run| run.first <= step.hour && step.hour <= run.last && matches!(run.holder, Holder::Found { slot: held, .. } if held == slot))
+                };
+                tags.extend(query.holders.tags.iter().filter(|(_, runs)| holds(runs)).map(|(tag, _)| tag.clone()));
             }
         }
     }
-    let mut by_hour: BTreeMap<(u32, i32), BTreeSet<u128>> = BTreeMap::new();
-    for (&key, &(run, _, observed)) in &found {
-        by_hour.entry((run, observed)).or_default().insert(key >> 32);
+    let mut found: BTreeMap<(u32, u32, u32, i32), Counted> = BTreeMap::new();
+    for tag in tags {
+        let mut facts = Facts::new(query.timeline.first);
+        let (pieces, _) = pieces(query, &Country::Tag(tag.clone()), query.timeline.first, to);
+        for piece in pieces {
+            let read = read_piece(query, links_of(query, &mut links, piece.run)?, &piece)?;
+            see_piece(&mut facts, &piece, &read, cancelled)?;
+        }
+        for (&(slot, _, owner, local), evidence) in &facts.evidence {
+            for kept in evidence.entries.iter().filter(|kept| kept.counted && (from..=to).contains(&kept.entry.date)) {
+                found
+                    .entry((owner, local, kept.entry.ordinal, kept.entry.date))
+                    .or_insert_with(|| Counted { tag: tag.clone(), slot, owner, local, entry: kept.entry, read: kept.read, definition: kept.definition });
+            }
+        }
     }
+    Ok((found.into_values().collect(), unrecorded))
+}
+
+pub fn completions(source: &Source, load: &LoadContext, query: &Query<'_>, from: i32, to: i32, cancelled: &AtomicBool) -> io::Result<Completions> {
+    let content = content(source, load)?;
+    let (found, unrecorded) = counted(query, from, to, cancelled)?;
     let mut naming = Naming::new(&content);
-    let mut links: HashMap<u32, RunLinks> = HashMap::new();
-    let mut shown: HashMap<(u128, i32), ProjectCompletion> = HashMap::new();
     let mut frames = at_hour::Frames::new(query)?;
-    for ((run, hour), projects) in by_hour {
+    let mut events = Vec::with_capacity(found.len());
+    for counted in found {
         dashboard_text::metadata::check_cancel(cancelled)?;
-        let frame = frames.frame(hour, &[Read::these(TableId::Projects, projects.iter().copied())], "Special project completion")?;
-        let rows = frame.complete::<tables::Projects>().unwrap_or(&[]);
-        let definitions: Vec<u32> = rows.iter().map(|row| row.definition_id).collect();
-        let lexical = frames.frame(hour, &[Read::these(TableId::LexicalTokens, definitions.iter().map(|&id| u128::from(id)))], "Special project names")?;
-        let tokens = spellings(&lexical, definitions);
-        let run_links = links_of(query, &mut links, run)?;
-        for &key in &projects {
-            let (owner, project) = ((key >> 32) as u32, key as u32);
-            let tag = names.tag_at(run_links, owner, hour).map(str::to_owned);
-            let row = rows.iter().find(|row| (row.owner, row.local_id) == (owner, project));
-            let mut completion = ProjectCompletion { tag: tag.clone(), date: hour, observed_hour: hour, owner, project, name: None, icon: None, icon_missing: Some("The project was not read.".into()) };
-            match (row, tag) {
-                (Some(row), Some(tag)) => {
-                    let slot = run_links.slot_at(owner, hour);
-                    let mut scoped = |key: &str| match slot {
-                        Some(slot) => scoped_at(query, &content, key, hour, slot),
-                        None => Err("The project's name needs its country's scope, which is unresolved".to_owned()),
-                    };
-                    let named = naming.definition(tokens.get(&row.definition_id).map(String::as_str), row.definition_id, &tag, &mut scoped);
-                    completion.name = Some(named.name);
-                    completion.icon = named.icon;
-                    completion.icon_missing = named.icon_missing;
-                }
-                (None, _) => naming.note("the completed project's row was not recorded", format!("{owner}:{project}")),
-                (Some(_), None) => naming.note("no tag held the completed project's country", format!("{owner}:{project}")),
+        let Counted { tag, slot, owner, local, entry, read, definition } = counted;
+        let mut completion =
+            ProjectCompletion { tag: Some(tag.clone()), date: entry.date, observed_hour: read, owner, project: local, ordinal: entry.ordinal, name: None, icon: None, icon_missing: Some("The completed project's name is not recorded.".into()) };
+        match definition {
+            Some(definition) => {
+                let lexical = frames.frame(read, &[Read::these(TableId::LexicalTokens, [u128::from(definition)])], "Special project names")?;
+                let tokens = spellings(&lexical, [definition]);
+                let named = naming.definition(tokens.get(&definition).map(String::as_str), definition, &tag, &mut |key| scoped_at(query, &content, key, read, slot));
+                completion.name = Some(named.name);
+                completion.icon = named.icon;
+                completion.icon_missing = named.icon_missing;
             }
-            shown.insert((key, hour), completion);
+            None => naming.note("the completed project's name is not recorded", format!("{owner}:{local}")),
         }
+        events.push(completion);
     }
-    let mut events: Vec<ProjectCompletion> = found
-        .into_iter()
-        .filter_map(|(key, (_, date, observed))| shown.get(&(key >> 32, observed)).map(|completion| ProjectCompletion { date, ..completion.clone() }))
-        .collect();
-    events.sort_by(|a, b| (a.date, a.owner, a.project).cmp(&(b.date, b.owner, b.project)));
+    events.sort_by(|a, b| (a.date, a.owner, a.project, a.ordinal).cmp(&(b.date, b.owner, b.project, b.ordinal)));
     Ok(Completions { events, unrecorded, warnings: naming.warnings() })
 }

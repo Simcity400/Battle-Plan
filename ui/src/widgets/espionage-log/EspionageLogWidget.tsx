@@ -216,9 +216,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     : tokens === undefined ? { key: 'completed', label: 'Completed', rows: NO_ROWS, note: <SectionNote text="Loading completed operations…" loading /> }
     : !spec ? { key: 'completed', label: 'Completed', rows: NO_ROWS, note: <SectionNote text="No operation of the chosen types was recorded." /> }
     : { key: 'completed', label: 'Completed', pages, note: <SectionNote text="No espionage operations match these countries and settings by this moment." /> };
-  const endedSection: LogListSection<OperationItem> = ended.error ? { key: 'ended', label: 'Ended without completing', rows: NO_ROWS, note: <SectionNote failure={ended.error} retry={ended.retry} /> }
-    : !ended.data ? { key: 'ended', label: 'Ended without completing', rows: NO_ROWS, note: <SectionNote text="Loading ended operations…" loading /> }
-    : { key: 'ended', label: 'Ended without completing', rows: endedList, note: <SectionNote text="No operation ended without completing by this moment." /> };
+  const endedSection: LogListSection<OperationItem> = ended.error ? { key: 'ended', label: 'Ended operations', rows: NO_ROWS, note: <SectionNote failure={ended.error} retry={ended.retry} /> }
+    : !ended.data ? { key: 'ended', label: 'Ended operations', rows: NO_ROWS, note: <SectionNote text="Loading ended operations…" loading /> }
+    : { key: 'ended', label: 'Ended operations', rows: endedList, note: <SectionNote text="No other endings recorded." /> };
   const sections = [underWaySection, completedSection, endedSection];
 
   return <div ref={element => { root.current = element; head.root(element); }} className="espionage-log">

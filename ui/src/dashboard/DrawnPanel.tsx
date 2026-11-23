@@ -32,10 +32,8 @@ function write(field: HTMLElement, label: string, value: string | undefined, { b
 }
 
 export function paintFields(node: HTMLElement, texts: ReadonlyMap<string, string> | null, layout: PanelGeometry) {
-  const owned = layout.owns ?? (() => true);
   const selector = layout.extraFields ? commonFields + ',' + layout.extraFields : commonFields;
   for (const field of node.querySelectorAll<HTMLElement>(selector)) {
-    if (!owned(field)) continue;
     const { key, label } = identity(field, layout);
     write(field, label, texts?.get(key), layout);
   }

@@ -14,8 +14,8 @@ mod registry_tests;
 
 pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
     Some(match asked["panel"].as_str()? {
-        "special-projects" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
-        "special-project-details" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),
+        "special-projects" | "special-projects-history" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
+        "special-project-details" | "special-project-rewards" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),
         "doctrine-mastery" => dashboard_land::registrations::EXACT_DOCTRINEMASTERY(source, load, asked),
         "research-slots" => dashboard_research::registrations::EXACT_RESEARCHSLOTS(source, load, asked),
         "nuclear-arsenal" => dashboard_world::registrations::EXACT_NUCLEARARSENAL(source, load, asked),

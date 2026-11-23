@@ -186,7 +186,7 @@ impl TextIcon {
 }
 
 pub fn find_icon(name: &str, sprite: &dyn Fn(&[u8]) -> Option<IconSprite>) -> Option<TextIcon> {
-    let (names, frame) = icon_lookup(name);
+    let (names, frame) = content_reader_localisation::localisation::icon_lookup(name);
     names.into_iter().find_map(|found| {
         let (texture, frames) = sprite(&found)?;
         Some(TextIcon {
@@ -214,27 +214,6 @@ fn special_advance(
         Special::Currency => (CURRENCY_ADVANCE, None),
         Special::Number(_) => (8, None),
     })
-}
-
-pub fn icon_lookup(name: &str) -> ([Vec<u8>; 2], Option<i32>) {
-    let (stem, suffix) = match name.split_once('|') {
-        Some((stem, suffix)) => (stem, Some(suffix)),
-        None => (name, None),
-    };
-    let frame = suffix.map(|suffix| {
-        let mut value: i32 = 0;
-        for byte in suffix.bytes() {
-            if !byte.is_ascii_digit() {
-                return 0;
-            }
-            value = value.wrapping_mul(10).wrapping_add(i32::from(byte - b'0'));
-        }
-        if value < 0 { 0 } else { value - 1 }
-    });
-    (
-        [format!("GFX_{stem}").into_bytes(), stem.as_bytes().to_vec()],
-        frame,
-    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -812,7 +791,7 @@ mod tests;
 
 #[cfg(test)]
 mod validation_tests {
-    use crate::native_text::icon_lookup;
+    use content_reader_localisation::localisation::icon_lookup;
     use content_reader_localisation::localisation::{Argument, Localisation};
     use viewer_foundation::tooltip_text::{TextIcons, builtin, displayable, displayable_flags, token};
     struct Icons;

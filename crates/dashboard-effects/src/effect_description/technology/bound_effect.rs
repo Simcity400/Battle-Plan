@@ -1,4 +1,5 @@
 use super::*;
+use crate::effect_description::entity_links::{EntityKind, mark_at, unmark};
 use content_reader_parser::{parser::c_string, tokens::Token};
 
 const TECHNOLOGY_ID: u64 = mask::<replay_data::rows::TechnologyDefinitionRow>(&["id"]);
@@ -7,10 +8,15 @@ impl Renderer<'_, '_, '_> {
     pub(in crate::effect_description) fn bound_technology_effect(
         &mut self,
         token: &str,
+        database_index: Option<i32>,
         scopes: Scopes,
     ) -> Result<String, String> {
         let catalog = self.technology_catalog()?;
-        let Some(template) = catalog.get(token.as_bytes())?.cloned() else {
+        let template = match database_index {
+            Some(index) => Some(catalog.template(index, token.as_bytes())?.ok_or_else(|| format!("technology {token}: recorded template {index} is absent from the content"))?),
+            None => catalog.get(token.as_bytes())?,
+        };
+        let Some(template) = template.cloned() else {
             return Ok(String::new());
         };
         let country = match scopes.this {
@@ -23,7 +29,7 @@ impl Renderer<'_, '_, '_> {
         let world = self.context.world()?;
         let definition = find(
             self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY_ID)?,
-            |row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
+            |row| database_index.is_none_or(|index| row.database_index == index) && c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)),
         )?
         .ok_or("technology definitions lacks bound technology identity")?;
         let status = self
@@ -170,6 +176,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                         scopes,
                     )?;
+                    let name = self.technology_entity(EntityKind::Equipment, &definition.name, name)?;
                     self.technology_join(
                         &mut names,
                         &name,
@@ -208,11 +215,12 @@ impl Renderer<'_, '_, '_> {
             }
             if !modules.is_empty() {
                 let mut names = String::new();
-                for (ordinal, name) in modules.iter().enumerate() {
-                    if !self.technology_module_allowed(&catalog.equipment, name, country)? {
+                for (ordinal, token) in modules.iter().enumerate() {
+                    if !self.technology_module_allowed(&catalog.equipment, token, country)? {
                         continue;
                     }
-                    let name = self.technology_country_name(name, 0, false, scopes)?;
+                    let name = self.technology_country_name(token, 0, false, scopes)?;
+                    let name = self.technology_entity(EntityKind::Module, token, name)?;
                     self.technology_join(&mut names, &name, ordinal + 1 == modules.len(), scopes)?;
                 }
                 if !names.is_empty() {
@@ -245,6 +253,8 @@ impl Renderer<'_, '_, '_> {
                         database.by_token(token).map_err(|why| why.to_string())?
                     {
                         let name = self.localised(building.name.as_bytes(), &[], scopes, false)?;
+                        let name =
+                            self.technology_entity(EntityKind::Building, building.name.as_bytes(), name)?;
                         let level = self.char_native_text(
                             b"BUILDING_LEVEL",
                             &[("LEVEL", Argument::Int32(*level))],
@@ -283,13 +293,14 @@ impl Renderer<'_, '_, '_> {
             let sub_units = self.technology_enabled_subunits(&template.sub_units)?;
             if !sub_units.is_empty() {
                 let mut names = String::new();
-                for (ordinal, name) in sub_units.iter().enumerate() {
+                for (ordinal, token) in sub_units.iter().enumerate() {
                     let name = self.technology_country_name(
-                        name.as_bytes(),
+                        token.as_bytes(),
                         self.context.perspective,
                         false,
                         scopes,
                     )?;
+                    let name = self.technology_entity(EntityKind::SubUnit, token.as_bytes(), name)?;
                     self.technology_join(
                         &mut names,
                         &name,
@@ -357,6 +368,7 @@ impl Renderer<'_, '_, '_> {
                 false,
                 scopes,
             )?;
+            let name = self.technology_entity(EntityKind::Tactic, &tactic.token, name)?;
             self.technology_join(&mut names, &name, Some(tactic.id) == last, scopes)?;
         }
         Ok(names)
@@ -435,6 +447,34 @@ impl Renderer<'_, '_, '_> {
         self.technology_condition(&conditions.allowed, selected)
     }
 
+    pub(super) fn technology_entity(
+        &self,
+        kind: EntityKind,
+        token: &[u8],
+        name: String,
+    ) -> Result<String, String> {
+        self.technology_entity_at(kind, token, None, name)
+    }
+
+    pub(super) fn technology_entity_at(
+        &self,
+        kind: EntityKind,
+        token: &[u8],
+        index: Option<i32>,
+        name: String,
+    ) -> Result<String, String> {
+        if !self.context.entity_links {
+            return Ok(name);
+        }
+        let token = std::str::from_utf8(c_string(token)).map_err(|_| {
+            format!(
+                "the {kind:?} link token {} is not UTF-8",
+                String::from_utf8_lossy(token)
+            )
+        })?;
+        Ok(mark_at(kind, token, index, &name))
+    }
+
     fn technology_join(
         &self,
         out: &mut String,
@@ -470,13 +510,28 @@ impl Renderer<'_, '_, '_> {
         names: &str,
         scopes: Scopes,
     ) -> Result<(), String> {
-        out.push_str(&self.char_native_text(
-            key,
-            &[(argument, Argument::Text(names))],
-            scopes,
-            false,
-        )?);
+        out.push_str(&self.linked_text(names, |names| {
+            self.char_native_text(key, &[(argument, Argument::Text(names))], scopes, false)
+        })?);
         out.push('\n');
         Ok(())
+    }
+
+    pub(super) fn linked_text(
+        &self,
+        names: &str,
+        render: impl Fn(&str) -> Result<String, String>,
+    ) -> Result<String, String> {
+        let text = render(names)?;
+        if !self.context.entity_links {
+            return Ok(text);
+        }
+        if unmark(&text) != render(&unmark(names))? {
+            return Err(
+                "the game's formatting changes the linked names in this line, so their links are not reproduced"
+                    .into(),
+            );
+        }
+        Ok(text)
     }
 }

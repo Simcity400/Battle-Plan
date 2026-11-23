@@ -1,5 +1,5 @@
 import { runAt } from '../../charts/series.ts';
-import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchReply, ResearchSlotState } from '../../generated/dashboard';
+import type { Artwork, ResearchBreakdownReply, ResearchCoverage, ResearchEntry, ResearchReply, ResearchSlotNow, ResearchSlotState } from '../../generated/dashboard';
 import type { ResearchSlotsReply } from '../../generated/dashboard';
 import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
@@ -42,12 +42,14 @@ export function withBreakdown(slots: readonly ResearchSlotHistory[], breakdown: 
   });
 }
 
+export const completedBy = (entry: ResearchEntry) => entry.endedByHour !== null && entry.endedByHour > entry.lastObservedHour + 1;
+
 export function researchEntryAt(slot: ResearchSlotHistory, state: ResearchSlotState, hour: number) {
   let low = 0, high = slot.entries.length;
   while (low < high) { const mid = (low + high) >>> 1; if (slot.entries[mid].firstObservedHour < (state.entryFirstObservedHour ?? -Infinity)) low = mid + 1; else high = mid; }
   for (; low < slot.entries.length && slot.entries[low].firstObservedHour === state.entryFirstObservedHour; low++) {
     const entry = slot.entries[low];
-    if (entry.token === state.token && entry.firstObservedHour <= hour && (entry.endedByHour === null || entry.endedByHour > hour))
+    if (entry.token === state.token && entry.databaseIndex === state.databaseIndex && entry.firstObservedHour <= hour && (entry.endedByHour === null || entry.endedByHour > hour))
       return { ...entry, lastObservedHour: Math.min(entry.lastObservedHour, hour), endedByHour: null, outcomeObservedHour: null, outcome: 'active' as const };
   }
   return null;
@@ -144,10 +146,14 @@ export function researchFolderAt(looks: ResearchFolderLooks, token: string,
 
 export type ResearchArtwork = Map<string, Artwork> & { readonly definitions: ReadonlyMap<string, ReadonlyMap<number, Artwork>> };
 
-export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definitions'> | null | undefined,
+export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definitions' | 'history'> | null | undefined,
   images: ReadonlyMap<string, Artwork>): ResearchArtwork {
   const artwork = new Map<string, Artwork>(), definitions = new Map<string, Map<number, Artwork>>();
   for (const art of reply?.artwork ?? []) artwork.set(art.token, { ...art, icon: images.get(art.token)?.icon ?? art.icon });
+  for (const [token, [only, ...more]] of researchRecordedTemplates(reply?.history)) {
+    const art = artwork.get(token);
+    if (art && only != null && !more.length) definitions.set(token, new Map([[only, art]]));
+  }
   for (const definition of reply?.definitions ?? []) {
     const art = artwork.get(definition.token);
     definitions.set(definition.token, (definitions.get(definition.token) ?? new Map<number, Artwork>()).set(definition.databaseIndex,
@@ -157,7 +163,7 @@ export function researchArtwork(reply: Pick<ResearchReply, 'artwork' | 'definiti
   return Object.assign(artwork, { definitions });
 }
 
-export function researchRecordedTemplates(history: ResearchHistory | null | undefined): Map<string, (number | null)[]> {
+export function researchRecordedTemplates(history: { slots: readonly { entries: readonly { token: string; databaseIndex: number }[] }[] } | null | undefined): Map<string, (number | null)[]> {
   const recorded = new Map<string, Set<number>>();
   for (const slot of history?.slots ?? []) for (const entry of slot.entries)
     recorded.set(entry.token, (recorded.get(entry.token) ?? new Set<number>()).add(entry.databaseIndex));
@@ -165,7 +171,13 @@ export function researchRecordedTemplates(history: ResearchHistory | null | unde
 }
 
 export function researchArt(artwork: ResearchArtwork, token: string, databaseIndex?: number | null): Artwork | undefined {
-  return (databaseIndex == null ? undefined : artwork.definitions.get(token)?.get(databaseIndex)) ?? artwork.get(token);
+  return databaseIndex == null ? artwork.get(token) : artwork.definitions.get(token)?.get(databaseIndex);
+}
+
+export function researchReadName(artwork: ResearchArtwork, read: ResearchSlotNow): string | null | undefined {
+  const { token, databaseIndex } = read.state;
+  if (token === null) return undefined;
+  return isUnjoinedResearch(read.state) ? read.definition?.name : researchArt(artwork, token, databaseIndex)?.name;
 }
 
 export function researchFolderList(looks: ResearchFolderLooks): ResearchFolderLook[] {
@@ -181,7 +193,7 @@ export function researchArtworkTokens(slots: readonly ResearchSlotHistory[] | nu
   if (moment) for (const slot of ordered) {
     const current = researchStateAt(slot, hour);
     const entry = current && slot.entries.find(entry => entry.outcome === 'active'
-      && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token);
+      && entry.firstObservedHour === current.entryFirstObservedHour && entry.token === current.token && entry.databaseIndex === current.databaseIndex);
     if (entry) tokens.push(entry.token);
     else if (isUnjoinedResearch(current)) tokens.push(current.token);
   }
@@ -207,11 +219,14 @@ function validState(state: ResearchSlotState): boolean {
   const details = state.details;
   return hour(state.firstHour) && hour(state.lastHour) && state.lastHour >= state.firstHour
     && (state.token === null || (typeof state.token === 'string' && state.token.length > 0 && state.token.length <= 512))
+    && (state.databaseIndex === null ? state.token === null : state.token !== null && templateIndex(state.databaseIndex))
     && (state.entryFirstObservedHour === null || hour(state.entryFirstObservedHour))
     && fixed(state.speedMultiplierRaw) && fixed(state.bankedDaysRaw) && fixed(state.appliedDaysRaw)
     && (state.aheadReductionYearsRaw === null || fixed(state.aheadReductionYearsRaw))
     && (details === null || (
-      (details.remainingDays === null || (Number.isInteger(details.remainingDays) && details.remainingDays >= 0 && details.remainingDays <= 4294967295))
+      (details.remainingDays === null ? details.estimateRaw === null : Number.isInteger(details.remainingDays) && details.remainingDays >= 0 && details.remainingDays <= 4294967295
+        && fixed(details.estimateRaw) && BigInt(details.estimateRaw) <= BigInt(details.remainingDays) * 100_000n
+        && BigInt(details.estimateRaw) > BigInt(details.remainingDays) * 100_000n - 100_000n)
       && (details.modifiers === null || (hour(details.modifiers.year)
         && fixed(details.modifiers.totalBonusRaw) && fixed(details.modifiers.aheadFactorRaw) && fixed(details.modifiers.minimumSpeedRaw)
         && Array.isArray(details.modifiers.components) && details.modifiers.components.length === 8
@@ -270,7 +285,11 @@ export function validateResearchSlots(input: unknown): ResearchSlotsReply {
   const valid = !!reply && typeof reply.tag === 'string' && (reply.readHour === null || hour(reply.readHour))
     && text(reply.missing) && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.slots) && reply.slots.every((slot, at) => Number.isInteger(slot.index) && (at === 0 || slot.index > reply.slots[at - 1].index)
-      && !!slot.state && validState(slot.state) && (slot.progress === null || validProgress(slot.progress)))
+      && !!slot.state && validState(slot.state) && (slot.progress === null || validProgress(slot.progress))
+      && (isUnjoinedResearch(slot.state)
+        ? !!slot.definition && slot.definition.token === slot.state.token && slot.definition.databaseIndex === slot.state.databaseIndex
+          && text(slot.definition.name, Infinity) && text(slot.definition.description, Infinity)
+        : slot.definition === null))
     && !!reply.grants;
   if (!valid) throw new Error('Research slots do not match this country and recording.');
   return { ...reply, grants: researchGrants(reply.grants) };

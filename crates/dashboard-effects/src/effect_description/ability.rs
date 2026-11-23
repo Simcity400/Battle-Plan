@@ -22,6 +22,7 @@ pub fn ability_description(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let selected = crate::triggers::event_scopes::project(scopes, 0);
     let mut text = String::new();

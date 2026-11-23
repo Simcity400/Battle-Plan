@@ -12,6 +12,7 @@ pub fn occupation_modifier_description(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let localise = |key: &[u8]| {
         context

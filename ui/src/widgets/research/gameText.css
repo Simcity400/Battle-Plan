@@ -1,0 +1,44 @@
+.game-text { margin: 0; color: var(--text); font-size: 0.78125rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.game-text-run.is-positive { color: var(--positive); }
+.game-text-run.is-negative { color: var(--error); }
+.game-text-run.is-warning { color: var(--warning); }
+.game-text-run.is-strong { font-weight: 600; }
+.game-text-run.is-accent { color: var(--accent-ink); }
+.game-text-run.is-muted { color: var(--muted); }
+.game-text-icon { display: inline-block; width: auto; height: 1.15em; margin-inline: 0.1em 0.3em; vertical-align: -0.2em; }
+.game-text-icon.is-missing { height: auto; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--quiet);
+  font-size: 0.75em; vertical-align: 0.05em; }
+.game-text-flag { padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--muted); font-size: 0.85em; }
+.game-text-link { display: inline; margin: 0; padding: 0; border: 0; border-radius: 2px; background: none; color: var(--accent-ink); font: inherit; font-weight: 600;
+  text-decoration: underline 1px color-mix(in srgb, var(--accent) 35%, transparent); text-underline-offset: 2px; cursor: pointer;
+  transition: color var(--t-fast) var(--ease), text-decoration-color var(--t-fast) var(--ease); }
+.game-text-link:hover { color: var(--accent); text-decoration-color: currentColor; }
+.game-text-link:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 1px; }
+.game-text-link.is-positive { color: var(--positive); }
+.game-text-link.is-negative { color: var(--error); }
+
+.technology-window { width: min(460px, calc(100vw - 24px)); }
+.entity-stats-window { width: min(340px, calc(100vw - 24px)); }
+.entity-stats { display: grid; gap: 10px; padding: 14px 16px 16px; }
+.entity-stats h3 { margin: 0; color: var(--text); font-size: 0.9375rem; font-weight: 650; }
+.entity-stats-list { display: grid; grid-template-columns: minmax(0, 1fr) max-content; margin: 0; font-size: 0.78125rem; font-variant-numeric: tabular-nums; }
+.entity-stats-list > div { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; column-gap: 16px; padding: 4px 0; }
+.entity-stats-list > div + div { box-shadow: 0 -1px 0 color-mix(in srgb, var(--text) 7%, transparent); }
+.entity-stats-list dt { min-width: 0; color: var(--muted); }
+.entity-stats-source { display: block; color: var(--quiet); font-size: 0.6875rem; }
+.entity-stats-list dd { margin: 0; color: var(--text); text-align: end; white-space: nowrap; }
+.entity-stats-missing { margin: 0; color: var(--quiet); font-size: 0.75rem; }
+
+.game-blocks { display: grid; gap: 6px; min-width: 0; font-size: 0.78125rem; line-height: 1.5; }
+.game-block-text { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.game-block-text.is-quiet { color: var(--muted); font-size: 0.75rem; }
+.game-block-text.is-quiet .game-text-run { color: inherit; font-weight: inherit; }
+.game-block-heading { margin: 6px 0 0; color: var(--text); font-weight: 600; }
+.game-block-heading:first-child { margin-top: 0; }
+.game-block-heading .game-text-run { color: inherit; font-weight: inherit; }
+.game-block-stats { display: grid; grid-template-columns: minmax(0, 1fr) max-content; margin: 0; font-variant-numeric: tabular-nums; }
+.game-block-stats > div { display: contents; }
+.game-block-stats dt, .game-block-stats dd { padding: 3px 0; border-top: 1px solid color-mix(in srgb, var(--text) 7%, transparent); }
+.game-block-stats dt { min-width: 0; color: var(--muted); }
+.game-block-stats dt .game-text-run { color: inherit; font-weight: inherit; }
+.game-block-stats dd { margin: 0; padding-left: 16px; color: var(--text); font-weight: 600; text-align: end; white-space: nowrap; }

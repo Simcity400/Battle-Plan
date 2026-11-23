@@ -59,7 +59,7 @@ export function useResearchSlots(widget: WidgetSpec, runtime: WidgetRuntime, act
   const latest = { get current() { const read = now.current(), hour = now.shownAt(); return read && hour !== null ? { ...read, hour } : undefined; },
     inspect: (slot: number) => inspectedSlot(now.inspected(), slot) };
   const data = useMemo<ResearchSlotsAt | undefined>(() => shown.data && fallback !== null ? { ...shown.data, hour: fallback } : undefined, [shown.data, fallback]);
-  return { ...shown, root: attach, data, latest, hourNow: () => headHour() ?? fallback ?? 0 };
+  return { ...shown, root: attach, data, latest, feed, hourNow: () => headHour() ?? fallback ?? 0 };
 }
 
 export function useResearchChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {

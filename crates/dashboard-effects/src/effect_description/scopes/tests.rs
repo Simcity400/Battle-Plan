@@ -198,6 +198,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
             evaluator: OnceCell::new(),
             out: Description::default(),
             scripted_stack: Vec::new(),
+            concise: None,
         };
         let item = content_reader_parser::parser::parse(b"every_state_division={}")
             .unwrap()

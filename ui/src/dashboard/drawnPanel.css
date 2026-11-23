@@ -7,11 +7,8 @@
   height: 0;
   overflow: hidden;
 }
-.research-now-cell > .is-progress, .special-project-now-left { text-align: end; }
+.research-now-cell > .is-progress { text-align: end; }
 .doctrine-mastery-values dd,
 .research-now-cell.is-idle small { flex: 1; }
-.project-value-widths { display: grid; visibility: hidden; height: 0; overflow: hidden; }
-.project-value-widths > *, .special-project-now-left > [data-paint] { align-self: stretch; }
-.project-value-widths > * { grid-area: 1 / 1; }
 .research-now-label { display: flex; gap: .25em; }
 .research-now-label > [data-paint] { flex: 1; }

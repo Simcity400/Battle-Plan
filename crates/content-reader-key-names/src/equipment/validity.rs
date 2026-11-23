@@ -211,6 +211,15 @@ impl Database {
             .map(|(_, module)| module.as_slice())
             .filter(|module| !module.eq_ignore_ascii_case(b"empty"))
     }
+
+    pub fn default_modules<'a>(&'a self, equipment: &'a Equipment) -> Result<Vec<(&'a [u8], &'a [u8])>, String> {
+        let chain = self.chain(self.index_of(equipment)?)?;
+        Ok(equipment.module_slots.iter().filter_map(|slot| Some((slot.as_slice(), self.default_module(&chain, slot)?))).collect())
+    }
+
+    pub fn lineage(&self, equipment: &Equipment) -> Result<Vec<&Equipment>, String> {
+        Ok(self.chain(self.index_of(equipment)?)?.into_iter().map(|at| &self.equipment[at]).collect())
+    }
     fn dependency_graph(&self, equipment: &Equipment) -> BTreeMap<Node, Vec<Edge>> {
         let mut categories: Vec<BTreeSet<Token>> = equipment
             .module_slot_rules

@@ -1,4 +1,5 @@
 use super::*;
+use crate::effect_description::{EntityKind, IterationScopes, OutputSection};
 use replay_data::rows::{
     ProjectProgramRow, ProvinceRow, RaidFacilityRow, ScientistRow, ScientistSkillRow, tables,
 };
@@ -12,6 +13,16 @@ const PROGRAM_BUILDING: u64 = mask::<ProjectProgramRow>(&["building"]);
 
 #[cfg(test)]
 mod tests;
+
+fn push_section(sections: &mut Vec<OutputSection>, heading: Option<String>, text: &str) {
+    let text = text.trim_end_matches('\n');
+    if !text.is_empty() {
+        sections.push(OutputSection {
+            heading,
+            text: text.to_owned(),
+        });
+    }
+}
 
 fn trailing(text: &mut String, count: usize) {
     if text.is_empty() {
@@ -149,12 +160,7 @@ impl Renderer<'_, '_, '_> {
         }
         trailing(&mut text, 1);
         if !output.equipment_bonus.is_empty() {
-            let mut bonus = item.clone();
-            bonus.key = Some(b"bonus".to_vec());
-            bonus.value = content_reader_parser::parser::Value::Block(output.equipment_bonus.clone());
-            let mut adapter = item.clone();
-            adapter.value = content_reader_parser::parser::Value::Block(vec![bonus]);
-            match self.units_equipment_bonus(&adapter, scopes) {
+            match self.project_equipment_bonus(item, &output.equipment_bonus, scopes) {
                 Ok(bonus) => text.push_str(&bonus),
                 Err(why) => self.project_output_refusal(why),
             }
@@ -192,6 +198,225 @@ impl Renderer<'_, '_, '_> {
             }
         }
         Ok(indent_nonempty_lines(&text, 2))
+    }
+
+    pub(in crate::effect_description) fn project_iteration_body(
+        &mut self,
+        output: &content_reader_military::special_projects::Output,
+        scopes: Scopes,
+        owner: u32,
+        id: u32,
+        iteration: IterationScopes,
+    ) -> Result<(Option<String>, Vec<OutputSection>), String> {
+        let country = self
+            .context
+            .world()?
+            .slot(owner)
+            .ok_or("country links lacks project owner")?;
+        let project = self
+            .evaluator()?
+            .fresh_country_scope(Some(0), None)
+            .map_err(|why| why.to_string())?;
+        let project = self
+            .evaluator()?
+            .repoint_this(project, Scope::Project { owner, id })
+            .map_err(|why| why.to_string())?;
+        let mut sections = Vec::new();
+        if !output.country_effects.is_empty() {
+            let selected = self
+                .evaluator()?
+                .fresh_country_scope(Some(country), Some(project))
+                .map_err(|why| why.to_string())?;
+            self.iteration_effects(
+                &mut sections,
+                &output.country_effects,
+                selected,
+                iteration.country_seed,
+                "country effects",
+            );
+        }
+        if !output.scientist_effects.is_empty() {
+            match iteration.scientist {
+                Ok(Some(character)) => {
+                    let selected = self
+                        .evaluator()?
+                        .fresh_country_scope(Some(0), Some(project))
+                        .map_err(|why| why.to_string())?;
+                    let selected = self
+                        .evaluator()?
+                        .repoint_this(selected, Scope::Character(character))
+                        .map_err(|why| why.to_string())?;
+                    self.iteration_effects(
+                        &mut sections,
+                        &output.scientist_effects,
+                        selected,
+                        iteration.scientist_seed,
+                        "scientist effects",
+                    );
+                }
+                Ok(None) => {}
+                Err(why) => self.refuse("scientist effects", why),
+            }
+        }
+        if !output.facility_state_effects.is_empty() {
+            match iteration.facility {
+                Ok(Some((province, state))) => {
+                    let selected = self
+                        .evaluator()?
+                        .fresh_country_scope(Some(0), Some(project))
+                        .map_err(|why| why.to_string())?;
+                    let selected = self
+                        .evaluator()?
+                        .repoint_this(selected, Scope::State(state))
+                        .map_err(|why| why.to_string())?;
+                    self.evaluator()?.store_description_temp(
+                        b"facility_province_id".to_vec(),
+                        i64::from(province) * 100_000,
+                    );
+                    self.iteration_effects(
+                        &mut sections,
+                        &output.facility_state_effects,
+                        selected,
+                        iteration.state_seed,
+                        "state effects",
+                    );
+                }
+                Ok(None) => {}
+                Err(why) => self.refuse("state effects", why),
+            }
+        }
+        if !output.sub_unit_bonus.is_empty() {
+            match self.units_bonus_description(&output.sub_unit_bonus, scopes) {
+                Ok(text) => self.iteration_section(
+                    &mut sections,
+                    Some(b"SPECIAL_PROJECT_REWARD_UNIT_BONUS"),
+                    &text,
+                    scopes,
+                    "unit bonus",
+                ),
+                Err(why) => self.refuse("unit bonus", why),
+            }
+        }
+        if !output.equipment_bonus.is_empty() {
+            let blank = Item {
+                key: None,
+                key_quoted: false,
+                operator: Default::default(),
+                value: content_reader_parser::parser::Value::Block(Vec::new()),
+                kind: content_reader_parser::parser::Kind::Open,
+            };
+            match self.project_equipment_bonus(&blank, &output.equipment_bonus, scopes) {
+                Ok(text) => {
+                    self.iteration_section(&mut sections, None, &text, scopes, "equipment bonus")
+                }
+                Err(why) => self.refuse("equipment bonus", why),
+            }
+        }
+        for (kind, lists, heading, what) in [
+            (
+                0,
+                &output.enable_subunits,
+                b"SPECIAL_PROJECT_REWARD_SUBUNITS".as_slice(),
+                "sub-unit unlocks",
+            ),
+            (
+                2,
+                &output.enable_equipment_modules,
+                b"SPECIAL_PROJECT_REWARD_EQUIPMENT_MODULE".as_slice(),
+                "module unlocks",
+            ),
+            (
+                1,
+                &output.enable_equipments,
+                b"SPECIAL_PROJECT_REWARD_EQUIPMENT".as_slice(),
+                "equipment unlocks",
+            ),
+        ] {
+            match self.project_output_unlocks(lists, kind, country, scopes) {
+                Ok(names) if !names.is_empty() => {
+                    self.iteration_section(&mut sections, Some(heading), &names.join("\n"), scopes, what)
+                }
+                Ok(_) => {}
+                Err(why) => self.refuse(what, why),
+            }
+        }
+        let heading = if sections.is_empty() {
+            None
+        } else {
+            Some(self.char_native_text(b"SPECIAL_PROJECT_REWARDS_HEADER_TEXT", &[], scopes, false)?)
+        };
+        Ok((heading, sections))
+    }
+
+    fn iteration_effects(
+        &mut self,
+        sections: &mut Vec<OutputSection>,
+        items: &[Item],
+        selected: Scopes,
+        seed: Option<u32>,
+        what: &str,
+    ) {
+        if let Err(why) = self.seed_iteration_scope(selected, seed) {
+            self.refuse(what, why);
+            return;
+        }
+        let mut text = String::new();
+        match self.project_effect_output(&mut text, items, selected) {
+            Ok(()) => push_section(sections, None, &text),
+            Err(why) => self.refuse(what, why),
+        }
+    }
+
+    fn seed_iteration_scope(&self, selected: Scopes, seed: Option<u32>) -> Result<(), String> {
+        let Some(seed) = seed else {
+            return Ok(());
+        };
+        let at = selected
+            .cursor
+            .ok_or("iteration effect scope has no scope graph")?;
+        let mut graph = self.graph.borrow_mut();
+        let scope = graph
+            .scopes
+            .get_mut(at)
+            .ok_or("iteration effect scope is absent from its graph")?;
+        scope.random_seed = crate::scripted_text::random::scope_seed(seed);
+        scope.random_counter = crate::scripted_text::random::scope_counter(seed);
+        Ok(())
+    }
+
+    fn iteration_section(
+        &mut self,
+        sections: &mut Vec<OutputSection>,
+        heading: Option<&[u8]>,
+        text: &str,
+        scopes: Scopes,
+        what: &str,
+    ) {
+        let heading = match heading
+            .map(|key| self.char_native_text(key, &[], scopes, false))
+            .transpose()
+        {
+            Ok(heading) => heading,
+            Err(why) => {
+                self.refuse(what, why);
+                return;
+            }
+        };
+        push_section(sections, heading, text);
+    }
+
+    fn project_equipment_bonus(
+        &self,
+        item: &Item,
+        equipment_bonus: &[Item],
+        scopes: Scopes,
+    ) -> Result<String, String> {
+        let mut bonus = item.clone();
+        bonus.key = Some(b"bonus".to_vec());
+        bonus.value = content_reader_parser::parser::Value::Block(equipment_bonus.to_vec());
+        let mut adapter = item.clone();
+        adapter.value = content_reader_parser::parser::Value::Block(vec![bonus]);
+        self.units_equipment_bonus(&adapter, scopes)
     }
 
     fn project_output_refusal(&mut self, why: String) {
@@ -362,6 +587,7 @@ impl Renderer<'_, '_, '_> {
                         false,
                         scopes,
                     )
+                    .and_then(|shown| self.technology_entity(EntityKind::SubUnit, name.as_bytes(), shown))
                 })
                 .collect();
         }
@@ -413,12 +639,14 @@ impl Renderer<'_, '_, '_> {
                         name
                     }
                 };
-                names.push(self.technology_country_name(
-                    name,
-                    self.context.perspective,
-                    false,
-                    scopes,
-                )?);
+                let shown =
+                    self.technology_country_name(name, self.context.perspective, false, scopes)?;
+                let entity = if kind == 1 {
+                    EntityKind::Equipment
+                } else {
+                    EntityKind::Module
+                };
+                names.push(self.technology_entity(entity, token, shown)?);
             }
         }
         Ok(names)

@@ -1,4 +1,5 @@
 use super::*;
+use crate::effect_description::entity_links::EntityKind;
 use replay_data::rows::{
     BuildingRow, CountryAppearanceRow, RaidFacilityRow, TechnologyDefinitionRow,
 };
@@ -13,8 +14,15 @@ mod project_output;
 #[cfg(test)]
 mod tests;
 
+pub(super) struct TechBonus {
+    pub list: String,
+    pub ahead: i64,
+    pub bonus: i64,
+    pub uses: i32,
+}
+
 impl Renderer<'_, '_, '_> {
-    fn technology_catalog(&self) -> Result<&content_reader_military::technology::Catalog, String> {
+    pub(in crate::effect_description) fn technology_catalog(&self) -> Result<&content_reader_military::technology::Catalog, String> {
         self.context
             .content
             .doctrines
@@ -30,6 +38,81 @@ impl Renderer<'_, '_, '_> {
         scopes: Scopes,
         progress: bool,
     ) -> Result<String, String> {
+        let Some(gains) = self.breakthrough_gains(item, scopes, progress)? else {
+            return Ok(String::new());
+        };
+        let mut rows = String::new();
+        for (name, amount) in gains {
+            let mut row = self.char_native_text(
+                if progress {
+                    b"ADD_BREAKTHROUGH_PROGRESS_EFFECT_SPECIALIZATION"
+                } else {
+                    b"ADD_BREAKTHROUGH_POINTS_EFFECT_SPECIALIZATION"
+                },
+                &[
+                    ("SPECIALIZATION", Argument::Text(&name)),
+                    ("AMOUNT", amount),
+                ],
+                scopes,
+                false,
+            )?;
+            if !row.ends_with('\n') {
+                row.push('\n');
+            }
+            rows.push_str(&row);
+        }
+        let mut header = self.char_native_text(
+            if progress {
+                b"ADD_BREAKTHROUGH_PROGRESS_EFFECT_DESC"
+            } else {
+                b"ADD_BREAKTHROUGH_POINTS_EFFECT_DESC"
+            },
+            &[],
+            scopes,
+            false,
+        )?;
+        if !header.ends_with('\n') {
+            header.push('\n');
+        }
+        header.push_str(&indent_nonempty_lines(&rows, 2));
+        if !header.ends_with('\n') {
+            header.push('\n');
+        }
+        Ok(header)
+    }
+
+    fn breakthrough_amount(&self, field: Option<&Item>) -> Result<i64, String> {
+        let Some(field) = field else {
+            return Ok(0);
+        };
+        if let Some(value) = content_reader_script::modifiers::read_fixed5(field) {
+            return Ok(value);
+        }
+        let name = std::str::from_utf8(content_reader_parser::parser::c_string(
+            field.value.scalar().unwrap_or_default(),
+        ))
+        .map_err(|_| "breakthrough progress constant is not UTF-8")?;
+        let parts: Vec<_> = name.split('.').collect();
+        let constants = self.context.world()?.script_constants()?;
+        if let Some(value) = constants.fixed(&parts)? {
+            return Ok(value);
+        }
+        Err(match constants.value(&parts) {
+            content_reader_script::scoped_variable::Constant::Unset(why) => {
+                format!("breakthrough progress {name} is not a number and its constant is unread: {why}")
+            }
+            content_reader_script::scoped_variable::Constant::Value(_) => {
+                format!("breakthrough progress {name} is not a fixed-point script constant")
+            }
+        })
+    }
+
+    pub(super) fn breakthrough_gains(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+        progress: bool,
+    ) -> Result<Option<Vec<(String, Argument<'static>)>>, String> {
         let fields = children(item);
         let mut tokens = Vec::new();
         let world = self.context.world()?;
@@ -67,7 +150,7 @@ impl Renderer<'_, '_, '_> {
             tokens.push(token);
         }
         if tokens.is_empty() {
-            return Ok(String::new());
+            return Ok(None);
         }
         let raw_country = match scopes.this {
             Scope::Country(country) | Scope::CountryLeader { country, .. } => {
@@ -76,61 +159,27 @@ impl Renderer<'_, '_, '_> {
             _ => 0,
         };
         let amount = field(fields, "value");
-        let mut rows = String::new();
+        let amount = if progress {
+            Argument::Fixed5(self.breakthrough_amount(amount)?)
+        } else {
+            Argument::Int32(
+                amount
+                    .and_then(|field| field.value.scalar())
+                    .map(integer)
+                    .unwrap_or(0),
+            )
+        };
+        let mut gains = Vec::new();
         for token in content_reader_military::special_projects::specialization_order(&tokens) {
             let operand = world
                 .token(token)
                 .map_err(|why| why.to_string())?
                 .ok_or("lexical tokens lacks specialization text")?;
-            let Some(name) = self.char_specialization_name(operand, raw_country, scopes)? else {
-                continue;
-            };
-            let amount = if progress {
-                Argument::Fixed5(amount.map(content_reader_script::modifiers::stored).unwrap_or(0))
-            } else {
-                Argument::Int32(
-                    amount
-                        .and_then(|field| field.value.scalar())
-                        .map(integer)
-                        .unwrap_or(0),
-                )
-            };
-            let mut row = self.char_native_text(
-                if progress {
-                    b"ADD_BREAKTHROUGH_PROGRESS_EFFECT_SPECIALIZATION"
-                } else {
-                    b"ADD_BREAKTHROUGH_POINTS_EFFECT_SPECIALIZATION"
-                },
-                &[
-                    ("SPECIALIZATION", Argument::Text(&name)),
-                    ("AMOUNT", amount),
-                ],
-                scopes,
-                false,
-            )?;
-            if !row.ends_with('\n') {
-                row.push('\n');
+            if let Some(name) = self.char_specialization_name(operand, raw_country, scopes)? {
+                gains.push((name, amount));
             }
-            rows.push_str(&row);
         }
-        let mut header = self.char_native_text(
-            if progress {
-                b"ADD_BREAKTHROUGH_PROGRESS_EFFECT_DESC"
-            } else {
-                b"ADD_BREAKTHROUGH_POINTS_EFFECT_DESC"
-            },
-            &[],
-            scopes,
-            false,
-        )?;
-        if !header.ends_with('\n') {
-            header.push('\n');
-        }
-        header.push_str(&indent_nonempty_lines(&rows, 2));
-        if !header.ends_with('\n') {
-            header.push('\n');
-        }
-        Ok(header)
+        Ok(Some(gains))
     }
 
 
@@ -172,11 +221,20 @@ impl Renderer<'_, '_, '_> {
     }
 
 
-    pub(super) fn project_progress(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+    pub(super) fn project_progress_amount(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<(i64, u32, u32), String> {
         let amount = self.scoped_value(scalar_operand(item)?, scopes)?;
         let Scope::Project { owner, id } = scopes.this else {
             return Err("add_project_progress_ratio requires the PROJECT carrier".into());
         };
+        Ok((amount, owner, id))
+    }
+
+    pub(super) fn project_progress(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        let (amount, owner, id) = self.project_progress_amount(item, scopes)?;
         let name = self.project_name(owner, id)?;
         self.char_native_text(
             b"EFFECT_ADD_SPECIAL_PROJECT_PROGRESS",
@@ -410,20 +468,21 @@ impl Renderer<'_, '_, '_> {
         &self,
         operand: &[u8],
         scopes: Scopes,
-    ) -> Result<Option<&content_reader_military::technology::Definition>, String> {
+    ) -> Result<Option<(&content_reader_military::technology::Definition, Option<i32>)>, String> {
         let catalog = self.technology_catalog()?;
         if let Some(template) = catalog.get(operand)? {
-            return Ok(Some(template));
+            return Ok(Some((template, None)));
         }
         if !operand.starts_with(b"var:") {
             return Ok(None);
         }
         let handle = (self.scoped_value(operand, scopes)? / 100_000) as u32;
         let rows = self.complete::<tables::TechnologyDefinitions>(TECHNOLOGY)?;
-        match find(rows, |row| row.technology_handle == handle)? {
-            Some(row) => catalog.get(&row.id),
-            None => Ok(None),
-        }
+        let Some(row) = find(rows, |row| row.technology_handle == handle)? else { return Ok(None) };
+        let template = catalog.template(row.database_index, &row.id)?.ok_or_else(|| {
+            format!("technology {}: recorded template {} is absent from the content", String::from_utf8_lossy(&row.id), row.database_index)
+        })?;
+        Ok(Some((template, Some(row.database_index))))
     }
 
     fn technology_country_name(
@@ -494,23 +553,85 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .filter(|field| !field.keyword_is("popup"))
         {
-            let Some(template) =
+            let Some((template, index)) =
                 self.technology_template(field.key.as_deref().unwrap_or_default(), scopes)?
             else {
                 continue;
             };
             let name = self.technology_name(template, country, scopes, false)?;
-            out.push_str(&self.char_native_line(
-                b"EFFECT_GIVE_TECHNOLOGY",
-                &[("NAME", Argument::Text(&name))],
-                scopes,
-                false,
-            )?);
+            let name = self.technology_entity_at(EntityKind::Technology, &template.id, index, name)?;
+            out.push_str(&self.linked_text(&name, |name| {
+                self.char_native_line(
+                    b"EFFECT_GIVE_TECHNOLOGY",
+                    &[("NAME", Argument::Text(name))],
+                    scopes,
+                    false,
+                )
+            })?);
         }
         Ok(out)
     }
 
     pub(super) fn technology_bonus(&self, item: &Item, scopes: Scopes) -> Result<String, String> {
+        let TechBonus {
+            list,
+            ahead,
+            bonus,
+            uses,
+        } = self.technology_bonus_facts(item, scopes)?;
+        if ahead == 0 && bonus == 0 {
+            return Ok(String::new());
+        }
+        let uses_text = self.char_native_text(
+            b"EFFECT_TECH_BONUS_USES",
+            &[("USES", Argument::Int32(uses))],
+            scopes,
+            false,
+        )?;
+        self.linked_text(&list, |list| {
+            if ahead == 0 {
+                self.char_native_line(
+                    b"EFFECT_ADD_TECH_BONUS_BONUS_ONLY",
+                    &[
+                        ("LIST", Argument::Text(list)),
+                        ("BONUS", Argument::Fixed5(bonus)),
+                        ("USES", Argument::Text(&uses_text)),
+                    ],
+                    scopes,
+                    false,
+                )
+            } else if bonus == 0 {
+                self.char_native_line(
+                    b"EFFECT_ADD_TECH_BONUS_AHEAD_ONLY",
+                    &[
+                        ("LIST", Argument::Text(list)),
+                        ("AHEAD", Argument::Fixed5(ahead)),
+                        ("USES", Argument::Text(&uses_text)),
+                    ],
+                    scopes,
+                    false,
+                )
+            } else {
+                self.char_native_line(
+                    b"EFFECT_ADD_TECH_BONUS",
+                    &[
+                        ("LIST", Argument::Text(list)),
+                        ("AHEAD", Argument::Fixed5(ahead)),
+                        ("BONUS", Argument::Fixed5(bonus)),
+                        ("USES", Argument::Int32(uses)),
+                    ],
+                    scopes,
+                    false,
+                )
+            }
+        })
+    }
+
+    pub(super) fn technology_bonus_facts(
+        &self,
+        item: &Item,
+        scopes: Scopes,
+    ) -> Result<TechBonus, String> {
         let fields = children(item);
         let technology: Vec<_> = fields
             .iter()
@@ -531,10 +652,11 @@ impl Renderer<'_, '_, '_> {
         };
         let mut list = String::new();
         for (index, entry) in technology.iter().enumerate() {
-            if let Some(template) =
+            if let Some((template, template_index)) =
                 self.technology_template(entry.value.scalar().unwrap_or_default(), scopes)?
             {
-                list.push_str(&self.technology_name(template, country, scopes, true)?);
+                let name = self.technology_name(template, country, scopes, true)?;
+                list.push_str(&self.technology_entity_at(EntityKind::Technology, &template.id, template_index, name)?);
                 if index + 1 < technology.len() || !category.is_empty() {
                     list.push_str(", ");
                 }
@@ -565,50 +687,12 @@ impl Renderer<'_, '_, '_> {
             .and_then(|field| field.value.scalar())
             .map(integer)
             .unwrap_or(1);
-        if ahead == 0 && bonus == 0 {
-            return Ok(String::new());
-        }
-        let uses_text = self.char_native_text(
-            b"EFFECT_TECH_BONUS_USES",
-            &[("USES", Argument::Int32(uses))],
-            scopes,
-            false,
-        )?;
-        if ahead == 0 {
-            self.char_native_line(
-                b"EFFECT_ADD_TECH_BONUS_BONUS_ONLY",
-                &[
-                    ("LIST", Argument::Text(&list)),
-                    ("BONUS", Argument::Fixed5(bonus)),
-                    ("USES", Argument::Text(&uses_text)),
-                ],
-                scopes,
-                false,
-            )
-        } else if bonus == 0 {
-            self.char_native_line(
-                b"EFFECT_ADD_TECH_BONUS_AHEAD_ONLY",
-                &[
-                    ("LIST", Argument::Text(&list)),
-                    ("AHEAD", Argument::Fixed5(ahead)),
-                    ("USES", Argument::Text(&uses_text)),
-                ],
-                scopes,
-                false,
-            )
-        } else {
-            self.char_native_line(
-                b"EFFECT_ADD_TECH_BONUS",
-                &[
-                    ("LIST", Argument::Text(&list)),
-                    ("AHEAD", Argument::Fixed5(ahead)),
-                    ("BONUS", Argument::Fixed5(bonus)),
-                    ("USES", Argument::Int32(uses)),
-                ],
-                scopes,
-                false,
-            )
-        }
+        Ok(TechBonus {
+            list,
+            ahead,
+            bonus,
+            uses,
+        })
     }
 
     fn doctrine_name(

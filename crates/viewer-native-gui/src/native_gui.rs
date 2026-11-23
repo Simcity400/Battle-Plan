@@ -4134,7 +4134,7 @@ impl Assets {
         while index < chars.len() {
             match native_text::special(&chars[index..]) {
                 Some((length, native_text::Special::Icon(name))) => {
-                    let (names, _) = native_text::icon_lookup(&name);
+                    let (names, _) = content_reader_localisation::localisation::icon_lookup(&name);
                     self.sprites.extend(names);
                     index += length;
                 }

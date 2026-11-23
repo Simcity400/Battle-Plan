@@ -14,6 +14,9 @@ dashboard_base::register_products! {
 dashboard_base::register_hourly_products! {
     SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTDETAILSAT => crate::products::special_projects::details::SpecialProjectDetailsAt,
     SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTEFFECTSAT => crate::products::special_projects::details::SpecialProjectEffectsAt,
+    SPECIAL_PROJECTS_DETAILS_SPECIALPROJECTITERATIONAT => crate::products::special_projects::details::SpecialProjectIterationAt,
+    TECHNOLOGY_EFFECTS_TECHNOLOGYEFFECTSAT => crate::products::technology_effects::TechnologyEffectsAt,
+    ENTITY_STATS_ENTITYSTATSAT => crate::products::entity_stats::EntityStatsAt,
 }
 
 use dashboard_base::{Source, products::at_hour::exact_panel};

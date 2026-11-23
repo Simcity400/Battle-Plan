@@ -279,7 +279,7 @@ pub(crate) fn reply(
                 "Mission name unavailable".to_owned()
             });
             let icon = match &names.strip {
-                Ok((key, recorded)) => Some(SpriteFrame { key: key.clone(), frame: bit as u32, recorded: recorded.clone() }),
+                Ok((key, recorded)) => Some(SpriteFrame { key: key.clone(), frame: bit as u32, recorded: recorded.clone(), text: None }),
                 Err(why) => {
                     *refused.entry(format!("icon: {why}")).or_default() += 1;
                     None
