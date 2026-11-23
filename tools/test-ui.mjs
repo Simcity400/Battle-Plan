@@ -252,10 +252,12 @@ export async function executeGroup(group, root = repositoryRoot, output = proces
     process.chdir(base);
     let failed = false, unfinished = [];
     const running = new Set();
+    const wrapper = event => event.nesting === 0 && event.name === event.file;
     const tests = run({ files: group.files.map(file => resolve(base, file)), concurrency: group.concurrency,
-      execArgv: ['--experimental-strip-types'], signal });
-    tests.on('test:dequeue', event => { if (event.nesting === 0) running.add(event.file); });
-    tests.on('test:complete', event => { if (event.nesting === 0) running.delete(event.file); });
+      execArgv: ['--experimental-strip-types'], signal, setup: stream => {
+        stream.on('test:dequeue', event => { if (wrapper(event)) running.add(event.file); });
+        stream.on('test:complete', event => { if (wrapper(event)) running.delete(event.file); });
+      } });
     signal?.addEventListener('abort', () => { unfinished = [...running].map(file => relative(base, file).split(sep).join('/')).sort(); }, { once: true });
     tests.on('test:fail', () => { failed = true; });
     for await (const chunk of tests.compose(spec)) output.write(chunk);

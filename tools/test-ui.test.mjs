@@ -129,7 +129,12 @@ test('the production group runner reports actual Node test failures, and a group
 test('synthetic pass', () => { assert.equal(process.cwd(), ${JSON.stringify(root)}, 'tests run from the root, wherever the runner was started'); });`);
     await writeFile(resolve(root, 'fail.test.mjs'), "import test from 'node:test'; test('synthetic failure', () => { throw new Error('expected synthetic failure'); });");
     await writeFile(resolve(root, 'leak.test.mjs'), `import test from 'node:test'; import { writeFileSync } from 'node:fs';
-test('synthetic leak', () => { new MessageChannel().port1.on('message', () => {}); writeFileSync(new URL('./leaked', import.meta.url), ''); });`);
+test('synthetic leak', () => {
+  const { port1 } = new MessageChannel();
+  port1.on('message', () => {});
+  process.stdin.on('end', () => port1.close()).resume();
+  writeFileSync(new URL('./leaked', import.meta.url), '');
+});`);
     const runner = pathToFileURL(resolve(repositoryRoot, 'tools/test-ui.mjs')).href;
     await writeFile(resolve(root, 'driver.mjs'), `
 import { executeGroup } from ${JSON.stringify(runner)};
