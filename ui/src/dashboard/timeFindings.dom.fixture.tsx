@@ -150,7 +150,7 @@ Object.assign(window, { findings: {
   identityToken: (originOffset: number) => datedToken({ campaign: 'campaign', branch: '1', tag: 'GER', originOffset }),
   day: (hour: number) => dayLabel(hour),
   content: (token: string) => contentKey(token),
-  lineToken: (tag: string, key: string) => productionLineToken('campaign', '1', tag, key),
+  lineToken: (_tag: string, key: string) => productionLineToken('campaign', '1', key),
   async preload(kinds: string[]) { await Promise.all(kinds.map(kind => loadWidgetRenderer(kind))); },
   async mount(scene: Scene) {
     root?.unmount();

@@ -78,17 +78,18 @@ export function validateBreakdownReply(data: unknown): ProductionLineBreakdownRe
   return reply;
 }
 
-export const productionLineToken = (campaign: string, branch: string, tag: string, key: string) =>
-  setToken(campaignToken(campaign, JSON.stringify([branch, tag, key])));
+export const productionLineToken = (campaign: string, branch: string, key: string) =>
+  setToken(campaignToken(campaign, JSON.stringify([branch, key])));
 
-export function productionLineKey(campaign: string, branch: string, tag: string, token: unknown): string | null {
+export function productionLineKey(campaign: string, branch: string, token: unknown): string | null {
   if (typeof token !== 'string') return null;
   const value = contentKey(token);
   const prefix = campaignToken(campaign, '');
   if (!value.startsWith(prefix)) return null;
   try {
     const parts: unknown = JSON.parse(value.slice(prefix.length));
-    return Array.isArray(parts) && parts.length === 3 && parts[0] === branch && parts[1] === tag && typeof parts[2] === 'string' && parts[2] !== '' ? parts[2] : null;
+    const key = Array.isArray(parts) && parts[0] === branch ? parts.length === 2 ? parts[1] : parts.length === 3 && typeof parts[1] === 'string' ? parts[2] : null : null;
+    return typeof key === 'string' && key !== '' ? key : null;
   } catch { return null; }
 }
 

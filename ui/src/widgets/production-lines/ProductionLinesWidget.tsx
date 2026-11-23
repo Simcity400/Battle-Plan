@@ -114,7 +114,7 @@ export default function ProductionLinesWidget({ widget, runtime, active, onDiagn
   const window = track ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const shown: [number, number] = widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : extent;
   const lineTag = pinned ? drillControl.gate.country?.holder?.tag : tag && isSlotKey(tag) ? drillLines.data?.tag : tag;
-  const pinnedKey = pinned && track && lineTag ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, lineTag, options.line) : null;
+  const pinnedKey = pinned && track ? productionLineKey(track.source.metadata.campaignKey, track.branch.id, options.line) : null;
   const key = pinned ? pinnedKey : opened?.key ?? null;
   const part: Part = (pinned ? options.show : opened?.part) === 'output' ? 'output' : 'efficiency';
   const group = factor ?? (pinned && typeof options.factor === 'string' && options.factor ? options.factor : part);

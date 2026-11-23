@@ -6,7 +6,7 @@ import { productionLineLabel, productionLineToken } from './productionData';
 function useLineChoices(widget: WidgetSpec, runtime: WidgetRuntime) {
   const { data, track } = useProductionLines(widget, runtime, true);
   return {
-    line: data && track ? data.lines.map((line, index) => ({ value: productionLineToken(track.source.metadata.campaignKey, data.branchId, data.tag, line.key),
+    line: data && track ? data.lines.map((line, index) => ({ value: productionLineToken(track.source.metadata.campaignKey, data.branchId, line.key),
       label: productionLineLabel(data, line, index, track.branch.lastHour) })) : [],
     factor: FACTORS,
   };

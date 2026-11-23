@@ -122,7 +122,9 @@ export function useKeyedSeries(client: DashboardClient, clock: PlaybackControlle
   const content = useContentRevision(client);
   const reads = (spec?.keys ?? []).flatMap(key => {
     const hours = new Set([headFollowed ? null : headHour, hoverHour].filter(hour => hour !== null));
-    return [...hours].map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
+    const spans = spec?.within?.get(keyId(key));
+    return [...hours].filter(hour => !spans || spans.some(span => span.firstHour <= hour && hour <= span.lastHour))
+      .map(hour => ({ country: countryFromKey(key.tag), part: key.part, hour }));
   });
   const stateRead = useViewRead<typeof reads, KeyedStates>(enabled && reads.length ? JSON.stringify([ownerKey, content]) : null,
     reads, JSON.stringify(reads), active, (at, signal, publish, restart) => loadProduct(client, request('series-state', { reads: at }),
