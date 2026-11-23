@@ -101,8 +101,9 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const [owner] = useState(() => pinnedOwners--);
   const pipe = useFollowedWidget(pipeline, (following || pinned) && track ? headKey(widgetKey, track.axisOffset, region) : null,
     { offset: track?.axisOffset ?? 0, pin: pinned ? hour : null, bounds, widget: widgetKey, key: `${region.widget.kind}|${product}|${paramsKey}` });
-  const query = useMemo(() => following ? gate.follow({ ...params, panel: product, branchId: track!.branch.id }) : null,
-    [following, product, paramsKey, track?.branch.id, gate.follow]);
+  const checked = useMemo(() => following ? gate.checkFollow({ ...params, panel: product, branchId: track!.branch.id }) : null,
+    [following, product, paramsKey, track?.branch.id, gate.checkFollow]);
+  const query = checked?.query ?? null;
   const follow = useMemo(() => track ? { source: track.source, branch: track.branch.id, offset: track.axisOffset } : null, [track?.source, track?.branch.id, track?.axisOffset]);
   const sub = useFollowedSub(pipeline, pipe, follow, query, 'panel', product);
   const view = useInstalled(pipeline, pipe);
@@ -117,7 +118,7 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const panel = installedPanel(model);
   const pushed = following && view?.mode === 'picture' && panel !== undefined;
   const fromPanel = pushed ? panelReply(panel, validate) : {};
-  const named = following && (view?.mode === 'failed' || view?.mode === 'refused') ? view.reason ?? 'The followed stream failed' : undefined;
+  const named = checked?.refused ?? (following && (view?.mode === 'failed' || view?.mode === 'refused') ? view.reason ?? 'The followed stream failed' : undefined);
   const followFailure = useMemo(() => named === undefined ? undefined : asFailure(new Error(named)), [named]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : forwardRequest(track!.source, product, { ...params, branchId: track!.branch.id, hour } as unknown as ParamsFor<K>),
@@ -196,6 +197,6 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
       const shown = pipeline.view(pipe), texts = shown?.fields?.[`texts:${sub}`] as ReadonlyMap<string, string> | null | undefined, hour = shown?.painted ?? shown?.h;
       return shown?.mode === 'picture' && !shown.dim && texts && hour !== undefined ? { texts, hour, data: panelReply(installedPanel(installedModel(shown, sub)), validate).data } : undefined;
     },
-    read: outside ? 'off' : following ? 'followed' : hour === null ? 'off' : 'asked',
+    read: outside ? 'off' : follows ? 'followed' : hour === null ? 'off' : 'asked',
   };
 }

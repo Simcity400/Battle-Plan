@@ -1,3 +1,4 @@
+import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ArtFallback from '../../components/ArtFallback';
@@ -63,7 +64,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const countFor = options.countFor === 'host' ? 'host' : 'owner';
   const bars = options.cellBars === true;
   const subject = JSON.stringify([track?.branch.id, country.chosen, countFor]);
-  const asked = tag ? { tag, countFor } : null;
+  const asked = tag ? { country: countryFromKey(tag), countFor } : null;
   const state = useHeadProduct(runtime, gate, 'division-equipment', asked, { active, validate: validateDivisionEquipment, structure: equipmentStructure });
   useShownEachFrame(runtime.clock, state.shownAt, state.live);
   const data = state.data;

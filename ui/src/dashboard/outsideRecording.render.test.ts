@@ -96,7 +96,7 @@ test('on a track aligned 100 hours later, following playback at axis hour 8 read
 
 test('two humans recorded through 109, counted at this hour: at 110 Diplomatic relations and Trade flows’ market are outside the recording, not short of members', async () => {
   const { load, close } = await mount({ '/dashboard/headProduct.ts': wrapped('useHeadProduct'), '/dashboard/useCountryGroups.ts': wrapped('useCountryGroups'),
-    '/charts/useChartTokens.ts': TOKENS, '/charts/heat/HeatMatrix.tsx': 'export default () => null;',
+    '/dashboard/follow/useFollowed.ts': wrapped('usePipeline'), '/charts/useChartTokens.ts': TOKENS, '/charts/heat/HeatMatrix.tsx': 'export default () => null;',
     '/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx': code => code.replace('useSyncExternalStore(live.subscribe, domainOf)', 'useSyncExternalStore(live.subscribe, domainOf, domainOf)') });
   try {
     const shortTrack = track(100, 109);
@@ -104,7 +104,7 @@ test('two humans recorded through 109, counted at this hour: at 110 Diplomatic r
       humans: [{ tag: 'GER', firstHour: 100, lastHour: 109 }, { tag: 'ENG', firstHour: 100, lastHour: 109 }], unobserved: { humans: [], factions: [], wars: [] },
       countryIdentities: ['GER', 'ENG'].map((tag, index) => ({ tag, identities: [{ slot: index + 1, countryId: index + 101, firstHour: 100, lastHour: 109 }] })) };
     const runtime = { tracks: [shortTrack], client: {}, clock: clockAt({ firstHour: 100, lastHour: 200 }, 150), addWidgetBelow() {} };
-    host.__stub = { useHeadProduct: gated,
+    host.__stub = { useHeadProduct: gated, usePipeline: () => null,
       useCountryGroups: () => ({ data: groups, complete: true, retry() {} }) };
     const humans = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
     const { default: Relations } = await load<{ default: ComponentType<Record<string, unknown>> }>('/ui/src/widgets/diplomatic-relations/DiplomaticRelationsWidget.tsx');

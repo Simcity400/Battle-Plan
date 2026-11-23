@@ -55,12 +55,15 @@ export interface Gate {
   within: (hour: number | null | undefined) => BoundHour | null;
   span: (firstHour: number, lastHour: number) => BoundWindow | null;
   follow: (query: Readonly<Record<string, unknown>> | null) => FollowQuery | null;
+  checkFollow: (query: Readonly<Record<string, unknown>> | null) => FollowRefusal;
   time: (window?: BoundWindow, mode?: 'pin' | 'range') => GatedTime | null;
   checkTime: (window?: BoundWindow, mode?: 'pin' | 'range') => TimeRefusal;
   hold: (holder: Holder | null | undefined, extent?: BoundWindow | null) => HeldCountry | null;
   checkHold: (holder: Holder | null | undefined, extent?: BoundWindow | null) => HoldRefusal;
 }
 
+export type FollowRefusal = { query: FollowQuery; refused: null } | { query: null; refused: string | null };
+const NOT_FOLLOWED: FollowRefusal = { query: null, refused: null };
 export type HoldRefusal = { held: HeldCountry; refused?: undefined } | { held: null; refused: string };
 const NOTHING_HERE = 'This time is not recorded, so there is nothing to pin.';
 const NOT_HERE: TimeRefusal = { time: null, refused: NOTHING_HERE };
@@ -270,10 +273,14 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
     const first = Math.max(Math.floor(firstHour), track.branch.firstHour), last = Math.min(Math.floor(lastHour), track.branch.lastHour);
     return first <= last ? { firstHour: bounded(first), lastHour: bounded(last) } : null;
   }, [gated, track]);
-  const follow = useCallback((query: Readonly<Record<string, unknown>> | null) => {
-    const asked = gated !== null && follows && query && track ? followedProduct(query) : null;
-    return asked && track && refusedHours(asked.product, asked.params, track.branch, true) === null ? query as FollowQuery : null;
+  const checkFollow = useCallback((query: Readonly<Record<string, unknown>> | null): FollowRefusal => {
+    if (gated === null || !follows || !query || !track) return NOT_FOLLOWED;
+    const asked = followedProduct(query);
+    if (!asked) return { query: null, refused: 'This reading names no product to follow.' };
+    const refused = refusedHours(asked.product, asked.params, track.branch, true);
+    return refused === null ? { query: query as FollowQuery, refused: null } : { query: null, refused };
   }, [gated, follows, track]);
+  const follow = useCallback((query: Readonly<Record<string, unknown>> | null) => checkFollow(query).query, [checkFollow]);
   const checkTime = useCallback((chosen?: BoundWindow, mode: 'pin' | 'range' = 'pin'): TimeRefusal => {
     if (!track || gated === null) return NOT_HERE;
     if (!chosen && follows) return checkedTime({ mode: 'follow' }, tracks);
@@ -300,7 +307,7 @@ export function useRegionGate(runtime: Runtime, region: Region, active: boolean,
   const hold = useCallback((holder: Holder | null | undefined, extent?: BoundWindow | null) => checkHold(holder, extent).held, [checkHold]);
   const holder = country?.holder ?? null;
   const held = useMemo(() => hold(holder), [hold, holder?.tag, holder?.origin]);
-  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, time, checkTime, hold, checkHold };
+  return { region, track, active, hour: gated, window, outside, stage, open, country, members, groups, held, hourAt, recorded, within, span, follow, checkFollow, time, checkTime, hold, checkHold };
 }
 
 export function gateStage(track: BoundTrack | undefined, outside: Outside | null, hour: TrackHour | null, country: CountryAt | null, needsCountry: boolean,

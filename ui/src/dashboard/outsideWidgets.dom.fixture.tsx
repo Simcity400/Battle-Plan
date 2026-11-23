@@ -38,10 +38,11 @@ Object.assign(globalThis, { __fixture: { losses, trade, groups: { branchId: '1',
 const waiting = new Promise<never>(() => {});
 const client = {
   available: true,
+  openFollow: async () => {},
   product: async (request: { sourceId: string; revision: string; product: string }) => {
     const reply = (data: unknown) => ({ sourceId: request.sourceId, revision: request.revision, product: request.product, data });
-    if (request.product === 'follow') return reply({ available: false, reason: 'not followed here' });
-    if (request.product === 'follow-clock' || request.product === 'unfollow') return reply(null);
+    if (request.product === 'follow') return reply({ available: true, route: 1 });
+    if (request.product === 'follow-clock' || request.product === 'unfollow') return reply({ available: true });
     return waiting;
   },
   setMapViews: async () => {}, onMapStates: async () => () => {}, releaseSource: async () => {}, openSource: async () => { throw new Error('none'); },
