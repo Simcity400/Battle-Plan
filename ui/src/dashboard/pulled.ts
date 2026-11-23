@@ -13,23 +13,25 @@ export function noteFrame(at: number) {
 }
 
 let audit: DrawSample[] | null = null;
+let draining: DrawSample[] | null = null;
 let auditOffset = 0;
 
 export const auditing = () => audit !== null;
 export function recordPicture(sample: DrawSample) { audit?.push(sample); }
 
 export function capturePictures(start: boolean): Promise<DrawSample[]> {
-  if (start) { audit = []; auditOffset = 0; return Promise.resolve([]); }
-  const records = audit ?? [];
-  audit = null; auditOffset = 0;
+  if (start) { audit = []; draining = null; auditOffset = 0; return Promise.resolve([]); }
+  const records = audit ?? draining ?? [];
+  audit = null; draining = null; auditOffset = 0;
   return Promise.resolve(records);
 }
 
 export function capturePicturesBatch(limit: number): Promise<{ records: DrawSample[]; done: boolean }> {
-  const records = audit ?? [], count = Math.max(1, Math.floor(limit));
-  const chunk = records.slice(auditOffset, auditOffset + count);
+  if (!draining) { draining = audit ?? []; audit = null; auditOffset = 0; }
+  const count = Math.max(1, Math.floor(limit));
+  const chunk = draining.slice(auditOffset, auditOffset + count);
   auditOffset += chunk.length;
-  const done = auditOffset >= records.length;
-  if (done) { audit = null; auditOffset = 0; }
+  const done = auditOffset >= draining.length;
+  if (done) { draining = null; auditOffset = 0; }
   return Promise.resolve({ records: chunk, done });
 }

@@ -16,6 +16,7 @@ export type { WidgetRuntime } from './definitions';
 interface Props { widget: WidgetSpec; runtime: WidgetRuntime; active?: boolean; mapOptions?: MapOptions; headerSlot?: HTMLElement | null; countrySlot?: HTMLElement | null; onDiagnostics?: (warnings: string[]) => void;
   setOption?: (key: string, value: OptionValue) => void; setOptions?: (values: Readonly<Record<string, OptionValue>>) => void }
 const noDiagnostics = () => {};
+const MEASURE_UNGATED = typeof __BATTLEPLAN_MEASURE_UNGATED__ !== 'undefined' && __BATTLEPLAN_MEASURE_UNGATED__;
 
 export function WidgetBody({ widget, runtime, active = true, mapOptions, headerSlot, countrySlot, onDiagnostics, setOption, setOptions }: Props) {
   const resolved = useMemo(() => resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId), [widget, runtime.campaignTracks, runtime.defaultRoleId]);
@@ -26,7 +27,7 @@ export function WidgetBody({ widget, runtime, active = true, mapOptions, headerS
   const playing = useSyncExternalStore(runtime.clock.subscribe, readPlaying, readPlaying);
   const time = useRegionScope(runtime, useRegion(resolved));
   if (unavailable || !definition || !Render) return <div className="dash-empty" role="status">{unavailable ?? 'Widget renderer unavailable.'}</div>;
-  if (playing && !definition.playsBackDated) return <div className="dash-empty" role="status">{widget.title} isn't playing back yet</div>;
+  if (!MEASURE_UNGATED && playing && !definition.playsBackDated) return <div className="dash-empty" role="status">{widget.title} isn't playing back yet</div>;
   const scoped = runtime.tracks.filter(track => resolved.trackIds.includes(track.id))
     .map(track => scopeReason(definition, track.source.metadata.captureMode)).find(reason => reason !== null);
   if (scoped) return <WidgetState kind="unavailable" message={scoped} />;

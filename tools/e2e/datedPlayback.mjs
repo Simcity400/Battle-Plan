@@ -1,4 +1,4 @@
-import { MAX_PLAYBACK_AGE_HOURS, playbackPace } from './verdicts.mjs';
+import { MAX_PLAYBACK_AGE_HOURS, freshness, playbackPace, quantiles, windowLosses } from './verdicts.mjs';
 
 const shownFrom = r => Math.max(r.at, r.shownAt ?? r.at);
 const p95 = values => values.length ? values.toSorted((a, b) => a - b)[Math.ceil(values.length * .95) - 1] : null;
@@ -90,25 +90,43 @@ export function inputPictures(frames, visibility, records, pinWidget) {
     checked, future, wrongSeek, stale, lost, missing, pending, pinned, examples };
 }
 
+const forSession = (records, session) => (session ? records.filter(r => !r.session || r.session === session) : records);
+const hasSummaryLosses = losses => {
+  if (!losses) return false;
+  if (Array.isArray(losses)) return losses.length > 0;
+  if (typeof losses === 'object') return Object.values(losses).some(entry => entry && (entry.count ?? 0) > 0);
+  return false;
+};
+
 export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) {
   const reasons = [], metrics = [], placements = [];
   const sorted = records.toSorted((a, b) => a.at - b.at);
   if (!windows.length) reasons.push('nothing measured');
   for (const w of windows) {
+    const winRecords = forSession(sorted, w.session);
     const visibleWidgets = (w.widgets ?? []).filter(widget => widget.visible);
     if (!visibleWidgets.length) reasons.push('no visible dashboard placements');
     if (!visibleWidgets.length || visibleWidgets.every(widget => widget.notMigrated)) reasons.push('nothing measured');
-    const ticks = sorted.filter(r => r.t === 'tick' && r.playing && r.speed === 1440 && r.at >= w.from && r.at <= w.to);
+    if (Array.isArray(w.playbackReasons)) for (const reason of w.playbackReasons) reasons.push(reason);
+    const ticks = winRecords.filter(r => r.t === 'tick' && r.playing && r.speed === 1440 && r.at >= w.from && r.at <= w.to);
     const first = ticks[0], last = ticks.at(-1);
     const inside = at => at >= first?.at && at <= last?.at;
     const presented = (w.presented ?? []).filter(inside);
     const end = presented.findIndex(at => at >= presented[0] + w.seconds * 1000);
     const frames = end < 0 ? presented : presented.slice(0, end + 1);
-    if (end < 0 || !w.seconds || !w.complete) reasons.push('incomplete presented playing window');
+    const playLost = w.from != null && w.to != null ? windowLosses(winRecords, w.from, w.to) : { count: 0, sources: [] };
+    const inputFrom = w.inputs?.actions?.[0]?.at ?? w.to;
+    const inputLost = w.inputs && inputFrom != null && w.inputs.to != null ? windowLosses(winRecords, inputFrom, w.inputs.to) : { count: 0, sources: [] };
+    const idleLost = w.idleCost?.from != null && w.idleCost?.to != null ? windowLosses(winRecords, w.idleCost.from, w.idleCost.to) : { count: 0, sources: [] };
+    if (playLost.count > 0) reasons.push(`perf log lost ${playLost.count} records during ${w.page ?? 'playback'} playing window (${playLost.sources.join(', ')})`);
+    if (inputLost.count > 0) reasons.push(`perf log lost ${inputLost.count} records during ${w.page ?? 'playback'} input sequence (${inputLost.sources.join(', ')})`);
+    if (idleLost.count > 0) reasons.push(`perf log lost ${idleLost.count} records during ${w.page ?? 'playback'} idle cost window (${idleLost.sources.join(', ')})`);
+    const hasScopedLoss = playLost.count > 0 || inputLost.count > 0 || idleLost.count > 0;
+    if (end < 0 || !w.seconds || (w.complete === false && !hasScopedLoss && !hasSummaryLosses(w.losses))) reasons.push('incomplete presented playing window');
     const timed = r => r.at >= frames[0] && r.at <= frames.at(-1);
     const seconds = (frames.at(-1) - frames[0]) / 1000;
-    const page = sorted.filter(r => r.t === 'frame' && r.playing && timed(r));
-    const worker = sorted.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
+    const page = winRecords.filter(r => r.t === 'frame' && r.playing && timed(r));
+    const worker = winRecords.filter(r => r.t === 'workerFrame' && r.playing && timed(r));
     const laneCount = Math.max(0, ...worker.map(r => r.lanes ?? (r.lane ?? 0) + 1));
     const byLane = Map.groupBy(worker, r => r.lane ?? 0);
     const lanes = Array.from({ length: laneCount }, (_, lane) => byLane.has(lane) && seconds > 0 ? (byLane.get(lane).length - 1) / seconds : null);
@@ -123,8 +141,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     if (w.pressureMerges !== 0) reasons.push('pressure merges ' + w.pressureMerges);
     const pageCount = page.reduce((sum, r) => sum + r.commits, 0);
     const firstCommit = page[0]?.commitSequence - page[0]?.commits + 1;
-    const counted = sorted.filter(r => r.t === 'commit' && (Number.isFinite(firstCommit) ? r.serial >= firstCommit && r.serial <= page.at(-1)?.commitSequence : timed(r)));
-    const commits = sorted.filter(r => r.t === 'commit' && timed(r));
+    const counted = winRecords.filter(r => r.t === 'commit' && (Number.isFinite(firstCommit) ? r.serial >= firstCommit && r.serial <= page.at(-1)?.commitSequence : timed(r)));
+    const commits = winRecords.filter(r => r.t === 'commit' && timed(r));
     const commitCount = commits.length;
     const verified = c => c.verified && Number.isFinite(c.hour) && JSON.stringify(c.before) !== JSON.stringify(c.after);
     const boundariesByPlacement = new Map();
@@ -137,7 +155,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       if (!auditByWidget.has(sample.widget)) auditByWidget.set(sample.widget, []);
       auditByWidget.get(sample.widget).push(sample);
     }
-    for (const r of sorted) {
+    for (const r of winRecords) {
       if (r.t === 'picture' && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) {
         if (!picturesByWidget.has(r.widget)) picturesByWidget.set(r.widget, []);
         picturesByWidget.get(r.widget).push(r);
@@ -161,7 +179,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const unexplained = commitCount - structural.length - input.length;
     if (unexplained !== 0) reasons.push('React commits without verified structure or input ' + unexplained);
     if (counted.length !== pageCount) reasons.push('React commit audit does not reconcile with the page frame counts');
-    const idle = w.idleCost ? sorted.filter(r => r.t === 'workerFrame' && r.playing && r.changed === 0 && r.at >= w.idleCost.from && r.at <= w.idleCost.to) : worker.filter(r => r.changed === 0);
+    const idle = w.idleCost ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.changed === 0 && r.at >= w.idleCost.from && r.at <= w.idleCost.to) : worker.filter(r => r.changed === 0);
     const emptyMs = mean(idle.map(r => r.workMs));
     const changing = worker.filter(r => r.changed > 0);
     const changedWidgetMs = emptyMs === null ? null : mean(changing.map(r => (r.workMs - emptyMs) / r.changed));
@@ -170,7 +188,7 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     metrics.push({ fps, pageFps, presents, hps: pace.hps, commitsPerSecond: commitCount / seconds, structureCommitsPerSecond: structural.length / seconds,
       inputCommitsPerSecond: input.length / seconds, unexplainedCommitsPerSecond: unexplained / seconds, structureBySource, frames: frames.length,
       compositorGapP95: p95(gaps(frames)), workerGapP95: p95(gaps(worker.map(r => r.at))), emptyMs, emptyFrames: idle.length,
-      changedWidgetMs, changingFrames: changing.length, pressureMerges: w.pressureMerges });
+      changedWidgetMs, changingFrames: changing.length, pressureMerges: w.pressureMerges, playLost: playLost.count, inputLost: inputLost.count, idleLost: idleLost.count });
     const hasRecordedInputs = Array.isArray(w.inputs?.actions) && w.inputs.actions.length > 0;
     if (w.inputs && (!legacy || hasRecordedInputs)) {
       const checks = [];
@@ -178,18 +196,25 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       const presentedInputs = Array.isArray(w.inputs.presented) ? w.inputs.presented : [];
       let pinWidget;
       for (const [i, action] of actions.entries()) {
+        const failed = typeof action.failed === 'string' && action.failed.trim() ? action.failed.trim() : null;
+        if (failed) {
+          checks.push({ kind: action.kind, pass: false, reason: failed });
+          reasons.push(`Dashboard ${action.kind} failed: ${failed}`);
+          continue;
+        }
         const notApplicable = typeof action.notApplicable === 'string' && action.notApplicable.trim() ? action.notApplicable.trim() : null;
         if (notApplicable) { checks.push({ kind: action.kind, notApplicable, pass: true }); continue; }
         const times = presentedInputs.filter(at => at >= action.at && at < (actions[i + 1]?.at ?? w.inputs.to));
         pinWidget = action.pinWidget ?? pinWidget;
-        checks.push({ kind: action.kind, ...inputPictures(times, w.inputs.visibility ?? [], sorted, pinWidget) });
+        checks.push({ kind: action.kind, ...inputPictures(times, w.inputs.visibility ?? [], winRecords, pinWidget) });
       }
       for (const kind of CANONICAL_INPUTS) {
         const ofKind = checks.filter(c => c.kind === kind);
         const checked = ofKind.some(c => !c.notApplicable && c.pass &&
           (kind !== 'pin' || actions.some(action => action.kind === kind && action.pinWidget)));
         const notApplicable = ofKind.length > 0 && ofKind.every(c => c.notApplicable);
-        if (!checked && !notApplicable) reasons.push('Missing input coverage for ' + kind);
+        const explicitFailure = ofKind.some(c => c.reason && !c.pass);
+        if (!checked && !notApplicable && !explicitFailure) reasons.push('Missing input coverage for ' + kind);
       }
       if (checks.some(c => c.future > 0)) reasons.push('Future picture during dashboard input sequence');
       const rewindUnsettled = Array.isArray(w.inputs.rewindUnsettled) ? w.inputs.rewindUnsettled : [];
@@ -218,7 +243,19 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
     const placementStart = placements.length;
     for (const widget of w.widgets ?? []) {
       if (!widget.visible) continue;
-      if (widget.notMigrated) { placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'not migrated', pass: null }); continue; }
+      if (widget.notMigrated) { placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'not migrated', reason: 'not migrated', pass: false }); continue; }
+      if (widget.outcome === 'refusal') {
+        const detail = widget.detail ?? 'refused';
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'refused', reason: detail, pass: false });
+        reasons.push(`${widget.kind} refused: ${detail}`);
+        continue;
+      }
+      if (widget.outcome === 'error') {
+        const detail = widget.detail ?? 'error';
+        placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, status: 'error', reason: detail, pass: false });
+        reasons.push(`${widget.kind} error: ${detail}`);
+        continue;
+      }
       const reports = (picturesByWidget.get(widget.id) ?? []).toSorted((a, b) => shownFrom(a) - shownFrom(b));
       const declared = [...new Set((widget.surfaces ?? []).filter(surface => surface != null))];
       const visible = new Set(declared), required = new Set(visible);
@@ -289,12 +326,13 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
         && [...observedPairs].every(pair => auditedPairs.has(pair)) && audited.every(s => s.error === null);
       const age = p95(ages), eligible = p95(eligibleAges);
       const surfaces = [...byPlacement].map(([id, s]) => ({ id, surface: s.surface, p95: p95(s.drawn), eligibleP95: p95(s.eligible), frames: s.drawn.length, draw: drawCost(reports, id) }));
-      const pass = Number.isFinite(age) && age <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(eligible) && eligible <= MAX_PLAYBACK_AGE_HOURS &&
+      const pass = playLost.count === 0 && Number.isFinite(age) && age <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(eligible) && eligible <= MAX_PLAYBACK_AGE_HOURS &&
         surfaces.every(s => Number.isFinite(s.p95) && s.p95 <= MAX_PLAYBACK_AGE_HOURS && Number.isFinite(s.eligibleP95) && s.eligibleP95 <= MAX_PLAYBACK_AGE_HOURS) &&
         future === 0 && missing === 0 && exact && boundaryErrors.length === 0;
       placements.push({ from: w.from, page: w.page, widget: widget.id, title: widget.title, kind: widget.kind, scroll: w.scroll, p95: Number.isFinite(age) ? age : null,
         eligibleP95: Number.isFinite(eligible) ? eligible : null, surfaces, samples: samples.length, distinctHoursPerSecond: hours.size / seconds,
-        missing, late, lateWithoutCrossing, structureCrossings, future, exact, boundaryErrors, pass });
+        missing, late, lateWithoutCrossing, structureCrossings, future, exact, boundaryErrors,
+        ...(playLost.count > 0 && { lostRecords: playLost.count, reason: `perf log lost ${playLost.count} records during playing window` }), pass });
       reasons.push(...boundaryErrors);
     }
     for (const expected of expectedWidgets) {
@@ -302,16 +340,279 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       if (!placements.slice(placementStart).some(placement => placement.widget === expected.id)) reasons.push('Missing judged placement for expected widget');
     }
   }
+  const notMigratedPlacements = placements.filter(p => p.status === 'not migrated');
+  const notMigratedKinds = [...new Set(notMigratedPlacements.map(p => p.kind))];
+  if (notMigratedPlacements.length) {
+    reasons.unshift(`${notMigratedPlacements.length} placement${notMigratedPlacements.length === 1 ? '' : 's'} not migrated (${notMigratedKinds.length} kind${notMigratedKinds.length === 1 ? '' : 's'}: ${notMigratedKinds.join(', ')})`);
+  }
   const kinds = [...new Set(placements.map(p => p.kind))];
   const widgets = kinds.map(kind => {
     const kept = placements.filter(p => p.kind === kind), migrated = kept.filter(p => p.status !== 'not migrated');
-    const pass = migrated.length === 0 ? null : migrated.every(p => p.pass);
-    if (pass === false) reasons.push('A widget missed its dated presentation or exact-read target');
-    return { kind, p95: migrated.length && migrated.every(p => p.p95 !== null) ? Math.max(...migrated.map(p => p.p95)) : null,
-      eligibleP95: migrated.length && migrated.every(p => p.eligibleP95 !== null) ? Math.max(...migrated.map(p => p.eligibleP95)) : null,
-      structureCrossings: migrated.reduce((sum, p) => sum + p.structureCrossings, 0), future: migrated.reduce((sum, p) => sum + p.future, 0),
-      exact: migrated.length > 0 && migrated.every(p => p.exact),
-      ...(kept.some(p => p.status === 'not migrated') && { notMigrated: kept.filter(p => p.status === 'not migrated').length }), pass };
+    const notMigratedCount = kept.length - migrated.length;
+    const realFailed = migrated.some(p => !p.pass && p.status !== 'refused' && p.status !== 'error');
+    const pass = notMigratedCount === 0 && migrated.length > 0 && migrated.every(p => p.pass);
+    if (realFailed) reasons.push('A widget missed its dated presentation or exact-read target');
+    return { kind, p95: migrated.length && migrated.every(p => p.p95 !== null && p.p95 !== undefined) ? Math.max(...migrated.map(p => p.p95)) : null,
+      eligibleP95: migrated.length && migrated.every(p => p.eligibleP95 !== null && p.eligibleP95 !== undefined) ? Math.max(...migrated.map(p => p.eligibleP95)) : null,
+      structureCrossings: migrated.reduce((sum, p) => sum + (p.structureCrossings ?? 0), 0), future: migrated.reduce((sum, p) => sum + (p.future ?? 0), 0),
+      exact: migrated.length > 0 && migrated.every(p => p.exact === true),
+      ...(notMigratedCount > 0 && { notMigrated: notMigratedCount }), pass };
   });
-  return { pass: reasons.length === 0, reasons, metrics, widgets, placements };
+  return { pass: reasons.length === 0, reasons, notMigrated: notMigratedPlacements.length, notMigratedKinds, metrics, widgets, placements };
+}
+
+export const COST_FORMULA = 'mainDelta.p95 + worker.p95';
+export const BASELINE_MIN_FRAMES = 30;
+export const WIDGET_LOW_FRAMES = 30;
+export const BASELINE_MAX_P50_SPREAD_MS = 3;
+export const BASELINE_MAX_P95_SPREAD_MS = 8;
+export const BASELINE_MAX_TAIL_GAP_MS = 15;
+
+export function rankWidgetCosts(entries) {
+  const tie = entry => (Number.isFinite(entry.mainDelta?.p50) ? entry.mainDelta.p50 : -Infinity) + (entry.worker?.mean ?? 0);
+  return [...entries].sort((a, b) => {
+    const aMeasured = Number.isFinite(a.costScoreMs), bMeasured = Number.isFinite(b.costScoreMs);
+    if (aMeasured !== bMeasured) return aMeasured ? -1 : 1;
+    if (aMeasured && bMeasured && b.costScoreMs !== a.costScoreMs) return b.costScoreMs - a.costScoreMs;
+    return tie(b) - tie(a)
+      || (b.requestsPerSec ?? 0) - (a.requestsPerSec ?? 0)
+      || (b.commitsPerSec ?? 0) - (a.commitsPerSec ?? 0)
+      || String(a.kind).localeCompare(String(b.kind));
+  });
+}
+
+function checkCostClock(w, winRecords) {
+  if (!w || w.from == null || w.to == null || !(w.to > w.from)) {
+    return { ok: false, hps: null, elapsedSec: 0, reason: 'missing cost window timestamps' };
+  }
+  if (w.playingAtSnap === false) {
+    return { ok: false, hps: null, elapsedSec: 0, reason: 'clock stopped playing before end of window' };
+  }
+  const allTicks = winRecords.filter(r => r.t === 'tick' && r.at >= w.from && r.at <= w.to);
+  const pausedEarly = allTicks.find(r => !r.playing && r.at < w.to - 50);
+  if (pausedEarly) {
+    return { ok: false, hps: null, elapsedSec: 0, reason: 'clock paused inside cost window' };
+  }
+  const ticks = allTicks.filter(r => r.playing && r.speed === 1440);
+  if (ticks.length < 2) {
+    return { ok: false, hps: null, elapsedSec: 0, reason: 'clock recorded fewer than 2 ticks at 1,440 h/s' };
+  }
+  const first = ticks[0], last = ticks.at(-1);
+  const elapsedSec = (last.at - first.at) / 1000;
+  const recordedSec = (w.to - w.from) / 1000;
+  const requestedSec = Number.isFinite(w.seconds) ? w.seconds : recordedSec;
+  const requiredSec = Math.max(requestedSec, recordedSec);
+  const pace = playbackPace(first, last, 1440);
+  if (recordedSec < requestedSec * 0.75) {
+    return { ok: false, hps: pace.hps, elapsedSec, reason: `recorded window was only ${recordedSec.toFixed(2)} s of ${requestedSec.toFixed(1)} s requested` };
+  }
+  if (elapsedSec < Math.max(0.5, requiredSec * 0.75)) {
+    return { ok: false, hps: pace.hps, elapsedSec, reason: `clock ticked over only ${elapsedSec.toFixed(2)} s of ${requiredSec.toFixed(1)} s window` };
+  }
+  if (!pace.pass) {
+    return { ok: false, hps: pace.hps, elapsedSec, reason: `measured clock speed ${pace.hps?.toFixed(1) ?? 'unknown'} h/s, expected 1,440 h/s` };
+  }
+  return { ok: true, hps: pace.hps, elapsedSec, reason: null };
+}
+
+export function summarizeWidgetCosts(windows, records, { baseline = null, baselines = null, profile = null, confinement = null, ungated = false } = {}) {
+  const sorted = (records ?? []).toSorted((a, b) => a.at - b.at);
+  const diff = (a, b) => Number.isFinite(a) && Number.isFinite(b) ? a - b : null;
+  const frameStatsOf = (w, winRecords) => {
+    if (!w || w.from == null || w.to == null) return { main: { n: 0, p50: null, p95: null, max: null }, interval: { n: 0, p50: null, p95: null, max: null }, frames: [], lost: 0 };
+    const frames = winRecords.filter(r => r.t === 'frame' && r.playing && r.at >= w.from && r.at <= w.to);
+    return { main: quantiles(frames.map(r => r.main)), interval: quantiles(frames.map(r => r.dt)), frames, lost: windowLosses(winRecords, w.from, w.to).count };
+  };
+  const baselineWindows = Array.isArray(baselines) ? baselines.filter(Boolean) : (baseline ? [baseline] : []);
+  const baselineReasons = [];
+  if (!baselineWindows.length) baselineReasons.push('no empty-page baseline recorded');
+  const pooledFrames = [], pooledWorker = [], baselineSamples = [];
+  let baselineSeconds = 0, baselineLost = 0;
+  for (const [index, bw] of baselineWindows.entries()) {
+    const sampleLabel = bw.sampleLabel ?? (baselineWindows.length === 1 ? 'baseline' : `sample-${index + 1}`);
+    const winRecords = forSession(sorted, bw.session);
+    const stats = frameStatsOf(bw, winRecords);
+    const worker = bw.from != null && bw.to != null
+      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.at >= bw.from && r.at <= bw.to) : [];
+    const clock = checkCostClock(bw, winRecords);
+    const seconds = bw.from != null && bw.to != null && bw.to > bw.from ? (bw.to - bw.from) / 1000 : (bw.seconds ?? 0);
+    const sampleReasons = [];
+    if (bw.complete === false) sampleReasons.push('window incomplete');
+    if (Array.isArray(bw.reasons) && bw.reasons.length) sampleReasons.push(...bw.reasons);
+    if (stats.lost > 0) sampleReasons.push(`perf log lost ${stats.lost} records`);
+    if (stats.main.n < BASELINE_MIN_FRAMES) sampleReasons.push(`only ${stats.main.n} frames (minimum ${BASELINE_MIN_FRAMES})`);
+    if (!clock.ok) sampleReasons.push(clock.reason);
+    if (Number.isFinite(stats.main.p95) && Number.isFinite(stats.main.p50) && stats.main.p95 - stats.main.p50 > BASELINE_MAX_TAIL_GAP_MS) {
+      sampleReasons.push(`unstable tail: p95 ${stats.main.p95.toFixed(1)} ms vs p50 ${stats.main.p50.toFixed(1)} ms (gap ${(stats.main.p95 - stats.main.p50).toFixed(1)} ms > ${BASELINE_MAX_TAIL_GAP_MS} ms)`);
+    }
+    for (const reason of sampleReasons) baselineReasons.push(`baseline (${sampleLabel}): ${reason}`);
+    pooledFrames.push(...stats.frames);
+    pooledWorker.push(...worker);
+    baselineSeconds += seconds;
+    baselineLost += stats.lost;
+    baselineSamples.push({
+      label: sampleLabel,
+      seconds,
+      main: stats.main,
+      interval: stats.interval,
+      workerMeanMs: mean(worker.map(r => r.workMs)),
+      lostRecords: stats.lost,
+      clockHps: clock.hps,
+      usable: sampleReasons.length === 0,
+      reasons: sampleReasons,
+    });
+  }
+  const hasStart = baselineSamples.some(sample => sample.label === 'start');
+  const hasEnd = baselineSamples.some(sample => sample.label === 'end');
+  if (!hasStart) baselineReasons.push('missing start empty-page baseline sample');
+  if (!hasEnd) baselineReasons.push('missing end empty-page baseline sample');
+  const pooledMain = quantiles(pooledFrames.map(r => r.main));
+  const pooledInterval = quantiles(pooledFrames.map(r => r.dt));
+  const p50Values = baselineSamples.map(s => s.main.p50).filter(Number.isFinite);
+  const p95Values = baselineSamples.map(s => s.main.p95).filter(Number.isFinite);
+  const p50SpreadMs = p50Values.length >= 2 ? Math.max(...p50Values) - Math.min(...p50Values) : 0;
+  const p95SpreadMs = p95Values.length >= 2 ? Math.max(...p95Values) - Math.min(...p95Values) : 0;
+  if (p50SpreadMs > BASELINE_MAX_P50_SPREAD_MS) {
+    baselineReasons.push(`baseline p50 spread ${p50SpreadMs.toFixed(1)} ms across samples exceeds ${BASELINE_MAX_P50_SPREAD_MS} ms`);
+  }
+  if (p95SpreadMs > BASELINE_MAX_P95_SPREAD_MS) {
+    baselineReasons.push(`baseline p95 spread ${p95SpreadMs.toFixed(1)} ms across samples exceeds ${BASELINE_MAX_P95_SPREAD_MS} ms`);
+  }
+  if (Number.isFinite(pooledMain.p95) && Number.isFinite(pooledMain.p50) && pooledMain.p95 - pooledMain.p50 > BASELINE_MAX_TAIL_GAP_MS) {
+    baselineReasons.push(`pooled baseline tail gap ${(pooledMain.p95 - pooledMain.p50).toFixed(1)} ms exceeds ${BASELINE_MAX_TAIL_GAP_MS} ms`);
+  }
+  const baselineUsable = baselineReasons.length === 0 && pooledMain.n > 0 && Number.isFinite(pooledMain.p95);
+  const baselineSummary = {
+    seconds: baselineWindows.length ? baselineSeconds : null,
+    main: pooledMain,
+    interval: pooledInterval,
+    workerMeanMs: mean(pooledWorker.map(r => r.workMs)),
+    lostRecords: baselineLost,
+    spread: { p50Ms: p50SpreadMs, p95Ms: p95SpreadMs },
+    samples: baselineSamples,
+    usable: baselineUsable,
+    complete: baselineUsable,
+    reasons: [...new Set(baselineReasons)],
+  };
+  const widgets = windows.map(w => {
+    const winRecords = forSession(sorted, w.session);
+    const seconds = w.from != null && w.to != null && w.to > w.from ? (w.to - w.from) / 1000 : (w.seconds ?? 0);
+    const { main, interval, frames, lost } = frameStatsOf(w, winRecords);
+    const clock = checkCostClock(w, winRecords);
+    const mainDelta = baselineUsable ? {
+      p50: diff(main.p50, pooledMain.p50),
+      p95: diff(main.p95, pooledMain.p95),
+      max: diff(main.max, pooledMain.max),
+    } : { p50: null, p95: null, max: null };
+    const workerFrames = w.from != null && w.to != null
+      ? winRecords.filter(r => r.t === 'workerFrame' && r.playing && r.at >= w.from && r.at <= w.to) : [];
+    const changed = workerFrames.filter(r => r.changed > 0);
+    const workerQ = quantiles(changed.map(r => r.workMs));
+    const workerMean = mean(changed.map(r => r.workMs));
+    const workerTotalMs = changed.reduce((sum, r) => sum + (Number.isFinite(r.workMs) ? r.workMs : 0), 0);
+    const pictures = w.from != null && w.to != null && w.widget
+      ? winRecords.filter(r => r.t === 'picture' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
+    const playingPictures = pictures.filter(r => r.at >= w.from && r.at <= w.to && r.renderer === 'page');
+    const drawMsValues = playingPictures.filter(r => !r.detached && Number.isFinite(r.drawMs)).map(r => r.drawMs);
+    const worker = {
+      frames: workerFrames.length,
+      changedFrames: changed.length,
+      p50: workerQ.p50,
+      p95: workerQ.p95,
+      max: workerQ.max,
+      mean: workerMean,
+      totalMsPerSec: seconds > 0 ? workerTotalMs / seconds : null,
+      drawMsP95: p95(drawMsValues),
+    };
+    const commits = frames.reduce((sum, r) => sum + (Number.isFinite(r.commits) ? r.commits : 0), 0);
+    const commitsPerSec = seconds > 0 ? commits / seconds : null;
+    const queries = w.from != null && w.to != null
+      ? winRecords.filter(r => r.t === 'q' && r.at >= w.from && r.at <= w.to) : [];
+    const liveQueries = queries.filter(r => !r.cache && r.cmd !== undefined);
+    const cacheHits = queries.filter(r => r.cache);
+    const requestCountsByProduct = {};
+    for (const q of liveQueries) {
+      const name = q.product ?? q.cmd ?? 'unknown';
+      requestCountsByProduct[name] = (requestCountsByProduct[name] ?? 0) + 1;
+    }
+    const requestsByProduct = Object.fromEntries(Object.entries(requestCountsByProduct)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([product, count]) => [product, seconds > 0 ? count / seconds : count]));
+    const requestsPerSec = seconds > 0 ? liveQueries.length / seconds : null;
+    const cacheHitsPerSec = seconds > 0 ? cacheHits.length / seconds : null;
+    let lagP95Hours = null, futureFrames = 0;
+    if (playingPictures.length) {
+      const lags = [];
+      for (const r of playingPictures) {
+        const target = Math.floor(r.fixedHour ?? r.head);
+        if (Number.isFinite(r.hour) && Number.isFinite(target)) {
+          if (r.hour > target) futureFrames++;
+          lags.push(target - r.hour);
+        }
+      }
+      lagP95Hours = p95(lags);
+    } else if (w.from != null && w.to != null && w.widget) {
+      const fresh = freshness(winRecords, w.from, w.to, w.seekStart ?? w.from).widgets.find(entry => entry.widget === w.widget);
+      if (fresh) {
+        lagP95Hours = fresh.p95 >= Number.MAX_VALUE ? null : fresh.p95;
+        futureFrames = fresh.ahead ?? 0;
+      }
+    }
+    const audited = Array.isArray(w.audit) ? w.audit : [];
+    const inWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at >= w.from && s.at <= w.to) : audited;
+    const postWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at > w.to) : [];
+    const observedPairs = new Set(playingPictures.filter(r => !r.detached).map(r => `${r.surface}\u0000${r.placement}`));
+    const auditedPairs = new Set(inWindowAudit.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
+    const inWindowAuditError = inWindowAudit.find(s => s.error !== null)?.error ?? null;
+    const postWindowAuditErrors = postWindowAudit.filter(s => s.error !== null).map(s => ({ at: s.at, surface: s.surface, placement: s.placement, error: s.error }));
+    const widgetErrors = w.from != null && w.to != null && w.widget
+      ? winRecords.filter(r => r.t === 'widget_error' && r.widget === w.widget && r.at >= (w.seekStart ?? w.from) && r.at <= w.to) : [];
+    let outcome = w.outcome ?? 'content';
+    let detail = w.detail ?? null;
+    if (widgetErrors.length && outcome !== 'error') {
+      outcome = 'error';
+      detail = widgetErrors[0].message ?? 'widget error';
+    }
+    let exact = outcome === 'content' ? 'not-audited' : 'n/a', exactError = null;
+    if (outcome === 'content' && (inWindowAudit.length > 0 || observedPairs.size > 0)) {
+      if (inWindowAuditError) { exact = 'fail'; exactError = inWindowAuditError; }
+      else if (inWindowAudit.length > 0 && [...observedPairs].every(pair => auditedPairs.has(pair))) { exact = 'pass'; }
+      else { exact = 'fail'; exactError = 'missing exact-read audit for an observed surface'; }
+    } else if (inWindowAuditError) {
+      exact = 'fail'; exactError = inWindowAuditError;
+    }
+    const incompleteReasons = [];
+    if (Array.isArray(w.reasons)) incompleteReasons.push(...w.reasons);
+    if (lost > 0) incompleteReasons.push(`perf log lost ${lost} records`);
+    if (main.n === 0) incompleteReasons.push('no timed playing frames');
+    if (!clock.ok) incompleteReasons.push(clock.reason);
+    if (!baselineUsable) incompleteReasons.push('empty-page baseline is unusable');
+    const correctnessErrors = [];
+    if (exact === 'fail') correctnessErrors.push(exactError ? `audit: ${exactError}` : 'exact-read audit failed');
+    if (futureFrames > 0) correctnessErrors.push(`${futureFrames} future frame${futureFrames === 1 ? '' : 's'}`);
+    const complete = Boolean(w.complete ?? true) && lost === 0 && main.n > 0 && clock.ok && baselineUsable;
+    const pass = outcome !== 'error' && outcome !== 'placeholder' && complete && correctnessErrors.length === 0;
+    const belowBaselineNoise = Number.isFinite(mainDelta.p95) && mainDelta.p95 < 0;
+    const lowFrameCount = main.n > 0 && main.n < WIDGET_LOW_FRAMES;
+    const costScoreMs = complete && Number.isFinite(mainDelta.p95) ? mainDelta.p95 + (worker.p95 ?? 0) : null;
+    return {
+      kind: w.kind, title: w.title ?? w.kind, outcome, detail,
+      seconds, clockHps: clock.hps, main, mainDelta, interval, worker,
+      commits, commitsPerSec,
+      requests: liveQueries.length, requestsPerSec, requestsByProduct, requestCountsByProduct, cacheHitsPerSec,
+      lagP95Hours, futureFrames,
+      exact, exactError, auditSamples: inWindowAudit.length, postWindowAuditErrors,
+      lostRecords: lost, complete, pass, correctnessErrors, incompleteReasons: [...new Set(incompleteReasons)],
+      belowBaselineNoise, lowFrameCount,
+      costScoreMs,
+    };
+  });
+  return {
+    formula: COST_FORMULA,
+    profile,
+    confinement,
+    ungated,
+    baseline: baselineSummary,
+    widgets: rankWidgetCosts(widgets),
+  };
 }
