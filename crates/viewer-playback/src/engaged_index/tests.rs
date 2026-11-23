@@ -46,7 +46,7 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
         combats(
             &frame,
             LAND,
-            viewer.slot,
+            viewer.slot.unwrap(),
             &viewer.inputs.links,
             viewer.inputs.relations.as_ref().map_err(|reason| *reason),
             Some(index.shared.as_ref()),
@@ -1033,9 +1033,10 @@ fn complete_empty_witness_does_not_infer_all_sides_refresh_from_observer_lag() {
     use replay_data::rows::{LocalPlayerRow, TableRows};
     use replay_frame::frame::TableView;
     let allied: &[(u32, u32)] = &[(2, 4)];
+    let gained_vision: &[(u32, u32)] = &[(2, 4), (2, 3)];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
-    let observer_frame = |observer: u32, bytes: [u8; 2]| {
-        let mut frame = naval_frame(6, &[1], allied, 1, bytes);
+    let observer_frame = |factions: &[(u32, u32)], observer: u32, bytes: [u8; 2]| {
+        let mut frame = naval_frame(6, &[1], factions, 1, bytes);
         *frame.tables[TableId::LocalPlayer.index()] = TableView::Complete(TableRows::LocalPlayer(
             vec![LocalPlayerRow {
                 country: 0,
@@ -1044,9 +1045,9 @@ fn complete_empty_witness_does_not_infer_all_sides_refresh_from_observer_lag() {
         ));
         frame
     };
-    let frame10 = observer_frame(3, [0, 0]);
-    let frame11 = observer_frame(4, [0, 0]);
-    let mut frame12 = observer_frame(3, [0, 0]);
+    let frame10 = observer_frame(allied, 3, [0, 0]);
+    let frame11 = observer_frame(allied, 4, [0, 0]);
+    let mut frame12 = observer_frame(gained_vision, 3, [0, 0]);
     pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
     pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
     pass.fold_hour(3, 12, Some(&frame12), Some(10), false);
@@ -1061,9 +1062,65 @@ fn complete_empty_witness_does_not_infer_all_sides_refresh_from_observer_lag() {
         "{:?}",
         pass.check.summary.first
     );
-    let index = index(&pass);
-    let served = flags(&index, &mut frame12, 12, 3);
+    let idx = index(&pass);
+    let served = flags(&idx, &mut frame12, 12, 3);
     assert_eq!((served.land[&100], served.naval[&0]), (Engaged::No, Engaged::No));
+
+    let mut frame13 = observer_frame(gained_vision, 3, [0, 0]);
+    *frame13.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Unavailable {
+        reason: "witness unavailable".into(),
+    };
+    pass.fold_hour(3, 13, Some(&frame13), Some(10), false);
+    let idx = index(&pass);
+    let served13 = flags(&idx, &mut frame13, 13, 3);
+    assert_eq!(
+        served13.land[&100],
+        Engaged::Ambiguous(engaged::Ambiguity::Scope)
+    );
+}
+
+#[test]
+fn unidentified_hourly_viewer_keeps_independently_witnessed_side_refresh() {
+    use replay_data::rows::{CombatEngagementRefreshRow, LocalPlayerRow, TableRows};
+    use replay_frame::frame::TableView;
+    let allied: &[(u32, u32)] = &[(2, 3)];
+    for unlinked_tag in [false, true] {
+        let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
+        let frame10 = naval_frame(6, &[1], allied, 0, [0, 0]);
+        let mut frame11 = naval_frame(6, &[1], allied, 0, [0, 0]);
+        *frame11.tables[TableId::LocalPlayer.index()] = if unlinked_tag {
+            TableView::Complete(TableRows::LocalPlayer(vec![LocalPlayerRow {
+                country: 0,
+                observer_country: 999,
+            }]))
+        } else {
+            TableView::Unavailable {
+                reason: "not captured".into(),
+            }
+        };
+        *frame11.tables[TableId::CombatEngagementRefreshes.index()] = TableView::Complete(
+            TableRows::CombatEngagementRefreshes(vec![CombatEngagementRefreshRow {
+                kind: CombatEngagementRefreshRow::LAND_SIDE,
+                target: 100,
+                side: 0,
+                viewer: 3,
+                triggers: CombatEngagementRefreshRow::TRIGGER_RECORDED,
+            }]),
+        );
+        let mut frame12 = naval_frame(6, &[1], allied, 0, [0, 0]);
+        pass.fold_hour(3, 10, Some(&frame10), Some(10), false);
+        pass.fold_hour(3, 11, Some(&frame11), Some(10), false);
+        pass.fold_hour(3, 12, Some(&frame12), Some(10), false);
+
+        let idx = index(&pass);
+        {
+            let branches = idx.shared.branches.lock().unwrap();
+            assert!(!branches[&3].recording_player(11, 1));
+            assert!(branches[&3].recording_player(12, 1));
+        }
+        let served12 = flags(&idx, &mut frame12, 12, 1);
+        assert_eq!(served12.land[&100], Engaged::Yes);
+    }
 }
 
 #[test]
@@ -1301,7 +1358,7 @@ fn a_side_whose_combat_ends_is_reported_once() {
     ] {
         history.advance_reporting(
             engaged::Sample {
-                viewer: 1,
+                viewer: Some(1),
                 viewer_raw: None,
                 alternate_viewer: None,
                 alternate_viewer_raw: None,
@@ -1492,7 +1549,7 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
     combats(
         last,
         LAND,
-        viewer.slot,
+        viewer.slot.unwrap(),
         &viewer.inputs.links,
         viewer.inputs.relations.as_ref().map_err(|reason| *reason),
         Some(index.shared.as_ref()),
@@ -1570,7 +1627,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
         combats(
             &frames[1],
             LAND,
-            viewer.slot,
+            viewer.slot.unwrap(),
             &viewer.inputs.links,
             viewer.inputs.relations.as_ref().map_err(|reason| *reason),
             index,
@@ -1595,7 +1652,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
         combats(
             &unread,
             LAND,
-            viewer.slot,
+            viewer.slot.unwrap(),
             &viewer.inputs.links,
             viewer.inputs.relations.as_ref().map_err(|reason| *reason),
             Some(index.shared.as_ref()),

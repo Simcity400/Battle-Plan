@@ -214,7 +214,7 @@ fn defended<'a>(
     defenders: &[u64],
 ) -> Sample<'a> {
     Sample {
-        viewer: 1,
+        viewer: Some(1),
         viewer_raw: None,
         alternate_viewer: None,
         alternate_viewer_raw: None,
@@ -274,7 +274,7 @@ fn a_viewer_change_across_a_gap_is_not_a_rebuild_now() {
         viewer: u32,
     ) -> Sample<'a> {
         Sample {
-            viewer,
+            viewer: Some(viewer),
             ..sample(links, relations, &[7], &[2])
         }
     }
@@ -422,7 +422,7 @@ fn a_viewer_change_across_a_gap_rebuilds_nothing() {
     let mut history = History::default();
     history.advance(sample(&links, &allied, &[7], &[2]), Continuity::Load);
     let moved = |viewer| Sample {
-        viewer,
+        viewer: Some(viewer),
         ..sample(&links, &allied, &[7], &[2])
     };
     history.advance(moved(2), Continuity::Gap);
@@ -439,7 +439,7 @@ fn a_viewer_change_is_ordered_against_both_samples_relations() {
     let (apart, allied) = (relations(false), relations(true));
     fn at<'a>(links: &'a BTreeMap<u32, u32>, viewer: u32, relations: &'a Relations) -> Sample<'a> {
         Sample {
-            viewer,
+            viewer: Some(viewer),
             ..sample(links, relations, &[7], &[1])
         }
     }
@@ -892,7 +892,7 @@ fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
     let mut history = History::default();
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(101),
             recording: true,
             ..sample(&links, &allied, &[7], &[2])
@@ -902,7 +902,7 @@ fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
     assert_eq!(history.side(62, 0), Engaged::Yes);
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(101),
             recording: true,
             ..sample(&links, &apart, &[7], &[2])
@@ -912,7 +912,7 @@ fn alias_change_to_same_slot_does_not_prove_sweep_in_unavailable_interval() {
     assert_eq!(history.side(62, 0), Engaged::Yes);
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
@@ -931,7 +931,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     let mut history = History::default();
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
             ..sample(&links_before, &shares_with_one, &[7], &[3])
@@ -941,7 +941,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     assert_eq!(history.side(62, 0), Engaged::Yes);
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(701),
             alternate_viewer: Some(2),
             alternate_viewer_raw: Some(202),
@@ -954,7 +954,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     assert_eq!(history.side(62, 0), Engaged::Yes);
     history.advance(
         Sample {
-            viewer: 2,
+            viewer: Some(2),
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
@@ -967,7 +967,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     let mut direct_remap = History::default();
     direct_remap.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
             ..sample(&links_before, &shares_with_one, &[7], &[3])
@@ -977,7 +977,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     assert_eq!(direct_remap.side(62, 0), Engaged::Yes);
     direct_remap.advance(
         Sample {
-            viewer: 2,
+            viewer: Some(2),
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
@@ -996,7 +996,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     let mut reverse_remap = History::default();
     reverse_remap.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
             ..sample(&same_before, &shares_with_one, &[7], &[3])
@@ -1006,7 +1006,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     assert_eq!(reverse_remap.side(62, 0), Engaged::Yes);
     reverse_remap.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(701),
             recording: true,
             refreshes: complete_witness(),
@@ -1017,7 +1017,7 @@ fn remapped_tag_compares_within_same_links_table_without_proving_false_sweep() {
     assert_eq!(reverse_remap.side(62, 0), Engaged::Yes);
     reverse_remap.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(202),
             recording: true,
             refreshes: RefreshWitness::Unavailable,
@@ -1040,7 +1040,7 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
     let mut history = History::default();
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(1),
             recording: true,
             zero_visibility: &zero_yes,
@@ -1051,7 +1051,7 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
     assert_eq!(history.side(62, 0), Engaged::No);
     history.advance(
         Sample {
-            viewer: 1,
+            viewer: Some(1),
             viewer_raw: Some(1),
             alternate_viewer: Some(0),
             alternate_viewer_raw: Some(0),
@@ -1069,7 +1069,7 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Order));
     history.advance(
         Sample {
-            viewer: 0,
+            viewer: Some(0),
             viewer_raw: Some(0),
             recording: true,
             zero_visibility: &zero_no,
@@ -1079,4 +1079,32 @@ fn witnessed_zero_sweep_prevents_subsequent_unavailable_hour_from_proving_second
         Continuity::Next,
     );
     assert_eq!(history.side(62, 0), Engaged::Ambiguous(Ambiguity::Scope));
+}
+
+#[test]
+fn unidentified_viewer_degrades_unavailable_hour_conservatively() {
+    let links = BTreeMap::from([(1, 1), (2, 2), (3, 3), (5, 5)]);
+    let shares_with_three = Relations::factions_for_tests(&[(2, 3)]);
+    let mut history = History::default();
+    history.advance(
+        Sample {
+            viewer: Some(1),
+            viewer_raw: Some(1),
+            recording: true,
+            ..sample(&links, &shares_with_three, &[7], &[2])
+        },
+        Continuity::Load,
+    );
+    assert_eq!(history.side(62, 0), Engaged::No);
+    history.advance(
+        Sample {
+            viewer: None,
+            viewer_raw: None,
+            recording: true,
+            refreshes: RefreshWitness::Unavailable,
+            ..sample(&links, &shares_with_three, &[7], &[2])
+        },
+        Continuity::Next,
+    );
+    assert_eq!(history.side(62, 0), Engaged::Unknown);
 }

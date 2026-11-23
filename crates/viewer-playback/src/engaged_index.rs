@@ -184,7 +184,7 @@ fn witness<F: Tables + ?Sized>(frame: &F) -> io::Result<Witness> {
 }
 
 struct Viewer {
-    slot: u32,
+    slot: Option<u32>,
     raw: Option<u32>,
     alternate_slot: Option<u32>,
     alternate_raw: Option<u32>,
@@ -258,7 +258,7 @@ impl Viewer {
         }
         let (slot, _) = viewer_foundation::fold_tables::viewer(frame, &inputs.links, &tags, country)?;
         Ok(Self {
-            slot,
+            slot: Some(slot),
             raw: None,
             alternate_slot: None,
             alternate_raw: None,
@@ -266,34 +266,54 @@ impl Viewer {
         })
     }
 
-    fn recording<F: Tables + ?Sized>(frame: &F, inputs: &Arc<Inputs>) -> Option<(Self, bool)> {
-        let [player] = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)?
-        else {
-            return None;
-        };
-        let observing = (player.country as i32) <= 0;
-        let raw = if (player.country as i32) > 0 {
-            player.country
-        } else if (player.observer_country as i32) > 0 {
-            player.observer_country
-        } else {
-            0
-        };
-        let slot = if raw == 0 {
-            0
-        } else {
-            inputs.links.get(&raw).copied()?
-        };
-        Some((
-            Self {
-                slot,
-                raw: Some(raw),
-                alternate_slot: None,
-                alternate_raw: None,
-                inputs: Arc::clone(inputs),
-            },
-            observing,
-        ))
+    fn recording<F: Tables + ?Sized>(
+        frame: &F,
+        inputs: &Arc<Inputs>,
+    ) -> (Self, Option<(u32, u32)>, bool) {
+        let identified = viewer_foundation::fold_tables::whole::<tables::LocalPlayer, F>(frame)
+            .and_then(|rows| match rows {
+                [player] => {
+                    let observing = (player.country as i32) <= 0;
+                    let raw = if (player.country as i32) > 0 {
+                        player.country
+                    } else if (player.observer_country as i32) > 0 {
+                        player.observer_country
+                    } else {
+                        0
+                    };
+                    let slot = if raw == 0 {
+                        0
+                    } else {
+                        inputs.links.get(&raw).copied()?
+                    };
+                    Some(((slot, raw), observing))
+                }
+                _ => None,
+            });
+        match identified {
+            Some(((slot, raw), observing)) => (
+                Self {
+                    slot: Some(slot),
+                    raw: Some(raw),
+                    alternate_slot: None,
+                    alternate_raw: None,
+                    inputs: Arc::clone(inputs),
+                },
+                Some((slot, raw)),
+                observing,
+            ),
+            None => (
+                Self {
+                    slot: None,
+                    raw: None,
+                    alternate_slot: None,
+                    alternate_raw: None,
+                    inputs: Arc::clone(inputs),
+                },
+                None,
+                false,
+            ),
+        }
     }
 
     fn sample(&self, kind: usize, recording: bool, sides: HourSides) -> engaged::Sample<'_> {
@@ -666,32 +686,40 @@ impl Pass {
         let player = sides
             .as_ref()
             .zip(inputs.as_ref())
-            .and_then(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
+            .map(|((frame, _), inputs)| Viewer::recording(*frame, inputs));
         let previous_view = fold
             .client_view
             .as_ref()
             .filter(|_| recording_continuity == Continuity::Next);
-        let player = player.map(|(mut viewer, observing)| {
-            let view = (viewer.slot, viewer.raw.unwrap_or(0));
-            if let Some((slot, raw, prev_inputs)) = previous_view
+        let player = player.map(|(mut viewer, view, observing)| {
+            if let Some(view) = view
+                && recording_continuity == Continuity::Next
                 && observing
             {
-                let prev_slot_now = if *raw == 0 {
-                    Some(0)
+                if let Some((slot, raw, prev_inputs)) = previous_view {
+                    let prev_slot_now = if *raw == 0 {
+                        Some(0)
+                    } else {
+                        viewer.inputs.links.get(raw).copied()
+                    };
+                    viewer.slot = Some(prev_slot_now.unwrap_or(*slot));
+                    viewer.raw = Some(*raw);
+                    let same_view = same_raw_in(&prev_inputs.links, *raw, view.1)
+                        && same_raw_in(&viewer.inputs.links, *raw, view.1);
+                    if !same_view {
+                        viewer.alternate_slot = Some(view.0);
+                        viewer.alternate_raw = Some(view.1);
+                    }
                 } else {
-                    viewer.inputs.links.get(raw).copied()
-                };
-                viewer.slot = prev_slot_now.unwrap_or(*slot);
-                viewer.raw = Some(*raw);
-                let same_view = same_raw_in(&prev_inputs.links, *raw, view.1)
-                    && same_raw_in(&viewer.inputs.links, *raw, view.1);
-                if !same_view {
+                    viewer.slot = None;
+                    viewer.raw = None;
                     viewer.alternate_slot = Some(view.0);
                     viewer.alternate_raw = Some(view.1);
                 }
             }
             (viewer, view)
         });
+        let identified = player.as_ref().is_some_and(|(_, view)| view.is_some());
         match &sides {
             None => summary.unreadable_hours += 1,
             Some((_, sides)) => {
@@ -701,7 +729,7 @@ impl Pass {
                 }
                 if !naval.sides.is_empty() {
                     summary.naval_hours += 1;
-                    if player.is_none() {
+                    if !identified {
                         summary.unidentified_hours += 1;
                     }
                 }
@@ -712,7 +740,7 @@ impl Pass {
                 fold.recording
                     .advance(viewer, true, sides.clone(), recording_continuity);
                 fold.recording_last = Some((hour, true));
-                fold.client_view = Some((view.0, view.1, Arc::clone(&viewer.inputs)));
+                fold.client_view = view.map(|(slot, raw)| (slot, raw, Arc::clone(&viewer.inputs)));
                 let bytes = naval_check::recorded_bytes(frame).ok();
                 advance_icons(
                     &mut fold.recording_icons,
@@ -721,16 +749,17 @@ impl Pass {
                     bytes.as_ref(),
                     recording_continuity,
                 );
-                if self
-                    .check
-                    .compare(
-                        branch,
-                        hour,
-                        frame,
-                        &sides[NAVAL].sides,
-                        &fold.recording.histories[NAVAL],
-                    )
-                    .is_err()
+                if view.is_some()
+                    && self
+                        .check
+                        .compare(
+                            branch,
+                            hour,
+                            frame,
+                            &sides[NAVAL].sides,
+                            &fold.recording.histories[NAVAL],
+                        )
+                        .is_err()
                 {
                     self.check.summary.unreadable_hours += 1;
                 }
@@ -748,7 +777,7 @@ impl Pass {
                 );
             }
         }
-        let slot = viewer.as_ref().map(|viewer| viewer.slot);
+        let slot = viewer.as_ref().and_then(|viewer| viewer.slot);
         match (sides, viewer) {
             (Some((frame, sides)), Some(viewer)) => {
                 fold.perspective
@@ -789,7 +818,8 @@ impl Pass {
             }
             let player_slot = player
                 .as_ref()
-                .and_then(|(_, (view, raw))| (*raw != 0).then_some(*view));
+                .and_then(|(_, view)| *view)
+                .and_then(|(view, raw)| (raw != 0).then_some(view));
             if covered
                 .players
                 .last()

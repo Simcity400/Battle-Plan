@@ -161,7 +161,7 @@ pub fn combats(
     let mut history = engaged::History::default();
     history.advance(
         engaged::Sample {
-            viewer,
+            viewer: Some(viewer),
             viewer_raw,
             alternate_viewer: None,
             alternate_viewer_raw: None,
