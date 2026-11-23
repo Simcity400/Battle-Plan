@@ -167,9 +167,11 @@ export function columnTooltip(reply: WeatherReply, region: Choice, column: numbe
     const value = stats(entry?.measures.get(`mod:${item.id}`), column);
     return value && (show !== 'modifiers' || item.id === modifier) ? [{ label: item.name, lookupKey: item.id, value: range(value, modifierText) }] : [];
   });
+  const recorded = show === 'conditions' ? entry?.region.observed?.[column] ?? 0
+    : stats(entry?.measures.get(show === 'temperature' ? 'temp' : `mod:${modifier}`), column)?.days ?? 0;
   const head = days === 1 ? [{ label: date }] : [{ label: `${label(shown.firstHour)} to ${label(shown.lastHour)}` },
-    { label: 'Recorded days', value: `${shown.recorded} of ${days}` }];
-  if (!shown.recorded) return { title: region.name, rows: [...head, { label: 'Not recorded' }] };
+    { label: 'Recorded days', value: `${recorded} of ${days}` }];
+  if (!recorded) return { title: region.name, rows: [...head, { label: 'Not recorded' }] };
   return {
     title: region.name,
     rows: [

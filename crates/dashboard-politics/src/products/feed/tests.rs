@@ -530,3 +530,12 @@ fn a_scoped_page_and_its_counts_number_only_the_rows_kept() {
     assert_eq!((counts.before, counts.bins), (1, vec![(0, 1), (1, 1), (15, 1), (17, 1)]), "bins on the absolute grid from the one holding the first hour");
     assert!(count(&kept, 30, 230, 7).is_err(), "bins of seven hours are refused as every log's are");
 }
+
+#[test]
+fn two_projects_completing_in_one_hour_are_two_rows() {
+    use dashboard_research::products::special_projects::ProjectCompletion;
+    let completion = |project, ordinal| ProjectCompletion { tag: Some("GER".into()), date: 100, observed_hour: 101, owner: 9, project, ordinal, name: None, icon: None, icon_missing: None };
+    let ids: std::collections::BTreeSet<String> =
+        [completion(1, 4), completion(2, 4), completion(1, 7)].into_iter().filter_map(families::completion_row).map(|row| row.id).collect();
+    assert_eq!(ids.len(), 3, "each project's completion marker is its own row: {ids:?}");
+}

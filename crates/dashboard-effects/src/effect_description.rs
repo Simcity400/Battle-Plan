@@ -66,6 +66,7 @@ pub(crate) fn find<'r, R: RowCodec + Clone + 'r>(
 
 mod ability;
 mod characters;
+mod concise;
 pub use ability::ability_description;
 mod diplomacy;
 mod doctrine_sources;
@@ -73,6 +74,8 @@ pub use doctrine_sources::{doctrine_benefits, doctrine_tactic_sources};
 pub use static_lists::scaled_static_modifiers;
 mod dispatch;
 mod empty;
+mod entity_links;
+pub use entity_links::{EntityKind, Span, spans};
 mod events;
 pub use events::decision_name_key_at;
 mod lists;
@@ -108,8 +111,6 @@ const OPERAND_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::RaidTargets,
     replay_data::rows::TableId::RailwayGunCounterInputs,
     replay_data::rows::TableId::RelationLinks,
-    replay_data::rows::TableId::ScientistSkills,
-    replay_data::rows::TableId::Scientists,
     replay_data::rows::TableId::TaskForces,
     replay_data::rows::TableId::TimedIdeas,
     replay_data::rows::TableId::TrainInventory,
@@ -587,6 +588,7 @@ pub struct Context<'c, 'f> {
     perspective: u32,
     source: &'c str,
     content: Content<'c>,
+    entity_links: bool,
 }
 
 impl<'c, 'f> Context<'c, 'f> {
@@ -606,7 +608,13 @@ impl<'c, 'f> Context<'c, 'f> {
             perspective,
             source,
             content,
+            entity_links: false,
         }
+    }
+
+    pub fn with_entity_links(mut self) -> Self {
+        self.entity_links = true;
+        self
     }
 
     fn world(&self) -> Result<&'c World<'f>, String> {
@@ -650,6 +658,7 @@ pub fn describe(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let projected = crate::triggers::event_scopes::project(&out.graph.borrow(), 0);
     match projected {
@@ -683,6 +692,7 @@ struct Renderer<'r, 'c, 'f> {
     evaluator: OnceCell<Result<Evaluator<'c, 'f>, String>>,
     out: Description,
     scripted_stack: Vec<(Vec<u8>, Scope)>,
+    concise: Option<(u32, u32)>,
 }
 
 pub fn trim_description(text: &str) -> &str {
@@ -1320,6 +1330,16 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
             Some(0x142A31D78) => return self.hidden_group(item, scopes, indent),
             _ => {}
         }
+        match self.concise_leaf(item, scopes) {
+            Some(Ok(text)) if self.indents(item) => return indent_nonempty_lines(&text, 3 * indent),
+            Some(Ok(text)) => return text,
+            Some(Err(why)) => {
+                let effect_key = key(item);
+                self.refuse(&effect_key, format!("key {effect_key}: {why}"));
+                return String::new();
+            }
+            None => {}
+        }
         let Some(own) = self.own(item, scopes) else {
             return String::new();
         };
@@ -1379,6 +1399,88 @@ impl<'r, 'c, 'f> Renderer<'r, 'c, 'f> {
     }
 }
 
+pub fn technology_description(token: &str, database_index: Option<i32>, context: &Context<'_, '_>, country: u32) -> Description {
+    let mut renderer = Renderer {
+        context,
+        graph: Rc::new(RefCell::new(EventScopes::new(vec![
+            crate::scripted_text::EventScope::of(EventObject::Country(country)),
+        ]))),
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+        concise: None,
+    };
+    match renderer.bound_technology_effect(token, database_index, Scopes::of(Scope::Country(country))) {
+        Ok(text) => renderer.out.text = text,
+        Err(why) => renderer.refuse("technology effects", why),
+    }
+    renderer.out
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IterationScopes {
+    pub country_seed: Option<u32>,
+    pub scientist: Result<Option<u32>, String>,
+    pub scientist_seed: Option<u32>,
+    pub facility: Result<Option<(u32, u32)>, String>,
+    pub state_seed: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputSection {
+    pub heading: Option<String>,
+    pub text: String,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct IterationDescription {
+    pub heading: Option<String>,
+    pub sections: Vec<OutputSection>,
+    pub no_changes: bool,
+    pub refusals: BTreeMap<String, usize>,
+}
+
+pub fn project_iteration_description(
+    output: &content_reader_military::special_projects::Output,
+    context: &Context<'_, '_>,
+    owner: u32,
+    id: u32,
+    iteration: IterationScopes,
+) -> IterationDescription {
+    if concise::changes_nothing(output) {
+        return IterationDescription {
+            no_changes: true,
+            ..IterationDescription::default()
+        };
+    }
+    let mut renderer = Renderer {
+        context,
+        graph: Rc::new(RefCell::new(EventScopes::new(vec![
+            crate::scripted_text::EventScope::of(EventObject::Project { owner, id }),
+        ]))),
+        evaluator: OnceCell::new(),
+        out: Description::default(),
+        scripted_stack: Vec::new(),
+        concise: Some((owner, id)),
+    };
+    let mut out = IterationDescription::default();
+    match renderer.project_iteration_body(
+        output,
+        Scopes::of(Scope::Project { owner, id }),
+        owner,
+        id,
+        iteration,
+    ) {
+        Ok((heading, sections)) => {
+            out.heading = heading;
+            out.sections = sections;
+        }
+        Err(why) => renderer.refuse("special-project iteration", why),
+    }
+    out.refusals = renderer.out.refusals;
+    out
+}
+
 pub fn project_output_description(
     output: &content_reader_military::special_projects::Output,
     context: &Context<'_, '_>,
@@ -1395,6 +1497,7 @@ pub fn project_output_description(
         evaluator: OnceCell::new(),
         out: Description::default(),
         scripted_stack: Vec::new(),
+        concise: None,
     };
     let item = Item {
         key: None,

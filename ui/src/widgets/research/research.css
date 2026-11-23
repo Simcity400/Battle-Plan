@@ -89,30 +89,17 @@ button.research-now-cell:hover { background: var(--hover); }
 }
 .research-time-row .is-saved { --tone: color-mix(in srgb, var(--positive) calc(100% - var(--shade) * 16%), var(--glow)); }
 .research-time-row .is-juggle { --tone: var(--glow); }
+.research-time-row .is-rest { --tone: var(--positive); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--tone) 30%, transparent) 0 3px, color-mix(in srgb, var(--tone) 12%, transparent) 3px 6px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 45%, transparent); }
 .research-time-row .is-earlier { --tone: var(--muted); }
+.research-time-row .is-rounding { --tone: var(--muted); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--tone) 34%, transparent) 0 2px, transparent 2px 5px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 40%, transparent); }
 .research-time-row .is-remaining { --tone: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent); }
 .research-time.is-hovering .research-time-row > span:not(.is-hovered) { opacity: .35; }
 .research-time-row > span.is-hovered {
   position: relative; z-index: 1; filter: brightness(1.15); transform: scaleY(1.3);
   box-shadow: 0 0 10px 1px color-mix(in srgb, var(--tone) 60%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--tone) 80%, white 20%);
 }
-.research-description .research-time-readout {
-  grid-column: 1 / -1; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; column-gap: 6px; min-height: 34px; margin: 2px 0 0;
-  color: var(--muted); font-size: 0.75rem; line-height: 1.35; white-space: nowrap;
-}
-.research-time-readout > span:not(.research-time-swatch, .research-time-name) { grid-column: 1 / 3; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.research-time-readout > .research-time-name { grid-column: 2 / -1; color: var(--text); white-space: normal; overflow-wrap: anywhere; }
-.research-time-readout > small { grid-column: 2; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 0.6875rem; }
-.research-time-readout > strong { grid-column: 3; justify-self: end; color: var(--text); font-weight: 600; }
-.research-time-readout > strong[data-tone='faster'] { color: var(--positive); }
-.research-time-readout > strong[data-tone='slower'] { color: var(--error); }
-.research-time-swatch { --tone: var(--accent); grid-column: 1; width: 8px; height: 8px; border-radius: 50%; background: var(--tone); box-shadow: 0 0 6px color-mix(in srgb, var(--tone) 70%, transparent); }
-.research-time-swatch.is-base { --tone: color-mix(in srgb, var(--muted) 70%, var(--text)); }
-.research-time-swatch.is-penalty { --tone: var(--warning); }
-.research-time-swatch.is-slower { --tone: var(--error); }
-.research-time-swatch.is-paused, .research-time-swatch.is-earlier, .research-time-swatch.is-remaining { --tone: var(--muted); }
-.research-time-swatch.is-saved { --tone: var(--positive); }
-.research-time-swatch.is-juggle { --tone: var(--glow); }
 [data-motion='reduced'] .research-time-row > span { transition: none; }
 .research-description-text { margin-top: 8px; }
 .research-description-text > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; cursor: pointer; list-style: none; color: var(--muted); font-size: 0.75rem; font-weight: 500; }

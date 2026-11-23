@@ -270,7 +270,7 @@ impl Player {
                 while at < text.len() {
                     let next = native_text::special(&text[at..]);
                     if let Some((_, native_text::Special::Icon(name))) = &next {
-                        for name in native_text::icon_lookup(name)
+                        for name in content_reader_localisation::localisation::icon_lookup(name)
                             .0
                             .into_iter()
                             .filter(|_| !name.is_empty())

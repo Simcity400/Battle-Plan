@@ -6,8 +6,7 @@ mod validity;
 pub use validity::{Assignment, CountKey, ModuleCountLimit, ModuleValidity};
 mod groups;
 pub use design::{
-    ModuleConversion,
-    ModuleDesign, ModuleXpRules, StatComponents,
+    Amount, ModuleConversion, ModuleDesign, ModuleXpRules, ResourcePool, StatComponents,
     StatContribution, StatGroup, StatValue, UpgradeCurrency, UpgradeDesign, UpgradeXpRules,
     module_save_xp,
 };
@@ -513,10 +512,31 @@ pub struct Equipment {
     pub module_add_stats_multiplier: Vec<StatValue>,
     pub module_multiply_stats_multiplier: Vec<StatValue>,
     pub scaled_by_reliability: Vec<StatValue>,
+    pub unread_terms: Vec<(usize, String)>,
+    pub unread_multipliers: Vec<(Multiplier, usize, String)>,
+    pub manpower: Option<design::Amount>,
+    pub resources: design::ResourcePool,
+    pub off_sheet: Vec<Vec<u8>>,
     pub duplicate: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Multiplier {
+    Add,
+    Multiply,
+}
+
 impl Equipment {
+    pub fn unread_multipliers_for<'a>(&'a self, group: &'a StatGroup) -> impl Iterator<Item = (usize, &'a str)> + 'a {
+        self.unread_multipliers
+            .iter()
+            .filter(move |(role, index, _)| match role {
+                Multiplier::Add => group.add.iter().chain(&group.average).any(|term| term.index == *index),
+                Multiplier::Multiply => group.multiply.iter().any(|term| term.index == *index),
+            })
+            .map(|(_, index, why)| (*index, why.as_str()))
+    }
+
     fn new(name: Vec<u8>, at: usize) -> Self {
         Self {
             name,
@@ -549,6 +569,11 @@ impl Equipment {
             module_add_stats_multiplier: Vec::new(),
             module_multiply_stats_multiplier: Vec::new(),
             scaled_by_reliability: Vec::new(),
+            unread_terms: Vec::new(),
+            unread_multipliers: Vec::new(),
+            manpower: None,
+            resources: Vec::new(),
+            off_sheet: Vec::new(),
             duplicate: false,
         }
     }
@@ -875,6 +900,11 @@ impl Database {
                 equipment.module_add_stats_multiplier.clear();
                 equipment.module_multiply_stats_multiplier.clear();
                 equipment.scaled_by_reliability.clear();
+                equipment.unread_terms.clear();
+                equipment.unread_multipliers.clear();
+                equipment.manpower = None;
+                equipment.resources.clear();
+                equipment.off_sheet.clear();
                 at
             }
             None => self.register(key.to_vec()),
@@ -916,12 +946,16 @@ impl Database {
                             module_add_stats_multiplier,
                             module_multiply_stats_multiplier,
                             scaled_by_reliability,
+                            unread_terms,
+                            unread_multipliers,
                             sprite,
                         ) = (
                             archetype.stats,
                             archetype.module_add_stats_multiplier.clone(),
                             archetype.module_multiply_stats_multiplier.clone(),
                             archetype.scaled_by_reliability.clone(),
+                            archetype.unread_terms.clone(),
+                            archetype.unread_multipliers.clone(),
                             archetype.sprite.clone(),
                         );
                         let equipment = &mut self.equipment[at];
@@ -931,6 +965,8 @@ impl Database {
                         equipment.module_multiply_stats_multiplier =
                             module_multiply_stats_multiplier;
                         equipment.scaled_by_reliability = scaled_by_reliability;
+                        equipment.unread_terms = unread_terms;
+                        equipment.unread_multipliers = unread_multipliers;
                         if equipment.sprite.is_empty() {
                             equipment.sprite = sprite;
                         }
@@ -1000,22 +1036,28 @@ impl Database {
                 }
                 b"type_override" => self.equipment[at].type_override = string.to_ascii_lowercase(),
                 b"module_add_stats_multiplier" => {
-                    StatGroup::read_entries(
-                        &mut self.equipment[at].module_add_stats_multiplier,
+                    let equipment = &mut self.equipment[at];
+                    let unread = StatGroup::read_entries(
+                        &mut equipment.module_add_stats_multiplier,
                         field.value.items().unwrap_or_default(),
                     );
+                    equipment.unread_multipliers.extend(unread.into_iter().map(|(index, why)| (Multiplier::Add, index, why)));
                 }
                 b"module_multiply_stats_multiplier" => {
-                    StatGroup::read_entries(
-                        &mut self.equipment[at].module_multiply_stats_multiplier,
+                    let equipment = &mut self.equipment[at];
+                    let unread = StatGroup::read_entries(
+                        &mut equipment.module_multiply_stats_multiplier,
                         field.value.items().unwrap_or_default(),
                     );
+                    equipment.unread_multipliers.extend(unread.into_iter().map(|(index, why)| (Multiplier::Multiply, index, why)));
                 }
                 b"scaled_by_reliability" => {
-                    StatGroup::read_entries(
-                        &mut self.equipment[at].scaled_by_reliability,
+                    let equipment = &mut self.equipment[at];
+                    let unread = StatGroup::read_entries(
+                        &mut equipment.scaled_by_reliability,
                         field.value.items().unwrap_or_default(),
                     );
+                    equipment.unread_terms.extend(unread);
                 }
                 b"module_slots" => notes.extend(self.module_slots(at, field)),
                 b"upgrades" => {
@@ -1079,6 +1121,20 @@ impl Database {
                             Some((_, known)) => *known = module,
                             None => modules.push((slot.to_vec(), module)),
                         }
+                    }
+                }
+                b"manpower" if stat_index(&keyword).is_none() => {
+                    self.equipment[at].manpower = Some(design::number(field));
+                }
+                b"resources" if stat_index(&keyword).is_none() => {
+                    design::read_resources(
+                        &mut self.equipment[at].resources,
+                        field.value.items().unwrap_or_default(),
+                    );
+                }
+                b"modifier_stat" if stat_index(&keyword).is_none() => {
+                    if !self.equipment[at].off_sheet.contains(&keyword) {
+                        self.equipment[at].off_sheet.push(keyword.clone());
                     }
                 }
                 stat => {

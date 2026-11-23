@@ -682,6 +682,9 @@ fn statuses_from_page_entries_are_the_statuses_stepped() {
             assert!(inside(&read, first + 1_201) && !inside(&available, first + 1_201), "run {run}: an hour read but refused is not an available read");
         }
         assert!(available.iter().all(|&(a, b)| (a..=b).all(|hour| inside(&read, hour))), "run {run}: available reads are reads");
+        let complete = complete_reads(&recording, run, TableId::Countries, first, last).unwrap();
+        assert!(inside(&available, first + 300) && !inside(&complete, first + 300), "run {run}: a read in part is available but never complete");
+        assert!(inside(&complete, first + 24), "run {run}: a whole read is complete");
     }
 }
 

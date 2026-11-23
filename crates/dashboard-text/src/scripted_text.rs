@@ -583,7 +583,10 @@ impl ScriptedContent {
     }
 
     pub fn set_synthetic_environment(&self, state_names: std::collections::BTreeMap<u32, String>) {
-        let mut environment = entries::EnvironmentInputs::synthetic();
+        let mut environment = entries::EnvironmentInputs::synthetic().with_constants(
+            content_reader_politics::script_constants::read(&self.layers.layers)
+                .map_err(|why| why.to_string()),
+        );
         environment.state_names = state_names
             .into_iter()
             .map(|(id, name)| (id, Ok(name)))
@@ -631,6 +634,7 @@ pub struct ScriptedText<'a> {
     viewer: Option<u32>,
     pub(crate) nato_counters: bool,
     world: std::sync::OnceLock<Result<crate::triggers::World<'a>, String>>,
+    accepted_projects: Option<std::sync::Arc<crate::triggers::AcceptedProjects>>,
 }
 
 fn named(segment: &str, name: &str) -> bool {
@@ -865,6 +869,7 @@ impl<'a> ScriptedText<'a> {
             viewer: None,
             nato_counters: content_reader_settings::settings::MapOptions::DEFAULT.nato_counters,
             world: std::sync::OnceLock::new(),
+            accepted_projects: None,
         };
         if crate::triggers::inputs::recording() {
             text.names
@@ -904,7 +909,13 @@ impl<'a> ScriptedText<'a> {
             viewer: self.viewer,
             nato_counters: self.nato_counters,
             world: std::sync::OnceLock::new(),
+            accepted_projects: self.accepted_projects.clone(),
         }
+    }
+
+    pub fn with_accepted_projects(mut self, accepted: crate::triggers::AcceptedProjects) -> Self {
+        self.accepted_projects = Some(std::sync::Arc::new(accepted));
+        self
     }
 
 

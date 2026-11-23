@@ -4820,6 +4820,7 @@ dependencies = [
 name = "dashboard-research"
 version = "0.1.0"
 dependencies = [
+ "content-reader-defines",
  "content-reader-gui",
  "content-reader-key-names",
  "content-reader-localisation",

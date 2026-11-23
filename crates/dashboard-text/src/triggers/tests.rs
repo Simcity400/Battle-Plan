@@ -29,6 +29,9 @@ mod flags;
 #[path = "country_leader_tests.rs"]
 mod country_leaders;
 
+#[path = "scientist_tests.rs"]
+mod scientists;
+
 #[path = "collections/tests.rs"]
 mod collections;
 
@@ -195,7 +198,11 @@ fn with_world<T>(
     roles: Result<&LeaderRoles, &str>,
     run: impl FnOnce(&World) -> T,
 ) -> T {
-    with_world_traits(frame, aliases, roles, Err("none"), run)
+    with_world_traits(frame, aliases, roles, Err("none"), None, run)
+}
+
+fn with_world_accepted<T>(frame: &DecodedFrame, accepted: AcceptedProjects, run: impl FnOnce(&World) -> T) -> T {
+    with_world_traits(frame, "", Err("none"), Err("none"), Some(Arc::new(accepted)), run)
 }
 
 fn with_world_traits<T>(
@@ -209,6 +216,7 @@ fn with_world_traits<T>(
         ),
         &str,
     >,
+    accepted: Option<Arc<AcceptedProjects>>,
     run: impl FnOnce(&World) -> T,
 ) -> T {
     let aliases: Arc<TagAliases> = Arc::new(content_reader_key_names::tag_aliases::parse(
@@ -240,7 +248,8 @@ fn with_world_traits<T>(
             invasion_prepare_days: Err("none"),
             script_constants: Err("none"),
         },
-    );
+    )
+    .with_accepted_projects(accepted);
     run(&world)
 }
 
@@ -450,7 +459,7 @@ fn ruling_leader_traits_use_role_key_and_definition_identity() {
         definitions: vec![definition],
     };
     let evaluate = |frame: &DecodedFrame| {
-        with_world_traits(frame, "", Err("none"), Ok((&units, &traits)), |world| {
+        with_world_traits(frame, "", Err("none"), Ok((&units, &traits)), None, |world| {
             world.evaluate(
                 &items("has_country_leader_with_trait = same"),
                 Scopes::of(Scope::Country(0)),

@@ -37,7 +37,7 @@ fn decoded_source_keeps_trigger_short_circuits_and_native_scope_order() {
         world::core_gap(operands).as_deref(),
         Some("provinces: read only in part (3 rows missing)")
     );
-    with_world_traits(source, "", Err("none"), Err("none"), |world| {
+    with_world_traits(source, "", Err("none"), Err("none"), None, |world| {
         for (body, expected) in [
             ("always=yes", Eval::True),
             ("always=no", Eval::False),

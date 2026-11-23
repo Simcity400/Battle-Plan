@@ -3,7 +3,6 @@ use super::ordinals;
 use dashboard_base::{Source, catalogue::{self, Catalogue}, products::{LoadContext, Product, at_hour::{self, Read}}, queries::country_ids::Names, span::HourSpan};
 use dashboard_text::scripted_text::ScriptedText;
 use dashboard_query::{Query, read, timeline::Join};
-use content_reader_layers::content::diagnostics::Once;
 use replay_lanes::lanes::{self, Cell, Keys};
 use replay_data::rows::{TableId, tables};
 use serde::{Deserialize, Serialize};
@@ -413,12 +412,7 @@ impl Naming<'_, '_> {
             .clone();
         let token = self.lexicon.spelling(self.query, hour, project.definition_id)?;
         let cat = self.cat.clone()?;
-        let catalog = cat
-            .content
-            .layers
-            .derived::<Once<Result<Arc<content_reader_military::special_projects::Catalog>, String>>>()
-            .get_or_init(|| content_reader_military::special_projects::Catalog::read(&cat.content.layers).map(Arc::new).map_err(|why| why.to_string()))
-            .clone()?;
+        let catalog = content_reader_military::special_projects::Catalog::cached(&cat.content.layers)?;
         if let Some(reason) = &catalog.unsettled {
             return Err(reason.clone());
         }

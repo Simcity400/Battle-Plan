@@ -23,6 +23,7 @@ pub use organisations::{OrganisationCondition, Undecided};
 pub mod refusal;
 pub use refusal::Failure;
 pub mod saved_event_targets;
+mod scientists;
 pub mod scripted_localisation;
 #[cfg(test)]
 mod tests;
@@ -34,7 +35,7 @@ pub use operands::{Selected, Selector, compare, scope_selector, shown, trigger_b
 pub use variables::{Store, Temps};
 pub(crate) use world::{AuthoredStates, GeographyInputs, PreparedContent};
 pub use world::{
-    ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
+    AcceptedProjects, ContentFacts, LeaderRoles, NULL_STATE, PartyLeader, PartyLeaders, RecordedTemplate, World,
     required_invasion_hours,
 };
 pub use world::{LeaderVisibility, core_gap, fixed_round};
@@ -93,6 +94,8 @@ pub const RECORDED_TABLES: &[replay_data::rows::TableId] = &[
     replay_data::rows::TableId::OrdersGroups,
     replay_data::rows::TableId::PartyLeaders,
     replay_data::rows::TableId::PoliticalParties,
+    replay_data::rows::TableId::ScientistSkills,
+    replay_data::rows::TableId::Scientists,
     replay_data::rows::TableId::Politics,
     replay_data::rows::TableId::Players,
     replay_data::rows::TableId::PowerBalanceMembers,

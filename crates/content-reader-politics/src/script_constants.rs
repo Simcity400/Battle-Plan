@@ -113,6 +113,13 @@ impl Constants {
         }
     }
 
+    pub fn fixed(&self, parts: &[&str]) -> Result<Option<i64>, String> {
+        match self.find_value(parts).map_err(str::to_owned)? {
+            Some(Value::Fixed(value)) => Ok(Some(*value)),
+            _ => Ok(None),
+        }
+    }
+
     pub fn value(&self, parts: &[&str]) -> Constant {
         let shown = parts.join(".");
         let Some((category, _)) = parts.split_first() else {
@@ -412,6 +419,9 @@ mod tests {
         assert_eq!(constants.integer(&["sp", "small", "gain"]).unwrap(), None);
         assert_eq!(constants.integer(&["missing", "value"]).unwrap(), None);
         assert_eq!(constants.integer(&["groups", "nordics"]).unwrap(), None);
+        assert_eq!(constants.fixed(&["sp", "small", "gain"]).unwrap(), Some(12_500));
+        assert_eq!(constants.fixed(&["sp", "small", "min"]).unwrap(), None);
+        assert_eq!(constants.fixed(&["missing", "value"]).unwrap(), None);
     }
 
     #[test]

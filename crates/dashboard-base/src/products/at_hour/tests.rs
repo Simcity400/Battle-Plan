@@ -299,12 +299,62 @@ fn a_panel_made_on_the_panels_thread_reads_with_its_recordings_executable_tables
         context: (),
         content_warnings: Vec::new(),
         live: None,
+        answered: None,
         executable: Some(executable),
         product: PhantomData,
     };
     let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, FIRST, Some(&[TableId::Countries])).unwrap() else { panic!("hour {FIRST} is recorded") };
     let data = std::thread::scope(|threads| threads.spawn(|| panel.data(&frame)).join().unwrap());
     assert_eq!(data.unwrap()["scoped"], true, "a panel reading recorded keywords or registries would find them withheld");
+}
+
+struct Static;
+
+impl AtHour for Static {
+    const KEY: &'static str = "test-static";
+    const TITLE: &'static str = "Static";
+    const CONTENT_DEPENDENT: bool = false;
+    const CLOCK_DEPENDENT: bool = false;
+    const REPLY_NAMES_NO_HOUR: bool = true;
+    type Params = ScopedParams;
+    type Reply = ScopedReply;
+    type Context = std::sync::atomic::AtomicUsize;
+
+    fn tables(_params: &Self::Params) -> Vec<TableId> {
+        Vec::new()
+    }
+
+    fn context(_source: &Source, _load: &LoadContext) -> io::Result<Self::Context> {
+        Ok(0.into())
+    }
+
+    fn reply(_frame: &DecodedFrame, _params: &Self::Params, at: &At<'_, Self::Context>) -> io::Result<Self::Reply> {
+        at.context.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(ScopedReply { scoped: false, warnings: Vec::new() })
+    }
+}
+
+#[test]
+fn a_followed_product_that_reads_neither_tables_nor_the_hour_answers_once_for_every_frame() {
+    let (source, _) = recording();
+    let holders = Arc::clone(&crate::queries::query(&source, 1).unwrap().holders);
+    let mut panel = Followed::<Static> {
+        params: ScopedParams { branch_id: "1".into() },
+        tables: Vec::new(),
+        holders,
+        context: 0.into(),
+        content_warnings: Vec::new(),
+        live: None,
+        answered: None,
+        executable: None,
+        product: PhantomData,
+    };
+    assert!(followed(&source, &mut panel, FIRST).is_ok());
+    for hour in FIRST + 1..=FIRST + 3 {
+        let SeekResult::Frame(frame) = source.replay_ref().seek_selected(1, hour, Some(&[][..])).unwrap() else { panic!("hour {hour} is recorded") };
+        assert!(panel.unchanged(&frame), "hour {hour}");
+    }
+    assert_eq!(panel.context.load(std::sync::atomic::Ordering::Relaxed), 1, "an unchanged input is answered once, not again at every published frame");
 }
 
 #[test]

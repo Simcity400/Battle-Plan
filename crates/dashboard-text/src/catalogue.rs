@@ -198,6 +198,16 @@ pub fn text_icon_sprite<'a>(
     sprites.lookup(alias).map_err(invalid)
 }
 
+pub fn text_icon<'a>(
+    sprites: &'a SpriteSet,
+    name: &str,
+) -> io::Result<(&'a content_reader_gfx::gfx::SpriteType, u32)> {
+    let stem = name.split_once('|').map_or(name, |(stem, _)| stem);
+    let frame = u32::try_from(content_reader_localisation::localisation::icon_lookup(name).1.unwrap_or(0))
+        .map_err(|_| invalid(format!("Text icon {name} names no frame")))?;
+    Ok((text_icon_sprite(sprites, stem)?, frame))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Plain,
@@ -2007,6 +2017,34 @@ pub mod tests {
                 .contains("noOfFrames")
         );
         assert!(text_icon_sprite(&sprites, "missing").is_err());
+    }
+
+    #[test]
+    fn a_text_icon_routes_to_its_stems_sprite_and_the_frame_its_suffix_names() {
+        use content_reader_gui::gui::native::sprites::{Plain, SpriteFacts, SpriteKind, Sprites};
+        let sprite = |name: &str| SpriteFacts {
+            name: name.as_bytes().to_vec(),
+            load_type: 0,
+            kind: SpriteKind::Plain(Plain { texture: b"strip.dds".to_vec(), frames: 4, ..Plain::default() }),
+            refusals: Vec::new(),
+        };
+        let facts = Sprites { sprites: vec![sprite("GFX_mod_alias"), sprite("mod_alias"), sprite("bare_only")], ..Sprites::default() };
+        let sprites = SpriteSet::new(&[("interface/synthetic.gfx".to_owned(), facts)]);
+        let routed = |name: &str| text_icon(&sprites, name).map(|(sprite, frame)| (sprite.name.clone(), frame));
+        assert_eq!(routed("mod_alias|3").unwrap(), ("GFX_mod_alias".to_owned(), 2), "a frame suffix draws that frame of the sprite its stem names");
+        assert_eq!(routed("mod_alias").unwrap(), ("GFX_mod_alias".to_owned(), 0), "the native prefix is chosen before the bare name");
+        assert_eq!(routed("bare_only|1").unwrap(), ("bare_only".to_owned(), 0));
+        assert!(routed("mod_alias|0").unwrap_err().to_string().contains("names no frame"));
+        assert!(routed("missing|2").is_err(), "an undeclared stem is refused by name");
+        let colours = [[200, 20, 20, 255], [20, 200, 20, 255], [20, 20, 200, 255], [200, 200, 20, 255]];
+        let strip = Rgba8Image { width: 4, height: 1, pixels: colours.concat() };
+        let drawn = |name: &str| {
+            let (sprite, frame) = text_icon(&sprites, name).unwrap();
+            let SpriteKind::Plain(plain) = &sprite.facts.kind else { unreachable!("a plain sprite") };
+            native_frame(&strip, plain, frame, 96).unwrap().pixels
+        };
+        assert_eq!(drawn("mod_alias"), colours[0], "no suffix draws the first frame's colour");
+        assert_eq!(drawn("mod_alias|3"), colours[2], "the suffix draws its own frame's colour, never the first");
     }
 
     #[test]

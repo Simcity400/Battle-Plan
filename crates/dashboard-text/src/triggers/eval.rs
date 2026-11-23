@@ -516,6 +516,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             "any_neighbor_state" | "all_neighbor_state" => {
                 return block().map_or_else(unsupported, |b| self.neighbor_state(name, b, scopes));
             }
+            "any_scientist" => {
+                return block().map_or_else(unsupported, |b| {
+                    self.country_here(scopes.this)
+                        .and_then(|country| self.any_scientist(b, country, scopes))
+                        .unwrap_or_else(Eval::unknown)
+                });
+            }
             "has_event_target" => {
                 let name = match item.value.c_str() {
                     Ok(n) => n,
@@ -1651,6 +1658,8 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                 self.trait_names()?;
                 Eval::from_bool(self.world.character_has_trait(character, bytes)?)
             }
+            "has_scientist_level" => self.has_scientist_level(item, character, scopes)?,
+            "is_active_scientist" => self.is_active_scientist(item, character)?,
             _ => return Ok(None),
         }))
     }

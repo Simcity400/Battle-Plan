@@ -7,7 +7,7 @@ use viewer_engagements::engagement_history::CombatFlags;
 use viewer_engagements::engagement_progress::FIXED;
 use viewer_engagements::engagement_progress::Progresses;
 use viewer_engagements::engagement_progress::sides as engagement_progress_sides;
-use viewer_native_gui::native_text::icon_lookup;
+use content_reader_localisation::localisation::icon_lookup;
 use viewer_foundation::perspective::Vision;
 use viewer_foundation::templates::custom_icon_index;
 use viewer_foundation::tooltip_text::{TextIcons, builtin, token};

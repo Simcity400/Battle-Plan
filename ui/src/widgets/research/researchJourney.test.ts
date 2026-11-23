@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { ResearchSlotHistory } from './types';
 import { completedResearchJourney, researchJourney, researchTimeSplit, savedResearchCredit } from './researchJourney.ts';
 import type { ResearchTimeSplit } from './researchJourney';
-import { researchTimeRows } from './researchTimeBar.ts';
+import { researchDaysLeftMissing, researchTimeRows } from './researchTimeBar.ts';
 import { researchAt } from './researchData.ts';
 import type { ResearchEntry, ResearchSlotState } from '../../generated/dashboard';
 
@@ -17,9 +17,9 @@ function assignment(index: number, from: number, to: number, speed: bigint, save
     endedByHour: outcome === 'active' ? null : endHour, outcomeObservedHour: null, outcome,
   };
   const state: ResearchSlotState = {
-    firstHour, lastHour: outcome === 'active' ? endHour : endHour - 1, entryFirstObservedHour: firstHour, token: 'radio',
+    firstHour, lastHour: outcome === 'active' ? endHour : endHour - 1, entryFirstObservedHour: firstHour, token: 'radio', databaseIndex: 7,
     speedMultiplierRaw: speed.toString(), appliedDaysRaw: saved.toString(), bankedDaysRaw: '0', aheadReductionYearsRaw: '0',
-    details: { remainingDays: null, bonuses: [], modifiers: {
+    details: { remainingDays: null, estimateRaw: null, bonuses: [], modifiers: {
       components: [], totalBonusRaw: (speed - 100000n).toString(), year: 1938, aheadFactorRaw: '200000', minimumSpeedRaw: '10000',
     } },
   };
@@ -176,12 +176,13 @@ test('time out of a slot lengthens the Took row instead of replacing research ti
   const split = researchTimeSplit(researchJourney([first, second], second, second.entries[0]), true)!;
   assert.equal(split.paused, 1000000n);
   assert.equal(split.taken, 1500000n);
-  const rows = researchTimeRows(split, true)!;
+  const left = { left: Number(split.remaining / 100_000n), rounding: 0n };
+  const rows = researchTimeRows(split, true, left)!;
   assert.equal(rows.elapsed, 2500000n);
   const value = (key: string) => rows.took.find(s => s.key === key)?.value;
   assert.equal(value('core'), 1500000n, 'every researched day stays in the row');
   assert.equal(value('paused'), 1000000n);
-  const saved = researchTimeRows({ ...split, juggle: 100000n }, true)!.took.find(segment => segment.key === 'juggle');
+  const saved = researchTimeRows({ ...split, juggle: 100000n }, true, left)!.took.find(segment => segment.key === 'juggle');
   assert.equal(saved?.name, 'Saved research days');
   assert.equal(saved?.effect, '−1 day');
   assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expectedTotal + split.paused);
@@ -195,7 +196,7 @@ test('maluses adding more days than were researched keep every segment its own e
   const floored: ResearchTimeSplit = { base: 10000000n, penalty: 0n, bonus: -90000000n, juggle: 0n, earlier: 0n, remaining: 0n, paused: 0n, taken: 100000000n,
     modifiers: [modifier('Malus', -150000000n)], other: 60000000n, floored: true };
   for (const [split, row] of [[mixed, 20000000n], [floored, 160000000n]] as const) {
-    const rows = researchTimeRows(split, false)!;
+    const rows = researchTimeRows(split, false, null)!;
     assert.ok([...rows.expected, ...rows.took].every(s => s.value > 0n));
     assert.equal(rows.took.find(s => s.key === 'core')?.value, split.taken, 'every researched day stays in the row');
     for (const effect of split.modifiers)
@@ -214,4 +215,44 @@ test('after a witnessed start an unexplained surplus shows no breakdown', () => 
   const parked = assignment(0, 60, 150, 100000n, 3000000n, 9000000n, 'completed');
   const split = researchTimeSplit(researchJourney([parked], parked, parked.entries[0]), false)!;
   assert.equal(split.earlier, 6000000n);
+});
+
+test('with the game days left, the rest of an active research reads in calendar days and both rows still close', () => {
+  const split: ResearchTimeSplit = { base: 13750000n, penalty: 0n, bonus: 5430000n, juggle: 0n, earlier: 0n, remaining: 5700000n, paused: 0n, taken: 2620000n,
+    modifiers: [{ key: 'Bonus', kind: 'research speed', label: 'Bonus', days: 5430000n }], other: 0n, floored: false };
+  const total = (segments: readonly { value: bigint }[]) => segments.reduce((sum, s) => sum + s.value, 0n);
+  const rows = researchTimeRows(split, true, { left: 19, rounding: 0n })!;
+  assert.equal(rows.left, 1900000n);
+  assert.deepEqual(rows.took.filter(s => s.key === 'rest' || s.key === 'remaining').map(s => [s.key, s.value, s.name]),
+    [['rest', 3800000n, 'Bonuses on the rest'], ['remaining', 1900000n, 'Time left']]);
+  assert.equal(total(rows.took), total(rows.expected));
+  const slow = researchTimeRows(split, true, { left: 70, rounding: 0n })!;
+  assert.equal(slow.expected.find(s => s.key === 'rest-slower')?.value, 1300000n);
+  assert.equal(total(slow.took), total(slow.expected));
+  assert.equal(researchDaysLeftMissing(split, true, null), true);
+  assert.equal(researchTimeRows(split, true, null), null, 'without the game estimate the active breakdown is withheld, not drawn from base days');
+  const paused = researchTimeRows(split, false, null)!;
+  assert.equal(researchDaysLeftMissing(split, false, null), false);
+  assert.equal(paused.took.find(s => s.key === 'remaining')?.name, 'Base research time still to do');
+  const half = { ...split, remaining: 5650000n, taken: 2670000n };
+  const exact = researchTimeRows(half, true, { left: 57, rounding: 50000n })!;
+  assert.equal(exact.expected.find(s => s.key === 'rest-slower'), undefined, 'the game rounding its estimate up is no slowdown');
+  assert.deepEqual(exact.expected.filter(s => s.key === 'rounding').map(s => [s.value, s.name]), [[50000n, 'Rounded up to whole days']]);
+  assert.equal(total(exact.took), total(exact.expected));
+  const slower = researchTimeRows(half, true, { left: 58, rounding: 50000n })!;
+  assert.deepEqual(slower.expected.filter(s => s.key === 'rest-slower' || s.key === 'rounding').map(s => [s.key, s.value]), [['rest-slower', 100000n], ['rounding', 50000n]]);
+  assert.equal(total(slower.took), total(slower.expected));
+});
+
+test('the rounding is the game rounding its own estimate at the recorded rate, never the base days', () => {
+  const at = (remaining: bigint, left: number, estimateRaw: string) => {
+    const split: ResearchTimeSplit = { base: 2000000n, penalty: 0n, bonus: 0n, juggle: 0n, earlier: 0n, remaining, paused: 0n, taken: 2000000n - remaining,
+      modifiers: [], other: 0n, floored: false };
+    const rows = researchTimeRows(split, true, { left, rounding: BigInt(left) * 100_000n - BigInt(estimateRaw) })!;
+    const value = (segments: readonly { key: string; value: bigint }[], key: string) => segments.find(s => s.key === key)?.value ?? 0n;
+    assert.equal(rows.took.reduce((sum, s) => sum + s.value, 0n), rows.expected.reduce((sum, s) => sum + s.value, 0n));
+    return [value(rows.expected, 'rounding'), value(rows.took, 'rest'), value(rows.took, 'remaining')];
+  };
+  assert.deepEqual(at(1050000n, 7, '700000'), [0n, 350000n, 700000n], '10.5 base days at 1.5x is exactly 7 days: nothing is rounded, 3.5 days are saved');
+  assert.deepEqual(at(1000000n, 4, '333333'), [66667n, 666667n, 400000n], '10 base days at 3x is 3 1/3 days, rounded up to 4');
 });

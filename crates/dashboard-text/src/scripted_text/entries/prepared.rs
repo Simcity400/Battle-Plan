@@ -15,6 +15,8 @@ pub(super) struct PreparedInputs {
     invasion_days: OnceLock<Result<i32, String>>,
     mio_traits: OnceLock<Result<std::sync::Arc<content_reader_military::mio_traits::Catalog>, String>>,
     equipment_groups: OnceLock<Result<content_reader_key_names::equipment::Groups, String>>,
+    special_projects:
+        OnceLock<Result<std::sync::Arc<content_reader_military::special_projects::Catalog>, String>>,
     pub(super) dlcs: OnceLock<Result<BTreeSet<String>, String>>,
     pub(super) neighbors: OnceLock<Result<BTreeMap<u32, Vec<u32>>, String>>,
     pub(super) terrain: OnceLock<Option<content_reader_map::movement::MovementMap>>,
@@ -129,6 +131,14 @@ impl ScriptedContent {
 }
 
 impl PreparedContent for ScriptedContent {
+    fn special_projects(&self) -> Result<&content_reader_military::special_projects::Catalog, &str> {
+        self.prepared_environment()?
+            .prepared
+            .special_projects
+            .get_or_init(|| content_reader_military::special_projects::Catalog::cached(&self.layers.layers))
+            .as_deref()
+            .map_err(String::as_str)
+    }
     fn ideas(&self) -> Result<&content_reader_politics::ideas::IdeaContent, &str> {
         self.prepared_environment()?.ideas()
     }

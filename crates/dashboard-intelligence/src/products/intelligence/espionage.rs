@@ -440,9 +440,9 @@ pub struct EndedOperation {
     pub operation: Option<String>,
     pub first_seen: i32,
     pub last_seen: i32,
-    #[doc = " The first read that no longer held it."]
+    #[doc = " The first complete read that no longer held it."]
     pub by_hour: i32,
-    #[doc = " Whether completions were recorded every hour of its life: where not, a completion may have"]
+    #[doc = " Whether completions were read whole every hour of its life: where not, a completion may have"]
     #[doc = " gone unseen and its end is not known to be a cancellation."]
     pub completions_recorded: bool,
     #[doc = " As last read."]
@@ -531,14 +531,14 @@ impl Product for EspionageEnded {
             dashboard_text::metadata::check_cancel(cancelled)?;
             let end = stretch.last.min(params.to);
             let lives = dashboard_base::queries::lifetimes(source, stretch.run, TableId::Operations)?;
-            let reads = dashboard_query::cost::storage(|| lanes::available_reads(recording, stretch.run, TableId::Operations, stretch.first, end))?;
+            let reads = dashboard_query::cost::storage(|| lanes::complete_reads(recording, stretch.run, TableId::Operations, stretch.first, end))?;
             let ended = endings(&lives, (stretch.first, stretch.last), &reads, from, end);
             if ended.is_empty() {
                 continue;
             }
             let (low, high) = ended.iter().fold((i32::MAX, i32::MIN), |(low, high), ending| (low.min(ending.first), high.max(ending.by)));
             let completions = completed(&query, stretch.run, low, high)?;
-            let recorded = dashboard_query::cost::storage(|| lanes::available_reads(recording, stretch.run, TableId::OperationCompletions, low, high))?;
+            let recorded = dashboard_query::cost::storage(|| lanes::complete_reads(recording, stretch.run, TableId::OperationCompletions, low, high))?;
             let ended: Vec<Ending> = ended.into_iter().filter(|ending| !completions.contains(&(ending.key as u64))).collect();
             let rows = rows_at(recording, stretch.run, &ended.iter().map(|ending| (ending.last, ending.key)).collect::<Vec<_>>())?;
             let tokens: Vec<u128> = rows.values().map(|row| u128::from(row.definition_token)).collect::<BTreeSet<_>>().into_iter().collect();

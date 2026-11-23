@@ -622,10 +622,18 @@ pub struct StatusRun {
 }
 
 pub fn available_reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
+    reads_where(recording, run, table, from, to, replay_recording::columnar_frames::available)
+}
+
+pub fn complete_reads(recording: &Recording, run: u32, table: TableId, from: i32, to: i32) -> io::Result<Vec<(i32, i32)>> {
+    reads_where(recording, run, table, from, to, replay_recording::columnar_frames::complete)
+}
+
+fn reads_where(recording: &Recording, run: u32, table: TableId, from: i32, to: i32, kept: fn(Status) -> bool) -> io::Result<Vec<(i32, i32)>> {
     let reads = reads(recording, run, table, from, to)?;
     let available: Vec<(i32, i32)> = statuses(recording, run, table, from, to)?
         .into_iter()
-        .filter(|held| replay_recording::columnar_frames::available(held.status))
+        .filter(|held| kept(held.status))
         .map(|held| (held.first, held.last))
         .collect();
     let mut out = Vec::new();
