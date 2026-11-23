@@ -465,15 +465,6 @@ fn counted_batches_one_scan_per_table_per_run_and_matches_per_country_follow() {
             unfinished.state.current_offset = 0x18;
             unfinished.state.not_completed = 1;
             projects.push(unfinished);
-            histories.push(ProjectHistoryRow {
-                owner,
-                project: 2,
-                ordinal: 0,
-                prototype_reward_handle: 3,
-                option_handle: 4,
-                date: first,
-                ..Default::default()
-            });
             if at >= done + 2 {
                 histories.push(ProjectHistoryRow {
                     owner,
@@ -496,10 +487,20 @@ fn counted_batches_one_scan_per_table_per_run_and_matches_per_country_follow() {
                     ..Default::default()
                 });
             }
+            histories.push(ProjectHistoryRow {
+                owner,
+                project: 2,
+                ordinal: 0,
+                prototype_reward_handle: 3,
+                option_handle: 4,
+                date: first,
+                ..Default::default()
+            });
             let sample_hour = first + ((at - first) / STAGGER_PERIOD) * STAGGER_PERIOD;
             stamps.push(SliceReadRow { table: TableId::Projects.index() as u32, owner, sample_hour });
             stamps.push(SliceReadRow { table: TableId::ProjectHistory.index() as u32, owner, sample_hour });
         }
+        histories.sort_by_key(|row| (row.owner, row.project, row.ordinal));
         stamps.sort_by_key(|row| (row.table, row.owner));
         *frame.tables[TableId::Projects.index()] = TableView::Complete(TableRows::Projects(projects));
         *frame.tables[TableId::ProjectHistory.index()] = TableView::Complete(TableRows::ProjectHistory(histories));
@@ -527,5 +528,6 @@ fn counted_batches_one_scan_per_table_per_run_and_matches_per_country_follow() {
             }
         }
     }
+    assert_eq!(batched.len(), 4);
     assert_eq!(batched, expected.into_values().collect::<Vec<_>>());
 }
