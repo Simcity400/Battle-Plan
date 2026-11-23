@@ -63,6 +63,7 @@ export interface LaneHost<B extends Bitmap> {
   failSub?(sub: number, reason: string): void;
   failWidget?(widget: number, reason: string): void;
   later(run: () => void): void;
+  schedule?(run: () => void): void;
   hit?(widget: number, key: string | null): void;
   served?(frame: { seek: number; target: number; exact: boolean; changed: number; ms: number; costs?: [widget: number, cost: number][] }): void;
   budget?: number;
@@ -590,6 +591,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   stream(route: number, seek: number, target: number) {
     if (!this.natives.has(route)) return;
+    if (this.lastExact && this.lastExact.seek < seek) this.lastExact = null;
     this.failed.delete(route);
     this.routeConfirmedFollowed.delete(route);
     this.toldConfirmedFollowed.delete(route);
@@ -1223,7 +1225,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private schedule() {
     if (this.working || !this.request) return;
     this.working = true;
-    queueMicrotask(() => { void this.run(); });
+    const defer = this.host.schedule ?? queueMicrotask;
+    defer(() => { void this.run(); });
   }
 
   private async run() {
@@ -1357,10 +1360,26 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       && selected.window[1] <= sent.hi;
   }
 
+  private seekSuperseded(seek: number): boolean {
+    for (const route of this.natives.keys()) {
+      if (this.facts.generation(route).seek > seek) return true;
+    }
+    return false;
+  }
+
   private async serve(request: FrameRequest) {
     const began = this.time();
     this.requests++;
     this.stats.frames++;
+    if (this.seekSuperseded(request.seek)) {
+      this.acknowledge(request.installed, request.refused);
+      for (const id of this.facts.drain()) this.gone.add(id);
+      const bytes = this.freed + this.releasedFacts();
+      this.freed = 0;
+      if (bytes) this.host.release(bytes);
+      this.host.served?.({ seek: request.seek, target: request.target, exact: request.exact, changed: 0, ms: this.time() - began });
+      return;
+    }
     this.lastTarget = request.target;
     this.acknowledge(request.installed, request.refused);
     const inspect = new Map(request.inspect);

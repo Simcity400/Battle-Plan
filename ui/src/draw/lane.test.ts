@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { encode } from '@msgpack/msgpack';
 import { Lane, type LaneHost, type LaneView, type Painted, type Presented } from './lane.ts';
+import { laneDispatch } from './laneDispatch.ts';
+import type { FromLane, FromPull, ToLane } from './laneMessages';
 import { fieldsView } from './views/fields.ts';
 import { Page, type Bitmap, type FrameRequest, type PageMessage } from '../dashboard/follow/page.ts';
 import { message } from '../dashboard/follow/messages.fixture.ts';
@@ -1547,4 +1549,159 @@ test('F9: releasing and reopening the last subscription retires old page routes 
   await step(10, { playing: false });
   assert.ok(presented.length >= 1);
   assert.deepEqual(presented.at(-1)!.resets, [[129, 0]], 'retired page routes must not accumulate in presentation reset pairs');
+});
+
+test('deferred frame whose seek was superseded by stream before run never paints or prunes the new generation, still applies acks and emits served', async () => {
+  const scheduled: (() => void)[] = [];
+  const presented: Presented<Fake>[] = [];
+  const served: { seek: number; target: number; exact: boolean; changed: number; ms: number }[] = [];
+  const released: number[] = [];
+  const lane = new Lane<Fake>({
+    lane: 0,
+    lanes: 1,
+    views: () => fieldsView(() => undefined),
+    crop: async () => [],
+    schedule: run => { scheduled.push(run); },
+    present: presentation => { presented.push(presentation); },
+    release: bytes => { released.push(bytes); },
+    fail: reason => { throw new Error(`unexpected lane failure: ${reason}`); },
+    later: () => {},
+    served: frame => { served.push(frame); },
+  });
+  lane.follow(5, 'followed');
+  lane.mount(1, [5], 'fields');
+  lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+
+  lane.receive('follow', message(1000, [{ id: 5, hour: 990, answer: rows([1n], [990n]) }], false, NATIVE, 0));
+  lane.frame({ type: 'frame', serial: 1, now: 990, target: 990, exact: true, seek: 0, speed: 0, installed: [], refused: [], inspect: [] });
+  while (scheduled.length) { scheduled.shift()!(); await flush(); }
+  assert.equal(presented.length, 1);
+  const firstEntryId = presented[0]!.entries[0]!.id;
+
+  lane.frame({
+    type: 'frame', serial: 2, now: 1000, target: 1024, exact: false, seek: 0, speed: 1440,
+    installed: [{ widget: 1, binding: 1, id: firstEntryId }], refused: [], inspect: [],
+  });
+  assert.equal(scheduled.length, 1, 'stale seek-0 playing frame is deferred');
+
+  lane.receive('follow', message(10, [{ id: 5, hour: 10, answer: rows([1n], [10n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(11, [{ id: 5, hour: 11, answer: rows([1n], [11n]) }], false, NATIVE, 1));
+  lane.receive('follow', message(12, [{ id: 5, hour: 12, answer: rows([1n], [12n]) }], false, NATIVE, 1));
+  lane.stream(ROUTE, 1, 10);
+
+  const presentedBefore = presented.length;
+  const servedBefore = served.length;
+  const releasedBefore = released.reduce((sum, b) => sum + b, 0);
+  scheduled.shift()!();
+  await flush();
+
+  assert.equal(presented.length, presentedBefore, 'superseded seek-0 request must not paint under seek 1');
+  assert.equal(served.length, servedBefore + 1, 'superseded seek-0 request still emits served');
+  assert.deepEqual([served.at(-1)!.seek, served.at(-1)!.changed], [0, 0]);
+  assert.equal(lane.facts.select(5, 10)?.h, 10, 'superseded seek-0 request must not prune hour 10 from seek 1');
+
+  lane.frame({ type: 'frame', serial: 3, now: 10, target: 10, exact: true, seek: 1, speed: 0, installed: [], refused: [], inspect: [] });
+  while (scheduled.length) { scheduled.shift()!(); await flush(); }
+  assert.equal(presented.length, presentedBefore + 1, 'following exact seek-1 request for hour 10 paints hour 10');
+  const seek1Entry = presented.at(-1)!.entries[0]!;
+  assert.deepEqual([seek1Entry.gen.seek, seek1Entry.h], [1, 10]);
+  const answer = parseAnswer(seek1Entry.fields['answer:5'] as Uint8Array);
+  assert.ok(answer.kind === 'rows' && cellValue(answer, 0) === 10n);
+  lane.frame({
+    type: 'frame', serial: 4, now: 10, target: 10, exact: true, seek: 1, speed: 0,
+    installed: [{ widget: 1, binding: 1, id: seek1Entry.id }], refused: [], inspect: [],
+  });
+  while (scheduled.length) { scheduled.shift()!(); await flush(); }
+  assert.ok(released.reduce((sum, b) => sum + b, 0) > releasedBefore, 'acknowledged seek-0 fact is released once replaced');
+});
+
+test('laneDispatch with macrotask scheduling keeps slow paints within one paint of the newest request, while microtask scheduling falls linearly behind', async () => {
+  const simulate = async (deferToMailbox: boolean) => {
+    const frameMs = 16;
+    const paintMs = 48;
+    const stepHours = 24;
+    const ticks = 80;
+    let clockMs = 0;
+    let busyUntil = 0;
+    let serial = 0;
+    let newestTarget = 0;
+    let paints = 0;
+    const mailbox: (() => void)[] = [];
+    const paintedLags: number[] = [];
+    const port = { onmessage: null as ((event: MessageEvent<FromPull>) => void) | null, postMessage() {} } as unknown as MessagePort;
+
+    const view: LaneView = {
+      paint: (input): Painted => {
+        paints++;
+        clockMs += paintMs;
+        busyUntil = clockMs;
+        const h = input.pictures[0]!.h;
+        return { surfaces: [], fields: { h: { value: h, content: `h:${h}` } }, motion: false };
+      },
+    };
+
+    const dispatch = laneDispatch((msg: FromLane) => {
+      if (msg.type === 'served' && msg.changed > 0) {
+        paintedLags.push(newestTarget - msg.target);
+      }
+    }, {
+      views: () => view,
+      crop: async () => [],
+      later: () => {},
+      ...deferToMailbox ? { schedule: run => { mailbox.push(run); } } : {},
+    });
+
+    const post = (m: ToLane) => { mailbox.push(() => dispatch(m)); };
+    const drainMicrotasks = async () => {
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+    };
+
+    post({ type: 'init', lane: 0, lanes: 1, port, rate: 1 });
+    post({ type: 'follow', sub: 5, channel: 'followed' });
+    post({ type: 'mount', widget: 1, subs: [5], view: 'slow' });
+    post({ type: 'bind', widget: 1, binding: { generation: 1, surfaces: [], offset: 0, pin: null } });
+    post({ type: 'route', sub: 5, route: ROUTE, native: NATIVE, seek: 0, offset: 0 });
+    while (mailbox.length) { mailbox.shift()!(); await drainMicrotasks(); }
+
+    let pushed = -stepHours;
+    const pushFacts = (limit: number) => {
+      while (pushed + stepHours <= limit) {
+        pushed += stepHours;
+        const h = pushed;
+        const pkt = message(h + stepHours - 1, [{ id: 5, hour: h, answer: rows([1n], [BigInt(h)]) }], false, NATIVE);
+        mailbox.push(() => { port.onmessage?.({ data: { kind: 'follow', bytes: pkt } } as MessageEvent<FromPull>); });
+      }
+    };
+
+    for (let tick = 1; tick <= ticks; tick++) {
+      const tickMs = tick * frameMs;
+      const nowHour = tick * stepHours;
+      newestTarget = nowHour + stepHours;
+      pushFacts(newestTarget);
+      post({
+        type: 'frame', serial: ++serial, now: nowHour, target: newestTarget, exact: false,
+        seek: 0, speed: 1440, installed: [], refused: [], inspect: [],
+      });
+      if (tickMs >= busyUntil) {
+        clockMs = tickMs;
+        while (mailbox.length && clockMs <= tickMs) {
+          mailbox.shift()!();
+          await drainMicrotasks();
+        }
+      }
+    }
+
+    const paintBudgetHours = Math.ceil((paintMs / frameMs) * stepHours);
+    return { paints, maxLag: Math.max(...paintedLags), endLag: paintedLags.at(-1)!, paintBudgetHours };
+  };
+
+  const macro = await simulate(true);
+  assert.ok(macro.maxLag <= macro.paintBudgetHours,
+    `macrotask schedule must keep painted target within one paint (${macro.paintBudgetHours}h) of newest request, got max=${macro.maxLag}h`);
+  assert.ok(macro.paints < 40, `macrotask schedule must drop intermediate frames, painted ${macro.paints} of 80 ticks`);
+
+  const micro = await simulate(false);
+  assert.ok(micro.endLag > 1000,
+    `regression proof: microtask schedule must fall linearly behind (> 1000h), got endLag=${micro.endLag}h`);
 });

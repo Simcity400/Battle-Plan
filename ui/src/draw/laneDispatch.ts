@@ -5,6 +5,7 @@ export interface LaneSide {
   views(kind: string, wake: (widget: number) => void): LaneView;
   crop: LaneHost<ImageBitmap>['crop'];
   later(run: () => void): void;
+  schedule?: LaneHost<ImageBitmap>['schedule'];
   stretch?(ms: number, rate: number): void;
 }
 
@@ -19,6 +20,7 @@ export function laneDispatch(post: (message: FromLane, transfer?: Transferable[]
   const start = (index: number, lanes: number, port: MessagePort) => {
     const made = new Lane<ImageBitmap>({
       lane: index, lanes, views: viewOf, crop: side.crop, later: side.later,
+      ...side.schedule ? { schedule: side.schedule } : {},
       present: (presentation, transfer) => post({ type: 'presentation', ...presentation }, transfer),
       release: bytes => port.postMessage({ release: bytes } satisfies ToPull),
       hit: (widget, key) => post({ type: 'hit', widget, key }),
