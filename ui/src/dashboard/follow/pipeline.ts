@@ -40,7 +40,7 @@ interface WidgetState {
   held: Map<string, unknown>;
 }
 
-export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string }
+export interface MountOptions { offset: number; pin: number | null; bounds?: readonly [number, number] | null; view?: string; model?: unknown; key?: string; widget?: string; kind?: string }
 
 const NO_CHANNEL = 'This connection has no channel for pushed answers';
 const DEFAULT_COST = 0.5;
@@ -252,7 +252,7 @@ export class Pipeline {
   }
 
   mount(options: MountOptions) {
-    const kind = (options.key?.includes('|') ? options.key.slice(0, options.key.indexOf('|')) : options.key) ?? options.widget;
+    const kind = options.kind;
     const { lane, cost } = this.place(options.key, kind);
     const id = this.nextWidget++;
     this.loads[lane]!++;

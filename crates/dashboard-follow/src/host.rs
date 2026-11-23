@@ -554,14 +554,16 @@ impl<E: Send + Sync + 'static> Hosted for PlayheadHost<E> {
                     let mut next = Instant::now();
                     while !stopping.load(Ordering::Acquire) {
                         let Some(panels) = held.upgrade() else { return };
-                        let active = {
+                        let (active, poll) = {
                             let mut panels = panels.lock().unwrap_or_else(PoisonError::into_inner);
-                            panels.stamp.2 = get(&owner).epoch() as u32;
+                            let playhead = get(&owner);
+                            panels.stamp.2 = playhead.epoch() as u32;
                             evaluate(&mut panels);
-                            !panels.shown.is_empty()
+                            let poll = (playhead.frame_period() / 2).clamp(Duration::from_millis(4), PANEL_POLL);
+                            (!panels.shown.is_empty() && playhead.playing(), poll)
                         };
                         drop(panels);
-                        next += if active { PANEL_POLL } else { FRAME };
+                        next += if active { poll } else { FRAME };
                         let now = Instant::now();
                         if next > now {
                             std::thread::sleep(next - now);

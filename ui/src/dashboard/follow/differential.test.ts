@@ -342,3 +342,189 @@ test('differential: panels with reused live cells survive seeks, pauses, speed c
     assert.deepEqual(laneFailures, []);
   }
 });
+
+test('differential: ordering hazards (batched resets, deferred crop, speculative early open entries, inflight faults, panel decode faults + STANDS + stale seeks)', async () => {
+  const started = performance.now();
+  const faults: Fault[] = [];
+  let checked = 0;
+  for (let seed = 1; seed <= 40; seed++) {
+    const rnd = rng(0x7c3d + seed * 4999);
+    const widgets = [{ id: 1, subs: [3] }, { id: 2, subs: [5] }];
+    const subs = [3, 5];
+    const truth = recording(rnd, subs);
+    const pendingCrops: (() => void)[] = [];
+    const deferredPresentations: Parameters<Page<Fake>['offer']>[0][] = [];
+    const lanes: Lane<Fake>[] = [];
+    const laneFailures: string[] = [];
+    const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lanes[0]!.frame(m);
+      else if (m.type === 'stream') lanes[0]!.stream(m.route, m.seek, m.target);
+      else lanes[0]!.fail(m.route);
+    } });
+    const fields = fieldsView(() => undefined);
+    lanes.push(new Lane<Fake>({
+      lane: 0, lanes: 1,
+      views: () => ({
+        paint: (input, state, content) => {
+          const painted = fields.paint(input, state, content);
+          const id = `s:${input.pictures[0]!.parts[0]!.version}`;
+          return { ...painted, surfaces: [{ source: { width: 1, height: 1 }, content: id }] };
+        },
+      }),
+      crop: sources => new Promise<Fake[]>(resolve => {
+        const done = () => resolve(sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })));
+        if (rnd(3) === 0) pendingCrops.push(done);
+        else done();
+      }),
+      present: presentation => {
+        if (deferredPresentations.length || rnd(4) === 0) deferredPresentations.push(presentation);
+        else page.offer(presentation);
+      },
+      release: () => {}, later: () => {},
+      fail: reason => laneFailures.push(`seed ${seed}: ${reason}`),
+    }));
+    for (const w of widgets) {
+      for (const sub of w.subs) { lanes[0]!.follow(sub, 'followed'); lanes[0]!.bindRoute(sub, ROUTE, NATIVE); }
+      lanes[0]!.mount(w.id, w.subs, 'fields');
+      lanes[0]!.bind(w.id, { generation: 1, surfaces: [{ width: 1, height: 1, dpr: 1 }], offset: 0, pin: null });
+      page.mount(w.id, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    }
+    let seek = 0, clock = 0, playing = true, speed = 720, step = 12, nativeHead = 0;
+    const sent = new Map<number, string | bigint[]>();
+    const faulted = new Set<number>();
+    const makeAnswers = (hour: number, whole: boolean) => subs.flatMap(sub => {
+      const reason = truth.reason(sub, hour), rows = truth.rows(sub, hour), last = sent.get(sub);
+      if (whole) faulted.delete(sub);
+      else if (faulted.has(sub)) return [];
+      if (reason !== null) {
+        if (!whole && last === reason) return [];
+        sent.set(sub, reason);
+        return [{ id: sub, hour, body: answerBody({ notRecorded: reason }) }];
+      }
+      if (!whole && Array.isArray(last) && !faulted.has(sub) && rnd(10)) {
+        const changed = KEYS.flatMap((_k, r) => last[r] !== rows![r] ? [r] : []);
+        sent.set(sub, rows!);
+        if (!changed.length) return [];
+        return [{ id: sub, hour, body: answerBody({ keys: changed.map(r => KEYS[r]!), columns: 1, values: changed.map(r => rows![r]!), changed: true }) }];
+      }
+      sent.set(sub, rows!);
+      return [{ id: sub, hour, body: answerBody({ keys: KEYS, columns: 1, values: rows! }) }];
+    });
+    page.publish(0, { playing, seek, step, speed });
+    lanes[0]!.receive('follow', message(0, 0, true, makeAnswers(0, true)));
+    await flush();
+    for (let tick = 0; tick < 80; tick++) {
+      const action = rnd(14);
+      if (action === 0) {
+        seek++; clock = rnd(HOURS - 200); playing = false; nativeHead = clock; sent.clear();
+        lanes[0]!.receive('follow', message(clock, seek, true, makeAnswers(clock, true)));
+      } else if (action === 1) {
+        playing = !playing;
+      } else if (action === 2) {
+        nativeHead = Math.min(HOURS - 2, clock);
+        sent.clear();
+        lanes[0]!.receive('follow', message(nativeHead, seek, true, makeAnswers(nativeHead, true)));
+      } else if (action === 3 && !faulted.has(3)) {
+        faulted.add(3);
+        lanes[0]!.receive('follow', message(nativeHead, seek, false, [{ id: 3, hour: nativeHead, body: answerBody({ keys: [999n], columns: 1, values: [1n], changed: true }) }]));
+      }
+      if (playing) {
+        step = 12 + rnd(13);
+        clock = Math.min(HOURS - 50, clock + step);
+      }
+      const targetHead = Math.min(HOURS - 1, clock + (playing ? 36 : 0));
+      while (nativeHead < targetHead) {
+        nativeHead++;
+        lanes[0]!.receive('follow', message(nativeHead, seek, false, makeAnswers(nativeHead, false)));
+      }
+      while (pendingCrops.length && rnd(2) === 0) pendingCrops.shift()!();
+      while (deferredPresentations.length && (rnd(2) === 0 || !playing)) page.offer(deferredPresentations.shift()!);
+      page.publish(clock, { playing, seek, step, speed });
+      await flush();
+      if (!playing) {
+        for (let d = 0; d < 4; d++) {
+          while (pendingCrops.length) pendingCrops.shift()!();
+          await flush();
+          while (deferredPresentations.length) page.offer(deferredPresentations.shift()!);
+          page.frame();
+        }
+      }
+      for (const w of widgets) {
+        const view = page.view(w.id), sub = w.subs[0]!;
+        if (!playing && faulted.has(sub)) {
+          if (view.mode !== 'failed') faults.push({ property: 'inflight-fault', detail: `seed ${seed} tick ${tick} w${w.id} mode ${view.mode} while sub ${sub} faulted` });
+          continue;
+        }
+        if (view.mode === 'picture') {
+          checked++;
+          const h = view.h!, c = page.widgets.get(w.id)!.installed!.c;
+          const certified = Math.min(c, nativeHead, HOURS - 1);
+          if (certified > h && !truth.same(sub, h, certified)) {
+            faults.push({ property: 'certified-change', detail: `seed ${seed} tick ${tick} w${w.id} certified ${h}-${c} across a recording change` });
+          }
+          if (h > view.target) faults.push({ property: 'ahead', detail: `seed ${seed} tick ${tick} w${w.id} h ${h} > target ${view.target}` });
+          if (!playing && view.target <= c && view.dim) faults.push({ property: 'spurious-dim', detail: `seed ${seed} tick ${tick} w${w.id} dimmed at ${view.target} with c=${c}` });
+        }
+      }
+    }
+    assert.deepEqual(laneFailures, []);
+  }
+  for (let seed = 1; seed <= 20; seed++) {
+    const rnd = rng(0x2b19 + seed * 2713);
+    const laneFailures: string[] = [];
+    const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    } });
+    const lane = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => fieldsView(() => undefined),
+      crop: async () => [], present: p => page.offer(p), release: () => {}, later: () => {},
+      fail: reason => laneFailures.push(`panel seed ${seed}: ${reason}`),
+    });
+    lane.follow(3, 'panel', 'demo'); lane.bindRoute(3, ROUTE, NATIVE, 0);
+    lane.mount(1, [3], 'fields'); lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+    let seek = 0, hour = 0, expectFailed = false;
+    const corruptPanel = (atHour: number, atSeek: number) => {
+      const p = panelPacket([{ id: 3, hour: atHour, kind: 'data', stepped: true, data: { shape: `H${atHour}` } }, { id: 0, hour: atHour, kind: 'completed' }], atSeek);
+      p[24 + 16] = 0xc1;
+      return p;
+    };
+    const standsPanel = (atHour: number, atSeek: number) => {
+      const rec = new Uint8Array(16), rv = new DataView(rec.buffer);
+      rv.setUint32(0, 3, true); rv.setInt32(4, atHour, true); rv.setUint8(8, 3); rv.setUint8(9, 1); rv.setUint32(12, 0, true);
+      const out = new Uint8Array(24 + 16), dv = new DataView(out.buffer);
+      dv.setUint32(0, 0x324c4e50, true); dv.setUint16(4, 6, true); dv.setUint32(8, 1, true); dv.setUint32(16, NATIVE, true); dv.setUint32(20, atSeek, true);
+      out.set(rec, 24);
+      return out;
+    };
+    page.publish(0, { playing: false, seek: 0 });
+    lane.receive('panels', panelPacket([{ id: 3, hour: 0, kind: 'data', stepped: true, data: { shape: 'H0' } }, { id: 0, hour: 0, kind: 'completed' }], 0));
+    await flush(); page.frame(); await flush();
+    for (let step = 1; step <= 40; step++) {
+      hour += 5;
+      const op = rnd(5);
+      if (op === 0) {
+        seek++; expectFailed = false;
+        page.publish(hour, { playing: false, seek }); await flush();
+        lane.receive('panels', panelPacket([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], seek));
+      } else if (op === 1) {
+        expectFailed = true;
+        lane.receive('panels', corruptPanel(hour, seek));
+      } else if (op === 2) {
+        lane.receive('panels', standsPanel(hour, seek));
+      } else if (op === 3 && seek > 0) {
+        lane.receive('panels', corruptPanel(hour, seek - 1));
+      } else {
+        expectFailed = false;
+        lane.receive('panels', panelPacket([{ id: 3, hour, kind: 'data', stepped: true, data: { shape: `H${hour}` } }, { id: 0, hour, kind: 'completed' }], seek));
+      }
+      page.publish(hour, { playing: false, seek }); await flush(); await flush(); page.frame(); await flush(); page.frame();
+      const view = page.view(1);
+      if (expectFailed && view.mode !== 'failed') faults.push({ property: 'panel-fault', detail: `panel seed ${seed} step ${step} mode ${view.mode}, expected failed` });
+      if (!expectFailed && view.mode === 'failed') faults.push({ property: 'panel-stale', detail: `panel seed ${seed} step ${step} unexpectedly failed: ${view.reason}` });
+    }
+    assert.deepEqual(laneFailures, []);
+  }
+  assert.deepEqual(faults.slice(0, 5), [], `ordering differential faults (${faults.length} total, checked ${checked} frames in ${Math.round(performance.now() - started)}ms)`);
+  assert.ok(checked > 500, `checked ${checked} frames`);
+});

@@ -162,7 +162,7 @@ export interface IdlePreloadOptions {
   chunks?: Readonly<Record<string, string>>;
   schedule?: (run: (deadline: IdleDeadlineLike) => void) => number;
   cancel?: (id: number) => void;
-  preload?: (url: string) => void;
+  preload?: (url: string) => void | Promise<void>;
   load?: (kind: string) => Promise<unknown>;
   kinds?: readonly string[];
 }
@@ -183,30 +183,36 @@ function builtChunks(): Readonly<Record<string, string>> | undefined {
 
 const preloadedUrls = new Set<string>();
 
-function preloadModuleUrl(url: string): void {
-  if (preloadedUrls.has(url) || typeof document === 'undefined') return;
+function preloadModuleUrl(url: string): Promise<void> {
+  if (preloadedUrls.has(url) || typeof document === 'undefined') return Promise.resolve();
   preloadedUrls.add(url);
-  const link = document.createElement('link');
-  link.rel = 'modulepreload';
-  link.href = url;
-  document.head.appendChild(link);
+  return new Promise(resolve => {
+    const link = document.createElement('link');
+    link.rel = 'modulepreload';
+    link.href = url;
+    const done = () => { link.removeEventListener('load', done); link.removeEventListener('error', done); resolve(); };
+    link.addEventListener('load', done, { once: true });
+    link.addEventListener('error', done, { once: true });
+    document.head.appendChild(link);
+  });
 }
 
 let idlePreload = false;
 let preloadQueue: string[] | null = null;
+let preloadInFlight = false;
 let preloadWaiters: Set<() => void> | null = null;
 
 export function preloadStatus(): { started: boolean; done: boolean; remaining: number; total: number } {
   return {
     started: idlePreload,
-    done: idlePreload && preloadQueue === null,
-    remaining: preloadQueue ? preloadQueue.length : 0,
+    done: idlePreload && preloadQueue === null && !preloadInFlight,
+    remaining: (preloadQueue ? preloadQueue.length : 0) + (preloadInFlight ? 1 : 0),
     total: Object.keys(rendererLoaders).length,
   };
 }
 
 export function whenPreloadComplete(): Promise<void> {
-  if (idlePreload && preloadQueue === null) return Promise.resolve();
+  if (idlePreload && preloadQueue === null && !preloadInFlight) return Promise.resolve();
   preloadWaiters ??= new Set();
   return new Promise(resolve => { preloadWaiters!.add(resolve); });
 }
@@ -251,15 +257,13 @@ export function preloadAllWidgetRenderers(options?: IdlePreloadOptions): () => v
       const kind = kinds.shift();
       if (kind === undefined) { finish(); return; }
       const url = chunks?.[kind];
-      if (url) {
-        preload(url);
-        if (kinds.length === 0) finish();
-        else next();
-        return;
-      }
       inFlight = true;
-      void load(kind).catch(() => {}).finally(() => {
+      if (!custom) preloadInFlight = true;
+      const pending = url ? Promise.resolve(preload(url)) : load(kind);
+      void pending.catch(() => {}).finally(() => {
         inFlight = false;
+        if (!custom) preloadInFlight = false;
+        if (stopped) return;
         if (kinds.length === 0) finish();
         else next();
       });

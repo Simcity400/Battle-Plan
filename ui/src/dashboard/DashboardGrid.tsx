@@ -27,7 +27,7 @@ import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
-import { FollowedCard, FollowedWidgetKey } from './follow/store.ts';
+import { FollowedCard, FollowedWidgetKey, FollowedWidgetKind } from './follow/store.ts';
 import { WidgetFrames } from './widgetClock';
 import { perfLog } from '../shell/perf';
 import { DASHBOARD_SCROLL, NEAR_SCREEN } from './follow/useFollow.ts';
@@ -225,9 +225,9 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
     <HeldFailureNotices failures={failures} />
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       {!drawnHere ? null : active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedCard.Provider value={card}>
+        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={prepared ? null : widget.id}><FollowedWidgetKey.Provider value={widget.id}><FollowedWidgetKind.Provider value={widget.kind}><FollowedCard.Provider value={card}>
           <Body widget={widget} runtime={bodyRuntime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
-        </FollowedCard.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>
+        </FollowedCard.Provider></FollowedWidgetKind.Provider></FollowedWidgetKey.Provider></MeasuredWidget.Provider></HeldFailuresContext.Provider>
       </HeaderActionsSlot.Provider>}
     </div></div>
   </article>;

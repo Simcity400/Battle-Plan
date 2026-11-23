@@ -105,12 +105,18 @@ test('1,500 countries with 114 mounted widgets does zero work on quiet frames an
   }
   page.publish(0, { playing: true, step: STEP, speed: 1440, seek: 0 });
   await flush(); page.frame(); await flush();
+  const warmPatch = message(STEP, subs.map(id => ({ id, answer: { keys: [keys[0]!], columns: 1, values: [BigInt(id + 100)], changed: true }, held: whole })), false, NATIVE);
+  const warmSplit = splitForLanes(warmPatch, LANES);
+  assert.ok(warmSplit.kind === 'follow');
+  warmSplit.lanes.forEach((part, lane) => { if (part) lanes[lane]!.receive('follow', part); });
   page.publish(STEP, { playing: true, step: STEP, speed: 1440 });
+  await flush(); page.frame(); await flush();
+  page.publish(2 * STEP, { playing: true, step: STEP, speed: 1440 });
   await flush(); page.frame(); await flush();
   const pageBefore = page.stats.visited;
   const laneBefore = lanes.reduce((sum, l) => sum + l.stats.visited, 0);
   const pruneBefore = lanes.reduce((sum, l) => sum + l.stats.pruned, 0);
-  for (let f = 2; f <= 12; f++) {
+  for (let f = 3; f <= 12; f++) {
     page.publish(f * STEP, { playing: true, step: STEP, speed: 1440 });
     await flush();
   }
@@ -132,6 +138,6 @@ test('1,500 countries with 114 mounted widgets does zero work on quiet frames an
   const a0 = parseAnswer(page.view(1).fields?.[`answer:${subs[0]}`] as Uint8Array);
   const a1 = parseAnswer(page.view(2).fields?.[`answer:${subs[1]}`] as Uint8Array);
   assert.ok(a0.kind === 'rows' && cellValue(a0, 0) === 999_999n && cellValue(a0, 1) === 2n);
-  assert.ok(a1.kind === 'rows' && cellValue(a1, 1499) === 888_888n && cellValue(a1, 0) === 1n);
+  assert.ok(a1.kind === 'rows' && cellValue(a1, 1499) === 888_888n && cellValue(a1, 1) === 2n);
   assert.deepEqual(failures, []);
 });

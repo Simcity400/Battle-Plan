@@ -542,3 +542,74 @@ test('quiet frames visit zero unchanged widgets across 114 mounted widgets, and 
   p.publish(504, { playing: true, step: 24, speed: 1440 });
   assert.ok(p.stats.visited - beforeK <= 6, `visited ${p.stats.visited - beforeK} widgets for 3 changed out of 114`);
 });
+
+test('S2: a stale-generation confirmation queued before a reset never leaks into the post-reset picture', () => {
+  const { p, view } = page();
+  p.publish(20, { playing: true, step: 1 });
+  p.offer({
+    lane: 0, serial: 1, resets: [[9, 0]],
+    confirmed: [[9, 'followed', 500, 0, 0]],
+    entries: [entry({ id: 1, h: 10, c: 500, gen: { seek: 0, reset: 0 }, open: 'followed' })],
+  });
+  p.offer({
+    lane: 0, serial: 2, resets: [[9, 1]],
+    confirmed: [[9, 'followed', 20, 0, 1]],
+    entries: [entry({ id: 2, h: 20, c: 20, gen: { seek: 0, reset: 1 }, open: 'followed' })],
+  });
+  p.publish(20, { playing: false });
+  assert.equal(view().id, 2);
+  assert.equal(p.widgets.get(1)!.installed!.c, 20, 'old-reset confirmation 500 must not extend post-reset picture past 20');
+  p.publish(25, { playing: false });
+  assert.equal(view().dim, true, 'post-reset picture dims at 25 because it is only confirmed through 20');
+});
+
+test('S4: open-ended speculative entries [120, Infinity] and [144, Infinity] both stay parked until their hours', () => {
+  const { p, offer, view } = page();
+  p.publish(100, { playing: true, step: 24 });
+  offer(entry({ id: 1, h: 120, c: 140, lo: 120, hi: Infinity, content: 'day5' }));
+  p.publish(110, { playing: true, step: 24 });
+  offer(entry({ id: 2, h: 144, c: 160, lo: 144, hi: Infinity, content: 'day6' }));
+  p.publish(115, { playing: true, step: 24 });
+  p.publish(124, { playing: true, step: 24 });
+  assert.deepEqual([view().id, view().h], [1, 120], 'the [120, Infinity] entry must survive [144, Infinity] and install at 124');
+  p.publish(148, { playing: true, step: 24 });
+  assert.deepEqual([view().id, view().h], [2, 144], 'the [144, Infinity] entry installs once the clock reaches 144');
+});
+
+test('S5: an unclosed parked open-followed entry keeps advancing with shared confirmations while a closed one freezes', () => {
+  const { p, view } = page();
+  p.publish(100, { playing: true, step: 24 });
+  p.offer({
+    lane: 0, serial: 1,
+    confirmed: [[9, 'followed', 130, 0, 0]],
+    entries: [entry({ id: 1, h: 120, c: 130, lo: 120, hi: Infinity, open: 'followed', content: 'open' })],
+  });
+  p.publish(110, { playing: true, step: 24 });
+  p.publish(124, { playing: true, step: 24 });
+  assert.equal(view().id, 1);
+  p.offer({
+    lane: 0, serial: 2,
+    confirmed: [[9, 'followed', 150, 0, 0]],
+    entries: [],
+  });
+  p.publish(150, { playing: false });
+  assert.deepEqual([p.widgets.get(1)!.installed!.c, view().dim], [150, false], 'installed from early without close still tracks shared confirmation');
+
+  const closed = page();
+  closed.p.publish(100, { playing: true, step: 24 });
+  closed.p.offer({
+    lane: 0, serial: 1,
+    confirmed: [[9, 'followed', 130, 0, 0]],
+    entries: [entry({ id: 1, h: 120, c: 130, lo: 120, hi: Infinity, open: 'followed', content: 'closed' })],
+  });
+  closed.p.publish(110, { playing: true, step: 24 });
+  closed.p.offer({
+    lane: 0, serial: 2,
+    closed: [1],
+    confirmed: [[9, 'followed', 160, 0, 0]],
+    entries: [],
+  });
+  closed.p.publish(124, { playing: true, step: 24 });
+  closed.p.publish(150, { playing: false });
+  assert.deepEqual([closed.p.widgets.get(1)!.installed!.c, closed.view().dim], [130, true], 'parked entry closed before confirmation 160 freezes at 130');
+});

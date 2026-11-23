@@ -466,8 +466,9 @@ test('review 7 E: a followed message that fails to decode releases its charge at
   const { lane, mount, released } = rig();
   mount(1, [{ id: 5, channel: 'followed' }]);
   lane.bindRoute(5, ROUTE, NATIVE);
-  const bad = message(10, [{ id: 5, answer: rows([1n], [2n]) }], false, NATIVE);
-  bad[24 + 16] = 9;
+  const valid = message(10, [{ id: 5, answer: rows([1n], [2n]) }], false, NATIVE);
+  const bad = new Uint8Array(valid.length + 1);
+  bad.set(valid);
   assert.throws(() => lane.receive('follow', bad));
   assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > 0, 'the refused record was handed back without waiting for another frame');
 });
@@ -599,10 +600,12 @@ test('quiet frames visit zero unchanged widgets in serve and prune across 114 wi
   }
   lane.receive('follow', message(10, initial, false, NATIVE));
   await step(10, { playing: true, step: 24, speed: 1440 });
+  lane.receive('follow', message(34, initial.map(item => ({ id: item.id, answer: rows([1n], [BigInt(item.id + 1000)], { changed: true }) })), false, NATIVE));
   await step(34, { playing: true, step: 24, speed: 1440 });
+  await step(58, { playing: true, step: 24, speed: 1440 });
   const beforeVisited = lane.stats.visited;
   const beforePruned = lane.stats.pruned;
-  for (let h = 58; h <= 200; h += 24) {
+  for (let h = 82; h <= 202; h += 24) {
     await step(h, { playing: true, step: 24, speed: 1440 });
   }
   assert.equal(lane.stats.visited - beforeVisited, 0, `quiet frames visited ${lane.stats.visited - beforeVisited} widgets`);
@@ -649,4 +652,204 @@ test('one expensive widget on a lane does not starve cheap widgets across frames
     page.publish(70, { playing: false }); await flush(); await flush(); page.frame(); await flush();
   }
   for (let id = 1; id <= 5; id++) assert.equal(page.view(id).h, 70, `widget ${id} caught up after budget break`);
+});
+
+test('S3: a changed record arriving while crop is suspended never certifies the old pixels at the newer hour', async () => {
+  let releaseCrop!: () => void;
+  const views: Record<string, LaneView> = {
+    canvas: {
+      paint: (input): Painted => {
+        const answer = input.pictures[0]!.parts[0]!.value;
+        const val = answer.kind === 'answer' && answer.answer.kind !== 'notRecorded' ? cellValue(answer.answer, 0) : -1n;
+        return { surfaces: [{ source: { width: 1, height: 1, content: `v:${val}` } as unknown as { width: number; height: number }, content: `v:${val}` }], fields: {}, motion: false };
+      },
+    },
+  };
+  const { page, lane, mount } = rig(views, {
+    crop: sources => new Promise(resolve => {
+      releaseCrop = () => resolve(sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } })));
+    }),
+  });
+  mount(1, [{ id: 3, channel: 'followed' }], 'canvas', 1);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('follow', message(10, [{ id: 3, answer: rows([1n], [100n]) }], false, NATIVE));
+  page.publish(10, { playing: false });
+  await flush();
+  lane.receive('follow', message(20, [{ id: 3, answer: rows([1n], [200n], { changed: true }) }], false, NATIVE));
+  releaseCrop();
+  await flush();
+  page.frame();
+  assert.equal(page.view(1).h, 10);
+  assert.equal(page.widgets.get(1)!.installed!.c, 10, 'old pixels painted before crop must not be certified through hour 20');
+});
+
+test('S6: a malformed answer body inside a well-framed follow packet fails only its subscription, not the whole lane', async () => {
+  const { page, lane, failures, released, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  mount(2, [{ id: 7, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  lane.bindRoute(7, ROUTE, NATIVE);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [50n]) }, { id: 7, answer: rows([1n], [70n]) }], false, NATIVE));
+  await step(10, { playing: false });
+  const bad = message(20, [{ id: 5, answer: rows([1n], [55n]) }, { id: 7, answer: rows([1n], [75n]) }], false, NATIVE);
+  bad[24 + 16] = 9;
+  const releasedBefore = released.reduce((sum, bytes) => sum + bytes, 0);
+  lane.receive('follow', bad);
+  assert.ok(released.reduce((sum, bytes) => sum + bytes, 0) > releasedBefore, 'corrupt subscription record releases its charge immediately');
+  await step(20, { playing: false });
+  assert.deepEqual(failures, [], 'valid packet framing with one corrupt answer body must not kill the lane');
+  assert.equal(page.view(1).mode, 'failed');
+  assert.match(page.view(1).reason ?? '', /No followed answer kind 9/);
+  assert.deepEqual([page.view(2).mode, valueOf(page.view(2), 7)], ['picture', 75n]);
+});
+
+test('S7: a failed panel decode is not cleared by STANDS and stale-seek panels cannot mutate current state', async () => {
+  const { page, lane, failures, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'A' } }, { id: 0, hour: 10, kind: 'completed' }], 0));
+  await step(10, { playing: false });
+  assert.equal(page.view(1).mode, 'picture');
+  const corrupt = panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'B' } }, { id: 0, hour: 20, kind: 'completed' }], 0);
+  corrupt[24 + 16] = 0xc1;
+  lane.receive('panels', corrupt);
+  await step(20, { playing: false });
+  assert.deepEqual(failures, []);
+  assert.equal(page.view(1).mode, 'failed');
+  lane.receive('panels', panels([{ id: 3, hour: 25, kind: 'stands', stepped: true }, { id: 0, hour: 25, kind: 'completed' }], 0));
+  await step(25, { playing: false });
+  assert.equal(page.view(1).mode, 'failed', 'STANDS must not clear a panel decode fault or revert to the old panel');
+  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'C' } }, { id: 0, hour: 30, kind: 'completed' }], 0));
+  await step(30, { playing: false });
+  assert.equal(page.view(1).mode, 'picture', 'a complete replacement clears the panel fault');
+  await step(40, { playing: false, seek: 1 });
+  lane.receive('panels', panels([{ id: 3, hour: 40, kind: 'data', stepped: true, data: { shape: 'D' } }, { id: 0, hour: 40, kind: 'completed' }], 1));
+  await step(40, { playing: false });
+  page.frame();
+  assert.equal(page.view(1).mode, 'picture');
+  const staleCorrupt = panels([{ id: 3, hour: 45, kind: 'data', stepped: true, data: { shape: 'Z' } }], 0);
+  staleCorrupt[24 + 16] = 0xc1;
+  lane.receive('panels', staleCorrupt);
+  await step(40, { playing: false });
+  assert.equal(page.view(1).mode, 'picture', 'a stale-seek corrupt panel must not fault the current seek');
+});
+
+test('S8: a fault in an older fallback cell group does not fail a widget whose active panel uses a healthy cell group', async () => {
+  const CELL_A = 0x8000_0001, CELL_B = 0x8000_0002;
+  const panelWith = (cell: number) => ({
+    shape: `cell-${cell}`,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A) }, { id: 0, hour: 10, kind: 'completed' }]));
+  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE));
+  await step(10, { playing: false });
+  assert.equal(page.view(1).mode, 'picture');
+  lane.receive('panels', panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: panelWith(CELL_B) }, { id: 0, hour: 20, kind: 'completed' }]));
+  lane.receive('follow', message(20, [{ id: CELL_B, answer: rows([1n], [20n]) }], false, NATIVE));
+  await step(20, { playing: false });
+  assert.equal(page.view(1).mode, 'picture');
+  lane.receive('follow', message(25, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }, { id: CELL_B, answer: rows([1n], [25n], { changed: true }) }], false, NATIVE));
+  lane.receive('panels', panels([{ id: 0, hour: 25, kind: 'completed' }]));
+  await step(25, { playing: false });
+  assert.equal(page.view(1).mode, 'picture', 'a fault in retired fallback cell group A must not fail active panel using healthy cell group B');
+});
+
+test('S9: a subscription fault arriving while a normal picture is inflight is not lost after ack while paused', async () => {
+  const { page, lane, mount } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [10n]) }], false, NATIVE));
+  page.publish(10, { playing: false });
+  await flush();
+  await flush();
+  lane.receive('follow', message(15, [{ id: 5, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE));
+  await flush();
+  await flush();
+  page.frame();
+  await flush();
+  await flush();
+  page.frame();
+  assert.equal(page.view(1).mode, 'failed', 'fault arriving while a normal picture was inflight must reach the page');
+});
+
+test('S10: a panel covering 10..30 with an unseeded cell group starting at 20 installs when target advances from 15 to 20', async () => {
+  const CELL_A = 0x8000_0005;
+  const panelData = {
+    shape: 'unseeded',
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_A }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  };
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelData }, { id: 0, hour: 30, kind: 'completed' }]));
+  lane.receive('follow', message(20, [{ id: CELL_A, answer: rows([1n], [200n]) }], false, NATIVE));
+  await step(15, { playing: false });
+  assert.equal(page.view(1).mode, 'reading');
+  await step(20, { playing: false });
+  assert.equal(page.view(1).mode, 'picture', 'lane revisits widget once target reaches cell group start hour 20');
+});
+
+test('S11: materializing an answer field collapses its patched worker state onto the compacted buffer', async () => {
+  const { lane, mount, step } = rig();
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE);
+  const base = message(10, [{ id: 5, answer: { keys: [1n, 2n], columns: 1, values: [10n, 20n], names: ['A', 'B'] } }], false, NATIVE);
+  lane.receive('follow', base);
+  await step(10, { playing: false });
+  const first = lane.facts.latest(5);
+  assert.ok(first && first.kind === 'answer');
+  const baseBuffer = first.answer.kind !== 'notRecorded' ? first.answer.views.u8.buffer : null;
+  lane.receive('follow', message(20, [{ id: 5, answer: rows([1n], [99n], { changed: true }) }], false, NATIVE));
+  await step(20, { playing: false });
+  const latest = lane.facts.latest(5);
+  assert.ok(latest && latest.kind === 'answer' && latest.answer.kind !== 'notRecorded');
+  assert.equal(latest.answer.patches, undefined, 'materialized answer collapses patched tree');
+  assert.notEqual(latest.answer.views.u8.buffer, baseBuffer, 'materialized answer drops reference to the old base buffer');
+});
+
+test('S14: a cheap data widget changing every frame does not starve an oversized motion widget', async () => {
+  let clock = 0;
+  let motionPaints = 0;
+  let cheapPaints = 0;
+  const views: Record<string, LaneView> = {
+    heavyMotion: {
+      paint: (input): Painted => {
+        clock += 15;
+        motionPaints++;
+        return { surfaces: [], fields: { f: { value: motionPaints, content: `m:${motionPaints}:${input.now}` } }, motion: true };
+      },
+    },
+    cheapData: {
+      paint: (input): Painted => {
+        clock += 0.2;
+        cheapPaints++;
+        return { surfaces: [], fields: { h: { value: input.pictures[0]!.h, content: `c:${input.pictures[0]!.h}` } }, motion: false };
+      },
+    },
+  };
+  const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: kind => views[kind]!, crop: async () => [],
+    present: presentation => page.offer(presentation), release: () => {}, fail: () => {}, later: () => {},
+    budget: 10, clock: () => clock,
+  });
+  lane.follow(3, 'followed'); lane.bindRoute(3, ROUTE, NATIVE);
+  lane.mount(1, [3], 'heavyMotion'); lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+  lane.follow(5, 'followed'); lane.bindRoute(5, ROUTE, NATIVE);
+  lane.mount(2, [5], 'cheapData'); lane.bind(2, { generation: 1, surfaces: [], offset: 0, pin: null });
+  page.mount(2, { route: ROUTE, lane: 0, surfaces: [] });
+  lane.receive('follow', message(10, [{ id: 3, answer: rows([1n], [1n]) }, { id: 5, answer: rows([1n], [10n]) }], false, NATIVE));
+  page.publish(10, { playing: true, step: 1, speed: 24 }); await flush(); await flush(); page.frame(); await flush();
+  let paintsAfterWarmup = 0;
+  for (let frame = 1; frame <= 20; frame++) {
+    if (frame === 7) paintsAfterWarmup = motionPaints;
+    lane.receive('follow', message(10 + frame, [{ id: 5, answer: rows([1n], [BigInt(10 + frame)], { changed: true }) }], false, NATIVE));
+    page.publish(10 + frame, { playing: true, step: 1, speed: 24 }); await flush(); await flush(); page.frame(); await flush();
+  }
+  assert.ok(motionPaints - paintsAfterWarmup >= 3, `oversized motion widget starved after cost > budget: only ${motionPaints - paintsAfterWarmup} paints in 14 frames`);
+  assert.ok(cheapPaints >= 14, `cheap widget painted ${cheapPaints} times`);
 });

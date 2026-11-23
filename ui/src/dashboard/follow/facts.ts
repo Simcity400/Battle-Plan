@@ -76,12 +76,34 @@ export class Facts<V> {
 
   latest(id: number): V | undefined { return (this.subs.get(id) ?? this.groups.get(id))?.facts.at(-1)?.value; }
 
+  activeCells(id: number, target: number): readonly number[] {
+    const sub = this.subs.get(id);
+    if (!sub) return [];
+    for (let at = sub.facts.length - 1; at >= 0; at--) {
+      const fact = sub.facts[at]!;
+      if (fact.h <= target) return fact.cells;
+    }
+    return sub.carried && sub.carried.h <= target ? sub.carried.parts[0]?.cells ?? [] : [];
+  }
+
   nextStart(id: number, target: number): number {
     const sub = this.subs.get(id);
     if (!sub) return Infinity;
-    for (const fact of sub.facts) if (fact.h > target) return fact.h;
-    if (sub.carried && sub.carried.h > target) return sub.carried.h;
-    return Infinity;
+    let best = Infinity;
+    for (const fact of sub.facts) {
+      if (fact.h > target && fact.h < best) best = fact.h;
+      for (const seed of fact.seeds.values()) if (seed.h > target && seed.h < best) best = seed.h;
+    }
+    if (sub.carried && sub.carried.h > target && sub.carried.h < best) best = sub.carried.h;
+    for (const groupId of sub.uses) {
+      for (const fact of this.groups.get(groupId)?.facts ?? []) {
+        if (fact.h > target) {
+          if (fact.h < best) best = fact.h;
+          break;
+        }
+      }
+    }
+    return best;
   }
 
   prunable(id: number): boolean {
@@ -336,9 +358,9 @@ export class Facts<V> {
     return null;
   }
 
-  prune(id: number, actual: number, keep: readonly (Picture<V> | null | undefined)[]) {
+  prune(id: number, actual: number, keep: readonly (Picture<V> | null | undefined)[]): number {
     const sub = this.subs.get(id);
-    if (!sub || (!sub.facts.length && !sub.carried)) return;
+    if (!sub || (!sub.facts.length && !sub.carried)) return Infinity;
     const current = this.select(id, actual), held = new Set<Fact<V>>();
     const from = current && !current.carried ? sub.facts.indexOf(current.parts[0]!) : -1;
     const fallback = from > 0 ? this.before(sub, from, actual) : null;
@@ -351,6 +373,20 @@ export class Facts<V> {
     });
     if (sub.carried && sub.facts.length && current !== sub.carried && !keep.some(picture => picture === sub.carried)) sub.carried = null;
     this.retain(sub, undefined, actual, keep);
+    if (!this.prunable(id)) return Infinity;
+    let next = Infinity;
+    for (const fact of sub.facts) if (fact.h > actual && fact.h < next) next = fact.h;
+    if (sub.carried && sub.carried.h > actual && sub.carried.h < next) next = sub.carried.h;
+    for (const groupId of sub.uses) {
+      const group = this.groups.get(groupId);
+      if (!group) continue;
+      for (let i = 0; i < group.facts.length; i++) {
+        const fact = group.facts[i]!;
+        if (fact.h > actual && fact.h < next) next = fact.h;
+        if (!current && i < group.facts.length - 1 && fact.c >= actual && fact.c + 1 < next) next = fact.c + 1;
+      }
+    }
+    return next;
   }
 
   private floor(sub: Sub<V>, actual: number, keep: readonly (Picture<V> | null | undefined)[]) {

@@ -581,3 +581,11 @@ test('a seek keeps panel cell groups owned until the post-seek panel lands, even
   f.prune(1, 70, [f.select(1, 70)]);
   assert.deepEqual(f.drain(), [A], 'once the new panel no longer uses the cell group, prune releases it');
 });
+
+test('S10: nextStart includes future cell-group starts when a panel covers target without a matching cell yet', () => {
+  const f = facts([1, 'panel']);
+  f.panels(R, 0, [data(1, 10, { stepped: true, cells: [{ id: A }] })], 30);
+  f.followed(R, 0, msg(20, [{ id: A, hour: 20, value: 'v20' }]));
+  assert.equal(f.select(1, 15), null);
+  assert.equal(f.nextStart(1, 15), 20, 'nextStart sees the unseeded cell group becoming available at hour 20');
+});

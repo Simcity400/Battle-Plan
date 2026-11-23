@@ -522,6 +522,9 @@ struct Shared {
     settings: Settings,
     epoch: AtomicU64,
     freed_ns: AtomicU64,
+    activity: AtomicU64,
+    next_watcher: AtomicU64,
+    watchers: Mutex<Vec<(u64, Arc<dyn Fn() + Send + Sync>)>>,
     control: Mutex<Control>,
     wake: Condvar,
     jobs: Mutex<Jobs>,
@@ -567,12 +570,21 @@ impl Shared {
         }
     }
 
+    fn notify_watchers(&self) {
+        self.activity.fetch_add(1, Ordering::Release);
+        let watchers: Vec<Arc<dyn Fn() + Send + Sync>> = lock(&self.watchers).iter().map(|(_, wake)| Arc::clone(wake)).collect();
+        for wake in watchers {
+            wake();
+        }
+    }
+
     fn nudge(&self, change: impl FnOnce(&mut Control)) {
         let mut control = lock(&self.control);
         change(&mut control);
         control.version += 1;
         drop(control);
         self.wake.notify_all();
+        self.notify_watchers();
     }
 
     fn ask(&self, who: Option<usize>, head: Hour) -> bool {
@@ -985,6 +997,17 @@ impl Drop for Consumer {
     }
 }
 
+pub struct Watcher {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        lock(&self.shared.watchers).retain(|(id, _)| *id != self.id);
+    }
+}
+
 impl Playhead {
     pub fn new(pages: Arc<dyn Pages>, timeline: Timeline, settings: Settings, hook: Option<Hook>) -> io::Result<Self> {
         if settings.step_threads == 0 || settings.fetch_threads == 0 || settings.ring == 0 {
@@ -1000,6 +1023,9 @@ impl Playhead {
             settings,
             epoch: AtomicU64::new(0),
             freed_ns: AtomicU64::new(0),
+            activity: AtomicU64::new(0),
+            next_watcher: AtomicU64::new(0),
+            watchers: Mutex::default(),
             control: Mutex::new(Control {
                 version: 0,
                 head: first,
@@ -1189,6 +1215,26 @@ impl Playhead {
         ((control.pace / control.rate).round() as Hour).max(1)
     }
 
+    pub fn frame_period(&self) -> Duration {
+        let rate = lock(&self.shared.control).rate;
+        Duration::from_secs_f64((1.0 / rate).max(0.001))
+    }
+
+    pub fn playing(&self) -> bool {
+        let clock = lock(&self.shared.clock);
+        clock.playing() && clock.held().is_none()
+    }
+
+    pub fn activity(&self) -> u64 {
+        self.shared.activity.load(Ordering::Acquire)
+    }
+
+    pub fn watch(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Watcher {
+        let id = self.shared.next_watcher.fetch_add(1, Ordering::Relaxed);
+        lock(&self.shared.watchers).push((id, wake));
+        Watcher { shared: Arc::clone(&self.shared), id }
+    }
+
     pub fn play(&self, speed: f64) {
         if speed > 0.0 {
             lock(&self.shared.clock).play(speed, Instant::now());
@@ -1253,6 +1299,13 @@ impl Playhead {
     pub fn stand(&self) {
         let mut control = lock(&self.shared.control);
         control.stood += 1;
+        control.version += 1;
+        drop(control);
+        self.shared.wake.notify_all();
+    }
+
+    pub fn wake_waiters(&self) {
+        let mut control = lock(&self.shared.control);
         control.version += 1;
         drop(control);
         self.shared.wake.notify_all();

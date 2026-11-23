@@ -1,6 +1,6 @@
 import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type FollowAnswer, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
 import { SAME, type Ack, type Bitmap, type Entry, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
-import { parseAnswer, parseDatedPanelRecord, parseFollowed, type FollowedAnswer } from '../dashboard/follow/message.ts';
+import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { patchAnswer } from '../dashboard/follow/tables.ts';
 import { sectionOf } from '../dashboard/follow/liveCells.ts';
 
@@ -46,7 +46,7 @@ export interface Presented<B extends Bitmap> {
   serial: number;
   resets: [number, number][];
   closed?: number[];
-  confirmed?: [number, 'followed' | 'panel', number][];
+  confirmed?: [number, 'followed' | 'panel', number, number, number][];
   entries: Entry<B>[];
 }
 
@@ -76,7 +76,7 @@ interface Widget {
   id: number; order: number; subs: number[]; view: string; model: unknown; binding: Binding;
   installed: Sent | null; inflight: Sent | null; sent: Record<string, string>; motion: boolean; inspect: string | null;
   validWindow: Window | null;
-  start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; halted: number | null; parked: Sent | null;
+  start: { version: string; hour: number } | null; state: Map<string, unknown>; cost: number; served: number; deferrals: number; halted: number | null; parked: Sent | null;
 }
 
 interface Held { kind: 'follow' | 'panels'; native: number; seek: number; hour: number; id: number; records: Uint8Array[]; size: number; completed?: number }
@@ -87,9 +87,30 @@ const charged = (record: Uint8Array) => {
 };
 
 const recordsCharge = (bytes: Uint8Array) => {
+  if (bytes.byteLength < 24) return 0;
   const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let total = 0;
-  for (let i = 0, at = 24, count = data.getUint32(12, true); i < count; i++) { const length = data.getUint32(at + 8, true); total += charged(bytes.subarray(at, at + 16 + length)); at += 16 + length; }
+  for (let i = 0, at = 24, count = data.getUint32(12, true); i < count; i++) {
+    if (at + 16 > bytes.byteLength) break;
+    const length = data.getUint32(at + 8, true);
+    if (at + 16 + length > bytes.byteLength) break;
+    total += charged(bytes.subarray(at, at + 16 + length));
+    at += 16 + length;
+  }
+  return total;
+};
+
+const panelRecordsCharge = (bytes: Uint8Array) => {
+  if (bytes.byteLength < 24) return 0;
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let total = 0;
+  for (let i = 0, at = 24, count = data.getUint32(8, true); i < count; i++) {
+    if (at + 16 > bytes.byteLength) break;
+    const kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true), size = ((16 + length + 7) & ~7);
+    if (at + size > bytes.byteLength) break;
+    if (kind !== 4) total += 2 * size;
+    at += size;
+  }
   return total;
 };
 
@@ -128,10 +149,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly motionWidgets = new Set<number>();
   private readonly inflightWidgets = new Set<number>();
   private readonly windowedWidgets = new Set<number>();
+  private readonly outsideWindow = new Set<number>();
+  private windowSafeLo = -Infinity;
+  private windowSafeHi = Infinity;
   private readonly parkedWidgets = new Set<number>();
   private readonly inspectedWidgets = new Set<number>();
   private readonly nonOpenFollowed = new Set<number>();
-  private readonly prunableSubs = new Set<number>();
+  private readonly prunableNow = new Set<number>();
+  private readonly prunableAt = new Map<number, number>();
+  private minPruneHour = Infinity;
   private readonly limitedSubs = new Set<number>();
   private readonly subFailed = new Map<number, string>();
   private readonly routes = new Map<number, number>();
@@ -147,6 +173,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly pendingClosed = new Set<number>();
   private held: Held[] = [];
   private early: { native: number; seek: number; bytes: Uint8Array; stamp?: number }[] = [];
+  private earlyPanels: { native: number; seek: number; bytes: Uint8Array }[] = [];
   private heldBytes = 0;
   private readonly heldIds = new Map<number, number>();
   private readonly lost = new Map<number, number>();
@@ -194,6 +221,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.motionWidgets.delete(widget.id);
     this.inflightWidgets.delete(widget.id);
     this.windowedWidgets.delete(widget.id);
+    this.outsideWindow.delete(widget.id);
+    if (!this.windowedWidgets.size) { this.windowSafeLo = -Infinity; this.windowSafeHi = Infinity; }
     this.parkedWidgets.delete(widget.id);
     this.inspectedWidgets.delete(widget.id);
     this.nonOpenFollowed.delete(widget.id);
@@ -205,13 +234,31 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const w = widget.validWindow;
     const finiteActive = !!active && (Number.isFinite(active.lo) || Number.isFinite(active.hi));
     const finiteValid = !!w && (Number.isFinite(w[0]) || Number.isFinite(w[1]));
-    if (finiteActive || finiteValid) this.windowedWidgets.add(widget.id);
-    else this.windowedWidgets.delete(widget.id);
+    this.outsideWindow.delete(widget.id);
+    if (widget.binding.pin === null && (finiteActive || finiteValid)) {
+      this.windowedWidgets.add(widget.id);
+      if (!active && !w) {
+        this.outsideWindow.add(widget.id);
+      } else {
+        const lo = Math.max(w ? w[0] : -Infinity, active ? active.lo : -Infinity) - widget.binding.offset;
+        const hi = Math.min(w ? w[1] : Infinity, active ? active.hi : Infinity) - widget.binding.offset;
+        this.windowSafeLo = Math.max(this.windowSafeLo, lo);
+        this.windowSafeHi = Math.min(this.windowSafeHi, hi);
+      }
+    } else {
+      this.windowedWidgets.delete(widget.id);
+      if (!this.windowedWidgets.size) { this.windowSafeLo = -Infinity; this.windowSafeHi = Infinity; }
+    }
     if (widget.inflight) this.inflightWidgets.add(widget.id);
     else this.inflightWidgets.delete(widget.id);
     if (widget.parked) this.parkedWidgets.add(widget.id);
     else this.parkedWidgets.delete(widget.id);
     this.syncOpenTracking(widget);
+  }
+
+  private schedulePrune(subId: number) {
+    this.prunableNow.add(subId);
+    this.prunableAt.delete(subId);
   }
 
   private syncOpenTracking(widget: Widget) {
@@ -226,7 +273,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private markSub(id: number, closeOpen = false) {
     if (id < CELL) {
-      this.prunableSubs.add(id);
+      this.schedulePrune(id);
       const set = this.subWidgets.get(id);
       if (set) for (const wid of set) {
         this.dirtyWidgets.add(wid);
@@ -297,7 +344,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.lost.delete(sub);
     this.limitedSubs.delete(sub);
     this.subFailed.delete(sub);
-    this.prunableSubs.delete(sub);
+    this.prunableNow.delete(sub);
+    this.prunableAt.delete(sub);
     this.forget(sub);
     for (const cell of this.facts.unfollow(sub)) {
       this.gone.add(cell);
@@ -314,7 +362,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const made: Widget = { id: widget, order: was?.order ?? this.nextOrder++, subs: [...subs], view, model,
       binding: was?.binding ?? { generation: 1, surfaces: [], offset: 0, pin: null },
       installed: was?.installed ?? null, inflight: null, sent: {}, motion: false, inspect: was?.inspect ?? null, validWindow: null, start: null, state: was?.state ?? new Map(), cost: was?.cost ?? 0.1,
-      served: was?.served ?? 0, halted: null, parked: null };
+      served: was?.served ?? 0, deferrals: 0, halted: null, parked: null };
     this.widgets.set(widget, made);
     this.indexWidget(made);
     if (made.inspect !== null) this.inspectedWidgets.add(widget);
@@ -377,7 +425,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         this.subFailed.delete(cell);
         this.limitedSubs.delete(cell);
       }
-      this.prunableSubs.add(subId);
+      this.schedulePrune(subId);
     }
     const native = this.natives.get(route);
     if (native !== undefined) for (const [id, from] of this.lost) if (from === native) this.lost.delete(id);
@@ -526,16 +574,22 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private replayEarly() {
     const due = this.early.filter(item => (this.current(item) ?? 1) <= 0);
-    if (!due.length) return;
-    this.early = this.early.filter(item => !due.includes(item));
-    for (const item of due) this.follows(item.bytes, item.stamp);
+    if (due.length) {
+      this.early = this.early.filter(item => !due.includes(item));
+      for (const item of due) this.follows(item.bytes, item.stamp);
+    }
+    const duePanels = this.earlyPanels.filter(item => (this.current(item) ?? 1) <= 0);
+    if (duePanels.length) {
+      this.earlyPanels = this.earlyPanels.filter(item => !duePanels.includes(item));
+      for (const item of duePanels) this.panels(item.bytes);
+    }
   }
 
   private replay() {
-    const stale = this.held.filter(item => item.kind === 'follow' && this.current(item) === -1);
+    const stale = this.held.filter(item => this.current(item) === -1);
     this.release(stale);
     this.held = this.held.filter(item => !stale.includes(item));
-    const ready = this.held.filter(item => this.known(item.id) && this.routes.has(item.native) && (item.kind === 'panels' || this.current(item) === 0));
+    const ready = this.held.filter(item => this.known(item.id) && this.routes.has(item.native) && this.current(item) === 0);
     if (!ready.length) { this.reindex(); return; }
     this.held = this.held.filter(item => !ready.includes(item));
     for (const item of ready) this.heldBytes -= item.size + HELD_COST;
@@ -586,13 +640,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private follows(bytes: Uint8Array, stamped?: number) {
-    let message: ReturnType<typeof parseFollowed>;
-    try { message = parseFollowed(bytes); }
+    let message: ReturnType<typeof parseFollowedFrame>;
+    try { message = parseFollowedFrame(bytes); }
     catch (error) { this.freed += recordsCharge(bytes); throw error; }
     if (stamped !== undefined) this.stamped.set(message.route, Math.max(this.stamped.get(message.route) ?? 0, stamped));
     const order = this.current({ native: message.route, seek: message.seek });
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const count = data.getUint32(12, true);
+    const count = message.count;
     if (order === -1) { this.freed += recordsCharge(bytes); return; }
     if (order === 1) { this.early.push({ native: message.route, seek: message.seek, bytes, stamp: stamped }); return; }
     if (message.reset && order === null) this.unboundReset(message.route, message.seek);
@@ -666,13 +720,17 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.freed += size;
       const reason = error instanceof Error ? error.message : String(error);
       const id = record.byteLength >= 4 ? new DataView(record.buffer, record.byteOffset, 4).getUint32(0, true) : -1;
-      if (this.subs.has(id)) { this.subFailed.set(id, reason); this.markSub(id); }
+      if (this.subs.has(id)) { this.subFailed.set(id, reason); this.markSub(id, true); }
       else this.host.fail(reason);
       return null;
     }
-    this.subFailed.delete(panel.id);
     if (panel.waiting) { this.freed += size; return { kind: 'waiting', id: panel.id, hour: panel.hour }; }
-    if (!panel.panel) { this.freed += size; return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped }; }
+    if (!panel.panel) {
+      this.freed += size;
+      if (this.subFailed.has(panel.id)) return null;
+      return { kind: 'stands', id: panel.id, hour: panel.hour, stepped: panel.stepped };
+    }
+    this.subFailed.delete(panel.id);
     if (panel.panel.refused !== null) return { kind: 'refused', id: panel.id, hour: panel.hour, reason: panel.panel.refused, stepped: panel.stepped, bytes: size,
       value: { kind: 'panel', bytes: null, data: undefined, refused: panel.panel.refused } };
     let cells: ReturnType<typeof cellsOf> = [];
@@ -685,6 +743,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private panels(bytes: Uint8Array) {
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const native = data.getUint32(16, true), seek = data.getUint32(20, true), count = data.getUint32(8, true);
+    const order = this.current({ native, seek });
+    if (order === -1) { this.freed += panelRecordsCharge(bytes); return; }
+    if (order === 1) { this.earlyPanels.push({ native, seek, bytes }); return; }
     const route = this.routes.get(native);
     let at = 24, completed: number | undefined;
     const mine: PanelRecord<Value>[] = [], unbound = new Map<number, { records: Uint8Array[]; size: number }>();
@@ -750,7 +811,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       if (!widget || !owner || owner.sent.binding !== widget.binding.generation) continue;
       if (!widget.installed || widget.installed.id < owner.sent.id) widget.installed = owner.sent;
       if (widget.inflight?.id === ack.id) widget.inflight = null;
-      for (const sub of widget.subs) this.prunableSubs.add(sub);
+      for (const sub of widget.subs) this.schedulePrune(sub);
       this.syncWindowTracking(widget);
     }
     for (const refusal of refused) {
@@ -765,7 +826,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       widget.parked = refusal.reason === 'uncovered' && owner ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
       this.dirtyWidgets.add(widget.id);
-      for (const sub of widget.subs) this.prunableSubs.add(sub);
+      for (const sub of widget.subs) this.schedulePrune(sub);
       this.syncWindowTracking(widget);
     }
   }
@@ -785,18 +846,20 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         const failed = this.subFailed.get(id);
         if (failed !== undefined) return { failed };
         if (this.lost.has(id)) return 'lost';
-        const uses = this.facts.usesOf(id);
-        if (uses) {
-          for (const cell of uses) {
-            const cellFailed = this.subFailed.get(cell);
-            if (cellFailed !== undefined) return { failed: cellFailed };
-            if (this.lost.has(cell)) return 'lost';
-          }
+        for (const cell of this.facts.activeCells(id, target)) {
+          const cellFailed = this.subFailed.get(cell);
+          if (cellFailed !== undefined) return { failed: cellFailed };
+          if (this.lost.has(cell)) return 'lost';
         }
         const sub = this.subs.get(id);
         if (!sub || sub.route !== null && this.failed.has(sub.route)) return null;
         const picture = this.facts.select(id, target);
         if (!picture) return null;
+        for (const cell of picture.parts[0]!.cells) {
+          const cellFailed = this.subFailed.get(cell);
+          if (cellFailed !== undefined) return { failed: cellFailed };
+          if (this.lost.has(cell)) return 'lost';
+        }
         const window = this.facts.window(id, target, picture);
         if (!window) return null;
         pictures.push(picture);
@@ -855,33 +918,48 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.dirtyWidgets.clear();
     for (const wid of this.motionWidgets) candidates.add(wid);
     for (const wid of this.inflightWidgets) {
+      this.stats.visited++;
       const widget = this.widgets.get(wid);
       if (widget?.inflight && this.requests - widget.inflight.request > STALE) candidates.add(wid);
     }
     if (!request.exact && this.parkedWidgets.size) {
       for (const wid of this.parkedWidgets) {
+        this.stats.visited++;
         const widget = this.widgets.get(wid);
         if (widget) { widget.parked = null; candidates.add(wid); }
       }
       this.parkedWidgets.clear();
     }
     for (const wid of this.inspectedWidgets) {
+      this.stats.visited++;
       const widget = this.widgets.get(wid);
       if (widget && (inspect.get(wid) ?? null) !== widget.inspect) candidates.add(wid);
     }
     for (const [wid, key] of inspect) {
+      this.stats.visited++;
       const widget = this.widgets.get(wid);
       if (widget && widget.inspect !== key) candidates.add(wid);
     }
-    for (const wid of this.windowedWidgets) {
-      const widget = this.widgets.get(wid);
-      if (!widget) continue;
-      const target = this.targetOf(widget, request.target);
-      const w = widget.validWindow;
-      const active = widget.inflight ?? widget.installed;
-      if ((!active && !w) || (w && (target < w[0] || target > w[1])) || (active && (target < active.lo || target > active.hi))) {
-        candidates.add(wid);
+    if (this.windowedWidgets.size && (this.outsideWindow.size > 0 || request.target < this.windowSafeLo || request.target > this.windowSafeHi)) {
+      let lo = -Infinity, hi = Infinity;
+      this.outsideWindow.clear();
+      for (const wid of this.windowedWidgets) {
+        this.stats.visited++;
+        const widget = this.widgets.get(wid);
+        if (!widget) continue;
+        const target = this.targetOf(widget, request.target);
+        const w = widget.validWindow;
+        const active = widget.inflight ?? widget.installed;
+        if ((!active && !w) || (w && (target < w[0] || target > w[1])) || (active && (target < active.lo || target > active.hi))) {
+          candidates.add(wid);
+          this.outsideWindow.add(wid);
+        } else {
+          lo = Math.max(lo, Math.max(w ? w[0] : -Infinity, active ? active.lo : -Infinity) - widget.binding.offset);
+          hi = Math.min(hi, Math.min(w ? w[1] : Infinity, active ? active.hi : Infinity) - widget.binding.offset);
+        }
       }
+      this.windowSafeLo = lo;
+      this.windowSafeHi = hi;
     }
     const due: { widget: Widget; selected: Exclude<Selection, null>; motion: boolean; target: number }[] = [];
     for (const wid of candidates) {
@@ -912,7 +990,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         widget.validWindow = null;
         this.syncWindowTracking(widget);
         const reason = selected === 'lost' ? LOST : selected.failed;
-        if (widget.inflight || widget.installed?.contents.failed === reason) continue;
+        if (widget.inflight?.contents.failed === reason || (!widget.inflight && widget.installed?.contents.failed === reason)) continue;
         due.push({ widget, selected, motion: false, target });
         continue;
       }
@@ -930,7 +1008,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       widget.inspect = key;
       if (key === null) this.inspectedWidgets.delete(wid); else this.inspectedWidgets.add(wid);
     }
-    due.sort((a, b) => Number(a.motion) - Number(b.motion) || a.widget.served - b.widget.served || a.widget.order - b.widget.order);
+    const starved = (w: Widget) => w.deferrals >= 3 ? 0 : 1;
+    due.sort((a, b) => starved(a.widget) - starved(b.widget) || Number(a.motion) - Number(b.motion) || a.widget.served - b.widget.served || a.widget.order - b.widget.order);
     const budget = this.host.budget ?? 10;
     const entries: Entry<B>[] = [], surfaces: (B | typeof SAME | null)[][] = [], sources: Bitmapped[] = [], slots: [number, number, number][] = [];
     const made: { widget: Widget; selected: Selected }[] = [];
@@ -940,14 +1019,19 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const { widget, selected, motion, target } = due[i]!;
       const elapsed = this.time() - began;
       if (tried > 0 && elapsed + widget.cost > budget) {
+        widget.deferrals++;
         this.dirtyWidgets.add(widget.id);
         if (elapsed >= budget) {
-          for (let j = i + 1; j < due.length; j++) this.dirtyWidgets.add(due[j]!.widget.id);
+          for (let j = i + 1; j < due.length; j++) {
+            due[j]!.widget.deferrals++;
+            this.dirtyWidgets.add(due[j]!.widget.id);
+          }
           break;
         }
         continue;
       }
       tried++;
+      widget.deferrals = 0;
       const start = this.time();
       widget.served = this.requests;
       if (selected === 'lost' || 'failed' in selected) {
@@ -998,6 +1082,26 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       made.push({ widget, selected });
       surfaces.push(parts);
     }
+    const resets: [number, number][] = [];
+    let moved = false;
+    for (const [route, native] of this.natives) {
+      const count = this.resets.get(native) ?? 0;
+      if (this.told.get(route) !== count) { moved = true; this.told.set(route, count); }
+      resets.push([route, count]);
+    }
+    const confirmed: [number, 'followed' | 'panel', number, number, number][] = [];
+    for (const [route, hour] of this.routeConfirmedFollowed) {
+      if (this.toldConfirmedFollowed.get(route) !== hour) {
+        this.toldConfirmedFollowed.set(route, hour);
+        const native = this.natives.get(route);
+        const seek = this.facts.generation(route).seek;
+        const reset = native === undefined ? 0 : this.applied.get(native) ?? this.resets.get(native) ?? 0;
+        confirmed.push([route, 'followed', hour, seek, reset]);
+        moved = true;
+      }
+    }
+    const closed = this.pendingClosed.size ? [...this.pendingClosed] : undefined;
+    if (closed) { this.pendingClosed.clear(); moved = true; }
     let crops: B[] = [];
     try { crops = slots.length ? await this.host.crop(slots.map(([, , source]) => sources[source]!)) : []; }
     catch (error) {
@@ -1013,23 +1117,6 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     }
     this.stats.crops += crops.length;
     slots.forEach(([e, k], at) => { surfaces[e]![k] = crops[at]!; });
-    const resets: [number, number][] = [];
-    let moved = false;
-    for (const [route, native] of this.natives) {
-      const count = this.resets.get(native) ?? 0;
-      if (this.told.get(route) !== count) { moved = true; this.told.set(route, count); }
-      resets.push([route, count]);
-    }
-    const confirmed: [number, 'followed' | 'panel', number][] = [];
-    for (const [route, hour] of this.routeConfirmedFollowed) {
-      if (this.toldConfirmedFollowed.get(route) !== hour) {
-        this.toldConfirmedFollowed.set(route, hour);
-        confirmed.push([route, 'followed', hour]);
-        moved = true;
-      }
-    }
-    const closed = this.pendingClosed.size ? [...this.pendingClosed] : undefined;
-    if (closed) { this.pendingClosed.clear(); moved = true; }
     if (entries.length || moved) {
       this.host.present({ lane: this.host.lane, serial: request.serial, resets, ...closed ? { closed } : {}, ...confirmed.length ? { confirmed } : {}, entries }, crops);
     }
@@ -1090,10 +1177,23 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private prune(hour: number) {
-    if (!this.prunableSubs.size) return;
-    for (const subId of [...this.prunableSubs]) {
+    if (hour >= this.minPruneHour) {
+      let nextMin = Infinity;
+      for (const [subId, due] of this.prunableAt) {
+        if (due <= hour) {
+          this.prunableAt.delete(subId);
+          this.prunableNow.add(subId);
+        } else if (due < nextMin) {
+          nextMin = due;
+        }
+      }
+      this.minPruneHour = nextMin;
+    }
+    if (!this.prunableNow.size) return;
+    for (const subId of [...this.prunableNow]) {
+      this.prunableNow.delete(subId);
       const sub = this.subs.get(subId);
-      if (!sub) { this.prunableSubs.delete(subId); continue; }
+      if (!sub) { this.prunableAt.delete(subId); continue; }
       let actual = Infinity;
       const keep: Picture<Value>[] = [];
       const widgets = this.subWidgets.get(subId);
@@ -1110,9 +1210,15 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         }
       }
       if (!Number.isFinite(actual)) actual = hour + (sub.route === null ? 0 : this.offsets.get(sub.route) ?? 0);
-      this.facts.prune(subId, actual, keep);
+      const nextAt = this.facts.prune(subId, actual, keep);
       this.stats.pruned++;
-      if (!this.facts.prunable(subId)) this.prunableSubs.delete(subId);
+      if (Number.isFinite(nextAt)) {
+        const due = nextAt - (actual - hour);
+        this.prunableAt.set(subId, due);
+        if (due < this.minPruneHour) this.minPruneHour = due;
+      } else {
+        this.prunableAt.delete(subId);
+      }
     }
   }
 }

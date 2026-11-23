@@ -385,21 +385,23 @@ test('flush visits only widgets with date listeners rather than all mounted widg
 test('lane placement balances measured widget cost rather than widget count and re-places on remount', () => {
   const { pipeline, close } = inProcess({ lanes: 2 });
   try {
-    const heavy = pipeline.mount({ offset: 0, pin: null, key: 'heavy|0', widget: 'heavy' });
+    const heavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-1|0', widget: 'inst-1', kind: 'heavy' });
     const heavyLane = pipeline.lane(heavy);
     const otherLane = 1 - heavyLane;
     (pipeline as unknown as { receive(lane: number, m: unknown): void }).receive(heavyLane, {
       type: 'served', seek: 0, target: 0, exact: false, changed: 1, ms: 9, costs: [[heavy, 9]],
     });
-    const cheap1 = pipeline.mount({ offset: 0, pin: null, key: 'cheap-1|0', widget: 'cheap' });
-    const cheap2 = pipeline.mount({ offset: 0, pin: null, key: 'cheap-2|0', widget: 'cheap' });
-    const cheap3 = pipeline.mount({ offset: 0, pin: null, key: 'cheap-3|0', widget: 'cheap' });
+    const cheap1 = pipeline.mount({ offset: 0, pin: null, key: 'inst-c1|0', widget: 'inst-c1', kind: 'cheap' });
+    const cheap2 = pipeline.mount({ offset: 0, pin: null, key: 'inst-c2|0', widget: 'inst-c2', kind: 'cheap' });
+    const cheap3 = pipeline.mount({ offset: 0, pin: null, key: 'inst-c3|0', widget: 'inst-c3', kind: 'cheap' });
     assert.deepEqual([pipeline.lane(cheap1), pipeline.lane(cheap2), pipeline.lane(cheap3)], [otherLane, otherLane, otherLane],
       'cheap widgets go to the lower-cost lane even when it already holds more widgets by count');
-    const secondHeavy = pipeline.mount({ offset: 0, pin: null, key: 'heavy|1', widget: 'heavy' });
-    assert.equal(pipeline.lane(secondHeavy), otherLane, 'a second copy of a learned heavy kind is placed on the lighter lane');
+    const secondHeavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-2|0', widget: 'inst-2', kind: 'heavy' });
+    assert.equal(pipeline.lane(secondHeavy), otherLane, 'a second instance with a distinct instance ID shares learned kind cost');
+    const afterSecondHeavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-c4|0', widget: 'inst-c4', kind: 'cheap' });
+    assert.equal(pipeline.lane(afterSecondHeavy), heavyLane, 'secondHeavy charged learned heavy cost onto otherLane so the next widget returns to heavyLane');
     pipeline.unmount(heavy);
-    const remountedHeavy = pipeline.mount({ offset: 0, pin: null, key: 'heavy|0', widget: 'heavy' });
+    const remountedHeavy = pipeline.mount({ offset: 0, pin: null, key: 'inst-1|0', widget: 'inst-1', kind: 'heavy' });
     assert.equal(pipeline.lane(remountedHeavy), heavyLane, 'remounting after load drops re-places onto the now-lighter lane');
   } finally { close(); }
 });

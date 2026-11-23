@@ -137,6 +137,30 @@ export function wireKind(bytes: ArrayBuffer | Uint8Array): number {
   return v.byteLength < 4 ? 0 : new DataView(v.buffer, v.byteOffset, 4).getUint32(0, true);
 }
 
+export interface FollowedFrame {
+  route: number;
+  hour: number;
+  reset: boolean;
+  seek: number;
+  clock: number;
+  count: number;
+}
+
+export function parseFollowedFrame(bytes: ArrayBuffer | Uint8Array): FollowedFrame {
+  const { data, byteLength } = viewsOf(bytes);
+  if (byteLength < 24 || data.getUint32(0, true) !== DATED_FOLLOW) throw new Error('Not a followed message.');
+  const flags = data.getUint32(4, true), count = data.getUint32(12, true);
+  let at = 24;
+  for (let i = 0; i < count; i++) {
+    if (at + 16 > byteLength) throw new Error('A followed message ends early.');
+    const length = data.getUint32(at + 8, true), end = at + 16 + length;
+    if (end > byteLength) throw new Error('A followed message ends early.');
+    at = end;
+  }
+  if (at !== byteLength) throw new Error('A followed message holds bytes past its answers.');
+  return { route: flags >>> 1, hour: data.getInt32(8, true), reset: (flags & RESET) !== 0, seek: data.getUint32(16, true), clock: data.getInt32(20, true), count };
+}
+
 export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage {
   const { views, data, byteLength } = viewsOf(bytes);
   if (byteLength < 24 || data.getUint32(0, true) !== DATED_FOLLOW) throw new Error('Not a followed message.');

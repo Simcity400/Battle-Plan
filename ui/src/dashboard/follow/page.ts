@@ -39,7 +39,7 @@ export interface Presentation<B extends Bitmap = Bitmap> {
   serial: number;
   resets?: readonly (readonly [route: number, reset: number])[];
   closed?: readonly number[];
-  confirmed?: readonly (readonly [route: number, channel: 'followed' | 'panel', hour: number])[];
+  confirmed?: readonly (readonly [route: number, channel: 'followed' | 'panel', hour: number, seek: number, reset: number])[];
   entries: readonly Entry<B>[];
 }
 
@@ -153,6 +153,7 @@ export class Page<B extends Bitmap = Bitmap> {
   private safeDirty = false;
   private readonly kept = new Map<string, { value: unknown; holders: number }>();
   private readonly holding = new WeakMap<Entry<B>, string[]>();
+  private readonly earlyClosed = new WeakMap<Entry<B>, number>();
   private queue: Presentation<B>[] = [];
   private touched = new Set<Widget<B>>();
   private redated = new Set<Widget<B>>();
@@ -224,9 +225,11 @@ export class Page<B extends Bitmap = Bitmap> {
     const kept: Entry<B>[] = [];
     for (const held of list) {
       if (held === entry) continue;
-      const overlaps = held.lo <= entry.hi && entry.lo <= held.hi;
-      if (overlaps) {
-        if (held.id > entry.id) { this.refuse(widget, entry, 'displaced'); return; }
+      if (held.id > entry.id && held.lo <= entry.lo && held.hi >= entry.lo) {
+        this.refuse(widget, entry, 'displaced');
+        return;
+      }
+      if (entry.id >= held.id && entry.lo <= held.lo && entry.hi >= held.lo) {
         this.refuse(widget, held, 'displaced');
       } else {
         kept.push(held);
@@ -239,6 +242,14 @@ export class Page<B extends Bitmap = Bitmap> {
     widget.earlyMore = kept.slice(1);
     if (widget.early) this.earlyWidgets.add(widget);
     else this.earlyWidgets.delete(widget);
+  }
+
+  private freezeEarly(widget: Widget<B>, entries: readonly Entry<B>[]) {
+    for (const entry of entries) {
+      if (!entry.open || this.earlyClosed.has(entry)) continue;
+      const box = this.confirmedBox(widget.lane, widget.route, entry.open);
+      this.earlyClosed.set(entry, Math.max(entry.c, box.hour));
+    }
   }
 
   generation(route: number): Generation { return { seek: this.seek, reset: this.route(route).reset }; }
@@ -433,22 +444,32 @@ export class Page<B extends Bitmap = Bitmap> {
         if (widget.installed?.follows && widget.installed.gen.reset < reset) this.clear(widget, 'reading');
       }
     }
-    const early: Entry<B>[] = [];
+    const earlyByWidget = new Map<number, Entry<B>[]>();
     if (this.earlyWidgets.size) {
       for (const widget of this.earlyWidgets) {
         this.stats.visited++;
-        if (widget.early) { early.push(widget.early); widget.early = null; }
-        if (widget.earlyMore.length) { early.push(...widget.earlyMore); widget.earlyMore = []; }
+        const list: Entry<B>[] = [];
+        if (widget.early) { list.push(widget.early); widget.early = null; }
+        if (widget.earlyMore.length) { list.push(...widget.earlyMore); widget.earlyMore = []; }
+        if (list.length) earlyByWidget.set(widget.id, list);
       }
       this.earlyWidgets.clear();
     }
     for (const presentation of queue) {
-      for (const widgetId of presentation.closed ?? []) this.widgets.get(widgetId)?.installed?.freeze?.();
+      for (const widgetId of presentation.closed ?? []) {
+        const widget = this.widgets.get(widgetId);
+        if (!widget) continue;
+        widget.installed?.freeze?.();
+        const prev = earlyByWidget.get(widgetId);
+        if (prev) this.freezeEarly(widget, prev);
+        if (widget.early) this.freezeEarly(widget, [widget.early, ...widget.earlyMore]);
+      }
       for (const entry of presentation.entries) {
         this.stats.visited++;
         this.install(entry, presentation.lane);
       }
-      for (const [routeId, channel, hour] of presentation.confirmed ?? []) {
+      for (const [routeId, channel, hour, seek, reset] of presentation.confirmed ?? []) {
+        if (seek !== this.seek || reset !== this.route(routeId).reset) continue;
         const box = this.confirmedBox(presentation.lane, routeId, channel);
         if (hour > box.hour) {
           box.hour = hour;
@@ -462,7 +483,36 @@ export class Page<B extends Bitmap = Bitmap> {
         }
       }
     }
-    for (const entry of early) this.install(entry, -1, true);
+    for (const [widgetId, list] of earlyByWidget) {
+      const widget = this.widgets.get(widgetId);
+      if (!widget) { for (const entry of list) this.install(entry, -1, true); continue; }
+      const at = this.target(widget);
+      const eligible: Entry<B>[] = [];
+      for (const entry of list) {
+        if (at >= entry.lo && at <= entry.hi) eligible.push(entry);
+        else this.install(entry, -1, true);
+      }
+      if (eligible.length > 1) {
+        eligible.sort((a, b) => b.id - a.id);
+        let installedOne = false;
+        for (const entry of eligible) {
+          if (installedOne) this.refuse(widget, entry, 'superseded');
+          else if (this.reject(widget, entry) === null) { this.install(entry, -1, true); installedOne = true; }
+          else this.install(entry, -1, true);
+        }
+      } else if (eligible.length === 1) {
+        this.install(eligible[0]!, -1, true);
+      }
+    }
+  }
+
+  private effectiveC(widget: Widget<B>, entry: Entry<B>): number {
+    const closedAt = this.earlyClosed.get(entry);
+    if (closedAt !== undefined) return closedAt;
+    if (entry.open && entry.gen.seek === this.seek && entry.gen.reset === this.route(widget.route).reset) {
+      return Math.max(entry.c, this.confirmedBox(widget.lane, widget.route, entry.open).hour);
+    }
+    return entry.c;
   }
 
   private reject(widget: Widget<B>, entry: Entry<B>): string | null {
@@ -479,20 +529,22 @@ export class Page<B extends Bitmap = Bitmap> {
     if (at < entry.lo) return 'early';
     if (at > entry.hi) return 'superseded';
     if (!shown && Object.values(entry.fields).some(value => value === SAME)) return 'kept content';
-    if (entry.mode === 'refused' && !this.playing && shown && at > entry.c && !sameContent(entry.content, widget.content)) return 'uncovered';
+    const c = this.effectiveC(widget, entry);
+    if (entry.mode === 'refused' && !this.playing && shown && at > c && !sameContent(entry.content, widget.content)) return 'uncovered';
     if (entry.mode !== 'picture') return null;
     for (let k = 0; k < widget.surfaces.length; k++) {
       const part = entry.surfaces[k];
       if (part === SAME ? widget.content[k] !== entry.content[k] : !part || part.width === 0) return 'kept content';
     }
     for (const [key, value] of Object.entries(entry.fields)) if (value === SAME && (!shown || widget.content[key] !== entry.content[key])) return 'kept content';
-    if (!this.playing && shown && at > entry.c && !sameContent(entry.content, widget.content)) return 'uncovered';
+    if (!this.playing && shown && at > c && !sameContent(entry.content, widget.content)) return 'uncovered';
     return null;
   }
 
   private refuse(widget: Widget<B>, entry: Entry<B>, reason: string) {
     this.stats.rejected[reason] = (this.stats.rejected[reason] ?? 0) + 1;
     this.refusals[widget.lane]!.push({ widget: widget.id, id: entry.id, reason });
+    this.earlyClosed.delete(entry);
     closeParts(entry);
     this.disown(entry);
   }
@@ -543,10 +595,14 @@ export class Page<B extends Bitmap = Bitmap> {
       || Object.keys(widget.installed.fields).length !== Object.keys(entry.fields).length;
     widget.content = entry.mode === 'picture' ? { ...entry.content } : {};
     this.drop(widget.installed);
-    const open = fromEarly ? undefined : entry.open;
+    const closedAt = this.earlyClosed.get(entry);
+    this.earlyClosed.delete(entry);
+    const keepOpen = closedAt === undefined && entry.open !== undefined
+      && (!fromEarly || (entry.gen.seek === this.seek && entry.gen.reset === route.reset));
+    const open = keepOpen ? entry.open : undefined;
     const box = open ? this.confirmedBox(widget.lane, widget.route, open) : null;
-    let baseC = entry.c, live = box !== null;
-    const installed: Installed = { id: entry.id, h: entry.h, c: entry.c, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
+    let baseC = closedAt ?? (box ? Math.max(entry.c, box.hour) : entry.c), live = box !== null;
+    const installed: Installed = { id: entry.id, h: entry.h, c: baseC, lo: entry.lo, hi: entry.hi, gen: entry.gen, binding: entry.binding, follows: entry.follows,
       ...open ? { open } : {},
       mode: entry.mode, reason: entry.reason, fields, ms: entry.ms ?? 0, kept, structure: structureOf(widget.content, fields) };
     if (box) {

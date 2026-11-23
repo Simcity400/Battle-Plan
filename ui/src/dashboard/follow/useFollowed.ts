@@ -1,5 +1,6 @@
 import { decode } from '@msgpack/msgpack';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { FollowedWidgetKind } from './store.ts';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { PlaybackController } from '../playback';
 import { baseClient } from '../prepare.ts';
@@ -39,8 +40,9 @@ export function usePipeline(clock: PlaybackController | null, client: DashboardC
 
 export function useFollowedWidget(pipeline: Pipeline | null, key: string | null, options: MountOptions): number | null {
   const [held, setHeld] = useState<{ key: string; id: number } | null>(null);
+  const contextKind = useContext(FollowedWidgetKind);
   const timing = useRef(options);
-  timing.current = options;
+  timing.current = options.kind === undefined && contextKind !== null ? { ...options, kind: contextKind } : options;
   useLayoutEffect(() => {
     if (key === null || !pipeline) { setHeld(null); return; }
     setHeld({ key, id: pipeline.acquire(key, timing.current) });
