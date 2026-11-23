@@ -45,7 +45,7 @@ use std::{
     ptr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -5131,9 +5131,7 @@ struct SizingShared {
     capacities: engine_allocation::SharedBox<collector_capture::frame_capacities::Capacities>,
     capacities_version: AtomicU64,
     idle_growth_requested: AtomicBool,
-    country_intel_accounted: AtomicUsize,
-    template_home_accounted: AtomicUsize,
-    naval_combat_home_accounted: AtomicUsize,
+    home_accounted: Mutex<[usize; 3]>,
     pass_requested: AtomicBool,
     hint_demand: AtomicBool,
     settled_world: AtomicU64,
@@ -5160,11 +5158,12 @@ impl SizingShared {
                 unsafe { shared.frame_capacities() }.clone(),
             capacities_version: AtomicU64::new(0),
             idle_growth_requested: AtomicBool::new(false),
-            country_intel_accounted: AtomicUsize::new(
+            home_accounted: Mutex::new([
                 // SAFETY: Sizing and the test use only the home associated with these session frames.
-                unsafe { shared.country_intel() }.allocated_bytes()),
-            template_home_accounted: AtomicUsize::new(0),
-            naval_combat_home_accounted: AtomicUsize::new(0),
+                unsafe { shared.country_intel() }.allocated_bytes(),
+                0,
+                0,
+            ]),
             pass_requested: AtomicBool::new(false),
             hint_demand: AtomicBool::new(false),
             settled_world: AtomicU64::new(u64::MAX),
@@ -5231,32 +5230,27 @@ impl SizingShared {
     }
 
     fn account_homes(&self, shared: &Shared) {
-        for (bytes, accounted) in [
-            (
-                // SAFETY: Sizing and the test use only the home associated with these session frames.
-                unsafe { shared.country_intel() }.allocated_bytes(),
-                &self.country_intel_accounted,
+        let mut accounted = lock(&self.home_accounted);
+        let current = [
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes(),
+            collector_division_templates::extended::division_templates::home_allocated_bytes(
+                // SAFETY: The sizing pass uses its session's live shared storage.
+                unsafe { shared.template_home() },
             ),
-            (
-                collector_division_templates::extended::division_templates::home_allocated_bytes(
-                    // SAFETY: The sizing pass uses its session's live shared storage.
-                    unsafe { shared.template_home() },
-                ),
-                &self.template_home_accounted,
+            collector_naval_details::naval_combat_sources::home_allocated_bytes(
+                // SAFETY: The sizing pass uses its session's live shared storage.
+                unsafe { shared.naval_combat_home() },
             ),
-            (
-                collector_naval_details::naval_combat_sources::home_allocated_bytes(
-                    // SAFETY: The sizing pass uses its session's live shared storage.
-                    unsafe { shared.naval_combat_home() },
-                ),
-                &self.naval_combat_home_accounted,
-            ),
-        ] {
-            let previous = accounted.fetch_max(bytes, Ordering::Relaxed);
-
-            // SAFETY: The writer accounts memory to this same session and drains before it is released.
-            unsafe { shared.pool_bytes() }
-                .fetch_add(bytes.saturating_sub(previous) as u64, Ordering::Relaxed);
+        ];
+        for (slot, bytes) in accounted.iter_mut().zip(current) {
+            let previous = *slot;
+            if bytes != previous {
+                *slot = bytes;
+                // SAFETY: The writer accounts memory to this same session and drains before it is released.
+                unsafe { shared.pool_bytes() }
+                    .fetch_add((bytes as u64).wrapping_sub(previous as u64), Ordering::Relaxed);
+            }
         }
     }
 
@@ -6339,6 +6333,7 @@ mod equipment_destruction_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
@@ -8023,15 +8018,23 @@ mod tests {
                 +
                     // SAFETY: Sizing and the test use only the home associated with these session frames.
                     unsafe { shared.country_intel() }.allocated_bytes()
+                + collector_division_templates::extended::division_templates::home_allocated_bytes(
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.template_home() },
+                )
+                + collector_naval_details::naval_combat_sources::home_allocated_bytes(
+                    // SAFETY: The sizing pass uses its session's live shared storage.
+                    unsafe { shared.naval_combat_home() },
+                )
         };
+        let returning =
+        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
+        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let allocated_before = allocated_bytes();
         let pool_before = shared.pool_owned();
         let shared_before =
             // SAFETY: Sizing and the test use only the home associated with these session frames.
             unsafe { shared.country_intel() }.allocated_bytes();
-        let returning =
-        // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-        unsafe { shared.take_frame(&mut 0) }.unwrap();
         let frame = unsafe {
             // SAFETY: This is the runtime's frame pool for the current session.
             shared.frames()[returning].captured()
@@ -8057,7 +8060,10 @@ mod tests {
             unsafe { shared.country_intel() }.allocated_bytes();
         assert!(shared_after_idle > shared_before);
         let allocated_after_idle = allocated_bytes();
-        assert!(allocated_after_idle - allocated_before > shared_after_idle - shared_before);
+        assert_eq!(
+            allocated_after_idle - allocated_before,
+            shared_after_idle - shared_before
+        );
         let pool_after_idle = shared.pool_owned();
         assert_eq!(
             pool_after_idle - pool_before,
@@ -8068,18 +8074,31 @@ mod tests {
         assert_eq!(
             // SAFETY: This fixture reads the home associated with its own frame pool.
             unsafe { shared.country_intel() }.allocated_bytes(),
-            shared_after_idle
+            0
         );
         let allocated_after_return = allocated_bytes();
-        assert!(allocated_after_return > allocated_after_idle);
         let pool_after_return = shared.pool_owned();
         assert_eq!(
-            pool_after_return - pool_after_idle,
-            (allocated_after_return - allocated_after_idle) as u64
+            pool_after_return.wrapping_sub(pool_after_idle),
+            (allocated_after_return as u64).wrapping_sub(allocated_after_idle as u64)
         );
         assert_eq!(
-            pool_after_return - pool_before,
-            (allocated_after_return - allocated_before) as u64
+            pool_after_return.wrapping_sub(pool_before),
+            (allocated_after_return as u64).wrapping_sub(allocated_before as u64)
+        );
+
+        sizing.idle_growth_requested.store(true, Ordering::Release);
+        sizing.grow_idle(&shared);
+        assert_eq!(
+            // SAFETY: Sizing and the test use only the home associated with these session frames.
+            unsafe { shared.country_intel() }.allocated_bytes(),
+            shared_after_idle
+        );
+        let allocated_after_second = allocated_bytes();
+        let pool_after_second = shared.pool_owned();
+        assert_eq!(
+            pool_after_second.wrapping_sub(pool_before),
+            (allocated_after_second as u64).wrapping_sub(allocated_before as u64)
         );
         assert_idle_war_and_faction_capacities(&shared, sizing);
     }

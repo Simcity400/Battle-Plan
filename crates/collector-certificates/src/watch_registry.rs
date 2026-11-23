@@ -5,7 +5,7 @@ use std::{
     ptr,
     sync::atomic::{
         AtomicBool, AtomicPtr, AtomicU64, AtomicUsize,
-        Ordering::{Acquire, Relaxed, Release, SeqCst},
+        Ordering::{Acquire, Relaxed, SeqCst},
     },
 };
 
@@ -442,6 +442,33 @@ impl WatchRegistry {
         }
     }
 
+    fn clean_quiet_revision(&self) -> Option<u64> {
+        let seq = self.flush_seq.load(SeqCst);
+        if seq & 1 != 0 || self.dirty.load(SeqCst) {
+            return None;
+        }
+        let state = self.state.0.load(SeqCst);
+        if running(state) != 0 || state & UNTRUSTED != 0 {
+            return None;
+        }
+        let rev = revision(state).wrapping_add(self.revision.load(SeqCst));
+        (self.flush_seq.load(SeqCst) == seq).then_some(rev)
+    }
+
+    fn clean_sole_runner_revision(&self) -> Option<u64> {
+        let seq = self.flush_seq.load(SeqCst);
+        if seq & 1 != 0 || self.dirty.load(SeqCst) {
+            return None;
+        }
+        let state = self.state.0.load(SeqCst);
+        let total = (running(state) as usize).saturating_add(asymmetric::count_active(self.tag()));
+        if state & UNTRUSTED != 0 || total != 1 {
+            return None;
+        }
+        let rev = revision(state).wrapping_add(self.revision.load(SeqCst));
+        (self.flush_seq.load(SeqCst) == seq).then_some(rev)
+    }
+
     fn quiet_state(&self) -> Option<u64> {
         let mut state = self.state.0.load(SeqCst);
         if running(state) != 0 || state & UNTRUSTED != 0 {
@@ -460,16 +487,8 @@ impl WatchRegistry {
                 return None;
             }
         }
-        let seq = self.flush_seq.load(SeqCst);
-        if seq & 1 == 0 && !self.dirty.load(SeqCst) {
-            let state = self.state.0.load(SeqCst);
-            if running(state) != 0 || state & UNTRUSTED != 0 {
-                return None;
-            }
-            let rev = revision(state).wrapping_add(self.revision.load(SeqCst));
-            if self.flush_seq.load(SeqCst) == seq {
-                return Some(rev);
-            }
+        if let Some(rev) = self.clean_quiet_revision() {
+            return Some(rev);
         }
         let locked = self.lock_flush();
         let result = (|| {
@@ -1158,10 +1177,10 @@ impl WatchRegistry {
         if total != 1 {
             return None;
         }
-        if !self.dirty.load(SeqCst) {
-            return Some(revision(state).wrapping_add(self.revision.load(SeqCst)));
+        if let Some(rev) = self.clean_sole_runner_revision() {
+            return Some(rev);
         }
-        self.lock_flush();
+        let locked = self.lock_flush();
         let result = (|| {
             if self.dirty.swap(false, SeqCst) {
                 self.revision.fetch_add(1, SeqCst);
@@ -1175,7 +1194,7 @@ impl WatchRegistry {
             }
             Some(revision(state).wrapping_add(self.revision.load(SeqCst)))
         })();
-        self.flushing.store(false, Release);
+        self.unlock_flush(locked);
         result
     }
 
@@ -2289,30 +2308,33 @@ mod tests {
         drop(registry.notify(0x2000));
         let locked = registry.lock_flush();
         assert!(registry.dirty.swap(false, SeqCst));
+        assert_eq!(registry.clean_quiet_revision(), None);
+        {
+            let _running = registry.running();
+            assert_eq!(registry.clean_sole_runner_revision(), None);
+        }
         let started = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let done = std::sync::Arc::new(AtomicBool::new(false));
         let reader = {
-            let (registry, started, done) = (
+            let (registry, started) = (
                 std::sync::Arc::clone(&registry),
                 std::sync::Arc::clone(&started),
-                std::sync::Arc::clone(&done),
             );
             std::thread::spawn(move || {
                 started.wait();
-                let quiet = registry.quiet();
-                done.store(true, Release);
-                quiet
+                registry.quiet()
             })
         };
         started.wait();
-        for _ in 0..64 {
-            assert!(!done.load(Acquire));
-            std::thread::yield_now();
-        }
         registry.revision.fetch_add(1, SeqCst);
         registry.unlock_flush(locked);
         let after = reader.join().unwrap().unwrap();
         assert_ne!(after, initial);
+        assert_eq!(registry.clean_quiet_revision(), Some(after.1));
+        {
+            let _running = registry.running();
+            assert_eq!(registry.clean_sole_runner_revision(), Some(after.1));
+            assert_eq!(registry.sole_runner_revision(), Some(after.1));
+        }
         unsafe { registry.release() };
     }
 

@@ -209,7 +209,7 @@ impl Windows {
         reserve_map(&mut self.status_owners, ends)?;
         for entry in entries {
             let (country, root_index) = match entry.payload {
-                CompactPayload::Reset { status } => {
+                CompactPayload::Reset { status, .. } => {
                     if let Some(country) = self.status_owners.remove(&status) {
                         self.countries.remove(&country);
                         self.identities.remove(&country);

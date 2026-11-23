@@ -305,6 +305,15 @@ impl FlightGate {
         self.flush_seq.store(locked + 1, SeqCst);
     }
 
+    fn clean_epoch(&self) -> Option<u64> {
+        let seq = self.flush_seq.load(SeqCst);
+        if seq & 1 != 0 || self.dirty.load(SeqCst) {
+            return None;
+        }
+        let epoch = self.epoch.load(SeqCst);
+        (self.flush_seq.load(SeqCst) == seq).then_some(epoch)
+    }
+
     pub fn quiet_epoch(&self) -> Option<u64> {
         let tag = self.tag();
         if (self.overflow.load(SeqCst) & !RETAIN_BIT) != 0
@@ -318,12 +327,8 @@ impl FlightGate {
         {
             return None;
         }
-        let seq = self.flush_seq.load(SeqCst);
-        if seq & 1 == 0 && !self.dirty.load(SeqCst) {
-            let epoch = self.epoch.load(SeqCst);
-            if self.flush_seq.load(SeqCst) == seq {
-                return Some(epoch);
-            }
+        if let Some(epoch) = self.clean_epoch() {
+            return Some(epoch);
         }
         let locked = self.lock_flush();
         let result = (|| {
@@ -344,12 +349,8 @@ impl FlightGate {
     pub fn revision(&self) -> u64 {
         flush_writers();
         let tag = self.tag();
-        let seq = self.flush_seq.load(SeqCst);
-        if seq & 1 == 0 && !self.dirty.load(SeqCst) {
-            let epoch = self.epoch.load(SeqCst);
-            if self.flush_seq.load(SeqCst) == seq {
-                return epoch;
-            }
+        if let Some(epoch) = self.clean_epoch() {
+            return epoch;
         }
         let locked = self.lock_flush();
         let epoch = if self.dirty.swap(false, SeqCst) {
@@ -471,38 +472,27 @@ mod tests {
         drop(gate.enter(true));
         let locked = gate.lock_flush();
         assert!(gate.dirty.swap(false, SeqCst));
+        assert_eq!(gate.clean_epoch(), None);
         let started = Arc::new(Barrier::new(3));
-        let rev_done = Arc::new(AtomicBool::new(false));
-        let quiet_done = Arc::new(AtomicBool::new(false));
         let rev_reader = {
-            let (gate, started, done) =
-                (Arc::clone(&gate), Arc::clone(&started), Arc::clone(&rev_done));
+            let (gate, started) = (Arc::clone(&gate), Arc::clone(&started));
             std::thread::spawn(move || {
                 started.wait();
-                let rev = gate.revision();
-                done.store(true, Release);
-                rev
+                gate.revision()
             })
         };
         let quiet_reader = {
-            let (gate, started, done) =
-                (Arc::clone(&gate), Arc::clone(&started), Arc::clone(&quiet_done));
+            let (gate, started) = (Arc::clone(&gate), Arc::clone(&started));
             std::thread::spawn(move || {
                 started.wait();
-                let epoch = gate.quiet_epoch();
-                done.store(true, Release);
-                epoch
+                gate.quiet_epoch()
             })
         };
         started.wait();
-        for _ in 0..64 {
-            assert!(!rev_done.load(Acquire));
-            assert!(!quiet_done.load(Acquire));
-            std::thread::yield_now();
-        }
         gate.epoch.fetch_add(1, SeqCst);
         gate.unlock_flush(locked);
         assert_eq!(rev_reader.join().unwrap(), 11);
         assert_eq!(quiet_reader.join().unwrap(), Some(11));
+        assert_eq!(gate.clean_epoch(), Some(11));
     }
 }

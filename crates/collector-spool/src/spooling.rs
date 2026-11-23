@@ -10156,7 +10156,7 @@ mod tests {
             .unwrap();
 
         let branch = campaign.observe(None, 1, Some(1)).unwrap();
-        let partial = research_rows(&[(1, 0, 5, 1)]);
+        let partial = research_rows(&[(1, 0, 99, 1)]);
         let mut second = sliced_input(
             branch,
             1,
@@ -10167,7 +10167,7 @@ mod tests {
         );
         let partial_sel = SliceSelection::for_test(1, false, &[1]).with_census(&[1, 2]);
         assert!(merge_with(&mut campaign, &mut second, partial_sel));
-        let expected = research_rows(&[(1, 0, 5, 1), (2, 0, 6, 0)]);
+        let expected = research_rows(&[(1, 0, 99, 1), (2, 0, 6, 0)]);
         assert!(
             matches!(
                 merged(&second),
@@ -10180,14 +10180,14 @@ mod tests {
             .unwrap();
 
         let branch = campaign.observe(None, 2, Some(1)).unwrap();
-        let queued_slice = research_rows(&[(2, 0, 6, 2)]);
+        let queued_slice = research_rows(&[(2, 0, 22, 2)]);
         let mut queued = sliced_input(branch, 2, TableView::Complete(queued_slice));
         assert!(!merge_with(
             &mut campaign,
             &mut queued,
             SliceSelection::for_test(2, false, &[2]).with_census(&[1, 2])
         ));
-        let expected_after_queued = research_rows(&[(1, 0, 5, 0), (2, 0, 6, 2)]);
+        let expected_after_queued = research_rows(&[(1, 0, 5, 0), (2, 0, 22, 2)]);
         assert!(
             matches!(
                 merged(&queued),
@@ -10195,11 +10195,18 @@ mod tests {
             ),
             "queued non-full owner slice after truncation must merge onto saved complete baseline"
         );
-        assert_eq!(reads(&queued), [(1, 0), (2, 2)]);
+        assert_eq!(
+            campaign.sliced_reads.0[TableId::ResearchInputs.index()],
+            [(1, 0), (2, 2)]
+        );
         assert!(campaign.sliced_cache.get(&TableId::ResearchInputs).is_none());
         campaign
             .write(queued, 1002, Some(1), 0, &mut WorkSample::default())
             .unwrap();
+        assert_eq!(
+            campaign.sliced_reads.0[TableId::ResearchInputs.index()],
+            [(1, 0), (2, 2)]
+        );
 
         let branch = campaign.observe(None, 3, Some(1)).unwrap();
         let refreshed = research_rows(&[(1, 0, 5, 3), (2, 0, 6, 3)]);

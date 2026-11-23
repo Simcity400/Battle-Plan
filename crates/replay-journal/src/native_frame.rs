@@ -16,7 +16,7 @@ use replay_columnar::{
     manifest::{self, Manifest, Section, Status},
     restart::Last,
     state::Cell,
-    writer::{Dictionary, Evidence, Prepared, Sample, Strings, Sweep, TableWriter},
+    writer::{Dictionary, Prepared, Sample, Strings, Sweep, TableWriter},
 };
 use replay_data::{BranchId, sliced::SliceUpdate};
 use std::{

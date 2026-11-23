@@ -138,7 +138,7 @@ fn immutable_view_positions(reader: &Recorded<'_>) -> (Vec<usize>, usize, usize)
             .index
             .slots
             .iter()
-            .map(std::cell::Cell::get)
+            .map(|slot| slot.get() as usize)
             .collect(),
         reader.next_exact.get(),
         reader.last_bulk.get(),
@@ -1782,13 +1782,13 @@ fn compact_map_preserves_reset_roots_and_terminal_duplicate_faults() {
         assert_eq!(
             recorded.index.repeated,
             [
-                (recorded.index.slot(&log.spans, 0x2000, 4).unwrap(), 1),
-                (recorded.index.slot(&log.spans, 0x3000, 8).unwrap(), 2),
+                (recorded.index.slot(&log.spans, 0x2000, 4).unwrap() as u32, 1),
+                (recorded.index.slot(&log.spans, 0x3000, 8).unwrap() as u32, 2),
             ]
         );
         assert_eq!(
             recorded.index.next,
-            [usize::MAX, 3, 5, 6, usize::MAX, 7, 6, 7]
+            [u32::MAX, 3, 5, 6, u32::MAX, 7, 6, 7]
         );
         assert_eq!(
             recorded.index.cursor(&log.spans, 0x2000, 4).unwrap().get(),

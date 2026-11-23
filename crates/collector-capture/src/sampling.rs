@@ -941,10 +941,8 @@ pub struct Shared {
     pub(crate) naval_combat_home: collector_naval_details::naval_combat_sources::Home,
     pub(crate) weather_temperature: Mutex<collector_weather::weather::temperature::Tracker>,
     parked_packs: Mutex<Vec<Box<extended::ParkedPacks>>>,
-    parked_packs_bytes: AtomicU64,
-    growing_parked_bytes: AtomicU64,
     retired_parked: Mutex<Vec<Box<extended::ParkedPacks>>>,
-    retired_parked_bytes: AtomicU64,
+    parked_total_bytes: AtomicU64,
     retired_parked_pending: AtomicBool,
     pub(crate) builder_waker: OnceLock<std::thread::Thread>,
     #[cfg(test)]
@@ -1529,10 +1527,8 @@ impl Shared {
             naval_combat_home,
             weather_temperature: Mutex::new(Default::default()),
             parked_packs: Mutex::new(Vec::new()),
-            parked_packs_bytes: AtomicU64::new(0),
-            growing_parked_bytes: AtomicU64::new(0),
             retired_parked: Mutex::new(Vec::new()),
-            retired_parked_bytes: AtomicU64::new(0),
+            parked_total_bytes: AtomicU64::new(0),
             retired_parked_pending: AtomicBool::new(false),
             builder_waker: OnceLock::new(),
                     #[cfg(test)]
@@ -1616,14 +1612,11 @@ impl Shared {
     }
 
     fn parked_and_retired_bytes(&self) -> u64 {
-        self.parked_packs_bytes
-            .load(Ordering::Relaxed)
-            .saturating_add(self.growing_parked_bytes.load(Ordering::Relaxed))
-            .saturating_add(self.retired_parked_bytes.load(Ordering::Relaxed))
+        self.parked_total_bytes.load(Ordering::Relaxed)
     }
 
     pub fn parked_bytes(&self) -> u64 {
-        self.parked_and_retired_bytes()
+        self.parked_total_bytes.load(Ordering::Relaxed)
     }
 
     fn at_frame_limit(&self) -> bool {
@@ -1803,41 +1796,48 @@ impl Shared {
         Some(index)
     }
 
-    fn set_parked_packs_bytes(&self, bytes: u64) {
-        let previous = self.parked_packs_bytes.swap(bytes, Ordering::Relaxed);
-        self.pool_bytes
-            .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
+    fn adjust_parked_bytes(&self, before: u64, after: u64) {
+        if after != before {
+            let delta = after.wrapping_sub(before);
+            self.parked_total_bytes.fetch_add(delta, Ordering::Relaxed);
+            self.pool_bytes.fetch_add(delta, Ordering::Relaxed);
+        }
     }
 
     fn park_pack(&self, parked: Box<extended::ParkedPacks>) {
+        self.park_pack_with_prior(parked, 0);
+    }
+
+    fn park_pack_with_prior(&self, parked: Box<extended::ParkedPacks>, prior_bytes: u64) {
+        let after = parked.allocated_bytes() as u64;
         let retired = if let Ok(mut slots) = self.parked_packs.lock() {
             if slots.is_empty() && engine_allocation::reserve(&mut slots, 1).is_ok() {
-                let bytes = parked.allocated_bytes() as u64;
                 slots.push(parked);
-                self.set_parked_packs_bytes(bytes);
+                self.adjust_parked_bytes(prior_bytes, after);
                 None
             } else {
-                let current: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
-                self.set_parked_packs_bytes(current as u64);
                 Some(parked)
             }
         } else {
             Some(parked)
         };
         if let Some(retired) = retired {
-            self.retire_parked_pack(retired);
+            self.retire_parked_pack_with_prior(retired, prior_bytes);
         }
     }
 
-    fn retire_parked_pack(&self, retired: Box<extended::ParkedPacks>) {
+    fn retire_parked_pack_with_prior(
+        &self,
+        retired: Box<extended::ParkedPacks>,
+        prior_bytes: u64,
+    ) {
         const MAX_RETIRED_PARKED: usize = 1;
-        let bytes = retired.allocated_bytes() as u64;
+        let after = retired.allocated_bytes() as u64;
         let overflow = if let Ok(mut queue) = self.retired_parked.lock() {
             if queue.len() < MAX_RETIRED_PARKED && engine_allocation::reserve(&mut queue, 1).is_ok()
             {
                 queue.push(retired);
-                self.retired_parked_bytes.fetch_add(bytes, Ordering::Relaxed);
-                self.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
+                self.adjust_parked_bytes(prior_bytes, after);
                 self.retired_parked_pending.store(true, Ordering::Release);
                 None
             } else {
@@ -1846,7 +1846,10 @@ impl Shared {
         } else {
             Some(retired)
         };
-        drop(overflow);
+        if let Some(overflow) = overflow {
+            drop(overflow);
+            self.adjust_parked_bytes(prior_bytes, 0);
+        }
     }
 
     pub fn has_retired_parked(&self) -> bool {
@@ -1869,8 +1872,7 @@ impl Shared {
             .map(|entry| entry.allocated_bytes() as u64)
             .sum();
         drop(drained);
-        self.retired_parked_bytes.fetch_sub(bytes, Ordering::Relaxed);
-        self.pool_bytes.fetch_sub(bytes, Ordering::Relaxed);
+        self.adjust_parked_bytes(bytes, 0);
         true
     }
 
@@ -1882,63 +1884,56 @@ impl Shared {
         }
         let taken = self.parked_packs.lock().ok().and_then(|mut slots| {
             let parked = slots.pop()?;
-            let remaining: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
-            self.set_parked_packs_bytes(remaining as u64);
-            Some(parked)
+            let bytes = parked.allocated_bytes() as u64;
+            Some((parked, bytes))
         });
-        if let Some(parked) = taken {
+        if let Some((parked, bytes)) = taken {
             frame.extended.install_parked_packs(parked);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
+            self.adjust_parked_bytes(bytes, 0);
         } else {
             let capacities = self.frame_capacities.published();
             frame.extended.hydrate_parked_packs(&capacities.extended);
             frame.extended.share_country_intel(&self.country_intel);
             frame.extended.share_template_home(&self.template_home);
+            self.set_frame_bytes(index, frame.allocated_bytes() as u64);
         }
-        self.set_frame_bytes(index, frame.allocated_bytes() as u64);
     }
 
     pub fn grow_parked_packs(&self, capacities: &mut extended::Capacities) {
-        struct GrowingGuard<'a> {
+        struct PriorCharge<'a> {
             shared: &'a Shared,
             bytes: u64,
         }
-        impl Drop for GrowingGuard<'_> {
+        impl PriorCharge<'_> {
+            fn take(mut self) -> u64 {
+                let bytes = self.bytes;
+                self.bytes = 0;
+                bytes
+            }
+        }
+        impl Drop for PriorCharge<'_> {
             fn drop(&mut self) {
-                self.shared
-                    .growing_parked_bytes
-                    .fetch_sub(self.bytes, Ordering::Relaxed);
-                self.shared
-                    .pool_bytes
-                    .fetch_sub(self.bytes, Ordering::Relaxed);
+                if self.bytes != 0 {
+                    self.shared.adjust_parked_bytes(self.bytes, 0);
+                }
             }
         }
         let mut grown = 0usize;
         loop {
-            let (mut parked, guard) = match self.parked_packs.lock() {
+            let (mut parked, charge) = match self.parked_packs.lock() {
                 Ok(mut slots) => {
                     if grown >= slots.len() {
                         break;
                     }
                     let parked = slots.remove(0);
                     let bytes = parked.allocated_bytes() as u64;
-                    self.growing_parked_bytes
-                        .fetch_add(bytes, Ordering::Relaxed);
-                    self.pool_bytes.fetch_add(bytes, Ordering::Relaxed);
-                    let remaining: usize = slots.iter().map(|entry| entry.allocated_bytes()).sum();
-                    self.set_parked_packs_bytes(remaining as u64);
-                    (
-                        parked,
-                        GrowingGuard {
-                            shared: self,
-                            bytes,
-                        },
-                    )
+                    (parked, PriorCharge { shared: self, bytes })
                 }
                 Err(_) => break,
             };
             parked.grow(capacities);
-            self.park_pack(parked);
-            drop(guard);
+            self.park_pack_with_prior(parked, charge.take());
             grown += 1;
         }
     }
