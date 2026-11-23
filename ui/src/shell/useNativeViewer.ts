@@ -9,6 +9,7 @@ import {
 } from './api.ts';
 import type { DesktopState, MapBounds, MapView } from './api';
 import { engine } from '../engine/frame.ts';
+import { coveredBy, mapHoles } from './mapOverlays';
 
 export function useDesktopState(retry: number) {
   const [state, setState] = useState<DesktopState | null>(null);
@@ -130,7 +131,7 @@ export function useMapSurface(
       const height = Math.max(1, Math.round(rect.bottom * dpr) - y);
       lastBounds = { x, y, width, height };
       queue.send({
-        visible: surfaceVisible && !document.hidden && rect.width > 0 && rect.height > 0,
+        visible: surfaceVisible && !document.hidden && rect.width > 0 && rect.height > 0 && !mapHoles.covered() && !coveredBy(lastBounds, mapHoles.holes()),
         bounds: lastBounds,
       }, retry, force);
     };
@@ -159,6 +160,7 @@ export function useMapSurface(
     window.addEventListener('resize', schedule);
     window.visualViewport?.addEventListener('resize', schedule);
     document.addEventListener('visibilitychange', visibilityChanged);
+    const stopHoles = mapHoles.subscribe(schedule);
     watchResolution();
     measure(true);
 
@@ -169,6 +171,7 @@ export function useMapSurface(
       window.removeEventListener('resize', schedule);
       window.visualViewport?.removeEventListener('resize', schedule);
       document.removeEventListener('visibilitychange', visibilityChanged);
+      stopHoles();
       resolution?.removeEventListener('change', resolutionChanged);
       queue.send({ visible: false, bounds: lastBounds }, retry);
     };

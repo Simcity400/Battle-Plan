@@ -11,7 +11,7 @@ function elements(value: any): Node[] {
 }
 
 const scenarios = {
-  peek: 'sidebar peek occludes both native-map paths until the sidebar is kept open',
+  peek: 'sidebar peek cuts its hole in both native-map paths until the sidebar is kept open',
   storage: 'page-save warnings survive view changes and reset until saving succeeds',
   retry: 'Try again on the map sends each failed map operation again and shows its failure until that operation succeeds',
   switch: 'a switch to the map that cannot open its recording keeps the view shown, which offers the whole switch again',
@@ -111,8 +111,8 @@ for (const scenario of Object.keys(scenarios) as (keyof typeof scenarios)[]) tes
       const showSidebar = () => nodes!.find(node => node.props['aria-label'] === 'Show sidebar');
       assert.ok(showSidebar(), 'a hidden sidebar can be shown again without the shortcut');
       find(node => node.props.className === 'sidebar-edge').props.onPointerEnter(); render();
-      assert.equal(mapVisible, false, 'standalone native map hides while peeking');
-      assert.equal(hasMapOverlay(), true, 'dashboard native-map guard sees peek through the shared menu mechanism');
+      assert.equal(mapVisible, true, 'the campaign map stays shown beside the peeking sidebar');
+      assert.equal(hasMapOverlay(), true, 'the peek overlay is the popover whose hole the sidebar shows through');
       find(node => node.props['aria-label'] === 'Keep sidebar open').props.onClick(); render();
       assert.equal(mapVisible, true);
       assert.equal(hasMapOverlay(), false, 'keeping the sidebar open removes its overlay');
