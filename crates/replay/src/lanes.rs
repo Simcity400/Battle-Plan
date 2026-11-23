@@ -1176,7 +1176,17 @@ fn lives(recording: &Recording, run: u32, table: TableId, exact: Option<((u128, 
         },
     };
     let blocks = held.pages() as u32;
-    let extents = pieces(recording, run, table.index(), 0..blocks, 8)?;
+    let run_first = i64::from(held.first_hour);
+    let floor = valid_hour.map_or(0, |hour| hour - run_first);
+    let (low, high) = match exact {
+        Some((_, from, to)) => ((from - run_first).max(floor).max(0), (to - run_first).min(i64::from(held.ordinals) - 1)),
+        None => (floor.max(0), i64::from(held.ordinals) - 1),
+    };
+    if low > high || blocks == 0 {
+        return Ok(Vec::new());
+    }
+    let pages = (low / i64::from(UNIT_ORDINALS)) as u32..((high / i64::from(UNIT_ORDINALS)) as u32 + 1).min(blocks);
+    let extents = pieces(recording, run, table.index(), pages.clone(), 8)?;
     let mut spans: HashMap<u128, Vec<(i64, i64)>, foldhash::fast::RandomState> = HashMap::default();
     let mut covered = Vec::new();
     let mut gapped: Vec<(u128, i64, i64)> = Vec::new();
@@ -1195,10 +1205,15 @@ fn lives(recording: &Recording, run: u32, table: TableId, exact: Option<((u128, 
                 }
                 let start = (piece.directory.first_bucket + bucket as i64) * size;
                 let (first, last) = (start + i64::from(life.first), start + i64::from(life.end) - 1);
-                let refined = exact.and_then(|(_, from, to)| {
-                    let (first, last) = (first.max(from).max(valid_hour.unwrap_or(first)), last.min(to));
-                    (i64::from(life.hours) < i64::from(life.end) - i64::from(life.first) && first <= last).then_some((first, last))
-                });
+                if last < run_first + low || first > run_first + high {
+                    continue;
+                }
+                let gap = i64::from(life.hours) < i64::from(life.end) - i64::from(life.first);
+                let refined = match (gap, exact) {
+                    (false, _) => None,
+                    (true, Some(_)) => Some((first.max(run_first + low), last.min(run_first + high))).filter(|(first, last)| first <= last),
+                    (true, None) => valid_hour.filter(|&valid| first < valid && valid <= last).map(|valid| (valid, last)),
+                };
                 if let Some((first, last)) = refined {
                     gapped.push((key, first, last));
                 } else {
@@ -1208,7 +1223,6 @@ fn lives(recording: &Recording, run: u32, table: TableId, exact: Option<((u128, 
         }
     }
     if !gapped.is_empty() {
-        let run_first = i64::from(held.first_hour);
         let mut keys: Vec<u128> = gapped.iter().map(|(key, ..)| *key).collect();
         keys.sort_unstable();
         keys.dedup();
@@ -1239,9 +1253,8 @@ fn lives(recording: &Recording, run: u32, table: TableId, exact: Option<((u128, 
         crate::summaries::registry()?.iter().find(|(held, _)| *held == table.index()),
         Some((_, Shape::Values(_)))
     );
-    if values && blocks > 0 {
-        let floor = valid_hour.map_or(0, |hour| (hour - i64::from(held.first_hour)) as u32);
-        let ranges = if floor < held.ordinals { uncovered(recording, run, 0..blocks, &covered, floor, held.ordinals - 1)? } else { Vec::new() };
+    if values {
+        let ranges = uncovered(recording, run, pages, &covered, low as u32, high as u32)?;
         let keyed: Option<(u128, u128)> = exact.map(|(keys, ..)| keys);
         if !ranges.is_empty() {
             let mut walk = Walk::new(None, None, i64::from(held.first_hour), i64::from(held.ordinals), 1);

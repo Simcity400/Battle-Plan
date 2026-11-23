@@ -33,12 +33,9 @@ const stubs = { name: 'time-findings', enforce: 'pre' as const, transform(code: 
 interface Ask { product: string; hour: number | null; hours: number[]; params: Record<string, unknown> | null }
 interface Read { text: string; drillOpen: boolean; drill: string; day: string | null; asks: Ask[]; options: [string, unknown][]; pins: unknown[];
   follows: string[]; followLog: string[]; buttons: string[]; errors: string[]; shown: (number | null)[] }
-const KINDS = ['production-lines', 'world-tension', 'training-queue', 'occupation-trend', 'diplomatic-relations', 'general-career', 'navy-size', 'fuel', 'raid-tally', 'volunteers', 'equipment-produced',
-  'stability', 'weather-by-region', 'trade-flows', 'factories', 'scoreboard', 'resource-balance', 'research', 'casualties', 'equipment-stockpile', 'autonomy'];
 const onPage = (run: (act: <T>(expression: string) => Promise<T>) => Promise<void>) => withNativePage('time-findings', '/ui/src/dashboard/timeFindings.dom.fixture.tsx',
   page => page.stage('time findings', async () => {
     const act = <T,>(expression: string) => page.evaluate<T>(`window.findings.${expression}`);
-    await act(`preload(${JSON.stringify(KINDS)})`);
     await run(act);
   }, 240_000), [stubs], true);
 const scene = (value: unknown) => `mount(${JSON.stringify(value)})`;

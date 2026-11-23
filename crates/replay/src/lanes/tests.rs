@@ -33,6 +33,12 @@ fn a_gapped_bucket_before_a_withheld_boundary_is_not_read_and_the_valid_suffix_s
     let found = presences(&recording, 0, TableId::Countries, (0, u128::MAX), 0, i64::MAX).unwrap();
     assert!(!found.is_empty(), "the readable rows after the boundary are returned");
     assert!(found.iter().all(|(_, spans)| spans.iter().all(|&(first, _)| first >= i64::from(valid))), "nothing before the boundary: {found:?}");
+    let inside: i32 = 2_900;
+    let straddled = Recording::open(fixtures::absent_recording(recorder_derive::writers(), 6, gone..back)).unwrap()
+        .with_coverage_from(TableId::Countries, 0, (inside - 100) as u32, "withheld before 2900");
+    let lives = lifetimes(&straddled, 0, TableId::Countries).unwrap();
+    assert_eq!(lives.iter().filter(|&&(_, first, _)| first == i64::from(inside)).count(), 1, "only the row present at the boundary starts there: {lives:?}");
+    assert!(lives.iter().any(|&(_, first, _)| first == i64::from(back)), "a row absent at the boundary starts when it returns: {lives:?}");
 }
 
 #[test]

@@ -151,7 +151,6 @@ Object.assign(window, { findings: {
   day: (hour: number) => dayLabel(hour),
   content: (token: string) => contentKey(token),
   lineToken: (_tag: string, key: string) => productionLineToken('campaign', '1', key),
-  async preload(kinds: string[]) { await Promise.all(kinds.map(kind => loadWidgetRenderer(kind))); },
   async mount(scene: Scene) {
     await loadWidgetRenderer(scene.kind);
     root?.unmount();

@@ -7,7 +7,7 @@ import { TimeRegion } from '../../dashboard/widgetTime';
 import GateState from '../../dashboard/GateState';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { DrillControl } from './useDrill';
-import { DrillScope, useDrillShown } from '../../dashboard/widgetPerf.ts';
+import { DrillScope, ShownHour, useDrillShown } from '../../dashboard/widgetPerf.ts';
 export { default as FollowControl } from './FollowControl';
 import './drill.css';
 
@@ -82,7 +82,7 @@ export default function DrillHost({ mode, drill, runtime, subject = true, title,
 
   const shut = drill.gate.stage.stage !== 'open' && drill.gate.stage.stage !== 'unbound';
   useDrillShown(open && !popout);
-  const body = <DrillScope value={popout ? 'quiet' : 'owns'}><TimeRegion runtime={runtime} region={drill.region}>{shut ? <GateState gate={drill.gate} loading="Loading…" /> : children}</TimeRegion></DrillScope>;
+  const body = <DrillScope value={popout ? 'quiet' : 'owns'}><TimeRegion runtime={runtime} region={drill.region}>{shut ? <><ShownHour clock={runtime.clock} at={null} /><GateState gate={drill.gate} loading="Loading…" /></> : children}</TimeRegion></DrillScope>;
   const header = <div className="drill-header">
     {popout || saved ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
     {saved ? null : <strong>{title}</strong>}
