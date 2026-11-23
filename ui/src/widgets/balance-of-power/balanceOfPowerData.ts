@@ -1,3 +1,5 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { answersKey, isSlotKey } from '../../dashboard/countryKey.ts';
 import type { BalanceHistory, CountryRef, BalanceRange, BalanceRecord, BalanceSide, HolderBalances, HourSpan, PoliticsHistoryReply, PoliticsRun, PoliticsStateReply } from '../../generated/dashboard';
 import type { PoliticsStateAt } from '../../dashboard/politicsHistory';
@@ -230,11 +232,9 @@ export function balanceLanes(subject: BalanceSubject, names: BalanceNames, limit
   });
 }
 
-export function pinBalanceDrill(source: WidgetSpec, track: Pick<BoundTrack, 'id' | 'branch'>, hour: number, follow: boolean, token: string): WidgetSpec {
-  const pinned = pinnedBreakdown(source, WEEKLY_BREAKDOWN, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
-  return { ...pinned, options: { ...pinned.options, balance: token },
-    time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } } };
+export function pinBalanceDrill(source: WidgetSpec, track: Pick<BoundTrack, 'id'>, time: GatedTime, token: string): PinnedSpec {
+  const pinned = pinnedBreakdown(source, WEEKLY_BREAKDOWN, track.id, time);
+  return { ...pinned, options: { ...pinned.options, balance: token } };
 }
 
 

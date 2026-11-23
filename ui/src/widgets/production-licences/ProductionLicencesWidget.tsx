@@ -1,8 +1,8 @@
 import { createPortal } from 'react-dom';
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import FlowDiagram from '../../charts/flow/FlowDiagram';
 import type { FlowHit } from '../../charts/flow/FlowDiagram';
@@ -24,6 +24,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
@@ -34,6 +35,8 @@ import { COUNTRY, OPTIONS } from './definition';
 import { countryLicences, groupReasonAt, licencePairs, licenceRevision, licencesAt, pickedTag, PRODUCTION_LICENCES, slotOf, validateLicences } from './licencesData';
 import type { LicenceRow, LicenceWidth, PickedCountry } from './licencesData';
 import './productionLicences.css';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: readonly string[] = [];
 const NO_LICENCES: ReturnType<typeof licencesAt> = { rows: [], unattributed: 0 };
@@ -52,7 +55,7 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const options = resolveOptions(OPTIONS, widget.options);
   const width: LicenceWidth = options.width === 'factories' ? 'factories' : 'licences';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct(runtime, widget, PRODUCTION_LICENCES, track ? PARAMS : null, { active, validate: validateLicences });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), PRODUCTION_LICENCES, track ? PARAMS : null, { active, validate: validateLicences });
   const following = active && widget.time.mode === 'follow';
   const stepped = useAtHead(runtime.clock, following, clockHour => {
     const at = track ? trackHourOf(widget, track, runtime.tracks, clockHour) : null;
@@ -62,7 +65,9 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const anchor = useRef<HTMLDivElement>(null);
   const menu = useContextMenu('Licence actions');
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const [picked, setPicked] = useState<PickedCountry | null>(null);
   const [capacity, setCapacity] = useState(8);
   const needsGroups = widget.countries.kind !== 'all';
@@ -126,12 +131,13 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
     const tag = node.id.slice(node.id.indexOf(':') + 1);
     if (tag === OTHER || tag === UNNAMED || !data) return;
     setPicked({ slot: slotOf(data, tag), tag });
-    dispatch({ type: 'open', breakdown: COUNTRY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
+    dispatch({ type: 'open', breakdown: COUNTRY.id, hour, follow: drillControl.followsAt(hour) });
   };
-  const at = drillHour(drill, hour) ?? hour;
-  const drillAt = drill.follow ? hour : at;
-  const ownDay = picked !== null && drill.breakdown !== null && !drill.follow && track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillAt } } : null;
+  const drillHour = drillControl.hour;
+  const drillAt = drillHour ?? hour;
+  const sharesParent = drillControl.following && widget.time.mode === 'follow';
+  const ownDay = picked !== null && drill.breakdown !== null && !sharesParent && track && drillHour !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: PRODUCTION_LICENCES, params: { branchId: track.branch.id, hour: drillHour } }) : null;
   const own = useProduct(runtime.client, ownDay, active, validateLicences, track?.source);
   const drillData = ownDay ? own.data : data;
   const drillTag = drillData && picked ? pickedTag(drillData, picked) : null;
@@ -139,17 +145,17 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   const titleNames = useCountryLabelsAt(runtime.client, track, titleRead ? [titleRead] : [], active);
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see licences." />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
-  if (groupFailure && !groups.data) return groupFailure;
-  if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
-  if (!data || !match.ready) return <div ref={head.root}>{groupFailure}<WidgetState kind="loading" label="Loading licences…" /></div>;
-  const groupReason = groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour);
-  if (groupReason) return <div ref={head.root}>{groupFailure}<WidgetState kind={groupReason.kind} message={groupReason.message} /></div>;
-  if (data.missing) return <div ref={head.root}>{groupFailure}<WidgetState kind="unavailable" message={data.missing} /></div>;
-  const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()}{listed.unattributed ? '+' : ''} licences</span>, headerSlot);
-  const main = <div ref={head.root} className="production-licences">
+  const groupReason = data && match.ready ? groupReasonAt(widget.countries, groups.data, hour, track.branch.lastHour) : null;
+  const parentState = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+      : groupFailure && !groups.data ? null
+        : match.reason ? <WidgetState kind="unavailable" message={match.reason} />
+          : !data || !match.ready ? <div ref={head.root}><WidgetState kind="loading" label="Loading licences…" /></div>
+            : groupReason ? <div ref={head.root}><WidgetState kind={groupReason.kind} message={groupReason.message} /></div>
+              : data.missing ? <div ref={head.root}><WidgetState kind="unavailable" message={data.missing} /></div> : undefined;
+  const header = parentState === undefined && headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()}{listed.unattributed ? '+' : ''} licences</span>, headerSlot);
+  const main = parentState !== undefined ? parentState : <div ref={head.root} className="production-licences">
     <FlowDiagram label="Production licences: licensors to licensees" nodes={nodes} links={links} stretch={width} slots={capacity + 1} hour={hour}
       hoursPerSecond={hoursPerSecond} active={active && !(drill.breakdown && options.drill !== 'popout')} tooltip={tooltip} onCapacity={setCapacity}
       message={rows.length && !pairs.length ? 'No licence lends civilian factories at this date.' : rows.length ? null
@@ -160,9 +166,9 @@ export default function ProductionLicencesWidget({ widget, runtime, active, head
   </div>;
   return <div ref={anchor} className="production-licences-host">{groupFailure}
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && picked !== null} anchor={anchor}
-      title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(drillAt)} following={drill.follow}
-      canFollow={widget.time.mode === 'follow'} onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} onFollow={() => dispatch({ type: 'follow' })} main={main}>
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null && picked !== null} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={titleRead ? `${titleNames.labelAt(titleRead.hour)(titleRead.tag).name}: licences` : COUNTRY.label} day={dayLabel(drillAt)}
+      canFollow onClose={() => { dispatch({ type: 'close' }); setPicked(null); }} main={main}>
       {picked && (own.error && ownDay ? <WidgetState kind="error" failure={own.error} onRetry={own.retry} />
         : !drillData ? <WidgetState kind="loading" label="Loading licences…" />
           : drillData.missing ? <p className="drill-empty">{drillData.missing}</p>

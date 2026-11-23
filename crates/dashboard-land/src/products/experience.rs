@@ -72,6 +72,7 @@ impl AtHour for CountryExperience {
     const TITLE: &'static str = "Experience";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ExperienceParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ExperienceReply;
     type Context = ();
 

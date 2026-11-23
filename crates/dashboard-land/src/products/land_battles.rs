@@ -917,6 +917,7 @@ impl Product for LandBattlesManifest {
     const KEY: &'static str = "land-battles-manifest";
     const CONTENT_DEPENDENT: bool = false;
     type Params = dashboard_base::products::BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = LandBattlesManifestReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -944,6 +945,7 @@ impl Product for LandBattles {
     const KEY: &'static str = "land-battles";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LandBattlesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, window];
     type Reply = LandBattlesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -1094,6 +1096,7 @@ impl Product for LandBattlesRanking {
     const KEY: &'static str = "land-battles-ranking";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LandBattlesRankingParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End, topN, measure, "countries.membership[].firstHour": Start, "countries.membership[].lastHour": End, "countries.unobserved[].firstHour": Start, "countries.unobserved[].lastHour": End, "countries.countries[]"];
     type Reply = LandBattlesRankingReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -1222,6 +1225,7 @@ impl Product for LandBattleCourses {
     const KEY: &'static str = "land-battle-course";
     const CONTENT_DEPENDENT: bool = true;
     type Params = LandBattleCourseParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, id];
     type Reply = LandBattleCourseReply;
 
     #[cfg(any(test, feature = "export-types"))]

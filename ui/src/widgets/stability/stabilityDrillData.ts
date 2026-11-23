@@ -1,9 +1,11 @@
+import type { GatedTime } from '../../dashboard/regionTime';
+import type { PinnedSpec } from '../../charts/drill/drillState';
 import { pickLines } from '../../charts/linePick.ts';
 import type { ChartPick } from '../../charts/pick';
 import { pinnedBreakdown } from '../../charts/drill/drillState.ts';
 import type { Breakdown, DrillAction } from '../../charts/drill/drillState';
 import type { Run } from '../../charts/series';
-import type { WidgetSpec, WidgetTime } from '../../dashboard/model';
+import type { WidgetSpec } from '../../dashboard/model';
 import type { Measure } from './stabilityData';
 
 export interface StabilityLine { tag: string; measure: Measure; runs: readonly Run[] }
@@ -30,15 +32,10 @@ export function chooseStabilityActor(pick: StabilityPick, tag: string | null): S
   return { ...pick, tag, measure: lines.find(line => line.measure === pick.measure)?.measure ?? lines[0].measure };
 }
 
-export function stabilityPickAction(pick: StabilityPick, open: boolean, time: WidgetTime['mode'], playing: boolean,
-  playhead: number | null): DrillAction {
-  return open ? { type: 'pick', hour: pick.hour } : { type: 'open', breakdown: 'parts', hour: pick.hour,
-    playing: pick.tag !== null && time === 'follow' && playing,
-    playhead: pick.tag !== null && time === 'follow' ? playhead : null };
+export function stabilityPickAction(pick: StabilityPick, open: boolean, followsAt: (hour: number) => boolean): DrillAction {
+  return open ? { type: 'pick', hour: pick.hour } : { type: 'open', breakdown: 'parts', hour: pick.hour, follow: pick.tag !== null && followsAt(pick.hour) };
 }
 
-export function pinStabilityDrill(widget: WidgetSpec, breakdown: Breakdown, trackId: string, firstHour: number,
-  tag: string, hour: number, following: boolean): WidgetSpec {
-  return pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [tag] }, time: following ? { mode: 'follow' }
-    : { mode: 'pin', windows: { [trackId]: { firstOffset: Math.floor(hour) - firstHour, lastOffset: Math.floor(hour) - firstHour } } } }, breakdown, trackId);
+export function pinStabilityDrill(widget: WidgetSpec, breakdown: Breakdown, trackId: string, tag: string, time: GatedTime): PinnedSpec {
+  return pinnedBreakdown({ ...widget, countries: { kind: 'tags', tags: [tag] } }, breakdown, trackId, time);
 }

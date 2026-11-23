@@ -1,11 +1,12 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
 import HeatMatrix from '../../charts/heat/HeatMatrix';
 import type { MatrixAxisItem } from '../../charts/heat/HeatMatrix';
 import { signedColor } from '../../charts/heat/matrix';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, pinnedBreakdown } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { mapLive } from '../../charts/live';
@@ -15,6 +16,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { shownHour, useIntelLabels } from '../../dashboard/IntelCountry';
 import { resolveOptions, setToken } from '../../dashboard/options';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -26,8 +28,8 @@ import { cellState, countriesAt, coverageStructure, matrixCells, measureField, p
 import type { Basis, ChosenPair, Measure } from './intelCoverageData';
 import PairHistory from './PairHistory';
 import './intelCoverage.css';
-import type { IntelCoverageReply } from '../../generated/dashboard';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 const PARAMS = {} as const;
 const NO_TAGS: readonly string[] = [];
@@ -40,7 +42,8 @@ export default function IntelCoverageWidget(props: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const saved = options.show === 'pair';
   const readHour = useRef<number | null>(null);
-  const head = useHeadProduct<IntelCoverageReply>(runtime, widget, 'intel-network-coverage', track && !saved ? PARAMS : null,
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct(runtime, gate, 'intel-network-coverage', track && !saved ? PARAMS : null,
     { active, validate: validateIntelCoverage, structure: coverageStructure, paint: reply => { readHour.current = reply.readHour; } });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const data = head.data;
@@ -83,26 +86,29 @@ export default function IntelCoverageWidget(props: WidgetProps) {
       readHour.current === null ? null : dayLabel(readHour.current)),
     ...countryNameDetails(axis[row].countryFlag, axis[column].countryFlag),
   }, [at, live, axis, axisTags]);
-  const [savedDrill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const savedDrill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const scope = useMemo(() => ({}), [runtime.client, track?.source.id, track?.source.revision, track?.branch.id]);
   const [choice, setPair] = useState<{ scope: object; pair: ChosenPair } | null>(null);
   const pair = choice?.scope === scope ? choice.pair : null;
   const drill = pair ? savedDrill : CLOSED;
-  const drillAt = drillHour(drill, hour);
+  const drillRegion = drillControl.region;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
   const pairLabels = useIntelLabels(runtime, widget, pair ? [pair.owner, pair.target] : NO_TAGS, pair?.hour ?? null, active);
   const headRoot = head.root;
   const root = useCallback((element: HTMLDivElement | null) => { anchor.current = element; headRoot(element); }, [headRoot]);
   useDiagnostics(onDiagnostics, data?.warnings ?? null);
   if (!track) return <WidgetState kind="empty" icon="eye" message="Load a campaign to see intel networks." />;
-  if (saved) return <PairHistory {...props} pair={null} hour={hour} />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  if (filtered && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
-  if (selection?.reason) return <WidgetState kind="unavailable" message={selection.reason} />;
-  if (chosen?.length === 0) return <WidgetState kind="unavailable" message="Choose a country in the widget settings." />;
-  if (!data || selection && !selection.ready) return <WidgetState kind="loading" label="Loading intel networks…" />;
-  if (data.missing || !at || !ordered) return <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." detail={data.missing ?? undefined} />;
-  const main = touching && axisTags.length === 1 ? <WidgetState kind="empty" message="No intel networks of or in this country at this date." />
+  if (saved) return head.outside ? <WidgetState kind="outside" read={head} /> : <PairHistory {...props} pair={null} gate={gate} hour={gate.hour} />;
+  const main = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error && !data ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+    : filtered && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+    : selection?.reason ? <WidgetState kind="unavailable" message={selection.reason} />
+    : chosen?.length === 0 ? <WidgetState kind="unavailable" message="Choose a country in the widget settings." />
+    : !data || selection && !selection.ready ? <WidgetState kind="loading" label="Loading intel networks…" />
+    : data.missing || !at || !ordered ? <WidgetState kind="unavailable" message="Intel networks were not recorded at this time." detail={data.missing ?? undefined} />
+    : touching && axisTags.length === 1 ? <WidgetState kind="empty" message="No intel networks of or in this country at this date." />
     : axisTags.length < 2 ? <WidgetState kind="empty" message="Fewer than two countries are shown at this date." />
     : !data.networks.length ? <WidgetState kind="empty" message="No intel networks at this date." />
     : <HeatMatrix label="Intel network coverage" rows={axis} columns={axis} cell={cell} live={cells} revision={`${field}:${axisTags.join(',')}`} active={active}
@@ -112,23 +118,25 @@ export default function IntelCoverageWidget(props: WidgetProps) {
           ?? at.ids.get(axisTags[column]);
         if (targetId === undefined) return;
         setPair({ scope, pair: { owner: axisTags[row], target: axisTags[column], targetId, hour } });
-        dispatch({ type: 'open', breakdown: PAIR.id, hour, playing: widget.time.mode === 'follow', playhead: hour });
+        dispatch({ type: 'open', breakdown: PAIR.id, hour, follow: drillControl.followsAt(hour) });
       }} menu={() => readHour.current === null ? [] : [jumpItem(runtime, track.id, readHour.current)]} />;
   return <div ref={root} className="intel-coverage">
     <div className="intel-coverage-caption">
       {setOption && <Segmented value={measure} options={MEASURES} label="Measure" onChange={value => setOption('measure', value)} />}
     </div>
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drill.breakdown !== null} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
       title={pair ? `${pairLabels(pair.owner).name} → ${pairLabels(pair.target).name}` : PAIR.label}
-      day={drillAt === null ? '' : dayLabel(drillAt)} following={drill.follow} canFollow
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}
-      onPin={pair ? () => {
-        const pinned = pinnedBreakdown(widget, PAIR, track.id);
+      day={drillAt === null ? '' : dayLabel(drillAt)} canFollow
+      onClose={() => dispatch({ type: 'close' })} main={main}
+      pinRefused={drillControl.pinRefused} onPin={pair && drillControl.time() ? () => {
+        const time = drillControl.time();
+        if (!time) return;
+        const pinned = pinnedBreakdown(widget, PAIR, track.id, time);
         const saved = pairOptions(pair);
         pinned.options = { ...pinned.options, owner: setToken(saved.owner), target: setToken(saved.target) };
         runtime.addWidgetBelow(widget.id, pinned);
       } : undefined}>
-      {pair && <PairHistory {...props} pair={pair} hour={drillAt ?? hour} />}
+      {pair && <PairHistory {...props} pair={pair} gate={drillControl.gate} hour={drillControl.hour} />}
     </DrillHost>
   </div>;
 }

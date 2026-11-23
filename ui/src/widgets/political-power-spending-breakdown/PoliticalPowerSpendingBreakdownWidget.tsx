@@ -21,6 +21,7 @@ import { usePowerSpending } from '../../dashboard/usePowerSpending.ts';
 import { useShownHour } from '../../dashboard/widgetPerf.ts';
 import { useHeadHour } from '../army-size/headHour.ts';
 import { OPTIONS } from './definition';
+import ReadView from '../../dashboard/ReadView';
 
 const NO_WARNINGS: string[] = [];
 const LEVELS = ['categoryLevel', 'itemLevel'];
@@ -39,7 +40,7 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const digits = powerDecimals(options);
   const text = useMemo<SunburstText>(() => ({ format: (value, exact) => formatPower(exact ?? BigInt(Math.round(value)), digits),
     unit: 'PP', valueLabel: 'Spent', countLabel: 'Payments' }), [digits]);
-  const { track, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings, span } = usePowerSpending(widget, runtime, active, 'Political');
+  const { track, read, tags, ledgers, error, groupError, retry, ready, reason, selection, groupWarnings, span } = usePowerSpending(widget, runtime, active, 'Political');
   const following = widget.time.mode === 'follow';
   const from = widget.time.mode === 'range' ? span?.firstHour ?? null : null;
   const end = span?.lastHour ?? null;
@@ -94,13 +95,14 @@ export default function PoliticalPowerSpendingBreakdownWidget({ widget, runtime,
   const warnings = useMemo(() => [...(ledgers?.flatMap(ledger => ledger.warnings) ?? []), ...groupWarnings], [ledgers, groupWarnings]);
   useEffect(() => { onDiagnostics(warnings); return () => onDiagnostics(NO_WARNINGS); }, [warnings, onDiagnostics]);
   if (!track) return <WidgetState kind="empty" icon="sunburst" message="Load a campaign and choose a country to see its political power spending." />;
+  if (read.state === 'outside' || read.state === 'refused') return <ReadView read={read} loading="">{() => null}</ReadView>;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupNotice = groupError && <WidgetState kind="error" failure={groupError} onRetry={retry} />;
   if (!ready) return <>{groupNotice}<WidgetState kind="loading" label="Loading spending…" /></>;
   if (reason) return <>{groupNotice}<WidgetState kind="empty" message={reason} /></>;
   if (!tags.length) return <>{groupNotice}<WidgetState kind="empty" message="Choose a country to see its political power spending." /></>;
   if (!ledgers) return <>{groupNotice}<WidgetState kind="loading" label="Loading political power spending…" /></>;
-  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (hour === null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{groupNotice}<WidgetState kind="outside" /></>;
   if (ledgers.every(ledger => !ledger.coverage.length)) return <>{groupNotice}<WidgetState kind="unavailable" message="Political power spending wasn’t recorded." /></>;
   const notes = <LiveText live={texts} at="notes" />;
   const gain = <p className="chart-line-key"><LiveText live={texts} at="gain" /></p>;

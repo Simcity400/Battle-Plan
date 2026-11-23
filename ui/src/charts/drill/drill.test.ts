@@ -1,3 +1,4 @@
+import { gatedTime } from '../../test-support/gated.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerWidgets } from '../../dashboard/definitions.ts';
@@ -5,22 +6,43 @@ import { addGridItemBelow, seekPositionFor } from '../../dashboard/model.ts';
 import type { BoundTrack, GridLayouts, WidgetSpec } from '../../dashboard/model';
 import { resolveOptions, setOption, validOption } from '../../dashboard/options.ts';
 import { jumpItem } from '../jump.ts';
-import { breakdownOption, breakdownTitle, breakdownVariants, CLOSED, DRILL_OPTION, drillHour, FOLLOW_NEAR_HOURS, pinnedBreakdown, reduceDrill } from './drillState.ts';
+import { breakdownOption, breakdownTitle, breakdownVariants, CLOSED, DRILL_OPTION, drillAction, FOLLOW_NEAR_HOURS, opensFollowing, pinnedBreakdown, reduceDrill, savedDrill } from './drillState.ts';
+import type { DrillState } from './drillState';
+import { axisAt, regionHour, SPEC } from '../../dashboard/regionTime.ts';
 
-test('a breakdown follows playback when playing or opened near the playhead, and pins a picked day', () => {
-  const near = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000, playing: false, playhead: 1000 + FOLLOW_NEAR_HOURS });
-  assert.deepEqual(near, { breakdown: 'income', follow: true, hour: null });
-  assert.equal(drillHour(near, 5000), 5000);
-  const far = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000.7, playing: false, playhead: 1000 + FOLLOW_NEAR_HOURS + 1 });
-  assert.deepEqual(far, { breakdown: 'income', follow: false, hour: 1000 });
-  assert.equal(reduceDrill(CLOSED, { type: 'open', breakdown: 'x', hour: 1, playing: true, playhead: 99_999 }).follow, true);
-  assert.equal(reduceDrill(CLOSED, { type: 'open', breakdown: 'x', hour: 1, playing: false, playhead: null }).follow, false);
-  const picked = reduceDrill(near, { type: 'pick', hour: 2222 });
-  assert.deepEqual(picked, { breakdown: 'income', follow: false, hour: 2222 });
-  assert.equal(drillHour(picked, 9999), 2222);
-  assert.deepEqual(reduceDrill(picked, { type: 'follow' }), near);
+const WIDE = { id: 'wide', axisOffset: 0, branch: { id: 'wide', firstHour: 0, lastHour: 100_000, gaps: [] } } as unknown as BoundTrack;
+const widget = (time: WidgetSpec['time']) => ({ trackIds: ['wide'], time }) as unknown as WidgetSpec;
+const drillAt = (state: DrillState, playhead: number, time: WidgetSpec['time'] = { mode: 'follow' }) =>
+  regionHour({ widget: widget(time), action: drillAction(state) }, WIDE, [WIDE], axisAt(playhead));
+
+test('one reducer for every drill: open, pick, follow and close, with a saved breakdown reading its widget time until the user acts', () => {
+  const followed = reduceDrill(CLOSED, { type: 'open', breakdown: 'income', hour: 1000, follow: true });
+  assert.deepEqual(followed, { breakdown: 'income', spec: false, follow: true, hour: null });
+  assert.equal(drillAt(followed, 5000), 5000);
+  const picked = reduceDrill(followed, { type: 'pick', hour: 2222.7 });
+  assert.deepEqual(picked, { breakdown: 'income', spec: false, follow: false, hour: 2222 });
+  assert.equal(drillAt(picked, 9999), 2222);
+  assert.deepEqual(reduceDrill(picked, { type: 'follow' }), followed);
   assert.deepEqual(reduceDrill(picked, { type: 'close' }), CLOSED);
   assert.deepEqual(reduceDrill(CLOSED, { type: 'pick', hour: 5 }), CLOSED);
+  assert.deepEqual(reduceDrill(CLOSED, { type: 'follow' }), CLOSED);
+  const pin = { mode: 'pin', windows: { wide: { firstOffset: 1005, lastOffset: 1005 } } } as const;
+  const saved = savedDrill('fuel');
+  assert.equal(drillAt(saved, 1010, pin), 1005, 'a saved breakdown reads its widget’s pin');
+  const told = reduceDrill(saved, { type: 'follow' });
+  assert.equal(drillAt(told, 1010, pin), 1010, 'Follow on a saved breakdown follows playback, not the pin');
+  assert.equal(drillAt(told, 1005, pin), 1005, 'and seeking back is inside the recording at the playback hour');
+  assert.equal(drillAt(reduceDrill(told, { type: 'pick', hour: 1002 }), 1010, pin), 1002);
+  const attached = reduceDrill(CLOSED, { type: 'attach', breakdown: 'row' });
+  assert.equal(drillAt(attached, 1010, pin), 1005, 'an attached item drill reads its widget’s own time');
+});
+
+test('a drill opens following playback only under a following widget, when playing or opened near the playhead', () => {
+  const follows = { widget: widget({ mode: 'follow' }), action: SPEC }, pinned = { widget: widget({ mode: 'pin', windows: {} }), action: SPEC };
+  assert.equal(opensFollowing(follows, 1000, false, 1000 + FOLLOW_NEAR_HOURS), true);
+  assert.equal(opensFollowing(follows, 1000, false, 1000 + FOLLOW_NEAR_HOURS + 1), false);
+  assert.equal(opensFollowing(follows, 1, true, 99_999), true);
+  assert.equal(opensFollowing(pinned, 1000, true, 1000), false, 'a pinned widget’s drill holds the drawn hour, even while playing');
 });
 
 registerWidgets([{ kind: 'drill-test', version: 1, title: 'Drill test', icon: 'grid', timeModes: ['follow', 'campaign'], defaultTime: 'campaign',
@@ -33,10 +55,10 @@ test('the drill settings are ordinary options, and a pinned breakdown shows it a
   assert.deepEqual(setOption([show], undefined, 'show', 'income'), { show: 'income' });
   const source: WidgetSpec = { id: 'source', kind: 'drill-test', configVersion: 1, title: 'Political power', campaign: 'tracks', trackIds: ['t2'],
     countries: { kind: 'tags', tags: ['GER', 'ITA'] }, time: { mode: 'follow' }, contentScale: 125, options: { drill: 'popout' } };
-  const pinned = pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 'main');
+  const pinned = pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 'main', gatedTime({ mode: 'follow' }));
   assert.notEqual(pinned.id, source.id);
   assert.equal(pinned.title, 'Political power: Daily income');
-  assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
+  assert.deepEqual([pinned.campaign, pinned.trackIds, pinned.countries, pinned.time.value, pinned.contentScale], [source.campaign, source.trackIds, source.countries, source.time, 125]);
   assert.deepEqual(pinned.options, { drill: 'popout', show: 'income' });
 });
 
@@ -77,7 +99,7 @@ test('each breakdown is its own catalogue card, titled as Pin as widget titles i
     { key: 'show=spending', initial: { title: 'Political power: Spending that day', options: { show: 'spending' } } }]);
   const source: WidgetSpec = { id: 'source', kind: 'drill-test', configVersion: 1, title: 'Political power', campaign: 'default', trackIds: ['t'],
     countries: { kind: 'selected' }, time: { mode: 'campaign' }, contentScale: 100 };
-  assert.equal(pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 't').title, variants[0].initial.title);
+  assert.equal(pinnedBreakdown(source, { id: 'income', label: 'Daily income' }, 't', gatedTime({ mode: 'follow' })).title, variants[0].initial.title);
   assert.equal(breakdownTitle('Political power', 'Daily income'), 'Political power: Daily income');
   assert.deepEqual(breakdownVariants('Political power', [DRILL_OPTION]), [], 'a widget without a Show setting has no breakdown cards');
 });

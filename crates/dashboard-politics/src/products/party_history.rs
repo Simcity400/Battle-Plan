@@ -587,6 +587,7 @@ impl Product for PartyHistory {
     const KEY: &'static str = "party-history";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = PartyHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]

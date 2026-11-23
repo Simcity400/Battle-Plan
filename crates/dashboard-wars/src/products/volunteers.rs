@@ -82,6 +82,7 @@ impl Product for VolunteersExpeditionaries {
     const KEY: &'static str = "volunteers-expeditionaries";
     const CONTENT_DEPENDENT: bool = false;
     type Params = VolunteersExpeditionariesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, countries, "countries[]"];
     type Reply = VolunteersExpeditionariesReply;
 
     #[cfg(any(test, feature = "export-types"))]

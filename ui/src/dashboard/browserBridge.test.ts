@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { bridgeCommand, mapSettingsCommand, pageRecordings, preparedQueryCommand, recordingRequestBody } from '../../browserBridge.ts';
 import { MAX_MESSAGE_BYTES } from '../generated/dashboard.ts';
+import { productRequest } from './request.ts';
 
 async function* body(...chunks: Buffer[]) { yield* chunks; }
 
 function product(tags: string[]) {
-  return { type: 'product', id: 'request-1', request: { sourceId: 'source-1', revision: '1', product: 'agency-comparison', params: { branchId: '1', tags, top: null } } };
+  return { type: 'product', id: 'request-1', request: productRequest({ sourceId: 'source-1', revision: '1', product: 'agency-comparison', params: { branchId: '1', tags, top: null } }) };
 }
 
 test('browser HTTP and native bridge requests keep all 5,000 synthetic countries', async () => {
@@ -30,7 +31,7 @@ test('browser bridge commands include the native envelope and newline in their b
   const overhead = Buffer.byteLength(bridgeCommand(product([''])));
   const command = product(['x'.repeat(MAX_MESSAGE_BYTES - overhead)]);
   assert.equal(Buffer.byteLength(bridgeCommand(command)), MAX_MESSAGE_BYTES);
-  command.request.params.tags[0] += 'x';
+  (command.request.params.tags as string[])[0] += 'x';
   assert.throws(() => bridgeCommand(command), { message: 'Bridge command exceeds its byte budget' });
 });
 
@@ -47,7 +48,7 @@ test('a browser map-settings flip reaches the native bridge with its setting', (
 });
 
 test('a browser prepared-query refresh reaches the native bridge as a refresh', () => {
-  const request = { sourceId: 's', revision: 'r', product: 'p', params: {} };
+  const request = productRequest({ sourceId: 's', revision: 'r', product: 'p', params: {} });
   assert.equal(preparedQueryCommand({ type: 'preparedQuery', request, refresh: true }).refresh, true);
   assert.equal(preparedQueryCommand({ type: 'preparedQuery', request, refresh: false }).refresh, false);
   assert.equal(preparedQueryCommand({ type: 'preparedQuery', request }).refresh, false, 'a body without the flag is a first ask');

@@ -416,6 +416,7 @@ impl AtHour for NavalRepairs {
     const TITLE: &'static str = "Naval repairs";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalYardsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = NavalRepairsReply;
     type Context = Context;
 
@@ -566,6 +567,7 @@ impl AtHour for NavalRefits {
     const TITLE: &'static str = "Naval refits";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalYardsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = NavalRefitsReply;
     type Context = Context;
 

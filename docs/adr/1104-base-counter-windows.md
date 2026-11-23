@@ -4,4 +4,4 @@ Keep air-base, rocket-site, gun-emplacement, radar, strategic-location, headquar
 
 Local child lookup supplies each window's bindings. The footprint of the button that actually drew intercepts unit input. Use the radar window's efficiency icon and preserve its authored frame and zero priority. Strategic-location updates derive their sprite from the hour's location and keep the authored sprite if the content lacks that override. Facilities and strategic locations retain their authored frames. Rocket sites and gun emplacements choose the strategic or ordinary child by map mode and write the frame and enabled state to both children, including the hidden one. A required child missing from content produces a named refusal. The content's ordinary absolute-height cutoff and the map mode gate still apply to its native camera, and the free eye admits nearby icons by distance.
 
-[Base window pools and bindings](../../crates/viewer-counters/src/map/counters/base_windows.rs)
+[Base window pools and bindings](../../crates/viewer-counters-naval/src/base_windows.rs)

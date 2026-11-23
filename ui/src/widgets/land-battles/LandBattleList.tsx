@@ -5,6 +5,7 @@ import { Segmented } from '../../components/Segmented';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import DrillHost from '../../charts/drill/DrillHost';
+import { useDrill } from '../../charts/drill/useDrill';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { tooltipText } from '../../charts/tooltip';
 import type { TooltipContent } from '../../charts/tooltip';
@@ -26,6 +27,8 @@ import type { LandBattleRow } from './landBattlesData';
 import { definition, VIEWS } from './definition';
 import LandBattleDrill from './LandBattleDrill';
 import './landBattles.css';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 type Props = BattleLogProps<LandBattleRow> & { context: BattleViewContext };
 const NO_PLACES: readonly { provinceId: number; hour: number }[] = [];
@@ -298,6 +301,8 @@ const BattleCells = memo(function BattleCells({ stateKey, item, values, sides, t
 
 export default function LandBattleList(props: Props) {
   const { rows, view, log, country, live, menu, context, label, empty, onVisibleRows } = props;
+  const listRegion = useRegion(context.widget);
+  const itemDrill = useDrill(context.runtime, listRegion);
   const tokens = useChartTokens();
   const colours = useMemo(() => [tokens.categories[0], tokens.categories[1]], [tokens]);
   const actions = useContext(HeaderActionsSlot);
@@ -316,16 +321,16 @@ export default function LandBattleList(props: Props) {
   const following = useRef(context.heldPlaces !== null);
   following.current = context.heldPlaces !== null;
   const readTerrain = useCallback((places: readonly { provinceId: number; hour: number }[], signal: AbortSignal) => loadProduct(context.runtime.client,
-    { sourceId: context.track.source.id, revision: context.track.source.revision, product: 'land-battle-terrain',
-      params: { provinces: places.map(place => place.provinceId) }, asksFrom: Math.min(...places.map(place => place.hour)) }, signal, validateLandBattleTerrain, context.track.source)
+    productRequest({ sourceId: context.track.source.id, revision: context.track.source.revision, product: 'land-battle-terrain',
+      params: { provinces: places.map(place => place.provinceId) }, asksFrom: Math.min(...places.map(place => place.hour)) }), signal, validateLandBattleTerrain, context.track.source)
     .then(reply => ({ values: reply.provinces.map(entry => [String(entry.provinceId), entry] as const), warnings: reply.warnings })),
   [context.runtime.client, context.track.source]);
   const terrainReads = useKeyedReads(JSON.stringify([context.track.source.id, context.track.source.revision, content]), context.heldPlaces ?? NO_PLACES,
     context.active, place => String(place.provinceId), readTerrain);
   for (const entry of terrainReads.reads.values.values()) terrains.names.set(entry.provinceId, entry);
   const provinces = following.current ? [] : asked?.held === terrains ? asked.provinces : missingTerrain(terrains, drawn.current);
-  const terrainRequest = provinces.length ? { sourceId: context.track.source.id, revision: context.track.source.revision,
-    product: 'land-battle-terrain', params: { provinces } } : null;
+  const terrainRequest = provinces.length ? productRequest({ sourceId: context.track.source.id, revision: context.track.source.revision,
+    product: 'land-battle-terrain', params: { provinces } }) : null;
   const terrainReply = useProduct(context.runtime.client, terrainRequest, context.active, validateLandBattleTerrain);
   for (const entry of terrainReply.data?.provinces ?? []) terrains.names.set(entry.provinceId, entry);
   const terrainOf = (province: number) => terrainReads.reads.values.get(String(province))?.name ?? terrains.names.get(province)?.name ?? null;
@@ -382,7 +387,7 @@ export default function LandBattleList(props: Props) {
     setAsked(previous => previous?.held === current && (wanted.length === 0
       || previous.provinces.length === wanted.length && previous.provinces.every((value, index) => value === wanted[index])) ? previous : { held: current, provinces: wanted });
   }, [onVisibleRows]);
-  const open = (row: LandBattleRow) => setOpenId({ client: context.runtime.client, owner, id: row.id, row, hour: context.shownHour });
+  const open = (row: LandBattleRow) => { setOpenId({ client: context.runtime.client, owner, id: row.id, row, hour: context.shownHour }); itemDrill.attach(row.id); };
   const drawnItems = useMemo(() => new Map<string, LandBattleRow>(), [logRows]);
   const opener = useRef(open);
   opener.current = open;
@@ -423,8 +428,8 @@ export default function LandBattleList(props: Props) {
       }} />
   </div>;
   const drill = options.drill === 'popout' ? 'popout' : 'inline';
-  return <>{header}<DrillHost mode={drill} open={current !== null} title={current ? placeName(current, context.placePending(current)) : ''}
-    day={dayLabel(context.shownHour)} following={false} canFollow={false} onFollow={() => {}} onClose={() => setOpenId(null)} anchor={anchor} main={list}>
+  return <>{header}<DrillHost drill={itemDrill} runtime={context.runtime} subject={current !== null} mode={drill} title={current ? placeName(current, context.placePending(current)) : ''}
+    day={dayLabel(context.shownHour)} canFollow={false} onClose={() => setOpenId(null)} anchor={anchor} main={list}>
     {current && <LandBattleDrill row={current} context={context} colours={colours} looks={looks(current)} terrain={terrainOf(current.provinceId)} heldAt={heldAt} />}
   </DrillHost></>;
 }

@@ -94,6 +94,7 @@ impl AtHour for PowerDay {
     const TITLE: &'static str = "Power day";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PowerDayParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, currency];
     type Reply = PowerDayReply;
     type Context = DayContext;
 

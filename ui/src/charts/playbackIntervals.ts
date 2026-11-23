@@ -11,6 +11,8 @@ export class PlaybackIntervals<T> {
     this.hours = [...new Set(hours)].sort((a, b) => a - b);
   }
 
+  get edges(): ReadonlyArray<number> { return this.hours; }
+
   at(hour: number): T {
     const held = this.held;
     if (held && held.first <= hour && hour < held.end) return held.value;

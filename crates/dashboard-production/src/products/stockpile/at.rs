@@ -236,6 +236,7 @@ impl AtHour for EquipmentStockpileAt {
     const TITLE: &'static str = "Equipment stockpile";
     const CONTENT_DEPENDENT: bool = true;
     type Params = StockpileAtParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = StockpileAtReply;
     type Context = AtContext;
 

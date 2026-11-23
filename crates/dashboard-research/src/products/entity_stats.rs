@@ -339,6 +339,7 @@ impl AtHour for EntityStatsAt {
     const TITLE: &'static str = "Content entity stats";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EntityStatsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, kind, token];
     type Reply = EntityStats;
     type Context = Context;
 

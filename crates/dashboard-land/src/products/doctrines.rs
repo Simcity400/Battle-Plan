@@ -162,6 +162,7 @@ impl Product for Doctrines {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = DoctrineParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, hour: Read];
     type Reply = DoctrineReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         validate_country(&params.country)?;

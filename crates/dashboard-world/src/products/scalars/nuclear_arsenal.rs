@@ -118,6 +118,7 @@ impl AtHour for NuclearArsenal {
     const TITLE: &'static str = "Nuclear arsenal";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NuclearArsenalParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = NuclearArsenalReply;
     type Context = Result<Arc<Localisation>, String>;
 

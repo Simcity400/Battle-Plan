@@ -18,6 +18,7 @@ import { inSpans } from '../../charts/timeline/layout';
 import { activeAt, spiritState, spirits, startUnseen } from './spiritsData';
 import type { Spirit } from './spiritsData';
 import './nationalSpirits.css';
+import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 
 const NO_WARNINGS: string[] = [];
 const EXIT_MS = 450;
@@ -27,6 +28,8 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
   const options = resolveOptions(OPTIONS, widget.options);
   const { track, tag, data, error, retry } = useIdeaHistory(widget, runtime, active);
   const hour = useIdeaHour(widget, runtime, track, data, active);
+  const coverage = useRegionCoverage(runtime, useRegion(widget));
+  const live = widget.time.mode === 'follow';
   useShownEachFrame(runtime.clock, () => data ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const window = track && widget.time.mode === 'pin' ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const identityStart = data?.identityStarts.reduce<number | null>((latest, start) => hour != null && start <= hour ? start : latest, null) ?? null;
@@ -76,10 +79,11 @@ export default function NationalSpiritsWidget({ widget, runtime, active, onDiagn
 
   if (!track || !tag) return <WidgetState kind="empty" icon="star" message="Load a campaign and choose a country to see its national spirits." />;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
+  if (widget.time.mode === 'pin' && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
+  if (coverage.outside || !live && hour == null) return <WidgetState kind="outside" read={coverage} />;
   if (failure && !data) return failure;
   if (!data) return <>{failure}<WidgetState kind="loading" label="Loading national spirits…" /></>;
-  if (widget.time.mode === 'pin' && !window) return <>{failure}<WidgetState kind="unavailable" message="Choose another time in widget settings." /></>;
-  if (hour == null) return <>{failure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (hour == null) return <>{failure}<WidgetState kind="loading" label="Loading national spirits…" /></>;
   if (inSpans(data.unobserved, hour)) return <>{failure}<WidgetState kind="unavailable" message="National spirits were not recorded at this moment." /></>;
   const unplaced = new Set(data.ideas.filter(info => !info.category).map(info => info.token));
   const unclassified = data.spans.some(span => unplaced.has(span.token) && span.firstHour <= hour && hour <= span.lastHour);

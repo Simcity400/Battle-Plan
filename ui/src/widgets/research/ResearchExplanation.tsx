@@ -4,6 +4,7 @@ import type { CSSProperties } from 'react';
 import type { ResearchHistory, ResearchSlotHistory } from './types';
 import type { DashboardClient } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
+import type { Gate } from '../../dashboard/regionGate';
 import { useProduct } from '../../dashboard/products.ts';
 import WidgetState from '../../components/WidgetState';
 import { completedBy, validateResearchBreakdown, validateResearchSlots, withBreakdown } from './researchData';
@@ -14,6 +15,7 @@ import { researchNumber } from './researchBreakdown';
 import { completedResearchJourney, researchAssignments, researchJourney, researchTimeSplit, type ResearchTimeSplit } from './researchJourney';
 import { researchDaysLeftMissing, researchTimeRows, type ResearchDaysLeft, type ResearchSegment } from './researchTimeBar';
 import type { ResearchBreakdownPart, ResearchBreakdownReply, ResearchEntry, ResearchSlotsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const date = (hour: number) => { const value = gameDate(hour); return value ? formatDate(value) : '—'; };
 const amount = (raw: bigint) => researchNumber(raw < 0n ? -raw : raw);
@@ -58,18 +60,24 @@ export function daysLeftAt(reply: ResearchSlotsReply, slot: number, entry: Resea
   return { left, rounding: BigInt(details.remainingDays) * 100_000n - BigInt(details.estimateRaw) };
 }
 
-export default function ResearchExplanation({ client, track, tag, hour, history, slots, slot, entry, description }: {
-  client: DashboardClient; track: BoundTrack; tag: string; hour: number;
+export default function ResearchExplanation({ client, gate, track, tag, hour, history, slots, slot, entry, description }: {
+  client: DashboardClient; gate: Pick<Gate, 'recorded' | 'within'>; track: BoundTrack; tag: string; hour: number;
   history: ResearchHistory; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; description?: string | null;
 }) {
-  const parts = breakdownParts(slots, slot, entry, hour);
+  const asked = breakdownParts(slots, slot, entry, hour);
+  const parts = asked.flatMap(part => {
+    const first = gate.recorded(part.firstObservedHour), last = gate.within(part.lastHour);
+    return first !== null && last !== null ? [{ ...part, firstObservedHour: first, lastHour: last }] : [];
+  });
+  const unrecorded = parts.length < asked.length;
   const country = countryFromKey(tag);
   const bounded = entry.outcome === 'completed' && completedBy(entry);
-  const request = bounded ? null : { sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country, parts } };
+  const request = bounded || unrecorded ? null : productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'research-breakdown', params: { branchId: track.branch.id, country, parts } });
   const { data, error, retry } = useProduct<ResearchBreakdownReply>(client, request, true, validateResearchBreakdown, track.source);
   const active = entry.outcome === 'active';
-  const estimate = useProduct<ResearchSlotsReply>(client, active ? { sourceId: track.source.id, revision: track.source.revision, product: 'research-slots',
-    params: { branchId: track.branch.id, country, hour } } : null, true, validateResearchSlots, track.source);
+  const estimateAt = gate.recorded(hour);
+  const estimate = useProduct<ResearchSlotsReply>(client, active && estimateAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'research-slots',
+    params: { branchId: track.branch.id, country, hour: estimateAt } }) : null, true, validateResearchSlots, track.source);
   const daysLeft = estimate.data ? daysLeftAt(estimate.data, slot.index, entry, hour) : null;
   const joined = useMemo<ResearchHistory>(() => ({ coverage: history.coverage, slots: withBreakdown(history.slots, data) }), [history, data]);
   const joinedSlots = useMemo(() => withBreakdown(slots, data), [slots, data]);
@@ -89,6 +97,7 @@ export default function ResearchExplanation({ client, track, tag, hour, history,
       {active && <span data-tooltip={formatDateTime(hour)}><small>As of</small>{date(hour)}</span>}
     </div>
     {bounded ? <p className="research-unavailable">Research time breakdown unavailable: the research is known only to have completed by {date(entry.endedByHour!)}.</p>
+      : unrecorded ? <p className="research-unavailable">Research time breakdown unavailable: an assignment’s first observation was not recorded.</p>
       : (error || active && estimate.error) && !(data && (!active || estimate.data))
       ? <WidgetState kind="error" failure={(error ?? estimate.error)!} onRetry={error ? retry : estimate.retry} />
       : !data || active && !estimate.data ? <p className="research-unavailable" role="status">Loading research time breakdown…</p>

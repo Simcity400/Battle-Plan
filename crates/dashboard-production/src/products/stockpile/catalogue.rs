@@ -844,6 +844,7 @@ impl Product for EquipmentStockpileCatalogue {
     const KEY: &'static str = "equipment-stockpile-catalogue";
     const CONTENT_DEPENDENT: bool = true;
     type Params = StockpileCatalogueParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, included, "holders[].within[].firstHour": Start, "holders[].within[].lastHour": End, "holders[].country"];
     type Reply = StockpileCatalogueReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -876,6 +877,7 @@ impl Product for EquipmentStockpileChart {
     const KEY: &'static str = "equipment-stockpile-chart";
     const CONTENT_DEPENDENT: bool = true;
     type Params = StockpileChartParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, included, lines, from: Start, to: End, width, "holders[].within[].firstHour": Start, "holders[].within[].lastHour": End, "holders[].country"];
     type Reply = StockpileChartReply;
 
     #[cfg(any(test, feature = "export-types"))]

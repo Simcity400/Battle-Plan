@@ -10,6 +10,7 @@ import { useHeadHour } from '../army-size/headHour.ts';
 import type { ProductionSpendingReply } from '../../generated/dashboard';
 import { mergeSpending } from './spendingData';
 import type { SpendingData } from './spendingData';
+import { productRequest } from '../../dashboard/request.ts';
 
 export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean, repairs: boolean,
   validate: (data: unknown) => ProductionSpendingReply, key: (hour: number) => string, whole = false) {
@@ -43,8 +44,8 @@ export function useSpending(widget: WidgetSpec, runtime: WidgetRuntime, active: 
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const held = useFrameWindows<ProductionSpendingReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product: 'production-spending', params: { branchId: track!.branch.id, country: countryFromKey(tag!), repairs, window: index } }),
+  const held = useFrameWindows<ProductionSpendingReply>(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision,
+    product: 'production-spending', params: { branchId: track!.branch.id, country: countryFromKey(tag!), repairs, window: index } })),
   () => windowsAt(runtime.clock.getSnapshot().position, following), subscribeClock, active, validate, track?.source);
   const needed = windowsAt(runtime.clock.getSnapshot().position, false);
   const error = needed.map(index => held.errors.get(index)).find(failure => failure !== undefined);

@@ -1,7 +1,9 @@
+import { gatedParams } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { loadProduct } from './products.ts';
 import type { DashboardClient, DashboardSource, ProductRequest } from './client';
+import { productRequest } from './request.ts';
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
@@ -14,7 +16,7 @@ function transport() {
   return { client, asked };
 }
 const source = { id: 'shared-loads', revision: '1' } as DashboardSource;
-const request = (window: number): ProductRequest => ({ sourceId: source.id, revision: source.revision, product: 'land-battles', params: { branchId: '1', window } });
+const request = (window: number): ProductRequest => (productRequest({ sourceId: source.id, revision: source.revision, product: 'land-battles', params: { branchId: '1', window } }));
 const final = (value: number) => ({ value });
 
 test('mounts asking the same product share one read, and each is told its reply', async () => {
@@ -75,7 +77,7 @@ test('replies that follow the hour never push out those that do not, and either 
   const asked: string[] = [];
   const client = { product: async (request: ProductRequest) => { asked.push(JSON.stringify(request.params)); return { ...request, data: { at: request.params } }; } } as unknown as DashboardClient;
   const plain = { id: 'hour-cache', revision: '1' } as DashboardSource;
-  const at = (params: unknown): ProductRequest => ({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-catalogue', params });
+  const at = (params: unknown): ProductRequest => (productRequest({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-catalogue', params: gatedParams(params) }));
   const signal = () => new AbortController().signal;
   await loadProduct(client, at({ whole: true }), signal());
   for (let hour = 0; hour < 300; hour++) await loadProduct(client, at({ hour }), signal(), undefined, undefined, false, undefined, undefined, true);
@@ -88,7 +90,7 @@ test('replies that follow the hour never push out those that do not, and either 
 test('a held reply is validated each consumer’s own way, and an ask cancelled at once is cancelled even when the reply is held', async () => {
   const client = { product: async (request: ProductRequest) => ({ ...request, data: { rows: ['held'] } }) } as unknown as DashboardClient;
   const plain = { id: 'own-validation', revision: '1' } as DashboardSource;
-  const request: ProductRequest = { sourceId: plain.id, revision: plain.revision, product: 'synthetic-rows', params: {} };
+  const request: ProductRequest = productRequest({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-rows', params: {} });
   const signal = () => new AbortController().signal;
   const rows = (data: unknown) => (data as { rows: string[] }).rows;
   assert.deepEqual(await loadProduct(client, request, signal(), rows, undefined, false, undefined, undefined, true), ['held']);
@@ -118,7 +120,7 @@ test('an ask joins the same load going in the other cache rather than asking aga
   const answers: ((data: unknown) => void)[] = [];
   const client = { product: (request: ProductRequest) => new Promise(resolve => answers.push(data => resolve({ ...request, data }))) } as unknown as DashboardClient;
   const plain = { id: 'joined-across', revision: '1' } as DashboardSource;
-  const request: ProductRequest = { sourceId: plain.id, revision: plain.revision, product: 'synthetic-detail', params: { at: 1 } };
+  const request: ProductRequest = productRequest({ sourceId: plain.id, revision: plain.revision, product: 'synthetic-detail', params: { at: 1 } });
   const signal = () => new AbortController().signal;
   const followed = loadProduct(client, request, signal(), undefined, undefined, false, undefined, undefined, true);
   const ordinary = loadProduct(client, request, signal());

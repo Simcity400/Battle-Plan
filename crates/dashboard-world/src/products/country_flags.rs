@@ -120,6 +120,7 @@ impl Product for CountryFlags {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = CountryFlagParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![flags, size];
     type Reply = CountryFlagReply;
 
     #[cfg(any(test, feature = "export-types"))]

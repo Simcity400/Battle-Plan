@@ -1,3 +1,4 @@
+import type { GatedTime, PinnedSpec } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { contentTitle } from '../../dashboard/contentTitles.ts';
@@ -193,11 +194,8 @@ export function careerLanes(career: LeaderCareerReply, firstHour: number, lastHo
   ];
 }
 
-export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, hour: number, follow: boolean): WidgetSpec {
+export function pinnedCareer(source: WidgetSpec, reference: string, track: Pick<BoundTrack, 'id' | 'branch' | 'source'>, time: GatedTime): PinnedSpec {
   const base = createWidget('general-career', track.id);
-  const time: WidgetSpec['time'] = follow ? { mode: 'follow' } : { mode: 'pin', windows: {
-    [track.id]: { firstOffset: 0, lastOffset: Math.floor(hour) - track.branch.firstHour },
-  } };
   const options = resolveOptions([GROW_WITH_PLAYBACK_OPTION], source.options);
   return { ...base, campaign: source.campaign, trackIds: [...source.trackIds], countries: source.countries, time,
     contentScale: source.contentScale, options: { leader: subjectToken(track.source.metadata.campaignKey, reference), growWithPlayback: options.growWithPlayback } };

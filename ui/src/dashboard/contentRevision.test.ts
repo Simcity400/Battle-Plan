@@ -1,9 +1,11 @@
+import { gatedHour } from '../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ContentRevision, contentRevision } from './contentRevision.ts';
 import { loadProduct, productKey } from './products.ts';
 import type { DashboardClient, ProductRequest } from './client';
 import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
+import { productRequest } from './request.ts';
 
 test('folder and readiness changes invalidate content; repeated native status updates do not', () => {
   const revision = new ContentRevision();
@@ -50,7 +52,7 @@ test('a content reply that answers after the visual mods changed never fills the
     await new Promise<void>(resolve => answers.push(resolve));
     return { ...request, data: { style } };
   } } as unknown as DashboardClient;
-  const request = { sourceId: 'same', revision: 'same', product: 'sprite-artwork', params: { sprites: [{ key: 'GFX_icon', frame: 0 }] } };
+  const request = productRequest({ sourceId: 'same', revision: 'same', product: 'sprite-artwork', params: { sprites: [{ key: 'GFX_icon', frame: 0 }] } });
   const signal = () => new AbortController().signal;
   const revision = contentRevision(client);
   revision.observePresentation(1);
@@ -67,11 +69,11 @@ test('a content reply that answers after the visual mods changed never fills the
 });
 
 test('only products declared to read content change their request identity', () => {
-  const recorded = { sourceId: 'same', revision: 'same', product: 'country-measure', params: {} };
+  const recorded = productRequest({ sourceId: 'same', revision: 'same', product: 'country-measure', params: {} });
   assert.equal(productKey(recorded, 1), productKey(recorded, 2));
   assert.ok(!(CONTENT_PRODUCTS as readonly string[]).includes(recorded.product));
   for (const product of CONTENT_PRODUCTS) {
-    const request = { sourceId: 'same', revision: 'same', product, params: {} };
+    const request = productRequest({ sourceId: 'same', revision: 'same', product, params: {} });
     assert.notEqual(productKey(request, 1), productKey(request, 2));
   }
   assert.ok(CONTENT_PRODUCTS.includes('country-styles'));
@@ -89,7 +91,7 @@ test('a recording-only product keeps its settled cache and pending load across c
     await response;
     return { ...request, data: { recorded: '12' } };
   } } as unknown as DashboardClient;
-  const request = { sourceId: 'same', revision: 'same', product: 'country-measure', params: { branchId: '1', tag: 'ABC' } };
+  const request = productRequest({ sourceId: 'same', revision: 'same', product: 'country-measure', params: { branchId: '1', tag: 'ABC' } });
   const signal = () => new AbortController().signal;
   const pending = loadProduct(client, request, signal());
   await Promise.resolve();
@@ -111,7 +113,7 @@ test('content becoming available re-requests successful but empty replies at the
     calls++;
     return { ...request, data: { name: ready ? 'Current country' : null } };
   } } as unknown as DashboardClient;
-  const request = { sourceId: 'same', revision: 'same', product: 'country-styles', params: { branchId: '1', hour: 200, tags: ['ABC'] } };
+  const request = productRequest({ sourceId: 'same', revision: 'same', product: 'country-styles', params: { branchId: '1', hour: gatedHour(200), tags: ['ABC'] } });
   const signal = () => new AbortController().signal;
   const revision = contentRevision(client);
   revision.observe({ game: '', user: '', contentReady: false });

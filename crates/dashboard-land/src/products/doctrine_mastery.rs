@@ -283,6 +283,7 @@ impl AtHour for DoctrineMastery {
     const TITLE: &'static str = "Doctrine mastery";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DoctrineMasteryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = DoctrineMasteryReply;
     type Context = Context;
 

@@ -204,6 +204,21 @@ struct Family {
     measure: String,
 }
 
+pub const FIELDS: crate::fields::Fields = {
+    use crate::fields::HourRole::{End, Read, Start, Undated};
+    &[
+        ("branchId", Undated), ("family", Undated), ("countries", Undated), ("lines", Undated), ("reads[].hour", Read), ("from", Start), ("to", End),
+        ("key", Undated), ("measures", Undated), ("firstHour", Start), ("lastHour", End), ("cursor", Undated), ("pageSize", Undated), ("top", Undated),
+        ("hour", Read), ("width", Undated), ("within[].1[].firstHour", Start), ("within[].1[].lastHour", End), ("binHours", Undated), ("index", Undated),
+        ("withMarks", Undated), ("least", Undated), ("countries[]", Undated), ("lines[].country", Undated), ("reads[].country", Undated), ("within[].0", Undated),
+        ("family.membership[].firstHour", Start), ("family.membership[].lastHour", End), ("family.top", Undated), ("tags", Undated),
+    ]
+};
+
+pub fn params_walk() -> crate::fields::Walk {
+    crate::fields::walk::<Params>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Params {
@@ -227,8 +242,8 @@ struct Params {
     top: Option<u32>,
     hour: Option<f64>,
     width: Option<u32>,
-    #[serde(rename = "within")]
-    _within: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    within: Vec<(Country, Vec<Span>)>,
     #[serde(rename = "binHours")]
     _bin_hours: Option<i64>,
     #[serde(rename = "index")]
@@ -245,6 +260,19 @@ pub struct Span {
 }
 
 pub const PARTS: &str = "series-parts";
+
+pub type Within = std::collections::BTreeMap<Country, Vec<(i32, i32)>>;
+
+fn within_spans(part: Part, spans: Option<&[(i32, i32)]>) -> Vec<Part> {
+    let Some(spans) = spans else { return vec![part] };
+    spans
+        .iter()
+        .filter_map(|&(first, last)| {
+            let (first, last) = (part.first.max(first), part.last.min(last));
+            (first <= last).then_some(Part { first, last, ..part })
+        })
+        .collect()
+}
 
 pub const PAGE_LIMIT: u32 = 1024;
 
@@ -306,7 +334,7 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
         return Ok(None);
     };
     let value = params;
-    let params: Params = serde_json::from_value(params.clone()).map_err(|error| invalid(format!("Invalid {kind} request: {error}")))?;
+    let params: Params = crate::named::named(params).map_err(|error| invalid(format!("Invalid {kind} request: {error}")))?;
     if params.family.kind != series.kind {
         return Err(invalid("The family is not this series"));
     }
@@ -342,9 +370,10 @@ pub fn answer(query: &Query<'_>, product: &str, params: &serde_json::Value) -> i
                 Some(n) => ranked::stepped(&line, origin, key, bounds, n)?.into_iter().map(|tag| Ask::whole(&tag)).collect(),
                 None => line.asks(&params.countries, &params.lines)?,
             };
+            let within: Within = params.within.iter().map(|(country, spans)| (country.clone(), spans.iter().map(|span| (span.first_hour, span.last_hour)).collect())).collect();
             let hour = match series.kind {
-                "autonomy" => line.change_lines(&asks, &measures, origin, key, bounds)?,
-                _ => line.navigate_lines(&asks, &measures, origin, key, bounds)?,
+                "autonomy" => line.change_lines(&asks, &measures, origin, key, bounds, &within)?,
+                _ => line.navigate_lines(&asks, &measures, origin, key, bounds, &within)?,
             };
             serde_json::to_value(SeriesKeyReply { hour: hour.map(f64::from) })?
         }
@@ -1640,14 +1669,15 @@ impl<'q, 'a> Line<'q, 'a> {
 
     pub fn navigate<C: Clone + Into<Country>>(&self, countries: &[C], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
         let asks: Vec<Ask> = countries.iter().map(|country| Ask::whole(country.clone())).collect();
-        self.navigate_lines(&asks, measures, origin, key, bounds)
+        self.navigate_lines(&asks, measures, origin, key, bounds, &Within::new())
     }
 
-    pub fn navigate_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
-        Ok(self.change_lines(asks, measures, origin, key, bounds)?.or_else(|| origin.map(|hour| hour.clamp(bounds.0, bounds.1))))
+    pub fn navigate_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), within: &Within) -> io::Result<Option<i32>> {
+        let held = |hour: &i32| within.is_empty() || asks.iter().any(|ask| within.get(&ask.country).is_none_or(|spans| spans.iter().any(|&(first, last)| first <= *hour && *hour <= last)));
+        Ok(self.change_lines(asks, measures, origin, key, bounds, within)?.or_else(|| origin.map(|hour| hour.clamp(bounds.0, bounds.1)).filter(held)))
     }
 
-    pub fn change_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32)) -> io::Result<Option<i32>> {
+    pub fn change_lines(&self, asks: &[Ask], measures: &[&'static Measure], origin: Option<i32>, key: NavigationKey, bounds: (i32, i32), within: &Within) -> io::Result<Option<i32>> {
         if bounds.0 > bounds.1 {
             return Err(invalid("Invalid navigation bounds"));
         }
@@ -1668,28 +1698,28 @@ impl<'q, 'a> Line<'q, 'a> {
             }
             best = Some(best.map_or(hour, |held: i32| if forward { held.min(hour) } else { held.max(hour) }));
         };
-        let mut by_run: HashMap<u32, Vec<Part>> = HashMap::new();
+        let mut by_stretch: HashMap<(u32, i32, i32), Vec<Part>> = HashMap::new();
         for ask in asks {
-            for part in self.held(ask, bounds.0, bounds.1).into_iter().filter_map(|part| self.valid_part(&part)) {
-                let starts = i64::from(part.first);
-                if (forward && starts > at) || (!forward && starts < at) {
-                    offer(part.first);
+            for held in self.held(ask, bounds.0, bounds.1).into_iter().filter_map(|part| self.valid_part(&part)) {
+                for part in within_spans(held, within.get(&ask.country).map(Vec::as_slice)) {
+                    let starts = i64::from(part.first);
+                    if (forward && starts > at) || (!forward && starts < at) {
+                        offer(part.first);
+                    }
+                    by_stretch.entry((part.run, part.first, part.last)).or_default().push(part);
                 }
-                by_run.entry(part.run).or_default().push(part);
             }
         }
-        for (run, parts) in by_run {
+        for ((run, first, last), parts) in by_stretch {
             let mut keys: Vec<u128> = parts.iter().map(|part| part.key).collect();
             keys.sort_unstable();
             keys.dedup();
-            let first = parts.iter().map(|part| part.first).min().expect("a part");
-            let last = parts.iter().map(|part| part.last).max().expect("a part");
             for measure in measures {
                 let source = dashboard_declare::source(self.series.table, measure)?;
                 let column = dashboard_declare::summary_id(self.series.table, measure)?;
-                let found = read::nearest_change(recording, run, self.series.table, source, Some(column), &keys, at, forward, (first, last))?;
-                if let Some(hour) = found
-                    && parts.iter().any(|part| part.first <= hour && hour <= part.last)
+                if let Some(hour) = read::nearest_change(recording, run, self.series.table, source, Some(column), &keys, at, forward, (first, last))?
+                    && first <= hour
+                    && hour <= last
                 {
                     offer(hour);
                 }
@@ -1797,29 +1827,21 @@ impl<'q, 'a> Line<'q, 'a> {
             return Err(invalid("Invalid span"));
         }
         let recording = self.query.replay.recording();
-        let mut lives: HashMap<u32, Vec<(u128, i64, i64)>> = HashMap::new();
         let mut out = Vec::with_capacity(tags.len());
         for tag in tags {
-            let mut found: BTreeMap<u128, (i32, i32)> = BTreeMap::new();
+            let mut found: BTreeMap<u128, Vec<(i32, i32)>> = BTreeMap::new();
             let country: Country = tag.clone().into();
             let held = self.parts(&country, from, to);
             for part in held.iter().filter_map(|part| self.valid_part(part)) {
-                if !lives.contains_key(&part.run) {
-                    let mut read = crate::cost::lifetimes(recording, part.run, self.series.table)?;
-                    read.sort_unstable_by_key(|(key, ..)| *key);
-                    lives.insert(part.run, read);
-                }
                 let (lo, hi) = parts.range(parts.owner(part.key));
-                let run = &lives[&part.run];
-                let start = run.partition_point(|(key, ..)| *key < lo);
-                for &(key, first, last) in run[start..].iter().take_while(|(key, ..)| *key <= hi) {
-                    let (first, last) = (first.max(i64::from(part.first)), last.min(i64::from(part.last)));
-                    if first > last {
-                        continue;
+                let run = crate::cost::presences(recording, part.run, self.series.table, (lo, hi), i64::from(part.first), i64::from(part.last))?;
+                for (key, spans) in &run {
+                    for &(first, last) in spans {
+                        let (first, last) = (first.max(i64::from(part.first)), last.min(i64::from(part.last)));
+                        if first <= last {
+                            found.entry(parts.part(*key)).or_default().push((first as i32, last as i32));
+                        }
                     }
-                    let span = found.entry(parts.part(key)).or_insert((first as i32, last as i32));
-                    span.0 = span.0.min(first as i32);
-                    span.1 = span.1.max(last as i32);
                 }
             }
             let mut missing = self.unheld(&country, from, to, &held);
@@ -1830,7 +1852,18 @@ impl<'q, 'a> Line<'q, 'a> {
                 country,
                 parts: found
                     .into_iter()
-                    .map(|(part, (first_hour, last_hour))| SeriesPartLife { part: part.to_string(), id: parts.id(part).map(|id| id.to_string()), first_hour, last_hour })
+                    .flat_map(|(part, mut spans)| {
+                        spans.sort_unstable();
+                        let mut merged: Vec<(i32, i32)> = Vec::with_capacity(spans.len());
+                        for (first, last) in spans {
+                            match merged.last_mut() {
+                                Some(held) if first <= held.1.saturating_add(1) => held.1 = held.1.max(last),
+                                _ => merged.push((first, last)),
+                            }
+                        }
+                        let id = parts.id(part).map(|id| id.to_string());
+                        merged.into_iter().map(move |(first_hour, last_hour)| SeriesPartLife { part: part.to_string(), id: id.clone(), first_hour, last_hour })
+                    })
                     .collect(),
                 missing: joined(missing),
             });

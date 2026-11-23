@@ -86,6 +86,7 @@ impl AtHour for ResearchSlots {
     const TITLE: &'static str = "Research";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ResearchSlotsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ResearchSlotsReply;
     type Context = Content;
 

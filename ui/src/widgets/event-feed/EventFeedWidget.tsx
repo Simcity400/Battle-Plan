@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { countryNameDetails } from '../../charts/tooltip.ts';
 import { useCallback, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
@@ -38,6 +40,7 @@ import './eventFeed.css';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { trackHourOf } from '../../dashboard/settledHour';
 import { useDistinctState } from '../../dashboard/useDistinctState';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly LogRow<FeedEvent>[] = [];
 const sameKeys = (held: readonly LogRow<FeedEvent>[], next: readonly LogRow<FeedEvent>[]) => held.length === next.length
@@ -47,6 +50,7 @@ const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0
 
 export default function EventFeedWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const gate = useGate(runtime, widget, SPEC, active);
 useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtime.tracks, runtime.clock.getHour()) : null);
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
@@ -65,17 +69,18 @@ useShownEachFrame(runtime.clock, () => track ? trackHourOf(widget, track, runtim
   const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? { sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
-    params: { branchId: track.branch.id, categories: [...categories] } } : null, active, validateSpan, track?.source);
+  const span = useProduct<EventFeedSpanReply>(runtime.client, track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'event-feed-span',
+    params: { branchId: track.branch.id, categories: [...categories] } }) : null, active, validateSpan, track?.source);
   const coded = useProduct<EventFeedSpanReply>(runtime.client, track ? kindsRequest(track) : null, active, validateSpan, track?.source);
   const kinds = coded.data?.kinds;
   const facets = useMemo(() => kinds ? feedFacets(kinds, categories) : null, [kinds, categories]);
   const spanOnly = !!kinds && !facets;
   const scope = useMemo(() => filtered && match.ready ? countryScope(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0) : null,
     [filtered, match.ready, widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const spec = useMemo<LogSpec | null>(() => track && facets && (!filtered || scope) ? { source: track.source, branchId: track.branch.id, log: 'feed-events',
-    product: 'event-feed', facets, ...(scope ? { scope } : {}), firstHour: Math.max(from ?? track.branch.firstHour, track.branch.firstHour), lastHour: track.branch.lastHour } : null,
-  [track, facets, from, filtered, scope]);
+  const logSpan = track ? gate.span(from ?? track.branch.firstHour, track.branch.lastHour) : null;
+  const spec = useMemo<LogSpec | null>(() => track && logSpan && facets && (!filtered || scope) ? { source: track.source, branchId: track.branch.id, log: 'feed-events',
+    product: 'event-feed', facets, ...(scope ? { scope: scope?.flatMap(run => { const held = gate.span(run.firstHour, run.lastHour); return held ? [{ ...run, ...held }] : []; }) } : {}), ...logSpan } : null,
+  [track, facets, logSpan?.firstHour, logSpan?.lastHour, filtered, scope]);
   const feed = useLogPages<FeedEvent, EventFeedUnavailable>(runtime.client, runtime.clock, spec, cut, active && match.ready, feedRow, FEED_PAGE_SIZE, pageNotes);
   const country = filtered ? match.matches : null;
   const family = useMemo(() => span.data ? familyRows(span.data, categories, from, country) : NO_ROWS, [span.data, categories, from, country]);

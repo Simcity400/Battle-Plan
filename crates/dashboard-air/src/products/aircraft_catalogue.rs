@@ -139,6 +139,7 @@ impl Product for AircraftCatalogue {
     const KEY: &'static str = "aircraft-catalogue";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AircraftCatalogueParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![scope, query, first, count];
     type Reply = AircraftCatalogueReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

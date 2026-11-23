@@ -43,7 +43,7 @@ export default function ActiveResearchWidget({ widget, runtime, active, onDiagno
   const untip = tips.hide;
   const [opened, setOpened] = useState<{ on: string; research: OpenedResearch; x: number; y: number } | null>(null);
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
-  if (now.read === 'off') return <div className="dash-empty" role="status">This time is outside the recording.</div>;
+  if (now.read === 'off') return <WidgetState kind="outside" />;
   const failure = history.error ?? now.error;
   if (failure && (!data || !reply)) return <WidgetState kind="error" failure={failure} onRetry={history.error ? history.retry : now.retry} />;
   if (!data || !reply) return <ListSkeleton label="Loading research..." />;

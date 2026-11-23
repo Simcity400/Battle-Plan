@@ -1,3 +1,4 @@
+import type { Gate } from '../../dashboard/regionGate';
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import DrillParts from '../../charts/drill/DrillParts';
@@ -21,9 +22,9 @@ import type { StockpileHolder } from '../../generated/dashboard';
 const NEED_DASH = [5, 4];
 const NEED = '';
 
-export default function StockpileDrill({ data, catalogue, holders, included, group, hour, client, track, ...chart }: {
+export default function StockpileDrill({ data, catalogue, holders, included, group, hour, client, gate, track, ...chart }: {
   data: EquipmentStockpileReply; catalogue: StockpileCatalogueReply | undefined; holders: readonly StockpileHolder[]; included: readonly string[];
-  group: StockGroup; hour: number; client: DashboardClient; track: BoundTrack;
+  group: StockGroup; hour: number; client: DashboardClient; gate: Pick<Gate, 'span' | 'recorded'>; track: BoundTrack;
 } & Omit<Parameters<typeof BreakdownChart>[0], 'series' | 'axes' | 'label' | 'data'>) {
   const tokens = useChartTokens(), viewport = useViewportHeight();
   const amount = (raw: bigint) => formatAmount(raw, data.decimals, 0);
@@ -39,7 +40,7 @@ export default function StockpileDrill({ data, catalogue, holders, included, gro
   const lines = useMemo(() => [...group.variants.map(variant => ({ key: variant.id, group: JSON.stringify(['variant', variant.id]), measure: 'stock' as const })),
     { key: group.key, group: stockpileGroupKey(group), measure: 'stock' as const },
     ...(player ? [{ key: NEED, group: stockpileGroupKey(group), measure: 'need' as const }] : [])], [group, player]);
-  const incoming = useStockpileChart(client, track, catalogue, holders, included, lines, hour, chart.active);
+  const incoming = useStockpileChart(client, gate, track, catalogue, holders, included, lines, hour, chart.active);
   const logistics = player ? balanceOperandsAt(data, group, hour) : null;
   const byStock = [...models].sort((a, b) => (a.stock == null ? 1 : 0) - (b.stock == null ? 1 : 0)
     || (a.stock === b.stock ? a.label.localeCompare(b.label) : (a.stock ?? 0n) > (b.stock ?? 0n) ? -1 : 1));

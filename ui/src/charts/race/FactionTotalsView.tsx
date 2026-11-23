@@ -1,3 +1,5 @@
+import { OUTSIDE_MESSAGE, SPEC, type GatedTime } from '../../dashboard/regionTime';
+import GateState from '../../dashboard/GateState';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
@@ -15,26 +17,30 @@ import type { FollowEntry } from '../../dashboard/follow/store';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import { resolveWindow } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useViewRead } from '../../dashboard/viewRead';
 import { loadProduct, useProduct } from '../../dashboard/products';
 import { useFactionColours } from '../../dashboard/FactionColours';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { BoundTrack, GroupMembership, WidgetSpec } from '../../dashboard/model';
 import DrillHost from '../drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../drill/drillState';
-import type { DrillAction, DrillState } from '../drill/drillState';
+import { pinnedBreakdown, type PinnedSpec } from '../drill/drillState';
+import { useDrill } from '../drill/useDrill';
 import type { Live } from '../live';
 import FactionMembers from './FactionMembers';
 import { FACTION_MEMBERS } from './factionMembersOptions.ts';
 import { useShownHour, useWhyCommit } from '../../dashboard/widgetPerf';
 import { factionNameLabel } from '../../dashboard/factionNames';
 import { validateFactionLines, validateFactionRosters } from '../../dashboard/territoryReplies.ts';
-import type { FactionRostersReply, SeriesStateReply } from '../../generated/dashboard';
+import type { SeriesStateReply } from '../../generated/dashboard';
 import { liveRace, rowsOf } from './measureRaceData.ts';
 import type { GroupTotal } from './factionTotalsData';
 import { answerShape, answerValues, factionEntries, factionNote, factionSummaries, fixedRosters, membersPushed, rosterRows, rosterTags, stateValues } from './factionTotalsData.ts';
 import './countryRace.css';
 import type { FactionLines } from '../../dashboard/territoryReplies';
+import { useRegion } from '../../dashboard/widgetTime.ts';
+import { productRequest } from '../../dashboard/request.ts';
+import type { BoundWindow } from '../../dashboard/regionTime';
 
 export interface FactionTotalsViewProps extends WidgetProps {
   options: Readonly<Record<string, OptionValue>>;
@@ -52,6 +58,9 @@ export interface FactionTotalsViewProps extends WidgetProps {
 const NO_WARNINGS: string[] = [];
 const PARAMS = {};
 const DECIMALS = 0;
+
+const boundPairs = (pairs: readonly (readonly [number, number])[], span: (first: number, last: number) => BoundWindow | null) =>
+  pairs.flatMap(([first, last]) => { const held = span(first, last); return held ? [[held.firstHour, held.lastHour] as const] : []; });
 
 function validateStates(value: unknown): SeriesStateReply {
   const reply = value as SeriesStateReply;
@@ -72,12 +81,14 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const playhead = window && (widget.time.mode === 'follow' || widget.time.mode === 'pin') ? window.lastHour : null;
   const membership = widget.countries.kind === 'factions' || widget.countries.kind === 'group' ? widget.countries.membership : 'hour';
   const fixed = membership !== 'hour' || !!group;
-  const rosters = useHeadProduct<FactionRostersReply>(runtime, widget, 'faction-rosters', track ? PARAMS : null,
+  const gate = useGate(runtime, widget, SPEC, active);
+  const rosters = useHeadProduct(runtime, gate, 'faction-rosters', track ? PARAMS : null,
     { active: active && view === 'race' && !fixed, validate: validateFactionRosters, structure: rosterRows });
   const groups = useCountryGroups(runtime, track, active && view === 'race' && fixed && !group);
   const held = useMemo(() => fixed && !group && groups.data ? fixedRosters(groups.data, membership as 'end' | 'ever', extent[0], extent[1]) : undefined,
     [fixed, group, groups.data, membership, extent[0], extent[1]]);
   const moment = Math.floor((fixed ? null : rosters.hour) ?? playhead ?? extent[1]);
+  const askAt = fixed ? gate.hour : gate.recorded(rosters.hour ?? rosters.at);
   const factionData = fixed ? held : rosters.data;
   const rosterData = useMemo(() => group ? group.rosterAt(moment) : only && factionData
     ? { ...factionData, factions: factionData.factions.filter(faction => faction.id === only) } : factionData, [group, moment, only, factionData]);
@@ -85,14 +96,14 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const members = useMemo(() => group ? [...new Set(group.members.map(member => member.tag))].sort() : rosterTags(rosterData), [group, rosterData]);
   const family = useMemo(() => ({ kind, measure }), [kind, measure]);
   const following = active && view === 'race' && (group ? widget.time.mode === 'follow' : fixed ? widget.time.mode === 'follow' && !!held : rosters.read === 'followed');
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const target = useMemo(() => ({ current: root }), [root]);
   const liveRef = useRef<ReturnType<typeof liveRace> | null>(null);
   const named = useStickyMembers(JSON.stringify([track?.branch.id, kind, measure, following]), members, stickyLimit(members.length));
   const query = useMemo(() => following && track && named.length
-    ? { product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null,
-  [following, track?.branch.id, family, named]);
+    ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id, family, reads: named.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
+  [following, track?.branch.id, family, named, gate.follow]);
   const memberWakes = useMemo(() => new Set<() => void>(), []);
   const followed = useFollow(store, query, target, () => { liveRef.current?.wake(); for (const wake of [...memberWakes]) wake(); }, answerShape);
   const answered = useRef<{ store: unknown; entry: FollowEntry } | null>(null);
@@ -102,9 +113,9 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
     : answered.current?.store === store ? answered.current?.entry ?? null : null;
   const pushed = valuesEntry !== null;
   const refused = pushed && valuesEntry?.answer?.kind === 'notRecorded' ? valuesEntry.answer.reason : null;
-  const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length ? {
+  const asked = useProduct<SeriesStateReply>(runtime.client, track && view === 'race' && !pushed && members.length && askAt !== null ? productRequest({
     sourceId: track.source.id, revision: track.source.revision, product: 'series-state',
-    params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: moment })) } } : null, active, validateStates, track?.source);
+    params: { branchId: track.branch.id, family, reads: members.map(tag => ({ country: countryFromKey(tag), hour: askAt })) } }) : null, active, validateStates, track?.source);
   const live = useMemo(() => valuesEntry ? liveRace(runtime.clock, axisOffset,
     hour => { shown(hour); return factionEntries(rosterOf(hour), answerValues(valuesEntry.answer, named, DECIMALS), slots, hour, format).entries; },
     () => valuesEntry.version, !!group) : null,
@@ -120,11 +131,15 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
       : { from: next.from, to: next.to, width: next.width });
   }, []);
   const groupParams = group ? { members: group.members.map(member => ({ tag: member.tag, spans: member.spans })), unread: group.unread } : null;
-  const lane = track && view === 'lines' ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, kind, measure, membership, groupParams]) : null;
+  const lane = track && view === 'lines' && gate.open ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, kind, measure, membership, groupParams]) : null;
   const lines = useViewRead<{ from: number; to: number; width: number }, FactionLines>(lane, chartView, JSON.stringify(chartView), active,
-    (at, signal, publish, restart) => loadProduct(runtime.client, { sourceId: track!.source.id, revision: track!.source.revision, product: 'faction-lines',
-      params: { branchId: track!.branch.id, kind, measure, from: Math.floor(at.from), to: Math.floor(at.to), width: at.width, ...(groupParams ?? { membership }) } },
-    signal, validateFactionLines, track!.source, restart, publish), runtime.client);
+    (at, signal, publish, restart) => {
+      const range = gate.span(at.from, at.to);
+      return range ? loadProduct(runtime.client, productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'faction-lines',
+        params: { branchId: track!.branch.id, kind, measure, from: range.firstHour, to: range.lastHour, width: at.width, ...(groupParams ? { members: groupParams.members.map(member => ({ tag: member.tag, spans: member.spans && boundPairs(member.spans, gate.span) })),
+          unread: boundPairs(groupParams.unread, gate.span) } : { membership }) } }),
+      signal, validateFactionLines, track!.source, restart, publish) : Promise.reject(new Error(OUTSIDE_MESSAGE));
+    }, runtime.client);
   const looks = useFactionColours(runtime.client, track?.source);
   const factions = useMemo(() => new Map(looks.factions.map(faction => [faction.id, faction])), [looks.factions]);
   const entityLooks = useMemo(() => group ? { name: () => group.label, color: () => tokens.accent } : {
@@ -153,37 +168,40 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   const error = view === 'race' ? (fixed ? groups.error : rosters.error) ?? (pushed ? undefined : asked.error) : lines.error;
   const pinnedMembers = options.show === 'members';
   const resetKey = JSON.stringify([track?.source.id, track?.branch.id, kind, measure, widget.countries]);
-  const [drillState, setDrill] = useState<{ key: string; drill: DrillState }>({ key: resetKey, drill: CLOSED });
+  const drillControl = useDrill(runtime, useRegion(widget), pinnedMembers && only ? only : null);
+  const drill = drillControl.state, dispatch = drillControl.dispatch;
+  useEffect(() => { drillControl.close(); }, [resetKey]);
   useWhyCommit('FactionTotalsView', { rosters: rosters.data, rostersAt: rosters.at, groups: groups.data, members: followed, valuesEntry, live, named,
-    asked: asked.data, looks, lines: lines.data, chartView, drill: drillState });
-  const drill = drillState.key === resetKey ? drillState.drill : CLOSED;
-  const dispatch = useCallback((action: DrillAction) => setDrill(before => ({ key: resetKey, drill: reduceDrill(before.key === resetKey ? before.drill : CLOSED, action) })), [resetKey]);
-  const memberFaction = drill.breakdown ?? (pinnedMembers ? only ?? null : null);
+    asked: asked.data, looks, lines: lines.data, chartView, drill });
+  const memberFaction = drill.breakdown;
   const allGroups = useCountryGroups(runtime, track, active && memberFaction !== null);
   const factionGroup = useMemo(() => allGroups.data?.factions.find(faction => faction.id === memberFaction) ?? null, [allGroups.data, memberFaction]);
-  const membersFollow = pushed && (drill.breakdown == null || drill.follow);
-  const membersHour = Math.floor(drill.breakdown != null ? drillHour(drill, moment) ?? moment : moment);
+  const membersFollow = pushed && (drill.breakdown == null || drillControl.following);
+  const membersGate = drill.breakdown != null ? drillControl.gate : gate;
+  const membersAt = membersFollow ? null : membersGate.hour;
+  const membersHour = Math.floor(drill.breakdown != null ? (drillControl.following ? Math.floor(runtime.clock.getHour()) + axisOffset : drillControl.hour) ?? moment : moment);
   const membersHead = useMemo<Live<ReadonlyMap<string, number>> | null>(() => membersFollow && valuesEntry ? {
     read: () => answerValues(valuesEntry.answer, named, DECIMALS),
     subscribe: wake => { memberWakes.add(wake); return () => { memberWakes.delete(wake); }; },
   } : null, [membersFollow, valuesEntry, named, memberWakes]);
   const anchor = useRef<HTMLDivElement | null>(null);
-  const membersOf = (picked: boolean) => track ? <FactionMembers runtime={runtime} track={track} active={active} options={options} kind={kind} measure={measure}
+  const membersOf = (picked: boolean) => track ? membersGate.outside ? <GateState gate={membersGate} loading="Loading faction members…" /> : <FactionMembers runtime={runtime} gate={membersGate} at={membersAt} track={track} active={active} options={options} kind={kind} measure={measure}
     label={`${memberFaction ? entityLooks.name(memberFaction, membersHour) : label} · ${measureLabel}`} format={format} faction={factionGroup}
-    extent={extent} playhead={playhead} hour={membersHour} head={membersHead} onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} /> : null;
+    extent={extent} playhead={drill.breakdown != null ? membersHour : playhead} hour={membersHour} head={membersHead} onPick={picked ? hour => dispatch({ type: 'pick', hour }) : undefined} /> : null;
   const state = !track ? <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />
-    : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="Choose another time in widget settings." />
+    : gate.outside ? <GateState gate={gate} loading={`Loading ${label.toLowerCase()}…`} />
       : error ? <WidgetState kind="error" failure={error} onRetry={view === 'race' ? () => { rosters.retry(); groups.retry(); asked.retry(); } : lines.retry} />
         : looks.loading && !group ? <WidgetState kind="loading" label="Loading factions…" />
           : view === 'race' && rosterData?.missing ? <WidgetState kind="unavailable" message={rosterData.missing} />
             : view === 'race' && (!rosterData || !live && members.length > 0 && !asked.data) ? <WidgetState kind="loading" label={`Loading ${label.toLowerCase()}…`} /> : undefined;
-  if (pinnedMembers) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); }}>
+  if (pinnedMembers) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); anchor.current = element; }}>
     {!only ? <WidgetState kind="empty" icon="shield" message="Choose a faction group shown as one total in the widget settings." />
-      : allGroups.error && !allGroups.data ? <WidgetState kind="error" failure={allGroups.error} onRetry={allGroups.retry} />
-        : !allGroups.data ? <WidgetState kind="loading" label="Loading faction members…" /> : membersOf(false)}
+      : <DrillHost drill={drillControl} runtime={runtime} mode="inline" anchor={anchor} title={`${entityLooks.name(only, membersHour)}: members`} day={dayLabel(membersHour)} canFollow main={null}>
+        {allGroups.error && !allGroups.data ? <WidgetState kind="error" failure={allGroups.error} onRetry={allGroups.retry} />
+          : !allGroups.data ? <WidgetState kind="loading" label="Loading faction members…" /> : membersOf(true)}</DrillHost>}
   </div>;
   const openMembers = !group && track ? (hour: number, id?: string) => {
-    if (id) dispatch({ type: 'open', breakdown: id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? moment : null });
+    if (id) drillControl.show(id, hour);
   } : undefined;
   const raceView = (visible: boolean) => <CountryRaceView runtime={runtime} track={track} state={state} active={active && visible} options={options} view={view} extent={extent} playhead={playhead}
       onPick={openMembers}
@@ -204,12 +222,13 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
         ...(lines.data?.bounds ? { note: factionNote(undefined, '', true)! } : {}) }]} />;
   if (group || !track) return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); }}>{raceView(true)}</div>;
   const opened = drill.breakdown;
+  const pinTimed = drillControl.gate.checkTime();
+  const pinTime = pinTimed.time;
   return <div className="country-race" ref={element => { setRoot(element); rosters.root(element); anchor.current = element; }}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={opened != null} anchor={anchor}
-      title={opened ? `${entityLooks.name(opened, membersHour)}: members` : 'Faction members'} day={dayLabel(membersHour)} following={drill.follow}
-      canFollow={widget.time.mode === 'follow'} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
-      onPause={() => dispatch({ type: 'pick', hour: Math.floor(runtime.clock.getHour()) + axisOffset })}
-      onPin={opened ? () => runtime.addWidgetBelow(widget.id, pinFactionMembers(widget, track, opened, membersHour, drill.follow && widget.time.mode === 'follow', membership)) : undefined}
+    <DrillHost drill={drillControl} runtime={runtime} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={opened ? `${entityLooks.name(opened, membersHour)}: members` : 'Faction members'} day={dayLabel(membersHour)}
+      canFollow
+      pinRefused={pinTimed.refused ?? null} onPin={opened && pinTime ? () => runtime.addWidgetBelow(widget.id, pinFactionMembers(widget, track, opened, pinTime, membership)) : undefined}
       main={raceView(opened == null || options.drill === 'popout')}>
       {opened ? allGroups.error && !allGroups.data ? <WidgetState kind="error" failure={allGroups.error} onRetry={allGroups.retry} />
         : !allGroups.data ? <WidgetState kind="loading" label="Loading faction members…" /> : membersOf(true) : null}
@@ -217,10 +236,8 @@ export default function FactionTotalsView({ widget, runtime, active, onDiagnosti
   </div>;
 }
 
-export function pinFactionMembers(widget: WidgetSpec, track: BoundTrack, id: string, hour: number, follow: boolean, membership: GroupMembership): WidgetSpec {
-  const pinned = pinnedBreakdown(widget, FACTION_MEMBERS, track.id);
-  const offset = Math.floor(hour) - track.branch.firstHour;
+export function pinFactionMembers(widget: WidgetSpec, track: BoundTrack, id: string, time: GatedTime, membership: GroupMembership): PinnedSpec {
+  const pinned = pinnedBreakdown(widget, FACTION_MEMBERS, track.id, time);
   return { ...pinned, countries: { kind: 'group', group: { type: 'faction', id }, aggregate: true, membership },
-    time: follow ? { mode: 'follow' } : { mode: 'pin', windows: { [track.id]: { firstOffset: offset, lastOffset: offset } } },
     options: { ...pinned.options, view: 'race' } };
 }

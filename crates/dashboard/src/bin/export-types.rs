@@ -1,8 +1,7 @@
 use std::{env, fs, io, path::PathBuf};
 
 fn main() -> io::Result<()> {
-    let mut path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ui/src/generated/dashboard.ts");
+    let mut path = PathBuf::from("ui/src/generated/dashboard.ts");
     let mut check = false;
     let mut arguments = env::args().skip(1);
     while let Some(argument) = arguments.next() {

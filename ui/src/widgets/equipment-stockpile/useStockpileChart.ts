@@ -1,3 +1,5 @@
+import type { Gate } from '../../dashboard/regionGate';
+import { OUTSIDE_MESSAGE } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useMemo, useState } from 'react';
 import type { TimeChartProps } from '../../charts/TimeChart';
@@ -14,6 +16,7 @@ import type { StockpileView } from './stockpileCatalogue';
 import { validateStockpileChart } from './stockpileData';
 import type { StockpileCatalogueReply } from './types';
 import type { StockpileAtReply, StockpileHolder, StockpileMeasure } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export interface StockpileLineRequest { key: string; group: string; measure: StockpileMeasure }
 
@@ -28,7 +31,7 @@ export function askedView(view: StockpileView): StockpileView {
   return { from, to, width: Math.max(1, Math.ceil(Math.max(1, view.width) * (to - from + 1) / length)) };
 }
 
-export function useStockpileChart(client: DashboardClient, track: BoundTrack, catalogue: StockpileCatalogueReply | undefined,
+export function useStockpileChart(client: DashboardClient, gate: Pick<Gate, 'span' | 'recorded'>, track: BoundTrack, catalogue: StockpileCatalogueReply | undefined,
   holders: readonly StockpileHolder[], included: readonly string[], lines: readonly StockpileLineRequest[], head: number, active: boolean) {
   const scope = JSON.stringify([track.source.id, track.source.revision, track.branch.id, holders, included, lines]);
   const [view, setView] = useState<{ scope: string; view: StockpileView }>();
@@ -37,14 +40,18 @@ export function useStockpileChart(client: DashboardClient, track: BoundTrack, ca
   const display = useViewRead<StockpileView, ReadonlyMap<string, ChartSummary>>(lines.length ? JSON.stringify([scope, content]) : null, asked,
     JSON.stringify([asked.from, asked.to, asked.width]), active, async (at, signal, publish, restart) => {
       const keyed = (summaries: readonly ChartSummary[]) => new Map(lines.map((line, index) => [line.key, summaries[index]]));
-      return keyed(await loadProduct(client, { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-chart',
-        params: { branchId: track.branch.id, holders, included, lines: lines.map(({ group, measure }) => ({ group, measure })), from: at.from, to: at.to, width: at.width } },
+      const range = gate.span(at.from, at.to);
+      if (!range) throw new Error(OUTSIDE_MESSAGE);
+      return keyed(await loadProduct(client, productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'equipment-stockpile-chart',
+        params: { branchId: track.branch.id, holders: holders.map(holder => ({ country: holder.country,
+          ...(holder.within ? { within: holder.within.flatMap(span => gate.span(span.firstHour, span.lastHour) ?? []) } : {}) })), included, lines: lines.map(({ group, measure }) => ({ group, measure })), from: range.firstHour, to: range.lastHour, width: at.width } }),
       signal, value => validateStockpileChart(value, lines.length), track.source, restart, summaries => publish(keyed(summaries))));
     }, client);
   const [hover, setHover] = useState<number | null>(null);
   const tag = hover === null ? null : holderAt(holders, hover);
-  const pointed = useProduct<StockpileAtReply>(client, tag && hover !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'equipment-stockpile-at', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hover } } : null, active, validateStockpileAt, track.source);
+  const hoverAt = gate.recorded(hover);
+  const pointed = useProduct<StockpileAtReply>(client, tag && hoverAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'equipment-stockpile-at', params: { branchId: track.branch.id, country: countryFromKey(tag), hour: hoverAt } }) : null, active, validateStockpileAt, track.source);
   const data = useMemo(() => catalogue && pointed.data && hover !== null
     ? stockpileView(catalogue, atReply(pointed.data, repliedCells(pointed.data).read(), hover, track.branch.id), hover) : undefined,
   [catalogue, pointed.data, hover, track.branch.id]);

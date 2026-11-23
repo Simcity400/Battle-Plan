@@ -42,7 +42,7 @@ for (const completedCount of [0, 3]) test(`Whole campaign includes its unfinishe
     const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/national-focus/NationalFocusWidget.tsx');
     const props = { widget: { id: 'focus', kind: 'national-focus', trackIds: ['track'], countries: { kind: 'tags', tags: ['synthetic'] }, time: { mode: 'campaign' } },
       runtime: { client: {}, tracks: [{ id: 'track', axisOffset: 0, branch: { id: 'branch', firstHour: 0, lastHour: 30 },
-        source: { id: 'source', revision: '1' } }], clock: { getHour: () => 30 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
+        source: { id: 'source', revision: '1', metadata: { campaignKey: 'campaign', playerCountryId: null, countries: [] } } }], clock: { getHour: () => 30 } }, active: true, headerSlot: null, onDiagnostics() {} } as unknown as WidgetProps;
     const markup = renderToStaticMarkup(createElement(Widget, props));
     assert.deepEqual(host.__focusListInteractive, [...Array.from({ length: completedCount }, () => true), false],
       'completed rows are keyboard destinations; the unfinished ordered row is excluded');

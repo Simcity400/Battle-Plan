@@ -18,6 +18,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useDrawnPanel } from '../../dashboard/DrawnPanel';
 import { panelFeed } from '../../dashboard/panelFeed';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { headState } from '../../dashboard/HeadState';
 import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
@@ -31,7 +32,8 @@ import { activeTracks, choiceName, doctrineIcons, doctrineSprite, folderName, ma
 import type { TrackNumbers } from './doctrineMasteryData';
 import { OPTIONS } from './definition';
 import './doctrineMastery.css';
-import type { DoctrineMasteryReply, DoctrineRewardsReply, MasteryFolder, MasteryTrack } from '../../generated/dashboard';
+import type { DoctrineRewardsReply, MasteryFolder, MasteryTrack } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagnostics, setOption, headerSlot }: WidgetProps) {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -39,7 +41,8 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
   const valueId = useId();
   const root = useRef<HTMLDivElement | null>(null);
-  const head = useHeadProduct<DoctrineMasteryReply>(runtime, widget, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
+  const gate = useGate(runtime, widget);
+  const head = useHeadProduct(runtime, gate, 'doctrine-mastery', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateDoctrineMastery, structure: masteryStructure });
   const painted = useDrawnPanel(root, runtime.clock, panelFeed('doctrine-mastery', head, masteryStructure, widget, runtime), active);
   const offset = track?.axisOffset ?? 0;
@@ -63,8 +66,9 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
     [data, JSON.stringify(chosen)]);
   const hourShown = () => drawn.shownAt() ?? Math.floor(runtime.clock.getHour());
   const [describing, setDescribing] = useState<{ folder: number; track: number; hour: number } | null>(null);
-  const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describing.hour } } : null,
+  const describedAt = gate.recorded(describing?.hour);
+  const described = useProduct<DoctrineRewardsReply>(runtime.client, track && tag && describing && describedAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'doctrine-rewards', params: { branchId: track.branch.id, country: countryFromKey(tag), folder: describing.folder, track: describing.track, hour: describedAt } }) : null,
   active && describing !== null, validateDoctrineRewards, track?.source);
   const menu = useContextMenu('Doctrine mastery');
   const tracks = useMemo(() => new Map<string, { folder: MasteryFolder; item: MasteryTrack }>(shown.flatMap(folder =>
@@ -115,7 +119,6 @@ export default function DoctrineMasteryWidget({ widget, runtime, active, onDiagn
   if (!tag) return <WidgetState kind="empty" icon="flask" message="Choose a country in the widget's header." />;
   const shared = headState(drawn);
   if (shared) return <div ref={attach} className="doctrine-mastery">{shared}</div>;
-  if (head.read === 'off' && !data) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <div ref={attach} className="doctrine-mastery"><WidgetState kind="loading" label="Loading doctrines…" /></div>;
   const chips = data.folders.map(folder => ({ value: folder.id, label: folderName(folder), icon: folderImage(doctrineSprite(folder.icon)) }));

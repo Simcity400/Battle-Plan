@@ -48,6 +48,7 @@ impl Product for StabilityReads {
     const KEY: &'static str = "stability-reads";
     const CONTENT_DEPENDENT: bool = false;
     type Params = StabilityReadsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, from: Start, to: End];
     type Reply = StabilityReadsReply;
 
     #[cfg(any(test, feature = "export-types"))]

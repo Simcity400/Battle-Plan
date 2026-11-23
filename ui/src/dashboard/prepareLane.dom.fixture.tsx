@@ -1,3 +1,5 @@
+import { gatedHour } from '../test-support/gated.ts';
+import { followQuery } from '../test-support/gated.ts';
 import { Profiler, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
@@ -56,7 +58,7 @@ const client = {
   },
 } as unknown as DashboardClient;
 
-const ask = (product: string, hour: number): ProductRequest => ({ sourceId: 'fixture', revision: '1', product, params: { hour } });
+const ask = (product: string, hour: number) => ({ sourceId: 'fixture', revision: '1', product, params: { hour: gatedHour(hour) } }) as ProductRequest;
 
 function ShownPage() {
   const blockOf = () => Math.floor(clock.getHour() / 2880) * 2880;
@@ -190,11 +192,11 @@ const fixture = {
     } } as unknown as DashboardClient;
     const clock = new PageClock();
     clock.setBounds({ firstHour: 0, lastHour: START * 2 });
-    const store = followStore(following, { id: 'followed', revision: '1', path: 'followed', metadata: {} } as unknown as DashboardSource, clock);
+    const store = followStore(following, { source: { id: 'followed', revision: '1', path: 'followed', metadata: {} } as unknown as DashboardSource, axisOffset: 0 }, clock);
     const seen: Record<string, { status: string; hidden: boolean }> = {};
     function Widget({ copy }: { copy: string }) {
       const target = useRef<HTMLDivElement>(null);
-      const followed = useFollow(store, { copy, branchId: '1' }, target, () => {}, undefined, (_element, changed) => { changed(copy !== 'off screen'); return () => {}; });
+      const followed = useFollow(store, followQuery({ copy, branchId: '1' }), target, () => {}, undefined, (_element, changed) => { changed(copy !== 'off screen'); return () => {}; });
       seen[copy] = { status: followed.status, hidden: followed.hidden };
       return <div ref={target} />;
     }

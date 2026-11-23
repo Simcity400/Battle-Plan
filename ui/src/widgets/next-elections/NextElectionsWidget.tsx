@@ -1,4 +1,5 @@
 import { nameReadText } from '../../dashboard/nameReads.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { jumpItem } from '../../charts/jump';
@@ -31,6 +32,7 @@ import { changeHours, countdownTexts, electionValues, electionsAt, electionsStat
 import type { ElectionRow } from './nextElectionsData';
 import './nextElections.css';
 import type { PoliticsHistoryReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_ROWS: readonly ElectionRow[] = [];
 const NO_WARNINGS: string[] = [];
@@ -80,8 +82,8 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const options = resolveOptions(OPTIONS, widget.options);
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
-    params: { branchId: track.branch.id, mode: 'elections' } } : null;
+  const request = track ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: POLITICS_HISTORY,
+    params: { branchId: track.branch.id, mode: 'elections' } }) : null;
   const { data, error, retry } = useProduct<PoliticsHistoryReply>(runtime.client, request, active, validateElectionsReply, track?.source);
   const needsGroups = widget.countries.kind !== 'all';
   const groups = useCountryGroups(runtime, track, active && needsGroups);
@@ -98,7 +100,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   const following = widget.time.mode === 'follow';
   const hour = useAtHead(runtime.clock, active && following, clockHour => settledHour(hours, trackHour(clockHour)));
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
-  const inside = !!track && !!window && track.branch.firstHour <= hour && hour <= track.branch.lastHour;
+  const inside = !!track && !!window && recordedHour(track, hour) !== null;
   const read = !!data && readAt(data.known, hour);
   const view = useMemo(() => data && read && match.ready && !match.reason ? electionsAt(data, hour, match.matches) : null,
     [data, read, hour, match]);
@@ -127,7 +129,7 @@ export default function NextElectionsWidget({ widget, runtime, active, setOption
   }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="ballot" message="Load a campaign to see elections." />;
-  if (!window || !inside) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window || !inside) return <WidgetState kind="outside" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;

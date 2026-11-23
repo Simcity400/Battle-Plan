@@ -1,3 +1,4 @@
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -19,15 +20,17 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useProductWindows } from '../../dashboard/productWindows';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { airSummaryTooltip, airTooltip, momentRows, regionLabel, sideOrder, validateAirSuperiority } from '../../dashboard/airSuperiority';
 import { airMode, airParams, useAirLooks } from '../../dashboard/useAirSuperiority';
-import type { AirRankingReply, AirSide, AirSuperiorityReply, AirTimelineReply } from '../../generated/dashboard';
+import type { AirRankingReply, AirSide, AirTimelineReply } from '../../generated/dashboard';
 import { STEP, cellAt, dayOf, dayView, followedEnd, headTail, joinTiles, validateAirRanking, validateAirTimeline, viewTiles } from './airTimelineData';
 import { OPTIONS } from './definition';
 import { stickyLimit, useStickyMembers } from '../../dashboard/follow/stickyMembers.ts';
 import './airSuperiorityTimeline.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_SIDES: AirSide[] = [];
 const RANKING_MOVES = ['lastHour'] as const;
@@ -48,10 +51,12 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const firstHour = track ? widget.time.mode === 'range' && window ? window.firstHour : track.branch.firstHour : 0;
   const lastHour = !track || !window ? 0 : widget.time.mode === 'campaign' ? track.branch.lastHour : Math.min(window.lastHour, track.branch.lastHour);
   const beforeBranch = !!track && lastHour < firstHour;
-  const params = useMemo(() => track && window && !beforeBranch && !needsViewpoint ? { branchId: track.branch.id, firstHour, lastHour, ...airParams(mode),
-    ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, beforeBranch, needsViewpoint, firstHour, lastHour, mode, options.regionCount]);
-  const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'air-superiority-ranking', params } : null, RANKING_MOVES, active, validateAirRanking, track?.source);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const span = !beforeBranch ? gate.span(firstHour, lastHour) : null;
+  const params = useMemo(() => track && window && span && !needsViewpoint ? { branchId: track.branch.id, ...span, ...airParams(mode),
+    ...(mode.regions.length ? {} : { top: Number(options.regionCount) }) } : null, [track, window, span?.firstHour, span?.lastHour, needsViewpoint, mode, options.regionCount]);
+  const ranking = useFollowedProduct<AirRankingReply>(runtime.client, track && params ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-superiority-ranking', params }) : null, RANKING_MOVES, active, validateAirRanking, track?.source);
   const regionsKey = ranking.data ? JSON.stringify(ranking.data.rows.map(row => [row.region, regionLabel({ id: row.region, name: row.name })])) : null;
   const regions = useMemo(() => regionsKey === null ? [] : (JSON.parse(regionsKey) as [number, string][]).map(([id, name]) => ({ id, name })), [regionsKey]);
   const regionNames = useMemo(() => regions.map(region => String(region.id)), [regions]);
@@ -59,14 +64,14 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const tileRegions = useStickyMembers(tileScope, regionNames, stickyLimit(Math.max(1, Number(options.regionCount) || regionNames.length)));
   const regionIds = useMemo(() => tileRegions.map(Number).sort((a, b) => a - b), [tileRegions]);
   const tiling = useMemo(() => viewTiles(firstHour, lastHour), [firstHour, lastHour]);
-  const tileParams = useMemo(() => track && params && regionIds.length ? { branchId: track.branch.id, firstHour, ...airParams(mode), regions: regionIds } : null,
-    [track, params, regionIds, firstHour, mode]);
+  const tileParams = useMemo(() => track && params && span && regionIds.length ? { branchId: track.branch.id, firstHour: span.firstHour, ...airParams(mode), regions: regionIds } : null,
+    [track, params, regionIds, span?.firstHour, mode]);
   const identity = track && tileParams ? JSON.stringify([track.source.id, track.source.revision, tileParams]) : null;
-  const tileRequest = useCallback((tile: number) => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority-timeline',
-    params: { ...tileParams!, lastHour: tile * STEP + STEP - 1, tile } }), [track, tileParams]);
+  const tileRequest = useCallback((tile: number) => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'air-superiority-timeline',
+    params: { ...tileParams!, lastHour: gate.within(tile * STEP + STEP - 1)!, tile } })), [track, tileParams, gate.within]);
   const tiles = useProductWindows<AirTimelineReply>(runtime.client, identity, tileRequest, tiling.whole, active, validateAirTimeline, track?.source);
-  const cut = useProduct<AirTimelineReply>(runtime.client, track && tileParams && tiling.cut !== null ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'air-superiority-timeline', params: { ...tileParams, lastHour, tile: tiling.cut } } : null, active, validateAirTimeline, track?.source);
+  const cut = useProduct<AirTimelineReply>(runtime.client, track && tileParams && tiling.cut !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'air-superiority-timeline', params: { ...tileParams, lastHour: span!.lastHour, tile: tiling.cut } }) : null, active, validateAirTimeline, track?.source);
   const order = useMemo(() => [...tiling.whole, ...(tiling.cut === null ? [] : [tiling.cut])], [tiling]);
   const replies = useMemo(() => order.map(tile => tile === tiling.cut ? cut.data : tiles.data.get(tile)), [order, tiling.cut, cut.data, tiles.data]);
   const spans = useMemo(() => order.map(tile => ({ firstHour: Math.max(firstHour, tile * STEP), lastHour: Math.min(lastHour, tile * STEP + STEP - 1) })), [order, firstHour, lastHour]);
@@ -74,7 +79,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   const hasData = data !== undefined;
   const heading = following && hasData && !needsViewpoint && regions.length > 0;
   const momentParams = useMemo(() => heading ? airParams(mode) : null, [heading, mode]);
-  const head = useHeadProduct<AirSuperiorityReply>(runtime, widget, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
+  const head = useHeadProduct(runtime, gate, 'air-superiority', momentParams, { active, validate: validateAirSuperiority, structure: momentRows });
   const moment = momentParams ? head.data : undefined;
   const newest = head.current;
   const lastRead = useMemo(() => data?.days.reduce<number | null>((held, read) => read ?? held, null) ?? null, [data]);
@@ -139,7 +144,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
   [air.legend, mode.theatres.length, options.look, tokens.surface, tokens.text]);
   if (needsViewpoint) return <WidgetState kind="empty" icon="plane" message="Choose a dashboard country or a viewpoint in the widget settings." />;
   if (!track) return <WidgetState kind="empty" icon="plane" message="Load a campaign to see its air superiority." />;
-  if (!window || beforeBranch) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window || beforeBranch) return <WidgetState kind="outside" />;
   const error = ranking.error ?? [...tiles.errors.values()][0] ?? cut.error;
   if (error) return <WidgetState kind="error" failure={error} onRetry={() => { ranking.retry(); tiles.retry(); cut.retry(); }} />;
   if (!ranking.data) return <WidgetState kind="loading" label="Loading air superiority…" />;

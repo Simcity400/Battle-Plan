@@ -3,6 +3,11 @@ import type { CountryGroupReply, DiplomaticRelationsReply, ScoreboardReply } fro
 import { liveKey } from '../../charts/live.ts';
 import type { LiveValues } from '../../charts/live';
 import { NO_ROW, NOT_READ } from '../../dashboard/follow/liveCells.ts';
+import { countryKey } from '../../dashboard/countryKey.ts';
+import { countryDrillSpans } from '../../dashboard/countryIdentity.ts';
+import type { CountryDrillHistory } from '../../dashboard/countryIdentity';
+import { keyId } from '../../dashboard/keyedSeriesData.ts';
+import { runAt } from '../../charts/series.ts';
 
 export type OpinionCell = { value: number } | { unknown: true; reason: string } | null;
 
@@ -84,5 +89,16 @@ export function pairOf(value: unknown): ChosenPair | null {
 export const pairToken = (pair: ChosenPair) => JSON.stringify([pair.first, pair.second, pair.hour, pair.firstId, pair.secondId]);
 
 export const pairKeys = (pair: ChosenPair) => [{ tag: pair.first, part: String(pair.secondId) }, { tag: pair.second, part: String(pair.firstId) }];
+
+export function heldPairKeys(identities: readonly CountryDrillHistory[], pair: ChosenPair) {
+  const held = (tag: string) => {
+    const identity = runAt(identities.find(history => history.tag === tag)?.identities ?? [], pair.hour);
+    return identity ? { key: countryKey(identity.slot), spans: [...countryDrillSpans(identities, tag, pair.hour).values()].flat().sort((a, b) => a.firstHour - b.firstHour) } : null;
+  };
+  const first = held(pair.first), second = held(pair.second);
+  if (!first || !second) return null;
+  const keys = [{ tag: first.key, part: String(pair.secondId) }, { tag: second.key, part: String(pair.firstId) }];
+  return { keys, within: new Map([[keyId(keys[0]), first.spans], [keyId(keys[1]), second.spans]]) };
+}
 
 export const pairHolders = (pair: ChosenPair): HolderAt[] => [{ key: 'first', tag: pair.first, hour: pair.hour }, { key: 'second', tag: pair.second, hour: pair.hour }];

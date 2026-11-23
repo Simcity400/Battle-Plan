@@ -402,6 +402,7 @@ impl AtHour for AirMissionsAt {
     const TITLE: &'static str = "Air missions";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirMissionsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = AirMissionsReply;
     type Context = Names;
 
@@ -499,6 +500,7 @@ impl AtHour for AirMissionWingsAt {
     const TITLE: &'static str = "Air mission wings";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AirMissionWingsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, region];
     type Reply = AirMissionWingsReply;
     type Context = Names;
 

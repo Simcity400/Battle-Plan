@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useMemo, useRef, useState } from 'react';
 import { narrowTableOf } from '../../charts/table/options.ts';
 import { dayLabel } from '../../charts/draw';
@@ -9,6 +11,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { useProduct } from '../../dashboard/products';
 import { intelTooltip, intelValues, validateIntelDetails } from './intelData';
 import type { IntelDetail, IntelDetailsReply } from '../../generated/dashboard';
+import { productRequest } from '../../dashboard/request.ts';
 
 const keyOf = (row: IntelDetail) => row.key;
 const SORT = { column: 'group', direction: 'ascending' } as const;
@@ -23,14 +26,15 @@ export default function IntelSection({ widget, runtime, active, hour, playing }:
   const [group, setGroup] = useState('All intel');
   const asked = useRef<number | null>(null);
   if (hour !== null && (!playing || asked.current === null)) asked.current = hour;
-  const at = asked.current;
+  const gate = useGate(runtime, widget, SPEC, active);
+  const at = gate.recorded(asked.current);
   const validate = useMemo(() => (value: unknown) => {
     const data = validateIntelDetails(value);
     if (data.hour !== at || (country !== null && data.country !== country) || (viewer !== null && data.viewer !== viewer)) throw new Error('The intel reply belongs to another selection.');
     return data;
   }, [at, country, viewer]);
-  const read = useProduct<IntelDetailsReply>(runtime.client, track && at !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'intel-details',
-    params: { branchId: track.branch.id, hour: at, country, viewer } } : null, active, validate, track?.source);
+  const read = useProduct<IntelDetailsReply>(runtime.client, track && at !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'intel-details',
+    params: { branchId: track.branch.id, hour: at, country, viewer } }) : null, active, validate, track?.source);
   const held = useRef<IntelDetailsReply | undefined>(undefined);
   if (read.data) held.current = read.data;
   const data = read.data ?? held.current;

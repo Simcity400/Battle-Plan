@@ -22,6 +22,8 @@ impl<T: CheckpointValue> CheckpointValue for std::sync::Arc<T> {
     }
 }
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! wire_value {
     ($($ty:ty),+ $(,)?) => {
         $(impl $crate::checkpoint::values::CheckpointValue for $ty {
@@ -35,7 +37,7 @@ macro_rules! wire_value {
         })+
     };
 }
-pub(crate) use wire_value;
+pub use crate::wire_value;
 
 wire_value!(
     u8,
@@ -56,29 +58,9 @@ wire_value!(
     PowerDailyCostKind,
     GovernmentCause,
     PowerAction,
-    crate::event_feed_rows::EventFeedSource,
-    crate::event_feed_rows::EventFeedCoverage,
-    crate::event_feed_rows::EventFeedRoute,
-    crate::event_feed_rows::EventFeedHistoryRow,
-    crate::event_feed_rows::EventFeedScope,
-    crate::event_feed_rows::EventFeedScript,
-    crate::event_feed_rows::EventFeedCountry,
-    crate::event_feed_rows::EventFeedEvent,
-    NuclearStrikePart,
-    MapEventFaults,
-    MapEventFamilyHealth,
-    MapEventBuildingReason,
-    MapEventPayload,
     Retired,
     PacketHour,
-    FuelDemandHour,
-    SparseBytes,
     StrategicAction,
-    LaunchNavalBases,
-    ReservedCountryIntelSample,
-    TemplateNameValue,
-    SpottingLanes,
-    UnitCombatReference,
 );
 
 impl<T: Value + Default> CheckpointValue for RetiredNested<T> {
@@ -194,26 +176,9 @@ impl<T: CheckpointValue> CheckpointValue for Witnessed<T> {
     }
 }
 
-impl CheckpointValue for SpottingSample {
-    const MINIMUM_BYTES: usize = 1;
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
-        match self {
-            Self::Recorded(province) => {
-                Value::encode(&0_u8, output)?;
-                CheckpointValue::encode(province, output)
-            }
-            Self::Derived => Value::encode(&1_u8, output),
-        }
-    }
-    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        match input.u8()? {
-            0 => CheckpointValue::decode(input).map(Self::Recorded),
-            1 => Ok(Self::Derived),
-            _ => Err(invalid("invalid checkpoint spotting sample")),
-        }
-    }
-}
 
+#[macro_export]
+#[doc(hidden)]
 macro_rules! structure {
     ($ty:ty { $($field:ident: $field_ty:ty),* $(,)? }) => {
         impl $crate::checkpoint::values::CheckpointValue for $ty {
@@ -229,51 +194,4 @@ macro_rules! structure {
         }
     };
 }
-pub(crate) use structure;
-
-structure!(DivisionSupplyFooter {
-    asked: i64, received: i64, from_state: i64, air_drops: i64, disruption: i64,
-    division_demand: UnitSupplyDemand, airplane_demand: UnitSupplyDemand,
-    ship_demand: UnitSupplyDemand, origins: Option<Vec<UnitSupplyOrigin>>,
-});
-
-structure!(LandCombatSideDetails {
-    committed: Vec<u64>, reserves: Vec<u64>, tactic_id: i32, tactic_kind: u8,
-    tactic_counter_id: u32, tactic_token: Vec<u8>, air_counts: Vec<i32>,
-    anti_air_attack: RetiredKept<i64>, air_kills: u32, damage: [i64; 2],
-    ground_damage: RetiredNested<[i64; 2]>, prevented_damage: RetiredKept<[i64; 2]>,
-    organisation_loss_sum: i64, organisation_loss_count: u32, commander: u64,
-    commander_skill: i32, commander_category: i32, commander_country: u32,
-    commander_experience: RetiredNested<i64>, commander_name_token: Vec<u8>,
-    commander_description_token: RetiredNested<Vec<u8>>, commander_formation: u64,
-    presentation: CombatCommanderPresentation, traits: Vec<LandCombatCommanderTrait>,
-    timed_traits: RetiredNested<Vec<LandCombatCommanderTimedTrait>>,
-    learning_traits: RetiredNested<Vec<LandCombatCommanderLearningTrait>>,
-});
-
-impl CheckpointValue for FuelDemandPart {
-    const MINIMUM_BYTES: usize = 1;
-    fn encode(&self, output: &mut Vec<u8>) -> io::Result<()> {
-        Value::encode(&self.kind(), output)?;
-        match self {
-            Self::Division(value) | Self::TaskForce(value) => {
-                CheckpointValue::encode(value, output)
-            }
-            Self::Group(value) => CheckpointValue::encode(value, output),
-            Self::Fleet(value) => CheckpointValue::encode(value, output),
-            Self::Site(value) => CheckpointValue::encode(value, output),
-            Self::Context(value) => CheckpointValue::encode(value, output),
-        }
-    }
-    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
-        Ok(match input.u8()? {
-            0 => Self::Division(CheckpointValue::decode(input)?),
-            1 => Self::Group(CheckpointValue::decode(input)?),
-            2 => Self::Fleet(CheckpointValue::decode(input)?),
-            3 => Self::TaskForce(CheckpointValue::decode(input)?),
-            4 => Self::Site(CheckpointValue::decode(input)?),
-            5 => Self::Context(CheckpointValue::decode(input)?),
-            _ => return Err(invalid("invalid checkpoint fuel demand part")),
-        })
-    }
-}
+pub use crate::structure;

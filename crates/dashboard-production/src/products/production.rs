@@ -185,15 +185,7 @@ pub fn parse_key(key: &str) -> Option<(u64, u32)> {
     Some((handle.parse().ok()?, appearance))
 }
 
-pub fn link_slots(recording: &Recording, run: u32, hour: i32) -> io::Result<BTreeMap<u32, u32>> {
-    let slot = dashboard_declare::field(TableId::CountryLinks, "canonical_slot")?;
-    let links = read::Read { table: TableId::CountryLinks, columns: Some(&[slot]), keys: read::Keys::All };
-    let snapshot = read::at(recording, run, &[links], hour)?.remove(0);
-    let view = snapshot.view();
-    Ok(snapshot.rows.iter().filter_map(|&(key, row)| Some((key as u32, view.number(slot, row)? as u32))).collect())
-}
-
-pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
+pub fn appearances(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>, from: i32, to: i32, lines: &dyn Fn(u32) -> io::Result<std::sync::Arc<RunLines>>) -> io::Result<Vec<Appearance>> {
     let recording = query.replay.recording();
     let mut pieces: BTreeMap<u64, Vec<Piece>> = BTreeMap::new();
     for stretch in query.timeline.within(from, to) {
@@ -202,25 +194,46 @@ pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: 
             continue;
         }
         let index = lines(stretch.run)?;
-        let slots = link_slots(recording, stretch.run, stretch.last)?;
+        let links = dashboard_query::cost::storage(|| dashboard_base::queries::country_ids::run_links(recording, stretch.run))?;
         for run in &held {
             let Holder::Found { slot, .. } = run.holder else { continue };
-            for life in &index.lines {
-                if slots.get(&life.country) != Some(&slot) {
-                    continue;
+            let spans: Vec<(i32, i32)> = match within {
+                None => vec![(run.first, run.last)],
+                Some(within) => within.iter().map(|span| (run.first.max(span.first_hour), run.last.min(span.last_hour))).filter(|(first, last)| first <= last).collect(),
+            };
+            for (held_from, held_to) in spans {
+                for life in &index.lines {
+                    let from = life.first.max(held_from);
+                    if from > life.last.min(held_to) {
+                        continue;
+                    }
+                    for (linked, first, owned_to) in links.within(life.country, from, held_to) {
+                        let last = owned_to.min(life.last);
+                        if linked == Some(slot) && first <= last {
+                            pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from, held_to: owned_to });
+                        }
+                    }
                 }
-                let (first, last) = (life.first.max(run.first), life.last.min(run.last));
-                if first > last {
-                    continue;
-                }
-                pieces.entry(life.handle).or_default().push(Piece { run: stretch.run, first, last, starts_segment: true, held_from: run.first, held_to: run.last });
+            }
+        }
+    }
+    let mut runs_of: BTreeMap<u64, Vec<u32>> = pieces.keys().map(|handle| (*handle, Vec::new())).collect();
+    for stretch in query.timeline.within(query.timeline.first, query.timeline.last) {
+        let index = lines(stretch.run)?;
+        for life in &index.lines {
+            if let Some(runs) = runs_of.get_mut(&life.handle)
+                && life.first <= stretch.last
+                && stretch.first <= life.last
+                && !runs.contains(&stretch.run)
+            {
+                runs.push(stretch.run);
             }
         }
     }
     let mut out = Vec::new();
     for (handle, mut held) in pieces {
         held.sort_unstable_by_key(|piece| piece.first);
-        let mut appearance = 0;
+        let runs = runs_of.get(&handle).map(Vec::as_slice).unwrap_or_default();
         let mut current: Option<Appearance> = None;
         for mut piece in held {
             let previous = current.as_ref().and_then(|current| current.pieces.last());
@@ -230,7 +243,7 @@ pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: 
                 Some(current) if joins => current.pieces.push(piece),
                 _ => {
                     out.extend(current.take());
-                    appearance += 1;
+                    let appearance = runs.iter().position(|run| *run == piece.run).map_or(0, |at| at + 1);
                     current = Some(Appearance { key: format!("{handle}#{appearance}"), handle, pieces: vec![piece] });
                 }
             }
@@ -241,15 +254,21 @@ pub fn appearances(query: &Query<'_>, tag: &Country, from: i32, to: i32, lines: 
     Ok(out)
 }
 
-pub fn held_hours(query: &Query<'_>, tag: &Country, from: i32, to: i32) -> Vec<HourSpan> {
+pub fn held_hours(query: &Query<'_>, tag: &Country, within: Option<&[HourSpan]>, from: i32, to: i32) -> Vec<HourSpan> {
     let mut spans: Vec<HourSpan> = Vec::new();
     for run in query.holders.within(tag, from, to) {
         if !matches!(run.holder, Holder::Found { .. }) {
             continue;
         }
-        match spans.last_mut() {
-            Some(last) if last.last_hour.checked_add(1) == Some(run.first) => last.last_hour = run.last,
-            _ => spans.push(HourSpan { first_hour: run.first, last_hour: run.last }),
+        let clipped: Vec<(i32, i32)> = match within {
+            None => vec![(run.first, run.last)],
+            Some(within) => within.iter().map(|span| (run.first.max(span.first_hour), run.last.min(span.last_hour))).filter(|(first, last)| first <= last).collect(),
+        };
+        for (first, last) in clipped {
+            match spans.last_mut() {
+                Some(held) if held.last_hour.checked_add(1) == Some(first) => held.last_hour = last,
+                _ => spans.push(HourSpan { first_hour: first, last_hour: last }),
+            }
         }
     }
     spans

@@ -31,6 +31,7 @@ import type { FactionOrder, MemberOrder } from './factionsData';
 import './factions.css';
 import FactionDrill from './FactionDrill';
 import { motionOf } from '../../charts/easing.ts';
+import { recordedHour } from '../../dashboard/regionTime.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -60,7 +61,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   structure.current = hour => `${changesBy(changes, Math.floor(hour + axisOffset))}:${clock.getSnapshot().playing ? '' : hour}`;
   const liveHead = useMemo(() => followsClock && track ? { read: () => clock.getSnapshot().position + axisOffset,
     subscribe: (changed: () => void) => clock.subscribeFrame(changed) } : undefined, [followsClock, track, clock, axisOffset]);
-  useShownEachFrame(clock, () => data && track ? liveHead ? Math.floor(Math.min(liveHead.read(), track.branch.lastHour)) : at : null);
+  useShownEachFrame(clock, () => data && track ? liveHead ? recordedHour(track, liveHead.read()) : at : null);
   const dashboardTag = track ? defaultCountryKey(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
   const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour), [widget.countries, dashboardTag, data, at, lastHour]);
@@ -97,7 +98,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
 
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to see its factions." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="outside" />;
   const failure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (failure && !data) return failure;
   if (!data) return <>{failure}<WidgetState kind="loading" label="Loading factions…" /></>;

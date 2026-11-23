@@ -1,3 +1,5 @@
+import type { CountryAt, Gate } from '../../dashboard/regionGate';
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useMemo, useState } from 'react';
 import BreakdownChart from '../../charts/drill/BreakdownChart';
 import type { BreakdownSeries } from '../../charts/drill/BreakdownChart';
@@ -16,7 +18,7 @@ import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
 import { keyId } from '../../dashboard/keyedSeriesData';
 import type { ReachedKeyLine } from '../../dashboard/keyedSeriesData';
-import { useKeyedSeries } from '../../dashboard/keyedSeries';
+import { ownerKeys, useKeyedSeries } from '../../dashboard/keyedSeries';
 import { mostNamed } from '../../dashboard/tiles/view.ts';
 import type { ResourceBalanceReply, ResourceInfo } from '../../generated/dashboard';
 import ResourceDeals from './ResourceDealsView';
@@ -37,9 +39,9 @@ function partsAt(values: LiveValues<number>, id: number, decimals: number, colou
   return { balance, groups, other };
 }
 
-export default function ResourceBreakdown({ runtime, track, active, tag, resource, data, live, hour, following, tokens, extent, playhead,
+export default function ResourceBreakdown({ runtime, gate, track, active, history, resource, data, live, hour, following, tokens, extent, playhead,
   liveHead, playback, afterPlayhead, windowHours, hoursPerSecond, onPick, onContextMenu }: {
-  runtime: WidgetRuntime; track: BoundTrack; active: boolean; tag: string; resource: ResourceInfo; data: ResourceBalanceReply;
+  runtime: WidgetRuntime; gate: SeriesGate & Pick<Gate, 'recorded'>; track: BoundTrack; active: boolean; history: CountryAt['history']; resource: ResourceInfo; data: ResourceBalanceReply;
   live: Live<LiveValues<number>>; hour: number | null; following: boolean; tokens: ChartTokens; extent: [number, number]; playhead: number | null;
   liveHead?: { read(): number; subscribe(changed: () => void): () => void }; playback: PlaybackMode; afterPlayhead: boolean; windowHours: number;
   hoursPerSecond: number | undefined; onPick: (hour: number) => void; onContextMenu: (hour: number, x: number, y: number) => void;
@@ -68,20 +70,21 @@ export default function ResourceBreakdown({ runtime, track, active, tag, resourc
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const element = useMemo(() => ({ current: root }), [root]);
-  const keys = useMemo(() => [{ tag, part: String(resource.id) }], [tag, resource.id]);
-  const spec = (index: number) => ({ source: track.source, branchId: track.branch.id, family: PART_FAMILIES[index], keys, partBits: 32, lastHour: track.branch.lastHour });
-  const head = following ? null : hour;
+  const { keys, within } = useMemo(() => ownerKeys(history, [String(resource.id)]), [history, resource.id]);
+  const spec = (index: number) => ({ source: track.source, branch: track.branch, family: PART_FAMILIES[index], keys, within, partBits: 32, lastHour: track.branch.lastHour });
+  const head = following ? null : gate.recorded(hour);
+  const hovered = gate.recorded(hoverHour);
   const series = [
-    useKeyedSeries(runtime.client, runtime.clock, spec(0), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(1), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(2), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(3), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(4), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(5), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(6), head, hoverHour, following, active, element),
-    useKeyedSeries(runtime.client, runtime.clock, spec(7), head, hoverHour, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(0), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(1), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(2), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(3), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(4), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(5), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(6), head, hovered, following, active, element),
+    useKeyedSeries(runtime.client, runtime.clock, gate, spec(7), head, hovered, following, active, element),
   ];
-  const id = keyId(keys[0]);
+  const id = keys[0] ? keyId(keys[0]) : '';
   const summaries = series.map(item => item.summaryByKey.get(id)?.summary);
   const lines = series.map(item => item.lines[0] as ReachedKeyLine | undefined);
   const chartSeries = useMemo<BreakdownSeries[]>(() => RESOURCE_PARTS.map((part, index) => ({

@@ -1,130 +1,25 @@
 pub use crate::checkpoint::endpoint::EndpointRows;
+pub use replay_rows::rows::ops;
 pub use replay_rows::rows::*;
+pub use replay_rows_world::*;
+pub use replay_rows_events::*;
+pub use replay_rows_air::*;
+pub use replay_rows_naval::*;
+pub use replay_rows_weather::*;
+pub use replay_rows_land::*;
+pub use replay_rows_presentation::*;
+pub use replay_rows_wars::*;
 pub use replay_rows_economy::*;
-pub use replay_rows_projects::{
-    AceRangeInputRow,
-    NukeRow,
-    ProjectBreakthroughRow,
-    ProjectHistoryRow,
-    ProjectProgramRow,
-    ProjectRow,
-    RaidAirScoreRow,
-    RaidAirSiteRow,
-    RaidCooldownRow,
-    RaidCountryInputRow,
-    RaidCountryRow,
-    RaidEquipmentRow,
-    RaidFacilityRow,
-    RaidIntelInputRow,
-    RaidPathDistanceRow,
-    RaidPlayerAllowedTypeRow,
-    RaidRow,
-    RaidSpeedInputRow,
-    RaidTargetRow,
-    RaidTargetStatusRow,
-    RaidTooltipOperandRow,
-};
-pub use replay_rows_intelligence::{
-    ActiveAbilityRow,
-    AdvisorRoleRow,
-    AdvisorTokenRow,
-    AgencyOperationBuffersRow,
-    AgencyUpgradeLevelRow,
-    AvailableAdvisorRow,
-    CapturedOperativeReferenceRow,
-    CharacterOperativeRow,
-    CharacterRoleTraitRow,
-    CharacterRow,
-    CountryCharacterRow,
-    CountryIntelRow,
-    CountryLeaderRoleRow,
-    CryptologyRow,
-    FactionAdvisorRow,
-    HiredAdvisorRow,
-    IntelContributionRow,
-    IntelNetworkAuxiliaryRow,
-    IntelNetworkRow,
-    IntelNetworkSummaryRow,
-    IntelSourceRow,
-    IntelligenceAgencyRow,
-    OperationAssignmentRow,
-    OperationCompletionRow,
-    OperationRow,
-    OperationTokensRow,
-    OperativeMembershipRow,
-    OperativeMissionRow,
-    PropagandaEffortRow,
-    ScientistDailyRow,
-    ScientistRow,
-    ScientistSkillRow,
-    StrategicOperativeRow,
-    UnitIntelRow,
-    UnitLeaderRow,
-    UnitLeaderTraitExperienceRow,
-    UnitLeaderTraitRow,
-};
-pub use replay_rows_politics::{
-    ActiveIdeaRow,
-    AutonomyRow,
-    BorderConflictRow,
-    CapitulationRow,
-    CompletedFocusRow,
-    CountryCivilWarRow,
-    CountryCollaborationRow,
-    CountryCommandPowerRow,
-    CountryExperienceGainRow,
-    CountryExperienceRow,
-    CountryOccupationReserveManpowerRow,
-    CountryStabilityInputRow,
-    CountryStabilityLineRow,
-    CountryWarRow,
-    DecisionCountsRow,
-    DecisionRandomItemRow,
-    DecisionRow,
-    DynamicModifierRow,
-    FocusRow,
-    GlobalSavedEventTargetRow,
-    IncomingDiplomaticActionRow,
-    LexicalTokenRow,
-    ModifierDefinitionRow,
-    OccupationSettingsRow,
-    OwnedWargoalRow,
-    PartyLeaderRow,
-    PeaceConferenceRow,
-    PoliticalPartyRow,
-    PoliticsRow,
-    PowerBalanceMemberRow,
-    PowerBalanceOverrideRow,
-    PowerBalanceRangeRow,
-    PowerBalanceRow,
-    RelationLinkRow,
-    RelationOpinionRow,
-    RelationTupleRow,
-    ResearchAppliedBonusRow,
-    ResearchInputRow,
-    ResearchModifierRow,
-    ResearchSlotRow,
-    ResearchTechnologyRow,
-    ScriptFlagRow,
-    ScriptVariablesRow,
-    SliceReadRow,
-    StateAssignedManpowerRow,
-    StateCoreRow,
-    StateDynamicModifierRow,
-    StateFlagRow,
-    StateGarrisonRow,
-    StateOccupationLawRow,
-    StateResistanceRow,
-    SubjectRow,
-    TechSharingGroupRow,
-    TechSharingMemberRow,
-    TechnologyDefinitionRow,
-    ThreatCountryAggregateRow,
-    ThreatSourceRow,
-    TimedIdeaRow,
-    WorldTensionRow,
-};
+pub use replay_rows_projects::*;
+pub use replay_rows_intelligence::*;
+pub use replay_rows_politics::*;
 pub use replay_rows_derived::*;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_rows {
+    pub use replay_rows::rows::test_rows::*;
+    pub use replay_rows_land::test_rows::*;
+}
 use crate::codec::{Decoder, invalid_static as invalid, put_varint};
 use crate::display::Step;
 use engine_allocation as allocation;

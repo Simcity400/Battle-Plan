@@ -1,3 +1,5 @@
+import { useCampaignGate, useGate, type Gate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { OptionChoices, WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
@@ -8,6 +10,7 @@ import { validateWeather, weatherWindow } from './weatherData.ts';
 import type { WeatherReply, WeatherShow } from './weatherData';
 import { OPTIONS } from './definition';
 import { busyWait } from '../../shell/busy.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const WIDTH_STEP = 256;
 export const stepWidth = (pixels: number) => Math.ceil(Math.max(1, pixels) / WIDTH_STEP) * WIDTH_STEP;
@@ -19,14 +22,15 @@ export function weatherShow(widget: WidgetSpec): { show: WeatherShow; chosen: st
   return { show, chosen: options.modifier ? contentKey(String(options.modifier)) : null };
 }
 
-export function weatherRequest(widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number) {
+export function weatherRequest(gate: Pick<Gate, 'span'>, widget: WidgetSpec, track: BoundTrack | undefined, extent: readonly [number, number] | null, pixels: number) {
   const { show, chosen } = weatherShow(widget);
   const window = track && extent ? weatherWindow(track.branch, extent, pixels) : null;
-  if (!track || !window || window.first > window.last) return null;
+  const span = window && window.first <= window.last ? gate.span(window.first, window.last) : null;
+  if (!track || !window || !span) return null;
   const asked = show === 'modifiers' ? 'modifier' : show;
-  return { sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather', params: {
-    branchId: track.branch.id, firstHour: window.first, lastHour: window.last, width: window.width, show: asked,
-    ...asked === 'modifier' && chosen ? { modifier: chosen } : {} } };
+  return productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather', params: {
+    branchId: track.branch.id, ...span, width: window.width, show: asked,
+    ...asked === 'modifier' && chosen ? { modifier: chosen } : {} } });
 }
 
 function useWindowWidth(): number {
@@ -44,7 +48,8 @@ export function useWeather(widget: WidgetSpec, runtime: WidgetRuntime, active: b
   const options = resolveOptions(OPTIONS, widget.options);
   const { show, chosen } = weatherShow(widget);
   const window = useWindowWidth();
-  const product = useProduct<WeatherReply>(runtime.client, weatherRequest(widget, track, extent, pixels ?? window), active, validateWeather, track?.source);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const product = useProduct<WeatherReply>(runtime.client, weatherRequest(gate, widget, track, extent, pixels ?? window), active, validateWeather, track?.source);
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, show, chosen]);
   const kept = useRef<{ client: unknown; scope: string; data: WeatherReply } | null>(null);
   if (product.data) kept.current = { client: runtime.client, scope, data: product.data };
@@ -74,8 +79,9 @@ export function useWeatherInView(widget: WidgetSpec, runtime: WidgetRuntime, act
 
 export function useWeatherChoices(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather',
-    params: { branchId: track.branch.id, firstHour: track.branch.lastHour, lastHour: track.branch.lastHour, width: 1, show: 'conditions' } } : null;
+  const end = useCampaignGate(runtime, widget).hour;
+  const request = track && end !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'regional-weather',
+    params: { branchId: track.branch.id, firstHour: end, lastHour: end, width: 1, show: 'conditions' } }) : null;
   const { data } = useProduct<WeatherReply>(runtime.client, request, true, validateWeather, track?.source);
   const air = useAirTheatres(track, track?.branch.lastHour ?? null, true);
   return {

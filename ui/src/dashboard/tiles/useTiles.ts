@@ -12,6 +12,8 @@ import { TileView, tileCache, unrecordedReason } from './view.ts';
 import { prepareGate, preparing } from '../prepare.ts';
 import type { TiledLine, TileViewport } from './view.ts';
 import { inFrame } from '../frameUpdates.ts';
+import { productRequest } from '../request.ts';
+import type { BoundWindow } from '../regionTime';
 
 export interface TileSeries {
   source: Pick<DashboardSource, 'id' | 'revision'>;
@@ -19,6 +21,7 @@ export interface TileSeries {
   family: Record<string, unknown>;
   tags: readonly string[];
   within?: ReadonlyMap<string, readonly HourSpan[]>;
+  span: (firstHour: number, lastHour: number) => BoundWindow | null;
   lastHour: number;
   marks?: boolean;
 }
@@ -38,9 +41,9 @@ export function useTiles(client: DashboardClient, series: TileSeries | null, act
     const lane = latest.current;
     if (!active || !key || !lane) return;
     const tileRequest = (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined): ProductRequest =>
-      ({ sourceId: lane.source.id, revision: lane.source.revision, product: 'series-tiles',
+      (productRequest({ sourceId: lane.source.id, revision: lane.source.revision, product: 'series-tiles',
         params: { branchId: lane.branchId, family: lane.family, binHours, index, countries: tags.map(countryFromKey),
-          ...(within ? { within: tags.map(tag => [countryFromKey(tag), within[tag] ?? []]) } : {}), ...(lane.marks ? { withMarks: true } : {}) } });
+          ...(within ? { within: tags.map(tag => [countryFromKey(tag), (within[tag] ?? []).flatMap(span => lane.span(span.firstHour, span.lastHour) ?? [])] as const) } : {}), ...(lane.marks ? { withMarks: true } : {}) } }));
     const ask = async (binHours: number, index: number, tags: readonly string[], within: Record<string, HourSpan[]> | undefined) => {
       const request = tileRequest(binHours, index, tags, within);
       return validateProductReply(await client.product<TileReply>(request, new AbortController().signal), request).data;

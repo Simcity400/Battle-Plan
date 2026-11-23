@@ -120,6 +120,7 @@ impl Product for PoliticsStateHistory {
     const KEY: &'static str = "politics-state-history";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PoliticsHistoryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, mode, country];
     type Reply = PoliticsHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]

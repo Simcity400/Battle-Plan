@@ -12,4 +12,4 @@ The base badge separates stationing, own and foreign occupancy, and access. A pa
 
 Strategic locations retain the province's own order, followed by its own state's locations anchored on it. An anchor in another state never joins that list. The first location determines the sprite name. Radar is admitted by a group hosted in the state by the viewer, a member of its faction, a direct subject or a direct overlord. An existing controller's hosted group can keep the icon. Coverage does not need to include a particular part of the state. An unresolved relationship or missing controller is named when it could affect admission. The native camera's cutoffs remain strict, and the free camera applies them at the projected icon anchor.
 
-[Base counter reads and placement](../../crates/viewer-counters/src/map/counters/bases.rs) · [Building and base cases](../../crates/viewer-counters/src/map/counters/bases/tests.rs)
+[Base counter reads and placement](../../crates/viewer-counters-naval/src/bases.rs) · [Building and base cases](../../crates/viewer-counters-naval/src/bases/tests.rs)

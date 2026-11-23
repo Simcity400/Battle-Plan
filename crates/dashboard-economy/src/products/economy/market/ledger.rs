@@ -139,6 +139,7 @@ impl Product for MarketLedger {
     const KEY: &'static str = "market-ledger";
     const CONTENT_DEPENDENT: bool = true;
     type Params = MarketLedgerParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, facets, from: Start, to: End, cursor, pageSize, "facets[].countries[]", "facets[].values[]"];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]

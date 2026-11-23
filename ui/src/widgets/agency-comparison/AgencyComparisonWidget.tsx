@@ -12,6 +12,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { usePushedLooksHour } from '../../dashboard/pushedLooks.ts';
 import { nameReadText } from '../../dashboard/nameReads';
 import { resolveOptions } from '../../dashboard/options';
@@ -24,7 +25,7 @@ import { agencyName, agencyRows, agencyStructure, agencyTooltip, operativesCell,
 import type { AgencyRankField } from './types';
 import './agencyComparison.css';
 import IntelSection from './IntelSection';
-import type { Agency, AgencyComparisonReply } from '../../generated/dashboard';
+import type { Agency } from '../../generated/dashboard';
 
 const NO_ROWS: readonly Agency[] = [];
 const rowKey = (agency: Agency) => String(agency.country.id);
@@ -48,7 +49,7 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, lastHour), [widget.countries, fallback, groups.data, lastHour]);
   const includeUncreated = options.includeUncreated === true;
   const params = useMemo(() => track ? { includeUncreated } : null, [track, includeUncreated]);
-  const head = useHeadProduct<AgencyComparisonReply>(runtime, widget, 'agency-comparison', params, { active, validate: validateAgencies, structure: agencyStructure });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'agency-comparison', params, { active, validate: validateAgencies, structure: agencyStructure });
   useShownEachFrame(runtime.clock, () => head.shownAt(), head.live);
   const hour = head.at ?? head.hour ?? lastHour;
   const ready = top !== null || match.ready;
@@ -90,7 +91,7 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
 
   const body = () => {
     if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
-    if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (head.read === 'off') return <WidgetState kind="outside" />;
     if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
     const groupFailure = needsGroups && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
     if (groupFailure && !groups.data) return groupFailure;

@@ -6,4 +6,4 @@ Prepare camera-independent candidates first. A presented frame offers their owne
 
 The region icon uses the seam-unwrapped arithmetic mean of its province icons, with its first province as seam reference and height from terrain. The theatre icon takes the arithmetic mean of the region positions in their recorded order without another seam adjustment. It does not enter the counter grouping pass. Retain the native window resources and its zero priority. Depth gives the order for pool requests and paint, with nearer pins on top. Use the recorded theatre country count and emblem, and append the content's miniature suffix. A refused button hit shape also withholds its drawing so a visible pin cannot silently pass clicks to icons beneath it. Hover owns the union of theatre regions and clears it when the pointer leaves.
 
-[Faction pin preparation and drawing](../../crates/viewer-counters/src/map/counters/faction_pings.rs)
+[Faction pin preparation and drawing](../../crates/viewer-counters/src/counters/faction_pings.rs)

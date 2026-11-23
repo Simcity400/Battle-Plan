@@ -1,3 +1,5 @@
+import { useGate } from '../../dashboard/regionGate';
+import { axisAt, SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { nameReadMetadata } from '../../dashboard/nameReads.ts';
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -87,18 +89,19 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, lastHour]);
   const following = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const [rootElement, setRoot] = useState<HTMLDivElement | null>(null);
   const root = useMemo(() => ({ current: rootElement }), [rootElement]);
-  const store = useMemo(() => track ? followStore(runtime.client, track.source, runtime.clock, track.axisOffset) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
-  const headQuery = useMemo(() => following && active && track && resolved.tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
-  [following, active, track?.branch.id, config.measure, resolved.tags]);
+  const store = useMemo(() => track ? followStore(runtime.client, track, runtime.clock) : null, [runtime.client, runtime.clock, track?.source, track?.axisOffset]);
+  const headQuery = useMemo(() => following && active && track && resolved.tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+    family: { kind: 'country-measure', measure: config.measure }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
+  [following, active, track?.branch.id, config.measure, resolved.tags, gate.follow]);
   const shown = useShownHour();
   const followed = useFollow(store, headQuery, root, useCallback((entry: FollowEntry) => shown(shownThrough(entry)), [shown]));
   const followedHead = followsHead(followed);
-  const ceilingQuery = useMemo(() => following && active && showCeiling && track && resolved.tags.length ? { product: 'series-state', params: { branchId: track.branch.id,
-    family: { kind: 'country-stability', measure: 'maxCommandPower' }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag), hour: 0 })) } } : null,
-  [following, active, showCeiling, track?.branch.id, resolved.tags]);
+  const ceilingQuery = useMemo(() => following && active && showCeiling && track && resolved.tags.length ? gate.follow({ product: 'series-state', params: { branchId: track.branch.id,
+    family: { kind: 'country-stability', measure: 'maxCommandPower' }, reads: resolved.tags.map(tag => ({ country: countryFromKey(tag) })) } }) : null,
+  [following, active, showCeiling, track?.branch.id, resolved.tags, gate.follow]);
   const ceilingFollowed = useFollow(store, ceilingQuery, root, NO_PAINT);
   const ceilingHead = followsHead(ceilingFollowed);
   const headFollowed = followedHead && (!showCeiling || ceilingHead);
@@ -109,14 +112,15 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = playhead ?? extent[1];
+  const headAt = following ? gate.hourAt(axisAt(playbackHour)) : gate.hour;
   const axisOffset = track?.axisOffset ?? 0;
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
   const membership = resolved.membership ?? undefined;
-  const balances = useMeasureSeries(runtime.client, track?.source, track?.branch.id, 'country-measure', config.measure, resolved.tags,
-    following ? null : head, hoverHour, active, options.spendTicks === true, membership, lastHour, following);
-  const ceiling = useMeasureSeries(runtime.client, showCeiling ? track?.source : undefined, track?.branch.id, 'country-stability', 'maxCommandPower',
-    resolved.tags, following ? null : head, hoverHour, active && showCeiling, false, membership, lastHour, following);
+  const balances = useMeasureSeries(runtime.client, gate, track?.source, track?.branch, 'country-measure', config.measure, resolved.tags,
+    following ? null : headAt, gate.recorded(hoverHour), active, options.spendTicks === true, membership, lastHour, following);
+  const ceiling = useMeasureSeries(runtime.client, gate, showCeiling ? track?.source : undefined, track?.branch, 'country-stability', 'maxCommandPower',
+    resolved.tags, following ? null : headAt, gate.recorded(hoverHour), active && showCeiling, false, membership, lastHour, following);
   const [hoverCluster, setHoverCluster] = useChangedState<{ owner: unknown; cluster: MarkCluster | null } | null>(null);
   const [changeList, setChangeList] = useState<{ owner: unknown; id: number; tag: string; first: string; end?: string } | null>(null);
   const [changeLists, setChangeLists] = useState(0);
@@ -126,7 +130,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
     useCallback(hour => track ? resolveWindow(widget, track, runtime.tracks, hour)?.lastHour ?? null : null, [widget, track, runtime.tracks]));
   const styleAt = following && headFollowed && identityHour !== null ? identityHour
     : playhead ?? (widget.time.mode === 'range' && window ? window.lastHour : lastHour);
-  const styles = useCountryLineStyles(runtime.client, track, resolved.tags, styleAt, active);
+  const styles = useCountryLineStyles(runtime.client, gate, track, resolved.tags, styleAt, active);
   const known = styles.known;
   const lineByTag = useMemo(() => new Map(balances.lines.map(line => [line.tag, line])), [balances.lines]);
   const ceilingByTag = useMemo(() => new Map(ceiling.lines.map(line => [line.tag, line])), [ceiling.lines]);
@@ -320,7 +324,7 @@ export default function MeasureWidget({ widget, runtime, active, onDiagnostics, 
           setChangeList({ owner: balances.owner, id: changeLists + 1, tag, first, end });
         } }] : [])])} />
     </div>
-    {changeList?.owner === balances.owner && <BalanceChanges key={changeList.id} client={runtime.client} source={track.source} branchId={track.branch.id}
+    {changeList?.owner === balances.owner && <BalanceChanges key={changeList.id} client={runtime.client} gate={gate} source={track.source} branchId={track.branch.id}
       measure={config.measure} tags={resolved.tags} initialTag={changeList.tag} firstOrdinal={changeList.first} endOrdinal={changeList.end}
       digits={digits} unit={config.unit} visibleThrough={until ?? extent[1]} label={tag => labelAt(shownAt)(tag).name}
       onClose={() => setChangeList(null)} onPick={(_tag, hour) => jumpItem(runtime, track.id, hour).run()} />}

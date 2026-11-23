@@ -26,7 +26,7 @@ export function useHeadHour(clock: HeadClock, enabled: boolean, key: (hour: numb
   }, [clock, enabled, woken, frames]);
   const read = () => {
     if (!enabled) return null;
-    const hour = clock.getHour(), next = keyed.current(hour);
+    const hour = clock.getHour(), next = pausedKey(keyed.current(hour), hour, clock.getSnapshot().playing);
     return held.current = heldAt(held.current, next, hour);
   };
   useSyncExternalStore(subscribe, read, read);

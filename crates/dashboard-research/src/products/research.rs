@@ -446,6 +446,7 @@ impl Product for Research {
     const KEY: &'static str = "research";
     const CONTENT_DEPENDENT: bool = true;
     type Params = CountryParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = ResearchReply;
 
     #[cfg(any(test, feature = "export-types"))]

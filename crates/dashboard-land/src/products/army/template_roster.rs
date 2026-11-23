@@ -97,6 +97,7 @@ impl AtHour for TemplateRoster {
     const TITLE: &'static str = "Template roster";
     const CONTENT_DEPENDENT: bool = true;
     type Params = TemplateRosterParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = TemplateRosterReply;
     type Context = Arc<Localisation>;
 

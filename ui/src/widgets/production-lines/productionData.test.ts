@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveKey, valuesOf } from '../../charts/live.ts';
-import { efficiencyPercent, historyLanes, iconImage, lineKeyAt, lineValues, liveTotalText, totalText, validateAtReply, validateProductionReply, variantName, variantOf, weeklyRaw } from './productionData.ts';
+import { efficiencyPercent, historyLanes, iconImage, lineKeyAt, lineValues, liveTotalText, productionLineKey, productionLineToken, totalText, validateAtReply, validateProductionReply, variantName, variantOf, weeklyRaw } from './productionData.ts';
+import { campaignToken } from '../../dashboard/chosen.ts';
+import { setToken } from '../../dashboard/options.ts';
 import type { LineNow, ProductionLinesAtReply, ProductionLinesReply } from '../../generated/dashboard';
 
 const day = (hour: number) => `h${hour}`;
@@ -87,4 +89,11 @@ test('a picture is drawn only from an artwork URL; an image no host serves is mi
   assert.equal(iconImage(icons, 'sprite:GFX_b#2'), null, 'an unconfigured table names its images under a base no host serves');
   assert.equal(iconImage(icons, 'sprite:GFX_c#3'), null);
   assert.equal(iconImage(icons, null), null);
+});
+
+test('a chosen line reads back the key it was written with, whatever the country is named, and an older tag-based token still reads', () => {
+  assert.equal(productionLineKey('c', '1', productionLineToken('c', '1', '42#1')), '42#1');
+  assert.equal(productionLineKey('c', '1', setToken(campaignToken('c', JSON.stringify(['1', 'GER', '42#1'])))), '42#1', 'a token saved with the tag of its day');
+  assert.equal(productionLineKey('c', '2', productionLineToken('c', '1', '42#1')), null, 'another branch');
+  assert.equal(productionLineKey('other', '1', productionLineToken('c', '1', '42#1')), null, 'another campaign');
 });

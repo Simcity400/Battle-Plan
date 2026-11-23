@@ -11,6 +11,7 @@ import { selectedCountryKeys } from '../../dashboard/countrySelection';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { resolveWindow } from '../../dashboard/model';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { expiryText, fixed5, progressText, validateWargoalsReply, wargoalStructure } from './warGoalsData';
 import type { WargoalsReply } from '../../generated/dashboard';
@@ -37,7 +38,7 @@ export default function WarGoalsWidget({ widget, runtime, active, onDiagnostics 
       if (node && node.textContent !== text) node.textContent = text;
     }
   }, []);
-  const product = useHeadProduct(runtime, widget, 'wargoals', tag ? { country: countryFromKey(tag) } : null,
+  const product = useHeadProduct(runtime, useGate(runtime, widget), 'wargoals', tag ? { country: countryFromKey(tag) } : null,
     { active, validate: validateWargoalsReply, structure: wargoalStructure, paint: paintCompletions });
   const data = answersKey(product.data?.asked, tag) && product.data?.branchId === track?.branch.id ? product.data : null;
   const at = product.at ?? hour ?? 0;

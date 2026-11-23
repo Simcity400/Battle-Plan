@@ -180,6 +180,7 @@ impl AtHour for AgencyComparison {
     const TITLE: &'static str = "Agency comparison";
     const CONTENT_DEPENDENT: bool = true;
     type Params = AgencyComparisonParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, includeUncreated];
     type Reply = AgencyComparisonReply;
     type Context = Result<Arc<AgencyContent>, String>;
 

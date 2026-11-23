@@ -132,6 +132,7 @@ impl AtHour for Wargoals {
     const TITLE: &'static str = "War goals";
     const CONTENT_DEPENDENT: bool = true;
     type Params = WargoalsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = WargoalsReply;
     type Context = WargoalContent;
 

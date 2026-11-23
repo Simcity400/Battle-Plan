@@ -175,6 +175,7 @@ impl Product for LendLeaseHistory {
     const KEY: &'static str = "lend-lease-history";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = LendLeaseHistoryReply;
 
     #[cfg(any(test, feature = "export-types"))]

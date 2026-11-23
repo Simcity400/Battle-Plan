@@ -4,6 +4,7 @@ import { createServer } from 'vite';
 import type { WidgetRuntime } from './definitions';
 import type { CountrySelection, WidgetSpec } from './model';
 import type { CountryGroupReply } from '../generated/dashboard';
+import { at } from './regionTime.ts';
 
 const native = (firstHour: number, lastHour: number, countryId: number) => ({ firstHour, lastHour,
   slot: countryId === 10 ? 1 : countryId === 11 ? 2 : 3, countryId });
@@ -51,25 +52,25 @@ test.skip('actual selection hook loads manual identities and keeps literal reque
   const view = await fixture();
   try {
     const widget = view.widget({ kind: 'tags', tags: ['X'] });
-    const pending = view.countries(widget, view.runtime, 125, true);
+    const pending = view.countries(widget, view.runtime, true, at(125));
     assert.deepEqual(view.state.groupReads.at(-1), { track: 'main', active: true });
     assert.equal(pending.countries, undefined);
     assert.equal(pending.requestTags, undefined, 'pending manual picks never become an all-world request');
     view.state.groups = catalogue();
-    const selected = view.countries(widget, view.runtime, 125, true);
+    const selected = view.countries(widget, view.runtime, true, at(125));
     assert.deepEqual(new Set(selected.countries), new Set(['B', 'Y']));
     assert.deepEqual(selected.requestTags, ['X'], 'alias Y is never a new root that admits its unrelated holder');
-    assert.deepEqual(new Set(view.countries(widget, view.runtime, 105, true).countries), new Set(['X', 'B']));
-    assert.deepEqual(new Set(view.countries(widget, view.runtime, 130, true).countries), new Set(['B']), 'native gaps acquire no holder');
-    assert.deepEqual(new Set(view.countries(view.widget({ kind: 'selected' }), view.runtime, 95, true).countries), new Set(['A', 'B']));
-    const missing = view.countries(view.widget({ kind: 'tags', tags: ['unknown'] }), view.runtime, 125, true);
+    assert.deepEqual(new Set(view.countries(widget, view.runtime, true, at(105)).countries), new Set(['X', 'B']));
+    assert.deepEqual(new Set(view.countries(widget, view.runtime, true, at(130)).countries), new Set(['B']), 'native gaps acquire no holder');
+    assert.deepEqual(new Set(view.countries(view.widget({ kind: 'selected' }), view.runtime, true, at(95)).countries), new Set(['A', 'B']));
+    const missing = view.countries(view.widget({ kind: 'tags', tags: ['unknown'] }), view.runtime, true, at(125));
     assert.equal(missing.requestTags, undefined);
     assert.match(missing.selectionReason!, /Selected countries are unavailable in this campaign\./);
-    const all = view.countries(view.widget({ kind: 'all' }), view.runtime, 125, true);
+    const all = view.countries(view.widget({ kind: 'all' }), view.runtime, true, at(125));
     assert.equal(all.countries, null); assert.equal(all.requestTags, null);
     assert.equal(view.state.groupReads.at(-1)!.track, undefined);
     const group = view.widget({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false });
-    assert.deepEqual(new Set(view.countries(group, view.runtime, 125, true).countries), new Set(['Y']));
-    assert.equal(view.countries(group, view.runtime, 128, true).countries, undefined, 'hourly groups keep their own membership dates');
+    assert.deepEqual(new Set(view.countries(group, view.runtime, true, at(125)).countries), new Set(['Y']));
+    assert.equal(view.countries(group, view.runtime, true, at(128)).countries, undefined, 'hourly groups keep their own membership dates');
   } finally { await view.close(); }
 });

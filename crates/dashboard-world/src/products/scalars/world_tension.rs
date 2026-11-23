@@ -133,6 +133,7 @@ impl AtHour for WorldTension {
     const TITLE: &'static str = "World tension";
     const CONTENT_DEPENDENT: bool = false;
     type Params = WorldTensionParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = WorldTensionReply;
     type Context = ();
 
@@ -216,6 +217,10 @@ impl AtHour for WorldTension {
 
 pub const SERIES: &str = "world-tension";
 
+pub fn step_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<Step>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Step {
@@ -226,7 +231,7 @@ struct Step {
 }
 
 pub fn next_change(query: &Query<'_>, params: &serde_json::Value) -> io::Result<serde_json::Value> {
-    let step: Step = serde_json::from_value(params.clone()).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid world tension step: {error}")))?;
+    let step: Step = dashboard_query::named::named(params).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid world tension step: {error}")))?;
     let bounds = (series::hour_of(step.first_hour, "firstHour")?, series::hour_of(step.last_hour, "lastHour")?);
     let origin = step.from.map(|from| series::hour_of(Some(from), "from")).transpose()?;
     let forward = matches!(step.key, NavigationKey::ArrowRight | NavigationKey::Home);
@@ -235,7 +240,7 @@ pub fn next_change(query: &Query<'_>, params: &serde_json::Value) -> io::Result<
         let declared = dashboard_declare::series(kind).ok_or_else(|| io::Error::other(format!("{kind} is not declared")))?;
         let measure = declared.measure(measure).ok_or_else(|| io::Error::other(format!("{kind} has no measure {measure}")))?;
         let line = series::Line::new(query, declared, measure)?;
-        found.push(line.change_lines(&[series::Ask::whole("World")], &[measure], origin, step.key, bounds)?);
+        found.push(line.change_lines(&[series::Ask::whole("World")], &[measure], origin, step.key, bounds, &series::Within::new())?);
     }
     let hour = found.into_iter().flatten().reduce(|a, b| if forward { a.min(b) } else { a.max(b) });
     Ok(serde_json::to_value(series::SeriesKeyReply { hour: hour.map(f64::from) })?)

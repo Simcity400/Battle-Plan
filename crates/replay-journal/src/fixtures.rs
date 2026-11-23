@@ -124,6 +124,27 @@ pub fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> i32 + '_ {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub fn absent_recording(writers: Writers, units: u32, absent: std::ops::Range<i32>) -> Vec<u8> {
+    use synthetic::{Input, Sample, Synthetic};
+    use replay_data::rows::CountryRow;
+    let mut file = writer(writers, identity(b"absent synthetic", 0), |_| {});
+    file.start_run(7, envelope::epoch::START, 100).unwrap();
+    let mut synthetic = Synthetic::new(7, 100).unwrap();
+    for ordinal in 0..units * envelope::UNIT_ORDINALS {
+        let hour = 100 + ordinal as i32;
+        let mut rows = vec![CountryRow { id: 1, tag: b"held".to_vec(), political_power_raw: Some(500), ..Default::default() }];
+        if !absent.contains(&hour) {
+            rows.push(CountryRow { id: 3, tag: b"leaves".to_vec(), political_power_raw: Some(7), ..Default::default() });
+        }
+        synthetic
+            .table(TableId::Countries, Input::Snapshot { rows: &rows, partial: None, read: true, sample: Sample::FromReadBit })
+            .unwrap();
+        synthetic.end_encoded(|manifest, sections| file.hour(manifest, sections)).unwrap().unwrap();
+    }
+    finished(file)
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub fn native_recording(writers: Writers, units: u32, tamper: impl Fn(&mut Block) + Send + 'static) -> Vec<u8> {
     use synthetic::{Input, Sample, Synthetic};
     use replay_data::rows::CountryRow;

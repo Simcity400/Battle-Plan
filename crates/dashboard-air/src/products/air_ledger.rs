@@ -1057,6 +1057,7 @@ impl Product for MilitaryAirLedger {
     const KEY: &'static str = "military-air-ledger";
     const CONTENT_DEPENDENT: bool = true;
     type Params = MilitaryAirParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, family, regions, causes, fromHour: Start, window, top, "causes[]", "regions[]", "top.count"];
     type Reply = MilitaryAirReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

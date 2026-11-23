@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { followedRow, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
+import { followedRow, heldParts, keyId, keyedTileParams, keyedTileReply, reachedKeyLines, validateKeyedStates, validateSeriesParts } from './keyedSeriesData.ts';
 import { parseFollowed } from './follow/message.ts';
 import { message } from './follow/messages.fixture.ts';
 import type { TileReply } from './tiles/tile';
+import { gatedWindow } from '../test-support/gated.ts';
 
 const run = (firstHour: number, lastHour: number, valueRaw: string) => ({ firstHour, lastHour, valueRaw, firstExact: true, lastExact: false,
   startsSegment: false, slot: 1, countryId: 1, segmentFirstHour: firstHour });
@@ -42,17 +43,27 @@ test('states without a part and parts lists that repeat a part or name another o
     parts: [owner.parts[0], { ...owner.parts[1], id: null }] }, 'a part without a content id has none');
   assert.throws(() => validateSeriesParts(reply([owner]), 'GER'), /malformed/);
   assert.throws(() => validateSeriesParts(reply([owner, owner]), 'ENG'), /malformed/, 'another owner beside it');
-  assert.throws(() => validateSeriesParts(reply([{ ...owner, parts: [owner.parts[0], owner.parts[0]] }]), 'ENG'), /malformed/);
+  assert.throws(() => validateSeriesParts(reply([{ ...owner, parts: [owner.parts[0], owner.parts[0]] }]), 'ENG'), /malformed/, 'a part listed twice over the same hours');
+  assert.equal(validateSeriesParts(reply([{ ...owner, parts: [{ ...owner.parts[0], lastHour: 9 }, { ...owner.parts[0], firstHour: 20 }] }]), 'ENG').parts.length, 2, 'a part held over disjoint spans is listed once per span');
   assert.throws(() => validateSeriesParts(reply([{ ...owner, parts: [{ ...owner.parts[0], lastHour: -1 }] }]), 'ENG'), /malformed/);
   assert.throws(() => validateSeriesParts({ ...reply([owner]), partBits: 0 }, 'ENG'), /malformed/, 'no part bits');
 });
 
+test('a part held across disjoint runs is listed once, with each run kept apart', () => {
+  const held = heldParts([{ part: '7', id: null, firstHour: 0, lastHour: 9 }, { part: '3', id: 'tank', firstHour: 5, lastHour: 6 }, { part: '7', id: 'ship', firstHour: 20, lastHour: 29 },
+    { part: '7', id: null, firstHour: 10, lastHour: 12 }]);
+  assert.deepEqual(held, [{ part: '7', id: 'ship', firstHour: 0, lastHour: 29, spans: [{ firstHour: 0, lastHour: 12 }, { firstHour: 20, lastHour: 29 }] },
+    { part: '3', id: 'tank', firstHour: 5, lastHour: 6, spans: [{ firstHour: 5, lastHour: 6 }] }]);
+});
+
+const bound = (first: number, last: number) => gatedWindow(first, last);
+
 test('tile lines name each key, and the lines of a tag share the spans they are drawn over', () => {
-  assert.deepEqual(keyedTileParams(keys, undefined), { lines: keys.map(({ tag, part }) => ({ country: tag, part })) });
+  assert.deepEqual(keyedTileParams(keys, undefined, bound), { lines: keys.map(({ tag, part }) => ({ country: tag, part })) });
   const spans = [{ firstHour: 0, lastHour: 9 }];
   const within = { [keyId(keys[0])]: spans, [keyId(keys[1])]: spans };
-  assert.deepEqual(keyedTileParams(keys, within), { lines: keys.map(({ tag, part }) => ({ country: tag, part })), within: [['ENG', spans]] });
-  assert.throws(() => keyedTileParams(keys, { [keyId(keys[0])]: spans }), /one set of spans/, 'one key of a tag drawn whole beside another clipped');
+  assert.deepEqual(keyedTileParams(keys, within, bound), { lines: keys.map(({ tag, part }) => ({ country: tag, part })), within: [['ENG', spans]] });
+  assert.throws(() => keyedTileParams(keys, { [keyId(keys[0])]: spans }, bound), /one set of spans/, 'one key of a tag drawn whole beside another clipped');
 });
 
 test('the followed parts of an owner are found by tag and the part in the low bits of the row key', () => {

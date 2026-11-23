@@ -6,4 +6,4 @@ Progress uses the observed side fraction based on every ordered participant's cu
 
 Geometry starts both anchors at the defender, then points toward the first attacker with a map entity and current stack kind rebuilt from content. Refuse still-relevant missing geometry by name. Unwrap the attacker's x against the defender before taking the midpoint and direction, so an icon near the seam does not cross the map to the wrong copy. Prepare markers and their gaps once for the hour. The retained windows apply the camera and draw them.
 
-[Land combat marker joins and placement](../../crates/viewer-counters/src/map/counters/combat_markers.rs)
+[Land combat marker joins and placement](../../crates/viewer-counter-kit/src/combat_markers.rs)

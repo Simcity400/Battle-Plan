@@ -92,6 +92,7 @@ impl AtHour for FactoryParts {
     const TITLE: &'static str = "Factory parts";
     const CONTENT_DEPENDENT: bool = false;
     type Params = FactoryPartsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = FactoryPartsReply;
     type Context = ();
 

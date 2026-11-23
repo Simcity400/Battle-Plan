@@ -1,4 +1,4 @@
-import { queryFailure } from './queryError.ts';
+import { queryFailure, RefusedError } from './queryError.ts';
 import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource, MapSettingsReply, ProductReply, ProductRequest, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
@@ -10,8 +10,10 @@ import { BrowserRequestQueue } from './browserRequestQueue.ts';
 import type { BrowserRequestLane } from './browserRequestQueue';
 import { newId } from '../shell/ids.ts';
 import { busy } from '../shell/busy.ts';
+import { OpenedSources } from './openedSources.ts';
 
 const requests = new BrowserRequestQueue();
+const opened = new OpenedSources();
 const page = newId();
 let owning = false;
 function ownRecordings(): void {
@@ -98,14 +100,17 @@ export const browserDashboardClient: DashboardClient = {
       throw new DOMException('Request cancelled', 'AbortError');
     }
     contentRevision(browserDashboardClient).observePresentation(source.presentationGeneration);
-    return { id: source.id, path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
+    return opened.add({ id: source.id, path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } });
   },
 
   product<T>(query: ProductRequest, signal: AbortSignal) {
+    const refused = opened.refusal(query);
+    if (refused) return Promise.reject(new RefusedError(refused));
     return request<ProductReply<T>>({ type: 'product', request: query }, signal);
   },
 
   async releaseSource(sourceId) {
+    opened.delete(sourceId);
     forgetReplySizes(browserDashboardClient, sourceId);
     requests.cancelSource(sourceId);
     await request({ type: 'release', sourceId });

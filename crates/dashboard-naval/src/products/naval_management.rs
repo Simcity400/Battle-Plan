@@ -142,6 +142,7 @@ impl AtHour for NavalManagement {
     const TITLE: &'static str = "Naval management";
     const CONTENT_DEPENDENT: bool = true;
     type Params = NavalManagementParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country];
     type Reply = NavalManagementReply;
     type Context = Result<Arc<Catalogue>, String>;
 

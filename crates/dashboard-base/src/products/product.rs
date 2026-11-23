@@ -9,6 +9,7 @@ use crate::Source;
 pub use crate::config::{ContentOptions, LoadContext};
 pub use crate::protocol::validate_tag;
 pub use dashboard_query::identity::Country;
+pub use dashboard_query::fields::{Fields, HourRole};
 pub use crate::air_wing_names as air_wings;
 pub use crate::identity;
 
@@ -66,6 +67,25 @@ pub trait ReplyWarnings {
 }
 
 #[macro_export]
+macro_rules! fields {
+    ($($name:tt $(: $role:ident)?),* $(,)?) => {
+        &[$(($crate::field_name!($name), $crate::field_role!($($role)?))),*]
+    };
+}
+
+#[macro_export]
+macro_rules! field_name {
+    ($name:ident) => { stringify!($name) };
+    ($name:literal) => { $name };
+}
+
+#[macro_export]
+macro_rules! field_role {
+    () => { $crate::products::HourRole::Undated };
+    ($role:ident) => { $crate::products::HourRole::$role };
+}
+
+#[macro_export]
 macro_rules! reply_warnings {
     ($($reply:ty),+ $(,)?) => {$(
         impl $crate::products::ReplyWarnings for $reply {
@@ -81,6 +101,7 @@ pub trait Product: 'static {
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = false;
     const REPLAYS: bool = false;
+    const FIELDS: Fields;
     type Params: DeserializeOwned + 'static;
     type Reply: Serialize + ReplyWarnings + 'static;
 

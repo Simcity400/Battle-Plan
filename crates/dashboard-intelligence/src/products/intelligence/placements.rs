@@ -104,6 +104,7 @@ impl AtHour for OperativePlacements {
     const TITLE: &'static str = "Operative placements";
     const CONTENT_DEPENDENT: bool = true;
     type Params = OperativePlacementParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = OperativePlacementReply;
     type Context = Content;
 

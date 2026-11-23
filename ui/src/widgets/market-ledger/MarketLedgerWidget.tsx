@@ -1,8 +1,11 @@
-import { useMemo, useReducer, useRef, useState } from 'react';
+import { useGate } from '../../dashboard/regionGate';
+import { SPEC } from '../../dashboard/regionTime';
+import { coverageOf } from '../../dashboard/widgetTime';
+import { useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { ChipSet } from '../../components/ChipSet';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { logSettings } from '../../charts/log/logOptions';
 import { selectedCountryKeys } from '../../dashboard/countrySelection';
@@ -21,6 +24,7 @@ import { trackHourOf } from '../../dashboard/settledHour';
 import { useShownEachFrame } from '../../dashboard/widgetPerf';
 import { DETAILS, OPTIONS } from './definition';
 import './marketLedger.css';
+import { useRegion, useRegionHour } from '../../dashboard/widgetTime.ts';
 
 export default function MarketLedgerWidget({ widget, runtime, active, setOption }: WidgetProps) {
   const [drillShown, setDrillShown] = useState<number | undefined>();
@@ -29,6 +33,7 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const follow = widget.time.mode === 'follow';
+  const gate = useGate(runtime, widget, SPEC, active);
   const window = track && !follow ? resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour()) : null;
   const firstHour = widget.time.mode === 'range' && window && track ? Math.max(Math.floor(window.firstHour), track.branch.firstHour) : track?.branch.firstHour ?? 0;
   const cut: LogCut = follow ? { follow: true, offset: track?.axisOffset ?? 0 }
@@ -47,37 +52,42 @@ export default function MarketLedgerWidget({ widget, runtime, active, setOption 
   const kindsKey = kinds.join(',');
   const stableKinds = useMemo(() => kinds, [kindsKey]);
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const pickOwner = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
   const [pick, setPick] = useState<{ owner: string | null; item: LedgerItem } | null>(null);
   const picked = pick && pick.owner === pickOwner ? pick.item : null;
-  const head = cut.follow ? Math.floor(runtime.clock.getHour()) + cut.offset : cut.hour ?? track?.branch.lastHour ?? 0;
   const open = (item: LedgerItem, at: number) => {
     setPick({ owner: pickOwner, item });
-    dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, playing: runtime.clock.getSnapshot().playing, playhead: follow ? head : null });
+    dispatch({ type: 'open', breakdown: DETAILS.id, hour: at, follow: drillControl.followsAt(at) });
   };
-  const drillAt = drillHour(drill, head) ?? head;
+  const drillTime = drillControl.region.action;
+  const drillRegion = useRegion(widget, drillTime);
+  const drillOpen = drill.breakdown !== null && !!picked;
+  const drillAt = useRegionHour(runtime, drillRegion, active && drillOpen);
+  const drillDay = drillShown ?? drillAt;
   const pickedTags = picked ? partyTags(picked.seller, picked.buyer) : null;
   const chips = KINDS.map(kind => ({ value: kind.key, label: kind.label }));
 
   if (!track) return <WidgetState kind="empty" icon="history" message="Load a campaign to see market activity." />;
-  if (!follow && widget.time.mode !== 'campaign' && !window) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (needsGroups && groups.error && !groups.data) return <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />;
-  if (tags !== null && tags !== undefined && !tags.length) return <WidgetState kind="unavailable" message={needsGroups ? 'This group has no members in this campaign.' : 'Choose a country in the widget settings.'} />;
-  const main = <div className="log-widget market-ledger">
+  const parent = gate.outside ? <WidgetState kind="outside" read={coverageOf(gate.outside)} />
+    : needsGroups && groups.error && !groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
+    : tags !== null && tags !== undefined && !tags.length ? <WidgetState kind="unavailable" message={needsGroups ? 'This group has no members in this campaign.' : 'Choose a country in the widget settings.'} /> : null;
+  if (parent && !drillOpen) return parent;
+  const main = parent ?? <div className="log-widget market-ledger">
     {log.chips && <div className="log-chips"><ChipSet label="Market occurrences" chips={chips}
       selected={KINDS.filter(kind => enabled(kind.key)).map(kind => kind.key)} max={KINDS.length} onToggle={key => setOption?.(key, !enabled(key as KindKey))} /></div>}
     {tags === undefined ? <WidgetState kind="loading" label="Loading market activity…" />
       : !stableKinds.length ? <WidgetState kind="empty" icon="history" message="Choose the occurrences to show in the widget settings." />
-        : <MarketOccurrences runtime={runtime} track={track} kinds={stableKinds} tags={tags} firstHour={firstHour} cut={cut} active={active} label="Market ledger"
+        : <MarketOccurrences runtime={runtime} track={track} kinds={stableKinds} tags={tags} span={track ? gate.span(firstHour, track.branch.lastHour) : null} cut={cut} active={active} label="Market ledger"
           density={log.density} months={log.months} animate={log.animate} onOpen={open} />}
   </div>;
   return <div ref={anchor} className="market-ledger-host">
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null && !!picked} anchor={anchor}
-      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={dayLabel(drillShown ?? drillAt)}
-      following={drill.follow} canFollow={follow} onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })}
+    <DrillHost drill={drillControl} runtime={runtime} subject={drillOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={picked ? ledgerTitle(picked, tag => tag ?? 'Country not recorded') : DETAILS.label} day={drillDay == null ? '' : dayLabel(drillDay)} canFollow onClose={() => dispatch({ type: 'close' })}
       main={main}>
-      {picked && (pickedTags ? <MarketDrill runtime={runtime} widget={widget} hour={drillAt} following={drill.follow} active={active} onAnswered={setDrillShown}
+      {picked && (pickedTags ? <MarketDrill runtime={runtime} widget={widget} time={drillTime} active={active} onAnswered={setDrillShown}
         tags={pickedTags} selected={ledgerSelection(picked)} />
         : <WidgetState kind="unavailable" message="Neither party was recorded at this hour." />)}
     </DrillHost>

@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useMemo,  useRef, useState } from 'react';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import RegionProvinces from './RegionProvinces';
 import WidgetState from '../../components/WidgetState';
 import { Segmented } from '../../components/Segmented';
@@ -28,10 +28,15 @@ import { columnTooltip, pickedDay, shownRegions, uncoveredSpans, weatherPeriods,
 import type { Choice, WeatherPeriod, WeatherShow } from './weatherData';
 import { useWeatherInView } from './useWeather';
 import './weather.css';
+import {  recordedHour } from '../../dashboard/regionTime.ts';
+import { useRegion } from '../../dashboard/widgetTime.ts';
 
 export default function WeatherWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const drillTime = drillControl.region.action;
   const following = active && widget.time.mode === 'follow';
   const extentAt = (hour: number) => { const window = track && resolveWindow(widget, track, runtime.tracks, hour); return track && window ? windowExtent(track, window) : null; };
   const playback = useHeadHour(runtime.clock, following, hour => JSON.stringify(extentAt(hour)));
@@ -41,11 +46,11 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   const window = track && resolveWindow(widget, track, runtime.tracks, playback);
   const extent: [number, number] | null = track && window ? windowExtent(track, window) : null;
   const axisOffset = track?.axisOffset ?? 0;
-  const clockHour = () => track ? Math.max(track.branch.firstHour, Math.min(Math.floor(runtime.clock.getHour()) + axisOffset, track.branch.lastHour)) : null;
+  const clockHour = () => recordedHour(track, Math.floor(runtime.clock.getHour()) + axisOffset);
   const liveHead = useMemo(() => following ? { read: () => runtime.clock.getSnapshot().position + axisOffset, subscribe: runtime.clock.subscribeFrame } : undefined,
     [following, runtime.clock, axisOffset]);
   const { options, show, modifier, data, error, retry, onSummaryView } = useWeatherInView(widget, runtime, active, extent);
-  useShownEachFrame(runtime.clock, () => data ? following ? Math.min(clockHour() ?? data.lastHour, data.lastHour) : data.lastHour : null);
+  useShownEachFrame(runtime.clock, () => data ? following ? clockHour() : data.lastHour : null);
   const dayHours = data?.dayHours ?? 1;
   const chosenTheatres = useMemo(() => contentSet(options.theatres).map(contentKey), [options.theatres]);
   const air = useAirTheatres(track, extent?.[1] ?? null, active && chosenTheatres.length > 0);
@@ -83,10 +88,7 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
   const [drillShown, setDrillShown] = useState<number | null>(null);
   useDiagnostics(onDiagnostics, data ? [...data.warnings, ...data.temperature === 'available' ? [] : [data.temperature], ...drillWarnings] : null);
   if (!track) return <WidgetState kind="empty" icon="sun" message="Load a campaign to see weather." />;
-  if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading weather…" />;
-  const caption = <div className="weather-caption">
+  const caption = data && <div className="weather-caption">
     <div className="weather-key" aria-label="Data states">
       <span><i aria-hidden="true" style={{ background: tokens.surface }} />{show === 'conditions' ? 'No condition' : show === 'temperature' ? 'No average' : 'No modifier'}</span>
       <span><i aria-hidden="true" style={{ background: gap }} />Not recorded</span>
@@ -94,26 +96,29 @@ export default function WeatherWidget({ widget, runtime, active, onDiagnostics, 
     </div>
     {setOption && <Segmented value={show} options={SHOWS} label="Show" onChange={value => setOption('show', value)} />}
   </div>;
-  if (chosenTheatres.length && !air.theatres) return <div className="weather">{caption}<WidgetState kind="unavailable" message={air.unavailable ?? 'Air theatres are not known at this time.'} /></div>;
-  if (!heat || !heat.rows.length) return <div className="weather">{caption}<WidgetState kind="empty" message="No regions match these filters." /></div>;
-  const chart = <div className="weather-chart"><HeatChart label="Weather by region" rows={heat.rows} periods={periods} labelCatalogue={regions.map(region => region.name)}
-      extent={extent} playhead={widget.time.mode === 'follow' ? Math.min(clockHour() ?? extent[1], extent[1]) : null} liveHead={liveHead} branchStart={track.branch.firstHour}
+  const chart = !window || !extent || extent[1] < extent[0] ? <WidgetState kind="outside" />
+    : error ? <WidgetState kind="error" failure={error} onRetry={retry} />
+    : !data ? <WidgetState kind="loading" label="Loading weather…" />
+    : chosenTheatres.length && !air.theatres ? <WidgetState kind="unavailable" message={air.unavailable ?? 'Air theatres are not known at this time.'} />
+    : !heat || !heat.rows.length ? <WidgetState kind="empty" message="No regions match these filters." />
+    : <div className="weather-chart"><HeatChart label="Weather by region" rows={heat.rows} periods={periods} labelCatalogue={regions.map(region => region.name)}
+      extent={extent} playhead={widget.time.mode === 'follow' ? clockHour() : null} liveHead={liveHead} branchStart={track.branch.firstHour}
       legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${show}:${modifier}:${data.lastHour}`}
       hoursPerSecond={hoursPerSecond} loading={unreached} tooltip={tooltip} onContextMenu={onMenu} onSummaryView={onSummaryView}
       pickOwner={track.source.id} onPick={(row, _period, hour) => {
         const region = regions.find(item => item.id === row.id);
         if (!region) return;
         setPicked(region);
-        const playing = widget.time.mode === 'follow';
-        dispatch({ type: 'open', breakdown: 'provinces', hour: pickedDay(hour, dayHours, extent), playing, playhead: playing ? clockHour() : null });
+        drillControl.show('provinces', pickedDay(hour, dayHours, extent));
       }} /></div>;
-  const pinned = drill.breakdown !== null && !drill.follow ? drill.hour : null;
+  if (drill.breakdown === null && (!window || !extent || extent[1] < extent[0] || error || !data)) return chart;
+  if (drill.breakdown === null && (chosenTheatres.length && !air.theatres || !heat || !heat.rows.length)) return <div className="weather">{caption}{chart}</div>;
   return <div ref={anchor} className="weather">
     {caption}
-    <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown !== null}
-      title={picked?.name ?? 'Region'} day={drillShown === null ? '' : dayLabel(drillShown)} following={drill.follow} canFollow
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={chart}>
-      {picked && drill.breakdown !== null && <RegionProvinces runtime={runtime} widget={widget} region={picked.id} hour={pinned} active={active} onWarnings={setDrillWarnings} onHour={setDrillShown} />}
+    <DrillHost drill={drillControl} runtime={runtime} anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'}
+      title={picked?.name ?? 'Region'} day={drillShown === null ? '' : dayLabel(drillShown)} canFollow
+      onClose={() => dispatch({ type: 'close' })} main={chart}>
+      {picked && drill.breakdown !== null && <RegionProvinces runtime={runtime} widget={widget} region={picked.id} time={drillTime} active={active} onWarnings={setDrillWarnings} onHour={setDrillShown} />}
     </DrillHost>
     {menu.menu}
   </div>;

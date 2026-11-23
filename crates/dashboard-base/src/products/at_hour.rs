@@ -14,7 +14,7 @@ use dashboard_query::{
 };
 use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, Metrics, not_selected};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -92,6 +92,7 @@ pub trait AtHour: 'static {
     const TITLE: &'static str;
     const CONTENT_DEPENDENT: bool;
     const INTERACTIVE: bool = true;
+    const FIELDS: super::Fields;
     type Params: DeserializeOwned + Send + 'static;
     type Reply: Serialize + ReplyWarnings + PartialEq + Send + 'static;
     type Context: Send + 'static;
@@ -358,7 +359,7 @@ fn request_hour(request: &mut Value) -> Option<i32> {
 
 fn load<P: AtHour>(source: &Source, lease_id: &str, mut request: Value, load: &LoadContext, cancelled: &AtomicBool) -> Result<String, dashboard_core::QueryError> {
     let hour = request_hour(&mut request).ok_or_else(|| format!("Invalid {} request: it names no hour", P::KEY))?;
-    let params = P::Params::deserialize(&request).map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
+    let params = dashboard_query::named::named::<P::Params>(&request).map_err(|error| format!("Invalid {} request: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     super::reply_json(source, lease_id, P::KEY, P::CONTENT_DEPENDENT, load, cancelled, || {
         let query = crate::queries::query(source, dashboard_query::branch(&request)?)?;
@@ -373,7 +374,7 @@ where P::Params: Sync, P::Context: Sync {
     let query = crate::queries::query(source, branch).map_err(|e| e.to_string())?;
     let mut request = asked.clone();
     if let Some(fields) = request.as_object_mut() { fields.remove("panel"); }
-    let params = P::Params::deserialize(request).map_err(|e| format!("Invalid {} panel: {e}", P::KEY))?;
+    let params = dashboard_query::named::named::<P::Params>(&request).map_err(|e| format!("Invalid {} panel: {e}", P::KEY))?;
     P::validate(&params)?;
     let context = Arc::new(P::context_for(source, load, &params).map_err(|e| e.to_string())?);
     let params = Arc::new(params);
@@ -472,7 +473,7 @@ fn panel<P: AtHour>(source: &Source, load: &LoadContext, asked: &Value) -> Resul
     if let Some(fields) = asked.as_object_mut() {
         fields.remove("panel");
     }
-    let params = P::Params::deserialize(&asked).map_err(|error| format!("Invalid {} panel: {error}", P::KEY))?;
+    let params = dashboard_query::named::named::<P::Params>(&asked).map_err(|error| format!("Invalid {} panel: {error}", P::KEY))?;
     P::validate(&params).map_err(str::to_owned)?;
     let branch = dashboard_query::branch(&asked).map_err(|error| error.to_string())?;
     let holders = Arc::clone(&crate::queries::query(source, branch).map_err(|error| error.to_string())?.holders);
@@ -505,8 +506,12 @@ pub const fn entry<P: AtHour>() -> Entry {
             interactive: P::INTERACTIVE,
             replays: false,
             load: load::<P>,
+            fields: P::FIELDS,
+            read_hour: true,
             #[cfg(any(test, feature = "export-types"))]
             types: None,
+            #[cfg(any(test, feature = "export-types"))]
+            params: dashboard_query::fields::walk::<P::Params>,
         },
         panel: panel::<P>,
     }

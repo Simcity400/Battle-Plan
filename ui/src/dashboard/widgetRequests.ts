@@ -1,13 +1,14 @@
 import type { BoundTrack, HourWindow, WidgetSpec } from './model';
+import type { Gate } from './regionGate';
+import { productRequest } from './request.ts';
 
 type Track = BoundTrack | undefined;
-export function clockRequest(widget: WidgetSpec, track: Track, window: HourWindow | null) {
+export function clockRequest(gate: Pick<Gate, 'recorded' | 'span'>, widget: WidgetSpec, track: Track, window: HourWindow | null) {
   if (!track || !window) return null;
-  const firstHour = widget.time.mode !== 'range'
-    ? track.branch.firstHour : Math.max(track.branch.firstHour, Math.floor(window.firstHour));
-  const lastHour = Math.min(track.branch.lastHour, Math.floor(window.lastHour));
-  return firstHour <= lastHour ? { sourceId: track.source.id, revision: track.source.revision, product: 'campaign-clock',
-    params: { branchId: track.branch.id, firstHour, lastHour } } : null;
+  if (widget.time.mode !== 'range' && gate.recorded(window.lastHour) === null) return null;
+  const span = gate.span(widget.time.mode !== 'range' ? track.branch.firstHour : window.firstHour, window.lastHour);
+  return span ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'campaign-clock',
+    params: { branchId: track.branch.id, ...span } }) : null;
 }
 
 export const windowExtent = (track: BoundTrack, window: HourWindow): [number, number] =>

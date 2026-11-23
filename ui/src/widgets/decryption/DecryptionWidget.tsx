@@ -18,6 +18,7 @@ import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { shownHour, useIntelLabels } from '../../dashboard/IntelCountry';
 import { tagsOf } from '../../dashboard/intelligence';
 import { resolveOptions } from '../../dashboard/options';
@@ -37,7 +38,7 @@ const PARAMS = {} as const;
 export default function DecryptionWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
   const options = resolveOptions(OPTIONS, widget.options);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
-  const head = useHeadProduct<DecryptionReply>(runtime, widget, 'decryption', track ? PARAMS : null,
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'decryption', track ? PARAMS : null,
     { active, validate: validateDecryption, structure: raceStructure });
   useShownEachFrame(runtime.clock, head.shownAt, head.live);
   const hour = head.at ?? shownHour(runtime, widget, head) ?? 0;
@@ -75,7 +76,7 @@ export default function DecryptionWidget({ widget, runtime, active, onDiagnostic
     revision: `${hour}:${track?.source.revision}:${track?.branch.id}`, onMenu: jump });
   useDiagnostics(onDiagnostics, data ? data.warnings : null);
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its decryption races." />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (head.read === 'off') return <WidgetState kind="outside" />;
   if (head.error && !data) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
   const groupFailure = widget.countries.kind !== 'all' && groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (groupFailure && !groups.data) return groupFailure;

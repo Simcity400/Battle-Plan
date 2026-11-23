@@ -1,3 +1,4 @@
+import type { SeriesGate } from '../../dashboard/keyedSeries';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import TimeChart from '../../charts/TimeChart';
@@ -24,7 +25,7 @@ const WORLD_TAGS = [WORLD];
 const formatAxis = (value: number) => `${Math.round(value * 10) / 10}%`;
 
 export interface TensionChartProps {
-  runtime: WidgetRuntime; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
+  runtime: WidgetRuntime; gate: SeriesGate; track: BoundTrack; active: boolean; options: Readonly<Record<string, OptionValue>>;
   label: string; extent: [number, number]; playhead: number | null; following: boolean;
   layers: readonly TensionContribution[];
   colours: readonly string[]; otherColour: string;
@@ -40,15 +41,15 @@ export interface TensionChartProps {
   children?: ReactNode;
 }
 
-export default function TensionChart({ runtime, track, active, options, label, extent, playhead, following, layers, colours, otherColour, share, live,
+export default function TensionChart({ runtime, gate, track, active, options, label, extent, playhead, following, layers, colours, otherColour, share, live,
   badges, tooltip, marker = null, onPick, onHover, onContextMenu, revision, children }: TensionChartProps) {
   const tags = useMemo(() => layers.flatMap(layer => layer.tag ? [layer.tag] : []), [layers]);
   const lineKey = [...tags].sort().join('\u0000');
   const lineTags = useMemo(() => lineKey ? lineKey.split('\u0000') : [], [lineKey]);
   const lastHour = track.branch.lastHour;
-  const parts = useMeasureSeries(runtime.client, track.source, track.branch.id, 'threat-contributions', 'contribution', lineTags, null, null, active, false, undefined, lastHour, following);
-  const tension = useMeasureSeries(runtime.client, track.source, track.branch.id, 'world-tension', 'tension', WORLD_TAGS, null, null, active, false, undefined, lastHour, following);
-  const sum = useMeasureSeries(runtime.client, track.source, track.branch.id, 'threat-sum', 'sum', WORLD_TAGS, null, null, active, false, undefined, lastHour, following);
+  const parts = useMeasureSeries(runtime.client, gate, track.source, track.branch, 'threat-contributions', 'contribution', lineTags, null, null, active, false, undefined, lastHour, following);
+  const tension = useMeasureSeries(runtime.client, gate, track.source, track.branch, 'world-tension', 'tension', WORLD_TAGS, null, null, active, false, undefined, lastHour, following);
+  const sum = useMeasureSeries(runtime.client, gate, track.source, track.branch, 'threat-sum', 'sum', WORLD_TAGS, null, null, active, false, undefined, lastHour, following);
   useEffect(() => {
     if (!live) return undefined;
     const cell = (key: string, decimals: number) => () => { const value = live.read().get(key); return value === undefined ? null : value / 10 ** decimals; };

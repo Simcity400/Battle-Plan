@@ -253,6 +253,7 @@ impl AtHour for StockpileArtwork {
     const TITLE: &'static str = "Stockpile artwork";
     const CONTENT_DEPENDENT: bool = true;
     type Params = StockpileArtworkParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, variants];
     type Reply = StockpileArtworkReply;
     type Context = ArtContext;
 

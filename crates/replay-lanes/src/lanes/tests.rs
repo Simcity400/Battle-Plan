@@ -9,6 +9,39 @@ fn lifetimes_read_past_levels_a_run_closes_no_piece_of() {
 }
 
 #[test]
+fn a_row_absent_for_three_days_inside_one_bucket_is_present_on_both_sides_and_never_inside_the_gap() {
+    let (gone, back): (i32, i32) = (2_890, 2_962);
+    assert_eq!(i64::from(gone).div_euclid(summary::bucket_hours(1)), i64::from(back - 1).div_euclid(summary::bucket_hours(1)), "the absence lies inside one bucket");
+    let recording = Recording::open(fixtures::absent_recording(recorder_derive::writers(), 6, gone..back)).unwrap();
+    let found = presences(&recording, 0, TableId::Countries, (0, u128::MAX), 0, i64::MAX).unwrap();
+    let (_, leaves) = found.iter().find(|(_, spans)| spans.len() > 1).expect("the row that leaves has more than one presence");
+    assert!(leaves.iter().all(|&(first, last)| last < i64::from(gone) || first >= i64::from(back)), "no presence reaches into the gap: {leaves:?}");
+    assert_eq!(leaves.first().map(|span| span.1), Some(i64::from(gone) - 1), "present up to the hour it leaves: {leaves:?}");
+    assert_eq!(leaves.get(1).map(|span| span.0), Some(i64::from(back)), "present again from the hour it returns: {leaves:?}");
+    let lives = lifetimes(&recording, 0, TableId::Countries).unwrap();
+    assert!(lives.iter().any(|&(_, first, last)| first < i64::from(gone) && last >= i64::from(back)), "a lifetime still spans first to last");
+    let asked = presences(&recording, 0, TableId::Countries, (0, u128::MAX), i64::from(gone) + 10, i64::from(back) - 10).unwrap();
+    let inside = |spans: &Vec<(i64, i64)>| spans.iter().any(|&(first, last)| first <= i64::from(back) - 10 && last >= i64::from(gone) + 10);
+    assert_eq!(asked.iter().filter(|(_, spans)| inside(spans)).count(), 1, "a request wholly inside the gap finds only the row that stays: {asked:?}");
+}
+
+#[test]
+fn a_gapped_bucket_before_a_withheld_boundary_is_not_read_and_the_valid_suffix_still_is() {
+    let (gone, back, valid): (i32, i32, i32) = (2_890, 2_962, 3_000);
+    let recording = Recording::open(fixtures::absent_recording(recorder_derive::writers(), 6, gone..back)).unwrap()
+        .with_coverage_from(TableId::Countries, 0, (valid - 100) as u32, "withheld before 3000");
+    let found = presences(&recording, 0, TableId::Countries, (0, u128::MAX), 0, i64::MAX).unwrap();
+    assert!(!found.is_empty(), "the readable rows after the boundary are returned");
+    assert!(found.iter().all(|(_, spans)| spans.iter().all(|&(first, _)| first >= i64::from(valid))), "nothing before the boundary: {found:?}");
+    let inside: i32 = 2_900;
+    let straddled = Recording::open(fixtures::absent_recording(recorder_derive::writers(), 6, gone..back)).unwrap()
+        .with_coverage_from(TableId::Countries, 0, (inside - 100) as u32, "withheld before 2900");
+    let lives = lifetimes(&straddled, 0, TableId::Countries).unwrap();
+    assert_eq!(lives.iter().filter(|&&(_, first, _)| first == i64::from(inside)).count(), 1, "only the row present at the boundary starts there: {lives:?}");
+    assert!(lives.iter().any(|&(_, first, _)| first == i64::from(back)), "a row absent at the boundary starts when it returns: {lives:?}");
+}
+
+#[test]
 fn coarse_chart_names_level_zero_buckets() {
     let recording = Recording::open(fixtures::native_recording(recorder_derive::writers(), 20, |_| {})).unwrap();
     let source = replay_recording::summaries::registry()

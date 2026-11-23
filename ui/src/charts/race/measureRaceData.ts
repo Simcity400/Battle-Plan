@@ -7,7 +7,7 @@ import type { FollowedAnswer } from '../../dashboard/follow/message';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { SeriesRankedLine, SeriesState, SeriesStateReply } from '../../generated/dashboard';
 
-export interface RankedMeasure { kind: string; measure: string }
+export type RankedMeasure = { kind: string; measure: string };
 export type RankedLine = Decoded<SeriesRankedLine>;
 
 

@@ -12,4 +12,4 @@ Land markers walk attackers in recorded order. A proven null entity is skippable
 
 Prepare named texture assets and atlas flags before their first draw. The flag ladder can fall back from a missing cosmetic asset when the earlier rung is known absent. An unresolved earlier role or group cannot fall through to a later asset unless a valid preceding rung established the answer first. Naval detail follows the representative’s intel thresholds for ranges, hull and pride. Bars need recorded ratios and members. Flag clipping also clips the atlas rectangle. A subpixel native bar contributes no quad. Unsupported item grid and anchor layouts withhold instead of inventing positions. Synthetic tests author their own windows, preserving control names and exercising nested clipping, declaration order, flags, text and rotated bars without loading the game’s templates.
 
-[Counter parity cases](../../crates/viewer-counters/src/map/counters/tests.rs)
+[Counter parity cases](../../crates/viewer-counters/src/counters/tests.rs)

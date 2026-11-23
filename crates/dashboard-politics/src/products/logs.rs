@@ -91,6 +91,7 @@ impl Product for LogPage {
     const KEY: &'static str = "log-page";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LogPageParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, log, facets, from: Start, to: End, cursor, pageSize, columns, "facets[].countries[]", "facets[].values[]"];
     type Reply = LogPageReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -140,6 +141,7 @@ impl Product for LogCounts {
     const KEY: &'static str = "log-counts";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LogCountsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, log, facets, from: Start, to: End, binHours, "scope[].firstHour": Start, "scope[].lastHour": End, "facets[].countries[]", "facets[].values[]"];
     type Reply = LogCountsReply;
 
     #[cfg(any(test, feature = "export-types"))]

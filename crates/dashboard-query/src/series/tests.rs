@@ -181,22 +181,28 @@ fn the_next_change_of_a_part_is_the_next_hour_its_row_moves_comes_or_goes() {
     let bounds = (FIRST, FIRST + FIRST_HOURS - 1);
     for (id, resource, origin) in [(9001, 4, FIRST + 1_000), (9001, 4, FIRST + 5_950), (9001, 1, FIRST + 3_001), (9002, 2, ITA_FROM + 100), (9002, 1, ITA_FROM - 400)] {
         let ask = Ask { country: tag_of(id).into(), part: u128::from(resource) };
-        let found = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap();
+        let found = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds, &Within::new()).unwrap();
         let held = |hour: i32| held(&query, tag_of(id), hour);
         let first_held = (bounds.0..=bounds.1).find(|&hour| held(hour)).unwrap();
         let wanted = (origin + 1..=bounds.1).find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
-        assert_eq!(line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds).unwrap(), wanted, "{} part {resource} after {origin}: none when nothing changes after it", ask.country);
+        assert_eq!(line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowRight, bounds, &Within::new()).unwrap(), wanted, "{} part {resource} after {origin}: none when nothing changes after it", ask.country);
         assert_eq!(found, wanted.or(Some(origin)), "{} part {resource} after {origin}: the origin itself when nothing changes after it, as main", ask.country);
-        let back = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowLeft, bounds).unwrap();
+        let back = line.navigate_lines(std::slice::from_ref(&ask), &[measure], Some(origin), NavigationKey::ArrowLeft, bounds, &Within::new()).unwrap();
         let wanted = (bounds.0..origin).rev().find(|&hour| hour == first_held || (hour > first_held && produced(&query, id, resource, hour) != produced(&query, id, resource, hour - 1)));
         assert_eq!(back, wanted.or(Some(origin)), "{} part {resource} before {origin}: the origin itself when nothing changes before it, as main", ask.country);
     }
     let ask = Ask { country: tag_of(9001).into(), part: 4 };
-    let step = |origin: Option<i32>, key| line.navigate_lines(std::slice::from_ref(&ask), &[measure], origin, key, bounds).unwrap();
+    let step = |origin: Option<i32>, key| line.navigate_lines(std::slice::from_ref(&ask), &[measure], origin, key, bounds, &Within::new()).unwrap();
     assert_eq!(step(Some(bounds.0), NavigationKey::ArrowLeft), Some(bounds.0));
     assert_eq!(step(Some(bounds.1), NavigationKey::ArrowRight), Some(bounds.1));
     assert_eq!(step(Some(bounds.1 + 50), NavigationKey::ArrowRight), Some(bounds.1));
-    assert_eq!(step(None, NavigationKey::ArrowLeft), line.change_lines(std::slice::from_ref(&ask), &[measure], None, NavigationKey::ArrowLeft, bounds).unwrap());
+    assert_eq!(step(None, NavigationKey::ArrowLeft), line.change_lines(std::slice::from_ref(&ask), &[measure], None, NavigationKey::ArrowLeft, bounds, &Within::new()).unwrap());
+    let within = Within::from([(ask.country.clone(), vec![(FIRST + 2_000, FIRST + 3_000)])]);
+    let inside = |origin: i32, key| line.change_lines(std::slice::from_ref(&ask), &[measure], Some(origin), key, bounds, &within).unwrap();
+    let changes = || (FIRST + 2_001..=FIRST + 3_000).filter(|&hour| produced(&query, 9001, 4, hour) != produced(&query, 9001, 4, hour - 1));
+    assert_eq!(inside(FIRST + 1_000, NavigationKey::ArrowRight), Some(FIRST + 2_000), "a step from before the held run lands where it starts");
+    assert_eq!(inside(FIRST + 2_000, NavigationKey::ArrowRight), changes().next(), "a change outside the held run is never a step");
+    assert_eq!(inside(FIRST + 5_000, NavigationKey::ArrowLeft), changes().last().or(Some(FIRST + 2_000)), "a step back from after the held run stays inside it");
 }
 
 #[test]
@@ -279,17 +285,23 @@ fn an_owners_parts_over_a_span_are_its_rows_lifetimes() {
     for (from, to) in [(FIRST, last), (FIRST + 3_000, FIRST + 4_000), (FIRST + 5_500, second + 100)] {
         let owners = line.part_lives(&tags, from, to).unwrap();
         for (owner, id) in owners.iter().zip([9001, 9002]) {
-            let mut wanted: BTreeMap<u32, (i32, i32)> = BTreeMap::new();
+            let mut wanted: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
             for hour in from..=to {
                 for resource in [1, 2, 3, 4] {
                     if produced(&query, id, resource, hour).is_some() {
-                        let span = wanted.entry(resource).or_insert((hour, hour));
-                        span.1 = hour;
+                        let spans = wanted.entry(resource).or_default();
+                        match spans.last_mut() {
+                            Some(span) if span.1 + 1 == hour => span.1 = hour,
+                            _ => spans.push((hour, hour)),
+                        }
                     }
                 }
             }
-            let got: BTreeMap<u32, (i32, i32)> = owner.parts.iter().map(|life| (life.part.parse().unwrap(), (life.first_hour, life.last_hour))).collect();
-            assert_eq!(got, wanted, "{}'s parts over {from}..{to}", owner.country);
+            let mut got: BTreeMap<u32, Vec<(i32, i32)>> = BTreeMap::new();
+            for life in &owner.parts {
+                got.entry(life.part.parse().unwrap()).or_default().push((life.first_hour, life.last_hour));
+            }
+            assert_eq!(got, wanted, "{}'s parts over {from}..{to}: each span it is present, never one span across a gap", owner.country);
             assert!(owner.parts.iter().all(|life| life.id.as_deref() == Some(life.part.as_str())), "a resource part names its resource");
         }
         if to >= second {
@@ -485,6 +497,10 @@ fn a_request_naming_1500_countries_is_answered() {
     let next: SeriesKeyReply =
         serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": tags, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
     assert!(next.hour.is_some_and(|next| next > f64::from(hour)));
+    let held = serde_json::json!([["GER", [{ "firstHour": first, "lastHour": first }]]]);
+    let outside: SeriesKeyReply =
+        serde_json::from_value(ask("series-next-change", serde_json::json!({ "countries": ["GER"], "within": held, "key": "ArrowRight", "from": hour, "firstHour": first, "lastHour": last }))).unwrap();
+    assert_eq!(outside.hour, None, "a step from outside the held runs, with nothing after it inside them, goes nowhere rather than back to its origin");
     ask("events-page", serde_json::json!({ "countries": tags, "from": first, "to": last, "pageSize": 16 }));
 }
 

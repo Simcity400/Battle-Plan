@@ -6,4 +6,4 @@ A recorded hour does not by itself prove that every province clock was updated. 
 
 Air fuel forecasts need all 24 factors under a single held seasonal direction. Reuse the initialized vectors independently of the most recent clock update or the mission's selected day/night period.
 
-[Province clock calculation](../../crates/replay-rows/src/day_night.rs) · [Recorded clock states](../../crates/replay-rows/src/extended_rows/naval_weather.rs)
+[Province clock calculation](../../crates/replay-rows-world/src/day_night.rs) · [Recorded clock states](../../crates/replay-rows-weather/src/naval_weather.rs)

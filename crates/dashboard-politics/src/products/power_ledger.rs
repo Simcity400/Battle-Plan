@@ -205,6 +205,7 @@ impl Product for PowerSpending {
     const KEY: &'static str = "power-spending";
     const CONTENT_DEPENDENT: bool = true;
     type Params = PowerSpendingParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, currency, from: Start, to: End];
     type Reply = PowerSpendingReply;
 
     #[cfg(any(test, feature = "export-types"))]

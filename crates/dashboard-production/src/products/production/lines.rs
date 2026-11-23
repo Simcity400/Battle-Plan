@@ -58,6 +58,10 @@ pub struct LineHistory {
 pub struct ProductionLinesParams {
     pub branch_id: String,
     pub country: Country,
+    #[doc = " The held identity's own runs: lines are read only while the country holds them."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -89,6 +93,10 @@ pub struct ProductionDetailParams {
     pub branch_id: String,
     pub country: Country,
     pub window: i32,
+    #[doc = " The held identity's own runs: lines are read only while the country holds them."]
+    #[serde(default)]
+    #[cfg_attr(any(test, feature = "export-types"), ts(optional))]
+    pub within: Option<Vec<dashboard_base::span::HourSpan>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -212,7 +220,13 @@ fn part(values: &[Option<i64>]) -> Option<(OutputPart, i32, bool)> {
 }
 
 fn ended_rows(appearance: &Appearance, index: &RunLines) -> Vec<super::OutputLife> {
-    index.outputs_of(appearance.handle).iter().filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last())).copied().collect()
+    let held_to = appearance.pieces.last().map_or(appearance.last(), |piece| piece.held_to);
+    index
+        .outputs_of(appearance.handle)
+        .iter()
+        .filter(|row| row.first <= appearance.last() && row.ended.is_some_and(|ended| ended >= appearance.last() && ended <= held_to))
+        .map(|row| super::OutputLife { last: row.last.min(held_to), ..*row })
+        .collect()
 }
 
 fn ended_parts(recording: &replay_recording::columnar_frames::Recording, run: u32, asks: &[(i32, u128)]) -> io::Result<BTreeMap<u128, (OutputPart, i32, bool)>> {
@@ -251,6 +265,7 @@ impl Product for ProductionLines {
     const KEY: &'static str = "production-lines";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionLinesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, "within[].firstHour": Start, "within[].lastHour": End];
     type Reply = ProductionLinesReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -287,7 +302,7 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     let recording = query.replay.recording();
     let index = index_of(source);
     let (from, to) = (query.timeline.first, query.timeline.last);
-    let found = appearances(query, &params.country, from, to, &index)?;
+    let found = appearances(query, &params.country, params.within.as_deref(), from, to, &index)?;
     let mut warnings = Vec::new();
     if !query.holders.named(&params.country) {
         warnings.push(query.holders.say(&params.country, to, |name| format!("{name} is held by no country in this branch")));
@@ -363,15 +378,17 @@ pub(super) fn lines_reply(source: &Source, query: &Query<'_>, params: &Productio
     name_used(query, &used, content, &mut named, cancelled)?;
     warnings.extend(std::mem::take(&mut named.warnings));
     let icons = named.icons();
+    let line_hours = held_hours(query, &params.country, params.within.as_deref(), from, to);
+    let named_at = if params.within.is_some() { line_hours.last().map_or(to, |span| span.last_hour) } else { to };
     Ok(ProductionLinesReply {
         branch_id: params.branch_id.clone(),
-        tag: query.holders.name(&params.country, to),
+        tag: query.holders.name(&params.country, named_at),
         decimals: DECIMALS,
         lines,
         variants: named.variants.into_values().collect(),
         organisations: named.organisations.into_values().collect(),
         icons,
-        line_hours: held_hours(query, &params.country, from, to),
+        line_hours,
         detail_hours: DETAIL_HOURS,
         warnings,
     })
@@ -488,6 +505,7 @@ impl Product for ProductionLineDetail {
     const KEY: &'static str = "production-line-detail";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ProductionDetailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, window, "within[].firstHour": Start, "within[].lastHour": End];
     type Reply = ProductionLineDetailReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -513,7 +531,7 @@ pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &Producti
     let (first, last) = window_hours(params.window).ok_or_else(|| dashboard_core::invalid("Invalid production window"))?;
     let recording = query.replay.recording();
     let index = index_of(source);
-    let found: Vec<Appearance> = appearances(query, &params.country, query.timeline.first, query.timeline.last, &index)?
+    let found: Vec<Appearance> = appearances(query, &params.country, params.within.as_deref(), query.timeline.first, query.timeline.last, &index)?
         .into_iter()
         .filter(|appearance| appearance.pieces.iter().any(|piece| piece.first <= last && piece.last >= first))
         .collect();
@@ -540,5 +558,6 @@ pub(super) fn detail_reply(source: &Source, query: &Query<'_>, params: &Producti
         .iter()
         .map(|appearance| LineDetail { key: appearance.key.clone(), runs: line_runs(appearance, &by_run, first, last), output: output_runs(appearance, &outputs, first, last) })
         .collect();
-    Ok(ProductionLineDetailReply { branch_id: params.branch_id.clone(), tag: query.holders.name(&params.country, last), decimals: DECIMALS, window: params.window, first_hour: first, last_hour: last, lines, warnings: Vec::new() })
+    let named_at = super::held_hours(query, &params.country, params.within.as_deref(), first, last).last().map_or(last, |span| span.last_hour);
+    Ok(ProductionLineDetailReply { branch_id: params.branch_id.clone(), tag: query.holders.name(&params.country, named_at), decimals: DECIMALS, window: params.window, first_hour: first, last_hour: last, lines, warnings: Vec::new() })
 }

@@ -1,3 +1,4 @@
+import { gatedTime, heldCountry } from '../../test-support/gated.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { drawBands } from '../../charts/draw.ts';
@@ -271,20 +272,21 @@ test('historical pins retain the country, native cohort and branch-relative hour
     countries: { kind: 'selected' }, time: { mode: 'campaign' }, options: { landSource: 'combatLog', lossSelection: 'old' } };
   const keys = [lossKey(reply().causes[0], reply().designs[0])];
   const country = { campaign: 'campaign', branch: 'b', tag: 'opaque tag', originOffset: 2, slot: 17, countryId: 21 };
-  const pinned = pinLosses(widget, track, 'opaque tag', 205.8, false, null, keys, country);
+  const held = heldCountry({ tag: 'opaque tag', origin: 102, slot: 17, countryId: 21 });
+  const pinned = pinLosses(widget, track, held, gatedTime({ mode: 'pin', windows: { t: { firstOffset: 105, lastOffset: 105 } } }), keys);
   assert.deepEqual(readDrillCountry(pinned.options?.lossCountry, track, pinned.countries), country);
   assert.deepEqual(readDrillCountry(JSON.parse(JSON.stringify(pinned)).options.lossCountry, track, pinned.countries), country);
   assert.deepEqual(pinned.countries, { kind: 'tags', tags: ['opaque tag'] });
-  assert.deepEqual(pinned.time, { mode: 'pin', windows: { t: { firstOffset: 105, lastOffset: 105 } } });
+  assert.deepEqual(pinned.time.value, { mode: 'pin', windows: { t: { firstOffset: 105, lastOffset: 105 } } });
   assert.equal(pinned.options?.show, 'loss-details');
   assert.deepEqual(readLossSelection(pinned.options?.lossSelection, 'campaign', 'b', 'opaque tag')?.keys, keys);
   for (const scope of [['another', 'b', 'opaque tag'], ['campaign', 'another', 'opaque tag'], ['campaign', 'b', 'another']])
     assert.equal(readLossSelection(pinned.options?.lossSelection, scope[0], scope[1], scope[2]), undefined);
   assert.equal(readLossSelection('malformed', 'campaign', 'b', 'opaque tag'), undefined);
-  assert.deepEqual(pinLosses(widget, track, 'opaque tag', 205.8, false, 150, keys).time,
+  assert.deepEqual(pinLosses(widget, track, held, gatedTime({ mode: 'range', firstOffset: 50, lastOffset: 105 }), keys).time.value,
     { mode: 'range', firstOffset: 50, lastOffset: 105 });
-  assert.deepEqual(pinLosses(widget, track, 'opaque tag', 205, true, null, null, country).time, { mode: 'follow' });
-  const followed = pinLosses(widget, track, 'opaque tag', 205, true, null, null, country);
+  assert.deepEqual(pinLosses(widget, track, held, gatedTime({ mode: 'follow' }), null).time.value, { mode: 'follow' });
+  const followed = pinLosses(widget, track, held, gatedTime({ mode: 'follow' }), null);
   assert.equal(followed.options?.lossSelection, undefined);
   assert.deepEqual(readDrillCountry(followed.options?.lossCountry, track, followed.countries), country);
 });

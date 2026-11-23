@@ -349,6 +349,7 @@ impl Product for EventFeedSpan {
     const KEY: &'static str = "event-feed-span";
     const CONTENT_DEPENDENT: bool = true;
     type Params = EventFeedSpanParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, from: Start, to: End, categories, kindsOnly];
     type Reply = EventFeedSpanReply;
 
     #[cfg(any(test, feature = "export-types"))]

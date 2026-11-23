@@ -152,6 +152,7 @@ impl AtHour for FactionDetails {
     const TITLE: &'static str = "Faction details";
     const CONTENT_DEPENDENT: bool = true;
     type Params = FactionDetailParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, faction, viewpoint];
     type Reply = FactionDetailReply;
     type Context = DetailContent;
 

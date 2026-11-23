@@ -79,6 +79,7 @@ impl Product for LandOwnersProduct {
     const KEY: &'static str = "land-owners";
     const CONTENT_DEPENDENT: bool = true;
     type Params = LandOwnersParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![];
     type Reply = LandOwners;
 
     #[cfg(any(test, feature = "export-types"))]

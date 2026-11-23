@@ -269,6 +269,7 @@ impl AtHour for ResourceBalance {
     const TITLE: &'static str = "Resource balance";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ResourceBalanceParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, order, hideEmpty];
     type Reply = ResourceBalanceReply;
     type Context = ResourceContext;
 
@@ -380,6 +381,7 @@ impl Product for ResourceSizes {
     const KEY: &'static str = "resource-sizes";
     const CONTENT_DEPENDENT: bool = false;
     type Params = ResourceSizesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, from: Start, to: End];
     type Reply = ResourceSizesReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

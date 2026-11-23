@@ -66,15 +66,14 @@ def check(normal, all_targets):
     layers = {
         "replay-data": {"replay-frame", "replay-derive", "replay"},
         "replay-rows": {"replay-frame", "replay-derive", "replay"},
-        "replay-rows-derived": {"replay-frame", "replay-derive", "replay"},
-        "replay-tables-a": {"replay-frame", "replay-derive", "replay"},
-        "replay-tables-b": {"replay-frame", "replay-derive", "replay"},
-        "replay-tables-c": {"replay-frame", "replay-derive", "replay"},
-        "replay-tables-d": {"replay-frame", "replay-derive", "replay"},
-        "replay-tables-e": {"replay-frame", "replay-derive", "replay"},
         "replay-frame": {"replay-derive", "replay"},
         "replay-derive": {"replay"},
     }
+    layers.update({
+        name: {"replay-frame", "replay-derive", "replay"}
+        for name in all_targets
+        if name.startswith(("replay-rows-", "replay-tables-"))
+    })
     content = {name for name in all_targets if name.startswith("content-reader")}
     for name, forbidden in layers.items():
         path = path_to(all_targets, name, forbidden | content)

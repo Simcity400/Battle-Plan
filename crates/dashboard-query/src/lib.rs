@@ -1,10 +1,12 @@
 
 pub mod chart;
 pub mod cost;
+pub mod fields;
 #[cfg(test)]
 mod fixture;
 pub mod identity;
 pub mod log;
+pub mod named;
 pub mod pieces;
 pub mod read;
 pub mod series;

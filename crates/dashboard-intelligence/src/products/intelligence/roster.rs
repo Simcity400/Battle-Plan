@@ -337,6 +337,7 @@ impl AtHour for OperativesRoster {
     const TITLE: &'static str = "Operatives roster";
     const CONTENT_DEPENDENT: bool = true;
     type Params = OperativesRosterParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, "countries[]"];
     type Reply = OperativesRosterReply;
     type Context = RosterContext;
 
@@ -474,6 +475,7 @@ impl Product for OperativesDeparted {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = OperativesDepartedParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, hour: Read, "countries[]"];
     type Reply = OperativesDepartedReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -617,6 +619,7 @@ impl Product for OperativeTenures {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = OperativesDepartedParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, hour: Read, "countries[]"];
     type Reply = OperativeTenuresReply;
 
     #[cfg(any(test, feature = "export-types"))]

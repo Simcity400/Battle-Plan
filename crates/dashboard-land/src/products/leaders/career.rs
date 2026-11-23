@@ -265,6 +265,7 @@ impl Product for LeaderCareer {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = LeaderCareerParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, reference];
     type Reply = LeaderCareerReply;
 
     #[cfg(any(test, feature = "export-types"))]
@@ -451,6 +452,7 @@ impl AtHour for LeaderHour {
     const TITLE: &'static str = "General career";
     const CONTENT_DEPENDENT: bool = true;
     type Params = LeaderHourParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, reference];
     type Reply = LeaderHourReply;
     type Context = LeadersContext;
 
@@ -607,6 +609,7 @@ impl Product for LeaderChoices {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = LeaderChoicesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, selection, "selection.countries[]"];
     type Reply = LeaderChoicesReply;
 
     #[cfg(any(test, feature = "export-types"))]

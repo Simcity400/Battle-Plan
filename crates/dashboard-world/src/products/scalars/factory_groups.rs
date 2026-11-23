@@ -105,6 +105,7 @@ impl Product for FactoryGroups {
     const KEY: &'static str = "factory-groups";
     const CONTENT_DEPENDENT: bool = true;
     type Params = FactoryGroupsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = FactoryGroupsReply;
 
     #[cfg(any(test, feature = "export-types"))]

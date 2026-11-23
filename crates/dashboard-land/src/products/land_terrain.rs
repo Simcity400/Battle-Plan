@@ -155,6 +155,7 @@ impl Product for LandBattleTerrains {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = LandBattleTerrainParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![provinces, "provinces[]"];
     type Reply = LandBattleTerrainReply;
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {

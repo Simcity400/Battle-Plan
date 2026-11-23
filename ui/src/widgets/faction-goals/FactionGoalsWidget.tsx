@@ -74,7 +74,7 @@ export default function FactionGoalsWidget({ widget, runtime, active, headerSlot
     {completedCount(all)} completed</span>, headerSlot);
   const body = (() => {
     if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see faction goals." />;
-    if (hour === null) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+    if (hour === null) return <WidgetState kind="outside" />;
     const groupFailure = groups.error ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
     if (groupFailure && !groups.data) return groupFailure;
     if (!groups.data) return <WidgetState kind="loading" label="Loading faction goals…" />;

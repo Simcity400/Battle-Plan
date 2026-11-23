@@ -40,6 +40,7 @@ impl Product for CampaignClock {
     const CONTENT_DEPENDENT: bool = false;
     const INTERACTIVE: bool = true;
     type Params = CampaignClockParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, firstHour: Start, lastHour: End];
     type Reply = CampaignClockReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {

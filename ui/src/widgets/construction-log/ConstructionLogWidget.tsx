@@ -134,7 +134,7 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   if (!manifest || !match.ready) return <>{groupFailure}<WidgetState kind="loading" label="Loading the construction log…" /></>;
   if (match.reason) return <>{groupFailure}<WidgetState kind="unavailable" message={match.reason} /></>;
   if (!manifest.recorded) return <>{groupFailure}<WidgetState kind="unavailable" message="Construction was not recorded." /></>;
-  if (!inBranch) return <>{groupFailure}<WidgetState kind="unavailable" message="This time is outside the recording." /></>;
+  if (!inBranch) return <>{groupFailure}<WidgetState kind="outside" /></>;
   if (!log || hour == null) return <>{groupFailure}<WidgetState kind="loading" label="Loading the construction log…" /></>;
 
   const chosen = contentSet(types);

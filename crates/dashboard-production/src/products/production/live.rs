@@ -140,6 +140,7 @@ impl AtHour for ProductionLinesAt {
     const TITLE: &'static str = "Production lines";
     const CONTENT_DEPENDENT: bool = true;
     type Params = ProductionLinesAtParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, order];
     type Reply = ProductionLinesAtReply;
     type Context = LinesContext;
 

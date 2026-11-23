@@ -1,0 +1,28 @@
+use replay_rows_world::*;
+
+replay_rows::row_ops! {
+    Clock => ClockRow,
+    Campaign => CampaignRow,
+    Countries => CountryRow,
+    CountryLinks => CountryLinkRow,
+    Provinces => ProvinceRow,
+    States => StateRow,
+    WarRelations => WarRelationRow,
+    Factions => FactionRow,
+    FactionMembers => FactionMemberRow,
+    Players => PlayerRow,
+    HumanControllers => HumanControllerRow,
+    ReserveModifierBreakdowns => ReserveModifierBreakdownRow,
+    PowerBalanceModifierBreakdowns => PowerBalanceModifierBreakdownRow,
+    NavalModifierBreakdowns => NavalModifierBreakdownRow,
+    AttritionModifierBreakdowns => AttritionModifierBreakdownRow,
+    NavalModifierTrees => NavalModifierTreeRow,
+    NavalModifierTreeSamples => NavalModifierTreeSampleRow,
+    OwnerTransportSpeeds => OwnerTransportSpeedRow,
+    ReserveModifierTrees => ReserveModifierTreeRow,
+    MovementStateTerms => MovementStateTermRow,
+    CoreSupplyAccess => CoreSupplyAccessRow,
+    CountryUnitSpeedEntries => CountryUnitSpeedEntryRow,
+    RiverRelations => RiverRelationRow,
+    DivisionTransportSpeeds => OwnerTransportSpeedRow,
+}

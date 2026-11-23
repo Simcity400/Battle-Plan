@@ -6,4 +6,4 @@ Map names, counter counts, and plan labels resolve their authored font or the re
 
 The layout consumes stored colour escapes without counting them as glyphs. A dangling escape marker is consumed alone. The standalone reserved control has no visible glyph, and unsupported inline controls produce a named refusal. A measured line and the corresponding label share glyph advances and kerning. The bounded layout uses the authored width for alignment and truncation, with overlong lines beginning at the left of the box.
 
-[Font loading and layout](../../crates/viewer-native-gui/src/text.rs) · [Counter label caller](../../crates/viewer-counters/src/map/counters/mod.rs)
+[Font loading and layout](../../crates/viewer-native-gui/src/text.rs) · [Counter label caller](../../crates/viewer-counter-kit/src/lib.rs)

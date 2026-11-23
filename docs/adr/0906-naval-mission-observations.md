@@ -6,4 +6,4 @@ The navy's nonempty regional ledger retains registration order and repeats, incl
 
 Country inputs are acquired on their daily slices and also promptly for a new owner or changed commander fingerprint. Combined task force modifiers start at the roster owner's accumulator, while escort efficiency uses the mission owner's entry. Region hubs preserve original order. The escort breakdown is demanded only for registered escort mission owners. Its unavailable value and an observed empty breakdown are distinct. Commander contributions come from the fleet leader followed by the four headquarters accumulators. A reached but unresolved or ineligible commander has absent entries, and no row means it was not read. Slice evidence retains the actual sample hour and prevents claiming a fresh modifier computation from a carried read.
 
-[Naval mission inputs](../../crates/replay-rows/src/naval_mission_rows.rs)
+[Naval mission inputs](../../crates/replay-rows-naval/src/naval_mission_rows.rs)

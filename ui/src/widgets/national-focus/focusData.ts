@@ -3,12 +3,13 @@ import type { ProductRequest } from '../../dashboard/client';
 import type { NameAt } from '../../dashboard/countryFacts';
 import { artworkEntry, drawableIcon, keepDrawableIcons } from '../../dashboard/artwork.ts';
 import { enTwoDecimals } from '../../charts/numberFormat.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 export const PRODUCT = 'national-focus';
 const FIXED = 100_000n;
 
-export function focusRequest(sourceId: string, revision: string, params: CountryParams): ProductRequest<CountryParams> {
-  return { sourceId, revision, product: PRODUCT, params };
+export function focusRequest(sourceId: string, revision: string, params: CountryParams): ProductRequest<typeof PRODUCT> {
+  return productRequest({ sourceId, revision, product: PRODUCT, params });
 }
 
 function spanAt<T extends { firstHour: number; lastHour: number }>(spans: readonly T[], hour: number): number {

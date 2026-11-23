@@ -26,6 +26,7 @@ import { followedEnd, mergeSupremacy, runOn, supremacyDays, supremacyRows, supre
 import type { Control } from './navalSupremacyData';
 import { OPTIONS } from './definition';
 import './navalSupremacy.css';
+import { productRequest } from '../../dashboard/request.ts';
 
 const LABELS: Record<Control, string> = { friendly: 'Friendly control', enemy: 'Enemy control', neither: 'Contested' };
 
@@ -47,8 +48,8 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const shown = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1]) : [], [extent?.[0], extent?.[1]]);
   const wanted = useMemo(() => extent && extent[0] <= extent[1] ? windowsOf(extent[0], extent[1], following) : [], [extent?.[0], extent?.[1], following]);
   const identity = track && tag ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, tag]) : null;
-  const held = useProductWindows(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision, product: 'naval-supremacy',
-    params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } }), wanted, active, validateSupremacy, track?.source);
+  const held = useProductWindows(runtime.client, identity, index => (productRequest({ sourceId: track!.source.id, revision: track!.source.revision, product: 'naval-supremacy',
+    params: { branchId: track!.branch.id, country: countryFromKey(tag!), window: index } })), wanted, active, validateSupremacy, track?.source);
   const error = shown.map(index => held.errors.get(index)).find(failure => failure !== undefined);
   const retry = held.retry;
   const complete = shown.length > 0 && shown.every(index => held.data.has(index));
@@ -76,7 +77,7 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   useShownEachFrame(runtime.clock, () => data && extent ? liveHead ? Math.min(liveHead.read(), data.lastHour) : extent[1] : null);
   if (!track) return <WidgetState kind="empty" icon="anchor" message="Load a campaign to see naval supremacy." />;
   if (!tag) return <WidgetState kind="empty" icon="anchor" message="Choose a country in the widget's header." />;
-  if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="unavailable" message="This time is outside the recording." />;
+  if (!window || !extent || extent[1] < extent[0]) return <WidgetState kind="outside" />;
   if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
   if (!data) return <WidgetState kind="loading" label="Loading naval supremacy…" />;
   if (!rows.length) return <WidgetState kind="empty" message="No sea regions match these filters." />;

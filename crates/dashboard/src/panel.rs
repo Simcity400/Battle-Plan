@@ -12,10 +12,16 @@ pub fn panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Re
 #[cfg(test)]
 mod registry_tests;
 
+pub const PANEL_ALIASES: &[(&str, &str)] = &[("special-projects-history", "special-projects"), ("special-project-rewards", "special-project-details")];
+
+pub fn panel_product(panel: &str) -> &str {
+    PANEL_ALIASES.iter().find(|(alias, _)| *alias == panel).map_or(panel, |(_, product)| product)
+}
+
 pub fn dated_panel_of(source: &Source, load: &LoadContext, asked: &Value) -> Option<Result<Box<dyn Panel>, String>> {
-    Some(match asked["panel"].as_str()? {
-        "special-projects" | "special-projects-history" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
-        "special-project-details" | "special-project-rewards" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),
+    Some(match panel_product(asked["panel"].as_str()?) {
+        "special-projects" => dashboard_research::products::special_projects::dated_panel(source, load, asked),
+        "special-project-details" => dashboard_research::registrations::EXACT_SPECIALPROJECTDETAILSAT(source, load, asked),
         "doctrine-mastery" => dashboard_land::registrations::EXACT_DOCTRINEMASTERY(source, load, asked),
         "research-slots" => dashboard_research::registrations::EXACT_RESEARCHSLOTS(source, load, asked),
         "nuclear-arsenal" => dashboard_world::registrations::EXACT_NUCLEARARSENAL(source, load, asked),

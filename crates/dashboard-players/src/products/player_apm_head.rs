@@ -20,6 +20,12 @@ use std::{
 
 pub const SERIES: &str = "player-apm";
 
+pub const HEADS: &[(&str, dashboard_base::products::Fields, fn() -> dashboard_query::fields::Walk)] = &[
+    (SERIES, dashboard_base::fields![branchId, group, tags, players, firstHour: Start, lastHour: End, windowHours, "membership[].firstHour": Start, "membership[].lastHour": End],
+        dashboard_query::fields::walk::<ApmHeadParams>),
+    ("campaign-clock", dashboard_base::fields![branchId, firstHour: Start, lastHour: End], dashboard_query::fields::walk::<ClockHeadParams>),
+];
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApmHeadParams {
@@ -315,12 +321,12 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
         let cancelled = AtomicBool::new(false);
         match kind {
             SERIES => {
-                let params: ApmHeadParams = serde_json::from_value(params)?;
+                let params: ApmHeadParams = dashboard_query::named::named(&params)?;
                 let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
                 Ok(Head::new(ApmHead::new(index(source, branch, &cancelled)?, &params)?))
             }
             "campaign-clock" => {
-                let params: ClockHeadParams = serde_json::from_value(params)?;
+                let params: ClockHeadParams = dashboard_query::named::named(&params)?;
                 let branch = params.branch_id.parse().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid branch"))?;
                 Ok(Head::new(ClockHead { index: index(source, branch, &cancelled)?, branch_id: params.branch_id, first: params.first_hour, last: params.last_hour }))
             }
@@ -328,6 +334,10 @@ pub fn head_of(source: &Source, asked: &Value) -> Option<Result<Head, String>> {
         }
     };
     Some(build().map_err(|error| error.to_string()))
+}
+
+pub fn tile_family_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<TileFamily>()
 }
 
 #[derive(Deserialize)]
@@ -341,6 +351,10 @@ struct TileFamily {
     value: String,
 }
 
+pub fn tile_ask_walk() -> dashboard_query::fields::Walk {
+    dashboard_query::fields::walk::<TileAsk>()
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TileAsk {
@@ -351,8 +365,8 @@ struct TileAsk {
 
 pub fn tile(source: &Source, branch: u64, timeline_last: i32, params: &Value) -> io::Result<SeriesTileReply> {
     let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_owned());
-    let family: TileFamily = serde_json::from_value(params.get("family").cloned().ok_or_else(|| invalid("A tile names no family"))?)?;
-    let ask: TileAsk = serde_json::from_value(params.clone())?;
+    let family: TileFamily = dashboard_query::named::named(params.get("family").ok_or_else(|| invalid("A tile names no family"))?)?;
+    let ask: TileAsk = dashboard_query::named::named(params)?;
     if family.value != "apm" && family.value != "pausedOrders" {
         return Err(invalid("No eAPM tile value"));
     }

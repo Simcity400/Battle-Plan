@@ -8,4 +8,4 @@ An interval runs between hour reads and may include events stamped with either e
 
 The display operands retain the simulation's raw country references. Unit intel samples keep canonical country ordinals, signed levels, source order and repetitions. For fake divisions and railway guns, preserve both the displayed province and the province used for visibility. Captured generals retain the two country refs. Paradrops retain landing losses and fog, while resistance retains the best victory-point province, the controller and the owner's overlord. Damage notifications emit one event per affected building level. The recorded reason selects which text to show.
 
-[Map event rows](../../crates/replay-rows/src/map_event_rows.rs)
+[Map event rows](../../crates/replay-rows-events/src/map_event_rows.rs)

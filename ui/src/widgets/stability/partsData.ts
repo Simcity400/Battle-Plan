@@ -2,7 +2,7 @@ import { divergingStack, runAt } from '../../charts/series.ts';
 import type { Band } from '../../charts/series';
 import type { HourSpan } from '../../generated/dashboard';
 import type { ChartSummary } from '../../charts/chartSummary';
-import type { KeyedState, SeriesPart } from '../../dashboard/keyedSeriesData';
+import type { HeldPart, KeyedState } from '../../dashboard/keyedSeriesData';
 import type { FixedRun, MeasureParts, StabilityPart, StabilityPartName, StabilityPartNamesReply } from './types';
 import { lineName, rawAt, termLabel } from './stabilityData.ts';
 import type { Measure } from './stabilityData';
@@ -238,9 +238,9 @@ export function validateStabilityPartNames(value: unknown): StabilityPartNamesRe
   return reply;
 }
 
-export function namesAt(listed: readonly SeriesPart[], end: number): [number, string[]][] {
+export function namesAt(listed: readonly HeldPart[], end: number): [number, string[]][] {
   const last = new Map<string, number>();
-  for (const part of listed) last.set(part.part, Math.max(last.get(part.part) ?? -Infinity, Math.min(part.lastHour, end)));
+  for (const part of listed) for (const span of part.spans) if (span.firstHour <= end) last.set(part.part, Math.max(last.get(part.part) ?? -Infinity, Math.min(span.lastHour, end)));
   const byHour = new Map<number, string[]>();
   for (const [part, hour] of last) byHour.set(hour, [...(byHour.get(hour) ?? []), part]);
   return [...byHour].sort(([a], [b]) => a - b);

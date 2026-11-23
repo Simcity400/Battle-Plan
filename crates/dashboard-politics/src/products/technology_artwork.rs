@@ -38,6 +38,7 @@ impl Product for TechnologyArtwork {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = TechnologyArtworkParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![tokens, recorded, "recorded.*[]"];
     type Reply = TechnologyArtworkReply;
 
     #[cfg(any(test, feature = "export-types"))]

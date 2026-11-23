@@ -1,11 +1,11 @@
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { createPortal } from 'react-dom';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo,  useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
 import ArtFallback from '../../components/ArtFallback';
 import { contentTitleHint } from '../../dashboard/contentTitles';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import { useDrill } from '../../charts/drill/useDrill';
 import { dayLabel } from '../../charts/draw';
 import { liveAt, liveByColumn, liveKey, mapLive } from '../../charts/live';
 import type { Live, LiveValues } from '../../charts/live';
@@ -22,6 +22,7 @@ import { reporting } from '../../dashboard/follow/liveCells.ts';
 import { gameWindow, windowDayLabel, withWindowDiagnostics } from '../../dashboard/gameWindows';
 import type { MioPolicySelection, ShownWindow } from '../../dashboard/gameWindows';
 import { useHeadProduct } from '../../dashboard/headProduct';
+import { useGate } from '../../dashboard/regionGate';
 import { resolveWindow } from '../../dashboard/model';
 import { nameReadFailure, nameReadText } from '../../dashboard/nameReads.ts';
 import { resolveOptions } from '../../dashboard/options';
@@ -34,6 +35,7 @@ import { cooldownDays, cooldownValues, exactFundsText, fundsRaw, fundsText, orga
   validateOrganisations } from './organisationsData';
 import type { OrganisationRow } from './organisationsData';
 import './industrialOrganisations.css';
+import { useRegion, useRegionHour, useRegionCoverage } from '../../dashboard/widgetTime.ts';
 
 const NO_ROWS: readonly OrganisationRow[] = [];
 const NO_WARNINGS: readonly string[] = [];
@@ -48,11 +50,13 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = selectedCountryKeys(widget.countries, track)[0] ?? null;
-  const head = useHeadProduct(runtime, widget, 'industrial-organisations', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateOrganisations });
+  const head = useHeadProduct(runtime, useGate(runtime, widget), 'industrial-organisations', tag ? { country: countryFromKey(tag) } : null, { active, validate: validateOrganisations });
   const data = head.data;
   const hour = head.at ?? head.hour ?? track?.branch.lastHour ?? 0;
   const anchor = useRef<HTMLDivElement>(null);
-  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const drillControl = useDrill(runtime, useRegion(widget));
+  const drill = drillControl.state;
+  const dispatch = drillControl.dispatch;
   const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag]);
   const owner = useMemo(() => ({ client: runtime.client, scope }), [runtime.client, scope]);
   const [stored, setPicked] = useState<{ owner: object; selection: MioPolicySelection } | null>(null);
@@ -111,18 +115,20 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const open = (row: OrganisationRow) => {
     if (!track || !tag || !Chooser) return;
     setPicked({ owner, selection: { kind: 'mioPolicyChooser', sourceId: track.source.id, revision: track.source.revision, branchId: track.branch.id, hour, organisation: row.key } });
-    dispatch({ type: 'open', breakdown: POLICY.id, hour, playing: runtime.clock.getSnapshot().playing, playhead: widget.time.mode === 'follow' ? hour : null });
+    dispatch({ type: 'open', breakdown: POLICY.id, hour, follow: drillControl.followsAt(hour) });
   };
-  const at = drillHour(drill, hour) ?? hour;
+  const drillRegion = drillControl.region;
+  const at = useRegionHour(runtime, drillRegion, active && drill.breakdown !== null);
+  const drillCoverage = useRegionCoverage(runtime, drillRegion);
 
   if (!track) return <WidgetState kind="empty" icon="factory" message="Load a campaign to see organisations." />;
   if (!tag) return <WidgetState kind="empty" message="Choose a country in widget settings." />;
-  if (head.read === 'off') return <WidgetState kind="unavailable" message="This time is outside the recording." />;
-  if (head.error) return <WidgetState kind="error" failure={head.error} onRetry={head.retry} />;
-  if (!data) return <div ref={head.root}><WidgetState kind="loading" label="Loading organisations…" /></div>;
   const country = nameReadText(names.get(nameKey(hour, tag)));
-  const header = headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} organisations</span>, headerSlot);
-  const body = data.missing ? <WidgetState kind="unavailable" message={data.missing} />
+  const header = data && headerSlot && createPortal(<span className="pill">{rows.length.toLocaleString()} organisations</span>, headerSlot);
+  const body = head.read === 'off' ? <WidgetState kind="outside" />
+    : head.error ? <WidgetState kind="error" failure={head.error} onRetry={head.retry} />
+    : !data ? <WidgetState kind="loading" label="Loading organisations…" />
+    : data.missing ? <WidgetState kind="unavailable" message={data.missing} />
     : !rows.length ? <WidgetState kind="empty" icon="factory" message={`${country} has no industrial organisations at this date.`} />
       : <Table rowRevision={organisationRevision} key={`${track.source.id}:${track.branch.id}:${tag}`} label="Industrial organisations" rows={rows} columns={columns}
         rowKey={row => row.key} sort={sort} setOption={setOption} cellBars={options.cellBars === true} density={options.density === 'compact' ? 'compact' : 'comfortable'}
@@ -131,10 +137,11 @@ export default function IndustrialOrganisationsWidget({ widget, runtime, active,
   const main = <div ref={head.root} className="industrial-organisations-main">{body}</div>;
   return <div ref={anchor} data-detail={failureDetails([...names.values()].map(nameReadFailure))} className="industrial-organisations">
     {header}
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={windowOpen} anchor={anchor}
-      title={POLICY.label} day={windowShown ? windowDayLabel(windowShown) : dayLabel(at)} following={drill.follow} canFollow={widget.time.mode === 'follow'}
-      onClose={() => dispatch({ type: 'close' })} onFollow={() => dispatch({ type: 'follow' })} main={main}>
-      {picked && Chooser && <Chooser selection={{ ...picked, hour: drill.follow ? hour : at }} active={active} client={runtime.client}
+    <DrillHost drill={drillControl} runtime={runtime} subject={windowOpen} mode={options.drill === 'popout' ? 'popout' : 'inline'} anchor={anchor}
+      title={POLICY.label} day={windowShown ? windowDayLabel(windowShown) : at === null ? '' : dayLabel(at)} canFollow
+      onClose={() => dispatch({ type: 'close' })} main={main}>
+      {picked && Chooser && at === null && <WidgetState kind="outside" read={drillCoverage} />}
+      {picked && Chooser && at !== null && <Chooser selection={{ ...picked, hour: at }} active={active} client={runtime.client}
         onDiagnostics={onWindowDiagnostics} onShown={setWindowShown} />}
     </DrillHost>
   </div>;

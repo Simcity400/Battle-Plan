@@ -17,6 +17,7 @@ import { forgetReplySizes } from './replySizes.ts';
 import type { Compression } from '../recorder/compression';
 import { perfLog } from '../shell/perf.ts';
 import { busy } from '../shell/busy.ts';
+import { OpenedSources } from './openedSources.ts';
 import type { QueryTiming } from '../shell/perf';
 
 function cancelled(): DOMException {
@@ -114,7 +115,10 @@ async function sent<T>(
   }
 }
 
+const opened = new OpenedSources();
+
 async function releaseSource(sourceId: string): Promise<void> {
+  opened.delete(sourceId);
   forgetReplySizes(nativeDashboardClient, sourceId);
   if (!desktopAvailable) return;
   await invoke('dashboard_release_source', { sourceId });
@@ -170,10 +174,12 @@ export const nativeDashboardClient: DashboardClient = {
     const source = await request<SourceReply>('dashboard_open_source', () => ({ path }), signal,
       late => invoke('dashboard_release_source', { sourceId: late.id }));
     contentRevision(nativeDashboardClient).observePresentation(source.presentationGeneration);
-    return { id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } };
+    return opened.add({ id: source.id, path: source.path, revision: source.revision, metadata: { ...source.metadata, revision: source.revision } });
   },
 
   product<T>({ asksFrom, ...query }: import('./client').ProductRequest, signal: AbortSignal) {
+    const refused = opened.refusal(query);
+    if (refused) return Promise.reject(new RefusedError(refused));
     return request<ProductReply<T>>('dashboard_product', () => ({ query }), signal, undefined, asksFrom);
   },
 

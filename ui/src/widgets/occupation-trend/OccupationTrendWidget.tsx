@@ -1,3 +1,4 @@
+import { useGate } from '../../dashboard/regionGate';
 import { countryKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CountryPicker from '../../components/CountryPicker';
@@ -13,7 +14,9 @@ import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackMotion, useTransitionValue } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { countryMatch } from '../../dashboard/groups';
-import { resolveWindow } from '../../dashboard/model';
+import { axisHour, regionHour, SPEC } from '../../dashboard/regionTime.ts';
+import { coverageOf, useRegion, useRegionOutside } from '../../dashboard/widgetTime.ts';
+import WidgetState from '../../components/WidgetState';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { OPTIONS } from './definition';
 import { SERIES, measureName, occupationLineTooltip, occupationPercent, occupationTooltip, otherMeasure, rankingMeasure, validateOccupationDetail } from './occupationTrendData.ts';
@@ -21,6 +24,7 @@ import type { DetailAt, OccupationMeasure, ShownMeasure } from './occupationTren
 import type { OccupationDetailReply } from '../../generated/dashboard';
 import '../../charts/race/countryRace.css';
 import { useChangedState } from '../../dashboard/changedState.ts';
+import { productRequest } from '../../dashboard/request.ts';
 
 const NO_WARNINGS: string[] = [];
 
@@ -40,24 +44,27 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
 
   const groups = useCountryGroups(runtime, track, active && view === 'mix');
   const fallback = defaultCountryKey(track);
-  const readHour = useCallback(() => track ? Math.floor(resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour ?? track.branch.lastHour) : 0,
+  const readHour = useCallback((): number | null => regionHour({ widget, action: SPEC }, track, runtime.tracks, axisHour(runtime.clock)),
     [widget, track, runtime.tracks, runtime.clock]);
+  const mixOutside = useRegionOutside(runtime, useRegion(widget), active && view === 'mix');
+  const gate = useGate(runtime, widget, SPEC, active);
   const settled = useTransitionValue(view === 'mix' && !playing ? runtime.clock.subscribe : null, readHour);
   const held = useRef(settled);
   if (!playing) held.current = settled;
   const choiceHour = held.current;
-  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceHour, countries: [], collaboration: false } } : null, active, validateOccupationDetail, track?.source);
+  const choiceAt = gate.recorded(choiceHour);
+  const occupiers = useProduct<OccupationDetailReply>(runtime.client, view === 'mix' && track && choiceAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'occupation-at', params: { branchId: track.branch.id, hour: choiceAt, countries: [], collaboration: false } }) : null, active, validateOccupationDetail, track?.source);
   const match = useMemo(() => countryMatch(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const candidates = useMemo(() => (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(countryKey(row.country), choiceHour)).map(row => countryKey(row.country)),
+  const candidates = useMemo(() => choiceHour === null ? [] : (occupiers.data?.occupiers ?? []).filter(row => row.missing === null && match.matches(countryKey(row.country), choiceHour)).map(row => countryKey(row.country)),
     [occupiers.data, match, choiceHour]);
   const [picked, setPicked] = useState<{ tag: string; hour: number } | null>(null);
   const originHour = picked?.hour ?? choiceHour;
   const resolvedTag = mixCountry(widget.countries, fallback, candidates.map(tag => ({ tag })));
   const mixTag = picked && candidates.includes(picked.tag) ? picked.tag : resolvedTag !== null && candidates.includes(resolvedTag) ? resolvedTag : candidates.length === 1 ? candidates[0] : null;
   const mixOrigin = picked?.tag === mixTag ? originHour : choiceHour;
-  const spans = useMemo(() => view === 'mix' && mixTag && groups.data ? countryDrillSpans(groups.data.countryIdentities, mixTag, mixOrigin) : null,
+  const spans = useMemo(() => view === 'mix' && mixTag && groups.data && mixOrigin !== null ? countryDrillSpans(groups.data.countryIdentities, mixTag, mixOrigin) : null,
     [view, mixTag, mixOrigin, groups.data]);
   const spansKey = spans ? JSON.stringify([...spans]) : null;
   const mix = useMemo(() => mixTag && spans ? { tag: mixTag, spans } : null, [mixTag, spansKey]);
@@ -70,8 +77,9 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
     asked.current = at;
     queueMicrotask(() => setDetailHour(at));
   }, []);
-  const request = track && detailHour !== null ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
-    params: { branchId: track.branch.id, hour: detailHour, countries: [], collaboration } } : null;
+  const detailAt = gate.recorded(detailHour);
+  const request = track && detailAt !== null ? productRequest({ sourceId: track.source.id, revision: track.source.revision, product: 'occupation-at',
+    params: { branchId: track.branch.id, hour: detailAt, countries: [], collaboration } }) : null;
   const read = useProduct<OccupationDetailReply>(runtime.client, request, active, validateOccupationDetail, track?.source);
   const detail = useMemo<DetailAt | null>(() => read.data && detailHour !== null ? { hour: detailHour, reply: read.data, values: repliedCells(read.data).read() } : null,
     [read.data, detailHour]);
@@ -93,12 +101,13 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
 
   const legend = shown === 'both' && view !== 'race'
     ? <p className="chart-line-key"><i aria-hidden="true" />Solid: {measureName(rank).toLowerCase()} · <i className="is-dashed" aria-hidden="true" />dashed: {measureName(otherMeasure(rank)).toLowerCase()}</p> : null;
-  const chooser = view === 'mix' && track ? <CountryPicker countries={track.source.metadata.countries} allowedTags={candidates} selectedTag={mixTag} playerCountryId={null}
+  const chooser = view === 'mix' && track && choiceHour !== null ? <CountryPicker countries={track.source.metadata.countries} allowedTags={candidates} selectedTag={mixTag} playerCountryId={null}
     source={track.source} client={runtime.client} field flagAt={{ branchId: track.branch.id, hour: choiceHour }}
     onChange={tag => { if (tag && candidates.includes(tag)) setPicked({ tag, hour: choiceHour }); }} /> : null;
   const unavailable = view === 'mix' && occupiers.data && !candidates.length ? <p className="chart-line-key">No occupied-state data at this time.</p>
     : view === 'mix' && !mixTag ? <p className="chart-line-key">Choose an occupier.</p>
     : view === 'mix' && groups.data && spans && spans.size === 0 ? <p className="chart-line-key">Country unavailable at this time.</p> : null;
+  if (view === 'mix' && mixOutside) return <WidgetState kind="outside" read={coverageOf(mixOutside)} />;
   return <MeasureRace widget={widget} runtime={runtime} active={active} measure={measure} decimals={5} view={view}
     options={options} label={`Average ${measureName(rank).toLowerCase()}`} icon="globe" format={format} formatValue={formatValue}
     onWarnings={onWarnings} second={second} mix={mix} tooltip={tooltip} lineTooltip={lineTooltip} onHover={ask}

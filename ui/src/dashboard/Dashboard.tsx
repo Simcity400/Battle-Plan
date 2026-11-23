@@ -17,6 +17,7 @@ import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
 import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
+import { persistedSpec, type PinnedSpec } from './regionTime.ts';
 import type { PageEntry, PageId } from './pages';
 import { doneEditing, droppedTagWarning, layoutSaveAllowed, layoutSaveCheck, loadLayouts, unsavedLayoutPages, parseLayoutLibrary, parseTemplate, parseTemplateWithNotes, saveLayouts } from './storage';
 import type { LayoutLibrary, LayoutSaveAction } from './storage';
@@ -592,7 +593,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     clock.seek(position);
     return true;
   }, [tracks, clock]);
-  const addWidgetBelow = useCallback((sourceId: string, widget: WidgetSpec) => {
+  const addWidgetBelow = useCallback((sourceId: string, pinned: PinnedSpec) => {
+    const widget = persistedSpec(pinned);
     update(previous => ({ ...previous, widgets: [...previous.widgets, widget], layouts: addGridItemBelow(previous.layouts, widget, sourceId) }));
   }, [update]);
   const runtime = useMemo(() => ({ onMapBranch, tracks, clock, maps, client, campaignTracks: template.tracks, defaultRoleId, alignment: template.alignment, nativeHidden,

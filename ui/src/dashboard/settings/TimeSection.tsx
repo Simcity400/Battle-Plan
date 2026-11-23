@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { Segmented } from '../../components/Segmented';
 import { SettingLabel } from './SettingLabel';
 import DateTimePicker from '../../components/DateTimePicker';
 import { formatDateTime } from '../calendar';
-import { pinTime } from '../model';
+import { pinNow } from '../regionGate';
+import { axisHour } from '../regionTime';
 import type { BoundTrack, WidgetSpec, WidgetTime } from '../model';
 import type { WidgetRuntime } from '../definitions';
 
@@ -18,12 +20,14 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
   widget: WidgetSpec; effective: WidgetSpec; reference: BoundTrack | undefined; runtime: WidgetRuntime;
   modes: readonly WidgetTime['mode'][]; onChange: (time: WidgetTime) => void;
 }) {
+  const [refused, setRefused] = useState<string | null>(null);
   const offered = ORDER.filter(mode => modes.includes(mode) && (mode === 'follow' || mode === 'campaign' || reference));
   const choose = (mode: WidgetTime['mode']) => {
+    setRefused(null);
     if (mode === 'follow' || mode === 'campaign') onChange({ mode });
     else if (mode === 'pin') {
-      const pin = pinTime({ ...effective, time: { mode: 'follow' } }, runtime.tracks, runtime.clock.getSnapshot().position);
-      if (pin.mode === 'pin' && Object.keys(pin.windows).length) onChange(pin);
+      const pin = pinNow(effective, runtime.tracks, axisHour(runtime.clock));
+      if (pin.time) onChange(pin.time.value); else setRefused(`Can’t pin now: ${pin.refused}`);
     }
     else if (reference) onChange({ mode: 'range', firstOffset: 0, lastOffset: reference.branch.lastHour - reference.branch.firstHour });
   };
@@ -32,6 +36,7 @@ export function TimeSection({ widget, effective, reference, runtime, modes, onCh
   return <>
     {offered.length > 1 && <Segmented label="Time" value={time.mode} onChange={choose}
       options={offered.map(mode => ({ value: mode, ...MODES[mode] }))} />}
+    {refused && <p className="setting-row" role="alert">{refused}</p>}
     {time.mode === 'pin' && <div className="setting-row"><SettingLabel label={pinned && reference
       ? <>Holding {formatDateTime(reference.branch.firstHour + pinned.lastOffset)}</> : 'The pinned moment is not in this campaign'} />
       <button type="button" className="button small" disabled={!reference} onClick={() => choose('pin')}

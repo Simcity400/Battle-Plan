@@ -143,6 +143,7 @@ impl AtHour for DivisionTemplates {
     const TITLE: &'static str = "Division templates";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DivisionTemplatesParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor];
     type Reply = DivisionTemplatesReply;
     type Context = Content;
 

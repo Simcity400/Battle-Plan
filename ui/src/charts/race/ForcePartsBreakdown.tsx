@@ -23,17 +23,19 @@ import { breakdownValue, breakdownWindows, joinForceWindows } from './forceRace.
 import type { ForceParams } from './forceRace';
 import { bindCountryParts } from './countryPartsDrillData';
 import { partsRaceDrillData, UNATTRIBUTED_PART } from './partsRaceDrill';
+import { forwardRequest, type DeclaredProduct } from '../../dashboard/request.ts';
+import type { ParamsFor } from '../../dashboard/regionTime';
 
 export interface PartsRaceDetailProps { runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack; tag: string; hour: number; following: boolean; active: boolean }
 
 export default function ForcePartsBreakdown({ runtime, widget, track, active, options, product, request, manifest, validate, extent, playhead, tag,
-  originHour, holder, hour: givenHour, following, pinned, countrySlot, saved, onPick, onFollow, picker, details: Details,
+  originHour, holder, hour: givenHour, following, pinned, countrySlot, saved, onPick, picker, details: Details,
   measure, ownership, partsLabel, referenceLabel, note, formatValue }: {
   runtime: WidgetRuntime; widget: WidgetSpec; track: BoundTrack | undefined; active: boolean; options: Readonly<Record<string, OptionValue>>;
-  product: string; request: ForceParams | null; manifest: ForceSizeReply | undefined; validate: (value: unknown) => ForceSizeReply;
+  product: DeclaredProduct; request: ForceParams | null; manifest: ForceSizeReply | undefined; validate: (value: unknown) => ForceSizeReply;
   extent: [number, number]; playhead: number | null; tag: string | null; originHour: number; holder?: string | null; hour: number;
   following: boolean; pinned: boolean; countrySlot: HTMLElement | null; saved: boolean;
-  onPick: (hour: number) => void; onFollow: () => void;
+  onPick: (hour: number) => void;
   picker: { tags: readonly string[]; onChange: (tag: string, hour: number) => void } | null;
   details?: ComponentType<PartsRaceDetailProps>;
   measure: string; ownership: string; partsLabel: string; referenceLabel?: string; note?: string; formatValue: (value: number) => string;
@@ -61,8 +63,8 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
     const stops = [runtime.clock.subscribeFrame(changed), runtime.clock.subscribe(changed)];
     return () => { for (const stop of stops) stop(); };
   }, [runtime.clock]);
-  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => ({ sourceId: track!.source.id, revision: track!.source.revision,
-    product, params: { ...request!, window: index } }), () => windowsAt(live ? hourNow() : givenHour), subscribeClock, active && identity !== null,
+  const history = useFrameWindows<ForceSizeReply>(runtime.client, identity, index => (forwardRequest(track!.source,
+    product, { ...request!, window: index } as ParamsFor<DeclaredProduct>)), () => windowsAt(live ? hourNow() : givenHour), subscribeClock, active && identity !== null,
   validate, track?.source);
   windowsCheck.current = history.check;
   const reply = useMemo(() => manifest ? joinForceWindows(manifest, history.data) : undefined, [manifest, history.data]);
@@ -129,8 +131,6 @@ export default function ForcePartsBreakdown({ runtime, widget, track, active, op
       bands: bands ? selectedIndex >= 0 ? [bands[selectedIndex]] : bands : [],
       parts: shownParts.map(part => ({ ...part, value: head ? <LiveText live={head.texts} at={`part:${part.id}`} /> : legendText(at, part.id) })) } : null}
     beforeChart={<div className="parts-race-details">
-      {pinned && <p className="drill-day">{head ? <LiveText live={head.texts} at="day" /> : dayLabel(hour)} {track !== undefined && !following
-        && <button type="button" className="button small" onClick={onFollow}>Follow playback</button>}</p>}
       {pending && <WidgetState kind="loading" label={`Updating ${partsLabel.toLowerCase()}…`} />}
       {picker && track && picker.tags.length > 1 && <div className="parts-race-country">Country
         <CountryPicker countries={track.source.metadata.countries} allowedTags={picker.tags} selectedTag={actor} playerCountryId={track.source.metadata.playerCountryId}

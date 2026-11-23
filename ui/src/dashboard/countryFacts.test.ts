@@ -4,6 +4,7 @@ import { factsKey, HourStore, nameKey, planRequests, readFacts, wantedHours } fr
 import type { FactSpec } from './countryFacts';
 import { loadProduct } from './products.ts';
 import type { DashboardClient, ProductRequest } from './client';
+import { productRequest } from './request.ts';
 
 const found = (entries: [string, string][]) => new Map(entries);
 
@@ -98,7 +99,7 @@ test('per-hour reads go around the shared product cache, so they never evict wid
     if ((input.params as { hour?: number }).hour === -1) throw new Error('gap');
     return { sourceId: input.sourceId, revision: input.revision, product: input.product, data: { names: input.params } };
   } } as unknown as DashboardClient;
-  const history: ProductRequest = { sourceId: 's', revision: 'v', product: 'resource-balance', params: { branchId: '1', tag: 'GER' } };
+  const history: ProductRequest = productRequest({ sourceId: 's', revision: 'v', product: 'resource-balance', params: { branchId: '1', tag: 'GER' } });
   await loadProduct(client, history, new AbortController().signal);
   const spec: FactSpec<string> = { product: 'country-styles', perRequest: 64, params: (branchId, hour, tags) => ({ branchId, hour, tags }),
     extract: data => new Map(((data as { names: { tags: string[] } }).names.tags).map(tag => [tag, `${tag}!`])) };

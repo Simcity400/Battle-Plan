@@ -23,10 +23,13 @@ import { useChartTokens } from '../../charts/useChartTokens';
 import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { contentTitle } from '../../dashboard/contentTitles';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken, toggleContentSet } from '../../dashboard/options';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import { useHeadHour } from '../army-size/headHour';
+import { useGate } from '../../dashboard/regionGate';
+import GateState from '../../dashboard/GateState';
+import { axisAt, axisHour, SPEC } from '../../dashboard/regionTime';
+import { useRegionHourAt } from '../../dashboard/widgetTime';
 import { useRecordedRows } from '../../dashboard/widgetPerf';
 import { perfLog } from '../../shell/perf';
 import type { ResearchData, ResearchSlotHistory } from './types';
@@ -152,17 +155,17 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const actions = useContext(HeaderActionsSlot);
   const options = resolveOptions(OPTIONS, widget.options);
   const view = options.view === 'list' ? 'list' : 'columns';
-  const { track, tag, data, error, retry } = useResearchReply(widget, runtime, active);
+  const gate = useGate(runtime, widget, SPEC, active);
+  const hourAt = useRegionHourAt(runtime, gate.region);
+  const { track, tag, data, error, retry } = useResearchReply(widget, runtime, active, gate.open);
   const following = widget.time.mode === 'follow';
   const moment = following || widget.time.mode === 'pin';
   const revealed = useCallback((axis: number) => {
-    if (!data || !track) return '';
-    const hour = Math.floor(axis) + track.axisOffset;
-    return hour < track.branch.firstHour || hour > track.branch.lastHour ? 'outside' : researchRevealKey(data.history, hour);
-  }, [data, track]);
+    const hour = hourAt(axisAt(axis));
+    return hour === null ? 'outside' : data ? researchRevealKey(data.history, hour) : 'inside';
+  }, [data, hourAt]);
   const headHour = useHeadHour(runtime.clock, active && following, revealed);
-  const window = track && resolveWindow(widget, track, runtime.tracks, headHour);
-  const hour = window ? Math.floor(window.lastHour) : undefined;
+  const hour = hourAt(axisAt(headHour)) ?? undefined;
   const root = useRef<HTMLElement | null>(null);
   const now = useResearchSlots(widget, runtime, active && moment && !!data, slotsStructure, root);
   const { latest } = now;
@@ -179,7 +182,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const sort = tableSortOf(options.tableSort, DEFAULT_SORT);
   const includeRow = useCallback((row: ResearchRow) => row.kind === 'gap' ? sort.column === 'date' : !dimmed(row.token, rowIndex(row)), [dimmed, sort.column]);
   const rows = useMemo(() => view === 'list' && slots ? researchRows(lanes, slots, coverage).filter(includeRow) : [], [view, slots, lanes, coverage, includeRow]);
-  const requested = perfLog && track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
+  const requested = perfLog && track && hourAt(axisHour(runtime.clock));
   const keys = (shown: readonly ResearchLane[]) => shown.flatMap(lane => [
     'slot:' + lane.slot.index + ':' + lane.offset, ...lane.items.map(item => lane.slot.index + ':' + item.key),
   ]);
@@ -209,13 +212,13 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
   const breakdown = usePopover('start');
   const [shown, setShown] = useState<Breakdown | null>(null);
   const open = useCallback((target: Breakdown, anchor: () => AnchorRect | null) => {
-    const displayed = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour())?.lastHour;
-    if (displayed === undefined || target.hour > displayed) return;
+    const displayed = hourAt(axisHour(runtime.clock));
+    if (displayed === null || target.hour > displayed) return;
     const observation = target.entry.outcomeObservedHour;
     if (observation != null && observation > displayed) return;
     setShown({ ...target, hour: Math.max(target.hour, observation ?? target.hour) });
     breakdown.openAt(anchor);
-  }, [breakdown, runtime, track, widget]);
+  }, [breakdown, runtime, hourAt]);
   const jump = useCallback<Jump>(at => track ? rowJumpProps(runtime, track.id, at, menu.open) : {}, [runtime, track, menu.open]);
   const completed = useMemo(() => lanes.reduce((total, lane) => total + lane.items.filter(item => item.kind === 'completed').length, 0), [lanes]);
   const slot = actions ?? headerSlot;
@@ -224,7 +227,8 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     {headerSlot && completed > 0 && createPortal(<span className="pill">{usNumber.format(completed)} completed</span>, headerSlot)}
   </>;
   if (!track || !tag) return <div className="dash-empty" role="status"><span className="empty-icon"><Icon name="flask" /></span><p>Load a campaign and choose a country to see its research.</p></div>;
-  if (hour === undefined || hour < track.branch.firstHour || hour > track.branch.lastHour) return <>{header}<div className="dash-empty" role="status">This time is outside the recording.</div></>;
+  if (!gate.open) return <>{header}<GateState gate={gate} loading="Loading research…" /></>;
+  if (hour === undefined) return <>{header}<WidgetState kind="outside" /></>;
   const failure = error ? <WidgetState kind="error" failure={error} onRetry={retry} /> : null;
   if (failure && !data) return <>{header}{failure}</>;
   if (!data || !slots) return <>{header}<ListSkeleton label="Loading research…" /></>;
@@ -255,7 +259,7 @@ function ResearchBody({ widget, runtime, active, onDiagnostics, headerSlot, setO
     <Popover menu={breakdown} className="research-popover" aria-label="Research time breakdown">
       {breakdown.open && shownSlot && shownEntry && <>
         <PopoverHeading title={text.name(shownEntry.token, shownEntry.databaseIndex)} menu={breakdown} />
-        <ResearchExplanation client={runtime.client} track={track} tag={tag} hour={detailHour!} history={data.history} slots={detailSlots!} slot={shownSlot} entry={shownEntry}
+        <ResearchExplanation client={runtime.client} gate={gate} track={track} tag={tag} hour={detailHour!} history={data.history} slots={detailSlots!} slot={shownSlot} entry={shownEntry}
           description={researchArt(artwork, shownEntry.token, shownEntry.databaseIndex)?.description} />
       </>}
     </Popover>

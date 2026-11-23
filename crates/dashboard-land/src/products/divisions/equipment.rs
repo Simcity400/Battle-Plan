@@ -194,6 +194,7 @@ impl AtHour for DivisionEquipment {
     const TITLE: &'static str = "Division equipment";
     const CONTENT_DEPENDENT: bool = true;
     type Params = DivisionEquipmentParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, country, countFor, template, division];
     type Reply = DivisionEquipmentReply;
     type Context = EquipmentContext;
 

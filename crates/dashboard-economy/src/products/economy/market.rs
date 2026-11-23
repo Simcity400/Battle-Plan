@@ -267,6 +267,7 @@ impl AtHour for MarketLendLease {
     const TITLE: &'static str = "Market and lend-lease";
     const CONTENT_DEPENDENT: bool = true;
     type Params = MarketLendLeaseParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, countries, only, "countries[]"];
     type Reply = MarketLendLeaseReply;
     type Context = names::Context;
 

@@ -258,6 +258,7 @@ impl Product for FocusArtwork {
     const CONTENT_DEPENDENT: bool = true;
     const INTERACTIVE: bool = true;
     type Params = FocusArtworkParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, hour: Read, country, database, tokens, textOnly, includeDescriptions, iconsOnly];
     type Reply = FocusArtworkReply;
     #[cfg(any(test, feature = "export-types"))]
     fn types() -> Vec<String> {

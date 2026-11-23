@@ -52,6 +52,7 @@ impl AtHour for FactionGoalRewards {
     const TITLE: &'static str = "Faction goal rewards";
     const CONTENT_DEPENDENT: bool = true;
     type Params = FactionGoalRewardsParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, faction, goal];
     type Reply = FactionGoalRewardsReply;
     type Context = Arc<Catalogue>;
 

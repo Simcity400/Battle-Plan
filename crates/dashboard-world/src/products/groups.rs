@@ -597,6 +597,7 @@ impl Product for CountryGroups {
     const KEY: &'static str = "country-groups";
     const CONTENT_DEPENDENT: bool = true;
     type Params = BranchParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId];
     type Reply = CountryGroupReply;
 
     #[cfg(any(test, feature = "export-types"))]

@@ -155,6 +155,7 @@ impl Product for LendLeasePartners {
     const KEY: &'static str = "lend-lease-partners";
     const CONTENT_DEPENDENT: bool = false;
     type Params = LendLeasePartnersParams;
+    const FIELDS: dashboard_base::products::Fields = dashboard_base::fields![branchId, holder, measure, from: Start, to: End];
     type Reply = LendLeasePartnersReply;
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
