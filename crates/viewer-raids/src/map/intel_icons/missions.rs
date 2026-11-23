@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use super::{
     build::*,
     values::{self, ONE},
@@ -998,7 +999,7 @@ pub(super) fn append<'f>(
             )
             .viewing(hour.ours);
             let effects = scripted.effects()?;
-            let context = dashboard_text::effect_description::Context::new(
+            let context = dashboard_effects::effect_description::Context::new(
                 &script,
                 hour.localisation,
                 hour.ours,
@@ -1006,7 +1007,7 @@ pub(super) fn append<'f>(
                 effects.view(None),
             );
             out.push_str(
-                &dashboard_text::effect_description::scaled_static_modifiers(
+                &dashboard_effects::effect_description::scaled_static_modifiers(
                     &context,
                     "root_out_resistance_mission_modifier",
                     "  ",

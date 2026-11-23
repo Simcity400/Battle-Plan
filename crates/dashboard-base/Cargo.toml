@@ -11,7 +11,7 @@ doctest = false
 
 [features]
 export-types = []
-test-support = ["replay/test-support", "replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
+test-support = ["replay/test-support", "replay-frame/test-support", "dashboard-core/test-support", "dashboard-text/test-support", "dashboard-effects/test-support", "content-reader-abilities/test-support", "content-reader-core/test-support", "content-reader-country-names/test-support", "content-reader-equipment-graphics/test-support", "content-reader-focus/test-support", "content-reader-gfx/test-support", "content-reader-image/test-support", "content-reader-localisation/test-support", "content-reader-province-area/test-support", "content-reader-regions/test-support", "content-reader-settings/test-support", "content-reader-states/test-support"]
 
 [dependencies]
 replay-columnar.workspace = true
@@ -47,6 +47,7 @@ replay-frame.workspace = true
 job-priority.workspace = true
 blake3.workspace = true
 dashboard-core.workspace = true
+dashboard-effects.workspace = true
 dashboard-text.workspace = true
 replay-spool.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
@@ -76,6 +77,7 @@ replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }
 dashboard-core = { workspace = true, features = ["test-support"] }
+dashboard-effects = { workspace = true, features = ["test-support"] }
 dashboard-text = { workspace = true, features = ["test-support"] }
 png.workspace = true
 

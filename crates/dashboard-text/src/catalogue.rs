@@ -1,4 +1,5 @@
 
+use crate::scripted_text::EffectDescriberFactory;
 use crate::{artwork::png_url, invalid};
 use dashboard_core::{
     findings::{Finding, Kind},
@@ -735,6 +736,7 @@ pub struct Catalogue {
     pub recorded_language: String,
     refused: Mutex<Refusals>,
     findings: Option<Mutex<BTreeSet<Finding>>>,
+    effect_describer: Option<EffectDescriberFactory>,
     scripted: Once<Result<crate::scripted_text::ScriptedContent, String>>,
     war_names: Once<Result<content_reader_wargoals::wargoals::Names, String>>,
     pub state_content: Arc<Once<Result<crate::scripted_text::StateContent, String>>>,
@@ -833,6 +835,7 @@ impl Catalogue {
             warnings,
             recorded_language,
             gui_decode,
+            None,
         ))
     }
 
@@ -846,6 +849,7 @@ impl Catalogue {
         mut warnings: Vec<String>,
         recorded_language: String,
         gui_decode: Result<content_reader_image::native::Decode, String>,
+        effect_describer: Option<EffectDescriberFactory>,
     ) -> Self {
         for (label, count) in [
             ("logged localisation diagnostics", localisation.logged.len()),
@@ -876,6 +880,7 @@ impl Catalogue {
             recorded_language,
             refused: Mutex::default(),
             findings: None,
+            effect_describer,
             scripted: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),
@@ -1030,7 +1035,10 @@ impl Catalogue {
                 )
                 .map(|mut scripted| {
                     scripted.state_content = Arc::clone(&self.state_content);
-                    scripted
+                    match self.effect_describer {
+                        Some(factory) => scripted.with_effect_describer(factory),
+                        None => scripted,
+                    }
                 })
             })
             .as_ref()
@@ -1232,8 +1240,13 @@ impl Catalogue {
             .unwrap_or_default()
     }
 
-    pub fn of_layers_for_check(layers: ResolvedLayers, language: &str) -> io::Result<Self> {
+    pub fn of_layers_for_check(
+        layers: ResolvedLayers,
+        language: &str,
+        effect_describer: EffectDescriberFactory,
+    ) -> io::Result<Self> {
         let mut catalogue = Self::of_layers(layers, language)?;
+        catalogue.effect_describer = Some(effect_describer);
         catalogue.findings = Some(Mutex::default());
         Ok(catalogue)
     }
@@ -2096,6 +2109,15 @@ pub mod tests {
         (layers_catalogue(layers), folder)
     }
 
+    pub fn with_effect_describer(
+        mut catalogue: Catalogue,
+        factory: EffectDescriberFactory,
+    ) -> Catalogue {
+        assert!(catalogue.scripted.peek().is_none());
+        catalogue.effect_describer = Some(factory);
+        catalogue
+    }
+
     pub fn layers_catalogue(layers: ResolvedLayers) -> Catalogue {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLEPLAN_GAME_DIR must name the supported installation for runtime table tests");
@@ -2119,6 +2141,7 @@ pub mod tests {
             recorded_language: "english".into(),
             refused: Mutex::default(),
             findings: None,
+            effect_describer: None,
             scripted: Once::new(),
             war_names: Once::new(),
             state_content: Arc::new(Once::new()),

@@ -1,4 +1,5 @@
 
+use dashboard_effects::ScriptedEffects;
 use dashboard_base::catalogue::Catalogue;
 use crate::products;
 use dashboard_core::findings::{Finding, Kind};
@@ -68,7 +69,11 @@ impl Content {
     fn catalogue(&self) -> Result<&Arc<Catalogue>, String> {
         self.catalogue
             .get_or_init(|| {
-                Catalogue::of_layers_for_check(self.resolved.layers.clone(), &self.language)
+                Catalogue::of_layers_for_check(
+                    self.resolved.layers.clone(),
+                    &self.language,
+                    dashboard_effects::effect_describer,
+                )
                     .map(Arc::new)
                     .map_err(|error| error.to_string())
             })

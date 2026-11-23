@@ -152,10 +152,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .map_err(within)
     }
 
-    pub(crate) const NULL_IDEOLOGY: &'static str =
+    pub const NULL_IDEOLOGY: &'static str =
         "ideology database null-object identity is unrecorded";
 
-    pub(crate) fn ideology_specifier(
+    pub fn ideology_specifier(
         &self,
         operand: Option<&[u8]>,
         scopes: Scopes,
