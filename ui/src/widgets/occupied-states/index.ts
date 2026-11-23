@@ -1,3 +1,5 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
-import OccupiedStatesWidget from './OccupiedStatesWidget';
-export default { render: OccupiedStatesWidget } satisfies WidgetRenderer;
+import { occupiedStatesDeclaration } from './occupiedProjection';
+import './occupiedStates.css';
+
+export default { declaration: occupiedStatesDeclaration } satisfies WidgetRenderer;

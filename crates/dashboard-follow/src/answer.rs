@@ -105,7 +105,7 @@ impl Table {
         *self.names.last_mut().expect("a row") = at;
     }
 
-    fn text(&mut self, text: &str) -> u32 {
+    pub(crate) fn text(&mut self, text: &str) -> u32 {
         if let Some(&at) = self.held.get(text) {
             return at;
         }
