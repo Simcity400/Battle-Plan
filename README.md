@@ -42,7 +42,7 @@ BattlePlan records your Hearts of Iron IV campaign while you play, then replays 
 You need:
 
 - Windows, with Microsoft Edge WebView2.
-- Hearts of Iron IV. An unrecognised game version shows a warning, and any part that can't verify itself on that version is left out by name.
+- A real Hearts of Iron IV game install. BattlePlan contains no game assets and you must use your owned version of the game. An unrecognised game version shows a warning, and any part that can't verify itself on that version is left out by name.
 
 Updates arrive in the app. Choose the **stable** or **nightly** channel in **Settings**, and a badge shows when a new version is ready to download.
 
