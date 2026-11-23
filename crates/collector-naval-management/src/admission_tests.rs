@@ -232,7 +232,8 @@ impl Census {
             task_forces: rows,
             ships: rows,
         });
-        let mut bases = bases::Session::begin(self, 0);
+        // SAFETY: tests serialize naval-management observer state with `changes::fixture::SERIAL`.
+        let mut bases = unsafe { bases::Session::begin(self, 0) };
         bases.visit(
             BASE,
             &engine_native::cnaval_base::Row {
@@ -371,7 +372,8 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
                 "{id:?}"
             );
         }
-        changes::boundary(false);
+        // SAFETY: Unit test exclusively owns naval-management watch tables.
+        unsafe { changes::boundary(false) };
         let (forces, bases) = memory.capture();
         let quiet = encoder
             .encode_bytes(input(hour + 1, &forces, &bases), false)
@@ -381,7 +383,8 @@ fn naval_management_populated_first_off_slot_and_post_gap_admission_preserves_ev
         assert_values(decoder.advance(&quiet).unwrap(), 0);
 
         memory = Census::populated(1);
-        changes::boundary(true);
+        // SAFETY: Unit test exclusively owns naval-management watch tables.
+        unsafe { changes::boundary(true) };
         let (forces, bases) = memory.capture();
         let recovered = encoder
             .encode_bytes(input(hour + 3, &forces, &bases), true)
@@ -452,7 +455,8 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
         memory.array(pointer(index) + native::BASE_REPAIR_QUEUE, LISTS, 0);
     }
     let capture = || {
-        let mut session = bases::Session::begin(&memory, 0);
+        // SAFETY: test holds `changes::fixture::SERIAL` as the sole naval-base census caller.
+        let mut session = unsafe { bases::Session::begin(&memory, 0) };
         for index in 0..BASES {
             session.visit(
                 pointer(index),
@@ -467,7 +471,8 @@ fn naval_repair_bases_refused_by_a_full_table_register_at_the_next_hour() {
     for table in capture().tables {
         assert_eq!(table.err(), Some("naval repair base registration refused"));
     }
-    changes::boundary(false);
+    // SAFETY: Unit test exclusively owns naval-management watch tables.
+    unsafe { changes::boundary(false) };
     let captured = capture();
     let TableRows::NavalRepairBases(rows) = captured.tables[0].as_ref().unwrap().as_ref() else {
         panic!("repair bases");

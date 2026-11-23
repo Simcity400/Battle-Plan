@@ -1546,9 +1546,13 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
     for (missing, missing_mask) in CHARACTER_MASKS.into_iter().enumerate() {
         let bytes = kit::mapped_fixture();
         let memory = kit::memory(&bytes);
-        characters::advisors::note_modifier_demand(
-            engine_native::cadvisor::modifier_demand(&memory, kit::BASE, kit::GAME_STATE).unwrap(),
-        );
+        // SAFETY: Isolated test holds `characters::test_globals()` for advisor modifier demand.
+        unsafe {
+            characters::advisors::note_modifier_demand(
+                engine_native::cadvisor::modifier_demand(&memory, kit::BASE, kit::GAME_STATE)
+                    .unwrap(),
+            );
+        }
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         let captured = frame.extended.characters_pilot();
         *captured = characters::Captured::with_capacities(&capacities);

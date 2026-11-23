@@ -71,11 +71,18 @@ pub fn sequence(fleet: usize) -> Option<Certificate> {
     }
 }
 
-pub fn demand(fleets: usize) {
+/// # Safety
+/// Run only while fleet-region watches remain live for the active session (or an isolated test)
+/// and teardown is excluded, with measured fleet demand for the current session.
+pub unsafe fn demand(fleets: usize) {
     RECEIVERS.fetch_max(fleets, Ordering::Relaxed);
 }
 
-pub fn presize() {
+/// # Safety
+/// Run only while fleet-region watches remain live for the active session (or an isolated test)
+/// and `WatchRegistry::release` is excluded; `WatchRegistry::offer` atomically swaps offered
+/// tables across concurrent frame construction or sizing callers.
+pub unsafe fn presize() {
     if !CONFIGURED.load(Ordering::Acquire) {
         return;
     }

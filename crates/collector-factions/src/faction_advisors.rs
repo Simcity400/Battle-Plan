@@ -183,12 +183,18 @@ impl Store {
             self.failure = Some("faction advisor structure changed during acquisition");
         }
     }
-    pub fn finish(&mut self, complete: bool, changes: &impl Changes) {
-        crate::faction_companion_changes::demand(
-            self.owners.iter().fold(self.owners.len(), |n, owner| {
-                n.saturating_add(owner.slots.len())
-            }),
-        );
+    /// # Safety
+    /// Caller holds hourly capture admission for the active session (or isolated fixture control)
+    /// so global `faction_companion_changes` demand updates belong to this pass.
+    pub(crate) unsafe fn finish(&mut self, complete: bool, changes: &impl Changes) {
+        // SAFETY: Admitted faction-advisor capture records measured owner demand.
+        unsafe {
+            crate::faction_companion_changes::demand(
+                self.owners.iter().fold(self.owners.len(), |n, owner| {
+                    n.saturating_add(owner.slots.len())
+                }),
+            );
+        }
         if !complete {
             self.failure = Some("faction advisor identity roster incomplete");
         }
@@ -436,7 +442,8 @@ mod tests {
     fn acquire(store: &mut Store, memory: &Counted, changes: &Observed, complete: bool) {
         store.begin(changes, false);
         store.visit(memory, 0, OWNER, 7, changes);
-        store.finish(complete, changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(complete, changes) };
     }
     #[test]
     fn advisor_certificate_carries_slots_and_reads_only_the_changed_slot() {
@@ -521,7 +528,8 @@ mod tests {
         store.begin(&changes, true);
         store.visit(&memory, 0, OWNER, 7, &changes);
         drop(changes.0.notify(unrelated));
-        store.finish(true, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &changes) };
         assert_eq!(store.output().1, None);
         let rows = store.output().0.unwrap();
         let rows = rows.rows::<tables::FactionAdvisorModifiers>().unwrap();
@@ -542,7 +550,8 @@ mod tests {
         store.visit(&memory, 0, OWNER, 7, &changes);
         assert_eq!(memory.reads.get(), reads, "a quiet family carries the owner");
         drop(changes.0.notify(unrelated));
-        store.finish(true, &changes);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &changes) };
         assert_eq!(
             store.output().1,
             Some("faction advisor observation changed during acquisition")
@@ -560,7 +569,8 @@ mod tests {
         let mut store = Store::default();
         store.begin(&interrupting, true);
         store.visit(&memory, 0, OWNER, 7, &interrupting);
-        store.finish(true, &interrupting);
+        // SAFETY: Unit test runs against an isolated fixture.
+        unsafe { store.finish(true, &interrupting) };
         assert!(interrupting.fired.load(SeqCst));
         assert!(store.output().0.is_none());
         assert_eq!(

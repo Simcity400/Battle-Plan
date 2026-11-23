@@ -1602,10 +1602,13 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
     {
         collector_equipment_destruction::equipment_destruction::lost_drain();
         collector_naval_results::naval_result_sources::lost_drain();
-        collector_observers::air_losses::lost_drain();
-        collector_observers::building_bombing::lost_drain();
-        collector_observers::nuclear_strikes::lost_drain();
-        collector_land_events::land_events::fail();
+        // SAFETY: Decode panic recovery owns recording lost observer intervals for this session.
+        unsafe {
+            collector_observers::air_losses::lost_drain();
+            collector_observers::building_bombing::lost_drain();
+            collector_observers::nuclear_strikes::lost_drain();
+            collector_land_events::land_events::fail();
+        }
         error = Some(failure::joined(
             payload,
             "decode worker panicked; its in-flight frame may be incomplete",
@@ -1634,10 +1637,13 @@ pub unsafe fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static 
     })) {
         collector_equipment_destruction::equipment_destruction::lost_drain();
         collector_naval_results::naval_result_sources::lost_drain();
-        collector_observers::air_losses::lost_drain();
-        collector_observers::building_bombing::lost_drain();
-        collector_observers::nuclear_strikes::lost_drain();
-        collector_land_events::land_events::fail();
+        // SAFETY: Decode panic recovery owns recording lost observer intervals for this session.
+        unsafe {
+            collector_observers::air_losses::lost_drain();
+            collector_observers::building_bombing::lost_drain();
+            collector_observers::nuclear_strikes::lost_drain();
+            collector_land_events::land_events::fail();
+        }
         let reason = failure::joined(
             payload,
             "decode detach drain panicked; queued frames remain incomplete",

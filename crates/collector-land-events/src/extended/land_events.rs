@@ -29,8 +29,12 @@ impl Captured {
     pub fn vacant() -> Self {
         Self::with_capacities(&Capacities::default())
     }
-    pub fn fail(&mut self, hour: i32, reason: &'static str) {
-        self.drained = Some(crate::land_events::lost_drain(hour, reason));
+    /// # Safety
+    /// Caller must own the active session's capture or publication failure path when invalidating
+    /// live land-event observation.
+    pub unsafe fn fail(&mut self, hour: i32, reason: &'static str) {
+        // SAFETY: Caller owns the capture or publication failure path for land events.
+        self.drained = Some(unsafe { crate::land_events::lost_drain(hour, reason) });
     }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
@@ -44,7 +48,11 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.words.capacity() * size_of::<u64>()
     }
-    pub fn grow(&mut self, c: &mut Capacities) {
+    /// # Safety
+    /// Caller holds exclusive `&mut` access to this frame while land-event storage stays live for
+    /// the active session (or an isolated test) and teardown is excluded. Different frames may grow
+    /// concurrently across spool and sizing threads because `land_events::prepare` locks `LOG_SWAP`.
+    pub unsafe fn grow(&mut self, c: &mut Capacities) {
         self.grow_from(&LIVE, c);
     }
 
@@ -56,7 +64,11 @@ impl Captured {
         }
         grow_vec(&mut self.words, c.words);
     }
-    pub fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
+    /// # Safety
+    /// Only the admitted hour's sole observer boundary (or an isolated test owning land-event
+    /// observation) may drain the shared land-event log and install offered storage while storage
+    /// remains live and teardown is excluded.
+    pub unsafe fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
         self.drain_from(&LIVE, hour, invalidating)
     }
 
@@ -69,7 +81,10 @@ impl Captured {
             .max(0) as u64
     }
 
-    pub fn lost_casualty_reads(&mut self, count: u64) {
+    /// # Safety
+    /// Caller must hold hourly capture admission for the active session (or an isolated test
+    /// owning land-event observation) so global casualty-read loss accounting belongs to this pass.
+    pub unsafe fn lost_casualty_reads(&mut self, count: u64) {
         self.lost_casualty_reads_from(&LIVE, count);
     }
 

@@ -1225,7 +1225,8 @@ fn run_economy_shared(
     memory: &impl engine_native::Memory,
 ) -> economy::EconomyRestCopyReport {
     let cached = request.countries.view(memory);
-    economy::copy_economy_rest_refresh(&cached, request.context, &mut request.payload)
+    // SAFETY: Admitted economy acquisition runs while market observer storage lives.
+    unsafe { economy::copy_economy_rest_refresh(&cached, request.context, &mut request.payload) }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1343,7 +1344,10 @@ fn run_with_memory(
         ),
         Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
         Job::EventFeedSeal(feed) => {
-            feed.seal();
+            // SAFETY: Admitted hourly capture worker is the sole consumer for this frame with
+            // teardown excluded; a live event-feed owner exists whenever `feed` holds a prepared
+            // interval (otherwise `seal` is a no-op preserving the refusal).
+            unsafe { feed.seal() };
             Report::EventFeedSeal
         }
         Job::FinalInputs(request) => {
@@ -1697,23 +1701,26 @@ fn run_with_memory(
         }
         Job::AirMissions(request) => {
             let cached = request.countries.roster_view(memory);
-            request.pack.capture_missions(
-                &cached,
-                request.base,
-                request.game_state,
-                air::MissionSources {
-                    parent: request.parent,
-                    histories: &mut request.histories,
-                    changes: &collector_air_histories::history_changes::Observer,
-                    carry: request
-                        .mission_store
-                        .as_deref_mut()
-                        .map(|store| air::MissionCarry {
-                            store,
-                            changes: &collector_missions::mission_changes::Observer,
-                        }),
-                },
-            );
+            // SAFETY: Admitted AirMissions worker updates mission demand for the active session.
+            unsafe {
+                request.pack.capture_missions(
+                    &cached,
+                    request.base,
+                    request.game_state,
+                    air::MissionSources {
+                        parent: request.parent,
+                        histories: &mut request.histories,
+                        changes: &collector_air_histories::history_changes::Observer,
+                        carry: request
+                            .mission_store
+                            .as_deref_mut()
+                            .map(|store| air::MissionCarry {
+                                store,
+                                changes: &collector_missions::mission_changes::Observer,
+                            }),
+                    },
+                );
+            }
             request.pack.join_missions(
                 &request.countries.bytes_view(memory),
                 request.base,
@@ -2140,9 +2147,9 @@ impl Pool {
         workers: usize,
         run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
     ) -> Self {
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
         let executor =
-        // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-        unsafe { collector_workers::acquisition::Pool::start(workers, MAX_JOBS, run) }.unwrap();
+            unsafe { collector_workers::acquisition::Pool::start(workers, MAX_JOBS, run) }.unwrap();
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         let executor = Arc::new(executor);
@@ -2165,22 +2172,26 @@ impl Pool {
     pub unsafe fn start(worker_count: usize, capacity: usize) -> Result<Self, &'static str> {
         let calibration = Arc::new(SharedCalibration::default());
         let runner_calibration = Arc::clone(&calibration);
-        let executor =
-        // SAFETY: This attaches the owned acquisition workers and they join before sampler
-        // teardown.
-        unsafe { collector_workers::acquisition::Pool::start_with_class(
-            worker_count.max(1),
-            capacity,
-            Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
-            move |job: &mut Job| {
-                #[cfg(feature = "worker_sampler")]
-                let _sampler_job = collector_workers::worker_sampler::job(job.role());
-                let memory =  LiveMemory::new() ;
-                #[cfg(feature = "acquisition_profile")]
-                let memory = CountedMemory::new(memory);
-                run_with_memory(job, &memory, &runner_calibration)
-            },
-        ) }?;
+        let run = move |job: &mut Job| {
+            #[cfg(feature = "worker_sampler")]
+            let _sampler_job = collector_workers::worker_sampler::job(job.role());
+            // SAFETY: submit's callback lease remains admitted until every
+            // accepted request is collected, including on callback unwind.
+            let memory = unsafe { LiveMemory::new() };
+            #[cfg(feature = "acquisition_profile")]
+            let memory = CountedMemory::new(memory);
+            run_with_memory(job, &memory, &runner_calibration)
+        };
+        // SAFETY: Caller owns the active session's acquisition pool and shuts it down
+        // before teardown releases capture-gate, sampler, or native resources.
+        let executor = unsafe {
+            collector_workers::acquisition::Pool::start_with_class(
+                worker_count.max(1),
+                capacity,
+                Some((ROLE_COUNT, |job: &Job| job.role() as usize)),
+                run,
+            )
+        }?;
         executor.set_callback_help(Job::callback_help);
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
@@ -3542,9 +3553,9 @@ mod tests {
         };
         let mut direct = world_request();
         let expected = run_world_shared(&mut direct, &memory);
-        let pool =
-            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-            unsafe { collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
+        // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+        let pool = unsafe {
+            collector_workers::acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
                 run_world_shared(
                     request,
                     &engine_native::memory::SliceMemory {
@@ -3552,8 +3563,9 @@ mod tests {
                         bytes: &bytes,
                     },
                 )
-            }) }
-            .unwrap();
+            })
+        }
+        .unwrap();
         let request = world_request();
         let pointers = [
             request
@@ -3604,27 +3616,31 @@ mod tests {
                 bytes: &bytes,
             });
             let reads = Capture::new();
-            let expected = economy::copy_economy_rest_refresh(
-                &direct.countries.view(&memory),
-                direct.context,
-                &mut direct.payload,
-            );
+            // SAFETY: Isolated unit test with synthetic memory and no live market hooks.
+            let expected = unsafe {
+                economy::copy_economy_rest_refresh(
+                    &direct.countries.view(&memory),
+                    direct.context,
+                    &mut direct.payload,
+                )
+            };
             let _expected_reads = reads.finish();
-            let pool =
-            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-            unsafe { collector_workers::acquisition::Pool::start(
-                workers,
-                1,
-                move |request: &mut EconomyRequest| {
-                    run_economy_shared(
-                        request,
-                        &CountedMemory::new(engine_native::memory::SliceMemory {
-                            base: 0,
-                            bytes: &bytes,
-                        }),
-                    )
-                },
-            ) }
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                collector_workers::acquisition::Pool::start(
+                    workers,
+                    1,
+                    move |request: &mut EconomyRequest| {
+                        run_economy_shared(
+                            request,
+                            &CountedMemory::new(engine_native::memory::SliceMemory {
+                                base: 0,
+                                bytes: &bytes,
+                            }),
+                        )
+                    },
+                )
+            }
             .unwrap();
             let request = economy_request();
             let pointer = request.payload.log.bytes.as_ptr();
@@ -3649,21 +3665,22 @@ mod tests {
     fn absent_world_parts_read_nothing_and_keep_no_economy_attempt() {
         for workers in [0, 1] {
             let bytes = empty_memory();
-            let pool =
-            // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-            unsafe { collector_workers::acquisition::Pool::start(
-                workers,
-                1,
-                move |request: &mut WorldRequest| {
-                    run_world_shared(
-                        request,
-                        &CountedMemory::new(engine_native::memory::SliceMemory {
-                            base: 0,
-                            bytes: &bytes,
-                        }),
-                    )
-                },
-            ) }
+            // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+            let pool = unsafe {
+                collector_workers::acquisition::Pool::start(
+                    workers,
+                    1,
+                    move |request: &mut WorldRequest| {
+                        run_world_shared(
+                            request,
+                            &CountedMemory::new(engine_native::memory::SliceMemory {
+                                base: 0,
+                                bytes: &bytes,
+                            }),
+                        )
+                    },
+                )
+            }
             .unwrap();
             let mut request = world_request();
             request.production = None;

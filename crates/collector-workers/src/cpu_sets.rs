@@ -123,9 +123,8 @@ pub unsafe fn select(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
 /// The caller must own the target thread's scheduling policy and keep its handle live. Change only
 /// collector worker affinity as part of that session's policy.
 pub unsafe fn select_away(thread: BorrowedHandle<'_>, sets: Option<&[u32]>) -> bool {
-    let selected =
-    // SAFETY: The live handle belongs to a worker whose affinity this policy owns.
-    unsafe { select(thread, sets) };
+    // SAFETY: The caller owns this collector worker thread's scheduling policy and handle.
+    let selected = unsafe { select(thread, sets) };
     if !selected {
         AWAY_FAILURES.fetch_add(1, Ordering::Relaxed);
     }
@@ -142,7 +141,10 @@ pub struct AwayFromGame {
     applied: Option<&'static [u32]>,
 }
 impl AwayFromGame {
-    pub fn follow(&mut self, processor: Option<u32>) {
+    /// # Safety
+    /// The caller must own the current thread's scheduling policy and confine only a designated
+    /// collector worker or capture thread as part of that session's policy.
+    pub unsafe fn follow(&mut self, processor: Option<u32>) {
         if processor == self.wanted {
             return;
         }
@@ -151,9 +153,9 @@ impl AwayFromGame {
         if sets.map(<[u32]>::as_ptr) == self.applied.map(<[u32]>::as_ptr) {
             return;
         }
-        if
-        // SAFETY: This policy controls the target collector worker and its handle is live.
-        unsafe { select_away(BorrowedHandle::borrow_raw(GetCurrentThread()), sets) } {
+        // SAFETY: The caller owns the current collector thread's scheduling policy, and the
+        // pseudo-handle from GetCurrentThread() is valid for this call.
+        if unsafe { select_away(BorrowedHandle::borrow_raw(GetCurrentThread()), sets) } {
             self.applied = sets;
         }
     }

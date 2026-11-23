@@ -179,7 +179,10 @@ pub fn schedule_storage(
     }
     Ok(demand)
 }
-pub fn presize(demand: usize, countries: usize) {
+/// # Safety
+/// Run only during attach or the active session's serial sizing pass (or an isolated test), while
+/// market observer storage remains live and teardown is excluded.
+pub unsafe fn presize(demand: usize, countries: usize) {
     SCHEDULE_DEMAND.fetch_max(demand, Ordering::Release);
     prepare_events();
     VARIABLES_WATCH.offer(countries);
@@ -204,21 +207,36 @@ fn prepare_events() {
 pub fn contract_storage(_items: usize, _in_transit: usize) -> Option<usize> {
     Some(10)
 }
-pub fn prepare_contract_events(demand: usize) {
+/// # Safety
+/// Run only during admitted economy capture or the active session's sizing pass (or an isolated
+/// test), while market observer storage remains live and teardown is excluded.
+pub unsafe fn prepare_contract_events(demand: usize) {
     CONTRACT_DEMAND.fetch_max(demand, Ordering::Release);
     prepare_events();
 }
 pub fn mark_stranded() {
     LEDGER.mark_stranded();
 }
-pub fn lost_drain() {
-    LEDGER.lost_drain();
+/// # Safety
+/// Caller must own the active session's recovery or publication failure path (or an isolated test
+/// session) when invalidating market-event drains.
+pub unsafe fn lost_drain() {
+    // SAFETY: Caller owns the market recovery or publication failure path.
+    unsafe { LEDGER.lost_drain() };
 }
-pub fn lost_output(count: usize) {
-    LEDGER.lost_output(count);
+/// # Safety
+/// Caller must own the active session's projection or publication failure path (or an isolated
+/// test session) when recording lost market-event output.
+pub unsafe fn lost_output(count: usize) {
+    // SAFETY: Caller owns the market projection or publication failure path.
+    unsafe { LEDGER.lost_output(count) };
 }
-pub fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidate: bool) {
-    LEDGER.boundary(clock);
+/// # Safety
+/// Caller must run on the admitted hourly observer boundary as the sole consumer advancing market
+/// observation and watch tables (or an isolated test session).
+pub unsafe fn boundary(clock: Option<engine_native::cgame_state::Clock<u64>>, invalidate: bool) {
+    // SAFETY: Caller runs on the admitted hourly observer boundary for market observation.
+    unsafe { LEDGER.boundary(clock) };
     let invalidate = invalidate || LEDGER.interval_incomplete() || held::recovery_requested();
     let renew = if invalidate {
         [None; 4]
@@ -318,7 +336,10 @@ pub fn country_reset(country: usize) -> CountryReset {
         owner: owner.filter(|_| ENABLED.load(Ordering::SeqCst)),
     }
 }
-pub fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
+/// # Safety
+/// Caller must be the admitted hourly capture consumer draining market events while observer
+/// storage stays live and teardown is excluded.
+pub unsafe fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
     if !ENABLED.load(Ordering::SeqCst)
         || !RESET_FORWARDED.load(Ordering::SeqCst)
         || !VARIABLES_FORWARDED.load(Ordering::SeqCst)
@@ -326,7 +347,8 @@ pub fn drain(output: &mut Vec<MarketEventRow>) -> Result<usize, &'static str> {
     {
         return Err("market writer coverage incomplete (see market_changes status)");
     }
-    let count = LEDGER.drain(output)?;
+    // SAFETY: Caller holds hourly capture admission as the sole market-events consumer.
+    let count = unsafe { LEDGER.drain(output)? };
     let mut times = AMENDMENT_TIMES
         .lock()
         .map_err(|_| "market amendment timing storage poisoned")?;
@@ -1193,15 +1215,20 @@ pub mod test_support {
     use super::*;
     pub(super) static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     pub struct Session(std::sync::MutexGuard<'static, ()>);
-    impl Default for Session {
-        fn default() -> Self {
+    impl Session {
+        /// # Safety
+        /// Caller must run in a detached, isolated test process with no live collector session
+        /// for the lifetime of the returned guard; creating a `Session` resets and enables the
+        /// process-wide market observer state.
+        pub unsafe fn new() -> Self {
             let guard = SERIAL.lock().unwrap();
             LEDGER.reset();
             VARIABLES_UNOBSERVED.store(false, Ordering::SeqCst);
             ENABLED.store(true, Ordering::SeqCst);
             observe_resets(true);
             observe_variables(true);
-            presize(16, 16);
+            // SAFETY: Test session holds `SERIAL`, owning the global market observer state.
+            unsafe { presize(16, 16) };
             held::invalidate();
             Self(guard)
         }
@@ -1211,7 +1238,8 @@ pub mod test_support {
             held::test_census(rows);
         }
         pub fn lose_interval(&self) {
-            LEDGER.lost_output(1);
+            // SAFETY: Test session holds `SERIAL`, owning the global market observer state.
+            unsafe { LEDGER.lost_output(1) };
         }
         pub fn emit(&self, row: MarketEventRow) {
             append(row).unwrap();
@@ -1300,14 +1328,14 @@ mod tests {
     use super::*;
     #[test]
     fn country_receiver_keys_cover_zero_and_the_full_native_id_domain() {
-        let _session = test_support::Session::default();
-        boundary(
+        let _session = unsafe { test_support::Session::new() };
+        unsafe { boundary(
             Some(engine_native::cgame_state::Clock {
                 hour: 1,
                 ..Default::default()
             }),
             false,
-        );
+        ) };
         for owner in [0, 1, 5000, u32::MAX] {
             let key = country_receiver(owner);
             assert_ne!(key, 0);
@@ -1324,21 +1352,20 @@ mod tests {
     }
     #[test]
     fn contract_removal_copies_only_fixed_scalars_without_allocation() {
-        let _session = test_support::Session::default();
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        let _session = unsafe { test_support::Session::new() };
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 1,
             ..Default::default()
-        }));
+        })) };
         assert!(
-            LEDGER
-                .drain(&mut Vec::new())
+            unsafe { LEDGER.drain(&mut Vec::new()) }
                 .unwrap_err()
                 .contains("partial")
         );
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 2,
             ..Default::default()
-        }));
+        })) };
         const POINTER: usize = 0x100;
         struct FixedOperands {
             identity: Option<u64>,
@@ -1472,7 +1499,7 @@ mod tests {
             }
         }
         let mut events = Vec::new();
-        assert_eq!(LEDGER.drain(&mut events), Ok(4));
+        assert_eq!(unsafe { LEDGER.drain(&mut events) }, Ok(4));
         assert_eq!(
             (events[0].kind, events[0].mode),
             (AMENDMENT_COST, FINAL_CONTRACT)
@@ -1603,18 +1630,18 @@ mod tests {
         }
         LEDGER.reset();
         LEDGER.prepare(30030);
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 76,
             ..Default::default()
-        }));
+        })) };
         assert_eq!(
-            LEDGER.drain(&mut Vec::new()),
+            unsafe { LEDGER.drain(&mut Vec::new()) },
             Err("event ledger first/branch/recovery interval is partial")
         );
-        LEDGER.boundary(Some(engine_native::cgame_state::Clock {
+        unsafe { LEDGER.boundary(Some(engine_native::cgame_state::Clock {
             hour: 77,
             ..Default::default()
-        }));
+        })) };
         let memory = Memory(&world);
         crate::test_support::with_allocations_denied(|| {
             replacement(&memory, 0, exchange).unwrap();
@@ -1658,7 +1685,7 @@ mod tests {
             contract_created(&StackBirth, 0, CONTRACT, false).unwrap();
         });
         let mut events = Vec::new();
-        LEDGER.drain(&mut events).unwrap();
+        unsafe { LEDGER.drain(&mut events) }.unwrap();
         let births: Vec<_> = events
             .iter()
             .filter(|row| matches!(row.kind, REQUEST_CREATED | CONTRACT_CREATED))
@@ -1740,7 +1767,7 @@ mod tests {
             )
             .unwrap();
         });
-        LEDGER.drain(&mut events).unwrap();
+        unsafe { LEDGER.drain(&mut events) }.unwrap();
         assert_eq!(
             events.iter().filter(|row| row.kind == FINAL_ITEM).count(),
             10_000

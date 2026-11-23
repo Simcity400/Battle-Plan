@@ -2603,9 +2603,12 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
                 [0; country_appearance::N]
             );
             assert_eq!(
-                captured
-                    .division_templates
-                    .capture(&memory, base, state, hour, true),
+                // SAFETY: Isolated test exercises preacquired refusal on a local frame.
+                unsafe {
+                    captured
+                        .division_templates
+                        .capture(&memory, base, state, hour, true)
+                },
                 [0; division_templates::N]
             );
             assert!(
@@ -2631,9 +2634,12 @@ fn country_naming_terminal_loan_restores_original_buffers_and_never_retries_nati
         captured
             .country_appearance
             .capture_at(&memory, base, state, hour + 1);
-        captured
-            .division_templates
-            .capture(&memory, base, state, hour + 1, true);
+        // SAFETY: Isolated test exercises preacquired context mismatch on a local frame.
+        unsafe {
+            captured
+                .division_templates
+                .capture(&memory, base, state, hour + 1, true);
+        }
         assert_eq!(memory.0.get(), 0, "context mismatch remains a refusal");
         captured.reset();
         captured

@@ -264,17 +264,15 @@ fn worker_sampler_real_pool_job_attribution_and_guard_reset() {
         }
     });
     let job_barrier = Arc::clone(&barrier);
-    let pool =
-    // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-    unsafe { crate::acquisition::Pool::start(1, 1, move |_: &mut ()| {
-        let _job =
-        job(crate::roles::Role::World);
+    let run = move |_: &mut ()| {
+        let _job = job(crate::roles::Role::World);
         let _ = entered_tx.send(());
-        let _ = ready_tx.send( GetCurrentThreadId() );
+        let _ = ready_tx.send(unsafe { GetCurrentThreadId() });
         job_barrier.wait();
         7_u8
-    }) }
-    .unwrap();
+    };
+    // SAFETY: Test owns this local acquisition pool and drops it before test exit.
+    let pool = unsafe { crate::acquisition::Pool::start(1, 1, run) }.unwrap();
     let mut target = pool
         .thread_ids()
         .first()
