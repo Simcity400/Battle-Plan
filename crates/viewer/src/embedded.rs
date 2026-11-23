@@ -959,6 +959,7 @@ struct NativeWindow {
     views: RefCell<Option<Vec<ViewBounds>>>,
     holes: RefCell<Vec<ViewBounds>>,
     region: RefCell<Option<Shape>>,
+    drawn: Cell<bool>,
     shaped: Cell<bool>,
 }
 
@@ -979,37 +980,7 @@ fn shape(views: Option<&[ViewBounds]>, holes: &[ViewBounds], window: ViewBounds)
     Some(Shape { parts, holes })
 }
 
-impl Shape {
-    fn draws(&self) -> bool {
-        self.parts.iter().any(|&part| {
-            let mut left = vec![part];
-            for &hole in &self.holes {
-                left = left.into_iter().flat_map(|rest| subtract_bounds(rest, hole)).collect();
-            }
-            !left.is_empty()
-        })
-    }
-}
-
-fn subtract_bounds(rect: ViewBounds, hole: ViewBounds) -> Vec<ViewBounds> {
-    let Some(cut) = intersect_bounds(rect, hole) else {
-        return vec![rect];
-    };
-    let (right, bottom) = (rect.x + rect.width as i32, rect.y + rect.height as i32);
-    let (cut_right, cut_bottom) = (cut.x + cut.width as i32, cut.y + cut.height as i32);
-    [
-        (rect.x, rect.y, right, cut.y),
-        (rect.x, cut_bottom, right, bottom),
-        (rect.x, cut.y, cut.x, cut_bottom),
-        (cut_right, cut.y, right, cut_bottom),
-    ]
-    .into_iter()
-    .filter(|&(left, top, right, bottom)| right > left && bottom > top)
-    .map(|(left, top, right, bottom)| ViewBounds { x: left, y: top, width: (right - left) as u32, height: (bottom - top) as u32 })
-    .collect()
-}
-
-fn build_region(shape: &Shape) -> io::Result<HRGN> {
+fn build_region(shape: &Shape) -> io::Result<(HRGN, bool)> {
     // SAFETY: every region made here is combined into `region` and deleted, or deleted on failure.
     unsafe {
         let region = CreateRectRgn(0, 0, 0, 0);
@@ -1017,20 +988,21 @@ fn build_region(shape: &Shape) -> io::Result<HRGN> {
             return Err(io::Error::last_os_error());
         }
         let cuts = shape.parts.iter().map(|part| (part, RGN_OR)).chain(shape.holes.iter().map(|hole| (hole, RGN_DIFF)));
+        let mut kind = NULLREGION;
         for (rect, mode) in cuts {
             let part = CreateRectRgn(rect.x, rect.y, rect.x + rect.width as i32, rect.y + rect.height as i32);
             if part.is_null() {
                 DeleteObject(region);
                 return Err(io::Error::last_os_error());
             }
-            let combined = CombineRgn(region, region, part, mode);
+            kind = CombineRgn(region, region, part, mode);
             DeleteObject(part);
-            if combined == 0 {
+            if kind == 0 {
                 DeleteObject(region);
                 return Err(io::Error::other("Cannot combine native map clipping regions"));
             }
         }
-        Ok(region)
+        Ok((region, kind != NULLREGION))
     }
 }
 
@@ -1045,6 +1017,7 @@ impl NativeWindow {
             views: RefCell::new(None),
             holes: RefCell::new(Vec::new()),
             region: RefCell::new(None),
+            drawn: Cell::new(true),
             shaped: Cell::new(true),
         })
     }
@@ -1077,12 +1050,16 @@ impl NativeWindow {
     }
 
     fn visibility(&self, visible: bool) {
+        self.show(visible, true);
+    }
+
+    fn show(&self, visible: bool, focus: bool) {
         let placement = Placement { visible, ..self.placement.get() };
         self.placement.set(placement);
         // SAFETY: asynchronous calls on the map's window; its own thread applies them.
         unsafe {
             ShowWindowAsync(self.hwnd(), if placement.show() { SW_SHOWNOACTIVATE } else { SW_HIDE });
-            if placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {
+            if focus && placement.show() && GetForegroundWindow() == GetAncestor(self.hwnd(), GA_ROOT) {
                 self.window.focus();
             }
         }
@@ -1137,8 +1114,8 @@ impl NativeWindow {
         };
         let shape = shape(self.views.borrow().as_deref(), &self.holes.borrow(), window);
         if *self.region.borrow() != shape {
-            let region = match &shape {
-                None => ptr::null_mut(),
+            let (region, drawn) = match &shape {
+                None => (ptr::null_mut(), true),
                 Some(shape) => build_region(shape)?,
             };
             // SAFETY: Windows takes the region only when it accepts it, so a refused one is still deleted here.
@@ -1152,12 +1129,10 @@ impl NativeWindow {
                 return Err(error);
             }
             *self.region.borrow_mut() = shape;
+            self.drawn.set(drawn);
         }
-        if self.views.borrow().is_some() {
-            let drawn = self.region.borrow().as_ref().is_some_and(Shape::draws);
-            if self.placement.get().visible != drawn {
-                self.visibility(drawn);
-            }
+        if self.views.borrow().is_some() && self.placement.get().visible != self.drawn.get() {
+            self.show(self.drawn.get(), self.holes.borrow().is_empty());
         }
         Ok(())
     }
@@ -1960,15 +1935,11 @@ mod tests {
         assert_eq!(shape(None, &[rect(0, 0, 90, 40)], campaign), None, "a hole beside the map leaves it whole");
         let cut = shape(None, &[rect(850, 40, 200, 100)], campaign).unwrap();
         assert_eq!(cut, Shape { parts: vec![rect(0, 0, 800, 600)], holes: vec![rect(750, 0, 50, 90)] });
-        assert!(cut.draws());
 
         let root = rect(0, 0, 1000, 800);
         let views = [rect(0, 0, 400, 300), rect(500, 0, 400, 300)];
-        let dashboard = shape(Some(&views), &[rect(350, 0, 600, 300)], root).unwrap();
-        assert_eq!(dashboard.parts, views.to_vec());
-        assert!(dashboard.draws(), "the first view still shows left of the hole");
-        let covered = shape(Some(&views), &[rect(0, 0, 450, 300), rect(450, 0, 450, 300)], root).unwrap();
-        assert!(!covered.draws(), "two holes that together cover every view leave nothing to show");
-        assert!(!shape(Some(&[]), &[], root).unwrap().draws());
+        let dashboard = shape(Some(&views), &[rect(350, 0, 600, 300), rect(0, 900, 10, 10)], root).unwrap();
+        assert_eq!(dashboard, Shape { parts: views.to_vec(), holes: vec![rect(350, 0, 600, 300)] }, "a hole off the window is dropped");
+        assert_eq!(shape(Some(&[]), &[], root), Some(Shape { parts: Vec::new(), holes: Vec::new() }), "a dashboard with no view keeps an empty region");
     }
 }

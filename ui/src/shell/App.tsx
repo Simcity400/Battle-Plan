@@ -327,7 +327,7 @@ export default function App() {
     return () => { current = false; };
   }, [folders?.contentReady]);
   const shellError = actionError ?? native.error;
-  const mapSurface = tab === 'map' && !!path && !shellError && !sidebar.peek;
+  const mapSurface = tab === 'map' && !!path && !shellError;
   const boundsError = useMapSurface(content, mapSurface && !leaving && !closing, retry, tab === 'map');
   const nativePath = native.state?.viewer.path ?? null;
   const mapError = actionError ?? boundsError ?? native.error ?? native.state?.error ?? null;

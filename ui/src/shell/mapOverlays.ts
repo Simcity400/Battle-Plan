@@ -62,11 +62,14 @@ class MapHoles {
     document.addEventListener('toggle', this.schedule, true);
     window.addEventListener('resize', this.moved);
     window.addEventListener('scroll', this.moved, true);
+    window.addEventListener('blur', this.left);
+    this.schedule();
     return () => {
       document.removeEventListener('beforetoggle', this.toggling, true);
       document.removeEventListener('toggle', this.schedule, true);
       window.removeEventListener('resize', this.moved);
       window.removeEventListener('scroll', this.moved, true);
+      window.removeEventListener('blur', this.left);
       this.frame?.();
       this.frame = null;
       for (const element of [...this.tracked]) this.drop(element);
@@ -103,6 +106,10 @@ class MapHoles {
 
   private moved = (): void => { if (this.tracked.size) this.schedule(); };
 
+  private left = (): void => {
+    for (const element of document.querySelectorAll<HTMLElement>('[popover="auto"]:popover-open')) element.hidePopover();
+  };
+
   private schedule = (): void => {
     if (this.frame) return;
     this.frame = engine.next('measure', () => { this.frame = null; this.measure(); });
@@ -120,7 +127,7 @@ class MapHoles {
       const hole = physicalRect(intersectRects(rect, page), dpr);
       if (hole.width <= 0 || hole.height <= 0) continue;
       holes.push(hole);
-      if (open && this.waiting.get(element) === 0 && getComputedStyle(element).visibility !== 'hidden') this.waiting.set(element, measured);
+      if (open && this.waiting.has(element) && getComputedStyle(element).visibility !== 'hidden') this.waiting.set(element, measured);
     }
     this.publish(holes, !!document.querySelector('dialog[open]'));
     this.push(holes, measured);

@@ -83,7 +83,7 @@ impl Inner {
 
     fn set_holes(&mut self, holes: Vec<ViewBounds>) -> Result<Option<tokio::sync::oneshot::Receiver<()>>, String> {
         dashboard_core::protocol::validate_map_holes(&holes).map_err(str::to_owned)?;
-        let shown = self.map.is_some() && self.status.ready && self.status.visible;
+        let shown = self.map.is_some() && self.status.ready;
         self.holes.clone_from(&holes);
         self.pending.holes = Some(holes);
         let answered = shown.then(|| {

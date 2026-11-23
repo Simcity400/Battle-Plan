@@ -18,7 +18,7 @@ fn resized_commands_coalesce_and_close_takes_priority() {
 }
 
 #[test]
-fn popover_holes_wait_only_for_a_shown_map_and_follow_a_restart() {
+fn popover_holes_wait_only_for_a_running_map_and_follow_a_restart() {
     let hole = ViewBounds { x: 10, y: 20, width: 300, height: 200 };
     let mut inner = Inner { status: HostStatus { ready: true, visible: true, ..Default::default() }, ..Default::default() };
     assert!(inner.set_holes(vec![hole]).unwrap().is_none(), "no running map has nothing to wait for");
