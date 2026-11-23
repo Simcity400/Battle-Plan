@@ -774,6 +774,7 @@ struct Shared {
     asked: Mutex<Vec<Asked>>,
     demand: AtomicU64,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    on_publish: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     chosen: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -840,6 +841,7 @@ impl Store {
             asked: Mutex::default(),
             demand: AtomicU64::new(0),
             wake: Mutex::default(),
+            on_publish: Mutex::default(),
             #[cfg(test)]
             chosen: Mutex::default(),
         };
@@ -1118,6 +1120,14 @@ impl Views {
         Arc::ptr_eq(&self.shared, &reader.shared)
     }
 
+
+    pub fn set_on_publish(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.on_publish) = Some(wake);
+    }
+
+    pub fn demand(&self) -> u64 {
+        self.shared.demand.load(Ordering::Acquire)
+    }
 
     pub fn held(&self) -> Vec<(TableId, usize)> {
         reading(&self.shared).iter().enumerate().filter_map(|(table, held)| held.as_ref().map(|held| (TableId::ALL[table], held.bytes()))).collect()
@@ -1509,6 +1519,10 @@ fn publish(shared: &Shared, kept: &[Option<Kept>], mirrors: &Mirrors, places: &[
     shared.made.notify_all();
     if published {
         shared.entry.playhead().wake_waiters();
+        let on_publish = lock(&shared.on_publish).clone();
+        if let Some(wake) = on_publish {
+            wake();
+        }
     }
 }
 

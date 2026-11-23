@@ -528,3 +528,64 @@ test('differential: ordering hazards (batched resets, deferred crop, speculative
   assert.deepEqual(faults.slice(0, 5), [], `ordering differential faults (${faults.length} total, checked ${checked} frames in ${Math.round(performance.now() - started)}ms)`);
   assert.ok(checked > 500, `checked ${checked} frames`);
 });
+
+test('differential: N3 rewinding into a carried panel while native switches and reuses a newer cell group never drops its reset table', async () => {
+  const CELL_BASE = 0x8000_0000;
+  for (let seed = 1; seed <= 20; seed++) {
+    const rnd = rng(0x4a71 + seed * 4219);
+    const laneFailures: string[] = [];
+    const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    } });
+    const lane = new Lane<Fake>({
+      lane: 0, lanes: 1, views: () => fieldsView(() => undefined),
+      crop: async () => [], present: p => page.offer(p), release: () => {}, later: () => {},
+      fail: reason => laneFailures.push(`seed ${seed}: ${reason}`),
+    });
+    lane.follow(3, 'panel', 'demo'); lane.bindRoute(3, ROUTE, NATIVE, 0);
+    lane.mount(1, [3], 'fields'); lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+    page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+    const panelWith = (cell: number, tag: string) => ({
+      shape: tag,
+      live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+    });
+    let seek = 0, hour = 10, nextCell = 1, activeCell = (CELL_BASE | nextCell++) >>> 0;
+    let carriedHour = 10;
+    const emitResetAndPanel = (atHour: number, cell: number, resetFirst: boolean) => {
+      const fBytes = message(atHour, seek, true, [{ id: cell, hour: atHour, body: answerBody({ keys: [1n], columns: 1, values: [BigInt(atHour * 10)] }) }]);
+      const pBytes = panelPacket([{ id: 3, hour: atHour, kind: 'data', stepped: true, data: panelWith(cell, `S${seek}:${atHour}:${cell}`) }, { id: 0, hour: atHour + 10, kind: 'completed' }], seek);
+      if (resetFirst) { lane.receive('follow', fBytes); lane.receive('panels', pBytes); }
+      else { lane.receive('panels', pBytes); lane.receive('follow', fBytes); }
+    };
+    page.publish(hour, { playing: false, seek: 0 });
+    emitResetAndPanel(hour, activeCell, false);
+    await flush(); page.frame(); await flush();
+    for (let step = 1; step <= 30; step++) {
+      const op = rnd(4);
+      if (op === 0) {
+        carriedHour = hour + 5;
+        hour += 20;
+        activeCell = (CELL_BASE | nextCell++) >>> 0;
+        lane.receive('panels', panelPacket([{ id: 3, hour, kind: 'data', stepped: true, data: panelWith(activeCell, `S${seek}:${hour}:${activeCell}`) }, { id: 0, hour: hour + 10, kind: 'completed' }], seek));
+        lane.receive('follow', message(hour + 10, seek, false, [{ id: activeCell, hour, body: answerBody({ keys: [1n], columns: 1, values: [BigInt(hour * 10)] }) }]));
+        seek++;
+        page.publish(carriedHour, { playing: false, seek });
+        await flush(); await flush(); page.frame(); await flush();
+        lane.receive('panels', panelPacket([{ id: 0, hour: carriedHour, kind: 'completed' }], seek));
+        emitResetAndPanel(carriedHour, activeCell, true);
+        hour = carriedHour + 1;
+        lane.receive('follow', message(hour, seek, false, [{ id: activeCell, hour, body: answerBody({ keys: [1n], columns: 1, values: [BigInt(hour * 10)], changed: true }) }]));
+        lane.receive('panels', panelPacket([{ id: 0, hour, kind: 'completed' }], seek));
+      } else {
+        hour += 2;
+        lane.receive('follow', message(hour, seek, false, [{ id: activeCell, hour, body: answerBody({ keys: [1n], columns: 1, values: [BigInt(hour * 10)], changed: true }) }]));
+        lane.receive('panels', panelPacket([{ id: 0, hour, kind: 'completed' }], seek));
+      }
+      page.publish(hour, { playing: false, seek });
+      await flush(); await flush(); page.frame(); await flush(); page.frame();
+      const view = page.view(1);
+      assert.notEqual(view.mode, 'failed', `seed ${seed} step ${step} failed: ${view.reason}`);
+    }
+    assert.deepEqual(laneFailures, []);
+  }
+});

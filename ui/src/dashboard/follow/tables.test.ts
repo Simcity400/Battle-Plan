@@ -84,3 +84,18 @@ test('patching one changed row in a 1,500-row table copies cells proportional to
   assert.equal(cellValue(reparsed, 1), 20n);
   assert.equal(rowName(reparsed, 1499), 'C1500');
 });
+
+test('N8: single-row patch index allocation stays logarithmic on a 10,000-row table rather than copying O(rows/64) root slots', () => {
+  const N = 10_000;
+  const keys = Array.from({ length: N }, (_, i) => BigInt(i + 1));
+  const values = keys.map(k => k * 3n);
+  const root = rows({ keys, columns: 1, values });
+  const stats = { cellsCopied: 0, indexSlotsAllocated: 0 };
+  const next = patchAnswer(root, rows({ keys: [keys[5432]!], columns: 1, values: [999_999n], changed: true }), stats);
+  assert.ok(stats.cellsCopied > 0 && stats.cellsCopied <= 8, `copied ${stats.cellsCopied} cells`);
+  assert.ok(stats.indexSlotsAllocated > 0 && stats.indexSlotsAllocated <= 48,
+    `allocated ${stats.indexSlotsAllocated} index slots for 1 row of ${N} (expected O(log8 N) <= 48)`);
+  assert.equal(cellValue(next, 5432), 999_999n);
+  assert.equal(cellValue(next, 5431), 5432n * 3n);
+  assert.equal(cellValue(root, 5432), 5433n * 3n);
+});

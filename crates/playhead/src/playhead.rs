@@ -584,7 +584,6 @@ impl Shared {
         control.version += 1;
         drop(control);
         self.wake.notify_all();
-        self.notify_watchers();
     }
 
     fn ask(&self, who: Option<usize>, head: Hour) -> bool {
@@ -599,7 +598,11 @@ impl Shared {
     }
 
     fn seek(&self, hour: Hour) {
-        self.seek_locked(&mut lock(&self.clock), hour);
+        {
+            let mut clock = lock(&self.clock);
+            self.seek_locked(&mut clock, hour);
+        }
+        self.notify_watchers();
     }
 
     fn seek_locked(&self, clock: &mut Clock, hour: Hour) {
@@ -825,6 +828,7 @@ impl Drop for StepperExit {
                 control.error = Some("playhead stepper panicked".into());
             }
         });
+        self.shared.notify_watchers();
     }
 }
 
@@ -876,11 +880,13 @@ impl Consumer {
         }
     }
 
+    pub fn try_take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> Option<usize> {
+        let ring = self.lock_ring()?;
+        Some(self.take_from(ring, head, out))
+    }
+
     pub fn take(&mut self, head: Hour, out: &mut Vec<Arc<Step>>) -> usize {
-        let Some(ring) = self.lock_ring() else {
-            return 0;
-        };
-        self.take_from(ring, head, out)
+        self.try_take(head, out).unwrap_or(0)
     }
 
     pub fn ahead(&self, out: &mut Vec<Arc<Step>>) {
@@ -889,20 +895,26 @@ impl Consumer {
         }
     }
 
-    pub fn advance(&self, head: Hour) {
+    pub fn try_advance(&self, head: Hour) -> bool {
         if self.blocking {
             self.ask_blocking(head);
-            return;
+            return true;
         }
         if !self.shared.ask(Some(self.id), head) {
-            return;
+            return false;
         }
-        if !self.asked.load(Ordering::Relaxed)
-            && let Some(mut ring) = try_lock(&self.shared.ring)
-        {
+        if !self.asked.load(Ordering::Relaxed) {
+            let Some(mut ring) = try_lock(&self.shared.ring) else {
+                return false;
+            };
             ring.asks(self.id);
             self.asked.store(true, Ordering::Relaxed);
         }
+        true
+    }
+
+    pub fn advance(&self, head: Hour) {
+        let _ = self.try_advance(head);
     }
 
     pub fn lands_itself(&self) {
@@ -919,6 +931,7 @@ impl Consumer {
             control.lands.push(id);
             control.caught_up_at = None;
         });
+        self.shared.notify_watchers();
     }
 
     pub fn state(&self, step: &Step, table: usize) -> Option<State> {
@@ -1104,6 +1117,7 @@ impl Playhead {
             let since = vec![control.selection; tables.len()];
             control.readers.insert(Reader(id), Declaration { tables, since, rebuild });
         });
+        self.shared.notify_watchers();
         Ok(Reader(id))
     }
 
@@ -1113,7 +1127,9 @@ impl Playhead {
             if control.readers.get(&reader).is_some_and(|held| held.tables == tables) {
                 control.hook_requested = true;
                 control.version += 1;
+                drop(control);
                 self.shared.wake.notify_all();
+                self.shared.notify_watchers();
                 return Ok(());
             }
         }
@@ -1129,7 +1145,12 @@ impl Playhead {
                 found = true;
             }
         });
-        if found { Ok(()) } else { Err(invalid(format!("Reader {} is retired", reader.0))) }
+        if found {
+            self.shared.notify_watchers();
+            Ok(())
+        } else {
+            Err(invalid(format!("Reader {} is retired", reader.0)))
+        }
     }
 
     fn check(&self, tables: &[Declared]) -> io::Result<()> {
@@ -1164,6 +1185,7 @@ impl Playhead {
                 control.caught_up_at = None;
             }
         });
+        self.shared.notify_watchers();
     }
 
     pub fn consumer(&self, reader: Reader) -> Consumer {
@@ -1198,6 +1220,7 @@ impl Playhead {
         clock.anchor(position, playing, speed, at);
         drop(clock);
         self.shared.nudge(|_| {});
+        self.shared.notify_watchers();
     }
 
     pub fn frame_rate(&self, rate: f64) {
@@ -1208,6 +1231,7 @@ impl Playhead {
         control.version += 1;
         drop(control);
         self.shared.resize();
+        self.shared.notify_watchers();
     }
 
     pub fn step_hours(&self) -> Hour {
@@ -1246,6 +1270,7 @@ impl Playhead {
         if speed > 0.0 {
             self.shared.nudge(|control| control.pace = speed);
             if self.shared.leads() { self.shared.resize(); }
+            self.shared.notify_watchers();
         }
     }
 
@@ -1268,15 +1293,26 @@ impl Playhead {
     pub fn pause(&self) {
         lock(&self.shared.clock).pause(Instant::now());
         self.shared.nudge(|_| {});
+        self.shared.notify_watchers();
     }
 
     pub fn seed_paused_query(&self) {
-        let mut clock = lock(&self.shared.clock);
-        if !clock.playing() && clock.held().is_none() {
-            let hour = clock.head(Instant::now());
-            if self.newest().is_some_and(|newest| newest > hour) {
-                self.shared.seek_locked(&mut clock, hour);
+        let sought = {
+            let mut clock = lock(&self.shared.clock);
+            if !clock.playing() && clock.held().is_none() {
+                let hour = clock.head(Instant::now());
+                if self.newest().is_some_and(|newest| newest > hour) {
+                    self.shared.seek_locked(&mut clock, hour);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
+        };
+        if sought {
+            self.shared.notify_watchers();
         }
     }
 
@@ -1321,6 +1357,7 @@ impl Playhead {
         clock.place(hour, Instant::now());
         drop(clock);
         self.shared.nudge(|_| {});
+        self.shared.notify_watchers();
     }
 
     pub fn seek(&self, hour: Hour) {
@@ -1483,6 +1520,7 @@ impl Playhead {
 
     fn stop(&mut self) -> Vec<Lane> {
         self.shared.nudge(|control| control.stop = true);
+        self.shared.notify_watchers();
         lock(&self.shared.jobs).stop = true;
         self.shared.work.notify_all();
         let lanes = self.stepper.take().map(|stepper| stepper.join().unwrap_or_default()).unwrap_or_default();
@@ -1834,6 +1872,7 @@ impl Stepper {
             if let Err(error) = outcome {
                 self.failed = true;
                 self.shared.nudge(|control| control.error = Some(error.to_string()));
+                self.shared.notify_watchers();
             }
             self.publish_joins();
             self.report(false);
@@ -2570,6 +2609,7 @@ impl Stepper {
             control.published_steps += 1;
             self.publish_caught_up(control, caught_up);
         });
+        self.shared.notify_watchers();
         Ok(true)
     }
 
@@ -2921,6 +2961,7 @@ impl Stepper {
             control.published_steps += 1;
             self.publish_caught_up(control, caught_up);
         });
+        self.shared.notify_watchers();
         Ok(true)
     }
 
@@ -3059,6 +3100,7 @@ impl Stepper {
             control.published_steps += 1;
             self.publish_caught_up(control, caught_up);
         });
+        self.shared.notify_watchers();
         Ok(true)
     }
 
@@ -3247,6 +3289,7 @@ impl Stepper {
                         control.published_steps += 1;
                         self.publish_caught_up(control, caught_up);
                     });
+                    self.shared.notify_watchers();
                     moved = true;
                 }
                 Err(steps) => {
@@ -3283,6 +3326,7 @@ impl Stepper {
                     control.published_steps += 1;
                     self.publish_caught_up(control, caught_up);
                 });
+                self.shared.notify_watchers();
             }
             Err(step) => self.shared.free(step),
         }

@@ -34,7 +34,7 @@ function panels(records: PanelRow[], seek = 0): Uint8Array {
 
 interface Timing { offset?: number; pin?: number | null; dated?: { h: number; c: number } }
 
-function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; crop?: LaneHost<Fake>['crop']; clock?: () => number } = {}) {
+function rig(views: Record<string, LaneView> = {}, extra: { budget?: number; crop?: LaneHost<Fake>['crop']; clock?: () => number; earlyBuffer?: number } = {}) {
   const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { posted.push(m); if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
   const posted: PageMessage[] = [], released: number[] = [], failures: string[] = [], later: (() => void)[] = [], hits: (string | null)[] = [];
   const presented: Presented<Fake>[] = [];
@@ -291,7 +291,10 @@ test('astra 14: when the budget serves one widget a frame, stable widgets take t
   for (const widget of [1, 2, 3]) lane.bindRoute(widget * 2 + 1, ROUTE, NATIVE);
   lane.receive('panels', panels([1, 2, 3].map(widget => ({ id: widget * 2 + 1, hour: 10, kind: 'data' as const, stepped: true, data: {} }))));
   for (let hour = 10; hour < 19; hour++) {
-    lane.receive('panels', panels([{ id: 0, hour, kind: 'completed' }]));
+    lane.receive('panels', panels([
+      ...[1, 2, 3].map(widget => ({ id: widget * 2 + 1, hour, kind: 'data' as const, stepped: true, data: { shape: `h${hour}` } })),
+      { id: 0, hour, kind: 'completed' },
+    ]));
     await step(hour, { playing: false });
   }
   const served = new Map<number, number>();
@@ -592,20 +595,32 @@ test('a protocol fault on one subscription fails only widgets using it while sib
 test('quiet frames visit zero unchanged widgets in serve and prune across 114 widgets, and K changed visits O(K)', async () => {
   const { page, lane, mount, step } = rig({}, { clock: () => 0 });
   const initial: { id: number; answer: ReturnType<typeof rows> }[] = [];
-  for (let i = 1; i <= 114; i++) {
+  const initialPanels: PanelRow[] = [];
+  for (let i = 1; i <= 90; i++) {
     const sub = i * 2 + 1;
     mount(i, [{ id: sub, channel: 'followed' }]);
     lane.bindRoute(sub, ROUTE, NATIVE);
     initial.push({ id: sub, answer: rows([1n], [BigInt(i)]) });
   }
+  for (let i = 91; i <= 114; i++) {
+    const sub = i * 2 + 1;
+    mount(i, [{ id: sub, channel: 'panel', product: 'demo' }]);
+    lane.bindRoute(sub, ROUTE, NATIVE);
+    initialPanels.push({ id: sub, hour: 10, kind: 'data', stepped: true, data: { shape: `P${i}` } });
+  }
+  initialPanels.push({ id: 0, hour: 10, kind: 'completed' });
   lane.receive('follow', message(10, initial, false, NATIVE));
+  lane.receive('panels', panels(initialPanels, 0));
   await step(10, { playing: true, step: 24, speed: 1440 });
   lane.receive('follow', message(34, initial.map(item => ({ id: item.id, answer: rows([1n], [BigInt(item.id + 1000)], { changed: true }) })), false, NATIVE));
+  lane.receive('panels', panels([{ id: 0, hour: 34, kind: 'completed' }], 0));
   await step(34, { playing: true, step: 24, speed: 1440 });
   await step(58, { playing: true, step: 24, speed: 1440 });
   const beforeVisited = lane.stats.visited;
   const beforePruned = lane.stats.pruned;
   for (let h = 82; h <= 202; h += 24) {
+    lane.receive('follow', message(h, [], false, NATIVE));
+    lane.receive('panels', panels([{ id: 0, hour: h, kind: 'completed' }], 0));
     await step(h, { playing: true, step: 24, speed: 1440 });
   }
   assert.equal(lane.stats.visited - beforeVisited, 0, `quiet frames visited ${lane.stats.visited - beforeVisited} widgets`);
@@ -852,4 +867,237 @@ test('S14: a cheap data widget changing every frame does not starve an oversized
   }
   assert.ok(motionPaints - paintsAfterWarmup >= 3, `oversized motion widget starved after cost > budget: only ${motionPaints - paintsAfterWarmup} paints in 14 frames`);
   assert.ok(cheapPaints >= 14, `cheap widget painted ${cheapPaints} times`);
+});
+
+test('S7b: COMPLETED never extends pre-fault panel data across a decode fault interval, even after a later replacement', async () => {
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'H10' } }, { id: 0, hour: 10, kind: 'completed' }], 0));
+  await step(10, { playing: false });
+  assert.equal(page.view(1).mode, 'picture');
+  const corrupt = panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'H20' } }, { id: 0, hour: 20, kind: 'completed' }], 0);
+  corrupt[24 + 16] = 0xc1;
+  lane.receive('panels', corrupt);
+  lane.receive('panels', panels([{ id: 0, hour: 25, kind: 'completed' }], 0));
+  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: { shape: 'H30' } }, { id: 0, hour: 30, kind: 'completed' }], 0));
+  await step(25, { playing: false });
+  page.frame();
+  assert.equal(page.view(1).mode, 'failed', 'paused at 25 must show the fault from 20..29, never hour-10 data certified through 25');
+  await step(24, { playing: false, seek: 1 });
+  assert.notEqual(page.view(1).mode, 'picture', 'seeking to 24 must not carry invalid hour-10 coverage across the decode fault');
+});
+
+test('S8b: a speculative cell-group fault at target 36 for a panel starting at 30 never replaces a healthy panel at page hour 12', async () => {
+  const CELL_A = 0x8000_0011, CELL_B = 0x8000_0012;
+  const panelWith = (cell: number, shape: string) => ({
+    shape,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A, 'A') }, { id: 0, hour: 29, kind: 'completed' }]));
+  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE));
+  lane.receive('follow', message(29, [], false, NATIVE));
+  await step(12, { playing: false });
+  assert.equal(page.view(1).mode, 'picture');
+  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: panelWith(CELL_B, 'B') }, { id: 0, hour: 36, kind: 'completed' }]));
+  lane.receive('follow', message(36, [{ id: CELL_B, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE));
+  await step(12, { playing: true, step: 24, speed: 1440 });
+  assert.equal(page.view(1).mode, 'picture', 'healthy panel A at page hour 12 must stay shown until the clock reaches panel B at 30');
+  await step(13, { playing: true, step: 24, speed: 1440 });
+  assert.equal(page.view(1).mode, 'picture', 'speculative target 37 must park panel B fault as early while clock is at 13');
+  await step(30, { playing: true, step: 24, speed: 1440 });
+  assert.equal(page.view(1).mode, 'failed', 'failure installs once the clock reaches hour 30');
+});
+
+test('S12b: a lane widget outside its active window does not force O(N) scans of all windowed widgets on quiet frames', async () => {
+  const { lane, mount, step } = rig({}, { clock: () => 0 });
+  mount(1, [{ id: 3, channel: 'followed' }]);
+  lane.bindRoute(3, ROUTE, NATIVE);
+  for (let i = 2; i <= 60; i++) {
+    const sub = i * 2 + 1;
+    mount(i, [{ id: sub, channel: 'followed' }]);
+    lane.bindRoute(sub, ROUTE, NATIVE);
+  }
+  lane.receive('follow', message(10, Array.from({ length: 60 }, (_, idx) => ({ id: (idx + 1) * 2 + 1, answer: rows([1n], [BigInt(idx + 1)]) })), false, NATIVE));
+  lane.receive('follow', message(20, [{ id: 3, answer: rows([1n], [999n], { changed: true }) }], false, NATIVE));
+  await step(15, { playing: false });
+  await step(50, { playing: true, seek: 1, step: 24, speed: 1440 });
+  lane.receive('follow', message(50, Array.from({ length: 59 }, (_, idx) => ({ id: (idx + 2) * 2 + 1, answer: rows([1n], [BigInt(idx + 2)]) })), true, NATIVE, 1));
+  await step(50, { playing: true, step: 24, speed: 1440 });
+  await step(74, { playing: true, step: 24, speed: 1440 });
+  const before = lane.stats.visited;
+  for (let h = 98; h <= 200; h += 24) {
+    await step(h, { playing: true, step: 24, speed: 1440 });
+  }
+  assert.equal(lane.stats.visited - before, 0, `quiet frames visited ${lane.stats.visited - before} widgets`);
+});
+
+test('S14b: four always-changing 6 ms data widgets do not starve one 15 ms motion widget on a 10 ms budget', async () => {
+  let clock = 0;
+  let motionPaints = 0;
+  const views: Record<string, LaneView> = {
+    motion15: {
+      paint: (input): Painted => {
+        clock += 15;
+        motionPaints++;
+        return { surfaces: [], fields: { f: { value: motionPaints, content: `m:${motionPaints}:${input.now}` } }, motion: true };
+      },
+    },
+    data6: {
+      paint: (input): Painted => {
+        clock += 6;
+        return { surfaces: [], fields: { h: { value: input.pictures[0]!.h, content: `d:${input.pictures[0]!.h}` } }, motion: false };
+      },
+    },
+  };
+  const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => { if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target); } });
+  const lane = new Lane<Fake>({
+    lane: 0, lanes: 1, views: kind => views[kind]!, crop: async () => [],
+    present: presentation => page.offer(presentation), release: () => {}, fail: () => {}, later: () => {},
+    budget: 10, clock: () => clock,
+  });
+  lane.follow(3, 'followed'); lane.bindRoute(3, ROUTE, NATIVE);
+  lane.mount(1, [3], 'motion15'); lane.bind(1, { generation: 1, surfaces: [], offset: 0, pin: null });
+  page.mount(1, { route: ROUTE, lane: 0, surfaces: [] });
+  for (let id = 2; id <= 5; id++) {
+    const sub = id * 2 + 1;
+    lane.follow(sub, 'followed'); lane.bindRoute(sub, ROUTE, NATIVE);
+    lane.mount(id, [sub], 'data6'); lane.bind(id, { generation: 1, surfaces: [], offset: 0, pin: null });
+    page.mount(id, { route: ROUTE, lane: 0, surfaces: [] });
+  }
+  lane.receive('follow', message(10, [3, 5, 7, 9, 11].map(id => ({ id, answer: rows([1n], [10n]) })), false, NATIVE));
+  page.publish(10, { playing: true, step: 1, speed: 24 }); await flush(); await flush();
+  let at30 = 0;
+  for (let frame = 1; frame <= 120; frame++) {
+    if (frame === 30) at30 = motionPaints;
+    lane.receive('follow', message(10 + frame, [5, 7, 9, 11].map(id => ({ id, answer: rows([1n], [BigInt(10 + frame)], { changed: true }) })), false, NATIVE));
+    page.publish(10 + frame, { playing: true, step: 1, speed: 24 }); await flush(); await flush();
+  }
+  assert.ok(motionPaints > at30 + 5, `motion widget starved after frame 30: ${at30} at frame 30, ${motionPaints} at frame 120`);
+});
+
+test('N2: on seek, early followed cell answer and early panel naming that cell both drain immediately while paused', async () => {
+  const CELL_X = 0x8000_0021;
+  const panelData = {
+    shape: 'early-cell',
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_X }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  };
+  const { page, lane, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  await step(10, { playing: false, seek: 0 });
+  lane.receive('follow', message(50, [{ id: CELL_X, answer: rows([1n], [777n]) }], true, NATIVE, 1));
+  lane.receive('panels', panels([{ id: 3, hour: 50, kind: 'data', stepped: true, data: panelData }, { id: 0, hour: 50, kind: 'completed' }], 1));
+  await step(50, { playing: false, seek: 1 });
+  page.frame();
+  assert.equal(page.view(1).mode, 'picture', 'paused widget must install without waiting for an unrelated later packet');
+});
+
+test('N3: rewinding into carried panel A keeps latest native panel B cell ownership until new-seek panel replaces it', async () => {
+  const CELL_A = 0x8000_0031, CELL_B = 0x8000_0032;
+  const panelWith = (cell: number, shape: string) => ({
+    shape,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+  const { page, lane, failures, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(CELL_A, 'A') }, { id: 0, hour: 20, kind: 'completed' }], 0));
+  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [100n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(20, [], false, NATIVE, 0));
+  await step(15, { playing: false });
+  lane.receive('panels', panels([{ id: 3, hour: 30, kind: 'data', stepped: true, data: panelWith(CELL_B, 'B') }, { id: 0, hour: 35, kind: 'completed' }], 0));
+  lane.receive('follow', message(35, [{ id: CELL_B, answer: rows([1n], [200n]) }], false, NATIVE, 0));
+  await step(15, { playing: false, seek: 1 });
+  lane.receive('panels', panels([{ id: 0, hour: 15, kind: 'completed' }], 1));
+  lane.receive('follow', message(15, [{ id: CELL_B, answer: rows([1n], [250n]) }], true, NATIVE, 1));
+  lane.receive('panels', panels([{ id: 3, hour: 15, kind: 'data', stepped: true, data: panelWith(CELL_B, 'B1') }, { id: 0, hour: 16, kind: 'completed' }], 1));
+  lane.receive('follow', message(16, [{ id: CELL_B, answer: rows([1n], [260n], { changed: true }) }], false, NATIVE, 1));
+  await step(16, { playing: false });
+  page.frame();
+  assert.deepEqual(failures, []);
+  assert.equal(page.view(1).mode, 'picture', 'delta on reused cell B after rewind into carried panel A must not fail with missing base');
+});
+
+test('N4: a rejected crop from seek 0 arriving after seek 1 never installs a failure under seek 1', async () => {
+  let rejectCrop!: (err: Error) => void;
+  let calls = 0;
+  const views: Record<string, LaneView> = {
+    canvas: {
+      paint: (input): Painted => ({
+        surfaces: [{ source: { width: 1, height: 1, content: `h:${input.pictures[0]!.h}` } as unknown as { width: number; height: number }, content: `h:${input.pictures[0]!.h}` }],
+        fields: {},
+        motion: false,
+      }),
+    },
+  };
+  const { page, lane, mount, step } = rig(views, {
+    crop: sources => {
+      calls++;
+      if (calls === 1) return new Promise((_resolve, reject) => { rejectCrop = reject; });
+      return Promise.resolve(sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } })));
+    },
+  });
+  mount(1, [{ id: 3, channel: 'followed' }], 'canvas', 1);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.receive('follow', message(10, [{ id: 3, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.publish(55, { playing: false, seek: 1 });
+  await flush();
+  rejectCrop(new Error('GPU lost on old seek'));
+  await flush(); await flush(); page.frame();
+  assert.notEqual(page.view(1).mode, 'failed', 'seek 0 crop rejection must not fail seek 1');
+  lane.receive('follow', message(55, [{ id: 3, answer: rows([1n], [55n]) }], true, NATIVE, 1));
+  await step(55, { playing: false });
+  page.frame();
+  assert.equal(page.view(1).mode, 'picture');
+  assert.equal(page.view(1).h, 55);
+});
+
+test('N6: future-seek completion-only panel packets coalesce and future-seek queue overflow produces a named failure', async () => {
+  const { page, lane, mount, step } = rig({}, { earlyBuffer: 512 });
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  await step(10, { playing: false, seek: 0 });
+  for (let h = 1; h <= 200; h++) {
+    lane.receive('panels', panels([{ id: 0, hour: h, kind: 'completed' }], 1));
+  }
+  lane.receive('panels', panels([{ id: 3, hour: 100, kind: 'data', stepped: true, data: { shape: 'ok' } }, { id: 0, hour: 200, kind: 'completed' }], 1));
+  await step(100, { playing: false, seek: 1 });
+  page.frame();
+  assert.equal(page.view(1).mode, 'picture', '200 redundant future-seek completion packets coalesce without overflowing');
+  for (let i = 0; i < 10; i++) {
+    lane.receive('panels', panels([{ id: 3, hour: 300 + i, kind: 'data', stepped: true, data: { shape: 'big', pad: 'x'.repeat(120) } }], 2));
+  }
+  await step(300, { playing: false, seek: 2 });
+  page.frame();
+  assert.equal(page.view(1).mode, 'failed', 'future-seek panel queue overflow reports a named failure');
+  assert.match(page.view(1).reason ?? '', /overflowed/i);
+});
+
+test('N7: completion-only panel packets on quiet frames visit zero unchanged stepped panel widgets', async () => {
+  const { page, lane, mount, step } = rig({}, { clock: () => 0 });
+  const initial: PanelRow[] = [];
+  for (let i = 1; i <= 50; i++) {
+    const sub = i * 2 + 1;
+    mount(i, [{ id: sub, channel: 'panel', product: 'demo' }]);
+    lane.bindRoute(sub, ROUTE, NATIVE);
+    initial.push({ id: sub, hour: 10, kind: 'data', stepped: true, data: { shape: `S${i}` } });
+  }
+  initial.push({ id: 0, hour: 10, kind: 'completed' });
+  lane.receive('panels', panels(initial, 0));
+  await step(10, { playing: true, step: 24, speed: 1440 });
+  await step(34, { playing: true, step: 24, speed: 1440 });
+  const beforeVisited = lane.stats.visited;
+  for (let h = 58; h <= 202; h += 24) {
+    lane.receive('panels', panels([{ id: 0, hour: h, kind: 'completed' }], 0));
+    await step(h, { playing: true, step: 24, speed: 1440 });
+  }
+  assert.equal(lane.stats.visited - beforeVisited, 0, `completion-only panel packets visited ${lane.stats.visited - beforeVisited} unchanged panel widgets`);
+  await step(200, { playing: false });
+  assert.equal(page.view(1).dim, false, 'shared panel confirmation keeps stepped panels undimmed on pause');
 });

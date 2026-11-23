@@ -147,7 +147,6 @@ export class Page<B extends Bitmap = Bitmap> {
   private readonly earlyWidgets = new Set<Widget<B>>();
   private readonly inspectedByLane: Set<Widget<B>>[];
   private readonly bounded = new Set<Widget<B>>();
-  private readonly boundedOutside = new Set<Widget<B>>();
   private safeLo = -Infinity;
   private safeHi = Infinity;
   private safeDirty = false;
@@ -188,22 +187,20 @@ export class Page<B extends Bitmap = Bitmap> {
   }
 
   private trackBounds(widget: Widget<B>) {
-    this.bounded.delete(widget);
-    this.boundedOutside.delete(widget);
-    if (widget.bounds && widget.pin === null) {
-      this.bounded.add(widget);
-      const at = this.target(widget);
-      if (at < widget.bounds[0] || at > widget.bounds[1]) this.boundedOutside.add(widget);
-    }
+    if (widget.bounds && widget.pin === null) this.bounded.add(widget);
+    else this.bounded.delete(widget);
     this.safeDirty = true;
   }
 
   private refreshSafeBounds() {
     let lo = -Infinity, hi = Infinity;
     for (const widget of this.bounded) {
-      if (this.boundedOutside.has(widget) || !widget.bounds) continue;
-      lo = Math.max(lo, widget.bounds[0] - widget.offset);
-      hi = Math.min(hi, widget.bounds[1] - widget.offset);
+      if (!widget.bounds) continue;
+      const b0 = widget.bounds[0] - widget.offset;
+      const b1 = widget.bounds[1] - widget.offset;
+      if (this.T < b0) hi = Math.min(hi, b0 - 1);
+      else if (this.T > b1) lo = Math.max(lo, b1 + 1);
+      else { lo = Math.max(lo, b0); hi = Math.min(hi, b1); }
     }
     this.safeLo = lo;
     this.safeHi = hi;
@@ -271,7 +268,6 @@ export class Page<B extends Bitmap = Bitmap> {
     this.inspectedByLane[widget.lane]?.delete(widget);
     this.byRoute.get(widget.route)?.delete(widget);
     this.bounded.delete(widget);
-    this.boundedOutside.delete(widget);
     this.safeDirty = true;
     this.drop(widget.installed);
     this.widgets.delete(id);
@@ -305,36 +301,31 @@ export class Page<B extends Bitmap = Bitmap> {
         this.stats.visited++;
         if (this.face(widget) !== widget.face) this.touched.add(widget);
       }
-      if (this.bounded.size) {
-        this.boundedOutside.clear();
-        for (const widget of this.bounded) {
-          const at = this.target(widget);
-          if (widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1])) this.boundedOutside.add(widget);
-        }
-        this.safeDirty = true;
-      }
+      if (this.bounded.size) this.refreshSafeBounds();
     } else if (moved) {
       if (!this.playing) {
         for (const widget of this.widgets.values()) {
           this.stats.visited++;
           if (this.face(widget) !== widget.face) this.touched.add(widget);
         }
+        if (this.bounded.size) this.safeDirty = true;
       } else if (this.bounded.size) {
-        if (this.safeDirty) this.refreshSafeBounds();
-        if (this.boundedOutside.size > 0 || T < this.safeLo || T > this.safeHi) {
-          let changedOutside = false;
+        if (this.safeDirty || T < this.safeLo || T > this.safeHi) {
+          let lo = -Infinity, hi = Infinity;
           for (const widget of this.bounded) {
             this.stats.visited++;
-            const at = this.target(widget);
-            const out = !!widget.bounds && (at < widget.bounds[0] || at > widget.bounds[1]);
-            const wasOut = this.boundedOutside.has(widget);
-            if (out !== wasOut) {
-              if (out) this.boundedOutside.add(widget); else this.boundedOutside.delete(widget);
-              changedOutside = true;
+            if (widget.bounds) {
+              const b0 = widget.bounds[0] - widget.offset;
+              const b1 = widget.bounds[1] - widget.offset;
+              if (T < b0) hi = Math.min(hi, b0 - 1);
+              else if (T > b1) lo = Math.max(lo, b1 + 1);
+              else { lo = Math.max(lo, b0); hi = Math.min(hi, b1); }
             }
             if (this.face(widget) !== widget.face) this.touched.add(widget);
           }
-          if (changedOutside) this.safeDirty = true;
+          this.safeLo = lo;
+          this.safeHi = hi;
+          this.safeDirty = false;
         }
       }
     }

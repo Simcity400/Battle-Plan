@@ -1,13 +1,30 @@
 import { cellState, cellValue, rowName, rowReason, textAt } from './message.ts';
-import type { FollowedAnswer, FollowedRows, RowChunk } from './message';
+import type { FollowedAnswer, FollowedRows, PatchNode, RowChunk, RowPatches } from './message';
 
 const NO_TEXT = 0xffff_ffff;
 const CHUNK_ROWS = 8;
-const GROUP_CHUNKS = 8;
+const BRANCH = 8;
 const encoder = new TextEncoder();
 const aligned = (at: number) => (at + 7) & ~7;
 
-export interface PatchStats { cellsCopied: number }
+export interface PatchStats { cellsCopied: number; indexSlotsAllocated?: number }
+
+function treeShift(rows: number): number {
+  const chunks = Math.ceil(rows / CHUNK_ROWS);
+  let shift = 0, cap = BRANCH;
+  while (cap < chunks) { cap *= BRANCH; shift += 3; }
+  return shift;
+}
+
+function getChunk(patches: RowPatches | undefined, chunkIndex: number): RowChunk | undefined {
+  if (!patches) return undefined;
+  let node: PatchNode | undefined = patches.root;
+  for (let shift = patches.shift; shift > 0; shift -= 3) {
+    node = node[(chunkIndex >>> shift) & 7] as PatchNode | undefined;
+    if (!node) return undefined;
+  }
+  return node[chunkIndex & 7] as RowChunk | undefined;
+}
 
 const keyAt = (rows: FollowedRows, row: number, word: number) => rows.views.u32[rows.keys * 2 + (word < 2 ? row * 2 + word : (rows.rows + row) * 2 + word - 2)]!;
 
@@ -46,7 +63,7 @@ function makeChunk(base: FollowedRows, chunkIndex: number, stats?: PatchStats): 
   const start = chunkIndex * CHUNK_ROWS;
   const len = Math.min(CHUNK_ROWS, base.rows - start);
   const columns = base.columns;
-  const existing = base.patches?.root[chunkIndex >>> 3]?.[chunkIndex & 7];
+  const existing = getChunk(base.patches, chunkIndex);
   if (stats) stats.cellsCopied += len * columns;
   if (existing) {
     return { values: existing.values.slice(), states: existing.states.slice(), reasons: existing.reasons.slice() };
@@ -68,24 +85,31 @@ export function patchAnswer(base: FollowedAnswer, changed: FollowedRows, stats?:
   if (!changed.canonical || !base.canonical) throw new Error('Changed rows arrived out of key order: they are merged only by walking keys.');
   if (!changed.rows) return base;
   const { rows, columns } = base;
-  const rootLen = Math.ceil(rows / (CHUNK_ROWS * GROUP_CHUNKS));
-  const nextRoot: ((RowChunk | undefined)[] | undefined)[] = base.patches ? base.patches.root.slice() : new Array(rootLen);
-  const clonedGroups = new Set<number>();
+  const shift = base.patches ? base.patches.shift : treeShift(rows);
+  const nextRoot: PatchNode = base.patches ? base.patches.root.slice() : new Array(BRANCH);
+  if (stats) stats.indexSlotsAllocated = (stats.indexSlotsAllocated ?? 0) + BRANCH;
+  const cloned = new Set<PatchNode>([nextRoot]);
   const clonedChunks = new Map<number, RowChunk>();
   let at = 0;
   for (let row = 0; row < changed.rows; row++) {
     at = findRow(base, at, changed, row);
-    const chunkIndex = at >>> 3, groupIndex = chunkIndex >>> 3, slot = chunkIndex & 7, offset = at & 7;
+    const chunkIndex = at >>> 3, offset = at & 7;
     let chunk = clonedChunks.get(chunkIndex);
     if (!chunk) {
-      let group = nextRoot[groupIndex];
-      if (!clonedGroups.has(groupIndex)) {
-        group = group ? group.slice() : new Array<RowChunk | undefined>(GROUP_CHUNKS);
-        nextRoot[groupIndex] = group;
-        clonedGroups.add(groupIndex);
+      let node = nextRoot;
+      for (let s = shift; s > 0; s -= 3) {
+        const idx = (chunkIndex >>> s) & 7;
+        let child = node[idx] as PatchNode | undefined;
+        if (!child || !cloned.has(child)) {
+          child = child ? child.slice() : new Array(BRANCH);
+          if (stats) stats.indexSlotsAllocated = (stats.indexSlotsAllocated ?? 0) + BRANCH;
+          cloned.add(child);
+          node[idx] = child;
+        }
+        node = child;
       }
       chunk = makeChunk(base, chunkIndex, stats);
-      group![slot] = chunk;
+      node[chunkIndex & 7] = chunk;
       clonedChunks.set(chunkIndex, chunk);
     }
     const dst = offset * columns, src = row * columns;
@@ -97,7 +121,7 @@ export function patchAnswer(base: FollowedAnswer, changed: FollowedRows, stats?:
     chunk.reasons[offset] = reason === NO_TEXT ? null : textAt(changed, reason)!;
     at++;
   }
-  return { ...base, patches: { root: nextRoot } };
+  return { ...base, patches: { root: nextRoot, shift } };
 }
 
 export function serializeAnswer(answer: FollowedRows): Uint8Array {

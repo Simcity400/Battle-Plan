@@ -21,8 +21,11 @@ export interface RowChunk {
   reasons: (string | null)[];
 }
 
+export type PatchNode = (PatchNode | RowChunk | undefined)[];
+
 export interface RowPatches {
-  root: ((RowChunk | undefined)[] | undefined)[];
+  root: PatchNode;
+  shift: number;
 }
 
 export interface FollowedRows {
@@ -181,8 +184,17 @@ export function parseFollowed(bytes: ArrayBuffer | Uint8Array): FollowedMessage 
   return message;
 }
 
-const chunkAt = (answer: FollowedRows, row: number): RowChunk | undefined =>
-  answer.patches?.root[row >>> 6]?.[(row >>> 3) & 7];
+const chunkAt = (answer: FollowedRows, row: number): RowChunk | undefined => {
+  const patches = answer.patches;
+  if (!patches) return undefined;
+  let node: PatchNode | undefined = patches.root;
+  const chunk = row >>> 3;
+  for (let shift = patches.shift; shift > 0; shift -= 3) {
+    node = node[(chunk >>> shift) & 7] as PatchNode | undefined;
+    if (!node) return undefined;
+  }
+  return node[chunk & 7] as RowChunk | undefined;
+};
 
 export const cellState = (answer: FollowedRows, at: number): number => {
   if (answer.patches) {

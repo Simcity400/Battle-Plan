@@ -613,3 +613,20 @@ test('S5: an unclosed parked open-followed entry keeps advancing with shared con
   closed.p.publish(150, { playing: false });
   assert.deepEqual([closed.p.widgets.get(1)!.installed!.c, closed.view().dim], [130, true], 'parked entry closed before confirmation 160 freezes at 130');
 });
+
+test('S12: one bounded widget outside its recording bounds does not force page scans of all bounded widgets on quiet ticks', () => {
+  const p = new Page<Fake>({ lanes: 1 });
+  p.mount(1, { route: 9, lane: 0, bounds: [0, 50], surfaces: [] });
+  for (let id = 2; id <= 50; id++) p.mount(id, { route: 9, lane: 0, bounds: [0, 10_000], surfaces: [] });
+  p.publish(0, { playing: true, step: 24, speed: 1440 });
+  for (let id = 1; id <= 50; id++) {
+    p.offer({ lane: 0, serial: id, entries: [entry({ id, widget: id, n: 0, h: 0, c: 10_000, lo: 0, hi: 10_000 })] });
+  }
+  p.publish(100, { playing: true, step: 24, speed: 1440 });
+  assert.equal(p.view(1).mode, 'outside');
+  const before = p.stats.visited;
+  for (let h = 124; h <= 400; h += 24) p.publish(h, { playing: true, step: 24, speed: 1440 });
+  assert.equal(p.stats.visited - before, 0, `one outside bounded widget caused ${p.stats.visited - before} visits on quiet ticks`);
+  p.publish(40, { playing: true, step: 24, speed: 1440 });
+  assert.equal(p.view(1).mode, 'picture', 're-entering bounds restores picture');
+});

@@ -5,6 +5,7 @@ export interface Fact<V> {
   c: number;
   readonly value: V;
   readonly refused: string | null;
+  readonly failed: string | null;
   readonly cells: readonly number[];
   readonly seeds: ReadonlyMap<number, Fact<V>>;
   readonly channel: Channel;
@@ -18,6 +19,7 @@ export interface Picture<V> {
   readonly parts: readonly Fact<V>[];
   readonly value: V;
   readonly refused: string | null;
+  readonly failed: string | null;
   readonly carried?: true;
 }
 
@@ -26,6 +28,7 @@ export interface CellSeed<V> { id: number; seedHour?: number; values?: V }
 export type PanelRecord<V> =
   | { kind: 'data'; id: number; hour: number; value: V; stepped?: boolean; cells?: readonly CellSeed<V>[]; bytes?: number }
   | { kind: 'refused'; id: number; hour: number; reason: string; value: V; stepped?: boolean; bytes?: number }
+  | { kind: 'failed'; id: number; hour: number; reason: string; stepped?: boolean }
   | { kind: 'stands'; id: number; hour: number; stepped?: boolean }
   | { kind: 'waiting'; id: number; hour: number };
 
@@ -36,7 +39,7 @@ export interface FollowMessage<V> { hour: number; reset?: boolean; limited?: Rea
 export interface Generation { seek: number; reset: number }
 
 interface Owner<V> { id: number; route: number; channel: Channel; facts: Fact<V>[]; open: boolean }
-interface Sub<V> extends Owner<V> { stepped: boolean; carried: Picture<V> | null; uses: Set<number> }
+interface Sub<V> extends Owner<V> { stepped: boolean; carried: Picture<V> | null; uses: Set<number>; nativeCells: Set<number> }
 interface Group<V> extends Owner<V> { users: Set<number> }
 interface Route { seek: number; reset: number; early: [number, () => void][] }
 
@@ -86,6 +89,39 @@ export class Facts<V> {
     return sub.carried && sub.carried.h <= target ? sub.carried.parts[0]?.cells ?? [] : [];
   }
 
+  activePanelWindow(id: number, target: number): Window | null {
+    const sub = this.subs.get(id);
+    if (!sub) return null;
+    for (let at = sub.facts.length - 1; at >= 0; at--) {
+      const fact = sub.facts[at]!;
+      if (fact.h <= target) {
+        const next = sub.facts[at + 1];
+        return [fact.h, next ? next.h - 1 : Infinity];
+      }
+    }
+    if (sub.carried && sub.carried.h <= target) {
+      const next = sub.facts[0];
+      return [sub.carried.h, next ? next.h - 1 : Infinity];
+    }
+    return null;
+  }
+
+  isOpenSteppedPanel(id: number): boolean {
+    const sub = this.subs.get(id);
+    if (!sub || sub.channel !== 'panel' || !sub.stepped || !sub.open) return false;
+    const last = sub.facts.at(-1);
+    return !!last && last.failed === null;
+  }
+
+  nextFaultStart(id: number, target: number, isFaulted: (cell: number) => boolean): number {
+    const sub = this.subs.get(id);
+    if (!sub) return Infinity;
+    for (const fact of sub.facts) {
+      if (fact.h > target && fact.cells.some(isFaulted)) return fact.h;
+    }
+    return Infinity;
+  }
+
   nextStart(id: number, target: number): number {
     const sub = this.subs.get(id);
     if (!sub) return Infinity;
@@ -119,13 +155,14 @@ export class Facts<V> {
 
   follow(id: number, route: number, channel: Channel) {
     if (channel !== 'pinned') this.route(route);
-    this.subs.set(id, { id, route, channel, facts: [], open: false, stepped: false, carried: null, uses: new Set() });
+    this.subs.set(id, { id, route, channel, facts: [], open: false, stepped: false, carried: null, uses: new Set(), nativeCells: new Set() });
   }
 
   unfollow(id: number): number[] {
     const sub = this.subs.get(id);
     if (!sub) return [];
     this.subs.delete(id);
+    sub.nativeCells.clear();
     this.removed.push(...sub.facts);
     this.retain(sub, new Set());
     return this.drain();
@@ -178,7 +215,7 @@ export class Facts<V> {
     if (seek <= at.seek) return;
     for (const sub of this.subs.values()) if (sub.route === route && sub.channel !== 'pinned') {
       const shown = this.select(sub.id, target);
-      sub.carried = shown && shown.h <= target && target <= shown.c ? Object.freeze({ ...shown, carried: true as const }) : null;
+      sub.carried = shown && shown.failed === null && shown.h <= target && target <= shown.c ? Object.freeze({ ...shown, carried: true as const }) : null;
       this.removed.push(...sub.facts);
       sub.facts = []; sub.open = false; sub.stepped = false;
     }
@@ -210,8 +247,8 @@ export class Facts<V> {
   }
 
   private fact(h: number, c: number, value: V, refused: string | null, channel: Channel, bytes: number,
-    cells: readonly number[] = [], seeds: ReadonlyMap<number, Fact<V>> = new Map()): Fact<V> {
-    return { h, c, value, refused, cells, seeds, channel, version: ++versions, bytes };
+    cells: readonly number[] = [], seeds: ReadonlyMap<number, Fact<V>> = new Map(), failed: string | null = null): Fact<V> {
+    return { h, c, value, refused, failed, cells, seeds, channel, version: ++versions, bytes };
   }
 
   exact(id: number, hour: number, value: V, refused: string | null = null, bytes = 0) {
@@ -229,9 +266,10 @@ export class Facts<V> {
     for (const record of records) {
       const sub = this.subs.get(record.id);
       if (!sub || sub.route !== route || sub.channel !== 'panel') { if ('bytes' in record) this.freed += record.bytes ?? 0; continue; }
-      if ((record.kind === 'data' || record.kind === 'refused' || record.kind === 'stands') && record.stepped) sub.stepped = true;
+      if ((record.kind === 'data' || record.kind === 'refused' || record.kind === 'failed' || record.kind === 'stands') && record.stepped) sub.stepped = true;
       if (record.kind === 'data' || record.kind === 'refused') {
         const seeds = new Map<number, Fact<V>>(), cells = record.kind === 'data' ? record.cells ?? [] : [];
+        sub.nativeCells = new Set(cells.map(cell => cell.id));
         for (const cell of cells) {
           this.group(cell.id, route, sub);
           if (cell.seedHour !== undefined && cell.seedHour <= record.hour && cell.values !== undefined)
@@ -239,6 +277,8 @@ export class Facts<V> {
         }
         this.add(sub, this.fact(record.hour, record.hour, record.value, record.kind === 'refused' ? record.reason : null, 'panel', record.bytes ?? 0,
           cells.map(cell => cell.id), seeds));
+      } else if (record.kind === 'failed') {
+        this.add(sub, this.fact(record.hour, record.hour, undefined as V, null, 'panel', 0, [], new Map(), record.reason));
       } else if (record.kind === 'stands') {
         const last = sub.facts.at(-1);
         if (last) { last.c = Math.max(last.c, record.hour); sub.open = true; }
@@ -290,7 +330,7 @@ export class Facts<V> {
 
   private join(fact: Fact<V>, target: number, cover: boolean): Picture<V> | null {
     if (cover && !(fact.h <= target && target <= fact.c)) return null;
-    if (!fact.cells.length) return { h: fact.h, c: fact.c, parts: [fact], value: fact.value, refused: fact.refused };
+    if (!fact.cells.length) return { h: fact.h, c: fact.c, parts: [fact], value: fact.value, refused: fact.refused, failed: fact.failed };
     const lists = fact.cells.map(id => {
       const own = this.groups.get(id)?.facts ?? [], seed = fact.seeds.get(id);
       return seed ? [...own, seed] : own;
@@ -307,7 +347,7 @@ export class Facts<V> {
         if (!best) { complete = false; break; }
         h = Math.max(h, best.h); c = Math.min(c, best.c); parts.push(best);
       }
-      if (complete) return { h, c, parts, value: fact.value, refused: fact.refused };
+      if (complete) return { h, c, parts, value: fact.value, refused: fact.refused, failed: fact.failed };
     }
     return null;
   }
@@ -398,7 +438,7 @@ export class Facts<V> {
     return { floor, parts: new Set([...current?.parts ?? [], ...keep.flatMap(picture => picture?.parts ?? [])]) };
   }
 
-  private retain(sub: Sub<V>, uses = new Set([...sub.facts.flatMap(fact => fact.cells), ...sub.carried?.parts[0]?.cells ?? []]),
+  private retain(sub: Sub<V>, uses = new Set([...sub.facts.flatMap(fact => fact.cells), ...sub.carried?.parts[0]?.cells ?? [], ...sub.nativeCells]),
     actual?: number, keep: readonly (Picture<V> | null | undefined)[] = []) {
     for (const id of [...sub.uses]) if (!uses.has(id)) {
       sub.uses.delete(id);
