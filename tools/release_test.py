@@ -262,25 +262,39 @@ class Resolve(unittest.TestCase):
         self.assertEqual(self.resolve(whole_run_state=broken)["due"], "false")
         self.assertEqual(self.resolve(draft=True, whole_run_state=broken)["due"], "true")
 
-    def test_a_failed_whole_workspace_run_bars_nightlies_until_one_passes(self):
+    def test_a_failed_or_running_whole_workspace_run_bars_nightlies_until_one_passes(self):
         def listed(*conclusions):
-            return json.dumps({"workflow_runs": [{"conclusion": found, "head_sha": "c" * 40} for found in conclusions]})
+            return json.dumps({"workflow_runs": [{"conclusion": found, "status": "in_progress" if found is None else "completed",
+                                                  "head_sha": "c" * 40} for found in conclusions]})
 
         with mock.patch.object(release, "run", answers(listed("cancelled", "failure", "success"))):
             self.assertIn("ended failure", release.whole_run_state("owner/repo"))
+        with mock.patch.object(release, "run", answers(listed(None, "success"))):
+            self.assertIn("still going", release.whole_run_state("owner/repo"))
         with mock.patch.object(release, "run", answers(listed("success", "failure"))):
             self.assertIsNone(release.whole_run_state("owner/repo"))
         with mock.patch.object(release, "run", answers(listed())):
             self.assertIsNone(release.whole_run_state("owner/repo"))
 
+    def test_a_nightly_whose_whole_workspace_run_failed_during_its_build_is_not_published(self):
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "candidate.json").write_text(json.dumps({"commit": "b" * 40, "version": "1.4.4-nightly.20261123.9"}))
+            args = argparse.Namespace(channel="nightly", draft=False, public_key="", candidate=folder, commit="b" * 40, version="")
+            broken = mock.Mock(return_value="main's last whole-workspace CI run, of bbbbbbbbbbbb, ended failure")
+            with mock.patch.multiple(release, repository=mock.Mock(return_value="owner/repo"), git=mock.Mock(return_value=""),
+                                     same_workflows=mock.Mock(), whole_run_state=broken, preflight=mock.Mock(side_effect=AssertionError)):
+                with self.assertRaisesRegex(release.Refused, "ended failure; the candidate is kept"):
+                    release.publish(args)
+
     def test_a_scheduled_nightly_is_due_once_a_utc_day_and_a_dispatched_one_whenever_asked(self):
-        today = f"{datetime.datetime.now(datetime.UTC):%Y%m%d}"
-        fresh = mock.Mock(return_value={"commit": "a" * 40, "version": f"1.4.3-nightly.{today}.900"})
+        today = f"{datetime.datetime.now(datetime.UTC):%Y-%m-%d}"
+        fresh = mock.Mock(return_value={"commit": "a" * 40, "version": "1.4.3-nightly.20000101.900", "pub_date": f"{today}T00:40:00Z"})
         self.assertEqual(self.resolve(read_feed=fresh)["due"], "false")
         self.assertEqual(self.resolve(read_feed=fresh, scheduled=False)["due"], "true")
-        self.assertFalse(release.built_today({"version": "1.4.3-nightly.20261121.900"}, datetime.datetime(2026, 11, 22)))
-        self.assertTrue(release.built_today({"version": "1.4.3-nightly.20261122.900"}, datetime.datetime(2026, 11, 22)))
-        self.assertFalse(release.built_today(None, datetime.datetime(2026, 11, 22)))
+        built_yesterday = {"version": "1.4.3-nightly.20261121.900", "pub_date": "2026-11-22T00:40:00Z"}
+        self.assertTrue(release.published_today(built_yesterday, datetime.datetime(2026, 11, 22, 0, 41)))
+        self.assertFalse(release.published_today(built_yesterday, datetime.datetime(2026, 11, 23)))
+        self.assertFalse(release.published_today(None, datetime.datetime(2026, 11, 22)))
 
     def test_a_named_nightly_commit_needs_green_ci_and_changes_since_the_feeds(self):
         self.assertEqual(self.resolve(sha="b" * 40)["commit"], "b" * 40)
@@ -292,11 +306,13 @@ class Resolve(unittest.TestCase):
     def test_the_newest_green_commit_passes_by_a_tip_still_in_ci_and_one_whose_workflows_differ(self):
         line = mock.Mock(return_value="e\nd\nc\nb")
         states = {"e": "its CI run is still going", "d": "its Comments run is still going", "c": None, "b": None}
-        with mock.patch.multiple(release, git=line, ci_state=mock.Mock(side_effect=lambda repo, sha: states[sha]),
-                                 workflows_differ=mock.Mock(side_effect=lambda sha: [".github/workflows/ci.yml"] if sha == "c" else [])):
+        trees = answers("main\nmain\nmain\nolder\nmain\n")
+        with mock.patch.multiple(release, git=line, run=trees, ci_state=mock.Mock(side_effect=lambda repo, sha: states[sha])):
             self.assertEqual(release.newest_green("owner/repo", "a"), "b")
         line.assert_called_once_with("rev-list", "--first-parent", "origin/main", "^a")
-        with mock.patch.multiple(release, git=mock.Mock(return_value="e"), workflows_differ=mock.Mock(return_value=[]),
+        self.assertEqual(trees.call_args.kwargs["data"], "origin/main:.github/workflows\ne:.github/workflows\nd:.github/workflows\n"
+                         "c:.github/workflows\nb:.github/workflows\n")
+        with mock.patch.multiple(release, git=mock.Mock(return_value="e"), run=answers("main\nmain\n"),
                                  ci_state=mock.Mock(return_value="its CI run has not started")):
             self.assertIsNone(release.newest_green("owner/repo", None))
 

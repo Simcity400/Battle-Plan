@@ -113,6 +113,7 @@ class Job:
     shards: int
     warm: tuple
     dependents: bool
+    manifest: str
     definition: str
 
 
@@ -142,6 +143,7 @@ def load_pipeline(text):
             report=table.get("report", ""),
             not_run=tuple((reason, rule.get("panic", ""), tuple(rule.get("crates", ()))) for reason, rule in table.get("not-run", {}).items()),
             shards=table.get("shards", 0), warm=tuple(table.get("warm", ())), dependents=table.get("dependents", True),
+            manifest=table.get("manifest", ""),
             definition=json.dumps([table, data["toolchain"].get(table["toolchain"]), groups.get(table.get("group"))], sort_keys=True))
         problems = [f"tier {job.tier!r}"] if job.tier not in tiers else []
         problems += [f"kind {job.kind!r}"] if job.kind not in KINDS else []
@@ -244,6 +246,28 @@ def crates_from_manifests(root):
     return crates
 
 
+def manifest_reach(root, manifest, crates):
+    """The workspace crates a manifest outside the workspace builds: its path dependencies of any
+    kind, and every library they build on, at any depth; None when it cannot be read."""
+    root, key = Path(root), lambda path: os.path.normcase(os.path.normpath(str(path)))
+    try:
+        data = tomllib.loads((root / manifest).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    folders = {key(root / crate.folder): crate.name for crate in crates.values()}
+    kinds = ("dependencies", "dev-dependencies", "build-dependencies")
+    sections = [data.get(kind, {}) for kind in kinds] + [target.get(kind, {}) for target in data.get("target", {}).values() for kind in kinds]
+    here = (root / manifest).parent
+    reach = {folders.get(key(here / spec["path"])) for section in sections for spec in section.values()
+             if isinstance(spec, dict) and "path" in spec} - {None}
+    pending = list(reach)
+    while pending:
+        for dep in crates[pending.pop()].libraries - reach:
+            reach.add(dep)
+            pending.append(dep)
+    return reach
+
+
 def crate_owner(crates):
     """path -> the crate whose folder holds it, or None; the deepest folder wins."""
     folders = {crate.folder: crate.name for crate in crates.values()}
@@ -339,8 +363,9 @@ class Context:
     workspace crates (None when the manifests could not be read), the pipeline, each job's
     definition at the base (None when the base has no readable pipeline, so every job runs),
     whether the run takes every job across everything it covers, whatever changed (main's nightly,
-    or a push to main with no green main commit to compare with), and whether a crates job takes
-    every crate above a changed one rather than its direct dependents (a push to main)."""
+    or a push to main with no green main commit to compare with), whether a crates job takes
+    every crate above a changed one rather than its direct dependents (a push to main), and the
+    workspace crates each job's `manifest` builds (None when it could not be read)."""
     tree: set
     changed: set
     crates: dict | None
@@ -348,6 +373,7 @@ class Context:
     definitions: dict | None = None
     everything: bool = False
     transitive: bool = False
+    manifests: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -384,7 +410,11 @@ def decide(job, ctx, tier):
 def decide_inputs(job, ctx):
     if job.kind == "crates":
         return decide_crates(job, ctx)
-    inputs = matcher(job.inputs)
+    patterns = job.inputs
+    if job.manifest:
+        reach = ctx.manifests.get(job.manifest) if ctx.crates else None
+        patterns += ("crates/**",) if reach is None else tuple(f"{ctx.crates[name].folder}/**" for name in sorted(reach))
+    inputs = matcher(patterns)
     wide = ctx.everything or widened(ctx, job)
     if job.kind == "files":
         pool = ctx.tree if wide else ctx.changed & ctx.tree
@@ -727,8 +757,10 @@ def plan(tier, base_ref, exact=False, everything=False):
     values = {"python": sys.executable, "node": shutil.which("node") or "node",
               "npm": shutil.which("npm.cmd") or shutil.which("npm") or "npm", "base": ratchet_base(base) or base}
     needs_crates = any(job.kind == "crates" for job in pipeline.jobs)
-    ctx = Context(read_tree(), changed_since(base), crates_from_manifests(ROOT) if needs_crates else {}, pipeline,
-                  definitions_at(base), everything=everything, transitive=tier != pipeline.tiers[0])
+    crates = crates_from_manifests(ROOT) if needs_crates or any(job.manifest for job in pipeline.jobs) else {}
+    manifests = {job.manifest: manifest_reach(ROOT, job.manifest, crates) for job in pipeline.jobs if job.manifest and crates}
+    ctx = Context(read_tree(), changed_since(base), crates, pipeline, definitions_at(base), everything=everything,
+                  transitive=tier != pipeline.tiers[0], manifests=manifests)
     decisions = [decide(job, ctx, tier) for job in pipeline.jobs]
     if not ratchet_base(base):
         decisions = [Decision(d.job, "not run", f"no commit to ratchet against: {base} is not one and HEAD has no parent")

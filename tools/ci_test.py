@@ -236,6 +236,7 @@ class Crates(unittest.TestCase):
                                          'test-unify = { path = "../test-unify" }\n',
                 "crates/test-unify/Cargo.toml": '[package]\nname = "test-unify"\n',
                 "crates/gone/Cargo.toml": '[package]\nname = "gone"\n',
+                "fuzz/Cargo.toml": '[package]\nname = "fuzz"\n[dependencies]\nt = { package = "top", path = "../crates/top" }\n',
             }
             for name, text in files.items():
                 Path(root, name).parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +248,19 @@ class Crates(unittest.TestCase):
             self.assertEqual(found["top"].deps, {"mid", "test-unify"})
             self.assertEqual(found["top"].libraries, {"mid"})
             self.assertEqual(found["core"].folder, "crates/core")
+            self.assertEqual(ci.manifest_reach(root, "fuzz/Cargo.toml", found), {"top", "mid"})
+            self.assertIsNone(ci.manifest_reach(root, "missing/Cargo.toml", found))
+        pipeline = ci.load_pipeline(PIPELINE + '[[job]]\nname = "fuzz"\ngroup = "all"\ntier = "check"\ntoolchain = "rust"\n'
+                                               'inputs = ["fuzz/**"]\nmanifest = "fuzz/Cargo.toml"\ncommand = ["cargo", "check"]\n')
+        ctx = context(["crates/core/src/lib.rs"])
+        ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
+        ctx.manifests = {"fuzz/Cargo.toml": {"mid"}}
+        self.assertEqual(decide("fuzz", ctx).state, "skipped")
+        ctx.changed = {"crates/mid/src/lib.rs"}
+        self.assertEqual(decide("fuzz", ctx).state, "run")
+        ctx.manifests = {"fuzz/Cargo.toml": None}
+        ctx.changed = {"crates/core/src/lib.rs"}
+        self.assertEqual(decide("fuzz", ctx).state, "run")
 
 
 

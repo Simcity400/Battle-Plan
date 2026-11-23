@@ -23,8 +23,8 @@ as the workspace version, over SSH with the release deploy key the checkout carr
 `resolve` decides whether a release is due and from what. A nightly takes `--sha`, or the newest
 commit on main after the nightly feed's whose CI is green, and is due when there is one, unless
 PAUSE_NIGHTLY is true, another nightly release run is going or main's last whole-workspace CI run
-failed; a scheduled one is also due at most once a UTC day, by the build date in the feed's
-version. A stable
+failed or is going; a scheduled one is also due at most once a UTC day, by the date its feed was
+published. A stable
 takes the commit the nightly feed offers unless `--sha` names one. A preview, a draft with no feed,
 takes main's head or `--sha`. `resolve --prepare` builds a stable candidate ahead, so its release
 only promotes. `publish --draft` is the dry run: everything goes to a new draft
@@ -94,8 +94,9 @@ def say(text):
 
 
 
-def run(command, cwd=ROOT, env=None, check=True, capture=True):
-    done = subprocess.run([str(part) for part in command], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+def run(command, cwd=ROOT, env=None, check=True, capture=True, data=None):
+    done = subprocess.run([str(part) for part in command], cwd=cwd, env=env, input=data,
+                          stdin=None if data is not None else subprocess.DEVNULL,
                           capture_output=capture, text=True, encoding="utf-8", errors="replace")
     if check and done.returncode != 0:
         told = (done.stderr or done.stdout or "").strip()[-2000:] if capture else "see the output above"
@@ -631,25 +632,30 @@ def newest_green(repo, since):
     whose CI is green and whose workflows are main's, or None. Main's tip is usually still in CI,
     and a replaced push never turns green, so a nightly takes the newest commit that did."""
     line = git("rev-list", "--first-parent", "origin/main", *([f"^{since}"] if since else [])).split()
-    return next((commit for commit in line if not workflows_differ(commit) and ci_state(repo, commit) is None), None)
+    trees = run(["git", "cat-file", "--batch-check=%(objectname)"], data="".join(
+        f"{commit}:.github/workflows\n" for commit in ["origin/main", *line])).stdout.split("\n")
+    main, own = trees[0], dict(zip(line, trees[1:]))
+    return next((commit for commit in line if own[commit] == main and ci_state(repo, commit) is None), None)
 
 
 def whole_run_state(repo):
     """Why main's last whole-workspace CI run, the scheduled one, bars a nightly, or None when it
     passed or none has run. A push's run tests only what changed since the last green commit, so a
-    break only the whole run sees holds every nightly until a whole run passes again."""
+    break only the whole run sees holds every nightly until a whole run passes again; a run still
+    going holds them too, because a retried run shows only its newest attempt."""
     runs = json.loads(run(["gh", "api", f"repos/{repo}/actions/workflows/{CI_WORKFLOW}/runs?branch=main&event=schedule"
-                           "&status=completed&per_page=20"]).stdout)["workflow_runs"]
+                           "&per_page=100"]).stdout)["workflow_runs"]
     last = next((found for found in runs if found["conclusion"] != "cancelled"), None)
+    if last and last["status"] != "completed":
+        return f"main's whole-workspace CI run of {last['head_sha'][:12]} is still going"
     if last and last["conclusion"] not in SETTLED:
         return f"main's last whole-workspace CI run, of {last['head_sha'][:12]}, ended {last['conclusion']}"
     return None
 
 
-def built_today(feed, today):
-    """Whether the nightly feed's release was built on `today` (UTC), by the date its version carries."""
-    found = re.search(r"-nightly\.(\d{8})\.", (feed or {}).get("version", ""))
-    return bool(found) and found.group(1) >= f"{today:%Y%m%d}"
+def published_today(feed, today):
+    """Whether the nightly feed's release was published on `today` (UTC), by its feed's date."""
+    return (feed or {}).get("pub_date", "")[:10] == f"{today:%Y-%m-%d}"
 
 
 def nightly_going(repo):
@@ -683,7 +689,7 @@ def resolve(args):
         if not args.draft and (going := nightly_going(repo)):
             return not_yet(f"nightly release run {going} is going")
         feed = read_feed(repo, "nightly")
-        if args.scheduled and built_today(feed, datetime.datetime.now(datetime.UTC)):
+        if args.scheduled and published_today(feed, datetime.datetime.now(datetime.UTC)):
             say(f"Today's nightly, {feed['version']}, is out; the next is due tomorrow (UTC).")
             return outputs(found, args.github_output) or 0
         if not args.draft and (why := whole_run_state(repo)):
@@ -839,7 +845,9 @@ def publish(args):
                       f"{args.version or 'release'} of {args.commit[:12]} that was resolved.")
     git("fetch", "--quiet", "origin", "main")
     same_workflows(args.commit)
-    public_key = Path(args.public_key).read_text(encoding="utf-8") if args.public_key else chosen["updater_key"]
+    if channel == "nightly" and not draft and (why := whole_run_state(repo)):
+        raise Refused(f"{why}; the candidate is kept, and a later nightly publishes it or a newer one.")
+    public_key =Path(args.public_key).read_text(encoding="utf-8") if args.public_key else chosen["updater_key"]
     with clock.step("Preflight"):
         preflight(draft, public_key)
         authenticode = authenticode_enabled(False)
