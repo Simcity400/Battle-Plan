@@ -31,7 +31,7 @@ export type SubStatus = 'pending' | 'followed' | 'refused' | 'failed';
 
 interface SubState {
   id: number; key: string; lane: number; channel: Channel; route: RouteState; holders: number; status: SubStatus; reason?: string; error?: Failure;
-  widgets: Set<number>; released: boolean;
+  widgets: Map<number, number>; released: boolean;
 }
 
 interface RouteState {
@@ -429,12 +429,12 @@ export class Pipeline {
     let sub = this.subs.get(key);
     if (!sub) {
       const id = this.nextSub[widget.lane]!++ * this.lanes + widget.lane;
-      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', widgets: new Set(), released: false };
+      sub = { id, key, lane: widget.lane, channel, route, holders: 0, status: 'pending', widgets: new Map(), released: false };
       this.subs.set(key, sub); this.byId.set(id, sub);
       this.register(sub, query, product);
     }
     sub.holders++;
-    sub.widgets.add(widgetId);
+    sub.widgets.set(widgetId, (sub.widgets.get(widgetId) ?? 0) + 1);
     const was = widget.subs.get(token);
     widget.subs.set(token, sub.id);
     if (was !== undefined) this.release(was, widgetId);
@@ -456,7 +456,11 @@ export class Pipeline {
   private release(id: number, widget: number) {
     const sub = this.byId.get(id);
     if (!sub) return;
-    sub.widgets.delete(widget);
+    const count = sub.widgets.get(widget);
+    if (count !== undefined) {
+      if (count <= 1) sub.widgets.delete(widget);
+      else sub.widgets.set(widget, count - 1);
+    }
     if (--sub.holders > 0) return;
     this.subs.delete(sub.key); this.byId.delete(id);
     sub.released = true;
@@ -576,18 +580,21 @@ export class Pipeline {
       : this.ask('follow', { id: sub.id, query, branchId: sub.route.branch, clock: sub.route.offset, lane: sub.lane, lanes: this.lanes }, sub.route))
       .then(reply => {
         const data = reply as { available?: boolean; reason?: string; route?: number } | null;
-        if (this.closed || sub.released) { if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {}); return; }
+        if (this.closed || sub.released || sub.status === 'failed' || sub.status === 'refused') {
+          if (data?.available === true) void this.ask('unfollow', { id: sub.id }, sub.route, new AbortController().signal).catch(() => {});
+          return;
+        }
         if (data?.available !== true || !Number.isInteger(data.route)) { this.refuse(sub, data?.reason ?? 'The service did not say whether it follows this'); return; }
         const first = !this.holds(sub.route), moved = sub.route.native !== null && sub.route.native !== data.route;
         if (moved) sub.route.page = this.nextRoute++;
         sub.status = 'followed';
         sub.route.native = data.route!;
         this.host.lanes[sub.lane]!.postMessage({ type: 'route', sub: sub.id, route: sub.route.page, native: data.route!, seek: this.page.seek, offset: sub.route.offset });
-        for (const widget of sub.widgets) this.page.mountRoute(widget, sub.route.page);
+        for (const widget of sub.widgets.keys()) this.page.mountRoute(widget, sub.route.page);
         if (first || moved) sub.route.told = null;
         this.anchor();
       }, error => {
-        if (this.closed || sub.released) return;
+        if (this.closed || sub.released || sub.status === 'failed' || sub.status === 'refused') return;
         const failure = asFailure(error);
         if (error instanceof RefusedError) this.refuse(sub, failure.message);
         else this.fail(sub, failure);
@@ -597,14 +604,14 @@ export class Pipeline {
   private refuse(sub: SubState, reason: string) {
     if (this.closed) return;
     sub.status = 'refused'; sub.reason = reason; sub.error = undefined;
-    for (const widget of sub.widgets) this.page.name(widget, 'refused', reason);
+    for (const widget of sub.widgets.keys()) this.page.name(widget, 'refused', reason);
     this.flush();
   }
 
   private fail(sub: SubState, failure: Failure) {
     if (this.closed) return;
     sub.status = 'failed'; sub.reason = failure.message; sub.error = failure;
-    for (const widget of sub.widgets) this.page.name(widget, 'failed', failure.message);
+    for (const widget of sub.widgets.keys()) this.page.name(widget, 'failed', failure.message);
     this.flush();
   }
 

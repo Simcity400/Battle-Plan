@@ -1,4 +1,4 @@
-import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type FollowAnswer, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
+import { Facts, changeWindow, followsChannel, joinComponents, samePicture, type Channel, type PanelRecord, type Picture, type Window } from '../dashboard/follow/facts.ts';
 import { SAME, type Ack, type Bitmap, type Entry, type FrameRequest, type Refusal } from '../dashboard/follow/page.ts';
 import { parseAnswer, parseDatedPanelRecord, parseFollowedFrame, type FollowedAnswer } from '../dashboard/follow/message.ts';
 import { patchAnswer } from '../dashboard/follow/tables.ts';
@@ -117,6 +117,34 @@ const panelRecordsCharge = (bytes: Uint8Array) => {
   return total;
 };
 
+const followRecordSubs = (bytes: Uint8Array): number[] => {
+  if (bytes.byteLength < 24) return [];
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), out: number[] = [];
+  for (let i = 0, at = 24, count = data.getUint32(12, true); i < count; i++) {
+    if (at + 16 > bytes.byteLength) break;
+    const id = data.getUint32(at, true), length = data.getUint32(at + 8, true);
+    if (at + 16 + length > bytes.byteLength) break;
+    if (id < CELL) out.push(id);
+    at += 16 + length;
+  }
+  return out;
+};
+
+const panelRecordSubs = (bytes: Uint8Array): number[] => {
+  if (bytes.byteLength < 24) return [];
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), out: number[] = [];
+  for (let i = 0, at = 24, count = data.getUint32(8, true); i < count; i++) {
+    if (at + 16 > bytes.byteLength) break;
+    const id = data.getUint32(at, true), kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true), size = ((16 + length + 7) & ~7);
+    if (at + size > bytes.byteLength) break;
+    if (kind !== 4 && id < CELL) out.push(id);
+    at += size;
+  }
+  return out;
+};
+
+const isWholeFollowRecord = (record: Uint8Array) => record.byteLength > 16 && record[16] !== 3;
+
 const refusalOf = (picture: Picture<Value>): string | null => {
   const value = picture.parts[0]!.value;
   if (value.kind === 'answer') return value.answer.kind === 'notRecorded' ? value.answer.reason : null;
@@ -184,7 +212,9 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private earlyPanels: { native: number; seek: number; bytes: Uint8Array; completedOnly?: number }[] = [];
   private earlyBytes = 0;
   private readonly newestFutureSeek = new Map<number, number>();
+  private readonly newestUnboundSeek = new Map<number, number>();
   private readonly earlyOverflow = new Map<number, number>();
+  private readonly overflowedSubs = new Map<number, { seek: number; subs: Set<number> }>();
   private heldBytes = 0;
   private readonly heldIds = new Map<number, number>();
   private readonly lost = new Map<number, number>();
@@ -203,6 +233,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private readonly host: LaneHost<B>;
 
   constructor(host: LaneHost<B>) { this.host = host; }
+
+  retainedBytes(): number {
+    let bytes = this.freed + this.facts.retainedBytes();
+    for (const item of this.held) bytes += item.size;
+    for (const item of this.early) bytes += recordsCharge(item.bytes);
+    for (const item of this.earlyPanels) bytes += panelRecordsCharge(item.bytes);
+    return bytes;
+  }
 
   private time() { return this.host.clock?.() ?? now(); }
   private content = () => `${this.host.lane}:${this.nextContent++}`;
@@ -396,15 +434,52 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (channel === 'pinned') this.facts.follow(sub, -1, 'pinned');
   }
 
+  private retireRoute(route: number) {
+    const native = this.natives.get(route);
+    this.natives.delete(route);
+    if (native !== undefined && this.routes.get(native) === route) this.routes.delete(native);
+    this.offsets.delete(route);
+    this.told.delete(route);
+    this.routeConfirmedFollowed.delete(route);
+    this.toldConfirmedFollowed.delete(route);
+    this.routeConfirmedPanel.delete(route);
+    this.toldConfirmedPanel.delete(route);
+    this.routeWidgets.delete(route);
+    this.failed.delete(route);
+    this.facts.retireRoute(route);
+  }
+
+  private routeHasSubs(route: number) {
+    for (const sub of this.subs.values()) if (sub.route === route) return true;
+    return false;
+  }
+
   bindRoute(sub: number, route: number, native: number, seek = 0, offset = 0) {
     const held = this.subs.get(sub);
     if (!held || held.route !== null) return;
+    const prevRoute = this.routes.get(native);
     held.route = route;
     this.routes.set(native, route);
     this.natives.set(route, native);
     this.offsets.set(route, offset);
+    if (prevRoute !== undefined && prevRoute !== route && !this.routeHasSubs(prevRoute)) this.retireRoute(prevRoute);
     this.facts.follow(sub, route, held.channel);
     this.facts.stamp(route, seek);
+    const currentSeek = this.facts.generation(route).seek;
+    const newestUnbound = this.newestUnboundSeek.get(native);
+    this.newestUnboundSeek.delete(native);
+    if (newestUnbound !== undefined && newestUnbound > currentSeek) {
+      this.newestFutureSeek.set(native, Math.max(this.newestFutureSeek.get(native) ?? 0, newestUnbound));
+    }
+    const ov = this.overflowedSubs.get(native);
+    if (ov) {
+      if (ov.seek < currentSeek) this.overflowedSubs.delete(native);
+      else if (ov.seek === currentSeek && ov.subs.has(sub)) {
+        ov.subs.delete(sub);
+        if (!ov.subs.size) this.overflowedSubs.delete(native);
+        this.failSub(sub, EARLY_OVERFLOW);
+      }
+    }
     const set = this.subWidgets.get(sub);
     if (set) {
       let rset = this.routeWidgets.get(route);
@@ -424,18 +499,23 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   unfollow(sub: number) {
+    const route = this.subs.get(sub)?.route ?? null;
     this.subs.delete(sub);
     this.lost.delete(sub);
     this.limitedSubs.delete(sub);
     this.failedSubs.delete(sub);
     this.prunableNow.delete(sub);
     this.prunableAt.delete(sub);
+    for (const [native, ov] of [...this.overflowedSubs]) {
+      if (ov.subs.delete(sub) && !ov.subs.size) this.overflowedSubs.delete(native);
+    }
     this.forget(sub);
     for (const cell of this.facts.unfollow(sub)) {
       this.gone.add(cell);
       this.limitedSubs.delete(cell);
       this.forget(cell);
     }
+    if (route !== null && !this.routeHasSubs(route)) this.retireRoute(route);
     this.after();
   }
 
@@ -499,6 +579,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   stream(route: number, seek: number, target: number) {
+    if (!this.natives.has(route)) return;
     this.failed.delete(route);
     this.routeConfirmedFollowed.delete(route);
     this.toldConfirmedFollowed.delete(route);
@@ -574,7 +655,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private hold(item: Held) {
-    if (item.id >= CELL && this.gone.has(item.id) || this.failedSubs.has(item.id) || this.lost.has(item.id)) { this.freed += item.size; return; }
+    if (this.failedSubs.has(item.id) || this.lost.has(item.id)) { this.freed += item.size; return; }
     if (this.heldBytes + item.size + HELD_COST > BUFFER) {
       this.freed += item.size;
       this.forget(item.id);
@@ -656,7 +737,34 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private earlyLimit() { return this.host.earlyBuffer ?? BUFFER; }
 
+  private dropHeldBefore(native: number, seek: number) {
+    const dropped = this.held.filter(item => item.native === native && item.seek < seek);
+    if (!dropped.length) return;
+    this.release(dropped);
+    this.held = this.held.filter(item => !dropped.includes(item));
+    this.reindex();
+  }
+
+  private acceptUnboundSeek(native: number, seek: number, charge: number): boolean {
+    const newest = this.newestUnboundSeek.get(native);
+    if (newest !== undefined && seek < newest) {
+      this.freed += charge;
+      return false;
+    }
+    if (newest === undefined || seek > newest) {
+      this.newestUnboundSeek.set(native, seek);
+      this.dropHeldBefore(native, seek);
+      const seeks = this.unbound.get(native);
+      if (seeks) {
+        for (const s of [...seeks.keys()]) if (s < seek) seeks.delete(s);
+        if (!seeks.size) this.unbound.delete(native);
+      }
+    }
+    return true;
+  }
+
   private dropEarlyBefore(native: number, seek: number) {
+    this.dropHeldBefore(native, seek);
     const keepFollow: typeof this.early = [];
     for (const item of this.early) {
       if (item.native === native && item.seek < seek) {
@@ -675,7 +783,13 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     this.earlyPanels = keepPanels;
   }
 
-  private acceptFutureSeek(native: number, seek: number, charge: number): boolean {
+  private recordOverflowSubs(native: number, seek: number, ids: Iterable<number>) {
+    let entry = this.overflowedSubs.get(native);
+    if (!entry || entry.seek !== seek) this.overflowedSubs.set(native, entry = { seek, subs: new Set() });
+    for (const id of ids) if (id < CELL) entry.subs.add(id);
+  }
+
+  private acceptFutureSeek(native: number, seek: number, charge: number, subs: readonly number[]): boolean {
     const newest = this.newestFutureSeek.get(native);
     if (newest !== undefined && seek < newest) {
       this.freed += charge;
@@ -686,19 +800,24 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       this.dropEarlyBefore(native, seek);
       const overflowed = this.earlyOverflow.get(native);
       if (overflowed !== undefined && overflowed < seek) this.earlyOverflow.delete(native);
+      const ovSubs = this.overflowedSubs.get(native);
+      if (ovSubs && ovSubs.seek < seek) this.overflowedSubs.delete(native);
     }
     if (this.earlyOverflow.get(native) === seek) {
+      this.recordOverflowSubs(native, seek, subs);
       this.freed += charge;
       return false;
     }
     return true;
   }
 
-  private overflowEarly(native: number, seek: number) {
+  private overflowEarly(native: number, seek: number, extraSubs: readonly number[]) {
     this.earlyOverflow.set(native, seek);
+    this.recordOverflowSubs(native, seek, extraSubs);
     const keepFollow: typeof this.early = [];
     for (const item of this.early) {
       if (item.native === native && item.seek === seek) {
+        this.recordOverflowSubs(native, seek, followRecordSubs(item.bytes));
         this.earlyBytes -= item.bytes.byteLength + HELD_COST;
         this.freed += recordsCharge(item.bytes);
       } else keepFollow.push(item);
@@ -707,20 +826,29 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const keepPanels: typeof this.earlyPanels = [];
     for (const item of this.earlyPanels) {
       if (item.native === native && item.seek === seek) {
+        this.recordOverflowSubs(native, seek, panelRecordSubs(item.bytes));
         this.earlyBytes -= item.bytes.byteLength + HELD_COST;
         this.freed += panelRecordsCharge(item.bytes);
       } else keepPanels.push(item);
     }
     this.earlyPanels = keepPanels;
+    const droppedHeld = this.held.filter(item => item.native === native && item.seek === seek);
+    if (droppedHeld.length) {
+      this.recordOverflowSubs(native, seek, droppedHeld.map(item => item.id));
+      this.release(droppedHeld);
+      this.held = this.held.filter(item => !droppedHeld.includes(item));
+      this.reindex();
+    }
   }
 
   private queueEarlyFollow(native: number, seek: number, bytes: Uint8Array, stamp?: number) {
     const charge = recordsCharge(bytes);
-    if (!this.acceptFutureSeek(native, seek, charge)) return;
+    const subs = followRecordSubs(bytes);
+    if (!this.acceptFutureSeek(native, seek, charge, subs)) return;
     const cost = bytes.byteLength + HELD_COST;
     if (this.earlyBytes + cost > this.earlyLimit()) {
       this.freed += charge;
-      this.overflowEarly(native, seek);
+      this.overflowEarly(native, seek, subs);
       return;
     }
     this.earlyBytes += cost;
@@ -729,7 +857,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
 
   private queueEarlyPanel(native: number, seek: number, bytes: Uint8Array) {
     const charge = panelRecordsCharge(bytes);
-    if (!this.acceptFutureSeek(native, seek, charge)) return;
+    const subs = panelRecordSubs(bytes);
+    if (!this.acceptFutureSeek(native, seek, charge, subs)) return;
     const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const count = bytes.byteLength >= 24 ? data.getUint32(8, true) : 0;
     const isCompletedOnly = count === 1 && bytes.byteLength >= 40 && data.getUint8(24 + 8) === 4;
@@ -749,7 +878,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
         return;
       }
       const cost = bytes.byteLength + HELD_COST;
-      if (this.earlyBytes + cost > this.earlyLimit()) { this.overflowEarly(native, seek); return; }
+      if (this.earlyBytes + cost > this.earlyLimit()) { this.overflowEarly(native, seek, subs); return; }
       this.earlyBytes += cost;
       this.earlyPanels.push({ native, seek, bytes, completedOnly: completed });
       return;
@@ -757,7 +886,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const cost = bytes.byteLength + HELD_COST;
     if (this.earlyBytes + cost > this.earlyLimit()) {
       this.freed += charge;
-      this.overflowEarly(native, seek);
+      this.overflowEarly(native, seek, subs);
       return;
     }
     this.earlyBytes += cost;
@@ -773,13 +902,22 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const route = this.routes.get(native);
       if (route === undefined) continue;
       const current = this.facts.generation(route).seek;
-      if (seek < current) this.earlyOverflow.delete(native);
-      else if (seek === current) {
+      if (seek < current) {
         this.earlyOverflow.delete(native);
+        if (this.overflowedSubs.get(native)?.seek === seek) this.overflowedSubs.delete(native);
+      } else if (seek === current) {
+        this.earlyOverflow.delete(native);
+        const ov = this.overflowedSubs.get(native);
         for (const [subId, sub] of this.subs) if (sub.route === route) {
+          ov?.subs.delete(subId);
           this.failSub(subId, EARLY_OVERFLOW);
         }
+        if (ov && !ov.subs.size) this.overflowedSubs.delete(native);
       }
+    }
+    for (const [native, ov] of [...this.overflowedSubs]) {
+      const route = this.routes.get(native);
+      if (route !== undefined && ov.seek < this.facts.generation(route).seek) this.overflowedSubs.delete(native);
     }
     const duePanels = this.earlyPanels.filter(item => (this.current(item) ?? 1) <= 0);
     if (duePanels.length) {
@@ -815,36 +953,59 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       }
       const route = this.routes.get(item.native)!, only = new Set([item.id]);
       if (item.kind === 'follow') {
-        const limited = new Map<number, number>(), answers: FollowAnswer<Value>[] = [], latest = new Map<number, AnswerValue>();
+        const limited = new Map<number, number>();
+        let seen = false;
         for (const record of item.records) {
+          const size = charged(record);
+          if (this.failedSubs.has(item.id) || (item.id >= CELL && !this.facts.owns(item.id))) {
+            this.freed += size;
+            continue;
+          }
           const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
-          if (!view.getUint32(8, true)) { limited.set(item.id, view.getInt32(4, true)); this.freed += charged(record); this.limitedSubs.add(item.id); }
-          else { const answer = this.answer(item.id, record, charged(record), false, latest); if (answer) answers.push(answer); }
+          if (!view.getUint32(8, true)) {
+            limited.set(item.id, view.getInt32(4, true));
+            this.freed += size;
+            this.limitedSubs.add(item.id);
+          } else if (this.commitFollowAnswer(route, item.seek, item.id, record, size, seen)) {
+            seen = true;
+          }
         }
         if (this.failedSubs.has(item.id) || (item.id >= CELL && !this.facts.owns(item.id))) continue;
-        this.facts.followed(route, item.seek, { hour: item.hour, answers, limited }, only);
+        this.facts.confirmFollowed(route, item.seek, item.hour, limited, only);
         this.markSub(item.id, true);
       } else {
-        const parsed = item.records.flatMap(record => this.panel(record) ?? []);
+        for (const record of item.records) {
+          if (this.failedSubs.has(item.id)) {
+            this.freed += 2 * record.length;
+            continue;
+          }
+          const made = this.panel(record);
+          if (made) {
+            this.facts.panels(route, item.seek, [made], undefined, only);
+            this.markSub(item.id, made.kind !== 'stands');
+          }
+        }
         if (this.failedSubs.has(item.id)) continue;
-        this.facts.panels(route, item.seek, parsed, item.completed, only);
-        this.markSub(item.id);
+        if (item.completed !== undefined) {
+          this.facts.panels(route, item.seek, [], item.completed, only);
+          this.markSub(item.id, false);
+        }
       }
     }
     this.replay();
   }
 
-  private answer(id: number, record: Uint8Array, bytes: number, reset: boolean, latest: Map<number, AnswerValue>): FollowAnswer<Value> | null {
+  private commitFollowAnswer(route: number, seek: number, id: number, record: Uint8Array, bytes: number, extendPrevious: boolean): boolean {
     if (this.failedSubs.has(id) || (id >= CELL && !this.facts.owns(id))) {
       this.freed += bytes;
-      return null;
+      return false;
     }
     const view = new DataView(record.buffer, record.byteOffset, record.byteLength), at = view.getInt32(4, true);
     let value: AnswerValue;
     try {
       const parsed = parseAnswer(record.subarray(16, 16 + view.getUint32(8, true)));
       if (parsed.kind === 'changed') {
-        const base = latest.get(id) ?? (reset ? undefined : this.facts.latest(id));
+        const base = this.facts.latest(id);
         if (!base || base.kind !== 'answer') throw new Error('Changed rows arrived without the table they change.');
         const patched = patchAnswer(base.answer, parsed);
         value = { kind: 'answer', answer: patched };
@@ -855,10 +1016,11 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     } catch (error) {
       this.freed += bytes;
       this.failSub(id, error instanceof Error ? error.message : String(error));
-      return null;
+      return false;
     }
-    latest.set(id, value);
-    return { id, hour: at, value, bytes };
+    this.facts.addFollowedAnswer(route, seek, { id, hour: at, value, bytes }, extendPrevious);
+    this.markSub(id, true);
+    return true;
   }
 
   private follows(bytes: Uint8Array, stamped?: number) {
@@ -871,6 +1033,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const count = message.count;
     if (order === -1) { this.freed += recordsCharge(bytes); return; }
     if (order === 1) { this.queueEarlyFollow(message.route, message.seek, bytes, stamped); return; }
+    if (order === null && !this.acceptUnboundSeek(message.route, message.seek, recordsCharge(bytes))) return;
     if (message.reset && order === null) this.unboundReset(message.route, message.seek);
     else if (message.reset) {
       this.resets.set(message.route, (this.resets.get(message.route) ?? 0) + 1);
@@ -880,45 +1043,61 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     if (stamp !== undefined) this.resets.set(message.route, stamp);
     const route = this.routes.get(message.route);
     const limited = new Map<number, number>(), unbound = new Map<number, { records: Uint8Array[]; size: number }>();
-    const mine: [number, number, number][] = [];
+    const seenInPacket = new Set<number>();
+    if (route !== undefined) {
+      const behind = stamped !== undefined && (this.applied.get(message.route) ?? stamped) < stamped, reset = message.reset || behind;
+      if (stamped !== undefined) this.applied.set(message.route, stamped);
+      if (reset) {
+        this.routeConfirmedFollowed.delete(route);
+        this.toldConfirmedFollowed.delete(route);
+        for (const [subId, sub] of this.subs) if (sub.route === route && sub.channel === 'followed') {
+          this.limitedSubs.delete(subId);
+        }
+        for (const [subId, sub] of this.subs) if (sub.route === route && sub.channel === 'panel') {
+          for (const cell of this.facts.usesOf(subId) ?? []) {
+            this.limitedSubs.delete(cell);
+          }
+        }
+        this.facts.resetFollowed(route, message.seek);
+        this.markRoute(route, 'followed');
+      }
+    }
     let at = 24;
     for (let i = 0; i < count; i++) {
       const id = data.getUint32(at, true), hour = data.getInt32(at + 4, true), length = data.getUint32(at + 8, true), record = bytes.subarray(at, at + 16 + length);
       const size = charged(record);
-      if (this.failedSubs.has(id)) { this.freed += size; }
-      else if (route === undefined || !this.known(id)) {
-        if (this.subs.has(id) || id >= CELL) {
+      at += 16 + length;
+      if (this.failedSubs.has(id)) { this.freed += size; continue; }
+      if (route === undefined || !this.known(id)) {
+        if (this.subs.has(id)) {
+          let own = unbound.get(id);
+          if (!own) unbound.set(id, own = { records: [], size: 0 });
+          own.records.push(record.slice()); own.size += size;
+        } else if (id >= CELL) {
+          if (this.gone.has(id)) {
+            if (length > 0 && isWholeFollowRecord(record)) this.gone.delete(id);
+            else { this.freed += size; continue; }
+          }
           let own = unbound.get(id);
           if (!own) unbound.set(id, own = { records: [], size: 0 });
           own.records.push(record.slice()); own.size += size;
         } else this.freed += size;
+        continue;
       }
-      else if (!length) { limited.set(id, hour); this.freed += size; }
-      else mine.push([id, at, length]);
-      at += 16 + length;
+      if (!length) {
+        limited.set(id, hour);
+        this.freed += size;
+        this.limitedSubs.add(id);
+        this.markSub(id, true);
+        continue;
+      }
+      if (this.commitFollowAnswer(route, message.seek, id, record, size, seenInPacket.has(id))) {
+        seenInPacket.add(id);
+      }
     }
     this.holdMessage('follow', message.route, message.seek, message.hour, unbound);
     if (route === undefined) return;
-    const behind = stamped !== undefined && (this.applied.get(message.route) ?? stamped) < stamped, reset = message.reset || behind;
-    if (stamped !== undefined) this.applied.set(message.route, stamped);
-    if (reset) {
-      this.routeConfirmedFollowed.delete(route);
-      this.toldConfirmedFollowed.delete(route);
-      for (const [subId, sub] of this.subs) if (sub.route === route && sub.channel === 'followed') {
-        this.limitedSubs.delete(subId);
-      }
-      for (const [subId, sub] of this.subs) if (sub.route === route && sub.channel === 'panel') {
-        for (const cell of this.facts.usesOf(subId) ?? []) {
-          this.limitedSubs.delete(cell);
-        }
-      }
-      this.markRoute(route, 'followed');
-    }
-    const latest = new Map<number, AnswerValue>();
-    const answers = mine.flatMap(([id, start, length]) => { const record = bytes.subarray(start, start + 16 + length); return this.answer(id, record, charged(record), reset, latest) ?? []; });
-    this.facts.followed(route, message.seek, { hour: message.hour, reset, answers, limited });
-    for (const answer of answers) this.markSub(answer.id, true);
-    for (const id of limited.keys()) { this.limitedSubs.add(id); this.markSub(id, true); }
+    this.facts.confirmFollowed(route, message.seek, message.hour, limited);
     for (const id of [...this.limitedSubs]) {
       const sub = this.subs.get(id);
       if (sub && sub.route === route && !limited.has(id)) {
@@ -978,35 +1157,44 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const order = this.current({ native, seek });
     if (order === -1) { this.freed += panelRecordsCharge(bytes); return; }
     if (order === 1) { this.queueEarlyPanel(native, seek, bytes); return; }
+    if (order === null && !this.acceptUnboundSeek(native, seek, panelRecordsCharge(bytes))) return;
     const route = this.routes.get(native);
     let at = 24, completed: number | undefined;
-    const mine: PanelRecord<Value>[] = [], unbound = new Map<number, { records: Uint8Array[]; size: number }>();
+    const unbound = new Map<number, { records: Uint8Array[]; size: number }>();
     for (let i = 0; i < count; i++) {
       const id = data.getUint32(at, true), kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true);
       const size = ((16 + length + 7) & ~7);
-      if (kind === 4) completed = data.getInt32(at + 4, true);
-      else if (this.failedSubs.has(id)) { this.freed += 2 * size; }
-      else if (route === undefined || !this.known(id)) {
+      const start = at;
+      at += size;
+      if (kind === 4) {
+        completed = data.getInt32(start + 4, true);
+        if (route !== undefined) {
+          this.facts.panels(route, seek, [], completed);
+          const prev = this.routeConfirmedPanel.get(route) ?? -Infinity;
+          if (completed > prev) this.routeConfirmedPanel.set(route, completed);
+          for (const wid of this.nonOpenPanel) {
+            const widget = this.widgets.get(wid);
+            if (widget && this.routeOf(widget) === route) this.dirtyWidgets.add(wid);
+          }
+        }
+        continue;
+      }
+      if (this.failedSubs.has(id)) { this.freed += 2 * size; continue; }
+      if (route === undefined || !this.known(id)) {
         if (this.subs.has(id)) {
           let own = unbound.get(id);
           if (!own) unbound.set(id, own = { records: [], size: 0 });
-          own.records.push(bytes.slice(at, at + size)); own.size += 2 * size;
+          own.records.push(bytes.slice(start, start + size)); own.size += 2 * size;
         } else this.freed += 2 * size;
-      } else { const made = this.panel(bytes.subarray(at, at + size)); if (made) mine.push(made); }
-      at += size;
-    }
-    this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
-    if (route === undefined) return;
-    this.facts.panels(route, seek, mine, completed);
-    for (const record of mine) this.markSub(record.id, record.kind !== 'stands');
-    if (completed !== undefined) {
-      const prev = this.routeConfirmedPanel.get(route) ?? -Infinity;
-      if (completed > prev) this.routeConfirmedPanel.set(route, completed);
-      for (const wid of this.nonOpenPanel) {
-        const widget = this.widgets.get(wid);
-        if (widget && this.routeOf(widget) === route) this.dirtyWidgets.add(wid);
+        continue;
+      }
+      const made = this.panel(bytes.subarray(start, start + size));
+      if (made) {
+        this.facts.panels(route, seek, [made]);
+        this.markSub(made.id, made.kind !== 'stands');
       }
     }
+    this.holdMessage('panels', native, seek, completed ?? data.getInt32(12, true), unbound, completed);
   }
 
   frame(request: FrameRequest) {
@@ -1061,9 +1249,14 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const widget = this.widgets.get(refusal.widget);
       if (!widget) continue;
       if (widget.inflight?.id === refusal.id) widget.inflight = null;
+      if (!owner || owner.sent.binding !== widget.binding.generation) {
+        for (const sub of widget.subs) this.schedulePrune(sub);
+        this.syncWindowTracking(widget);
+        continue;
+      }
       if (refusal.reason === 'failed' || refusal.reason === 'refused') widget.halted = widget.binding.generation;
       if (refusal.reason === 'kept content') widget.installed = null;
-      widget.parked = refusal.reason === 'uncovered' && owner ? owner.sent : null;
+      widget.parked = refusal.reason === 'uncovered' ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
       this.dirtyWidgets.add(widget.id);
       for (const sub of widget.subs) this.schedulePrune(sub);

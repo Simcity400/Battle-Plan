@@ -684,3 +684,219 @@ test('differential: M2 future-seek panel replay preserves exact panel coverage a
     }
   }
 });
+
+test('differential: Round 5 ordering hazards (same-packet valid+corrupt, reused cell answer-before-panel, unbound overflow, unbound superseded seek, stale refusal after switch, late registration after sub-failed, shared widget tokens, and credit invariant)', async () => {
+  const { managedInProcess, NATIVE: IN_PROC_NATIVE } = await import('./inProcess.fixture.ts');
+  const { installedEntry } = await import('./store.ts');
+  const { message: followMsg } = await import('./messages.fixture.ts');
+  const CELL_BASE = 0x8000_0400;
+  const followCharge = (bytes: Uint8Array) => {
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let total = 0;
+    for (let i = 0, at = 24, count = data.getUint32(12, true); i < count; i++) {
+      const length = data.getUint32(at + 8, true);
+      total += 16 + 2 * Math.max(length, data.getUint32(at + 12, true));
+      at += 16 + length;
+    }
+    return total;
+  };
+  const panelCharge = (bytes: Uint8Array) => {
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let total = 0;
+    for (let i = 0, at = 24, count = data.getUint32(8, true); i < count; i++) {
+      const kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true), size = ((16 + length + 7) & ~7);
+      if (kind !== 4) total += 2 * size;
+      at += size;
+    }
+    return total;
+  };
+  const panelWith = (cell: number, tag: string) => ({
+    shape: tag,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: cell }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+
+  for (let seed = 1; seed <= 25; seed++) {
+    const rnd = rng(0x6d31 + seed * 5381);
+    const released: number[] = [];
+    const subFailures: [number, string][] = [];
+    const widgetSubs = new Map<number, number[]>();
+    let holdCrop = false;
+    const pendingCrops: (() => void)[] = [];
+    const page = new Page<Fake>({ lanes: 1, post: (_lane, m: PageMessage) => {
+      if (m.type === 'frame') lane.frame(m); else if (m.type === 'stream') lane.stream(m.route, m.seek, m.target);
+    } });
+    const fields = fieldsView(() => (panel => (panel.data as { shape?: string } | undefined)?.shape));
+    const lane = new Lane<Fake>({
+      lane: 0, lanes: 1,
+      views: () => ({
+        paint: (input, state, content) => {
+          const p = fields.paint(input, state, content);
+          return { ...p, surfaces: [{ source: { width: 1, height: 1 }, content: `s:${input.subs.map(s => s.id).join(',')}:${input.pictures[0]!.h}` }] };
+        },
+      }),
+      crop: sources => new Promise<Fake[]>(resolve => {
+        const done = () => resolve(sources.map((): Fake => ({ closed: false, width: 1, close() { this.closed = true; } })));
+        if (holdCrop) pendingCrops.push(done); else done();
+      }),
+      present: p => page.offer(p),
+      release: bytes => released.push(bytes),
+      later: () => {},
+      earlyBuffer: 256,
+      fail: reason => { throw new Error(`seed ${seed}: lane failed: ${reason}`); },
+      failSub: (sub, reason) => {
+        subFailures.push([sub, reason]);
+        for (const [w, subs] of widgetSubs) if (subs.includes(sub)) page.name(w, 'failed', reason);
+      },
+      failWidget: (w, reason) => page.name(w, 'failed', reason),
+    });
+    let totalCharged = 0;
+    const totalReleased = () => released.reduce((a, b) => a + b, 0);
+    const checkCredit = (label: string) => assert.equal(totalReleased() + lane.retainedBytes(), totalCharged, `seed ${seed} ${label}`);
+    const sendF = (pkt: Uint8Array, label: string) => { totalCharged += followCharge(pkt); lane.receive('follow', pkt); checkCredit(label); };
+    const sendP = (pkt: Uint8Array, label: string) => { totalCharged += panelCharge(pkt); lane.receive('panels', pkt); checkCredit(label); };
+    const mountW = (w: number, sub: number, channel: 'followed' | 'panel', bindSeek?: number) => {
+      lane.follow(sub, channel, channel === 'panel' ? 'demo' : undefined);
+      widgetSubs.set(w, [sub]);
+      lane.mount(w, [sub], 'fields');
+      page.mount(w, { route: ROUTE, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+      lane.bind(w, { generation: 1, surfaces: [{ width: 1, height: 1, dpr: 1 }], offset: 0, pin: null });
+      if (bindSeek !== undefined) { lane.bindRoute(sub, ROUTE, NATIVE, bindSeek); checkCredit(`bind ${sub}`); }
+    };
+    const pump = async (hour: number, seek: number) => {
+      page.publish(hour, { playing: false, seek });
+      await flush();
+      while (pendingCrops.length) pendingCrops.shift()!();
+      await flush(); page.frame(); await flush(); page.frame();
+      checkCredit(`pump ${hour}:${seek}`);
+    };
+
+    const scenario = seed % 5;
+    if (scenario === 0) {
+      mountW(1, 3, 'followed', 0);
+      mountW(2, 5, 'followed', 0);
+      sendF(message(10, 0, false, [
+        { id: 3, hour: 10, body: answerBody({ keys: [1n], columns: 1, values: [10n] }) },
+        { id: 3, hour: 10, body: answerBody({ keys: [9n], columns: 1, values: [99n], changed: true }) },
+        { id: 5, hour: 10, body: answerBody({ keys: [1n], columns: 1, values: [50n] }) },
+      ]), 'same-packet follow valid+corrupt');
+      await pump(10, 0);
+      assert.equal(page.view(1).mode, 'failed');
+      assert.equal(page.view(2).mode, 'picture');
+      await pump(10, 1);
+      assert.equal(page.view(1).mode, 'failed', 'failed sub never carries pre-fault same-packet table across seek');
+    } else if (scenario === 1) {
+      const cell = (CELL_BASE | (seed * 2 + 1)) >>> 0;
+      mountW(1, 3, 'panel', 0);
+      const badBatch = panelPacket([
+        { id: 3, hour: 10, kind: 'data', stepped: true, data: panelWith(cell, 'bad-owner') },
+        { id: 3, hour: 10, kind: 'data', stepped: true, data: { live: { groups: 'bad', rows: [], kinds: [], cells: [] } } },
+        { id: 0, hour: 10, kind: 'completed' },
+      ], 0);
+      sendP(badBatch, 'same-packet panel valid+corrupt');
+      assert.equal(page.view(1).mode, 'failed');
+      if (rnd(2) === 0) sendF(message(15, 0, false, [{ id: cell, hour: 15, body: answerBody({ keys: [1n], columns: 1, values: [15n], changed: true }) }]), 'stale delta');
+      sendF(message(20, 0, false, [{ id: cell, hour: 20, body: answerBody({ keys: [1n], columns: 1, values: [220n] }) }]), 'fresh whole before healthy panel');
+      mountW(2, 5, 'panel', 0);
+      sendP(panelPacket([{ id: 5, hour: 20, kind: 'data', stepped: true, data: panelWith(cell, 'healthy-owner') }, { id: 0, hour: 20, kind: 'completed' }], 0), 'healthy panel reusing cell');
+      await pump(20, 0);
+      assert.equal(page.view(1).mode, 'failed');
+      assert.equal(page.view(2).mode, 'picture');
+      assert.equal((page.view(2).fields?.['live:5'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 220);
+      sendF(message(21, 0, false, [{ id: cell, hour: 21, body: answerBody({ keys: [1n], columns: 1, values: [221n], changed: true }) }]), 'delta after reuse');
+      sendP(panelPacket([{ id: 0, hour: 21, kind: 'completed' }], 0), 'completed 21');
+      await pump(21, 0);
+      assert.equal((page.view(2).fields?.['live:5'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 221);
+    } else if (scenario === 2) {
+      mountW(1, 3, 'panel', 0);
+      mountW(2, 5, 'panel');
+      await pump(10, 0);
+      for (let i = 0; i < 4; i++) {
+        sendP(panelPacket([
+          { id: 3, hour: 100 + i, kind: 'data', stepped: true, data: { shape: 'A', pad: 'x'.repeat(100) } },
+          { id: 5, hour: 100 + i, kind: 'data', stepped: true, data: { shape: 'B', pad: 'x'.repeat(100) } },
+        ], 1), `overflow ${i}`);
+      }
+      await pump(100, 1);
+      assert.equal(page.view(1).mode, 'failed');
+      lane.bindRoute(5, ROUTE, NATIVE, 1); checkCredit('late bind after overflow');
+      await pump(100, 1);
+      assert.equal(page.view(2).mode, 'failed', 'unbound sub told of overflow when it binds');
+    } else if (scenario === 3) {
+      mountW(1, 3, 'panel');
+      const bad1 = panelPacket([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'bad1' } }], 1);
+      bad1[24 + 16] = 0xc1;
+      const good2 = panelPacket([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'good2' } }, { id: 0, hour: 20, kind: 'completed' }], 2);
+      if (rnd(2) === 0) { sendP(bad1, 'unbound bad seek 1'); sendP(good2, 'unbound good seek 2'); }
+      else { sendP(good2, 'unbound good seek 2 first'); sendP(bad1, 'unbound bad seek 1 late'); }
+      lane.bindRoute(3, ROUTE, NATIVE, 1); checkCredit('bind at seek 1');
+      assert.equal(subFailures.length, 0);
+      await pump(20, 2);
+      assert.equal(page.view(1).mode, 'picture');
+      assert.equal((page.view(1).fields?.['model:3'] as { structure?: string }).structure, 'good2');
+    } else {
+      mountW(1, 3, 'followed', 0);
+      holdCrop = true;
+      sendF(message(10, 0, false, [{ id: 3, hour: 10, body: answerBody({ keys: [1n], columns: 1, values: [10n] }) }]), 'initial');
+      page.publish(10, { playing: false, seek: 0 });
+      await flush();
+      page.name(1, 'failed', 'old sub failed');
+      holdCrop = false;
+      while (pendingCrops.length) pendingCrops.shift()!();
+      await flush();
+      lane.follow(5, 'followed'); lane.bindRoute(5, ROUTE, NATIVE, 0);
+      widgetSubs.set(1, [5]);
+      lane.mount(1, [5], 'fields');
+      page.rebind(1, { subscription: true });
+      lane.bind(1, { generation: page.widgets.get(1)!.binding, surfaces: [{ width: 1, height: 1, dpr: 1 }], offset: 0, pin: null });
+      sendF(message(10, 0, false, [{ id: 5, hour: 10, body: answerBody({ keys: [1n], columns: 1, values: [55n] }) }]), 'healthy switch');
+      await pump(10, 0);
+      assert.equal(page.view(1).mode, 'picture', 'stale refusal from old binding never halts healthy switch');
+    }
+  }
+
+  let releaseFollow!: () => void;
+  let notifyFollow!: () => void;
+  const followStarted = new Promise<void>(resolve => { notifyFollow = resolve; });
+  const env = managedInProcess({
+    gate: (product, params) => {
+      if (product === 'follow' && (params.query as { params?: { gate?: boolean } })?.params?.gate) {
+        notifyFollow();
+        return new Promise<void>(resolve => { releaseFollow = resolve; });
+      }
+      return undefined;
+    },
+  });
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const wLate = p.acquire('diff-late|0', { offset: 0, pin: null });
+    const sLate = p.subscribe(wLate, {}, env.source, '1', 0, { product: 'series-state', params: { gate: true } }, 'followed')!;
+    await followStarted;
+    const huge = { keys: Array.from({ length: 12000 }, (_, i) => BigInt(i + 1)), columns: 1, values: Array.from({ length: 12000 }, () => 1n) };
+    const pkt = followMsg(10, [{ id: sLate, answer: huge }], false, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence);
+    for (let i = 0; i < 20 && p.status(sLate).status !== 'failed'; i++) env.send(pkt);
+    await env.waitView(p, wLate, v => v?.mode === 'failed');
+    const unfollowed = env.nextEvent('unfollow');
+    releaseFollow();
+    await unfollowed;
+    assert.equal(p.status(sLate).status, 'failed');
+    assert.ok(installedEntry(p, wLate, sLate).retry);
+
+    const wShared = p.acquire('diff-shared|0', { offset: 0, pin: null });
+    const tok1 = {}, tok2 = {};
+    const c1 = env.nextEvent('follow-clock');
+    const sShared = p.subscribe(wShared, tok1, env.source, '1', 0, { product: 'series-state', params: { shared: 1 } }, 'followed')!;
+    p.subscribe(wShared, tok2, env.source, '1', 0, { product: 'series-state', params: { shared: 1 } }, 'followed');
+    await c1;
+    p.unsubscribe(wShared, tok2);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    env.send(followMsg(10, [{ id: sShared, answer: { keys: [1n], columns: 1, values: [1n] } }], true, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence));
+    await env.waitView(p, wShared, v => v?.mode === 'picture');
+    env.send(followMsg(12, [{ id: sShared, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, IN_PROC_NATIVE, env.clock.getSnapshot().seekSequence));
+    await env.waitView(p, wShared, v => v?.mode === 'failed');
+    assert.equal(installedEntry(p, wShared, sShared).status, 'failed');
+    assert.ok(installedEntry(p, wShared, sShared).error);
+  } finally {
+    env.close();
+  }
+});

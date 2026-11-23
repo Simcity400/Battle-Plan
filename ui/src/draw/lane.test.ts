@@ -1293,3 +1293,258 @@ test('P6: cell-group fault fails owner subscriptions only, never keyed by cell i
   assert.equal(page.view(2).mode, 'picture', 'healthy subscription 5 reusing CELL_A must not inherit sub 3 fault');
   assert.equal((page.view(2).fields?.['live:5'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 300);
 });
+
+const followCharge = (bytes: Uint8Array) => {
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let total = 0;
+  for (let i = 0, at = 24, count = data.getUint32(12, true); i < count; i++) {
+    const length = data.getUint32(at + 8, true);
+    const uncompressed = data.getUint32(at + 12, true);
+    total += 16 + 2 * Math.max(length, uncompressed);
+    at += 16 + length;
+  }
+  return total;
+};
+
+const panelCharge = (bytes: Uint8Array) => {
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let total = 0;
+  for (let i = 0, at = 24, count = data.getUint32(8, true); i < count; i++) {
+    const kind = data.getUint8(at + 8), length = data.getUint32(at + 12, true), size = ((16 + length + 7) & ~7);
+    if (kind !== 4) total += 2 * size;
+    at += size;
+  }
+  return total;
+};
+
+test('M1/F1: same-packet valid record followed by corrupt record commits nothing past the fault and returns full credit on live and held paths', async () => {
+  const { page, lane, released, subFailures, mount, step } = rig();
+  const totalReleased = () => released.reduce((sum, b) => sum + b, 0);
+  let totalCharged = 0;
+  const sendFollow = (pkt: Uint8Array) => { totalCharged += followCharge(pkt); lane.receive('follow', pkt); };
+  const sendPanels = (pkt: Uint8Array) => { totalCharged += panelCharge(pkt); lane.receive('panels', pkt); };
+
+  mount(1, [{ id: 5, channel: 'followed' }]);
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  sendFollow(message(10, [
+    { id: 5, hour: 10, answer: rows([1n], [100n]) },
+    { id: 5, hour: 10, answer: rows([9n], [999n], { changed: true }) },
+  ], false, NATIVE, 0));
+  assert.equal(subFailures.length, 1);
+  assert.equal(page.view(1).mode, 'failed');
+  assert.equal(lane.facts.select(5, 10), null, 'M1: valid table before corrupt delta in same packet must not survive failSub');
+  assert.equal(totalReleased() + lane.retainedBytes(), totalCharged);
+  await step(10, { playing: false, seek: 1 });
+  assert.equal(lane.facts.select(5, 10), null, 'M1: seek must never carry pre-fault table from same packet');
+  assert.equal(page.view(1).mode, 'failed');
+
+  mount(2, [{ id: 7, channel: 'followed' }]);
+  const heldBefore = totalReleased();
+  const heldBatch = message(10, [
+    { id: 7, hour: 10, answer: rows([1n], [100n]) },
+    { id: 7, hour: 10, answer: rows([9n], [999n], { changed: true }) },
+  ], false, NATIVE, 1);
+  sendFollow(heldBatch);
+  lane.bindRoute(7, ROUTE, NATIVE, 1);
+  assert.equal(page.view(2).mode, 'failed');
+  assert.equal(lane.facts.select(7, 10), null, 'M1 held: valid table before corrupt delta must not survive replay fault');
+  assert.equal(totalReleased() - heldBefore, followCharge(heldBatch), 'M1 held: all charged bytes from both records must return');
+  assert.equal(totalReleased() + lane.retainedBytes(), totalCharged);
+
+  const CELL_A = 0x8000_0091;
+  const panelWith = (shape: string) => ({
+    shape,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_A }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+  mount(3, [{ id: 9, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(9, ROUTE, NATIVE, 1);
+  const badPanelBatch = panels([
+    { id: 9, hour: 10, kind: 'data', stepped: true, data: panelWith('H10') },
+    { id: 9, hour: 10, kind: 'data', stepped: true, data: { live: { groups: 'bad', rows: [], kinds: [], cells: [] } } },
+    { id: 0, hour: 10, kind: 'completed' },
+  ], 1);
+  sendPanels(badPanelBatch);
+  assert.equal(page.view(3).mode, 'failed');
+  assert.equal(lane.facts.owns(CELL_A), false, 'F1: malformed second panel in same packet must not leave CELL_A owned by failed sub');
+  assert.equal(lane.facts.select(9, 10), null);
+  assert.equal(totalReleased() + lane.retainedBytes(), totalCharged);
+
+  mount(4, [{ id: 11, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(11, ROUTE, NATIVE, 1);
+  sendPanels(panels([{ id: 11, hour: 20, kind: 'data', stepped: true, data: panelWith('H20') }, { id: 0, hour: 20, kind: 'completed' }], 1));
+  sendFollow(message(20, [{ id: CELL_A, hour: 20, answer: rows([1n], [222n]) }], false, NATIVE, 1));
+  await step(20, { playing: false });
+  assert.equal(page.view(4).mode, 'picture');
+  assert.equal((page.view(4).fields?.['live:11'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 222);
+  assert.equal(totalReleased() + lane.retainedBytes(), totalCharged);
+});
+
+test('credit invariant: charged bytes always equal retained plus released across live, held, early, overflow, fault, cell reuse, seek, and unfollow sequences', async () => {
+  const { lane, released, mount, step } = rig({}, { earlyBuffer: 320 });
+  const totalReleased = () => released.reduce((sum, b) => sum + b, 0);
+  let totalCharged = 0;
+  const check = (label: string) => assert.equal(totalReleased() + lane.retainedBytes(), totalCharged, label);
+  const sendFollow = (pkt: Uint8Array, label: string) => { totalCharged += followCharge(pkt); lane.receive('follow', pkt); check(label); };
+  const sendPanels = (pkt: Uint8Array, label: string) => { totalCharged += panelCharge(pkt); lane.receive('panels', pkt); check(label); };
+
+  const CELL_A = 0x8000_00a1;
+  const panelData = (tag: string) => ({
+    shape: tag,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_A }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  mount(2, [{ id: 5, channel: 'followed' }]);
+  sendFollow(message(5, [{ id: 5, answer: rows([1n], [1n]) }], false, NATIVE, 0), 'unbound follow seek 0');
+  sendFollow(message(6, [{ id: 5, answer: rows([1n], [2n]) }], false, NATIVE, 1), 'unbound follow supersedes seek 0');
+  lane.bindRoute(3, ROUTE, NATIVE, 1); check('bind sub 3');
+  lane.bindRoute(5, ROUTE, NATIVE, 1); check('bind sub 5');
+  sendPanels(panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelData('A') }, { id: 0, hour: 10, kind: 'completed' }], 1), 'live panel');
+  sendFollow(message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE, 1), 'live cell whole');
+  await step(10, { playing: false, seek: 1 }); check('step 10');
+  sendFollow(message(11, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE, 1), 'cell fault');
+  sendFollow(message(12, [{ id: CELL_A, answer: rows([1n], [12n], { changed: true }) }], false, NATIVE, 1), 'stale delta after fault');
+  sendFollow(message(13, [{ id: CELL_A, answer: rows([1n], [13n]) }], false, NATIVE, 1), 'fresh whole for reused cell');
+  for (let i = 0; i < 6; i++) {
+    sendPanels(panels([{ id: 3, hour: 20 + i, kind: 'data', stepped: true, data: { shape: 'big', pad: 'x'.repeat(120) } }], 2), `early overflow ${i}`);
+  }
+  await step(20, { playing: false, seek: 2 }); check('seek 2 after overflow');
+  sendFollow(message(19, [{ id: 5, answer: rows([1n], [19n]) }], false, NATIVE, 1), 'stale seek follow');
+  lane.unfollow(3); check('unfollow 3');
+  lane.unfollow(5); check('unfollow 5');
+  lane.unmount(1); lane.unmount(2);
+  await step(20, { playing: false, seek: 2 }); check('after unmount');
+  assert.equal(lane.retainedBytes(), 0, 'all bytes returned once all subs and widgets are gone');
+});
+
+test('P6/F3: fresh whole answer arriving before a healthy panel reuses a faulted cell id is held and merges later deltas', async () => {
+  const CELL_A = 0x8000_00b1;
+  const panelData = (tag: string) => ({
+    shape: tag,
+    live: { groups: [{ table: 1, columns: [0], keys: ['1'], follow: CELL_A }], rows: ['r0'], kinds: [{ id: 'k', op: 'value', scale: 1 }], cells: [0, 0, 1, 0, 0, 0] },
+  });
+  const { page, lane, subFailures, mount, step } = rig();
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.receive('panels', panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: panelData('P1') }, { id: 0, hour: 10, kind: 'completed' }], 0));
+  lane.receive('follow', message(10, [{ id: CELL_A, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  lane.receive('follow', message(11, [{ id: CELL_A, answer: rows([9n], [99n], { changed: true }) }], false, NATIVE, 0));
+  assert.deepEqual(subFailures.map(([id]) => id), [3]);
+  assert.equal(page.view(1).mode, 'failed');
+
+  lane.receive('follow', message(12, [{ id: CELL_A, answer: rows([1n], [12n], { changed: true }) }], false, NATIVE, 0));
+  lane.receive('follow', message(20, [{ id: CELL_A, answer: rows([1n], [200n]) }], false, NATIVE, 0));
+  mount(2, [{ id: 5, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  lane.receive('panels', panels([{ id: 5, hour: 20, kind: 'data', stepped: true, data: panelData('P2') }, { id: 0, hour: 20, kind: 'completed' }], 0));
+  await step(20, { playing: false });
+  assert.equal(page.view(2).mode, 'picture', 'healthy panel naming reused CELL_A after fresh whole answer must install, never stay on Reading');
+  assert.equal((page.view(2).fields?.['live:5'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 200);
+
+  lane.receive('follow', message(21, [{ id: CELL_A, answer: rows([1n], [205n], { changed: true }) }], false, NATIVE, 0));
+  lane.receive('panels', panels([{ id: 0, hour: 21, kind: 'completed' }], 0));
+  await step(21, { playing: false });
+  assert.equal(page.view(2).mode, 'picture', 'subsequent delta merges onto the held whole base cleanly');
+  assert.equal((page.view(2).fields?.['live:5'] as Map<string, unknown> | undefined)?.get('r0\u0000k'), 205);
+});
+
+test('P9/F4: future-seek overflow delivers failure to an unbound subscription when it later binds at that seek', async () => {
+  const { page, lane, subFailures, mount, step } = rig({}, { earlyBuffer: 256 });
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  mount(2, [{ id: 5, channel: 'panel', product: 'demo' }]);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  await step(10, { playing: false, seek: 0 });
+  for (let i = 0; i < 4; i++) {
+    lane.receive('panels', panels([
+      { id: 3, hour: 100 + i, kind: 'data', stepped: true, data: { shape: 'A', pad: 'x'.repeat(100) } },
+      { id: 5, hour: 100 + i, kind: 'data', stepped: true, data: { shape: 'B', pad: 'x'.repeat(100) } },
+    ], 1));
+  }
+  await step(100, { playing: false, seek: 1 });
+  assert.deepEqual(subFailures.map(([id]) => id), [3], 'bound sub A fails on entering seek 1');
+  assert.equal(page.view(1).mode, 'failed');
+
+  lane.bindRoute(5, ROUTE, NATIVE, 1);
+  lane.receive('panels', panels([{ id: 5, hour: 101, kind: 'stands', stepped: true }, { id: 0, hour: 101, kind: 'completed' }], 1));
+  await step(101, { playing: false, seek: 1 });
+  assert.deepEqual(subFailures.map(([id]) => id), [3, 5], 'unbound sub B receives overflow failure when it binds at seek 1');
+  assert.equal(page.view(2).mode, 'failed');
+  assert.match(page.view(2).reason ?? '', /overflowed/i);
+});
+
+test('F5: unbound native route drops superseded seek-1 malformed panel when seek-2 healthy panel arrives before bindRoute', async () => {
+  const { page, lane, subFailures, released, mount, step } = rig();
+  const totalReleased = () => released.reduce((sum, b) => sum + b, 0);
+  let totalCharged = 0;
+  const sendPanels = (pkt: Uint8Array) => { totalCharged += panelCharge(pkt); lane.receive('panels', pkt); };
+
+  mount(1, [{ id: 3, channel: 'panel', product: 'demo' }]);
+  const badSeek1 = panels([{ id: 3, hour: 10, kind: 'data', stepped: true, data: { shape: 'bad' } }], 1);
+  badSeek1[24 + 16] = 0xc1;
+  sendPanels(badSeek1);
+  sendPanels(panels([{ id: 3, hour: 20, kind: 'data', stepped: true, data: { shape: 'healthy2' } }, { id: 0, hour: 20, kind: 'completed' }], 2));
+  assert.equal(totalReleased(), panelCharge(badSeek1), 'superseded seek-1 malformed panel is released before bind');
+
+  lane.bindRoute(3, ROUTE, NATIVE, 1);
+  assert.deepEqual(subFailures, [], 'binding at seek 1 must not decode superseded seek-1 malformed panel');
+  assert.notEqual(page.view(1).mode, 'failed');
+
+  await step(20, { playing: false, seek: 2 });
+  assert.equal(page.view(1).mode, 'picture', 'entering seek 2 replays the healthy held seek-2 panel');
+  assert.equal((page.view(1).fields?.['model:3'] as { structure?: string }).structure, 'healthy2');
+  assert.equal(totalReleased() + lane.retainedBytes(), totalCharged);
+});
+
+test('F8: refusal for a previous binding arriving after switching to a healthy subscription never halts the current binding', async () => {
+  let finishFirstCrop!: () => void;
+  let cropCall = 0;
+  const view: LaneView = {
+    paint: (input): Painted => ({
+      surfaces: [{ source: { width: 1, height: 1, content: `v:${input.subs[0]!.id}:${input.pictures[0]!.h}` } as never, content: `v:${input.subs[0]!.id}:${input.pictures[0]!.h}` }],
+      fields: {},
+      motion: false,
+    }),
+  };
+  const { page, lane, mount, step } = rig({ view }, {
+    crop: sources => {
+      cropCall++;
+      const make = () => sources.map((source): Fake => ({ content: (source as unknown as { content: string }).content, closed: false, width: 1, close() { this.closed = true; } }));
+      if (cropCall === 1) return new Promise<Fake[]>(resolve => { finishFirstCrop = () => resolve(make()); });
+      return Promise.resolve(make());
+    },
+  });
+  mount(1, [{ id: 3, channel: 'followed' }], 'view', 1);
+  lane.bindRoute(3, ROUTE, NATIVE, 0);
+  lane.receive('follow', message(10, [{ id: 3, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  page.publish(10, { playing: false, seek: 0 });
+  await flush();
+  page.name(1, 'failed', 'sub 3 failed');
+  finishFirstCrop();
+  await flush();
+
+  lane.follow(5, 'followed');
+  lane.bindRoute(5, ROUTE, NATIVE, 0);
+  lane.mount(1, [5], 'view');
+  page.rebind(1, { subscription: true });
+  lane.bind(1, { generation: page.widgets.get(1)!.binding, surfaces: [{ width: 1, height: 1, dpr: 1 }], offset: 0, pin: null });
+  lane.receive('follow', message(10, [{ id: 5, answer: rows([1n], [50n]) }], false, NATIVE, 0));
+  await step(10, { playing: false });
+  await step(10, { playing: false });
+  assert.equal(page.view(1).mode, 'picture', 'stale refusal from binding 1 must never halt binding 2');
+});
+
+test('F9: releasing and reopening the last subscription retires old page routes so frames send only active reset pairs', async () => {
+  const { lane, presented, mount, step } = rig();
+  for (let r = 1; r <= 128; r++) {
+    const sub = r * 2 + 1;
+    lane.follow(sub, 'followed');
+    lane.bindRoute(sub, r, NATIVE, 0);
+    lane.unfollow(sub);
+  }
+  mount(1, [{ id: 501, channel: 'followed' }]);
+  lane.bindRoute(501, 129, NATIVE, 0);
+  lane.receive('follow', message(10, [{ id: 501, answer: rows([1n], [10n]) }], false, NATIVE, 0));
+  presented.length = 0;
+  await step(10, { playing: false });
+  assert.ok(presented.length >= 1);
+  assert.deepEqual(presented.at(-1)!.resets, [[129, 0]], 'retired page routes must not accumulate in presentation reset pairs');
+});

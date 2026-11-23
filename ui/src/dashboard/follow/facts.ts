@@ -159,6 +159,21 @@ export class Facts<V> {
 
   hasRemoved() { return this.removed.length > 0; }
 
+  retireRoute(route: number) { this.routes.delete(route); }
+
+  retainedBytes(): number {
+    const held = new Set<Fact<V>>();
+    for (const sub of this.subs.values()) {
+      for (const fact of sub.facts) held.add(fact);
+      for (const part of sub.carried?.parts ?? []) held.add(part);
+    }
+    for (const group of this.groups.values()) for (const fact of group.facts) held.add(fact);
+    for (const fact of this.removed) held.add(fact);
+    let bytes = this.freed;
+    for (const fact of held) bytes += fact.bytes;
+    return bytes;
+  }
+
   releasedBytes(): number { return this.release(() => false); }
 
   release(held: (fact: Fact<V>) => boolean): number {
@@ -324,6 +339,40 @@ export class Facts<V> {
           if (last && last.c < completed) last.c = completed;
         }
       }
+    }
+  }
+
+  resetFollowed(route: number, seek: number) {
+    if (!this.accept(route, seek, () => this.resetFollowed(route, seek))) return;
+    const at = this.route(route);
+    at.reset++;
+    for (const owner of this.owners(route)) if (owner.channel === 'followed') {
+      this.removed.push(...owner.facts);
+      owner.facts = []; owner.open = false;
+    }
+    for (const sub of this.subs.values()) if (sub.route === route && sub.carried && followsChannel(sub.carried)) sub.carried = null;
+  }
+
+  addFollowedAnswer(route: number, seek: number, answer: FollowAnswer<V>, extendPrevious = false) {
+    if (!this.accept(route, seek, () => this.addFollowedAnswer(route, seek, answer, extendPrevious))) {
+      if (seek < this.route(route).seek) this.freed += answer.bytes ?? 0;
+      return;
+    }
+    const owner = this.subs.get(answer.id) ?? this.groups.get(answer.id);
+    if (!owner || owner.route !== route || owner.channel !== 'followed') { this.freed += answer.bytes ?? 0; return; }
+    if (extendPrevious && owner.open) {
+      const last = owner.facts.at(-1);
+      if (last && last.h < answer.hour && last.c < answer.hour - 1) last.c = answer.hour - 1;
+    }
+    this.add(owner, this.fact(answer.hour, answer.hour, answer.value, answer.refused ?? null, 'followed', answer.bytes ?? 0));
+  }
+
+  confirmFollowed(route: number, seek: number, hour: number, limited?: ReadonlyMap<number, number>, only?: ReadonlySet<number>) {
+    if (!this.accept(route, seek, () => this.confirmFollowed(route, seek, hour, limited, only))) return;
+    for (const owner of this.owners(route)) {
+      if (owner.channel !== 'followed' || !owner.open || only && !only.has(owner.id)) continue;
+      const last = owner.facts.at(-1), confirmed = limited?.get(owner.id) ?? hour;
+      if (last && confirmed > last.c) last.c = confirmed;
     }
   }
 

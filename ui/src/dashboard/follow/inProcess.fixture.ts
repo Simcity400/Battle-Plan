@@ -182,7 +182,10 @@ export function managedInProcess({ lanes = 1, views = () => undefined, follow, f
           queueMicrotask(() => notify('follow'));
         }
       }
-      if (request.product === 'unfollow') followers.delete(`${session}:${request.params.id}`);
+      if (request.product === 'unfollow') {
+        followers.delete(`${session}:${request.params.id}`);
+        queueMicrotask(() => notify('unfollow'));
+      }
       if (request.product === 'follow-clock') {
         try {
           const told = followClock ? followClock(request.params) : { available: followers.size > 0 };

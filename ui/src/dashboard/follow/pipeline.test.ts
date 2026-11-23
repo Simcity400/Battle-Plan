@@ -860,3 +860,197 @@ test('a superseded follow-clock rejection never overwrites a route failure cause
     env.close();
   }
 });
+
+test('F6: a late successful registration reply after sub-failed never overwrites failed status and unfollows natively', async () => {
+  let releaseFollow!: () => void;
+  let notifyFollow!: () => void;
+  const followStarted = new Promise<void>(resolve => { notifyFollow = resolve; });
+  const env = managedInProcess({
+    gate: product => {
+      if (product === 'follow') {
+        notifyFollow();
+        return new Promise<void>(resolve => { releaseFollow = resolve; });
+      }
+      return undefined;
+    },
+  });
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const w = p.acquire('f6|0', { offset: 0, pin: null });
+    const s = p.subscribe(w, {}, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    await followStarted;
+    const huge = { keys: Array.from({ length: 12000 }, (_, i) => BigInt(i + 1)), columns: 1, values: Array.from({ length: 12000 }, () => 1n) };
+    const pkt = message(10, [{ id: s, answer: huge }], false, NATIVE, env.clock.getSnapshot().seekSequence);
+    for (let i = 0; i < 20 && p.status(s).status !== 'failed'; i++) env.send(pkt);
+    await env.waitView(p, w, v => v?.mode === 'failed');
+    assert.equal(p.status(s).status, 'failed');
+
+    const unfollowed = env.nextEvent('unfollow');
+    releaseFollow();
+    await unfollowed;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(p.status(s).status, 'failed', 'late follow reply must not overwrite terminal failed status');
+    p.bind(w, [surface()], { surfaces: [{ width: 2, height: 1, dpr: 1 }] });
+    assert.equal(p.view(w)?.mode, 'failed', 'rebinding after late registration reply keeps widget failed instead of Reading');
+  } finally {
+    env.close();
+  }
+});
+
+test('F7: releasing one of two tokens sharing a subscription on the same widget keeps the widget notified on later faults', async () => {
+  const env = managedInProcess();
+  try {
+    env.clock.seek(10);
+    const p = env.pipeline;
+    const w = p.acquire('f7|0', { offset: 0, pin: null });
+    const tokA = {}, tokB = {};
+    const c1 = env.nextEvent('follow-clock');
+    const sA = p.subscribe(w, tokA, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    const sB = p.subscribe(w, tokB, env.source, '1', 0, { product: 'series-state', params: { k: 1 } }, 'followed')!;
+    assert.equal(sA, sB);
+    await c1;
+    p.unsubscribe(w, tokB);
+    const seek = env.clock.getSnapshot().seekSequence;
+    env.send(message(10, [{ id: sA, answer: { keys: [1n], columns: 1, values: [10n] } }], true, NATIVE, seek));
+    await env.waitView(p, w, v => v?.mode === 'picture');
+    env.send(message(15, [{ id: sA, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, NATIVE, seek));
+    await env.waitView(p, w, v => v?.mode === 'failed');
+    assert.equal(p.view(w)?.mode, 'failed');
+    assert.match(p.view(w)?.reason ?? '', /does not hold/);
+  } finally {
+    env.close();
+  }
+});
+
+test('P2/F2: useFollowedAll recomputes failure outcome and Retry when a lane fault changes the installed view while entries stay stable', async () => {
+  const { createServer } = await import('vite');
+  const states = new Map<number, unknown>();
+  const memos = new Map<number, { deps: readonly unknown[]; value: unknown }>();
+  const effects = new Map<number, { deps?: readonly unknown[]; run: () => void | (() => void); cleanup?: () => void }>();
+  const pending = new Map<number, { deps?: readonly unknown[]; run: () => void | (() => void) }>();
+  let cursor = 0;
+  let dirty = false;
+  const hooks = {
+    useState(initial?: unknown) {
+      const i = cursor++;
+      if (!states.has(i)) states.set(i, typeof initial === 'function' ? (initial as () => unknown)() : initial);
+      return [states.get(i), (next: unknown) => {
+        const prev = states.get(i);
+        const val = typeof next === 'function' ? (next as (v: unknown) => unknown)(prev) : next;
+        if (!Object.is(prev, val)) { states.set(i, val); dirty = true; }
+      }];
+    },
+    useRef(initial?: unknown) {
+      const i = cursor++;
+      if (!states.has(i)) states.set(i, { current: initial });
+      return states.get(i);
+    },
+    useMemo(make: () => unknown, deps: readonly unknown[]) {
+      const i = cursor++, prev = memos.get(i);
+      if (!prev || prev.deps.length !== deps.length || prev.deps.some((d, at) => !Object.is(d, deps[at]))) {
+        memos.set(i, { deps: [...deps], value: make() });
+      }
+      return memos.get(i)!.value;
+    },
+    useCallback(fn: unknown, deps: readonly unknown[]) { return hooks.useMemo(() => fn, deps); },
+    useContext(ctx: { _currentValue?: unknown }) { return ctx._currentValue; },
+    useId() { cursor++; return 'sb-id'; },
+    useEffect(run: () => void | (() => void), deps?: readonly unknown[]) {
+      const i = cursor++, prev = effects.get(i);
+      if (!deps || !prev || !prev.deps || prev.deps.length !== deps.length || prev.deps.some((d, at) => !Object.is(d, deps[at]))) pending.set(i, { deps: deps ? [...deps] : undefined, run });
+    },
+    useLayoutEffect(run: () => void | (() => void), deps?: readonly unknown[]) { hooks.useEffect(run, deps); },
+    useSyncExternalStore(_sub: (onChange: () => void) => () => void, getSnapshot: () => unknown) {
+      cursor++;
+      return getSnapshot();
+    },
+    commit() {
+      for (const [i, next] of [...pending]) {
+        pending.delete(i);
+        effects.get(i)?.cleanup?.();
+        const cleanup = next.run();
+        effects.set(i, { deps: next.deps, run: next.run, cleanup: typeof cleanup === 'function' ? cleanup : undefined });
+      }
+    },
+    unmount() {
+      for (const e of effects.values()) e.cleanup?.();
+      effects.clear(); pending.clear(); states.clear(); memos.clear();
+    },
+  };
+  const g = globalThis as typeof globalThis & { __followedAllHooks?: typeof hooks };
+  g.__followedAllHooks = hooks;
+  const vite = await createServer({
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{
+      name: 'hook-shim',
+      transform(code, id) {
+        const norm = id.replace(/\\/g, '/');
+        if (norm.endsWith('/followedAll.ts') || norm.endsWith('/useFollowed.ts') || norm.endsWith('/useFollow.ts')) {
+          return code.replace(
+            /import\s*\{([^}]+)\}\s*from\s*['"]react['"];?/,
+            (_, names: string) => `const {${names}} = globalThis.__followedAllHooks;`,
+          );
+        }
+        return null;
+      },
+    }],
+  });
+  let env: ReturnType<typeof managedInProcess> | null = null;
+  try {
+    const fixtureMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/inProcess.fixture.ts') as { managedInProcess: typeof managedInProcess };
+    const msgMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/messages.fixture.ts') as { message: typeof message };
+    env = fixtureMod.managedInProcess();
+    const mod = await vite.ssrLoadModule('/ui/src/widgets/scoreboard/followedAll.ts') as {
+      useFollowedAll: (store: unknown, queries: readonly (Record<string, unknown> | null)[], target: { current: Element | null }, onScreen: (el: Element, cb: (v: boolean) => void) => () => void) => {
+        entries: readonly unknown[]; failure?: string; error?: { message: string }; retry: () => void;
+      };
+    };
+    const store = { client: env.client, source: env.source, clock: env.clock, offset: 0 };
+    const storeMod = await vite.ssrLoadModule('/ui/src/dashboard/follow/store.ts') as { FollowedCard: { _currentValue: unknown }; FollowedWidgetKey: { _currentValue: unknown } };
+    const fakeEl = { isConnected: true } as Element;
+    storeMod.FollowedCard._currentValue = fakeEl;
+    storeMod.FollowedWidgetKey._currentValue = 'sb-f2';
+    const alwaysOn = (_el: Element, cb: (v: boolean) => void) => { cb(true); return () => {}; };
+    const queries = [
+      { product: 'series-state', branchId: '1', params: { col: 'a' } },
+      { product: 'series-state', branchId: '1', params: { col: 'b' } },
+    ];
+    const render = () => {
+      let out!: ReturnType<typeof mod.useFollowedAll>;
+      for (let pass = 0; pass < 4; pass++) {
+        cursor = 0; dirty = false;
+        out = mod.useFollowedAll(store, queries, { current: fakeEl }, alwaysOn);
+        hooks.commit();
+        if (!dirty) break;
+      }
+      return out;
+    };
+    env.clock.seek(10);
+    const c1 = env.nextEvent('follow-clock');
+    const f2 = env.nextEvent('follow');
+    const first = render();
+    await Promise.all([c1, f2]);
+    const subA = (first.entries[0] as { id: number } | null)?.id;
+    assert.ok(subA !== undefined);
+    assert.equal(first.error, undefined);
+    const seek = env.clock.getSnapshot().seekSequence;
+    env.send(msgMod.message(10, [{ id: subA, answer: { keys: [1n], columns: 1, values: [10n] } }], true, NATIVE, seek));
+    env.send(msgMod.message(15, [{ id: subA, answer: { keys: [99n], columns: 1, values: [99n], changed: true } }], false, NATIVE, seek));
+    await env.waitView(env.pipeline, 1, v => v?.mode === 'failed');
+    const second = render();
+    assert.equal(second.entries, first.entries, 'entries reference stays stable across view change');
+    assert.ok(second.error !== undefined, 'useFollowedAll must recompute error when view changes to failed');
+    assert.match(second.failure ?? '', /does not hold/);
+    const restarted = env.nextEvent('restart');
+    second.retry();
+    await restarted;
+  } finally {
+    hooks.unmount();
+    delete g.__followedAllHooks;
+    env?.close();
+    await vite.close();
+  }
+});
