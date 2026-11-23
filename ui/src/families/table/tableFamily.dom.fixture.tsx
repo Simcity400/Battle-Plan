@@ -283,6 +283,7 @@ window.tableFamilyDom = {
             pin={null}
             bounds={[0, 2000]}
             onActivate={key => { activated.push(key); }}
+            contextMenuItems={(key, _name, hour) => [{ label: `Jump to date (${key ?? 'empty'}@${hour})`, run: () => {} }]}
           />
           <TooltipLayer />
         </Profiler>
@@ -587,5 +588,36 @@ window.tableFamilyDom = {
     if (!opened) throw new Error('+N columns button did not open chooser');
     const menuOpen = !!document.querySelector('.tf-chooser');
     return { firstKey, afterDown, activated: [...activated], liveStatus, moreText, menuOpen, totalInstallReads };
+  },
+
+  async testEmptySpaceContextMenuAndValueStateTooltip() {
+    document.querySelector<HTMLElement>('.tf-chooser:popover-open')?.hidePopover?.();
+    hostNode!.style.width = '460px';
+    const nextHour = Math.floor(clock.getSnapshot().hour) + 2;
+    clock.seek(nextHour);
+    seek = clock.getSnapshot().seekSequence;
+    sendHour(nextHour, [20n, 90n, 80n, -1n], [BigInt(nextHour), BigInt(nextHour * 2), 3n, 4n], true);
+    await until(() => {
+      const view = pipeline.view(pipeId);
+      return view?.mode === 'picture' && view.h === nextHour && !view.dim;
+    }, 2000);
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    const bodyEl = hostNode!.querySelector<HTMLElement>('.tf-body')!;
+    bodyEl.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+    await until(() => pipeline.view(pipeId)?.fields?.tooltip == null, 1500);
+    const frameEl = hostNode!.querySelector<HTMLElement>('.tf-frame')!;
+    const box = frameEl.getBoundingClientRect();
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: box.left + 12, clientY: box.bottom - 8 });
+    frameEl.dispatchEvent(ev);
+    const opened = await until(() => !!document.querySelector('[role="menu"]:popover-open [role="menuitem"]'), 2000);
+    const menuLabel = document.querySelector('[role="menu"]:popover-open [role="menuitem"]')?.textContent ?? null;
+    document.querySelector<HTMLElement>('[role="menu"]:popover-open')?.hidePopover?.();
+
+    const engRow = hostNode!.querySelector<HTMLTableRowElement>('.table-accessibility tbody tr[data-row-key="ENG"]')!;
+    engRow.focus();
+    const tipShown = await until(() => !!document.querySelector('.chart-tooltip [data-value-state="missing"]'), 2000);
+    const hasMissingState = !!document.querySelector('.chart-tooltip [data-value-state="missing"]');
+    const hasKnownState = !!document.querySelector('.chart-tooltip [data-value-state="known"]');
+    return { opened, menuLabel, tipShown, hasMissingState, hasKnownState };
   },
 };

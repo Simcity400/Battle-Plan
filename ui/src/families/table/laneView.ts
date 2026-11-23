@@ -4,6 +4,7 @@ import type { Picture } from '../../dashboard/follow/facts.ts';
 import type { FollowedAnswer } from '../../dashboard/follow/message';
 import type { LaneView, Painted, PaintInput, Scene, Value as LaneValue } from '../../draw/lane.ts';
 import { liveValues, type LiveMap } from '../../draw/views/fields.ts';
+import { FamilyArtLoader, type FamilyArtFetcher } from '../artLoader.ts';
 import { CadenceGate, TrailingFlushScheduler, type CadenceTimers } from '../cadence.ts';
 import type { FamilySources } from '../contract.ts';
 import { buildColumnLayouts, layoutFamilyTable, measureFixedColumnWidths, type FamilyColumnLayout, type FamilyTableLayout } from './layout.ts';
@@ -19,7 +20,7 @@ import {
   type TableModel,
 } from './model.ts';
 import {
-  collectCellIcons,
+  collectVisibleCellIcons,
   createTablePicture,
   drawFamilyTable,
   glideDurationForSpeed,
@@ -69,12 +70,14 @@ interface PhaseTally {
   auditMs: number;
 }
 
+type NavTuple = readonly [string, string, number, number, string, unknown];
+
 interface HeldFamilyTable {
   canvas: OffscreenCanvas;
   ctx: OffscreenCanvasRenderingContext2D;
   picture: FamilyTablePicture;
   content: string;
-  icons: Map<string, ImageBitmap | null>;
+  art: FamilyArtLoader;
   widthConfigKey: string;
   fixedWidths: Record<string, number>;
   priorRows: readonly FlatTableRow[];
@@ -94,6 +97,9 @@ interface HeldFamilyTable {
   validFrom: number;
   validUntil: number;
   cachedModel: TableModel | null;
+  cachedModelKind: string;
+  cachedModelHasTimeBoundaries: boolean;
+  cachedModelNextAt: number;
   cachedRows: readonly FlatTableRow[];
   cachedHasGroupHeaders: boolean;
   cachedRowIndex: Map<string, number>;
@@ -110,7 +116,7 @@ interface HeldFamilyTable {
 
   metaSig: string;
   metaField: FieldEntry | null;
-  navSig: string;
+  navItems: readonly NavTuple[] | null;
   navField: FieldEntry | null;
   tableSig: string;
   tableField: FieldEntry | null;
@@ -257,13 +263,53 @@ export function sourcesFromScene(scene: Scene, binding: FamilyTableBinding): Fam
   };
 }
 
-function loadIcon(held: HeldFamilyTable, url: string) {
-  if (held.icons.has(url)) return;
-  held.icons.set(url, null);
-  void fetch(url)
-    .then(response => { if (!response.ok) throw new Error(`icon ${response.status}`); return response.blob(); })
-    .then(blob => createImageBitmap(blob))
-    .then(image => { held.icons.set(url, image); held.picture = createTablePicture(); held.wake?.(); }, () => {});
+function sameColumnSpecs(a: readonly TableColumnSpec[] | null, b: readonly TableColumnSpec[]): boolean {
+  if (a === b) return true;
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ca = a[i]!, cb = b[i]!;
+    if (
+      ca.key !== cb.key
+      || ca.label !== cb.label
+      || ca.as !== cb.as
+      || ca.tone !== cb.tone
+      || ca.priority !== cb.priority
+      || ca.numeric !== cb.numeric
+      || ca.text !== cb.text
+      || ca.hideable !== cb.hideable
+      || ca.sortable !== cb.sortable
+      || ca.hint !== cb.hint
+      || ca.format !== cb.format
+      || ca.offered.length !== cb.offered.length
+      || (ca.widest?.length ?? 0) !== (cb.widest?.length ?? 0)
+    ) return false;
+    for (let j = 0; j < ca.offered.length; j++) if (ca.offered[j] !== cb.offered[j]) return false;
+    if (ca.widest && cb.widest) {
+      for (let j = 0; j < ca.widest.length; j++) if (ca.widest[j] !== cb.widest[j]) return false;
+    }
+  }
+  return true;
+}
+
+function sameNavItems(prev: readonly NavTuple[] | null, rows: readonly FlatTableRow[]): boolean {
+  if (!prev) return false;
+  let pos = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const item = rows[i]!;
+    if (item.kind !== 'data') continue;
+    const old = prev[pos++];
+    if (!old) return false;
+    const treeState = item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1;
+    if (
+      old[0] !== item.key
+      || old[1] !== item.name
+      || old[2] !== i
+      || old[3] !== treeState
+      || old[4] !== (item.parent ?? '')
+      || old[5] !== (item.row.meta ?? null)
+    ) return false;
+  }
+  return pos === prev.length;
 }
 
 function cachedField(held: HeldFamilyTable, name: string, text: string, content: () => string): string {
@@ -306,14 +352,6 @@ function initialTextSamples(columns: readonly FamilyColumnLayout[], rows: readon
   return samples;
 }
 
-function navSignature(rows: readonly FlatTableRow[]): string {
-  return JSON.stringify(
-    rows.map(item => (item.kind === 'data'
-      ? [1, item.key, item.name, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.row.meta ?? null]
-      : [0, item.key])),
-  );
-}
-
 function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, rankWidth: number): string {
   return JSON.stringify([
     model.empty ?? null,
@@ -330,12 +368,19 @@ function metaSignature(model: TableModel, hasTree: boolean, rankShown: boolean, 
   ]);
 }
 
+export interface FamilyTableLaneOptions {
+  readonly cadenceTimers?: CadenceTimers;
+  readonly clock?: () => number;
+  readonly fetchBitmap?: FamilyArtFetcher;
+  readonly artMaxEntries?: number;
+}
+
 export function familyTableLaneView(
   wake: (widget: number) => void,
-  laneOptions?: { readonly cadenceTimers?: CadenceTimers; readonly clock?: () => number },
+  laneOptions?: FamilyTableLaneOptions,
 ): LaneView {
   return {
-    next(scene: Scene, hour: number): number {
+    next(scene: Scene, hour: number, state?: Map<string, unknown>): number {
       const bound = scene.model;
       if (!isFamilyTableBinding(bound)) return Infinity;
       const projection = tableProjection(bound.kind);
@@ -348,7 +393,27 @@ export function familyTableLaneView(
         const sources = sourcesFromScene(scene, bound);
         soonest = Math.min(soonest, projection.nextChange(sources, hour, bound.options));
       }
+      const held = state?.get('familyTable') as HeldFamilyTable | undefined;
+      if (
+        held?.cachedModel
+        && held.cachedModelHasTimeBoundaries
+        && held.cachedModelKind === bound.kind
+        && samePictures(held.prevParts, scene.pictures)
+        && held.prevOptions === bound.options
+        && held.prevStaticPanels === bound.staticPanels
+        && held.prevStaticAnswers === bound.staticAnswers
+      ) {
+        soonest = Math.min(soonest, nextTableChange(held.cachedModel, hour));
+      }
       return soonest;
+    },
+    unmount(_widget: number, state: Map<string, unknown>): void {
+      const held = state.get('familyTable') as HeldFamilyTable | undefined;
+      if (held) {
+        held.flusher.cancel();
+        held.art.dispose();
+        state.delete('familyTable');
+      }
     },
     paint(input: PaintInput, state: Map<string, unknown>, content: () => string): Painted {
       const bound = input.model;
@@ -371,12 +436,16 @@ export function familyTableLaneView(
         const mirrorGate = new CadenceGate(MIRROR_CADENCE_MS);
         const tipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
         const focusTipGate = new CadenceGate(TOOLTIP_CADENCE_MS);
+        const art = new FamilyArtLoader({
+          maxEntries: laneOptions?.artMaxEntries,
+          fetchBitmap: laneOptions?.fetchBitmap,
+        });
         state.set('familyTable', held = {
           canvas,
           ctx,
           picture: createTablePicture(),
           content: content(),
-          icons: new Map(),
+          art,
           widthConfigKey: '',
           fixedWidths: {},
           priorRows: [],
@@ -393,6 +462,9 @@ export function familyTableLaneView(
           validFrom: Infinity,
           validUntil: -Infinity,
           cachedModel: null,
+          cachedModelKind: '',
+          cachedModelHasTimeBoundaries: false,
+          cachedModelNextAt: Infinity,
           cachedRows: [],
           cachedHasGroupHeaders: false,
           cachedRowIndex: new Map(),
@@ -407,7 +479,7 @@ export function familyTableLaneView(
           widthsField: null,
           metaSig: '',
           metaField: null,
-          navSig: '',
+          navItems: null,
           navField: null,
           tableSig: '',
           tableField: null,
@@ -424,6 +496,11 @@ export function familyTableLaneView(
           phases: { serves: 0, projMs: 0, layoutMs: 0, paintMs: 0, fieldsMs: 0, auditMs: 0 },
           phasesField: null,
         });
+        const holder = held;
+        art.setOnLoad(() => {
+          holder.picture = createTablePicture();
+          holder.wake?.();
+        });
       }
       held.wake = () => wake(input.widget);
       if (held.canvas.width !== widthPx || held.canvas.height !== heightPx) {
@@ -435,6 +512,7 @@ export function familyTableLaneView(
 
       const sortSig = JSON.stringify([bound.settings.sort.column, bound.settings.sort.direction]);
       const canReuseModel = held.cachedModel !== null
+        && held.cachedModelKind === bound.kind
         && samePictures(held.prevParts, input.pictures)
         && held.prevOptions === bound.options
         && held.prevStaticPanels === bound.staticPanels
@@ -453,6 +531,7 @@ export function familyTableLaneView(
       } else {
         const sources = sourcesFromScene(input, bound);
         model = projection.project(sources, input.hour, bound.options);
+        const modelNextAt = nextTableChange(model, input.hour);
         flatRows = resolveTableRows(model, bound.settings, bound.expanded);
         let hasGroups = false;
         const rowIndex = new Map<string, number>();
@@ -461,13 +540,14 @@ export function familyTableLaneView(
           if (item.kind === 'group-header') hasGroups = true;
           else rowIndex.set(item.key, i);
         }
-        for (const url of collectCellIcons(flatRows)) loadIcon(held, url);
         let nextBoundary = Math.min(
           nextLookChange(optionsLooks(bound.options), input.hour),
           nextLookChange(bound.theme?.countryLooks, input.hour),
+          modelNextAt,
         );
-        if (projection.nextChange) nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
-        if (model.rows.some(r => r.revealAt !== undefined)) nextBoundary = Math.min(nextBoundary, nextTableChange(model, input.hour));
+        if (projection.nextChange) {
+          nextBoundary = Math.min(nextBoundary, projection.nextChange(sources, input.hour, bound.options));
+        }
         held.prevParts = snapshotPictures(input.pictures);
         held.prevOptions = bound.options;
         held.prevStaticPanels = bound.staticPanels;
@@ -477,6 +557,9 @@ export function familyTableLaneView(
         held.validFrom = input.hour;
         held.validUntil = nextBoundary;
         held.cachedModel = model;
+        held.cachedModelKind = bound.kind;
+        held.cachedModelNextAt = modelNextAt;
+        held.cachedModelHasTimeBoundaries = Number.isFinite(modelNextAt);
         held.cachedRows = flatRows;
         held.cachedHasGroupHeaders = hasGroups;
         held.cachedRowIndex = rowIndex;
@@ -491,7 +574,7 @@ export function familyTableLaneView(
       const rankMarkersOn = rankShown && model.rankMarkers === true;
       const rankWidth = rankShown ? (bound.rankWidth ?? (rankMarkersOn ? 64 : 36)) : 0;
       const layoutSame = held.cachedLayout !== null
-        && held.layoutCols === model.columns
+        && sameColumnSpecs(held.layoutCols, model.columns)
         && held.layoutSettings === bound.settings
         && held.layoutWidth === bound.width
         && held.layoutRankShown === rankShown
@@ -596,6 +679,10 @@ export function familyTableLaneView(
       const selectedKey = bound.selectedKey ?? null;
       const focusedKey = bound.focusedKey ?? null;
 
+      const visibleFirst = Math.max(0, Math.floor(bound.scrollTop / rowHeight));
+      const visibleLast = Math.min(flatRows.length, Math.ceil((bound.scrollTop + bound.height) / rowHeight) + (held.glide.size && glideMs > 0 ? 2 : 0));
+      held.art.requestVisible(collectVisibleCellIcons(flatRows, layout.columns, model.hour, visibleFirst, visibleLast));
+
       let painted = false;
       if (bound.theme) {
         const result = drawFamilyTable(held.ctx, {
@@ -618,7 +705,7 @@ export function familyTableLaneView(
           selectedKey,
           focusedKey,
           empty: model.empty,
-          icons: held.icons,
+          icons: held.art.map,
           dpr,
           hasGroupHeaders: held.cachedHasGroupHeaders,
         }, held.picture);
@@ -658,16 +745,15 @@ export function familyTableLaneView(
       fields.meta = held.metaField!;
 
       if (modelChanged || !held.navField) {
-        const nSig = navSignature(flatRows);
-        if (nSig !== held.navSig || !held.navField) {
-          held.navSig = nSig;
-          const navItems: (readonly [string, string, number, number, string, unknown])[] = [];
+        if (!held.navField || !sameNavItems(held.navItems, flatRows)) {
+          const navItems: NavTuple[] = [];
           for (let i = 0; i < flatRows.length; i++) {
             const item = flatRows[i]!;
             if (item.kind === 'data') {
               navItems.push([item.key, item.name, i, item.isTreeGroup ? (item.isOpen ? 1 : 0) : -1, item.parent ?? '', item.row.meta ?? null]);
             }
           }
+          held.navItems = navItems;
           held.navField = { value: navItems, content: content() };
         }
       }
@@ -703,12 +789,14 @@ export function familyTableLaneView(
         return builtTip;
       };
 
+      const stringifyTip = (payload: unknown): string => JSON.stringify(payload, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v));
+
       if (inspectedKey) {
         if (modelChanged || layoutChanged) held.tipGate.invalidate();
         if (!held.tipField || held.tipGate.due(now, input.speed, inspectedKey)) {
           const tooltip = getTip(inspectedKey);
           const tipPayload = { key: `row:${inspectedKey}`, text: tooltip ? { hour: model.hour, rowKey: inspectedKey, content: tooltip } : null };
-          const tipText = JSON.stringify(tipPayload);
+          const tipText = stringifyTip(tipPayload);
           held.tipField = { value: tipPayload, content: cachedField(held, 'tooltip', tipText, content) };
           held.tipGate.record(now, inspectedKey);
         }
@@ -723,7 +811,7 @@ export function familyTableLaneView(
         if (!held.focusTipField || held.focusTipGate.due(now, input.speed, focusedKey)) {
           const tooltip = getTip(focusedKey);
           const tipPayload = { key: `focus:${focusedKey}`, text: tooltip ? { hour: model.hour, rowKey: focusedKey, content: tooltip } : null };
-          const tipText = JSON.stringify(tipPayload);
+          const tipText = stringifyTip(tipPayload);
           held.focusTipField = { value: tipPayload, content: cachedField(held, 'focusTooltip', tipText, content) };
           held.focusTipGate.record(now, focusedKey);
         }
@@ -786,7 +874,14 @@ export function familyTableLaneView(
       };
 
       const handledPicture = model.rows.length > 0 || model.empty !== undefined;
-      return { ...(handledPicture ? { mode: 'picture' as const } : {}), surfaces: [{ source: held.canvas, content: held.content }], fields, motion: moving, hit };
+      return {
+        ...(handledPicture ? { mode: 'picture' as const } : {}),
+        ...(Number.isFinite(held.cachedModelNextAt) ? { nextChangeAt: held.cachedModelNextAt } : {}),
+        surfaces: [{ source: held.canvas, content: held.content }],
+        fields,
+        motion: moving,
+        hit,
+      };
     },
   };
 }

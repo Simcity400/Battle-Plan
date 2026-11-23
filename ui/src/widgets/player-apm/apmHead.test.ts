@@ -8,7 +8,7 @@ import { EMPTY_SOURCES } from '../../families/contract.ts';
 import { deriveTableTooltip, resolveCellAtHour, resolveTableRows } from '../../families/table/model.ts';
 import { tableSettingsOf } from '../../families/table/settings.ts';
 import type { ApmReply } from '../../generated/dashboard';
-import { apmFromSort, apmHeadNamesKey, apmHeadRows, apmHeadStructure, apmHolders, apmLiveValues, apmPausedView, apmSortValue, clockHead, datedPlayerNames } from './apmHead.ts';
+import { ABSENT_PLAYER_NAME_REASON, apmFromSort, apmHeadNamesKey, apmHeadRows, apmHeadStructure, apmHolders, apmLiveValues, apmPausedView, apmSortValue, clockHead, datedPlayerNameMissing, datedPlayerNames } from './apmHead.ts';
 import { apmTableColumns, apmTableProjection } from './apmProjection.ts';
 
 const bits = (value: number) => { const view = new DataView(new ArrayBuffer(8)); view.setFloat64(0, value, true); return view.getBigInt64(0, true); };
@@ -189,7 +189,7 @@ test('apm-table resolves country at row observation hour including hour 0, gives
 
   const cols = apmTableColumns(true, true, false);
   const tip = deriveTableTooltip(resolveTableRows(model, tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'apm', direction: 'descending' } })), 'p1', cols, new Set(), 400)!;
-  assert.equal(tip.rows.find(r => r.label === 'Country')?.value, 'Weimar');
+  assert.equal(tip.rows.find(r => r.label === 'Country')?.valueState?.text, 'Weimar');
 
   const followOpts = { ...opts, staticSpan: null };
   assert.equal(apmTableProjection.nextChange?.(EMPTY_SOURCES, 5, followOpts), 10, 'trailing window enters gap at 10');
@@ -198,9 +198,12 @@ test('apm-table resolves country at row observation hour including hour 0, gives
   assert.equal(apmTableProjection.project({ answers: new Map(), panels: new Map([['main', reply]]), live: new Map() }, 188, followOpts).empty, undefined, 'trailing [21,188] is past [10,20]');
 });
 
-test('M2: APM graph legend and tooltips use dated player names from the window head rather than branch-end names', () => {
-  const branchRows = [{ id: 'p1', name: 'RenamedAtBranchEnd' }, { id: 'p2', name: 'Bob' }];
-  const registry = [{ id: 'p1', name: 'RenamedAtBranchEnd' }, { id: 'p2', name: 'Bob' }];
+test('M2: APM graph legend and tooltips use dated player names from the window head and mark absent players not recorded with a reason', () => {
+  const branchRows = [
+    { id: 'p1', name: 'RenamedAtBranchEnd', nameMissing: null },
+    { id: 'p2', name: 'LaterAliasOfP2', nameMissing: null },
+  ];
+  const registry = [{ id: 'p1', name: 'RenamedAtBranchEnd' }, { id: 'p2', name: 'LaterAliasOfP2' }];
   const earlyHead = headAnswer([
     { key: 0n, id: 'p1', values: [bits(3.0), bits(3.0), 30n, 0n, bits(10), 1n, 0n, 'GER', 50n, 'EarlyAlias', null] },
   ]);
@@ -210,7 +213,8 @@ test('M2: APM graph legend and tooltips use dated player names from the window h
   assert.notEqual(apmHeadNamesKey(earlyHead), apmHeadNamesKey(laterHead), 'structure key changes when player renames');
   const earlyNames = datedPlayerNames(branchRows, earlyHead, registry);
   assert.equal(earlyNames.get('p1'), 'EarlyAlias', 'dated head name overrides branch-end name');
-  assert.equal(earlyNames.get('p2'), 'Bob', 'players outside the head window keep their branch name');
+  assert.equal(earlyNames.get('p2'), undefined, 'M2: player absent from dated head never gets whole-branch alias from another time');
+  assert.equal(datedPlayerNameMissing(branchRows, earlyHead).get('p2'), ABSENT_PLAYER_NAME_REASON, 'M2: absent player carries a missing-name reason');
   const laterNames = datedPlayerNames(branchRows, laterHead, registry);
   assert.equal(laterNames.get('p1'), 'LaterAlias', 'updates to the new alias at the later window');
 });

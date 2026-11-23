@@ -336,3 +336,108 @@ test('P4: deferUntilAuditDone retains widget audit snapshots across unmount unti
   await capturePictures(false);
   await capturePicturesBatch(100);
 });
+
+test('F2: capturePictures waits for surfaces to acknowledge audit-enabled bindings so clock ticks in the gap emit zero unaudited pictures', async () => {
+  const { auditing, auditingDesired, capturePictures, capturePicturesBatch, onAuditingChange, recordPicture } = await import('../dashboard/pulled.ts');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+  let ackSurface!: () => void;
+  const off = onAuditingChange(active => {
+    if (!active) return;
+    return new Promise<void>(resolve => { ackSurface = resolve; });
+  });
+  try {
+    const starting = capturePictures(true);
+    assert.equal(auditingDesired(), true, 'surfaces are notified to install audit-enabled bindings');
+    assert.equal(auditing(), false, 'sampling has not begun while surface acknowledgement is pending');
+    recordPicture({
+      t: 'picture', at: 1, shownAt: 1, seek: 0, widget: 'gap-tick', surface: 'table', placement: 1, owner: -1,
+      renderer: 'page', head: 10, hour: 10, offset: 0, eligibleHour: 10, drawMs: 0, mode: 'picture', dim: false,
+      reset: 0, binding: 1, inspect: null, tooltip: false, auditMissing: true,
+    });
+    ackSurface();
+    await starting;
+    assert.equal(auditing(), true, 'sampling starts once every visible surface acknowledges');
+    recordPicture({
+      t: 'picture', at: 2, shownAt: 2, seek: 0, widget: 'after-ack', surface: 'table', placement: 1, owner: -1,
+      renderer: 'page', head: 11, hour: 11, offset: 0, eligibleHour: 11, drawMs: 0, mode: 'picture', dim: false,
+      reset: 0, binding: 2, inspect: null, tooltip: false, rows: [{ row: 'A', key: 'A:v', value: 'ok' }],
+    });
+    const captured = await capturePictures(false);
+    assert.deepEqual(captured.map(r => (r.t === 'picture' ? r.widget : r.t)), ['after-ack'], 'gap tick before ack was never recorded as an unaudited failure');
+  } finally {
+    off();
+    await capturePictures(false);
+    await capturePicturesBatch(100);
+  }
+});
+
+test('F3 & P4: captured picture snapshots stay pinned across >512 store creates and across unmount during auditPicturesBatch awaits until verification drains', async () => {
+  const { capturePictures, capturePicturesBatch, recordPicture } = await import('../dashboard/pulled.ts');
+  const { AuditSnapshotStore } = await import('../families/audit.ts');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+  const recorder = Object.create(PerfRecorder.prototype) as PerfRecorder;
+  Object.assign(recorder as unknown as Record<string, unknown>, {
+    readers: new Map(),
+    commitSequence: 0,
+    rowChanges: [],
+    exactReads: new Map(),
+    auditGen: 0,
+    lines: [],
+    buffered: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    lost: { count: 0, bytes: 0, from: Infinity, to: -Infinity },
+    sending: 0,
+    stopped: false,
+    push: () => {},
+    flush: async () => {},
+  });
+
+  const store = new AuditSnapshotStore<{ expected: string }>(8);
+  const pinnedId = store.create({ expected: 'pinned-row' });
+  const stopReader = recorder.reader(5, -1, async (_hour, auditId) => {
+    const snap = store.require(auditId);
+    return { values: new Map([['R:v', snap.expected]]), ordered: true };
+  }, 1, auditId => store.pin(auditId));
+
+  await recorder.beginAudit();
+  let releaseCommitAwait!: () => void;
+  const commitGate = new Promise<void>(resolve => { releaseCommitAwait = resolve; });
+  recorder.structure(
+    'w-commit',
+    'table',
+    { hour: 1, rows: () => ['a'], exact: async () => { await commitGate; return ['a']; } },
+    { hour: 2, rows: () => ['b'], exact: async () => ['b'] },
+  );
+  (recorder as unknown as { commitAudit: unknown[] }).commitAudit.push({
+    at: 1, serial: 1, widgets: ['w-commit'], causes: {},
+    changes: (recorder as unknown as { rowChanges: unknown[] }).rowChanges,
+  });
+
+  recorder.pinPicture(1, 5, -1, pinnedId);
+  recordPicture({
+    t: 'picture', at: 10, shownAt: 10, seek: 0, widget: 'w-pinned', surface: 'table', placement: 5, owner: -1, generation: 1,
+    renderer: 'page', head: 10, hour: 10, offset: 0, eligibleHour: 10, drawMs: 0, mode: 'picture', dim: false,
+    reset: 0, binding: 0, inspect: null, tooltip: false, auditId: pinnedId,
+    rows: [{ row: 'R', key: 'R:v', value: 'pinned-row' }],
+  });
+
+  for (let i = 0; i < 600; i++) store.create({ expected: `scroll-${i}` });
+  assert.equal(store.get(pinnedId)?.expected, 'pinned-row', 'F3: pinned snapshot survives >512 scroll/resize creates');
+  assert.ok(store.size <= 9, `F3: unpinned snapshots still evict to maxEntries + pinned (got ${store.size})`);
+
+  const batchPromise = recorder.auditPicturesBatch(10);
+  await Promise.resolve();
+  stopReader();
+  store.clear();
+  assert.equal(store.get(pinnedId)?.expected, 'pinned-row', 'P4: unmount during auditPicturesBatch awaits keeps pinned snapshot alive');
+  releaseCommitAwait();
+
+  const drained = await batchPromise;
+  assert.equal(drained.done, true);
+  assert.equal(drained.results.length, 1);
+  assert.equal(drained.results[0]!.error, null, 'F3 & P4: audit verifies pinned snapshot with zero error');
+  assert.equal(store.get(pinnedId), undefined, 'F3 & P4: pinned stale snapshot is freed once verification drains');
+  await capturePictures(false);
+  await capturePicturesBatch(100);
+});

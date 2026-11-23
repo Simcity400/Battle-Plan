@@ -113,12 +113,12 @@ test('missing garrison and unresolved manpower report notRecorded with source re
   const settings = tableSettingsOf(undefined, COLUMNS, TABLE_BASE);
   const flat = resolveTableRows(model, settings);
   const tip1 = deriveTableTooltip(flat, '1', model.columns, new Set(), 50)!;
-  assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.value, 'Not recorded');
+  assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.valueState?.kind, 'missing');
   assert.equal(tip1.rows.find(r => r.label === 'Required manpower')?.detail, 'No state garrisons row at this hour');
-  assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.value, 'Not recorded');
+  assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.valueState?.kind, 'missing');
   assert.equal(tip1.rows.find(r => r.label === 'Assigned manpower')?.detail, 'No state garrisons row at this hour');
 
   const tip2 = deriveTableTooltip(flat, '2', model.columns, new Set(), 50)!;
-  assert.equal(tip2.rows.find(r => r.label === 'Required manpower')?.value, '9,007,199,254,740,993');
-  assert.equal(tip2.rows.find(r => r.label === 'Assigned manpower')?.value, '9,007,199,254,740,993');
+  assert.equal(tip2.rows.find(r => r.label === 'Required manpower')?.valueState?.text, '9,007,199,254,740,993');
+  assert.equal(tip2.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '9,007,199,254,740,993');
 });

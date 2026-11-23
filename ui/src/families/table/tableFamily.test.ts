@@ -528,10 +528,10 @@ test('occupied-states projection carries country looks at hour, filter ranges, u
   const flat15 = resolveTableRows(at15, settings);
   const tip = deriveTableTooltip(flat15, '1', at15.columns, new Set(), 15);
   assert.ok(tip);
-  assert.equal(tip.rows.find(r => r.label === 'Resistance')?.value, '25%');
-  assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.value, '0', 'known assigned with no live cell reads 0');
-  assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.value, '87.5%');
-  assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.value, 'Poland');
+  assert.equal(tip.rows.find(r => r.label === 'Resistance')?.valueState?.text, '25%');
+  assert.equal(tip.rows.find(r => r.label === 'Assigned manpower')?.valueState?.text, '0', 'known assigned with no live cell reads 0');
+  assert.equal(tip.rows.find(r => r.label === 'Garrison strength')?.valueState?.text, '87.5%');
+  assert.equal(tip.rows.find(r => r.label === 'Occupied country')?.valueState?.text, 'Poland');
 
   assert.equal(run(25).empty, 'Occupied states unavailable for these countries.');
   assert.equal(run(35).empty, 'Membership not recorded');
@@ -1035,17 +1035,36 @@ test('round 3 regressions: M1 typed scalars, N1 by-construction audit (bar/alert
   assert.equal(selectionUnobservedReason({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [{ firstHour: 10, lastHour: 20 }]), null);
 
   const retainedData = { series: [] };
-  const ctxA = { tag: 'A' };
-  const ctxB = { tag: 'B' };
+  const ctxA = { tag: 'A', role: 'occupier' };
+  const ctxB = { tag: 'B', role: 'occupied' };
+  const surfaceA = { settings: 'sA', looks: 'lA' };
+  const surfaceB = { settings: 'sB', looks: 'lB' };
   const frozenGate = openGate(0, 100);
-  const snap1 = resolveDisplayedStaticSnapshot(null, retainedData, undefined, [10, 50], ctxA, frozenGate);
-  const snapHeld = resolveDisplayedStaticSnapshot(snap1, retainedData, undefined, [20, 60], ctxB, frozenGate);
-  assert.equal(snapHeld, snap1, 'S1: displayed static snapshot stays frozen on [10,50] while newer [20,60] request is in flight');
+  const snap1 = resolveDisplayedStaticSnapshot(null, {
+    data: retainedData, moment: undefined, requestKey: 'req-1', satisfiesCurrent: true,
+    requestedSpan: [10, 50], context: ctxA, gate: frozenGate, extra: surfaceA,
+  });
+  const snapRefreshed = resolveDisplayedStaticSnapshot(snap1, {
+    data: retainedData, moment: undefined, requestKey: 'req-1', satisfiesCurrent: true,
+    requestedSpan: [10, 50], context: ctxB, gate: frozenGate, extra: surfaceB,
+  });
+  assert.equal(snapRefreshed?.context, ctxB, 'F1: when reply satisfies current request, option/role/settings/looks changes refresh immediately');
+  assert.equal(snapRefreshed?.extra, surfaceB, 'F1: refreshed snapshot carries current settings and looks');
+  const snapHeld = resolveDisplayedStaticSnapshot(snapRefreshed, {
+    data: retainedData, moment: undefined, requestKey: 'req-2', satisfiesCurrent: false,
+    requestedSpan: [20, 60], context: ctxA, gate: frozenGate, extra: surfaceA,
+  });
+  assert.equal(snapHeld, snapRefreshed, 'S1: retained reply for superseded request freezes complete context, settings, looks and span');
   assert.deepEqual(snapHeld?.span, [10, 50]);
-  assert.equal(snapHeld?.context, ctxA, 'S1: retained snapshot keeps its original selection context');
-  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, { series: [1] }, JSON.stringify([20, 60, 1]), [20, 60], ctxB, frozenGate);
+  assert.equal(snapHeld?.context, ctxB, 'S1: retained snapshot keeps its frozen context');
+  assert.equal(snapHeld?.extra, surfaceB, 'S1: retained snapshot keeps its frozen settings and looks without leaking current ones');
+  const snap2 = resolveDisplayedStaticSnapshot(snapHeld, {
+    data: { series: [1] }, moment: JSON.stringify([20, 60, 1]), requestKey: 'req-2', satisfiesCurrent: true,
+    requestedSpan: [20, 60], context: ctxA, gate: frozenGate, extra: surfaceA,
+  });
   assert.deepEqual(snap2?.span, [20, 60], 'S1: updates once new reply arrives');
-  assert.equal(snap2?.context, ctxB, 'S1: updated snapshot carries the new selection context');
+  assert.equal(snap2?.context, ctxA, 'S1: updated snapshot carries the new selection context');
+  assert.equal(snap2?.extra, surfaceA, 'S1: updated snapshot carries the new settings and looks');
 
   const emptyGsA = gameScoreProjection.project({
     answers: new Map(),
@@ -1269,4 +1288,230 @@ test('round 4 regressions: P1/N1 country colour & dateless tooltip audit, P2 who
   const mirrorWithIdx = deriveTableMirror(flatMirror, cols, 10, false, { first: 5, count: 2 }, 'R1', 1);
   assert.equal(mirrorWithIdx.rows[0]!.key, 'R1', 'M9: deriveTableMirror uses supplied O(1) focusedIndex');
   assert.equal(mirrorWithIdx.rows[0]!.rowIndex, 1);
+});
+
+test('round 5 regressions: F5 revealAt & child revealAt lane validity, F6 1500-country/20-row viewport art loader & unmount cleanup, F7 local vs stream failure origin, and F8 typed tooltip ValueState & audit', async () => {
+  const { Lane } = await import('../../draw/lane.ts');
+  const { Page } = await import('../../dashboard/follow/page.ts');
+  const { tooltipText } = await import('../../charts/tooltip.ts');
+
+  const cols: TableColumnSpec[] = [
+    { key: 'name', label: 'Name', as: 'flagName', offered: ['flagName'], priority: 0, text: true },
+    { key: 'val', label: 'Value', as: 'plain', offered: ['plain'], priority: 1, numeric: true, format: 'decimal1' },
+  ];
+  const settings = tableSettingsOf(undefined, cols, { density: 'comfortable', overflow: 'tooltip', sort: { column: 'name', direction: 'ascending' } });
+
+  registerTableProjection({
+    kind: 'test-r5-reveal',
+    family: 'table',
+    project(_sources, hour) {
+      return {
+        columns: cols,
+        hour,
+        unsorted: true,
+        rows: [
+          {
+            key: 'parent',
+            name: 'Parent',
+            cells: { name: { value: knownValue('Parent') }, val: { value: knownValue(1) } },
+            initiallyOpen: true,
+            children: [
+              { key: 'child-late', name: 'Child Late', revealAt: 25, cells: { name: { value: knownValue('Child Late') }, val: { value: knownValue(2) } } },
+            ],
+          },
+          { key: 'row-late', name: 'Row Late', revealAt: 40, cells: { name: { value: knownValue('Row Late') }, val: { value: knownValue(3) } } },
+        ],
+      };
+    },
+  });
+
+  registerTableProjection({
+    kind: 'test-r5-art-1500',
+    family: 'table',
+    project(_sources, hour) {
+      return {
+        columns: cols,
+        hour,
+        unsorted: true,
+        rows: Array.from({ length: 1500 }, (_, i) => {
+          const tag = `C${String(i).padStart(4, '0')}`;
+          return {
+            key: tag,
+            name: tag,
+            cells: {
+              name: {
+                value: knownValue(tag),
+                iconSlot: true,
+                country: tag,
+                looks: [
+                  { from: 0, name: tag, flag: `/flags/${tag}_early.png` },
+                  { from: 100, name: tag, flag: `/flags/${tag}_mid.png` },
+                  { from: 200, name: tag, flag: `/flags/${tag}_late.png` },
+                ],
+              },
+              val: { value: knownValue(i + 1) },
+            },
+          };
+        }),
+      };
+    },
+  });
+
+  let throwLocalPaint = false;
+  registerTableProjection({
+    kind: 'test-r5-local-fail',
+    family: 'table',
+    project(_sources, hour) {
+      if (throwLocalPaint) throw new Error('local projection crash');
+      return {
+        columns: cols,
+        hour,
+        rows: [{ key: 'ok', name: 'Ok', cells: { name: { value: knownValue('Ok') }, val: { value: knownValue(7) } } }],
+      };
+    },
+  });
+
+  const prevOffscreen = globalThis.OffscreenCanvas;
+  class FakeOffscreenCanvas {
+    width: number;
+    height: number;
+    constructor(w: number, h: number) { this.width = w; this.height = h; }
+    getContext() { return { ...instrumentedContext().ctx, setTransform() {} }; }
+  }
+  (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = FakeOffscreenCanvas;
+  try {
+    const presented: { widget: number; hour: number; navCount: number; mode: string; failureOrigin?: string }[] = [];
+    const requestedArt: string[] = [];
+    const abortedArt: string[] = [];
+    const closedArt: string[] = [];
+    const artResolvers = new Map<string, (bmp: ImageBitmap) => void>();
+
+    const tableView = familyTableLaneView(() => {}, {
+      artMaxEntries: 40,
+      fetchBitmap: (url, signal) => new Promise<ImageBitmap>((resolve, reject) => {
+        requestedArt.push(url);
+        signal.addEventListener('abort', () => {
+          abortedArt.push(url);
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+        artResolvers.set(url, resolve);
+      }),
+    });
+
+    const page = new Page<{ width: number; close(): void }>({ lanes: 1, post: (_lane, msg) => { if (msg.type === 'frame') lane.frame(msg); } });
+    const lane = new Lane<{ width: number; close(): void }>({
+      lane: 0,
+      lanes: 1,
+      views: () => tableView,
+      crop: async sources => sources.map(s => ({ width: s.width, close() {} })),
+      present: presentation => {
+        for (const entry of presentation.entries) {
+          const nav = entry.fields.nav as readonly unknown[] | undefined;
+          presented.push({ widget: entry.widget, hour: entry.lo, navCount: nav ? nav.length : -1, mode: entry.mode, failureOrigin: entry.failureOrigin });
+        }
+        page.offer(presentation);
+        page.frame();
+      },
+      release: () => {},
+      fail: () => {},
+      later: run => queueMicrotask(run),
+    });
+
+    const flushTicks = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+    page.mount(1, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.mount(1, [], 'table');
+    lane.bind(1, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: null, dated: { h: 10, c: 100 } }, {
+      family: 'table', kind: 'test-r5-reveal', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    });
+    page.publish(10, { playing: false });
+    await flushTicks();
+    assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 1, 'F5: at hour 10 only parent is visible');
+    page.publish(25, { playing: false });
+    await flushTicks();
+    assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 2, 'F5: crossing child revealAt=25 invalidates lane window and reveals child row');
+    page.publish(40, { playing: false });
+    await flushTicks();
+    assert.equal((page.view(1).fields?.nav as readonly unknown[]).length, 3, 'F5: crossing row revealAt=40 invalidates lane window and reveals top-level row');
+
+    page.mount(2, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.mount(2, [], 'table');
+    const viewportHeight20Rows = 20 * 28;
+    lane.bind(2, { generation: 1, surfaces: [{ width: 320, height: viewportHeight20Rows, dpr: 1 }], offset: 0, pin: null, dated: { h: 120, c: 120 } }, {
+      family: 'table', kind: 'test-r5-art-1500', options: {}, settings, sources: {}, width: 320, height: viewportHeight20Rows, scrollLeft: 0, scrollTop: 0,
+    });
+    page.publish(120, { playing: false });
+    await flushTicks();
+    assert.equal(requestedArt.length, 20, `F6: 1500-country model with 20-row viewport requests only 20 visible flags at displayed hour (got ${requestedArt.length})`);
+    assert.ok(requestedArt.every(url => url.endsWith('_mid.png')), 'F6: requests only the displayed hour flag, never past/future look history');
+    for (let i = 0; i < 10; i++) {
+      const url = requestedArt[i]!;
+      artResolvers.get(url)!({ width: 20, height: 14, close() { closedArt.push(url); } } as unknown as ImageBitmap);
+    }
+    await flushTicks();
+    lane.unmount(2);
+    assert.equal(abortedArt.length, 10, 'F6: unmount aborts remaining 10 pending fetches');
+    assert.equal(closedArt.length, 10, 'F6: unmount closes all 10 decoded bitmaps');
+
+    page.mount(3, { route: 0, lane: 0, surfaces: [{ install() {}, clear() {} }] });
+    lane.mount(3, [], 'table');
+    throwLocalPaint = true;
+    lane.bind(3, { generation: 1, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: 10, dated: { h: 10, c: 10 } }, {
+      family: 'table', kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    });
+    page.publish(10, { playing: false });
+    await flushTicks();
+    assert.equal(page.view(3).mode, 'failed', 'F7: projection error puts widget in failed mode');
+    assert.equal(page.view(3).failureOrigin, 'local', 'F7: local projection error carries local failure origin');
+    throwLocalPaint = false;
+    page.retryLocal(3);
+    lane.bind(3, { generation: page.view(3).binding!, surfaces: [{ width: 320, height: 200, dpr: 1 }], offset: 0, pin: 10, dated: { h: 10, c: 10 } }, {
+      family: 'table', kind: 'test-r5-local-fail', options: {}, settings, sources: {}, width: 320, height: 200, scrollLeft: 0, scrollTop: 0,
+    });
+    await flushTicks();
+    assert.equal(page.view(3).mode, 'picture', 'F7: local retry recovers without restarting pipeline');
+
+    page.name(3, 'failed', 'stream broken', 'stream');
+    assert.equal(page.view(3).failureOrigin, 'stream', 'F7: subscription/stream failure carries stream failure origin');
+
+    lane.unmount(1);
+    lane.unmount(3);
+  } finally {
+    (globalThis as unknown as { OffscreenCanvas: unknown }).OffscreenCanvas = prevOffscreen;
+  }
+
+  const layouts = buildColumnLayouts(cols, settings);
+  const mkTipModel = (extraVal: ReturnType<typeof partialValue> | ReturnType<typeof knownValue>) => ({
+    columns: cols,
+    hour: 10,
+    rows: [{
+      key: 'GER',
+      name: 'Germany',
+      cells: { name: { value: knownValue('Germany') }, val: { value: knownValue(10) } },
+      tooltipExtra: [{ label: 'Strength', value: extraVal, format: 'decimal1' as const }],
+    }],
+  });
+  const mAtLeast = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: true }));
+  const mPlainPartial = mkTipModel(partialValue(1.001, 'Missing corps', { atLeast: false }));
+  const mDiffUnderlying = mkTipModel(partialValue(1.004, 'Missing corps', { atLeast: true }));
+  const tipAtLeast = deriveTableTooltip(resolveTableRows(mAtLeast, settings), 'GER', cols, new Set(), 10)!;
+  const extraRow = tipAtLeast.rows.find(r => r.label === 'Strength')!;
+  assert.equal(extraRow.value, undefined, 'F8: tooltip row keeps typed ValueState instead of flattened string');
+  assert.equal(extraRow.valueState?.kind, 'partial');
+  assert.equal(extraRow.valueState?.atLeast, true, 'F8: tooltip row preserves atLeast on partial values');
+  assert.ok(tooltipText(tipAtLeast).includes('at least 1, partial: Missing corps'), 'F8: tooltipText speaks via valueStateText including atLeast');
+
+  const auditA = deriveTableAudit({ model: mAtLeast, flatRows: resolveTableRows(mAtLeast, settings), visibleColumns: layouts });
+  const auditB = deriveTableAudit({ model: mPlainPartial, flatRows: resolveTableRows(mPlainPartial, settings), visibleColumns: layouts });
+  const auditC = deriveTableAudit({ model: mDiffUnderlying, flatRows: resolveTableRows(mDiffUnderlying, settings), visibleColumns: layouts });
+  assert.notEqual(
+    auditA.find(r => r.key === 'GER:_tooltip')?.value,
+    auditB.find(r => r.key === 'GER:_tooltip')?.value,
+    'F8: tooltip audit distinguishes atLeast: true vs false',
+  );
+  assert.notEqual(
+    auditA.find(r => r.key === 'GER:_tooltip')?.value,
+    auditC.find(r => r.key === 'GER:_tooltip')?.value,
+    'F8: tooltip audit distinguishes distinct underlying numeric values that format identically',
+  );
 });

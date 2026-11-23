@@ -13,39 +13,56 @@ export function noteFrame(at: number) {
 }
 
 let audit: DrawSample[] | null = null;
+let auditDesired = false;
+let auditSession = 0;
 let draining: DrawSample[] | null = null;
 let auditOffset = 0;
-const auditListeners = new Set<(active: boolean) => void>();
+const auditListeners = new Set<(active: boolean) => void | Promise<void>>();
 
-function notifyAuditing(active: boolean) {
-  for (const listener of [...auditListeners]) listener(active);
+function notifyAuditing(active: boolean): Promise<void>[] {
+  const pending: Promise<void>[] = [];
+  for (const listener of [...auditListeners]) {
+    const result = listener(active);
+    if (result && typeof (result as Promise<void>).then === 'function') pending.push(result as Promise<void>);
+  }
+  return pending;
 }
 
 export const auditing = () => audit !== null;
-export function onAuditingChange(listener: (active: boolean) => void): () => void {
+export const auditingDesired = () => auditDesired;
+export function onAuditingChange(listener: (active: boolean) => void | Promise<void>): () => void {
   auditListeners.add(listener);
   return () => { auditListeners.delete(listener); };
 }
 export function recordPicture(sample: DrawSample) { audit?.push(sample); }
 
-export function capturePictures(start: boolean): Promise<DrawSample[]> {
-  const was = audit !== null;
+export async function capturePictures(start: boolean): Promise<DrawSample[]> {
   if (start) {
-    audit = []; draining = null; auditOffset = 0;
-    if (!was) notifyAuditing(true);
-    return Promise.resolve([]);
+    const session = ++auditSession;
+    audit = null; draining = null; auditOffset = 0;
+    auditDesired = true;
+    const ready = notifyAuditing(true);
+    if (ready.length) await Promise.all(ready);
+    if (auditSession !== session || !auditDesired) return [];
+    audit = [];
+    return [];
   }
+  auditSession++;
+  const wasDesired = auditDesired;
   const records = audit ?? draining ?? [];
   audit = null; draining = null; auditOffset = 0;
-  if (was) notifyAuditing(false);
-  return Promise.resolve(records);
+  auditDesired = false;
+  if (wasDesired) notifyAuditing(false);
+  return records;
 }
 
 export function capturePicturesBatch(limit: number): Promise<{ records: DrawSample[]; done: boolean }> {
   if (!draining) {
-    const was = audit !== null;
+    auditSession++;
+    const wasDesired = auditDesired;
     draining = audit ?? []; audit = null; auditOffset = 0;
-    if (was) notifyAuditing(false);
+    auditDesired = false;
+    if (wasDesired) notifyAuditing(false);
   }
   const count = Math.max(1, Math.floor(limit));
   const chunk = draining.slice(auditOffset, auditOffset + count);

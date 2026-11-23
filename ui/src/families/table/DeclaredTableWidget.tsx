@@ -29,6 +29,7 @@ import { useWidgetSkeleton } from '../../dashboard/widgetFrame.tsx';
 import { useRegion, useRegionCoverage } from '../../dashboard/widgetTime';
 import { perfLog } from '../../shell/perf.ts';
 import type { FamilySources, FamilySourceSubscription } from '../contract.ts';
+import { overlapsHourRanges } from '../holders.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import {
   buildDatedCountryLooks,
@@ -49,6 +50,7 @@ import {
   type TableWidgetDeclaration,
 } from './declaration.ts';
 import FamilyTableHost from './FamilyTableHost.tsx';
+import type { TableColumnSpec } from './model.ts';
 import { encodeTableSettings, TABLE_SETTINGS_KEY, tableSettingsOf, type TableSettings } from './settings.ts';
 
 const NO_TAGS: readonly string[] = [];
@@ -382,7 +384,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     rankedAt: (hour: number) => (effectiveMulti ? rankedCandidates(effectiveMulti, hour, effectiveMulti.tags) : NO_TAGS),
     reason: filterMatch?.reason ?? effectiveMulti?.reason ?? selectionUnobservedReason(widget.countries, filterUnobserved ?? effectiveMulti?.unobserved) ?? null,
     known: (first: number, last: number) => effectiveMulti?.known(first, last) ?? true,
-    unobservedIn: (first: number, last: number) => unobserved.some(([spanFirst, spanLast]) => spanFirst <= last && first <= spanLast),
+    unobservedIn: (first: number, last: number) => overlapsHourRanges(unobserved, first, last),
   }), [widget.countries, effectiveMulti, filterUnobserved, holders, allTags, membership, membershipRuns, unobserved, filter, labels, factionData, filterMatch?.reason]);
 
   const staticRange = useMemo(() => {
@@ -539,6 +541,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     track?.source,
   );
 
+  const staticReqKey = useMemo(() => (staticReq ? JSON.stringify(staticReq) : null), [staticReq]);
   const expectedStaticKey = useMemo(() => {
     if (!staticReq || !dynamicKeys.length) return null;
     const params = staticReq.params as Record<string, unknown>;
@@ -552,40 +555,61 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     [gate.open, track, countryTag, singleCountry?.aliases, singleCountry?.historyHeld],
   );
 
-  const pendingStaticByMomentRef = useRef(new Map<string, { readonly context: DeclaredTableContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null }>());
+  interface FrozenStaticSurface {
+    readonly columns: readonly TableColumnSpec[];
+    readonly settings: TableSettings;
+    readonly countryLooks: CountryLooksMap | undefined;
+  }
+
+  const currentSurface = useMemo<FrozenStaticSurface>(
+    () => ({ columns, settings, countryLooks: wantsColours ? labels : undefined }),
+    [columns, settings, wantsColours, labels],
+  );
+
+  const pendingStaticByMomentRef = useRef(
+    new Map<string, { readonly requestKey: string | null; readonly context: DeclaredTableContext<TAux>; readonly gate: FrozenGate; readonly span: readonly [number, number] | null; readonly extra: FrozenStaticSurface }>(),
+  );
   if (!following && staticReq && ctx) {
     const key = expectedStaticKey ?? '__single__';
     pendingStaticByMomentRef.current.set(key, {
+      requestKey: staticReqKey,
       context: ctx,
       gate: frozenGate,
       span: staticRange ? [staticRange.first, staticRange.last] as const : null,
+      extra: currentSurface,
     });
     if (pendingStaticByMomentRef.current.size > 32) {
       pendingStaticByMomentRef.current.delete(pendingStaticByMomentRef.current.keys().next().value!);
     }
   }
 
-  const displayedStaticRef = useRef<DisplayedStaticSnapshot<DeclaredTableContext<TAux>> | null>(null);
+  const displayedStaticRef = useRef<DisplayedStaticSnapshot<DeclaredTableContext<TAux>, FrozenStaticSurface> | null>(null);
   const displayedStatic = useMemo(() => {
     if (following || staticProduct.data === undefined || !ctx) {
       displayedStaticRef.current = null;
       return null;
     }
-    const matched = pendingStaticByMomentRef.current.get(staticProduct.moment ?? '__single__');
-    const sourceCtx = matched?.context ?? ctx;
-    const sourceGate = matched?.gate ?? frozenGate;
-    const requested = matched?.span ?? (staticRange ? [staticRange.first, staticRange.last] as const : null);
-    const next = resolveDisplayedStaticSnapshot(
-      displayedStaticRef.current,
-      staticProduct.data,
-      staticProduct.moment,
-      requested,
-      sourceCtx,
-      sourceGate,
-    );
+    const satisfiesCurrent = staticReq !== null && !staticHeld;
+    const matched = !satisfiesCurrent ? pendingStaticByMomentRef.current.get(staticProduct.moment ?? '__single__') : undefined;
+    const sourceCtx = satisfiesCurrent ? ctx : (matched?.context ?? ctx);
+    const sourceGate = satisfiesCurrent ? frozenGate : (matched?.gate ?? frozenGate);
+    const sourceExtra = satisfiesCurrent ? currentSurface : (matched?.extra ?? currentSurface);
+    const requested = satisfiesCurrent
+      ? (staticRange ? [staticRange.first, staticRange.last] as const : null)
+      : (matched?.span ?? (staticRange ? [staticRange.first, staticRange.last] as const : null));
+    const next = resolveDisplayedStaticSnapshot(displayedStaticRef.current, {
+      data: staticProduct.data,
+      moment: staticProduct.moment,
+      requestKey: satisfiesCurrent ? staticReqKey : (matched?.requestKey ?? staticReqKey),
+      satisfiesCurrent,
+      requestedSpan: requested,
+      context: sourceCtx,
+      gate: sourceGate,
+      extra: sourceExtra,
+    });
     displayedStaticRef.current = next;
     return next;
-  }, [following, staticProduct.data, staticProduct.moment, staticRange, ctx, frozenGate]);
+  }, [following, staticReq, staticReqKey, staticHeld, staticProduct.data, staticProduct.moment, staticRange, ctx, frozenGate, currentSurface]);
 
   const staticSources = useMemo<{ readonly sources: FamilySources; readonly hour: number; readonly span?: readonly [number, number] | null } | null>(() => {
     if (following || !displayedStatic) return null;
@@ -618,6 +642,9 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     return ctx;
   }, [ctx, following, displayedStatic, retainedStaticSpan]);
   const displayedGate = !following && displayedStatic ? displayedStatic.gate : frozenGate;
+  const displayedColumns = !following && displayedStatic ? displayedStatic.extra.columns : columns;
+  const displayedSettings = !following && displayedStatic ? displayedStatic.extra.settings : settings;
+  const displayedCountryLooks = !following && displayedStatic ? displayedStatic.extra.countryLooks : (wantsColours ? labels : undefined);
 
   const exactSources = useMemo(() => {
     if (!displayedCtx || !perfLog) return undefined;
@@ -643,7 +670,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
   );
 
   const contextMenuItems = useCallback(
-    (_key: string, _name: string, atHour: number) => (declaration.jumpToDate && track ? [jumpItem(runtime, track.id, atHour)] : []),
+    (_key: string | null, _name: string | null, atHour: number) => (declaration.jumpToDate && track ? [jumpItem(runtime, track.id, atHour)] : []),
     [declaration.jumpToDate, runtime, track],
   );
 
@@ -730,8 +757,8 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     widget={widget}
     runtime={runtime}
     active={active}
-    columns={columns}
-    settings={settings}
+    columns={displayedColumns}
+    settings={displayedSettings}
     onSettings={setOption && declaration.settings.kind !== 'fixed' ? onSettings : undefined}
     editableColumns={declaration.settings.kind === 'table' || declaration.settings.kind === 'custom'}
     subscriptions={followPlan.subs}
@@ -741,7 +768,7 @@ export default function DeclaredTableWidget<TProjectionOptions, TAux>({
     offset={track?.axisOffset ?? 0}
     pin={following ? null : (declaration.source.kind === 'panel' ? (staticSources?.hour ?? pinHour) : staticSources?.hour ?? null)}
     bounds={bounds}
-    countryLooks={wantsColours ? labels : undefined}
+    countryLooks={displayedCountryLooks}
     selectedKey={selectedKey}
     onActivate={onActivate}
     contextMenuItems={declaration.jumpToDate ? contextMenuItems : undefined}

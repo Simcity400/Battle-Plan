@@ -739,6 +739,31 @@ export function hitFamilyTable(
   return { kind: 'row', rowKey: item.key };
 }
 
+export function collectVisibleCellIcons(
+  rows: readonly FlatTableRow[],
+  columns: readonly Pick<FamilyColumnLayout, 'key' | 'display'>[],
+  hour: number,
+  first: number,
+  last: number,
+): string[] {
+  const urls = new Set<string>();
+  const start = Math.max(0, first);
+  const end = Math.min(rows.length, last);
+  for (let i = start; i < end; i++) {
+    const item = rows[i]!;
+    if (item.kind !== 'data') continue;
+    for (let c = 0; c < columns.length; c++) {
+      const col = columns[c]!;
+      if (!showsIcon(col.display)) continue;
+      const cell = item.row.cells[col.key];
+      if (!cell?.iconSlot) continue;
+      const resolved = resolveCellAtHour(cell, hour);
+      if (resolved.icon) urls.add(resolved.icon);
+    }
+  }
+  return [...urls];
+}
+
 export function collectCellIcons(rows: readonly FlatTableRow[]): string[] {
   const urls = new Set<string>();
   for (const item of rows) {

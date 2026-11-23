@@ -21,7 +21,7 @@ import {
   zeroValue,
 } from './value.ts';
 import { canonicalAuditData } from './audit.ts';
-import { auditValue, formatValueState, spokenValue } from './valueFormat.ts';
+import { auditValue, formatScalar, formatValueState, spokenValue, type ValueFormat } from './valueFormat.ts';
 
 const answer = (spec: Spec) => parseFollowed(message(100, [{ id: 1, answer: spec }])).answers[0]!.answer;
 
@@ -192,4 +192,58 @@ test('canonicalAuditData encodes Map and Set deterministically with tags and thr
   assert.throws(() => canonicalAuditData(new CustomBox(1)), /Unsupported audit value type: CustomBox/);
   assert.throws(() => canonicalAuditData(Symbol('s')), /Unsupported audit value type: symbol/);
   assert.throws(() => canonicalAuditData(() => 1), /Unsupported audit value type: function/);
+});
+
+test('F4: canonicalAuditData recognises family values only by exact plain-object shape and never drops extra fields or skips prototype checks', () => {
+  const recA = { kind: 'partial', value: 10, reason: 'gap', hour: 100 };
+  const recB = { kind: 'partial', value: 10, reason: 'gap', hour: 200 };
+  assert.notEqual(canonicalAuditData(recA), canonicalAuditData(recB), 'extra field hour is preserved and differentiates records');
+
+  const knownExtraA = { kind: 'known', value: 5, extra: 'a' };
+  const knownExtraB = { kind: 'known', value: 5, extra: 'b' };
+  assert.notEqual(canonicalAuditData(knownExtraA), canonicalAuditData(knownExtraB), 'extra fields on known-like plain objects are not dropped');
+
+  class FakePartial {
+    kind = 'partial' as const;
+    value = 1;
+    reason = 'gap';
+  }
+  assert.throws(() => canonicalAuditData(new FakePartial()), /Unsupported audit value type: FakePartial/);
+  assert.equal(
+    canonicalAuditData(partialValue(10, 'gap', { atLeast: true })),
+    JSON.stringify(['partial', ['int', '10'], 'gap', true]),
+  );
+});
+
+test('M1: every value format avoids exponent notation for 1e21, 1e-7, and MAX_SAFE_INTEGER + 2', () => {
+  const formats: ValueFormat[] = [
+    'integer',
+    'fixed5Percent',
+    'fixed5Amount',
+    'fixed5Width',
+    'clockSeconds',
+    'decimal1',
+    'percent2',
+    { decimals: 2 },
+    { decimals: 2, percent: true },
+    { decimals: 0, maxDecimals: 2 },
+    { decimals: 0, maxDecimals: 2, signed: true },
+  ];
+  const samples = [1e21, 1e-7, Number.MAX_SAFE_INTEGER + 2];
+  for (const format of formats) {
+    for (const sample of samples) {
+      const text = formatScalar(sample, format);
+      assert.equal(/[eE][+-]?\d/.test(text), false, `format ${JSON.stringify(format)} on ${sample} produced exponent string: ${text}`);
+    }
+  }
+  assert.equal(formatScalar(1e21, { decimals: 2 }), '10,000,000,000,000,000,000');
+  assert.equal(formatScalar(1e21, { decimals: 2, percent: true }), '1,000,000,000,000,000,000,000%');
+  assert.equal(formatScalar(1e21, { decimals: 0, maxDecimals: 2 }), '1,000,000,000,000,000,000,000');
+  assert.equal(formatScalar(1e-7, { decimals: 2 }), '0');
+  assert.equal(formatScalar(1e-7, 'decimal1'), '0');
+  assert.equal(formatScalar(1e-7, 'percent2'), '0.00%');
+  assert.equal(formatScalar(1e-7, { decimals: 0, maxDecimals: 2 }), '0');
+  assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, 'integer'), '9,007,199,254,740,992');
+  assert.equal(formatScalar(Number.MAX_SAFE_INTEGER + 2, { decimals: 2 }), '90,071,992,547,409.92');
+  assert.equal(formatScalar(1e21, 'clockSeconds'), '277777777777777777:46:40');
 });

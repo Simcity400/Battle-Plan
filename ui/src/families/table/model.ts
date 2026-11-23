@@ -20,7 +20,7 @@ import {
   type Value,
 } from '../value.ts';
 import { canonicalAuditData } from '../audit.ts';
-import { formatValueState, spokenValue, type ValueFormat } from '../valueFormat.ts';
+import { spokenValue, valueStateProps, type ValueFormat } from '../valueFormat.ts';
 import type { FamilyColumnLayout } from './layout.ts';
 import { lookAt, type CountryLook, type CountryLooksMap } from '../looks.ts';
 import { measuresColumn, type TableColumnDefaults, type TableSettings, type TableSortDirection } from './settings.ts';
@@ -95,6 +95,7 @@ export interface TableModel {
   readonly columns: readonly TableColumnSpec[];
   readonly rows: readonly TableRow[];
   readonly hour: number;
+  readonly nextChangeAt?: number;
   readonly refused?: string;
   readonly empty?: string;
   readonly emptyDetail?: string;
@@ -285,14 +286,18 @@ export function resolveTableRows(
 }
 
 export function nextTableChange(model: TableModel, hour: number): number {
-  let soonest = Infinity;
+  let soonest = model.nextChangeAt !== undefined && model.nextChangeAt > hour ? model.nextChangeAt : Infinity;
   const walk = (rows: readonly TableRow[]) => {
-    for (const row of rows) {
-      if (row.revealAt !== undefined && row.revealAt > hour) soonest = Math.min(soonest, row.revealAt);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]!;
+      if (row.revealAt !== undefined && row.revealAt > hour && row.revealAt < soonest) soonest = row.revealAt;
       for (const key in row.cells) {
-        const looks = row.cells[key]!.looks;
-        if (!looks) continue;
-        for (const look of looks) if (look.from > hour) soonest = Math.min(soonest, look.from);
+        const cell = row.cells[key]!;
+        if (!cell.looks || cell.lookHour !== undefined) continue;
+        for (let j = 0; j < cell.looks.length; j++) {
+          const from = cell.looks[j]!.from;
+          if (from > hour && from < soonest) soonest = from;
+        }
       }
       if (row.children) walk(row.children);
     }
@@ -543,18 +548,15 @@ export function deriveTableMirror(
 }
 
 function tooltipRowFromValue(label: string, value: Value, format?: ValueFormat, extra?: Partial<TooltipRow>): TooltipRow {
-  const formatted = formatValueState(value, format);
-  switch (formatted.kind) {
-    case 'known':
-    case 'zero':
-      return { label, value: formatted.text, ...extra };
-    case 'notRecorded':
-      return { label, value: 'Not recorded', detail: formatted.reason, tone: 'muted', ...extra };
-    case 'notApplicable':
-      return { label, value: '\u2014', detail: formatted.reason, tone: 'muted', ...extra };
-    case 'partial':
-      return { label, value: `${formatted.text} (partial)`, detail: formatted.reason, ...extra };
-  }
+  const state = valueStateProps(value, format);
+  return {
+    label,
+    rawValue: value,
+    valueState: state,
+    ...(state.reason ? { detail: state.reason } : {}),
+    ...(state.kind === 'missing' || state.kind === 'notApplicable' ? { tone: 'muted' as const } : {}),
+    ...extra,
+  };
 }
 
 export function deriveRowTooltip(

@@ -321,27 +321,8 @@ export function datedPlaybackVerdict(windows, records, { legacy = false } = {}) 
       }
       const audited = auditByWidget.get(widget.id) ?? [], samples = audited.filter(s => Number.isFinite(s.at) && timed(s));
       const auditedPairs = new Set(samples.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
-      const auditedKeys = new Set(samples.filter(rendered).map(s => `${s.generation ?? 0}\u0000${s.placement}\u0000${s.owner}\u0000${s.at}`));
       const paintedInWindow = reports.filter(r => r.mode === 'picture' && !r.detached && Number.isFinite(r.hour) && timed(r));
-      const paintedChecks = new Map();
-      for (const r of paintedInWindow) {
-        const gen = r.generation ?? 0;
-        if (r.surface in RENDERER_OWNER) {
-          const wantOwner = RENDERER_OWNER[r.surface];
-          const groupKey = `${gen}\u0000${r.placement}\u0000${wantOwner}\u0000${r.at}`;
-          const prev = paintedChecks.get(groupKey);
-          const missingHere = r.owner === wantOwner && r.auditMissing === true;
-          paintedChecks.set(groupKey, { auditMissing: (prev?.auditMissing ?? false) || missingHere });
-        } else {
-          const key = `${gen}\u0000${r.placement}\u0000${r.owner}\u0000${r.at}`;
-          const prev = paintedChecks.get(key);
-          paintedChecks.set(key, { auditMissing: (prev?.auditMissing ?? false) || r.auditMissing === true });
-        }
-      }
-      let unauditedPictures = 0;
-      for (const [key, state] of paintedChecks) {
-        if (state.auditMissing || !auditedKeys.has(key)) unauditedPictures++;
-      }
+      const unauditedPictures = countUnauditedPictures(paintedInWindow, samples);
       const exact = required.size > 0 && [...required].every(surface => observedSurfaces.has(surface))
         && [...required].every(surface => samples.some(s => s.surface === surface && rendered(s)))
         && [...observedPairs].every(pair => auditedPairs.has(pair)) && unauditedPictures === 0 && audited.every(s => s.error === null);
@@ -434,6 +415,30 @@ function checkCostClock(w, winRecords) {
     return { ok: false, hps: pace.hps, elapsedSec, reason: `measured clock speed ${pace.hps?.toFixed(1) ?? 'unknown'} h/s, expected 1,440 h/s` };
   }
   return { ok: true, hps: pace.hps, elapsedSec, reason: null };
+}
+
+function countUnauditedPictures(paintedInWindow, auditedSamples) {
+  const auditedKeys = new Set(auditedSamples.filter(rendered).map(s => `${s.generation ?? 0}\u0000${s.placement}\u0000${s.owner}\u0000${s.at}`));
+  const paintedChecks = new Map();
+  for (const r of paintedInWindow) {
+    const gen = r.generation ?? 0;
+    if (r.surface in RENDERER_OWNER) {
+      const wantOwner = RENDERER_OWNER[r.surface];
+      const groupKey = `${gen}\u0000${r.placement}\u0000${wantOwner}\u0000${r.at}`;
+      const prev = paintedChecks.get(groupKey);
+      const missingHere = r.owner === wantOwner && r.auditMissing === true;
+      paintedChecks.set(groupKey, { auditMissing: (prev?.auditMissing ?? false) || missingHere });
+    } else {
+      const key = `${gen}\u0000${r.placement}\u0000${r.owner}\u0000${r.at}`;
+      const prev = paintedChecks.get(key);
+      paintedChecks.set(key, { auditMissing: (prev?.auditMissing ?? false) || r.auditMissing === true });
+    }
+  }
+  let unauditedPictures = 0;
+  for (const [key, state] of paintedChecks) {
+    if (state.auditMissing || !auditedKeys.has(key)) unauditedPictures++;
+  }
+  return unauditedPictures;
 }
 
 export function summarizeWidgetCosts(windows, records, { baseline = null, baselines = null, profile = null, confinement = null, ungated = false } = {}) {
@@ -584,9 +589,8 @@ export function summarizeWidgetCosts(windows, records, { baseline = null, baseli
     const postWindowAudit = w.from != null && w.to != null ? audited.filter(s => Number.isFinite(s.at) && s.at > w.to) : [];
     const observedPairs = new Set(playingPictures.filter(r => !r.detached).map(r => `${r.surface}\u0000${r.placement}`));
     const auditedPairs = new Set(inWindowAudit.filter(rendered).map(s => `${s.surface}\u0000${s.placement}`));
-    const auditedKeys = new Set(inWindowAudit.filter(rendered).map(s => `${s.placement}\u0000${s.owner}\u0000${s.at}`));
-    const paintedInWindow = playingPictures.filter(r => r.mode === 'picture' && !r.detached && Number.isFinite(r.hour) && rendered(r));
-    const unauditedPictures = paintedInWindow.filter(r => r.auditMissing || !auditedKeys.has(`${r.placement}\u0000${r.owner}\u0000${r.at}`)).length;
+    const paintedInWindow = playingPictures.filter(r => r.mode === 'picture' && !r.detached && Number.isFinite(r.hour));
+    const unauditedPictures = countUnauditedPictures(paintedInWindow, inWindowAudit);
     const inWindowAuditError = inWindowAudit.find(s => s.error !== null)?.error ?? null;
     const postWindowAuditErrors = postWindowAudit.filter(s => s.error !== null).map(s => ({ at: s.at, surface: s.surface, placement: s.placement, error: s.error }));
     const widgetErrors = w.from != null && w.to != null && w.widget

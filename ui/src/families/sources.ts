@@ -34,30 +34,54 @@ export function resolveRetainedHeadSpan(
   return fallback;
 }
 
-export interface DisplayedStaticSnapshot<TContext = unknown> {
+export interface DisplayedStaticSnapshot<TContext = unknown, TExtra = unknown> {
   readonly data: unknown;
   readonly moment: string | undefined;
+  readonly requestKey: string | null;
   readonly span: readonly [number, number] | null;
   readonly context: TContext;
   readonly gate: FrozenGate;
+  readonly extra: TExtra;
 }
 
-export function resolveDisplayedStaticSnapshot<TContext>(
-  previous: DisplayedStaticSnapshot<TContext> | null,
-  data: unknown,
-  moment: string | undefined,
-  requestedSpan: readonly [number, number] | null,
-  context: TContext,
-  gate: FrozenGate,
-): DisplayedStaticSnapshot<TContext> | null {
-  if (data === undefined) return null;
-  if (previous && previous.data === data && previous.moment === moment) return previous;
+export interface DisplayedStaticInput<TContext, TExtra> {
+  readonly data: unknown;
+  readonly moment: string | undefined;
+  readonly requestKey: string | null;
+  readonly satisfiesCurrent: boolean;
+  readonly requestedSpan: readonly [number, number] | null;
+  readonly context: TContext;
+  readonly gate: FrozenGate;
+  readonly extra: TExtra;
+}
+
+export function resolveDisplayedStaticSnapshot<TContext, TExtra = undefined>(
+  previous: DisplayedStaticSnapshot<TContext, TExtra> | null,
+  input: DisplayedStaticInput<TContext, TExtra>,
+): DisplayedStaticSnapshot<TContext, TExtra> | null {
+  if (input.data === undefined) return null;
+  if (input.satisfiesCurrent) {
+    return {
+      data: input.data,
+      moment: input.moment,
+      requestKey: input.requestKey,
+      span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
+      context: input.context,
+      gate: input.gate,
+      extra: input.extra,
+    };
+  }
+  if (previous && previous.data === input.data && previous.moment === input.moment) {
+    return previous;
+  }
   return {
-    data,
-    moment,
-    span: resolveRetainedHeadSpan(moment, requestedSpan),
-    context,
-    gate,
+    data: input.data,
+    moment: input.moment,
+    requestKey: input.requestKey,
+    span: resolveRetainedHeadSpan(input.moment, input.requestedSpan),
+    context: input.context,
+    gate: input.gate,
+    extra: input.extra,
   };
 }
 

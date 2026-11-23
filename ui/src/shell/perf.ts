@@ -89,6 +89,8 @@ function tileOf(product: unknown, params: unknown): { key: string; bins: unknown
 
 export interface ExactRead { values: ReadonlyMap<string, string>; ranked?: boolean; ordered?: boolean }
 export type ExactPicture = (hour: number, auditId?: number) => Promise<ExactRead | null>;
+export type AuditSnapshotPin = (auditId: number) => (() => void) | undefined;
+interface ReaderRegistration { readonly exact: ExactPicture; readonly pin?: AuditSnapshotPin }
 type ShownRow = NonNullable<PictureSample['rows']>[number];
 
 export function pictureError(surface: string, rows: readonly ShownRow[], exact: ExactRead | null | undefined): string | null {
@@ -114,7 +116,7 @@ type PictureAuditResult = { widget: string; surface: string; placement: number; 
 
 const readerKey = (generation: number | undefined, id: number, owner: number) => (generation ?? 0) + '/' + id + '/' + owner;
 
-function shouldAuditPicture(record: DrawSample, activeReaders?: Map<string, ExactPicture>): boolean {
+function shouldAuditPicture(record: DrawSample, activeReaders?: Map<string, ReaderRegistration>): boolean {
   if (record.t !== 'picture' || record.hour === null) return false;
   if (record.rows) return true;
   if (record.mode !== 'picture' || record.detached) return false;
@@ -125,14 +127,23 @@ const READERS_HELD = 1024;
 const EXACT_READS_HELD = 64;
 
 export class PerfRecorder {
-  private readers = new Map<string, ExactPicture>();
-  private auditReaders?: Map<string, ExactPicture>;
+  private readers = new Map<string, ReaderRegistration>();
+  private auditReaders?: Map<string, ReaderRegistration>;
+  private auditActive = false;
+  private capturePins?: (() => void)[];
   private commitSequence = 0;
   private commitAudit?: { at: number; serial: number; widgets: string[]; causes: object; changes: RowChange[]; input?: string }[];
   private rowChanges: RowChange[] = [];
   private auditGen = 0;
-  private pictureAudit?: { gen: number; readers?: Map<string, ExactPicture>; pictures: AuditedPicture[]; done: boolean };
+  private pictureAudit?: { gen: number; readers?: Map<string, ReaderRegistration>; pictures: AuditedPicture[]; done: boolean };
   private auditCleanups?: (() => void)[];
+
+  private releaseCapturePins() {
+    const pins = this.capturePins;
+    if (!pins?.length) return;
+    this.capturePins = [];
+    for (const release of pins) release();
+  }
 
   private runAuditCleanups() {
     const pending = this.auditCleanups;
@@ -142,11 +153,19 @@ export class PerfRecorder {
   }
 
   deferUntilAuditDone(cleanup: () => void) {
-    if (!this.auditReaders && !this.pictureAudit) {
+    if (!this.auditActive) {
       cleanup();
       return;
     }
     (this.auditCleanups ??= []).push(cleanup);
+  }
+
+  pinPicture(generation: number | undefined, id: number, owner: number, auditId: number | undefined) {
+    if (!this.auditActive || auditId === undefined) return;
+    const key = readerKey(generation, id, owner);
+    const entry = this.auditReaders?.get(key) ?? this.readers.get(key);
+    const release = entry?.pin?.(auditId);
+    if (release) (this.capturePins ??= []).push(release);
   }
 
   structure(widget: string, source: string, previous: StructureRead, current: StructureRead, placement?: number) {
@@ -154,14 +173,15 @@ export class PerfRecorder {
       this.rowChanges.push({ widget, source, previous, current, ...placement !== undefined ? { placement } : {} });
   }
 
-  reader(id: number, owner: number, exact: ExactPicture | null, generation = 0): () => void {
+  reader(id: number, owner: number, exact: ExactPicture | null, generation = 0, pin?: AuditSnapshotPin): () => void {
     const key = readerKey(generation, id, owner);
     this.readers.delete(key);
     if (!exact) return () => {};
-    this.readers.set(key, exact);
+    const registration: ReaderRegistration = pin ? { exact, pin } : { exact };
+    this.readers.set(key, registration);
     if (this.readers.size > READERS_HELD) this.readers.delete(this.readers.keys().next().value!);
-    this.auditReaders?.set(key, exact);
-    return () => { if (this.readers.get(key) === exact) this.readers.delete(key); };
+    this.auditReaders?.set(key, registration);
+    return () => { if (this.readers.get(key) === registration) this.readers.delete(key); };
   }
   dropGeneration(generation: number) {
     const prefix = generation + '/';
@@ -187,12 +207,15 @@ export class PerfRecorder {
 
   async beginAudit() {
     const gen = ++this.auditGen;
+    this.auditActive = false;
     this.pictureAudit = undefined;
     this.auditReaders = undefined;
+    this.releaseCapturePins();
     this.runAuditCleanups();
     this.exactReads.clear();
     this.rowChanges = [];
     this.commitAudit = [];
+    this.auditActive = true;
     this.auditReaders = new Map(this.readers);
     const { capturePictures } = await import('../dashboard/pulled.ts');
     if (this.auditGen !== gen) return;
@@ -205,7 +228,6 @@ export class PerfRecorder {
       const { capturePicturesBatch } = await import('../dashboard/pulled.ts');
       if (this.auditGen !== gen) return { done: true, results: [] };
       const readers = this.auditReaders;
-      this.auditReaders = undefined;
       const commits = this.commitAudit ?? [];
       this.commitAudit = undefined;
       const checks = new WeakMap<StructureRead, Promise<boolean>>();
@@ -277,7 +299,7 @@ export class PerfRecorder {
       let error: string | null;
       try {
         error = rows
-          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.(hour, record.auditId))
+          ? pictureError(surface, rows, await work.readers?.get(readerKey(record.generation, placement, owner))?.exact(hour, record.auditId))
           : 'Painted picture emitted without audit rows';
       }
       catch (cause) { error = String(cause); }
@@ -285,7 +307,14 @@ export class PerfRecorder {
     });
     if (this.auditGen !== gen || this.pictureAudit !== work) return { done: true, results: [] };
     const done = work.done && work.pictures.length === 0;
-    if (done) { this.pictureAudit = undefined; this.exactReads.clear(); this.runAuditCleanups(); }
+    if (done) {
+      this.pictureAudit = undefined;
+      this.auditReaders = undefined;
+      this.auditActive = false;
+      this.exactReads.clear();
+      this.releaseCapturePins();
+      this.runAuditCleanups();
+    }
     return { done, results: results.filter(entry => entry !== null) };
   }
   async auditPictures(): Promise<PictureAuditResult[]> {
@@ -555,8 +584,10 @@ export class PerfRecorder {
   async finish(): Promise<boolean> {
     await this.settleFrames();
     this.stopped = true;
+    this.auditActive = false;
     this.auditReaders = undefined;
     this.pictureAudit = undefined;
+    this.releaseCapturePins();
     this.runAuditCleanups();
     clearInterval(this.timer);
     attributeCommits(null);

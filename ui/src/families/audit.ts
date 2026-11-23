@@ -1,24 +1,59 @@
 import { useSyncExternalStore } from 'react';
-import { auditing, onAuditingChange } from '../dashboard/pulled.ts';
+import { auditingDesired, onAuditingChange } from '../dashboard/pulled.ts';
 import type { AuditRow } from '../draw/notifications';
 import type { Scalar, Value } from './value.ts';
 
 export function isFamilyAuditing(): boolean {
-  return auditing();
+  return auditingDesired();
 }
 
-export function subscribeFamilyAuditing(listener: () => void): () => void {
-  return onAuditingChange(() => listener());
+export function subscribeFamilyAuditing(listener: (active: boolean) => void | Promise<void>): () => void {
+  return onAuditingChange(listener);
 }
 
 export function useFamilyAuditing(): boolean {
-  return useSyncExternalStore(subscribeFamilyAuditing, auditing, auditing);
+  return useSyncExternalStore(
+    listener => onAuditingChange(() => { listener(); }),
+    auditingDesired,
+    auditingDesired,
+  );
+}
+
+function isPlainObject(input: object): boolean {
+  const proto = Object.getPrototypeOf(input) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
+function isValidScalar(value: unknown): value is Scalar {
+  if (typeof value === 'bigint') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'string') return value.trim().length > 0;
+  return false;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function isFamilyValue(input: unknown): input is Value {
-  if (!input || typeof input !== 'object') return false;
-  const kind = (input as { kind?: unknown }).kind;
-  return kind === 'zero' || kind === 'known' || kind === 'partial' || kind === 'notRecorded' || kind === 'notApplicable';
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !isPlainObject(input)) return false;
+  const obj = input as Record<string, unknown>;
+  const keys = Object.keys(obj).filter(k => obj[k] !== undefined);
+  switch (obj.kind) {
+    case 'zero':
+      return keys.length === 2 && (obj.value === 0 || obj.value === 0n);
+    case 'known':
+      return keys.length === 2 && isValidScalar(obj.value) && obj.value !== 0 && obj.value !== 0n;
+    case 'notRecorded':
+    case 'notApplicable':
+      return keys.length === 2 && isNonEmptyString(obj.reason);
+    case 'partial':
+      if (!isValidScalar(obj.value) || !isNonEmptyString(obj.reason)) return false;
+      if (keys.length === 3) return true;
+      return keys.length === 4 && typeof obj.atLeast === 'boolean';
+    default:
+      return false;
+  }
 }
 
 export interface FamilyAuditField {
@@ -114,6 +149,8 @@ export function auditRowsOf(field: unknown): readonly AuditRow[] | undefined {
 
 export class AuditSnapshotStore<TSnapshot> {
   private readonly entries = new Map<number, TSnapshot>();
+  private readonly pinned = new Map<number, number>();
+  private readonly stale = new Set<number>();
   private readonly maxEntries: number;
   private nextId = 1;
 
@@ -121,13 +158,47 @@ export class AuditSnapshotStore<TSnapshot> {
     this.maxEntries = Math.max(1, maxEntries);
   }
 
+  private evictUnpinned(): void {
+    if (this.entries.size <= this.maxEntries) return;
+    for (const key of this.entries.keys()) {
+      if (this.entries.size <= this.maxEntries) break;
+      if (this.pinned.has(key)) continue;
+      this.entries.delete(key);
+      this.stale.delete(key);
+    }
+  }
+
   create(snapshot: TSnapshot): number {
     const id = this.nextId++;
     this.entries.set(id, snapshot);
-    if (this.entries.size > this.maxEntries) {
-      this.entries.delete(this.entries.keys().next().value!);
-    }
+    this.evictUnpinned();
     return id;
+  }
+
+  pin(id: number): (() => void) | undefined {
+    if (!this.entries.has(id)) return undefined;
+    this.pinned.set(id, (this.pinned.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const count = this.pinned.get(id);
+      if (count === undefined) return;
+      if (count > 1) {
+        this.pinned.set(id, count - 1);
+        return;
+      }
+      this.pinned.delete(id);
+      if (this.stale.delete(id)) {
+        this.entries.delete(id);
+      } else {
+        this.evictUnpinned();
+      }
+    };
+  }
+
+  isPinned(id: number): boolean {
+    return this.pinned.has(id);
   }
 
   get(id: number | undefined): TSnapshot | undefined {
@@ -152,7 +223,10 @@ export class AuditSnapshotStore<TSnapshot> {
   }
 
   clear(): void {
-    this.entries.clear();
+    for (const id of [...this.entries.keys()]) {
+      if (this.pinned.has(id)) this.stale.add(id);
+      else this.entries.delete(id);
+    }
   }
 
   get size(): number {

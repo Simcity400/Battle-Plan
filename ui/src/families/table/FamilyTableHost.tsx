@@ -7,6 +7,7 @@ import { useViewportHeight } from '../../charts/useChartTokens';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import { canonical } from '../../dashboard/follow/canonical.ts';
+import type { FailureOrigin } from '../../dashboard/follow/page.ts';
 import { restartPipeline } from '../../dashboard/follow/pipeline.ts';
 import { useElement, useFollowedWidget, usePipeline, useSurfaceLabel } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
@@ -19,7 +20,7 @@ import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
 import { ROW_HEIGHT, updateTableSettings, type TableSettings } from './settings.ts';
 import { columnWidthVar, DISPLAY_LABELS, FamilyTableHeader, type TableHeaderColumn } from './TableHeader.tsx';
 import { perfLog } from '../../shell/perf.ts';
-import { AuditSnapshotStore, auditIdOf, auditRowsOf, isFamilyAuditing, subscribeFamilyAuditing, useFamilyAuditing } from '../audit.ts';
+import { AuditSnapshotStore, auditIdOf, auditRowsOf, subscribeFamilyAuditing, useFamilyAuditing } from '../audit.ts';
 import type { FamilySources, FamilySourceSubscription, MirrorModel } from '../contract.ts';
 import type { CountryLooksMap } from '../looks.ts';
 import { readFamilyTheme } from '../theme.ts';
@@ -74,7 +75,7 @@ export interface FamilyTableHostProps<TOptions> {
   readonly countryLooks?: CountryLooksMap;
   readonly selectedKey?: string | null;
   readonly onActivate?: (key: string, meta?: unknown, hour?: number) => void;
-  readonly contextMenuItems?: (key: string, name: string, hour: number) => MenuItem[];
+  readonly contextMenuItems?: (key: string | null, name: string | null, hour: number) => MenuItem[];
   readonly headerSlot?: HTMLElement | null;
   readonly onDiagnostics?: (warnings: string[]) => void;
   readonly extraWarnings?: readonly string[];
@@ -87,6 +88,7 @@ export interface FamilyTableHostProps<TOptions> {
 interface TableMetaState {
   mode: string;
   reason: string | null;
+  failureOrigin: FailureOrigin;
   empty: string | null;
   emptyDetail: string | null;
   emptyKind: 'empty' | 'unavailable';
@@ -213,6 +215,7 @@ export default function FamilyTableHost<TOptions>({
   const [meta, setMeta] = useState<TableMetaState>(() => ({
     mode: staticSources ? 'picture' : 'reading',
     reason: null,
+    failureOrigin: 'local',
     empty: null,
     emptyDetail: null,
     emptyKind: 'empty',
@@ -226,6 +229,11 @@ export default function FamilyTableHost<TOptions>({
     columns: initialColumns,
   }));
   const metaSigRef = useRef('');
+  const lastMetaKeyRef = useRef<{ mode: string; reason: string | null; failureOrigin: FailureOrigin; rawMeta: unknown } | null>(null);
+  const lastWidthsRef = useRef<unknown>(null);
+  const lastMirrorObjRef = useRef<MirrorModel | null>(null);
+  const lastPhasesRef = useRef<unknown>(null);
+  const lastAuditUpdatedRef = useRef<{ id: number; widths: unknown } | null>(null);
 
   const [widthsState, setWidthsState] = useState<WidthsState>({
     widths: {},
@@ -249,11 +257,7 @@ export default function FamilyTableHost<TOptions>({
   }, [tooltipOwner, frame]);
 
   useEffect(() => () => {
-    const store = auditStoreRef.current;
-    if (store) {
-      if (perfLog) perfLog.deferUntilAuditDone(() => store.clear());
-      else store.clear();
-    }
+    auditStoreRef.current?.clear();
   }, []);
 
   const announce = useCallback((message: string) => {
@@ -598,6 +602,18 @@ export default function FamilyTableHost<TOptions>({
     const node = bodyRef.current;
     if (!node || !pipeline || pipe === null) return;
     lastExtentRef.current = { height: -1, width: -1, count: -1 };
+    lastMetaKeyRef.current = null;
+    lastWidthsRef.current = null;
+    lastMirrorObjRef.current = null;
+    lastPhasesRef.current = null;
+    lastAuditUpdatedRef.current = null;
+    let pendingAuditAck: { targetBinding: number; resolve: () => void } | null = null;
+    const settleAuditAck = () => {
+      if (!pendingAuditAck) return;
+      const done = pendingAuditAck;
+      pendingAuditAck = null;
+      done.resolve();
+    };
     const extent = document.createElement('div');
     const drawn = pipeline.held(pipe, 'table', () => {
       const canvas = document.createElement('canvas');
@@ -663,6 +679,7 @@ export default function FamilyTableHost<TOptions>({
 
       const mode = shown?.mode ?? 'reading';
       const reason = shown?.reason ?? null;
+      const failureOrigin: FailureOrigin = shown?.failureOrigin ?? 'local';
       if (visible && shown?.through !== undefined) {
         lastHourRef.current = shown.painted ?? shown.through;
         reportShownRef.current(shown.through);
@@ -670,42 +687,62 @@ export default function FamilyTableHost<TOptions>({
         reportShownRef.current(null);
       }
 
-      const rawMeta = shown?.fields?.meta as Omit<TableMetaState, 'mode' | 'reason'> | undefined;
-      const nextMetaSig = JSON.stringify([
-        mode,
-        reason,
-        rawMeta?.empty ?? null,
-        rawMeta?.emptyDetail ?? null,
-        rawMeta?.emptyKind ?? 'empty',
-        rawMeta?.summaryPill ?? null,
-        rawMeta?.notes ?? [],
-        rawMeta?.warnings ?? [],
-        rawMeta?.hasTree ?? false,
-        rawMeta?.unsorted ?? false,
-        rawMeta?.rankShown ?? false,
-        rawMeta?.rankWidth ?? 0,
-        rawMeta?.columns?.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
-      ]);
-      if (nextMetaSig !== metaSigRef.current) {
-        metaSigRef.current = nextMetaSig;
-        setMeta(prev => ({
+      if (pendingAuditAck) {
+        const installedAudit = visible && shown?.fields ? auditRowsOf(shown.fields.audit) : undefined;
+        if (!visible || ((shown?.installedBinding ?? 0) >= pendingAuditAck.targetBinding && installedAudit !== undefined)) {
+          settleAuditAck();
+        }
+      }
+
+      const rawMeta = shown?.fields?.meta as Omit<TableMetaState, 'mode' | 'reason' | 'failureOrigin'> | undefined;
+      const prevMetaKey = lastMetaKeyRef.current;
+      if (
+        !prevMetaKey
+        || prevMetaKey.mode !== mode
+        || prevMetaKey.reason !== reason
+        || prevMetaKey.failureOrigin !== failureOrigin
+        || prevMetaKey.rawMeta !== rawMeta
+      ) {
+        lastMetaKeyRef.current = { mode, reason, failureOrigin, rawMeta };
+        const nextMetaSig = JSON.stringify([
           mode,
           reason,
-          empty: rawMeta?.empty ?? null,
-          emptyDetail: rawMeta?.emptyDetail ?? null,
-          emptyKind: rawMeta?.emptyKind ?? 'empty',
-          summaryPill: rawMeta?.summaryPill ?? null,
-          notes: rawMeta?.notes ?? [],
-          warnings: rawMeta?.warnings ?? [],
-          hasTree: rawMeta?.hasTree ?? false,
-          unsorted: rawMeta?.unsorted ?? false,
-          rankShown: rawMeta?.rankShown ?? false,
-          rankWidth: rawMeta?.rankWidth ?? 0,
-          columns: rawMeta?.columns?.length ? rawMeta.columns : prev.columns,
-        }));
+          failureOrigin,
+          rawMeta?.empty ?? null,
+          rawMeta?.emptyDetail ?? null,
+          rawMeta?.emptyKind ?? 'empty',
+          rawMeta?.summaryPill ?? null,
+          rawMeta?.notes ?? [],
+          rawMeta?.warnings ?? [],
+          rawMeta?.hasTree ?? false,
+          rawMeta?.unsorted ?? false,
+          rawMeta?.rankShown ?? false,
+          rawMeta?.rankWidth ?? 0,
+          rawMeta?.columns?.map(c => [c.key, c.label, c.priority, c.as, c.offered, c.text ?? false, c.hideable ?? true, c.sortable ?? true, c.numeric ?? false, c.hint ?? '']) ?? [],
+        ]);
+        if (nextMetaSig !== metaSigRef.current) {
+          metaSigRef.current = nextMetaSig;
+          setMeta(prev => ({
+            mode,
+            reason,
+            failureOrigin,
+            empty: rawMeta?.empty ?? null,
+            emptyDetail: rawMeta?.emptyDetail ?? null,
+            emptyKind: rawMeta?.emptyKind ?? 'empty',
+            summaryPill: rawMeta?.summaryPill ?? null,
+            notes: rawMeta?.notes ?? [],
+            warnings: rawMeta?.warnings ?? [],
+            hasTree: rawMeta?.hasTree ?? false,
+            unsorted: rawMeta?.unsorted ?? false,
+            rankShown: rawMeta?.rankShown ?? false,
+            rankWidth: rawMeta?.rankWidth ?? 0,
+            columns: rawMeta?.columns?.length ? rawMeta.columns : prev.columns,
+          }));
+        }
       }
 
       if (!visible || !shown?.fields) {
+        lastMirrorObjRef.current = null;
         paintMirror(null);
         if (!pinnedTipRef.current) {
           hoverTipShownRef.current = false;
@@ -715,7 +752,8 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const widths = shown.fields.widths as Omit<WidthsState, 'signature'> | undefined;
-      if (widths) {
+      if (widths && widths !== lastWidthsRef.current) {
+        lastWidthsRef.current = widths;
         measuredWidthsRef.current = widths.widths;
         for (const [key, px] of Object.entries(widths.widths)) {
           frameNode?.style.setProperty(columnWidthVar(key), `${px}px`);
@@ -731,7 +769,11 @@ export default function FamilyTableHost<TOptions>({
 
       const installedAuditId = auditIdOf(shown.fields.audit);
       if (perfLog && installedAuditId !== undefined && widths) {
-        auditStoreRef.current!.update(installedAuditId, snap => ({ ...snap, measuredWidths: widths.widths }));
+        const prevUpdated = lastAuditUpdatedRef.current;
+        if (!prevUpdated || prevUpdated.id !== installedAuditId || prevUpdated.widths !== widths.widths) {
+          lastAuditUpdatedRef.current = { id: installedAuditId, widths: widths.widths };
+          auditStoreRef.current!.update(installedAuditId, snap => ({ ...snap, measuredWidths: widths.widths }));
+        }
       }
 
       const navField = shown.fields.nav as readonly NavEntry[] | undefined;
@@ -748,8 +790,9 @@ export default function FamilyTableHost<TOptions>({
           extent.style.height = `${extHeight}px`;
         }
         if (focusInsideRef.current && focusedKeyRef.current) {
-          if (tableInfo.focusedIndex >= 0) {
-            scrollRowIntoView(tableInfo.focusedIndex);
+          const entry = navRef.current.find(item => item[0] === focusedKeyRef.current);
+          if (entry) {
+            scrollRowIntoView(entry[2]);
           } else {
             const fallbackKey = navRef.current[0]?.[0] ?? null;
             if (fallbackKey !== focusedKeyRef.current) {
@@ -769,10 +812,16 @@ export default function FamilyTableHost<TOptions>({
       }
 
       const mirror = shown.fields.mirror as MirrorModel | undefined;
-      if (mirror) paintMirror(mirror);
+      if (mirror && mirror !== lastMirrorObjRef.current) {
+        lastMirrorObjRef.current = mirror;
+        paintMirror(mirror);
+      }
 
       const phases = shown.fields.phases as Record<string, unknown> | undefined;
-      if (phases && frameNode && perfLog) frameNode.dataset.familyPhases = JSON.stringify(phases);
+      if (phases && phases !== lastPhasesRef.current && frameNode && perfLog) {
+        lastPhasesRef.current = phases;
+        frameNode.dataset.familyPhases = JSON.stringify(phases);
+      }
 
       const hoverTipField = shown.fields.tooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
       const focusTipField = shown.fields.focusTooltip as { key: string; text: { hour: number; rowKey: string; content: TooltipContent } | null } | undefined;
@@ -921,10 +970,9 @@ export default function FamilyTableHost<TOptions>({
       if (heldRef.current || dimRef.current) return;
       const builder = latestRef.current.contextMenuItems;
       if (!builder) return;
-      const key = inspectedKeyRef.current ?? focusedKeyRef.current;
-      if (!key) return;
-      const entry = navRef.current.find(item => item[0] === key);
-      const items = builder(key, entry?.[1] ?? key, lastHourRef.current);
+      const key = inspectedKeyRef.current ?? (focusInsideRef.current && accessibleRef.current?.contains(event.target as Node) ? focusedKeyRef.current : null);
+      const entry = key ? navRef.current.find(item => item[0] === key) : undefined;
+      const items = builder(key, key ? (entry?.[1] ?? key) : null, lastHourRef.current);
       if (!items.length) return;
       event.preventDefault();
       contextMenuRef.current.open(event.clientX, event.clientY, items);
@@ -966,20 +1014,37 @@ export default function FamilyTableHost<TOptions>({
     refreshFocusAnchor();
     setViewportWidth(node.clientWidth);
 
+    const menuHost = frameRef.current ?? node;
     node.addEventListener('pointermove', onPointerMove);
     node.addEventListener('pointerleave', onPointerLeave);
     node.addEventListener('pointerdown', onPointerDown);
     node.addEventListener('pointerup', onPointerUp);
     node.addEventListener('pointercancel', onPointerCancel);
-    node.addEventListener('contextmenu', onContextMenu);
+    menuHost.addEventListener('contextmenu', onContextMenu);
     node.addEventListener('scroll', onScroll, { passive: true });
-    const stopAuditWatch = subscribeFamilyAuditing(() => {
-      latestRef.current.captureActive = isFamilyAuditing();
+    const stopAuditWatch = subscribeFamilyAuditing(activeAudit => {
+      latestRef.current.captureActive = activeAudit;
+      if (!activeAudit) {
+        settleAuditAck();
+        bindRef.current();
+        return;
+      }
+      if (!perfLog || !latestRef.current.exactSources) return;
       bindRef.current();
+      const targetBinding = pipeline.binding(pipe);
+      const currentView = pipeline.view(pipe);
+      if (currentView?.mode !== 'picture') return;
+      const installedAudit = currentView.fields ? auditRowsOf(currentView.fields.audit) : undefined;
+      if ((currentView.installedBinding ?? 0) >= targetBinding && installedAudit !== undefined) return;
+      return new Promise<void>(resolve => {
+        settleAuditAck();
+        pendingAuditAck = { targetBinding, resolve };
+      });
     });
     bindRef.current();
 
     return () => {
+      settleAuditAck();
       stopAuditWatch();
       stopInstall();
       resizeObserver.disconnect();
@@ -988,7 +1053,7 @@ export default function FamilyTableHost<TOptions>({
       node.removeEventListener('pointerdown', onPointerDown);
       node.removeEventListener('pointerup', onPointerUp);
       node.removeEventListener('pointercancel', onPointerCancel);
-      node.removeEventListener('contextmenu', onContextMenu);
+      menuHost.removeEventListener('contextmenu', onContextMenu);
       node.removeEventListener('scroll', onScroll);
       extent.remove();
       surfaceRef.current = null;
@@ -1027,7 +1092,7 @@ export default function FamilyTableHost<TOptions>({
         countryColors: snap.countryColors,
       });
       return { values: new Map(rows.map(row => [row.key, row.value ?? ''])), ordered: true };
-    }, pipeline.generation);
+    }, pipeline.generation, auditId => auditStoreRef.current?.pin(auditId));
     return () => {
       stopReader();
       pipeline.audit(pipe, TABLE_AUDIT, null);
@@ -1072,6 +1137,19 @@ export default function FamilyTableHost<TOptions>({
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     const nav = navRef.current;
+    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && !nav.length) {
+      if (heldRef.current || dimRef.current) return;
+      const builder = latestRef.current.contextMenuItems;
+      if (builder) {
+        const items = builder(null, null, lastHourRef.current);
+        if (items.length) {
+          event.preventDefault();
+          refreshFocusAnchor();
+          contextMenuRef.current.open(focusAnchorRef.current.x, focusAnchorRef.current.y, items);
+        }
+      }
+      return;
+    }
     if (!nav.length) return;
     const currentKey = focusedKeyRef.current ?? nav[0]![0];
     const currentIdx = nav.findIndex(item => item[0] === currentKey);
@@ -1239,6 +1317,13 @@ export default function FamilyTableHost<TOptions>({
     if (pipeline) restartPipeline(pipeline);
   }, [pipeline]);
 
+  const retryLocal = useCallback(() => {
+    if (pipeline && pipe !== null) {
+      pipeline.retryWidget(pipe);
+      bindRef.current();
+    }
+  }, [pipeline, pipe]);
+
   if (blockedState) return <>{blockedState}</>;
 
   const summaryPillNode = headerSlot && meta.mode === 'picture' && !meta.empty && meta.summaryPill
@@ -1251,7 +1336,8 @@ export default function FamilyTableHost<TOptions>({
     if (meta.mode === 'failed') {
       const failure = (pipeline && pipe !== null ? pipeline.widgetError(pipe) : undefined)
         ?? asFailure(new Error(meta.reason ?? `Couldn’t load ${subject}.`));
-      return <WidgetState kind="error" what={subject} failure={failure} onRetry={pipeline ? retryFollow : undefined} />;
+      const onRetry = pipeline ? (meta.failureOrigin === 'stream' ? retryFollow : retryLocal) : undefined;
+      return <WidgetState kind="error" what={subject} failure={failure} onRetry={onRetry} />;
     }
     if (meta.mode === 'reading') return <WidgetState kind="loading" label={loadingLabel ?? `Loading ${subject}…`} />;
     if (meta.empty) return <WidgetState kind={meta.emptyKind} message={meta.empty} detail={meta.emptyDetail ?? undefined} />;

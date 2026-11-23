@@ -29,7 +29,7 @@ import type { WidgetProps } from '../../dashboard/definitions';
 import { TRAILING_HOURS } from '../../dashboard/model';
 import type { ApmReply, ApmSeries } from '../../generated/dashboard';
 import { apmRuns, apmText, countText, pointAt, valueNote, apmValueText, validateApm, APM_EXPLANATION, GAPS_NOTE } from './apmData';
-import { apmHeadNamesKey, apmHeadQuery, apmHeadRows, apmHolders, apmPausedView, datedPlayerNames } from './apmHead.ts';
+import { apmHeadNamesKey, apmHeadQuery, apmHeadRows, apmHolders, apmPausedView, datedPlayerNameMissing, datedPlayerNames } from './apmHead.ts';
 import { useApm, useApmRegistry } from './useApm';
 import { useChangedState } from '../../dashboard/changedState.ts';
 import { productRequest } from '../../dashboard/request.ts';
@@ -89,6 +89,10 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
   const names = useMemo(
     () => (players ? datedPlayerNames(rows, headEntry?.answer, registry.data?.players) : new Map<string, string>()),
     [players, headEntry, headNameKey, rows, registry.data],
+  );
+  const missingNames = useMemo(
+    () => (players ? datedPlayerNameMissing(rows, headEntry?.answer) : new Map<string, string>()),
+    [players, headEntry, headNameKey, rows],
   );
   const graphTags = useMemo(() => tiled && !players ? rows.flatMap(row => row.tag ? [row.tag] : []) : NO_TAGS, [tiled, players, rows]);
   const identityHour = useIdentityHour(runtime.client, track, graphTags, runtime.clock, active && tiled && !players,
@@ -179,6 +183,7 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
       if (!data.available) return <WidgetState kind="unavailable" message="Player orders were not recorded in this campaign." />;
     }
     const label = (row: ApmSeries) => players ? (names.get(row.id) ?? 'Name not recorded') : looks.name(row.id);
+    const nameDetail = (row: ApmSeries) => (players ? missingNames.get(row.id) : undefined);
     return <div className="stacked-share-chart"><div className="stacked-share-plot">
       <TimeChart key={query.identity} label="eAPM: player-issued orders per unpaused real minute" extent={stillView ?? [first, Math.max(first + 1, last)]}
         playhead={following ? query.playbackHour + track.axisOffset : null} liveHead={liveHead}
@@ -194,24 +199,33 @@ export function ApmWidget(props: WidgetProps & { graph?: boolean }) {
             return fitTooltip([{ ...countryNameDetails(...(players ? [] : lines.map(line => ({ nameFailure: looks.nameFailure?.(line.row.id) })))), title: binsLabel(at, bins.flat()),
               rows: lines.flatMap((line, index) => {
                 const [rate, orders] = bins[index]!;
-                return [{ label: `${label(line.row)} · eAPM`, value: rate === null ? 'Unknown' : apmText(rate.firstValue), swatch: line.color },
-                  ...(paused ? [{ label: `${label(line.row)} · paused orders`, value: orders === null ? 'Unknown' : Math.round(orders.firstValue).toLocaleString(), swatch: line.color }] : [])];
+                const detail = nameDetail(line.row);
+                return [{ label: `${label(line.row)} · eAPM`, value: rate === null ? 'Unknown' : apmText(rate.firstValue), swatch: line.color, ...(detail ? { detail } : {}) },
+                  ...(paused ? [{ label: `${label(line.row)} · paused orders`, value: orders === null ? 'Unknown' : Math.round(orders.firstValue).toLocaleString(), swatch: line.color, ...(detail ? { detail } : {}) }] : [])];
               }), note: APM_EXPLANATION }], viewport);
           }
           const points = lines.map(line => ({ line, point: pointAt(line.row, at) }));
-          return fitTooltip([{ ...countryNameDetails(...(players ? [] : points.map(({ line }) => ({ nameFailure: looks.nameFailure?.(line.row.id) })))), title: dayLabel(at), rows: points.flatMap(({ line, point }) => [
-            { label: `${label(line.row)} · eAPM`, value: apmValueText(point?.value), swatch: line.color },
-            ...(paused ? [{ label: `${label(line.row)} · paused orders`, value: countText(point?.value.pausedOrders), swatch: line.color }] : [])]),
+          return fitTooltip([{ ...countryNameDetails(...(players ? [] : points.map(({ line }) => ({ nameFailure: looks.nameFailure?.(line.row.id) })))), title: dayLabel(at), rows: points.flatMap(({ line, point }) => {
+            const detail = nameDetail(line.row);
+            return [
+              { label: `${label(line.row)} · eAPM`, value: apmValueText(point?.value), swatch: line.color, ...(detail ? { detail } : {}) },
+              ...(paused ? [{ label: `${label(line.row)} · paused orders`, value: countText(point?.value.pausedOrders), swatch: line.color, ...(detail ? { detail } : {}) }] : []),
+            ];
+          }),
           note: points.some(({ point }) => point?.value.gaps) ? `${APM_EXPLANATION} * ${GAPS_NOTE}` : APM_EXPLANATION }], viewport);
         }} />
-    </div><Legend label="eAPM" always items={lines.map(line => ({ id: line.row.id, label: label(line.row), color: line.color,
-      value: headEntry && store
-        ? <FollowedText entry={headEntry} write={(entry, cell) => {
-          const value = apmHeadRows(entry.answer).find(held => held.id === line.row.id)?.summary;
-          cell.put(value ? `${apmValueText(value)} eAPM` : '—', value ? valueNote(value) : entry.answer?.kind === 'notRecorded' ? entry.answer.reason : 'Not played in the week to the head');
-        }} />
-        : `${apmValueText(line.row.summary)} eAPM`,
-      tooltip: headEntry ? APM_EXPLANATION : valueNote(line.row.summary) }))} /></div>;
+    </div><Legend label="eAPM" always items={lines.map(line => {
+      const detail = nameDetail(line.row);
+      const baseTooltip = headEntry ? APM_EXPLANATION : valueNote(line.row.summary);
+      return { id: line.row.id, label: label(line.row), color: line.color, ...(detail ? { detail } : {}),
+        value: headEntry && store
+          ? <FollowedText entry={headEntry} write={(entry, cell) => {
+            const value = apmHeadRows(entry.answer).find(held => held.id === line.row.id)?.summary;
+            cell.put(value ? `${apmValueText(value)} eAPM` : '—', value ? valueNote(value) : entry.answer?.kind === 'notRecorded' ? entry.answer.reason : 'Not played in the week to the head');
+          }} />
+          : `${apmValueText(line.row.summary)} eAPM`,
+        tooltip: detail ? `${detail} ${baseTooltip}` : baseTooltip };
+    })} /></div>;
   })();
   return <div ref={setRoot} style={FILL}>{body}</div>;
 }

@@ -99,5 +99,12 @@ test('table family plays live with zero React commits, zero layout reads on inst
     assert.equal(kbd.activated.length, 1, 'Enter activates focused row');
     assert.ok(kbd.moreText.includes('+'), `narrow table shows +N columns button: ${kbd.moreText}`);
     assert.equal(kbd.menuOpen, true, '+N columns button opens chooser');
+
+    const r5 = await act<{ opened: boolean; menuLabel: string | null; tipShown: boolean; hasMissingState: boolean; hasKnownState: boolean }>('testEmptySpaceContextMenuAndValueStateTooltip()');
+    assert.equal(r5.opened, true, 'F9: right-clicking empty space with no inspected or focused row opens context menu');
+    assert.ok((r5.menuLabel ?? '').includes('Jump to date (empty@'), `F9: menu item offered with null key on empty space: ${r5.menuLabel}`);
+    assert.equal(r5.tipShown, true, 'F8: tooltip renders ValueState elements');
+    assert.equal(r5.hasMissingState, true, 'F8: missing tooltip cell renders ValueState missing');
+    assert.equal(r5.hasKnownState, true, 'F8: known tooltip cell renders ValueState known');
   }));
 });

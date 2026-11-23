@@ -105,10 +105,14 @@ export function apmHolders(rows: readonly Pick<ApmSeries, 'id' | 'tag' | 'hour'>
   return rows.flatMap(row => row.tag ? [{ key: row.id, tag: row.tag, hour: shown === null ? row.hour : Math.min(row.hour, shown) }] : []);
 }
 
+export const ABSENT_PLAYER_NAME_REASON = 'Player name was not recorded in the period to this hour.';
+
 export function apmHeadNamesKey(answer: FollowedAnswer | undefined): string {
+  if (!answer) return '';
+  if (answer.kind === 'notRecorded') return `notRecorded:${answer.reason}`;
   const rows = apmHeadRows(answer);
   if (!rows.length) return '';
-  return JSON.stringify(rows.map(row => [row.id, row.name]));
+  return JSON.stringify(rows.map(row => [row.id, row.name, row.nameMissing]));
 }
 
 export function datedPlayerNames(
@@ -118,6 +122,35 @@ export function datedPlayerNames(
 ): Map<string, string> {
   if (!headAnswer) return playerNames(rows, registry);
   const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row.name]));
-  const datedRows = rows.map(row => (headById.has(row.id) ? { id: row.id, name: headById.get(row.id) ?? null } : { id: row.id, name: row.name }));
+  const datedRows = rows.map(row => ({ id: row.id, name: headById.get(row.id) ?? null }));
   return playerNames(datedRows, registry);
+}
+
+export function datedPlayerNameMissing(
+  rows: readonly Pick<ApmSeries, 'id' | 'name' | 'nameMissing'>[],
+  headAnswer: FollowedAnswer | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!headAnswer) {
+    for (const row of rows) {
+      if (row.name === null || row.name.trim() === '') {
+        out.set(row.id, row.nameMissing ?? ABSENT_PLAYER_NAME_REASON);
+      }
+    }
+    return out;
+  }
+  if (headAnswer.kind === 'notRecorded') {
+    for (const row of rows) out.set(row.id, headAnswer.reason);
+    return out;
+  }
+  const headById = new Map(apmHeadRows(headAnswer).map(row => [row.id, row]));
+  for (const row of rows) {
+    const dated = headById.get(row.id);
+    if (!dated) {
+      out.set(row.id, ABSENT_PLAYER_NAME_REASON);
+    } else if (dated.name === null || dated.name.trim() === '') {
+      out.set(row.id, dated.nameMissing ?? ABSENT_PLAYER_NAME_REASON);
+    }
+  }
+  return out;
 }
