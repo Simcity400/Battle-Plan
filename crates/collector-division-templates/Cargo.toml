@@ -12,7 +12,7 @@ doctest = false
 [features]
 default = ["template_changes"]
 template_changes = []
-test-support = ["dep:collector-test-support", "dep:engine-native-parts", "engine-native-parts/test-support"]
+test-support = ["dep:collector-test-support", "dep:engine-native-parts"]
 
 [dependencies]
 engine-native-parts = { workspace = true, optional = true }

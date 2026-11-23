@@ -10,7 +10,7 @@ license.workspace = true
 doctest = false
 
 [features]
-alloc-fault-injection = ["engine-native-memory/alloc-fault-injection"]
+alloc-fault-injection = ["engine-native-memory/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 
 [dependencies]
 engine-native-parts.workspace = true

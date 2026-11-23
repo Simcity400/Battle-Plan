@@ -12,7 +12,7 @@ doctest = false
 [features]
 default = []
 tap-foreign-probe = []
-test-support = ["collector-hooks/test-support", "engine-native-parts/test-support"]
+test-support = ["collector-hooks/test-support"]
 
 [dependencies]
 engine-native-parts.workspace = true

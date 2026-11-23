@@ -12,7 +12,7 @@ doctest = false
 [features]
 default = []
 acquisition_profile = ["engine-native/acquisition_profile", "collector-memory/acquisition_profile"]
-alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-native-memory/alloc-fault-injection", "collector-memory/alloc-fault-injection"]
+alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-native-memory/alloc-fault-injection", "collector-memory/alloc-fault-injection", "engine-native/alloc-fault-injection", "engine-native-air/alloc-fault-injection"]
 order_membership_oracle = ["acquisition_profile", "engine-native/order_membership_oracle"]
 tap-foreign-probe = ["collector-hooks/tap-foreign-probe"]
 test-support = ["collector-hooks/test-support", "collector-lifetime/test-support", "collector-memory/test-support", "collector-primitives/test-support", "collector-timing/test-support", "dep:collector-test-support"]
