@@ -153,7 +153,7 @@ function HeadRetryProbeBody({ widget, runtime, active }: WidgetProps) {
   headRetryState.retry = head.retry;
   headRetryState.error = head.error ?? null;
   if (head.error) return <WidgetState kind="error" what="research" failure={head.error} onRetry={head.retry} />;
-  return <div className="head-retry-probe">Waiting</div>;
+  return <WidgetState kind="loading" label="Loading research…" />;
 }
 
 registerWidgets([{
@@ -411,9 +411,11 @@ window.captionLayout = {
     await settle();
     await settle();
     const previewHasDynamicSwitch = !!previewHost.querySelector('[data-view-switch]');
+    const previewSwitchButtons = [...previewHost.querySelectorAll<HTMLButtonElement>('.dash-view-switch button')];
+    const previewSwitchDisabled = previewSwitchButtons.length > 0 && previewSwitchButtons.every(b => b.disabled);
     previewRoot.unmount();
     root.unmount();
-    return { switchClicks: [...switchClicks], previewHasDynamicSwitch };
+    return { switchClicks: [...switchClicks], previewHasDynamicSwitch, previewSwitchDisabled };
   },
 
   async testHeaderDropStability() {
@@ -483,12 +485,16 @@ window.captionLayout = {
     await settle();
     await settle();
     const stageAfterResizeWhilePlaying = Number(header.dataset.headerStage);
+    host.style.width = '180px';
+    await settle();
+    await settle();
+    const titleTabIndexAfterPlayResize = header.querySelector<HTMLElement>('h2')?.tabIndex ?? -1;
     clock.setPlaying(false);
     root.unmount();
     return {
       unloadedOscillations, triggerWidth, loadedStage, subjectCompact,
       stageBeforePlay, stageAfterContentGrowWhilePlaying, stageAfterPauseFlush,
-      wideStage, stageAfterResizeWhilePlaying,
+      wideStage, stageAfterResizeWhilePlaying, titleTabIndexAfterPlayResize,
     };
   },
 
@@ -550,6 +556,8 @@ window.captionLayout = {
       await settle();
       const behindBadge = article.querySelector('.dash-reading-badge')?.textContent ?? null;
       clock.setPlaying(false);
+      await settle();
+      const pausedAfterBehindBadge = article.querySelector('.dash-reading-badge')?.textContent ?? null;
 
       root.render(createElement(DashboardGrid, { template: makeTemplate({ mode: 'empty' }), runtime, editing: false, onApply() {}, onRemove() {}, onLayouts() {} }));
       await waitFor(() => article.querySelector('[data-state="empty"]'), host);
@@ -583,7 +591,7 @@ window.captionLayout = {
 
       return {
         loadingRole, loadingAnnouncement, announcedDuringError, loadingAfterRetryError,
-        badgeBeforeThreshold, badgeAfterRerender, badgeRole, badgeAnnouncement, behindBadge,
+        badgeBeforeThreshold, badgeAfterRerender, badgeRole, badgeAnnouncement, behindBadge, pausedAfterBehindBadge,
         firstEmptyAnnounced, clearedOnPicture, repeatedEmptyAnnounced,
         mapBadgeOutsideSurface, chooseButtonWhenUnloaded, chooseButtonWhenLoaded,
       };
@@ -604,19 +612,22 @@ window.captionLayout = {
     document.body.appendChild(host);
     const clock = makeClock();
     let followCalls = 0;
+    let openCalls = 0;
+    let releaseRetryFollow: (() => void) | null = null;
     const mockClient = {
       available: true,
       setMapViews: async () => {},
       onMapStates: async () => () => {},
       openFollow: async (ports: readonly MessagePort[]) => {
+        openCalls++;
         const owned = structuredClone([...ports], { transfer: [...ports] });
-        for (const p of owned) p.close();
-        return 'session-head-retry';
+        return { session: `session-head-retry-${openCalls}`, close: () => { for (const p of owned) p.close(); } };
       },
       product: async (req: { product: string }) => {
         if (req.product === 'follow') {
           followCalls++;
           if (followCalls === 1) throw new ShownError('Desktop panel channel busy.', 'panel follow 503');
+          await new Promise<void>(resolve => { releaseRetryFollow = resolve; });
           return { data: { available: true, route: 7 } };
         }
         return { data: { available: true } };
@@ -641,10 +652,16 @@ window.captionLayout = {
       const firstError = classifyFailure(headRetryState.error as never);
       const callsBeforeRetry = followCalls;
       (headRetryState.retry as (() => void) | null)?.();
+      await settle();
+      const errorWhileInFlight = !!host.querySelector('[data-state="error"]');
+      const loadingWhileInFlight = !!host.querySelector('[data-state="loading"]');
       for (let i = 0; i < 60 && followCalls < 2; i++) await settle();
+      (releaseRetryFollow as (() => void) | null)?.();
+      await settle();
       const callsAfterRetry = followCalls;
-      return { firstError, callsBeforeRetry, callsAfterRetry };
+      return { firstError, callsBeforeRetry, callsAfterRetry, openCalls, errorWhileInFlight, loadingWhileInFlight };
     } finally {
+      (releaseRetryFollow as (() => void) | null)?.();
       root.unmount();
     }
   },
@@ -723,13 +740,24 @@ window.captionLayout = {
       root.render(createElement(ActiveResearchWidget, { widget: makeWidget(100), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
       const rowName = await waitFor(() => host.querySelector<HTMLElement>('.active-row-name'), host);
       rowName.click();
-      await waitFor(() => document.querySelector('.research-window'), host);
-      const openBeforeEmpty = !!document.querySelector('.research-window');
+      const panelBefore = await waitFor(() => document.querySelector<HTMLElement>('.research-window'), host);
+      await settle();
+      const openBeforeEmpty = !!panelBefore;
+      panelBefore.style.left = '240px';
+      panelBefore.style.top = '180px';
+      const closeBtn = panelBefore.querySelector<HTMLButtonElement>('.floating-panel-close')!;
+      closeBtn.focus();
+      const leftBefore = panelBefore.offsetLeft;
+      const topBefore = panelBefore.offsetTop;
       root.render(createElement(ActiveResearchWidget, { widget: makeWidget(150), runtime, active: true, mapOptions: { fog: true, country: null }, headerSlot: null, onDiagnostics() {} }));
       await waitFor(() => host.querySelector('[data-state="empty"]'), host);
       await settle();
-      const openAfterEmpty = !!document.querySelector('.research-window');
-      return { openBeforeEmpty, openAfterEmpty };
+      const panelAfter = document.querySelector<HTMLElement>('.research-window');
+      const openAfterEmpty = !!panelAfter;
+      const samePanelNode = panelAfter === panelBefore;
+      const positionKept = !!panelAfter && panelAfter.offsetLeft === leftBefore && panelAfter.offsetTop === topBefore;
+      const focusKept = document.activeElement === closeBtn;
+      return { openBeforeEmpty, openAfterEmpty, samePanelNode, positionKept, focusKept };
     } finally {
       root.unmount();
     }

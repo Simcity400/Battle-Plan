@@ -35,13 +35,13 @@ export function followRefusal(...followed: readonly Followed[]): string | null {
 }
 
 export function followFailure(...followed: readonly Followed[]): { error: Failure; retry: () => void } | null {
-  for (const each of followed) if (each.status === 'failed') {
-    return {
-      error: each.error ?? asFailure(new Error(each.reason ?? 'The followed reading stopped without a reason')),
-      retry: () => { for (const item of followed) if (item.status === 'failed') item.entry?.retry?.(); },
-    };
-  }
-  return null;
+  const failed = followed.filter(each => each.status === 'failed');
+  if (!failed.length) return null;
+  const cause = failed.find(each => each.error !== undefined) ?? failed[0]!;
+  return {
+    error: cause.error ?? asFailure(new Error(cause.reason ?? 'The followed reading stopped without a reason')),
+    retry: () => { cause.entry?.retry?.(); },
+  };
 }
 
 export function usePlaybackHour(clock: PlaybackController, on = true): number {

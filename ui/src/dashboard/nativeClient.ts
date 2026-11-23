@@ -128,11 +128,11 @@ export const nativeDashboardClient: DashboardClient = {
   available: desktopAvailable,
   ...(desktopAvailable ? {
     openFollow(ports: readonly MessagePort[]) {
-      return new Promise<string>((resolve, reject) => {
+      return new Promise<{ session: string; close(): void }>((resolve, reject) => {
         const reader = new Worker(new URL('./pull.worker.ts', import.meta.url), { type: 'module' }), session = crypto.randomUUID();
         const fail = (reason: string) => { reader.terminate(); reject(new Error(reason)); };
         reader.onmessage = ({ data }) => {
-          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve(session); }
+          if (data === 'ready') { reader.onmessage = null; reader.onerror = null; resolve({ session, close: () => reader.terminate() }); }
           else if (data.reason) fail(data.reason);
         };
         reader.onerror = event => fail(event.message);

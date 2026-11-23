@@ -48,14 +48,15 @@ test('a widget body with a caption lays its content out in the reduced height be
     assert.equal(table.bodyHeight, table.contentHeight, 'table body fills reduced content area');
     assert.ok(table.scrollerScrollHeight <= table.scrollerClientHeight, 'table does not overflow');
 
-    const switched = await page.evaluate<{ switchClicks: string[]; previewHasDynamicSwitch: boolean }>('window.captionLayout.testDynamicSwitchFreshness()');
+    const switched = await page.evaluate<{ switchClicks: string[]; previewHasDynamicSwitch: boolean; previewSwitchDisabled: boolean }>('window.captionLayout.testDynamicSwitchFreshness()');
     assert.deepEqual(switched.switchClicks, ['v2:b'], 'useWidgetViewSwitch invokes the latest onChange callback after parent state changes');
     assert.equal(switched.previewHasDynamicSwitch, true, 'catalogue WidgetPreview passes setOption so dynamic view switches register');
+    assert.equal(switched.previewSwitchDisabled, true, 'catalogue preview view switch buttons are disabled');
 
     const headerDrop = await page.evaluate<{
       unloadedOscillations: number; triggerWidth: number; loadedStage: number; subjectCompact: boolean;
       stageBeforePlay: number; stageAfterContentGrowWhilePlaying: number; stageAfterPauseFlush: number;
-      wideStage: number; stageAfterResizeWhilePlaying: number;
+      wideStage: number; stageAfterResizeWhilePlaying: number; titleTabIndexAfterPlayResize: number;
     }>('window.captionLayout.testHeaderDropStability()');
     assert.equal(headerDrop.unloadedOscillations, 0, 'absent subject slot converges without oscillating');
     assert.ok(headerDrop.triggerWidth > 120, `measured real compact view trigger width (${headerDrop.triggerWidth}px), not 84px fallback`);
@@ -64,11 +65,12 @@ test('a widget body with a caption lays its content out in the reduced height be
     assert.equal(headerDrop.stageAfterContentGrowWhilePlaying, headerDrop.stageBeforePlay, 'content-only pill growth stays deferred while playing');
     assert.ok(headerDrop.stageAfterPauseFlush > headerDrop.stageBeforePlay, `deferred content re-measurement flushes once playback pauses (${headerDrop.stageBeforePlay} -> ${headerDrop.stageAfterPauseFlush})`);
     assert.ok(headerDrop.stageAfterResizeWhilePlaying > headerDrop.wideStage, 'container resize updates header drop stage immediately even while playing');
+    assert.equal(headerDrop.titleTabIndexAfterPlayResize, 0, 'resizing narrow while playing rechecks title clipping and gives the title tabIndex=0');
 
     const reading = await page.evaluate<{
       loadingRole: string | null; loadingAnnouncement: string; announcedDuringError: string; loadingAfterRetryError: string;
       badgeBeforeThreshold: string | null; badgeAfterRerender: string | null; badgeRole: string | null; badgeAnnouncement: string;
-      behindBadge: string | null;
+      behindBadge: string | null; pausedAfterBehindBadge: string | null;
       firstEmptyAnnounced: string; clearedOnPicture: string; repeatedEmptyAnnounced: string;
       mapBadgeOutsideSurface: boolean; chooseButtonWhenUnloaded: boolean; chooseButtonWhenLoaded: boolean;
     }>('window.captionLayout.testReadingBadgeAndAnnouncer()');
@@ -80,7 +82,8 @@ test('a widget body with a caption lays its content out in the reduced height be
     assert.match(reading.badgeAfterRerender ?? '', /^Reading /, 'reading badge stays settled across default-campaign re-renders');
     assert.equal(reading.badgeRole, null, 'reading badge has no duplicate role="status"');
     assert.equal(reading.badgeAnnouncement, reading.badgeAfterRerender, 'reading badge announces via the single frame live region');
-    assert.match(reading.behindBadge ?? '', /^Reading /, 'map data-held="behind" shows the reading badge during playback');
+    assert.equal(reading.behindBadge, 'Catching up…', 'playing behind badge shows an undated catch-up label rather than a stale hour');
+    assert.match(reading.pausedAfterBehindBadge ?? '', /^Reading /, 'pausing after playback lag switches the badge to the exact paused target hour');
     assert.equal(reading.firstEmptyAnnounced, 'Nothing here yet.');
     assert.equal(reading.clearedOnPicture, '', 'returning to a picture clears the announcer state');
     assert.equal(reading.repeatedEmptyAnnounced, 'Nothing here yet.', 're-entering the same state announces it again');
@@ -92,14 +95,23 @@ test('a widget body with a caption lays its content out in the reduced height be
       firstError: { kind: string; reason?: string; detail?: string } | null;
       callsBeforeRetry: number;
       callsAfterRetry: number;
+      openCalls: number;
+      errorWhileInFlight: boolean;
+      loadingWhileInFlight: boolean;
     }>('window.captionLayout.testHeadProductFollowRetry()');
     assert.deepEqual(headRetry.firstError, { kind: 'retryable', reason: 'Desktop panel channel busy.', detail: 'panel follow 503' },
       'useHeadProduct preserves ShownError user reason and technical detail');
     assert.equal(headRetry.callsBeforeRetry, 1);
+    assert.equal(headRetry.errorWhileInFlight, false, 'retrying clears the old error immediately instead of leaving a dead Retry button');
+    assert.equal(headRetry.loadingWhileInFlight, true, 'retrying shows the loading state immediately while the new pipeline opens');
+    assert.equal(headRetry.openCalls, 2, 'retry restarts the pipeline with a fresh openFollow call');
     assert.equal(headRetry.callsAfterRetry, 2, 'useHeadProduct.retry reissues the failed follow subscription while following');
 
-    const popup = await page.evaluate<{ openBeforeEmpty: boolean; openAfterEmpty: boolean }>('window.captionLayout.testActiveResearchPopupOnEmpty()');
+    const popup = await page.evaluate<{ openBeforeEmpty: boolean; openAfterEmpty: boolean; samePanelNode: boolean; positionKept: boolean; focusKept: boolean }>('window.captionLayout.testActiveResearchPopupOnEmpty()');
     assert.equal(popup.openBeforeEmpty, true);
     assert.equal(popup.openAfterEmpty, true, 'seeking to an hour with no active research slots keeps an open ResearchWindow mounted');
+    assert.equal(popup.samePanelNode, true, 'ResearchWindow is not remounted across an empty seek');
+    assert.equal(popup.positionKept, true, 'dragged ResearchWindow position survives an empty seek');
+    assert.equal(popup.focusKept, true, 'keyboard focus inside ResearchWindow survives an empty seek');
   }));
 });

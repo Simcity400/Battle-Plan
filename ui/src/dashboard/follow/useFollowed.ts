@@ -1,12 +1,12 @@
 import { decode } from '@msgpack/msgpack';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { PlaybackController } from '../playback';
 import { baseClient } from '../prepare.ts';
 import { pageClock } from '../widgetClock.ts';
 import { playbackRate } from '../pulled.ts';
 import { canonical } from './canonical.ts';
-import { pipelineFor, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
+import { pipelineFor, pipelineOf, subscribeClockPipeline, subscribePipeline, type FollowQuery, type MountOptions, type Pipeline, type PipelineHost } from './pipeline.ts';
 import type { Channel } from './facts';
 import type { FollowedPanel } from './message';
 import type { WidgetView } from './page';
@@ -26,27 +26,39 @@ export function lanesHost(client: DashboardClient): PipelineHost {
     channel: () => new MessageChannel(),
     frameRate: playbackRate,
     rate: weakCpu,
+    close: () => { for (const lane of lanes) lane.terminate(); },
   };
 }
 
 export function usePipeline(clock: PlaybackController | null, client: DashboardClient | null): Pipeline | null {
-  return useMemo(() => {
-    if (!clock || !client) return null;
-    const base = baseClient(client);
-    return pipelineFor(pageClock(clock), base, () => lanesHost(base));
-  }, [clock, client]);
+  const page = clock ? pageClock(clock) : null;
+  const base = client ? baseClient(client) : null;
+  const read = useCallback(() => page && base ? pipelineFor(page, base, () => lanesHost(base)) : null, [page, base]);
+  const subscribe = useCallback((changed: () => void) => {
+    if (!page || !base) return () => {};
+    pipelineFor(page, base, () => lanesHost(base));
+    return subscribePipeline(page, base, changed);
+  }, [page, base]);
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+export function usePipelineOf(clock: PlaybackController | null): Pipeline | null {
+  const page = clock ? pageClock(clock) : null;
+  const read = useCallback(() => page ? pipelineOf(page) : null, [page]);
+  const subscribe = useCallback((changed: () => void) => page ? subscribeClockPipeline(page, changed) : () => {}, [page]);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 export function useFollowedWidget(pipeline: Pipeline | null, key: string | null, options: MountOptions): number | null {
-  const [held, setHeld] = useState<{ key: string; id: number } | null>(null);
+  const [held, setHeld] = useState<{ pipeline: Pipeline; key: string; id: number } | null>(null);
   const timing = useRef(options);
   timing.current = options;
   useLayoutEffect(() => {
     if (key === null || !pipeline) { setHeld(null); return; }
-    setHeld({ key, id: pipeline.acquire(key, timing.current) });
+    setHeld({ pipeline, key, id: pipeline.acquire(key, timing.current) });
     return () => { pipeline.drop(key); };
   }, [pipeline, key]);
-  const id = heldFor(held, key);
+  const id = heldFor(held, key, pipeline);
   const { offset, pin, bounds } = options;
   const boundsKey = bounds === undefined ? 'kept' : bounds ? `${bounds[0]}:${bounds[1]}` : '';
   useLayoutEffect(() => {
@@ -80,18 +92,18 @@ export function useOnScreen(target: Element | null, onScreen: OnScreen = observe
 
 export function useFollowedSub(pipeline: Pipeline | null, widget: number | null, follow: { source: DashboardSource; branch: string; offset: number } | null,
   query: FollowQuery | null, channel: Channel, product?: string): number | undefined {
-  const [sub, setSub] = useState<number | undefined>(undefined);
+  const [heldSub, setHeldSub] = useState<{ pipeline: Pipeline; widget: number; key: string; sub: number | undefined } | null>(null);
   const key = query && follow ? canonical(query) : null;
   const held = useRef({ query, follow });
   held.current = { query, follow };
   useLayoutEffect(() => {
     const { query, follow } = held.current;
-    if (!pipeline || widget === null || key === null || !query || !follow) { setSub(undefined); return; }
+    if (!pipeline || widget === null || key === null || !query || !follow) { setHeldSub(null); return; }
     const token = {};
-    setSub(pipeline.subscribe(widget, token, follow.source, follow.branch, follow.offset, query, channel, product));
+    setHeldSub({ pipeline, widget, key, sub: pipeline.subscribe(widget, token, follow.source, follow.branch, follow.offset, query, channel, product) });
     return () => pipeline.unsubscribe(widget, token);
   }, [pipeline, widget, key, channel, product, follow?.source.id, follow?.source.revision, follow?.branch, follow?.offset]);
-  return sub;
+  return heldSub && heldSub.pipeline === pipeline && heldSub.widget === widget && heldSub.key === key ? heldSub.sub : undefined;
 }
 
 const viewKey = (view: WidgetView | null) => view
@@ -165,7 +177,8 @@ export function onInstalled(pipeline: Pipeline, widget: number, paint: () => voi
   return pipeline.onInstall(widget, run);
 }
 
-export const heldFor = (held: { key: string; id: number } | null, key: string | null) => held !== null && held.key === key ? held.id : null;
+export const heldFor = (held: { pipeline?: Pipeline; key: string; id: number } | null, key: string | null, pipeline?: Pipeline | null) =>
+  held !== null && held.key === key && (pipeline === undefined || held.pipeline === pipeline) ? held.id : null;
 
 export function useInstalledValue<T extends string | number | boolean | null>(subscribe: ((changed: () => void) => () => void) | undefined, select: () => T): T {
   const selected = useRef(select);

@@ -19,7 +19,7 @@ export default function WidgetViewSwitch({ label, value, options, compact = fals
   const asMenu = compact || options.length >= 4;
   if (!asMenu) {
     return <div className="dash-view-switch" data-view-switch="">
-      <Segmented label={label} value={value} options={options} onChange={readOnly ? () => {} : onChange} />
+      <Segmented label={label} value={value} options={options} disabled={readOnly} onChange={readOnly ? () => {} : onChange} />
     </div>;
   }
   const current = options.find(option => option.value === value) ?? options[0];

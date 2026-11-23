@@ -17,7 +17,7 @@ import { PreparingPage } from './preparing.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
 import { asFailure, RefusedError } from './queryError.ts';
-import type { Pipeline } from './follow/pipeline';
+import { restartPipeline, type Pipeline } from './follow/pipeline.ts';
 import { coverageOf, useReadsRegion, type ReadCoverage } from './widgetTime.ts';
 import { axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
 import type { Gate } from './regionGate';
@@ -121,7 +121,7 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const fromPanel = pushed ? panelReply(panel, validate) : {};
   const refusedNamed = checked?.refused ?? (following && view?.mode === 'refused' ? view.reason ?? 'Not in this recording' : undefined);
   const failedNamed = following && view?.mode === 'failed' ? view.reason ?? 'The followed stream failed' : undefined;
-  const subError = following && pipeline && sub !== undefined ? pipeline.status(sub).error : undefined;
+  const subError = following && pipeline && sub !== undefined ? (pipeline.status(sub).error ?? (pipe !== null ? pipeline.widgetError(pipe) : undefined)) : undefined;
   const followFailure = useMemo(() => refusedNamed !== undefined ? new RefusedError(refusedNamed)
     : failedNamed !== undefined ? (subError ?? asFailure(new Error(failedNamed))) : undefined, [refusedNamed, failedNamed, subError]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
@@ -186,9 +186,9 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
     hour: at, rows: () => recordedPanelRows(panelName, data), exact: async () => recordedPanelRows(panelName, await exactRead(at)),
   } : undefined, pipe ?? undefined);
   const retry = useCallback(() => {
-    if (following && pipeline && sub !== undefined) pipeline.retry(sub);
+    if (following && pipeline) restartPipeline(pipeline);
     else asked.retry();
-  }, [following, pipeline, sub, asked.retry]);
+  }, [following, pipeline, asked.retry]);
   const shownThrough = () => outside ? null : following ? (pipe === null || !pipeline ? null : pipeline.view(pipe)?.through ?? null) : data === undefined ? null : at;
   return {
     data, error, retry, root, hour, live: shownLive, ...coverageOf(gate.outside),

@@ -80,6 +80,7 @@ export default function WidgetHeader({
   const [measureEpoch, setMeasureEpoch] = useState(0);
   const [drop, setDrop] = useState<HeaderDropState>(FULL_HEADER_DROP);
   const pendingMeasure = useRef(false);
+  const lastClippedWidth = useRef<number | null>(null);
   const measuredHeader = useRef({
     measuredOnce: false,
     lastHeaderWidth: 0,
@@ -278,7 +279,9 @@ export default function WidgetHeader({
     const heading = titleRef.current;
     if (!heading) return;
     const playing = !readOnly && (runtime.clock.getSnapshot?.().playing ?? false);
-    if (playing) return;
+    const resized = lastClippedWidth.current !== headerWidth;
+    if (playing && !resized) return;
+    lastClippedWidth.current = headerWidth;
     const clipped = heading.scrollWidth > heading.clientWidth;
     setTitleClipped(previous => previous === clipped ? previous : clipped);
   }, [headerWidth, measureEpoch, readOnly, runtime.clock, widget.title, effectiveDrop.stage]);

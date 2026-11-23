@@ -239,6 +239,7 @@ function WidgetFrame({ prepared = false, widget, template, runtime, editing, onA
       return !playing && !!content.querySelector('[data-held="stale"]');
     };
     const label = () => {
+      if (runtime.clock.getSnapshot?.().playing) return 'Catching up…';
       const { effective: current, campaignTrack: track, tracks } = readingContextRef.current;
       const target = track ? resolveWindow(current, track, tracks, runtime.clock.getHour?.() ?? 0)?.lastHour : null;
       return target != null ? `Reading ${formatDateTime(target)}…` : 'Reading…';

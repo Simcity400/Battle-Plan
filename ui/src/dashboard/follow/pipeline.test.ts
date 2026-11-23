@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { inProcess, NATIVE } from './inProcess.fixture.ts';
+import { inProcess, managedInProcess, NATIVE } from './inProcess.fixture.ts';
 import { datedReading, datedStore, heldFor, joinReadings, onInstalled, readingOf } from './useFollowed.ts';
 import { message } from './messages.fixture.ts';
 import { cellValue, parseAnswer } from './message.ts';
@@ -350,92 +350,168 @@ test('review 10: a reading\'s hour is the installed date when it is read, and th
   assert.deepEqual(datedReading({ state: 'pending' }, { read: () => 16 }), { state: 'pending' });
 });
 
-test('transport or host errors on open or follow stay retryable failures distinct from recording refusals, and retry recovers them', async () => {
+test('retry on any follow failure restarts the whole pipeline cleanly without leaking readers, lanes, ports or listeners', async () => {
   let openAttempts = 0;
-  const opened = inProcess({
+  let followAttempts = 0;
+  let clockAttempts = 0;
+  let releaseLateFollow: (() => void) | null = null;
+  const env = managedInProcess({
     open: async () => {
       openAttempts++;
       if (openAttempts === 1) throw new Error('IPC pipe disconnected');
-      return 'session-1';
+      return `session-${openAttempts}`;
     },
-  });
-  try {
-    const id = opened.pipeline.acquire('open-fail|0', { offset: 0, pin: null });
-    const sub = opened.pipeline.subscribe(id, {}, opened.source, '1', 0, { product: 'series-state' }, 'followed')!;
-    opened.clock.seek(10);
-    assert.ok(await opened.settle(() => opened.pipeline.status(sub).status === 'failed'));
-    assert.equal(opened.pipeline.status(sub).reason, 'IPC pipe disconnected');
-    assert.equal(opened.pipeline.view(id)?.mode, 'failed');
-    opened.pipeline.retry(sub);
-    assert.ok(await opened.settle(() => opened.pipeline.status(sub).status === 'followed'));
-    opened.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [9n] } }], false, NATIVE, opened.clock.getSnapshot().seekSequence));
-    assert.ok(await opened.settle(() => opened.pipeline.view(id)?.mode === 'picture'));
-  } finally { opened.close(); }
-
-  let followAttempts = 0;
-  const asked = inProcess({
+    gate: (product, params) => {
+      if (product === 'follow' && (params.query as { params?: { late?: boolean } })?.params?.late) {
+        return new Promise<void>(resolve => { releaseLateFollow = resolve; });
+      }
+      return undefined;
+    },
     follow: (_id, query) => {
-      if ((query.params as { mode?: string } | undefined)?.mode === 'refused') return { available: false, reason: 'Table absent in format 141' };
+      const mode = (query.params as { mode?: string } | undefined)?.mode;
+      if (mode === 'refused') return { available: false, reason: 'Table absent in format 141' };
       followAttempts++;
-      if (followAttempts === 1) throw new Error('Host follow timed out');
-      return { available: true };
+      if (mode === 'fail-once' && followAttempts === 2) throw new Error('Host follow timed out');
+      return { available: true, route: mode === 'route2' ? NATIVE + 1 : NATIVE };
     },
-  });
-  try {
-    const failedId = asked.pipeline.acquire('follow-fail|0', { offset: 0, pin: null });
-    const failedSub = asked.pipeline.subscribe(failedId, {}, asked.source, '1', 0, { product: 'series-state', params: { mode: 'fail' } }, 'followed')!;
-    const refusedId = asked.pipeline.acquire('follow-refuse|0', { offset: 0, pin: null });
-    const refusedSub = asked.pipeline.subscribe(refusedId, {}, asked.source, '1', 0, { product: 'series-state', params: { mode: 'refused' } }, 'followed')!;
-    asked.clock.seek(10);
-    assert.ok(await asked.settle(() => asked.pipeline.status(failedSub).status === 'failed' && asked.pipeline.status(refusedSub).status === 'refused'));
-    assert.equal(asked.pipeline.status(failedSub).reason, 'Host follow timed out');
-    assert.equal(asked.pipeline.status(refusedSub).reason, 'Table absent in format 141');
-    asked.pipeline.retry(failedSub);
-    assert.ok(await asked.settle(() => asked.pipeline.status(failedSub).status === 'followed'));
-    asked.send(message(10, [{ id: failedSub, answer: { keys: [1n], columns: 1, values: [4n] } }], false, NATIVE, asked.clock.getSnapshot().seekSequence));
-    assert.ok(await asked.settle(() => asked.pipeline.view(failedId)?.mode === 'picture'));
-  } finally { asked.close(); }
-
-  let clockAttempts = 0;
-  const clockFail = inProcess({
     followClock: () => {
       clockAttempts++;
-      if (clockAttempts === 1) throw new ShownError('Host stream clock stalled.', 'clock rpc 504');
+      if (clockAttempts === 2) throw new ShownError('Host stream clock stalled.', 'clock rpc 504');
       return { available: true };
     },
   });
   try {
-    const id = clockFail.pipeline.acquire('clock-fail|0', { offset: 0, pin: null });
-    const sub = clockFail.pipeline.subscribe(id, {}, clockFail.source, '1', 0, { product: 'series-state' }, 'followed')!;
-    const entry = installedEntry(clockFail.pipeline, id, sub);
-    clockFail.clock.seek(10);
-    assert.ok(await clockFail.settle(() => clockFail.pipeline.view(id)?.mode === 'failed'));
-    assert.equal(entry.status, 'failed');
-    const shownErr = followFailure({ status: entry.status, reason: entry.reason, error: entry.error, structure: '', entry, hidden: false, reading: null });
-    assert.ok(shownErr);
-    assert.deepEqual(classifyFailure(shownErr.error), { kind: 'retryable', reason: 'Host stream clock stalled.', detail: 'clock rpc 504' });
-    shownErr.retry();
-    assert.ok(await clockFail.settle(() => clockAttempts === 2 && clockFail.pipeline.view(id)?.mode === 'reading'));
-    clockFail.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [11n] } }], false, NATIVE, clockFail.clock.getSnapshot().seekSequence));
-    assert.ok(await clockFail.settle(() => clockFail.pipeline.view(id)?.mode === 'picture'));
-  } finally { clockFail.close(); }
+    const initialListeners = env.counts().clockListeners;
+    env.clock.seek(10);
 
-  let openCalls = 0;
-  const streamDrop = inProcess({ open: async () => `session-${++openCalls}` });
+    const p1 = env.pipeline;
+    const w1 = p1.acquire('w1|0', { offset: 0, pin: null });
+    const s1 = p1.subscribe(w1, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    const e1 = installedEntry(p1, w1, s1);
+    await env.waitView(p1, w1, v => v?.mode === 'failed');
+    assert.equal(p1.status(s1).status, 'failed');
+    assert.equal(p1.status(s1).reason, 'IPC pipe disconnected');
+    assert.equal(env.counts().activeReaders, 0);
+
+    const restarted1 = env.nextEvent('restart');
+    e1.retry!();
+    await restarted1;
+    const p2 = env.pipeline;
+    assert.notEqual(p2, p1, 'retry after open failure replaces the pipeline');
+    const clock2 = env.nextEvent('follow-clock');
+    const w2 = p2.acquire('w1|0', { offset: 0, pin: null });
+    const s2 = p2.subscribe(w2, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await clock2;
+    assert.equal(p2.status(s2).status, 'followed');
+    assert.equal(env.send(message(10, [{ id: s2, answer: { keys: [1n], columns: 1, values: [9n] } }], true, NATIVE, env.clock.getSnapshot().seekSequence)), 1);
+    await env.waitView(p2, w2, v => v?.mode === 'picture');
+
+    const failW = p2.acquire('fail-sub|0', { offset: 0, pin: null });
+    const failS = p2.subscribe(failW, {}, env.source, '1', 0, { product: 'series-state', params: { mode: 'fail-once' } }, 'followed')!;
+    const refW = p2.acquire('ref-sub|0', { offset: 0, pin: null });
+    const refS = p2.subscribe(refW, {}, env.source, '1', 0, { product: 'series-state', params: { mode: 'refused' } }, 'followed')!;
+    const lateW = p2.acquire('late-sub|0', { offset: 0, pin: null });
+    p2.subscribe(lateW, {}, env.source, '1', 0, { product: 'series-state', params: { late: true } }, 'followed');
+    await Promise.all([
+      env.waitView(p2, failW, v => v?.mode === 'failed'),
+      env.waitView(p2, refW, v => v?.mode === 'refused'),
+    ]);
+    assert.equal(p2.status(failS).reason, 'Host follow timed out');
+    assert.equal(p2.status(refS).status, 'refused');
+    assert.equal(p2.status(refS).reason, 'Table absent in format 141');
+
+    const restarted2 = env.nextEvent('restart');
+    installedEntry(p2, failW, failS).retry!();
+    await restarted2;
+    (releaseLateFollow as (() => void) | null)?.();
+    const p3 = env.pipeline;
+    assert.notEqual(p3, p2, 'retry after follow failure restarts the pipeline');
+    const w3 = p3.acquire('clock-fail|0', { offset: 0, pin: null });
+    const s3 = p3.subscribe(w3, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    const e3 = installedEntry(p3, w3, s3);
+    await env.waitView(p3, w3, v => v?.mode === 'failed');
+    const clockErr = followFailure({ status: e3.status, reason: e3.reason, error: e3.error, structure: '', entry: e3, hidden: false, reading: null });
+    assert.ok(clockErr);
+    assert.deepEqual(classifyFailure(clockErr.error), { kind: 'retryable', reason: 'Host stream clock stalled.', detail: 'clock rpc 504' });
+
+    const restarted3 = env.nextEvent('restart');
+    clockErr.retry();
+    await restarted3;
+    const p4 = env.pipeline;
+    const clock4 = env.nextEvent('follow-clock');
+    const w4a = p4.acquire('route-a|0', { offset: 0, pin: null });
+    const s4a = p4.subscribe(w4a, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await clock4;
+    const clock4b = env.nextEvent('follow-clock');
+    const w4b = p4.acquire('route-b|24', { offset: 24, pin: null });
+    p4.subscribe(w4b, {}, env.source, '1', 24, { product: 'series-state', params: { mode: 'route2' } }, 'followed');
+    await clock4b;
+    env.fail('The pushed answers stopped');
+    await Promise.all([
+      env.waitView(p4, w4a, v => v?.mode === 'failed'),
+      env.waitView(p4, w4b, v => v?.mode === 'failed'),
+    ]);
+
+    const restarted4 = env.nextEvent('restart');
+    installedEntry(p4, w4a, s4a).retry!();
+    await restarted4;
+    const p5 = env.pipeline;
+    const clock5a = env.nextEvent('follow-clock');
+    const w5a = p5.acquire('route-a|0', { offset: 0, pin: null });
+    const s5a = p5.subscribe(w5a, {}, env.source, '1', 0, { product: 'series-state' }, 'followed')!;
+    await clock5a;
+    const clock5b = env.nextEvent('follow-clock');
+    const w5b = p5.acquire('route-b|24', { offset: 24, pin: null });
+    const s5b = p5.subscribe(w5b, {}, env.source, '1', 24, { product: 'series-state', params: { mode: 'route2' } }, 'followed')!;
+    await clock5b;
+    const pinW = p5.acquire('pinned|0', { offset: 0, pin: 10 });
+    const pinS = p5.subscribe(pinW, {}, env.source, '1', 0, { product: 'exact-panel' }, 'pinned', 'panel')!;
+    p5.exact(pinS, 10, { ok: true }, null);
+    assert.equal(env.send(message(10, [{ id: s5a, answer: { keys: [1n], columns: 1, values: [21n] } }], true, NATIVE, env.clock.getSnapshot().seekSequence)), 1,
+      'fresh reader counts resets from zero on each open');
+    assert.equal(env.send(message(34, [{ id: s5b, answer: { keys: [1n], columns: 1, values: [22n] } }], true, NATIVE + 1, env.clock.getSnapshot().seekSequence)), 1);
+    await Promise.all([
+      env.waitView(p5, w5a, v => v?.mode === 'picture'),
+      env.waitView(p5, w5b, v => v?.mode === 'picture'),
+      env.waitView(p5, pinW, v => v?.mode === 'picture'),
+    ]);
+
+    assert.deepEqual(env.counts(), {
+      openCalls: 5,
+      activeReaders: 1,
+      activeLanes: 1,
+      activeOwnedPorts: 1,
+      clockListeners: initialListeners,
+    }, 'after four restarts only one reader, one lane set, one port set and the original clock listener count remain');
+  } finally { env.close(); }
+});
+
+test('derived failure on a shared widget points at the sibling subscription carrying ShownError', async () => {
+  const shared = managedInProcess({
+    follow: (_id, query) => {
+      if ((query.params as { measure?: string } | undefined)?.measure === 'capacity') {
+        throw new ShownError('Capacity stream unavailable right now.', 'cap rpc 503');
+      }
+      return { available: true };
+    },
+  });
   try {
-    const id = streamDrop.pipeline.acquire('stream-drop|0', { offset: 0, pin: null });
-    const sub = streamDrop.pipeline.subscribe(id, {}, streamDrop.source, '1', 0, { product: 'series-state' }, 'followed')!;
-    const entry = installedEntry(streamDrop.pipeline, id, sub);
-    streamDrop.clock.seek(10);
-    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.status(sub).status === 'followed'));
-    streamDrop.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [2n] } }], false, NATIVE, streamDrop.clock.getSnapshot().seekSequence));
-    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.view(id)?.mode === 'picture'));
-    streamDrop.fail('The pushed answers stopped');
-    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.view(id)?.mode === 'failed'));
-    assert.equal(entry.status, 'failed');
-    entry.retry!();
-    assert.ok(await streamDrop.settle(() => openCalls === 2 && streamDrop.pipeline.status(sub).status === 'followed'));
-    streamDrop.send(message(10, [{ id: sub, answer: { keys: [1n], columns: 1, values: [3n] } }], true, NATIVE, streamDrop.clock.getSnapshot().seekSequence));
-    assert.ok(await streamDrop.settle(() => streamDrop.pipeline.view(id)?.mode === 'picture'));
-  } finally { streamDrop.close(); }
+    const widget = shared.pipeline.acquire('fuel|0', { offset: 0, pin: null });
+    const fuelSub = shared.pipeline.subscribe(widget, {}, shared.source, '1', 0, { product: 'series-state', params: { measure: 'fuel' } }, 'followed')!;
+    const capSub = shared.pipeline.subscribe(widget, {}, shared.source, '1', 0, { product: 'series-state', params: { measure: 'capacity' } }, 'followed')!;
+    shared.clock.seek(10);
+    await shared.waitView(shared.pipeline, widget, v => v?.mode === 'failed');
+    const fuelEntry = installedEntry(shared.pipeline, widget, fuelSub);
+    const capEntry = installedEntry(shared.pipeline, widget, capSub);
+    assert.equal(fuelEntry.status, 'failed');
+    assert.deepEqual(classifyFailure(fuelEntry.error), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
+      'derived failure on fuel entry points at capacity cause');
+    const picked = followFailure(
+      { status: fuelEntry.status, reason: fuelEntry.reason, error: fuelEntry.error, structure: '', entry: fuelEntry, hidden: false, reading: null },
+      { status: capEntry.status, reason: capEntry.reason, error: capEntry.error, structure: '', entry: capEntry, hidden: false, reading: null },
+    );
+    assert.ok(picked);
+    assert.deepEqual(classifyFailure(picked.error), { kind: 'retryable', reason: 'Capacity stream unavailable right now.', detail: 'cap rpc 503' },
+      'followFailure picks the subscription carrying the ShownError cause');
+  } finally { shared.close(); }
 });

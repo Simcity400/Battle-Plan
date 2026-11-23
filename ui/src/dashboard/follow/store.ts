@@ -2,7 +2,7 @@ import { createContext } from 'react';
 import type { DashboardClient, DashboardSource } from '../client';
 import type { PlaybackController } from '../playback';
 import { parseAnswer, type FollowedAnswer, type FollowedPanel } from './message.ts';
-import type { Pipeline } from './pipeline';
+import { restartPipeline, type Pipeline } from './pipeline.ts';
 import { componentReading, installedAnswer, installedModel, installedPanel } from './useFollowed.ts';
 import type { LiveMap } from '../../draw/views/fields';
 import type { Failure } from '../queryError';
@@ -59,7 +59,7 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
       const reading = componentReading(view(), sub);
       return pipeline.status(sub).reason ?? (reading.state === 'refused' ? reading.reason : undefined);
     },
-    get error() { return pipeline.status(sub).error; },
+    get error() { return pipeline.status(sub).error ?? (view()?.mode === 'failed' ? pipeline.widgetError(widget) : undefined); },
     get answer() { return answerOf(installedAnswer(installed(), sub)); },
     get panel() { return installedPanel(installedModel(installed(), sub)); },
     get values() { return (installed()?.fields?.[`live:${sub}`] as LiveMap | null | undefined) ?? undefined; },
@@ -68,7 +68,7 @@ export function installedEntry(pipeline: Pipeline, widget: number, sub: number):
     get through() { return installed()?.through ?? 0; },
     get version() { return installed()?.id ?? 0; },
     subscribe: changed => pipeline.onInstall(widget, changed),
-    retry: () => pipeline.retry(sub),
+    retry: () => { restartPipeline(pipeline); },
   };
 }
 

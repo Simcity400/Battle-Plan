@@ -3,7 +3,6 @@ import { axisAt, SPEC } from '../../dashboard/regionTime';
 import { countryFromKey } from '../../dashboard/countryKey.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { asFailure } from '../../dashboard/queryError.ts';
 import { liveByColumn, liveKey, noValues } from '../../charts/live.ts';
 import type { Live, LiveValues } from '../../charts/live';
 import { tableSortOf, tableSortToken } from '../../charts/table/options';
@@ -290,8 +289,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const state = (() => {
     if (!track) return <WidgetState kind="empty" icon="grid" message="Load a campaign to compare its countries." />;
     if (coverage.outside) return <WidgetState kind="outside" read={coverage} />;
-    const failure = followedHead ? refused ?? ranking.failure ?? columnsFollowed.failure : undefined;
-    if (failure) return <WidgetState kind="error" failure={asFailure(new Error(failure))} />;
+    if (followedHead && refused) return <WidgetState kind="unavailable" technical={refused} />;
+    const followError = followedHead ? ranking.error ?? columnsFollowed.error : undefined;
+    if (followError) return <WidgetState kind="error" failure={followError} onRetry={() => { ranking.retry(); columnsFollowed.retry(); }} />;
     if (!window && !followedHead) return <WidgetState kind="unavailable" message="Choose another time in widget settings." />;
     if (registryResult.error) return <WidgetState kind="error" failure={registryResult.error} onRetry={registryResult.retry} />;
     if (result.error && !followedHead) return <WidgetState kind="error" failure={result.error} onRetry={result.retry} />;

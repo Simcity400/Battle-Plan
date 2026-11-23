@@ -108,8 +108,10 @@ export interface DashboardClient {
   onMapOptions?(callback: (event: MapOptionsEvent) => void): Promise<() => void>;
   onMapToggle?(callback: (event: MapToggleEvent) => void): Promise<() => void>;
   onMapObserve?(callback: (event: MapObserveEvent) => void): Promise<() => void>;
-  openFollow?(ports: readonly MessagePort[]): Promise<string | void>;
+  openFollow?(ports: readonly MessagePort[]): Promise<OpenedFollow>;
 }
+
+export type OpenedFollow = string | void | { readonly session?: string; close?(): void };
 
 export interface MapOptionsEvent { viewId: string; options: MapOptions }
 export interface MapToggle { setting: 'dayNight' | 'alliedPlans' | 'fog' }

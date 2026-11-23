@@ -6,9 +6,7 @@ import type { RaceItem } from './race';
 import type { PlaybackController } from '../../dashboard/playback';
 import type { ArsenalModel, RaceInspection } from '../../draw/arsenal';
 import { bitmapSurface, holdElement } from '../../draw/bitmapSurface.ts';
-import { pipelineOf } from '../../dashboard/follow/pipeline.ts';
-import { pageClock } from '../../dashboard/widgetClock.ts';
-import { useFollowedWidget } from '../../dashboard/follow/useFollowed.ts';
+import { useFollowedWidget, usePipelineOf } from '../../dashboard/follow/useFollowed.ts';
 import { useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import { perfLog } from '../../shell/perf.ts';
 import { validateNuclearArsenal, arsenalNotice, arsenalRows } from '../../widgets/nuclear-arsenal/nuclearArsenalData.ts';
@@ -24,7 +22,7 @@ export default function DatedArsenal(props: RaceChartProps & { exactRead?: Exact
   const description = useRef<HTMLParagraphElement>(null), latest = useRef(props), update = useRef<() => void>(undefined);
   const owner = useId(), widgetKey = useWidgetKey();
   latest.current = props;
-  const pipeline = pipelineOf(pageClock(props.clock));
+  const pipeline = usePipelineOf(props.clock);
   const pinned = props.model.follow === undefined && props.model.fixed !== undefined ? props.model.fixed + props.model.offset : null;
   const pipe = useFollowedWidget(pipeline, pipeline && props.active ? `${widgetKey}|${props.model.offset}` : null, { offset: props.model.offset, pin: pinned });
   useLayoutEffect(() => {
