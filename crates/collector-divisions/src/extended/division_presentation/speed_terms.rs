@@ -121,25 +121,15 @@ struct HeldCrossings {
     answers: std::collections::HashMap<(u32, u32), Option<u8>>,
     charge: collector_primitives::raw_memory::Charge,
 }
-#[cfg(not(any(test, feature = "test-support")))]
 static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = Mutex::new(None);
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static HELD_CROSSINGS: Mutex<Option<HeldCrossings>> = const { Mutex::new(None) };
-}
 
 fn held_crossings<R>(visit: impl FnOnce(&mut HeldCrossings) -> R) -> R {
-    let with = |slot: &Mutex<Option<HeldCrossings>>| {
-        visit(
-            slot.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_or_insert_with(HeldCrossings::default),
-        )
-    };
-    #[cfg(not(any(test, feature = "test-support")))]
-    return with(&HELD_CROSSINGS);
-    #[cfg(any(test, feature = "test-support"))]
-    HELD_CROSSINGS.with(with)
+    visit(
+        HELD_CROSSINGS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HeldCrossings::default),
+    )
 }
 
 #[derive(Default)]

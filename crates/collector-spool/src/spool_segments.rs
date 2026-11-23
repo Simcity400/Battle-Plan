@@ -40,8 +40,18 @@ fn weight(encoder: &FrameEncoder, table: TableId, input: &TableInput) -> usize {
 pub(crate) fn encode(
     encoder: &FrameEncoder,
     source: &FrameInput,
+    target: (BranchId, Hour, bool),
+    helpers: collector_workers::spool_helper::Helpers<'_>,
+) -> [Option<TableSegment>; TABLE_COUNT] {
+    encode_observing(encoder, source, target, helpers, || {})
+}
+
+fn encode_observing(
+    encoder: &FrameEncoder,
+    source: &FrameInput,
     (branch, hour, force): (BranchId, Hour, bool),
     helpers: collector_workers::spool_helper::Helpers<'_>,
+    observe: impl Fn() + Sync,
 ) -> [Option<TableSegment>; TABLE_COUNT] {
     let context = encoder.frame_context(branch, hour, force);
     let mut order = [(0_usize, 0_usize); TABLE_COUNT];
@@ -84,6 +94,7 @@ pub(crate) fn encode(
         let _span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
         unsafe { HELPER.span(Phase::Encode) };
+        observe();
         work();
     };
     // SAFETY: The spool owns this conversion round and uses no helper in a competing round.
@@ -156,8 +167,7 @@ mod tests {
         ];
         let mut whole = FrameEncoder::new();
         let mut split = FrameEncoder::new();
-        let helper_encodes = || HELPER.phase(Phase::Encode).0;
-        let before = helper_encodes();
+        let helper_encodes = AtomicUsize::new(0);
         for hour in 0..6 {
             let input = frame(hour, 10 + hour as u32 / 2);
             let force = hour == 4;
@@ -166,7 +176,9 @@ mod tests {
                 pool: &pool[..if hour % 2 == 0 { 2 } else { 1 }],
                 backlogged: false,
             };
-            let mut segments = encode(&split, &input, (1, hour, force), helpers);
+            let mut segments = encode_observing(&split, &input, (1, hour, force), helpers, || {
+                helper_encodes.fetch_add(1, Ordering::Relaxed);
+            });
             for table in [TableId::Provinces, TableId::States, TableId::Countries] {
                 assert!(segments[table.index()].is_some(), "{table:?}");
             }
@@ -182,6 +194,6 @@ mod tests {
                 "hour {hour}"
             );
         }
-        assert!(helper_encodes() > before);
+        assert!(helper_encodes.load(Ordering::Relaxed) > 0);
     }
 }

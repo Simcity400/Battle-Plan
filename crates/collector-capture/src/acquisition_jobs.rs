@@ -29,7 +29,7 @@ pub(crate) use collector_workers::acquisition::{Completion, Failure, SubmitError
 mod presentation;
 pub(crate) mod ship_details;
 pub(crate) mod variant_workers;
-#[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+#[cfg(feature = "acquisition_profile")]
 use engine_native::memory::CountedMemory;
 use engine_native::memory::LiveMemory;
 pub(crate) use presentation::{
@@ -1135,7 +1135,7 @@ fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
 }
 
 fn account_completion(calibration: &SharedCalibration, completed: &Completion<Job, Report>) {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "acquisition_profile")]
     collector_memory::read_accounting::merge(&completed.table_reads);
     let role = completed.request.role();
     note_completion(&calibration.roles[role as usize], &completed.report);
@@ -2176,7 +2176,7 @@ impl Pool {
                 #[cfg(feature = "worker_sampler")]
                 let _sampler_job = collector_workers::worker_sampler::job(job.role());
                 let memory =  LiveMemory::new() ;
-                #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+                #[cfg(feature = "acquisition_profile")]
                 let memory = CountedMemory::new(memory);
                 run_with_memory(job, &memory, &runner_calibration)
             },
@@ -2255,21 +2255,24 @@ impl Pool {
     pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
         assert!(!request.worker_only(), "acquisition requires a worker");
         let role = request.role();
+        #[cfg(feature = "acquisition_profile")]
         let reads = collector_memory::read_accounting::Capture::new();
+        #[cfg(not(feature = "acquisition_profile"))]
+        let reads = collector_memory::read_accounting::Scope::new();
         let report = catch_failure(|| {
             let memory = unsafe { LiveMemory::new() };
-            #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+            #[cfg(feature = "acquisition_profile")]
             let memory = CountedMemory::new(memory);
             run_with_memory(&mut request, &memory, &self.calibration)
         });
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(feature = "acquisition_profile")]
         let table_reads = {
             let mut table_reads = collector_memory::read_accounting::ZERO;
             reads.finish_into(&mut table_reads);
             collector_memory::read_accounting::merge(&table_reads);
             table_reads
         };
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(feature = "acquisition_profile"))]
         drop(reads);
         let counters = &self.calibration.roles[role as usize];
         counters.inline_completed.fetch_add(1, Ordering::Relaxed);
@@ -2277,7 +2280,7 @@ impl Pool {
             counters.inline_panicked.fetch_add(1, Ordering::Relaxed);
         }
         let completed = Completion::inline(request, report);
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(feature = "acquisition_profile")]
         let completed = Completion {
             table_reads,
             ..completed
@@ -2614,7 +2617,7 @@ mod tests {
     use super::*;
     use characters::CharactersCopyContext;
     use collector_memory::read_accounting::{self, Capture};
-    use engine_native::memory::ReadCounts;
+    use engine_native::memory::{CountedMemory, ReadCounts};
     use replay_data::rows::TableId;
 
     #[test]
@@ -3606,7 +3609,7 @@ mod tests {
                 direct.context,
                 &mut direct.payload,
             );
-            let expected_reads = reads.finish();
+            let _expected_reads = reads.finish();
             let pool =
             // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
             unsafe { collector_workers::acquisition::Pool::start(
@@ -3636,7 +3639,8 @@ mod tests {
             );
             assert_eq!(report.raw_ok, expected.raw_ok);
             assert_eq!(report.raw_bytes, expected.raw_bytes);
-            assert_eq!(completed.table_reads, expected_reads);
+            #[cfg(feature = "acquisition_profile")]
+            assert_eq!(completed.table_reads, _expected_reads);
             assert_eq!(pool.calibration().uncollected, 0);
         }
     }
@@ -3670,6 +3674,7 @@ mod tests {
             let report = completed.report.unwrap();
             assert!(completed.request.production.is_none());
             assert!(completed.request.construction.is_none());
+            #[cfg(feature = "acquisition_profile")]
             assert_eq!(completed.table_reads, read_accounting::ZERO);
             macro_rules! empty {
                 ($part:ident) => {{
@@ -3685,6 +3690,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn single_requests_share_executor_without_mixing_reports() {
         let capture = Capture::new();
@@ -3741,6 +3747,7 @@ mod tests {
         assert_eq!(capture.finish(), expected);
     }
 
+    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn rejected_provinces_worker_retains_its_storage_without_inline_reads() {
         for workers in [0, 1] {
@@ -3928,6 +3935,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn callback_unwind_drains_jobs_and_releases_single_country_leases() {
         let capture = Capture::new();

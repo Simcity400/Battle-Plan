@@ -1,23 +1,22 @@
-use collector_land_events::land_events::test_support::{self, exclusive, reset};
+use collector_land_events::land_events::test_support::Fixture;
 
 #[test]
 fn refused_detach_stops_land_production() {
-    let _guard = exclusive();
-    reset();
+    let fixture = Fixture::new(1024);
     let mut retained = false;
-    let result = crate::runtime::refuse_land_detach_for_test(|| {
+    let result = crate::runtime::refuse_land_detach_for_test(&fixture, || {
         assert!(
-            !test_support::production_enabled(),
+            !fixture.production_enabled(),
             "stop before retaining collector state"
         );
         retained = true;
     });
     assert_eq!(result, Err("synthetic land detach refused"));
     assert!(retained);
-    let lost = test_support::thread_lost();
-    let required = test_support::required_words();
-    test_support::observe_while_disabled();
-    assert!(!test_support::production_enabled());
-    assert_eq!(test_support::thread_lost(), lost);
-    assert_eq!(test_support::required_words(), required);
+    let lost = fixture.lost();
+    let required = fixture.required_words();
+    fixture.observe_while_disabled();
+    assert!(!fixture.production_enabled());
+    assert_eq!(fixture.lost(), lost);
+    assert_eq!(fixture.required_words(), required);
 }

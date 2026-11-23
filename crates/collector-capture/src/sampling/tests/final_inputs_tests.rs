@@ -370,6 +370,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
         completed.report,
         Err(acquisition::Failure::Stopped)
     ));
+    #[cfg(feature = "acquisition_profile")]
     assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO
@@ -386,6 +387,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     assert_eq!(calibration.executor.caller_executed, 0);
 }
 
+#[cfg(feature = "acquisition_profile")]
 #[test]
 fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
     use collector_memory::read_accounting::{self, Capture, fixtures};

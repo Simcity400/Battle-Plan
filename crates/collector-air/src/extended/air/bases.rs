@@ -2474,12 +2474,36 @@ pub fn copy_air_bases_refresh(
     ctx: AirBasesCopyContext,
     job: &mut AirBasesJob,
 ) -> AirBasesCopyReport {
-    let mut ticks = [0u64; AIR_BASES_N];
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        job.slot_run = crate::air_base_changes::SlotRun::current();
-        job.carry = CarryRun::default();
+    job.slot_run = crate::air_base_changes::SlotRun::current();
+    job.carry = CarryRun::default();
+    let report = copy_air_bases_with_settings(memory, ctx, job);
+    crate::air_base_changes::record(&job.slot_report);
+    collector_observers::air_base_carry_changes::record_work(&job.registration_work);
+    if let Some(store) = job.registration_store.as_deref() {
+        collector_observers::air_base_carry_changes::record(
+            &store.counts(),
+            (!job.log.overflowed).then(|| store.bases()),
+        );
+        collector_observers::air_base_carry_changes::record_census(&store.census_counts());
     }
+    report
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn copy_air_bases_fixture(
+    memory: &impl Memory,
+    ctx: AirBasesCopyContext,
+    job: &mut AirBasesJob,
+) -> AirBasesCopyReport {
+    copy_air_bases_with_settings(memory, ctx, job)
+}
+
+fn copy_air_bases_with_settings(
+    memory: &impl Memory,
+    ctx: AirBasesCopyContext,
+    job: &mut AirBasesJob,
+) -> AirBasesCopyReport {
+    let mut ticks = [0u64; AIR_BASES_N];
     copy_air_bases_pass_with_context(
         job,
         memory,
@@ -2491,18 +2515,6 @@ pub fn copy_air_bases_refresh(
     let state_inputs_started = qpc();
     super::state_fuel_inputs::capture(job, memory, ctx.base);
     ticks[1] += elapsed(state_inputs_started);
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        crate::air_base_changes::record(&job.slot_report);
-        collector_observers::air_base_carry_changes::record_work(&job.registration_work);
-        if let Some(store) = job.registration_store.as_deref() {
-            collector_observers::air_base_carry_changes::record(
-                &store.counts(),
-                (!job.log.overflowed).then(|| store.bases()),
-            );
-            collector_observers::air_base_carry_changes::record_census(&store.census_counts());
-        }
-    }
     AirBasesCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,

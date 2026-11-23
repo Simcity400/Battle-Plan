@@ -152,7 +152,7 @@ fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_st
         assert_eq!(captured.statistics.outcome, Outcome::Rows { len: count });
 
         let bytes = air_bases_test_kit::mod_fixture(count);
-        let report = copy_air_bases_refresh(
+        let report = copy_air_bases_fixture(
             &air_bases_test_kit::memory(&bytes),
             AirBasesCopyContext {
                 base: air_bases_test_kit::BASE,
@@ -1864,13 +1864,13 @@ fn sparse_slot_copy(
     };
     let mut job = AirBasesJob::fixture();
     job.slot_run = run;
-    if !copy_air_bases_refresh(&memory, ctx, &mut job).raw_ok {
+    if !copy_air_bases_fixture(&memory, ctx, &mut job).raw_ok {
         assert!(job.grow_for_next());
         job.grow();
         job.clear();
     }
     memory.reads.borrow_mut().clear();
-    assert!(copy_air_bases_refresh(&memory, ctx, &mut job).raw_ok);
+    assert!(copy_air_bases_fixture(&memory, ctx, &mut job).raw_ok);
     (job, memory.reads.into_inner())
 }
 

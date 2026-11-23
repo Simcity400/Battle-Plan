@@ -39,15 +39,16 @@ impl Roster for Unobserved {
 
 impl Default for QuietRoster {
     fn default() -> Self {
-        #[cfg(not(any(test, feature = "test-support")))]
-        let domain: &'static dyn Roster = &collector_observers::roster_changes::Observer;
-        #[cfg(any(test, feature = "test-support"))]
-        let domain: &'static dyn Roster = &Unobserved;
-        Self::with(domain)
+        Self::with(&collector_observers::roster_changes::Observer)
     }
 }
 
 impl QuietRoster {
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn unobserved() -> Self {
+        Self::with(&Unobserved)
+    }
+
     pub(super) fn with(domain: &'static dyn Roster) -> Self {
         Self {
             domain,
@@ -466,4 +467,18 @@ pub(super) fn walk<M: Memory>(
             ..Carried::default()
         },
     )
+}
+
+#[cfg(test)]
+#[test]
+fn default_roster_passes_through_the_live_token() {
+    let _globals = super::test_globals();
+    // SAFETY: This isolated fixture has no roster hooks and owns the live roster observer.
+    unsafe {
+        collector_observers::roster_changes::with_quiet_roster_for_test(|| {
+            let token = collector_observers::roster_changes::roster().expect("enabled observer");
+            assert_eq!(QuietRoster::default().token(), Some(token));
+            assert_eq!(QuietRoster::unobserved().token(), None);
+        })
+    };
 }

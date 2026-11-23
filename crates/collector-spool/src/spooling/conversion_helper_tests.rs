@@ -141,9 +141,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
     ];
-    let helper_calls = collector_workers::spool_phases::HELPER
-        .phase(collector_workers::spool_phases::Phase::ConvertPacks)
-        .0;
+    let mut helper_calls = 0;
     let packs = PACK_NAMES.len();
     let later_first: [Option<u64>; PACK_NAMES.len()] =
         std::array::from_fn(|pack| Some(pack as u64 + 1));
@@ -207,6 +205,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
                 let expected: Vec<bool> =
                     (0..MAX_THREADS).map(|thread| thread <= helpers).collect();
                 assert_eq!(walls, expected);
+                helper_calls += walls[1..].iter().filter(|&&ran| ran).count();
             }
         }
         if let Some(reason) = ordinary_failure {
@@ -220,10 +219,5 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
             TableInput::Sampled(TableView::Complete(_))
         ));
     }
-    assert!(
-        collector_workers::spool_phases::HELPER
-            .phase(collector_workers::spool_phases::Phase::ConvertPacks)
-            .0
-            >= helper_calls + 24
-    );
+    assert!(helper_calls >= 24);
 }

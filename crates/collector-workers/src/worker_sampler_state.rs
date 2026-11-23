@@ -131,8 +131,6 @@ pub struct Control {
     pub thread: Mutex<Option<JoinHandle<()>>>,
     pub ready: AtomicBool,
     pub(crate) join_complete: AtomicBool,
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) follower_waits: std::sync::atomic::AtomicUsize,
 }
 impl Control {
     pub fn new(
@@ -148,12 +146,14 @@ impl Control {
             thread: Mutex::new(None),
             ready: AtomicBool::new(!enabled),
             join_complete: AtomicBool::new(!enabled),
-            #[cfg(any(test, feature = "test-support"))]
-            follower_waits: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     pub(crate) fn stop_join(&self) {
+        self.stop_join_waiting(thread::yield_now);
+    }
+
+    pub(crate) fn stop_join_waiting(&self, mut wait: impl FnMut()) {
         self.stop.store(true, Ordering::Release);
         while !self.ready.load(Ordering::Acquire) {
             thread::yield_now();
@@ -167,9 +167,7 @@ impl Control {
             self.join_complete.store(true, Ordering::Release);
         } else {
             while !self.join_complete.load(Ordering::Acquire) {
-                #[cfg(any(test, feature = "test-support"))]
-                self.follower_waits.fetch_add(1, Ordering::Release);
-                thread::yield_now();
+                wait();
             }
         }
     }

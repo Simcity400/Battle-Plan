@@ -680,7 +680,16 @@ pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
     }
 }
 
-fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+fn process_owned_job(shared: &Shared, job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+    process_owned_job_with_stage(shared, job, air_bases_memo, failure::stage);
+}
+
+fn process_owned_job_with_stage(
+    shared: &Shared,
+    mut job: DecodeJob,
+    air_bases_memo: &mut AirBasesMemo,
+    stage: impl Fn(&'static str, Option<usize>),
+) {
     // SAFETY: This stage owns the installed frame slot.
     unsafe { shared.frame_stage(job.index, sampling::FrameStage::Decoding) };
     let failure_scope = failure::Scope::frame(failure::Frame {
@@ -713,7 +722,7 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     failure::stage("frame retirement", None);
     reclaim_payloads();
     if !collector_memory::terminal::failed() {
-        process_job(shared, &mut job, air_bases_memo);
+        process_job(shared, &mut job, air_bases_memo, &stage);
     }
 
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
@@ -1189,25 +1198,30 @@ fn decode_contained(
     refused
 }
 
-fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBasesMemo) {
-    failure::stage("missing payload verdicts", None);
+fn process_job(
+    shared: &Shared,
+    job: &mut DecodeJob,
+    air_bases_memo: &mut AirBasesMemo,
+    stage: impl Fn(&'static str, Option<usize>),
+) {
+    stage("missing payload verdicts", None);
     if !job.air_bases_refresh || job.air_bases_payload.is_none() {
         air_bases_memo.invalidate();
     }
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
     decode_presentation(shared, job.index);
-    failure::stage("owned capture tails", None);
+    stage("owned capture tails", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.extended.decode_capture_tails();
-    failure::stage("owned census publication", None);
+    stage("owned census publication", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     // SAFETY: The decode path settles this frame's naval loan before reuse.
     unsafe { frame.map.naval.decode_owned() };
     frame.extended.decode_owned_censuses();
-    failure::stage("owned mission tails", None);
+    stage("owned mission tails", None);
     frame.extended.decode_mission_tails();
-    failure::stage("air copies", None);
+    stage("air copies", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.extended.decode_air_copies();
 
@@ -1215,7 +1229,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.relations_refresh
         && let Some(payload) = job.relations_payload.as_ref()
     {
-        failure::stage("relations", None);
+        stage("relations", None);
         let mut decode_ticks = [0; 2];
         decode_contained(shared, index, Family::Relations, |frame| {
             frame
@@ -1234,7 +1248,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
         let Some(payload) = payload.as_mut().filter(|_| *refresh) else {
             continue;
         };
-        failure::stage("characters", Some(part));
+        stage("characters", Some(part));
         let mut decode_ticks = [0; CHARACTERS.len()];
         decode_contained(shared, index, Family::Characters(part), |frame| {
             frame.extended.characters_pilot().decode_characters_payload(
@@ -1253,7 +1267,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.projects_refresh
         && let Some(payload) = job.projects_payload.as_ref()
     {
-        failure::stage("projects", None);
+        stage("projects", None);
         let mut decode_ticks = [0; PROJECTS.len()];
         decode_contained(shared, index, Family::Projects, |frame| {
             frame.extended.projects_pilot().decode_projects_payload(
@@ -1267,7 +1281,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.lexical_refresh
         && let Some(payload) = job.lexical_payload.as_ref()
     {
-        failure::stage("lexical", None);
+        stage("lexical", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Lexical, |frame| {
             frame.extended.lexical_pilot().decode_lexical_payload(
@@ -1282,7 +1296,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.divisions_refresh
         && let Some(payload) = job.divisions_payload.as_mut()
     {
-        failure::stage("divisions", None);
+        stage("divisions", None);
         let mut decode_ticks = [0; 6];
         decode_contained(shared, index, Family::Divisions, |frame| {
             sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
@@ -1292,7 +1306,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.air_wing_refresh
         && let Some(payload) = job.air_wing_payload.as_mut()
     {
-        failure::stage("air_wing", None);
+        stage("air_wing", None);
         let mut decode_ticks = [0; 2];
         decode_contained(shared, index, Family::AirWing, |frame| {
             collector_air::extended::air::decode_air_payload(
@@ -1311,7 +1325,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.air_stats_refresh
         && let Some(payload) = job.air_stats_payload.as_ref()
     {
-        failure::stage("air_stats", None);
+        stage("air_stats", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::AirStats, |frame| {
             collector_air::extended::air::decode_air_stats_payload(
@@ -1326,7 +1340,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.naval_refresh
         && let Some(payload) = job.naval_payload.as_ref()
     {
-        failure::stage("naval", None);
+        stage("naval", None);
         let mut decode_ticks = [0; 9];
         decode_contained(shared, index, Family::Naval, |frame| {
             frame
@@ -1338,7 +1352,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.players_refresh
         && let Some(payload) = job.players_payload.as_ref()
     {
-        failure::stage("players", None);
+        stage("players", None);
         let mut decode_ticks = [0; 2];
         decode_contained(shared, index, Family::Players, |frame| {
             // SAFETY: Decode is settling the matching job into its originating frame.
@@ -1353,7 +1367,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.session_refresh
         && let Some(payload) = job.session_payload.as_ref()
     {
-        failure::stage("session", None);
+        stage("session", None);
         let mut decode_ticks = [0; 3];
         decode_contained(shared, index, Family::Session, |frame| {
             frame.extended.session_pilot().decode_session_payload(
@@ -1367,7 +1381,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.production_rest_refresh
         && let Some(payload) = job.production_rest_payload.as_ref()
     {
-        failure::stage("production_rest", None);
+        stage("production_rest", None);
         let mut decode_ticks = [0; 8];
         decode_contained(shared, index, Family::ProductionRest, |frame| {
             frame
@@ -1385,7 +1399,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.construction_rest_refresh
         && let Some(payload) = job.construction_rest_payload.as_ref()
     {
-        failure::stage("construction_rest", None);
+        stage("construction_rest", None);
         let mut decode_ticks = [0; 10];
         decode_contained(shared, index, Family::ConstructionRest, |frame| {
             frame
@@ -1403,7 +1417,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.economy_rest_refresh
         && let Some(payload) = job.economy_rest_payload.as_ref()
     {
-        failure::stage("economy_rest", None);
+        stage("economy_rest", None);
         let mut decode_ticks = [0; collector_economy::economy::N];
         decode_contained(shared, index, Family::EconomyRest, |frame| {
             frame
@@ -1416,7 +1430,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
     {
-        failure::stage("air_bases", None);
+        stage("air_bases", None);
         let mut decode_ticks = [0; 3];
         let context = AirBasesMemoContext {
             owner: shared as *const Shared as usize,
@@ -1442,7 +1456,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.supremacy_refresh
         && let Some(payload) = job.supremacy_payload.as_ref()
     {
-        failure::stage("supremacy", None);
+        stage("supremacy", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Supremacy, |frame| {
             frame.extended.supremacy_pilot().decode_supremacy_payload(
@@ -1456,7 +1470,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.sunk_refresh
         && let Some(payload) = job.sunk_payload.as_ref()
     {
-        failure::stage("sunk", None);
+        stage("sunk", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Sunk, |frame| {
             frame.extended.sunk_pilot().decode_sunk_payload(
@@ -1470,7 +1484,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.radar_refresh
         && let Some(payload) = job.radar_payload.as_ref()
     {
-        failure::stage("radar", None);
+        stage("radar", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Radar, |frame| {
             frame
@@ -1483,7 +1497,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.intel_refresh
         && let Some(payload) = job.intel_payload.as_ref()
     {
-        failure::stage("intel", None);
+        stage("intel", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Intel, |frame| {
             frame
@@ -1496,7 +1510,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.weather_refresh
         && let Some(payload) = job.weather_payload.as_ref()
     {
-        failure::stage("weather", None);
+        stage("weather", None);
         let mut decode_ticks = [0; 2];
         let mut tracker = shared
             .weather_temperature
@@ -1519,7 +1533,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     if job.capitulation_refresh
         && let Some(payload) = job.capitulation_payload.as_ref()
     {
-        failure::stage("capitulation", None);
+        stage("capitulation", None);
         let mut decode_ticks = [0; 1];
         decode_contained(shared, index, Family::Capitulation, |frame| {
             frame

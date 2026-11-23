@@ -56,7 +56,7 @@ pub enum Failure {
 pub struct Completion<J, R> {
     pub request: J,
     pub report: Result<R, Failure>,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "acquisition_profile")]
     pub table_reads: collector_memory::read_accounting::TableCounts,
     #[cfg(feature = "callback_profile")]
     pub profile: Profile,
@@ -67,7 +67,7 @@ impl<J, R> Completion<J, R> {
         Self {
             request,
             report,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(feature = "acquisition_profile")]
             table_reads: collector_memory::read_accounting::ZERO,
             #[cfg(feature = "callback_profile")]
             profile: Profile::default(),
@@ -159,10 +159,6 @@ pub struct Calibration {
 struct SubmitCounters {
     accepted: u64,
     rejected: u64,
-    #[cfg(any(test, feature = "test-support"))]
-    notified_one: u64,
-    #[cfg(any(test, feature = "test-support"))]
-    relayed_one: u64,
 }
 
 #[derive(Default)]
@@ -179,8 +175,6 @@ struct Counters {
     help_executed: AtomicU64,
     #[cfg(feature = "executor_join_help")]
     help_ns: AtomicU64,
-    #[cfg(all(any(test, feature = "test-support"), feature = "executor_join_help"))]
-    help_lock_contentions: AtomicU64,
 }
 
 #[cfg(feature = "executor_join_help")]
@@ -303,7 +297,7 @@ impl State {
         })
     }
 
-    fn free_slot<J, R>(&self, shared: &Shared<J, R>, worker_only: bool) -> Option<usize> {
+    fn free_slot<J, R, O: Observer>(&self, shared: &Shared<J, R, O>, worker_only: bool) -> Option<usize> {
         shared
             .words
             .iter()
@@ -315,7 +309,7 @@ impl State {
             .map(|(index, _)| index)
     }
 
-    fn claim<J, R>(&mut self, shared: &Shared<J, R>, position: usize) -> Claim {
+    fn claim<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>, position: usize) -> Claim {
         let index = self
             .ready
             .remove(position)
@@ -340,9 +334,9 @@ impl State {
         }
     }
 
-    fn take_ready<J, R>(
+    fn take_ready<J, R, O: Observer>(
         &mut self,
-        shared: &Shared<J, R>,
+        shared: &Shared<J, R, O>,
         awaited: Option<Ticket>,
     ) -> Option<Claim> {
         let position = if let Some(ticket) = awaited {
@@ -369,7 +363,7 @@ impl State {
         Some(self.claim(shared, position))
     }
 
-    fn take_child<J, R>(&mut self, shared: &Shared<J, R>, ticket: Ticket) -> Option<Claim> {
+    fn take_child<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>, ticket: Ticket) -> Option<Claim> {
         let slot = self.slots.get(ticket.slot)?;
         if slot.generation != ticket.generation
             || slot.phase != Phase::Queued
@@ -381,12 +375,12 @@ impl State {
         Some(self.claim(shared, position))
     }
 
-    fn stop<J, R>(&mut self, shared: &Shared<J, R>) {
+    fn stop<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>) {
         self.stop = true;
         self.cancel_queued(shared);
     }
 
-    fn cancel_queued<J, R>(&mut self, shared: &Shared<J, R>) {
+    fn cancel_queued<J, R, O: Observer>(&mut self, shared: &Shared<J, R, O>) {
         while let Some(index) = self.ready.pop_front() {
             let slot = &self.slots[index];
             debug_assert!(slot.phase == Phase::Queued);
@@ -396,7 +390,7 @@ impl State {
             // and optional profile were initialized at submission.
             unsafe {
                 std::ptr::addr_of_mut!((*completion).report).write(Err(Failure::Stopped));
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(feature = "acquisition_profile")]
                 std::ptr::addr_of_mut!((*completion).table_reads)
                     .write(collector_memory::read_accounting::ZERO);
             }
@@ -414,7 +408,7 @@ struct BatchContext(UnsafeCell<collector_memory::terminal::Context>);
 // Both the native body and its detached continuation end before active retires.
 unsafe impl Sync for BatchContext {}
 
-struct Shared<J, R> {
+struct Shared<J, R, O: Observer> {
     id: u64,
     state: Mutex<State>,
     started_ready: Condvar,
@@ -440,10 +434,7 @@ struct Shared<J, R> {
     ready_wake: AtomicU64,
     settling: AtomicUsize,
     counters: Counters,
-    #[cfg(any(test, feature = "test-support"))]
-    hooks: TestHooks,
-    #[cfg(all(any(test, feature = "test-support"), feature = "executor_join_help"))]
-    help_attempt_gate: HelpAttemptGate,
+    observer: O,
     #[cfg(feature = "executor_join_help")]
     classify: Option<fn(&J) -> usize>,
     #[cfg(feature = "executor_join_help")]
@@ -458,16 +449,75 @@ struct Shared<J, R> {
     context: BatchContext,
 }
 
-#[cfg(any(test, feature = "test-support"))]
-#[derive(Default)]
-struct TestHooks {
-    before_readiness_wait: OnceLock<Box<dyn Fn() + Send + Sync>>,
-    before_publication_failed: OnceLock<Box<dyn Fn() + Send + Sync>>,
-    before_join_wait: OnceLock<Box<dyn Fn(Ticket) + Send + Sync>>,
-    before_work_wait: OnceLock<Box<dyn Fn() + Send + Sync>>,
+pub trait Observer: Send + Sync + 'static {
+    fn waking_worker(&self) {}
+    fn relaying_work(&self) {}
+    fn waiting_for_job(&self) {}
+    fn waiting_for_join(&self, _ticket: Ticket) {}
+    #[cfg(feature = "executor_join_help")]
+    fn attempting_join_help(&self) {}
+    #[cfg(feature = "executor_join_help")]
+    fn join_help_contended(&self) {}
 }
 
-impl<J, R> Shared<J, R> {
+pub struct Unobserved;
+
+impl Observer for Unobserved {}
+
+#[cfg(test)]
+#[derive(Default)]
+struct FixtureObserver {
+    notified_one: AtomicU64,
+    relayed_one: AtomicU64,
+    before_join_wait: OnceLock<Box<dyn Fn(Ticket) + Send + Sync>>,
+    before_work_wait: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    #[cfg(feature = "executor_join_help")]
+    help_attempt_gate: HelpAttemptGate,
+    #[cfg(feature = "executor_join_help")]
+    help_lock_contentions: AtomicU64,
+}
+
+#[cfg(test)]
+impl Observer for FixtureObserver {
+    fn waking_worker(&self) {
+        add(&self.notified_one, 1);
+    }
+
+    fn relaying_work(&self) {
+        add(&self.relayed_one, 1);
+    }
+
+    fn waiting_for_job(&self) {
+        if let Some(hook) = self.before_work_wait.get() {
+            hook();
+        }
+    }
+
+    fn waiting_for_join(&self, ticket: Ticket) {
+        if let Some(hook) = self.before_join_wait.get() {
+            hook(ticket);
+        }
+    }
+
+    #[cfg(feature = "executor_join_help")]
+    fn attempting_join_help(&self) {
+        let gate = &self.help_attempt_gate;
+        if gate.armed.swap(false, Ordering::SeqCst) {
+            gate.entered.store(true, Ordering::Release);
+            let until = std::time::Instant::now() + collector_test_support::TEST_HANG_GUARD;
+            while !gate.released.load(Ordering::Acquire) && std::time::Instant::now() < until {
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[cfg(feature = "executor_join_help")]
+    fn join_help_contended(&self) {
+        add(&self.help_lock_contentions, 1);
+    }
+}
+
+impl<J, R, O: Observer> Shared<J, R, O> {
     fn lock(&self) -> MutexGuard<'_, State> {
         lock_unpoisoned(&self.state)
     }
@@ -541,7 +591,10 @@ impl<J, R> Shared<J, R> {
         // admissions are collected and every active publisher has retired.
         let borrowed_context =
             unsafe { collector_memory::terminal::borrow_context(self.context.0.get()) };
+        #[cfg(feature = "acquisition_profile")]
         let reads = collector_memory::read_accounting::Capture::new();
+        #[cfg(not(feature = "acquisition_profile"))]
+        let reads = collector_memory::read_accounting::Scope::new();
         #[cfg(feature = "callback_profile")]
         let runner_thread_id = unsafe { GetCurrentThreadId() };
         #[cfg(any(feature = "callback_profile", feature = "executor_join_help"))]
@@ -601,13 +654,13 @@ impl<J, R> Shared<J, R> {
         // Initialize report/counts and update only already-initialized stages.
         unsafe {
             std::ptr::addr_of_mut!((*completion).report).write(report);
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(feature = "acquisition_profile")]
             {
                 std::ptr::addr_of_mut!((*completion).table_reads)
                     .write(collector_memory::read_accounting::ZERO);
                 reads.finish_into(&mut (*completion).table_reads);
             }
-            #[cfg(not(any(test, feature = "test-support")))]
+            #[cfg(not(feature = "acquisition_profile"))]
             drop(reads);
             #[cfg(feature = "callback_profile")]
             {
@@ -665,10 +718,6 @@ impl<J, R> Shared<J, R> {
                 unsafe { collector_memory::terminal::borrow_context(self.context.0.get()) };
             if let Err(payload) = catch_unwind(AssertUnwindSafe(|| publication.published())) {
                 std::mem::forget(payload);
-                #[cfg(any(test, feature = "test-support"))]
-                if let Some(hook) = self.hooks.before_publication_failed.get() {
-                    hook();
-                }
                 if let Err(payload) = catch_unwind(AssertUnwindSafe(|| publication.failed())) {
                     std::mem::forget(payload);
                 }
@@ -689,24 +738,12 @@ impl<J, R> Shared<J, R> {
             return None;
         }
         self.classify?;
-        #[cfg(any(test, feature = "test-support"))]
-        if self.help_attempt_gate.armed.swap(false, Ordering::SeqCst) {
-            self.help_attempt_gate
-                .entered
-                .store(true, Ordering::Release);
-            let until = std::time::Instant::now() + collector_test_support::TEST_HANG_GUARD;
-            while !self.help_attempt_gate.released.load(Ordering::Acquire)
-                && std::time::Instant::now() < until
-            {
-                std::thread::yield_now();
-            }
-        }
+        self.observer.attempting_join_help();
         let mut state = match self.state.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
             Err(std::sync::TryLockError::WouldBlock) => {
-                #[cfg(any(test, feature = "test-support"))]
-                add(&self.counters.help_lock_contentions, 1);
+                self.observer.join_help_contended();
                 return None;
             }
         };
@@ -766,7 +803,7 @@ impl<J, R> Shared<J, R> {
     }
 }
 
-impl<J, R> Drop for Shared<J, R> {
+impl<J, R, O: Observer> Drop for Shared<J, R, O> {
     fn drop(&mut self) {
         for (cell, state) in self.cells.iter().zip(&self.words) {
             let dropped = catch_unwind(AssertUnwindSafe(|| {
@@ -796,16 +833,13 @@ impl<J, R> Drop for Shared<J, R> {
     }
 }
 
-pub struct Pool<J: Send + 'static, R: Copy + Send + 'static> {
-    shared: Arc<Shared<J, R>>,
+pub struct Pool<J: Send + 'static, R: Copy + Send + 'static, O: Observer = Unobserved> {
+    shared: Arc<Shared<J, R, O>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
     allocated_bytes: usize,
 }
 
 impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
-    pub fn set_on_completed(&self, completed: OnCompleted<J, R>) {
-        assert!(self.shared.on_completed.set(completed).is_ok());
-    }
     #[cfg(any(test, feature = "test-support"))]
     /// # Safety
     /// Start only session-owned acquisition workers or isolated fixture workers. Keep them in the
@@ -826,7 +860,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         classes: Option<Classes<J>>,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_classified_boosted(worker_count, capacity, false, classes, run)
+        Self::start_classified_boosted(worker_count, capacity, false, classes, Unobserved, run)
     }
     #[cfg(any(test, feature = "test-support"))]
     fn start_boosted(
@@ -835,13 +869,34 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         wake_boost: bool,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
-        Self::start_classified_boosted(worker_count, capacity, wake_boost, None, run)
+        Self::start_classified_boosted(worker_count, capacity, wake_boost, None, Unobserved, run)
+    }
+}
+
+#[cfg(test)]
+impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R, FixtureObserver> {
+    fn start_fixture(
+        worker_count: usize,
+        capacity: usize,
+        classes: Option<Classes<J>>,
+        run: impl Fn(&mut J) -> R + Send + Sync + 'static,
+    ) -> Result<Self, &'static str> {
+        Self::start_classified_boosted(
+            worker_count, capacity, false, classes, FixtureObserver::default(), run,
+        )
+    }
+}
+
+impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Pool<J, R, O> {
+    pub fn set_on_completed(&self, completed: OnCompleted<J, R>) {
+        assert!(self.shared.on_completed.set(completed).is_ok());
     }
     fn start_classified_boosted(
         worker_count: usize,
         capacity: usize,
         wake_boost: bool,
         classes: Option<Classes<J>>,
+        observer: O,
         run: impl Fn(&mut J) -> R + Send + Sync + 'static,
     ) -> Result<Self, &'static str> {
         if worker_count > MAX_WORKERS || capacity == 0 {
@@ -940,10 +995,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             ready_wake: AtomicU64::new(0),
             settling: AtomicUsize::new(0),
             counters: Counters::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            hooks: TestHooks::default(),
-            #[cfg(all(any(test, feature = "test-support"), feature = "executor_join_help"))]
-            help_attempt_gate: HelpAttemptGate::default(),
+            observer,
             #[cfg(feature = "executor_join_help")]
             classify,
             #[cfg(feature = "executor_join_help")]
@@ -962,7 +1014,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         let allocated_bytes = {
             let state = shared.lock();
             let arc_layout = std::alloc::Layout::new::<[AtomicUsize; 2]>()
-                .extend(std::alloc::Layout::new::<Shared<J, R>>())
+                .extend(std::alloc::Layout::new::<Shared<J, R, O>>())
                 .expect("admitted acquisition shared layout")
                 .0
                 .pad_to_align();
@@ -1152,10 +1204,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                         Some(old.saturating_add(peers).min(limit))
                     });
         }
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.shared.lock().counters.notified_one += 1;
-        }
+        self.shared.observer.waking_worker();
         self.shared.work_ready.notify_one();
     }
     pub fn hold_pace(&self) {
@@ -1296,7 +1345,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         // promoted zero array is copied directly without a stack temporary.
         unsafe {
             std::ptr::addr_of_mut!((*cell).report).write(report);
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(feature = "acquisition_profile")]
             std::ptr::copy_nonoverlapping(
                 &collector_memory::read_accounting::ZERO,
                 std::ptr::addr_of_mut!((*cell).table_reads),
@@ -1489,10 +1538,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 || observed == word(ticket.generation, RUNNING)
             {
                 add(&self.shared.counters.join_sleeps, 1);
-                #[cfg(any(test, feature = "test-support"))]
-                if let Some(hook) = self.shared.hooks.before_join_wait.get() {
-                    hook(ticket);
-                }
+                self.shared.observer.waiting_for_join(ticket);
                 unsafe {
                     WaitOnAddress(
                         value.as_ptr().cast(),
@@ -1556,20 +1602,32 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             join_wall_max_ns: JOIN_WALL_MAX_NS.load(Ordering::Relaxed),
         }
     }
-    pub fn wait_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
+    pub fn wait_ready<T>(&self, ready: impl FnMut() -> Option<T>) -> T {
+        self.wait_ready_observing(ready, || {})
+    }
+
+    pub fn wait_ready_observing<T>(
+        &self,
+        mut ready: impl FnMut() -> Option<T>,
+        before_wait: impl FnMut(),
+    ) -> T {
         #[cfg(feature = "callback_profile")]
         if let Some(value) = ready() {
             return value;
         }
         #[cfg(feature = "callback_profile")]
         let begin = collector_primitives::clock::qpc();
-        let value = self.park_until_ready(&mut ready);
+        let value = self.park_until_ready(&mut ready, before_wait);
         #[cfg(feature = "callback_profile")]
         crate::callback_profile_state::record_readiness(collector_primitives::clock::qpc() - begin);
         value
     }
 
-    fn park_until_ready<T>(&self, mut ready: impl FnMut() -> Option<T>) -> T {
+    fn park_until_ready<T>(
+        &self,
+        mut ready: impl FnMut() -> Option<T>,
+        mut before_wait: impl FnMut(),
+    ) -> T {
         if let Some(value) = ready() {
             return value;
         }
@@ -1595,10 +1653,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
                 continue;
             }
             add(&self.shared.counters.join_sleeps, 1);
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(hook) = self.shared.hooks.before_readiness_wait.get() {
-                hook();
-            }
+            before_wait();
             unsafe {
                 WaitOnAddress(
                     self.shared.ready_wake.as_ptr().cast(),
@@ -1649,56 +1704,6 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             begin.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
         );
         true
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_readiness_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
-        assert!(
-            self.shared
-                .hooks
-                .before_readiness_wait
-                .set(Box::new(hook))
-                .is_ok()
-        );
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    /// # Safety
-    /// Install only on an isolated fixture's pool, before the join begins. The hook must release
-    /// any test barrier before the pool shuts down.
-    pub unsafe fn set_join_wait_hook(&self, hook: impl Fn(Ticket) + Send + Sync + 'static) {
-        assert!(
-            self.shared
-                .hooks
-                .before_join_wait
-                .set(Box::new(hook))
-                .is_ok()
-        );
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    /// # Safety
-    /// Install only on an isolated fixture's pool. The hook must let the worker return before
-    /// shutdown joins it.
-    pub unsafe fn set_work_wait_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
-        assert!(
-            self.shared
-                .hooks
-                .before_work_wait
-                .set(Box::new(hook))
-                .is_ok()
-        );
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_publication_failed_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
-        assert!(
-            self.shared
-                .hooks
-                .before_publication_failed
-                .set(Box::new(hook))
-                .is_ok()
-        );
     }
 
     pub fn notify_ready(&self) {
@@ -1770,7 +1775,7 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
         Ok(())
     }
 }
-impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
+impl<J: Send + 'static, R: Copy + Send + 'static, O: Observer> Drop for Pool<J, R, O> {
     fn drop(&mut self) {
         let _ =
         // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
@@ -1779,8 +1784,8 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Drop for Pool<J, R> {
     }
 }
 
-fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
-    shared: Arc<Shared<J, R>>,
+fn worker_loop<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
+    shared: Arc<Shared<J, R, O>>,
     index: usize,
     wake_boost: bool,
 ) {
@@ -1837,22 +1842,16 @@ fn worker_loop<J: Send + 'static, R: Copy + Send + 'static>(
                     })
                     .is_ok()
             };
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                state.counters.relayed_one += u64::from(relay);
-            }
             drop(state);
             if relay {
+                shared.observer.relaying_work();
                 shared.work_ready.notify_one();
             }
             shared.execute(claim, false, false);
             state = shared.lock();
         } else {
             shared.burst_peers.store(0, Ordering::Release);
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(hook) = shared.hooks.before_work_wait.get() {
-                hook();
-            }
+            shared.observer.waiting_for_job();
             state = shared.wait_for_work(state);
         }
     }
@@ -1911,11 +1910,11 @@ mod tests {
             "acquisition did not progress under the hang guard"
         );
     }
-    fn wake_join<J: Send + 'static, R: Copy + Send + 'static>(pool: &Pool<J, R>, slot: usize) {
+    fn wake_join<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(pool: &Pool<J, R, O>, slot: usize) {
         unsafe { WakeByAddressAll(pool.shared.words[slot].as_ptr().cast()) };
     }
-    fn rescue_join<J: Send + 'static, R: Copy + Send + 'static>(
-        pool: &Pool<J, R>,
+    fn rescue_join<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
+        pool: &Pool<J, R, O>,
         slot: usize,
         mut returned: impl FnMut() -> bool,
     ) -> bool {
@@ -2250,6 +2249,7 @@ mod tests {
             joined.store(true, Ordering::Release);
             assert!(helper.join().unwrap());
             assert_eq!(done.report, Err(Failure::Stopped));
+            #[cfg(feature = "acquisition_profile")]
             assert_eq!(done.table_reads, collector_memory::read_accounting::ZERO);
         });
         release.open();
@@ -2719,7 +2719,7 @@ mod tests {
             // SAFETY: This attaches the owned acquisition workers and they join before sampler
             // teardown.
             unsafe {
-                Pool::start_with_class(
+                Pool::start_fixture(
                     1,
                     2,
                     Some((2, |job: &u8| usize::from(*job != 0))),
@@ -2742,7 +2742,7 @@ mod tests {
             .unwrap();
         let candidate = submit(&pool, &mut Some(1));
         pool.shared
-            .help_attempt_gate
+            .observer.help_attempt_gate
             .armed
             .store(true, Ordering::SeqCst);
         std::thread::scope(|scope| {
@@ -2754,7 +2754,7 @@ mod tests {
             });
             let armed = progressed(|| {
                 pool.shared
-                    .help_attempt_gate
+                    .observer.help_attempt_gate
                     .entered
                     .load(Ordering::Acquire)
             });
@@ -2762,13 +2762,13 @@ mod tests {
             pool.shared.means[1].store(1, Ordering::Relaxed);
             pool.shared.maxima[1].store(1, Ordering::Relaxed);
             pool.shared
-                .help_attempt_gate
+                .observer.help_attempt_gate
                 .released
                 .store(true, Ordering::Release);
             let contended = armed
                 && progressed(|| {
                     pool.shared
-                        .counters
+                        .observer
                         .help_lock_contentions
                         .load(Ordering::Acquire)
                         > 0
@@ -3041,14 +3041,11 @@ mod tests {
         }
         let pool =
         // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
-        unsafe { Pool::start(1, 1, |request: &mut u8| *request + 1) }.unwrap();
+        unsafe { Pool::start_fixture(1, 1, None, |request: &mut u8| *request + 1) }.unwrap();
         let (idle_tx, idle) = mpsc::channel();
-        // SAFETY: The test owns the pool and the hook sends a nonblocking notification.
-        unsafe {
-            pool.set_work_wait_hook(move || {
-                let _ = idle_tx.send(());
-            })
-        };
+        assert!(pool.shared.observer.before_work_wait.set(Box::new(move || {
+            let _ = idle_tx.send(());
+        })).is_ok());
         let parked = pool.park(&mut Some(3), false).unwrap();
         assert_eq!(unsafe { pool.submit(&mut Some(4)) }, Err(SubmitError::Full));
         while idle.try_recv().is_ok() {}
@@ -3098,6 +3095,7 @@ mod tests {
         assert_eq!(completed.request.as_ptr(), allocation);
         assert_eq!(completed.request[0], 9);
         assert_eq!(completed.report, Ok(3));
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             completed.table_reads,
             collector_memory::read_accounting::ZERO
@@ -3131,8 +3129,8 @@ mod tests {
         assert_eq!(pool.unpark(ticket), None);
     }
 
-    fn submit<J: Send + 'static, R: Copy + Send + 'static>(
-        pool: &Pool<J, R>,
+    fn submit<J: Send + 'static, R: Copy + Send + 'static, O: Observer>(
+        pool: &Pool<J, R, O>,
         request: &mut Option<J>,
     ) -> Ticket {
         unsafe { pool.submit(request) }.unwrap()
@@ -3238,6 +3236,7 @@ mod tests {
         assert_eq!(rejected, Some(4));
     }
 
+    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn panic_returns_partial_request_cancels_queued_jobs_and_does_not_retry() {
         use engine_native::{
@@ -3307,6 +3306,7 @@ mod tests {
         assert!(Arc::get_mut(&mut owner).is_none());
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             completion.table_reads,
             collector_memory::read_accounting::ZERO
@@ -3573,7 +3573,7 @@ mod tests {
             let release = Arc::clone(&release.0);
             // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
             unsafe {
-                Pool::start(1, 4, move |job: &mut u64| {
+                Pool::start_fixture(1, 4, None, move |job: &mut u64| {
                     claimed_tx.send(*job).unwrap();
                     wait_until(|| release.load(Ordering::Acquire));
                     *job
@@ -3593,13 +3593,10 @@ mod tests {
         let (slept_tx, slept) = mpsc::channel();
         {
             let release = Arc::clone(&release.0);
-            // SAFETY: This fixture owns the pool and the callback releases the join barrier.
-            unsafe {
-                pool.set_join_wait_hook(move |ticket| {
-                    let _ = slept_tx.send(ticket);
-                    release.store(true, Ordering::Release);
-                })
-            };
+            assert!(pool.shared.observer.before_join_wait.set(Box::new(move |ticket| {
+                let _ = slept_tx.send(ticket);
+                release.store(true, Ordering::Release);
+            })).is_ok());
         }
         let joined = AtomicBool::new(false);
         let (report, woke) = std::thread::scope(|scope| {
@@ -3709,7 +3706,7 @@ mod tests {
                     // SAFETY: The attaching runtime or isolated fixture owns this worker through
                     // shutdown.
                     unsafe {
-                        Pool::start(workers, 8, move |job: &mut usize| {
+                        Pool::start_fixture(workers, 8, None, move |job: &mut usize| {
                             ran.lock().unwrap().push(std::thread::current().id());
                             if *job < workers {
                                 entered.send(()).unwrap();
@@ -3734,9 +3731,8 @@ mod tests {
                         .unwrap();
                 }
                 {
-                    let state = pool.shared.lock();
-                    assert_eq!(state.counters.notified_one, 1);
-                    assert!(state.counters.relayed_one <= (jobs - 1).min(workers - 1) as u64);
+                    assert_eq!(pool.shared.observer.notified_one.load(Ordering::Relaxed), 1);
+                    assert!(pool.shared.observer.relayed_one.load(Ordering::Relaxed) <= (jobs - 1).min(workers - 1) as u64);
                 }
                 release.open();
                 for ticket in tickets {
@@ -3768,7 +3764,7 @@ mod tests {
             let gate = Arc::clone(&gate);
             // SAFETY: The attaching runtime or isolated fixture owns this worker through shutdown.
             unsafe {
-                Pool::start(WORKERS, 8, move |job: &mut usize| {
+                Pool::start_fixture(WORKERS, 8, None, move |job: &mut usize| {
                     if *job < WORKERS {
                         entered.send(()).unwrap();
                         wait_until(|| gate.load(Ordering::Acquire));
@@ -3801,9 +3797,8 @@ mod tests {
             pool.wake_workers(2);
             pool.wake_workers(2);
             assert_eq!(pool.shared.burst_peers.load(Ordering::Acquire), 2);
-            let state = pool.shared.lock();
-            assert_eq!(state.counters.notified_one, 2);
-            assert_eq!(state.counters.relayed_one, 0);
+            assert_eq!(pool.shared.observer.notified_one.load(Ordering::Relaxed), 2);
+            assert_eq!(pool.shared.observer.relayed_one.load(Ordering::Relaxed), 0);
         });
         release.open();
         for (job, ticket) in running.into_iter().chain(queued).enumerate() {
@@ -3877,17 +3872,17 @@ pub fn verify_allocated_bytes<J: Send + 'static, R: Copy + Send + 'static>(
     let runner_bytes = size_of_val(&run);
     assert!(runner_bytes > 0, "fixture must cover the boxed runner");
     let pool =
-        Pool::start_classified_boosted(workers, capacity, false, Some(classes), run).unwrap();
+        Pool::start_classified_boosted(workers, capacity, false, Some(classes), Unobserved, run).unwrap();
     assert_eq!(pool.shared.cells.len(), capacity);
     assert_eq!(pool.shared.words.len(), capacity);
     assert_eq!(size_of::<Cell<J, R>>(), size_of::<Completion<J, R>>());
     let state = pool.shared.lock();
     let threads = pool.threads.lock().unwrap();
-    let shared_alignment = std::mem::align_of::<Shared<J, R>>();
+    let shared_alignment = std::mem::align_of::<Shared<J, R, Unobserved>>();
     let shared_offset = (2 * size_of::<AtomicUsize>()).next_multiple_of(shared_alignment);
     let arc_alignment = shared_alignment.max(std::mem::align_of::<AtomicUsize>());
     let allocations = [
-        (shared_offset + size_of::<Shared<J, R>>()).next_multiple_of(arc_alignment),
+        (shared_offset + size_of::<Shared<J, R, Unobserved>>()).next_multiple_of(arc_alignment),
         pool.shared.cells.len() * size_of::<Cell<J, R>>(),
         pool.shared.words.len() * size_of::<AtomicU64>(),
         state.slots.capacity() * size_of::<Slot>(),

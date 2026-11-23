@@ -5,7 +5,6 @@ use replay_data::rows::TableId;
 use std::{
     cell::RefCell,
     marker::PhantomData,
-    mem::MaybeUninit,
     rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -18,29 +17,19 @@ pub type TableCounts = [ReadCounts; TABLE_COUNT];
 pub const ZERO: TableCounts = [ReadCounts::ZERO; TABLE_COUNT];
 
 struct State {
-    #[cfg(any(test, feature = "test-support"))]
-    tables: TableCounts,
     current: usize,
 }
 
 impl State {
     const fn new() -> Self {
         Self {
-            #[cfg(any(test, feature = "test-support"))]
-            tables: ZERO,
             current: TableId::Clock.index(),
         }
     }
 
     fn flush(&mut self) {
-        #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
-        let reads = ReadCounts::take_current();
         #[cfg(feature = "acquisition_profile")]
-        crate::acquisition_profile::boundary(self.current, reads);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.tables[self.current] += reads;
-        }
+        crate::acquisition_profile::boundary(self.current, ReadCounts::take_current());
         if let Some(key) = engine_sites::take_taint() {
             withhold(self.current, key);
         }
@@ -112,113 +101,133 @@ pub fn with_table<R>(owner: TableId, work: impl FnOnce() -> R) -> R {
 }
 
 #[must_use]
-pub struct Capture {
-    previous: MaybeUninit<State>,
-    open: bool,
+pub struct Scope {
+    previous: usize,
     _thread: PhantomData<Rc<()>>,
 }
 
-impl Default for Capture {
+impl Default for Scope {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Capture {
+impl Scope {
     pub fn new() -> Self {
-        let mut capture = Self {
-            previous: MaybeUninit::uninit(),
-            open: false,
-            _thread: PhantomData,
-        };
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
+        let previous = STATE.with_borrow_mut(|state| {
             state.flush();
-            let previous = capture.previous.as_mut_ptr();
-            // SAFETY: every field of `previous` is written before `open` is set.
-            unsafe {
-                #[cfg(any(test, feature = "test-support"))]
-                std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
-                std::ptr::addr_of_mut!((*previous).current).write(state.current);
-            }
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                state.tables = ZERO;
-            }
-            state.current = TableId::Clock.index();
+            std::mem::replace(&mut state.current, TableId::Clock.index())
         });
-        capture.open = true;
         #[cfg(feature = "acquisition_profile")]
         crate::acquisition_profile::enter();
-        capture
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn finish(mut self) -> TableCounts {
-        let mut tables = ZERO;
-        self.restore(Some(&mut tables));
-        tables
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn finish_into(mut self, tables: &mut TableCounts) {
-        self.restore(Some(tables));
-    }
-
-    fn restore(&mut self, #[allow(unused_variables)] tables: Option<&mut TableCounts>) {
-        if !std::mem::take(&mut self.open) {
-            return;
+        Self {
+            previous,
+            _thread: PhantomData,
         }
-        // SAFETY: `open` was set only after `new` initialized `previous`.
-        let previous = unsafe { self.previous.assume_init_ref() };
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        STATE.with_borrow_mut(|state| {
             state.flush();
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                if let Some(tables) = tables {
-                    *tables = state.tables;
-                }
-                state.tables = previous.tables;
-            }
-            state.current = previous.current;
+            state.current = self.previous;
         });
         #[cfg(feature = "acquisition_profile")]
         crate::acquisition_profile::leave();
     }
 }
 
-impl Drop for Capture {
-    fn drop(&mut self) {
-        self.restore(None);
+#[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+mod counted {
+    use super::*;
+
+    thread_local! {
+        static COUNTS: RefCell<TableCounts> = const { RefCell::new(ZERO) };
+    }
+
+    fn record(reads: ReadCounts) {
+        let table = STATE.with_borrow(|state| state.current);
+        COUNTS.with_borrow_mut(|counts| counts[table] += reads);
+    }
+
+    #[must_use]
+    pub struct Capture {
+        _scope: Scope,
+        previous: Option<(TableCounts, Option<fn(ReadCounts)>)>,
+    }
+
+    impl Default for Capture {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Capture {
+        pub fn new() -> Self {
+            let scope = Scope::new();
+            let counts = COUNTS.replace(ZERO);
+            let observer = ReadCounts::replace_observer(Some(record));
+            Self {
+                _scope: scope,
+                previous: Some((counts, observer)),
+            }
+        }
+
+        pub fn finish(mut self) -> TableCounts {
+            let mut tables = ZERO;
+            self.restore(Some(&mut tables));
+            tables
+        }
+
+        pub fn finish_into(mut self, tables: &mut TableCounts) {
+            self.restore(Some(tables));
+        }
+
+        fn restore(&mut self, tables: Option<&mut TableCounts>) {
+            if let Some((previous, observer)) = self.previous.take() {
+                ReadCounts::replace_observer(observer);
+                COUNTS.with_borrow_mut(|counts| {
+                    if let Some(tables) = tables {
+                        *tables = *counts;
+                    }
+                    *counts = previous;
+                });
+            }
+        }
+    }
+
+    impl Drop for Capture {
+        fn drop(&mut self) {
+            self.restore(None);
+        }
+    }
+
+    pub fn merge(counts: &TableCounts) {
+        COUNTS.with_borrow_mut(|totals| {
+            for (total, extra) in totals.iter_mut().zip(counts) {
+                *total += *extra;
+            }
+        });
+    }
+
+    pub fn snapshot() -> TableCounts {
+        let mut tables = ZERO;
+        snapshot_into(&mut tables);
+        tables
+    }
+
+    pub fn snapshot_into(tables: &mut TableCounts) {
+        STATE.with_borrow_mut(State::flush);
+        COUNTS.with_borrow(|counts| *tables = *counts);
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn merge(counts: &TableCounts) {
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        for (total, extra) in state.tables.iter_mut().zip(counts) {
-            *total += *extra;
-        }
-    });
-}
+#[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+pub use counted::{Capture, merge, snapshot, snapshot_into};
 
-#[cfg(any(test, feature = "test-support"))]
-pub fn snapshot() -> TableCounts {
-    let mut tables = ZERO;
-    snapshot_into(&mut tables);
-    tables
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn snapshot_into(tables: &mut TableCounts) {
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        state.flush();
-        *tables = state.tables;
-    })
-}
+#[cfg(not(any(test, feature = "test-support", feature = "acquisition_profile")))]
+pub use Scope as Capture;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures {

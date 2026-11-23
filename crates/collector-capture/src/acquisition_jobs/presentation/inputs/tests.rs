@@ -161,6 +161,9 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             }))
             .is_ok()
     );
+    let (failing, failed) = mpsc::channel();
+    let (allow_failure, failure_allowed) = mpsc::channel();
+    let failure_allowed = Mutex::new(failure_allowed);
     let failing_inputs = Arc::downgrade(&inputs);
     let failure_panicked = Arc::new(AtomicBool::new(false));
     let failure_panic = Arc::clone(&failure_panicked);
@@ -168,6 +171,12 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         inputs
             .before_failure
             .set(Box::new(move || {
+                failing.send(()).unwrap();
+                failure_allowed
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(collector_test_support::TEST_HANG_GUARD)
+                    .unwrap();
                 if unwind == PublicationUnwind::BeforeFailureOutcome {
                     let inputs = failing_inputs.upgrade().unwrap();
                     let state = inputs
@@ -183,21 +192,9 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             }))
             .is_ok()
     );
-    let (failing, failed) = mpsc::channel();
-    let (allow_failure, failure_allowed) = mpsc::channel();
-    let failure_allowed = Mutex::new(failure_allowed);
-    executor.set_publication_failed_hook(move || {
-        failing.send(()).unwrap();
-        failure_allowed
-            .lock()
-            .unwrap()
-            .recv_timeout(collector_test_support::TEST_HANG_GUARD)
-            .unwrap();
-    });
     let failure_window = AtomicBool::new(false);
     let (probe, probed) = mpsc::channel();
     let (park, parked) = mpsc::channel();
-    executor.set_readiness_wait_hook(move || park.send(()).unwrap());
     let countries = engine_allocation::shared(
         engine_native::country_memory::Cache::try_with_capacity(0).unwrap(),
     )
@@ -248,7 +245,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
         };
         let callback = scope.spawn(|| {
             let mut probe = Some(probe);
-            let handoff = executor.wait_ready(|| {
+            let handoff = executor.wait_ready_observing(|| {
                 if abort.load(Ordering::Acquire) {
                     return Some(None);
                 }
@@ -260,7 +257,7 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
                     probe.send(handoff.is_some()).unwrap();
                 }
                 handoff.map(Some)
-            });
+            }, || park.send(()).unwrap());
             let Some(mut handoff) = handoff else { return };
             let restored = handoff.restore_master(&mut Census::default());
             let dispatched = handoff.take_dispatched();

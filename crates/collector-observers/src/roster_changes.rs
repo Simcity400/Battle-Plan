@@ -30,6 +30,21 @@ pub enum Table {
 }
 const TABLES: [&str; 3] = ["Characters", "ScriptFlags", "CharacterRoleTraits"];
 
+#[cfg(any(test, feature = "test-support"))]
+/// # Safety
+/// The fixture must have exclusive use of this roster observer and no installed roster hooks.
+pub unsafe fn with_quiet_roster_for_test<R>(check: impl FnOnce() -> R) -> R {
+    struct Disable;
+    impl Drop for Disable {
+        fn drop(&mut self) {
+            ROSTER.set_enabled(false);
+        }
+    }
+    ROSTER.set_enabled(true);
+    let _disable = Disable;
+    check()
+}
+
 pub fn roster() -> Option<(u64, u64)> {
     ROSTER.quiet()
 }

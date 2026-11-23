@@ -246,7 +246,7 @@ fn decode_refused(ordinal: usize) {
     let shared =
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }.unwrap();
+        unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &minimal_sizing(), 0) }.unwrap();
     let index =
     // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
     unsafe { shared.take_frame(&mut 0) }.unwrap();
@@ -487,13 +487,13 @@ fn attach_refused() {
     drop(
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing) }.unwrap(),
+        unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &sizing, 0) }.unwrap(),
     );
     let stores = {
         let guard = NullGuard::new(usize::MAX);
         drop(
             // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
-            unsafe { collector_capture::sampling::Shared::without_frames(0, 0, 1, &sizing) }
+            unsafe { collector_capture::sampling::Shared::without_fixture_frames(0, 0, 1, &sizing, 0) }
                 .unwrap(),
         );
         let stores = ATTEMPTS.load(Ordering::Relaxed);
@@ -507,7 +507,7 @@ fn attach_refused() {
         let attached =
         // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
         // boundary or detach.
-        unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &sizing) };
+        unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &sizing, 0) };
         let attempts = ATTEMPTS.load(Ordering::Relaxed);
         let denials = DENIALS.load(Ordering::Relaxed);
         drop(guard);
@@ -1422,13 +1422,10 @@ fn exercise_pipeline(
     let shared =
     // SAFETY: This is unpublished attach or isolated fixture state, with no competing observer
     // boundary or detach.
-    unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }?;
+    unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &minimal_sizing(), 0) }?;
     let mut processor =
     // SAFETY: The isolated test owns the spool's failure state.
-    unsafe { collector_spool::spooling::spool_failure_fixture(&root) }?;
-    if phase == Phase::Spool {
-        processor.lockstep_writer();
-    }
+    unsafe { collector_spool::spooling::spool_allocation_fixture(&root, phase == Phase::Spool) }?;
     let mut frame = collector_spool::spooling::allocation_failure_frame(19);
     if changed_loads {
         frame.clock.as_mut().unwrap().play_session_started_at = 19;
@@ -1492,8 +1489,7 @@ fn exercise_pipeline(
     collector_memory::terminal::inject(phase, ordinal as u64);
     TARGET_PHASE.store(phase as u8, Ordering::Relaxed);
     REACHED.store(false, Ordering::Relaxed);
-    // SAFETY: Only the isolated spool test changes this publication failure setting.
-    unsafe { collector_spool::spooling::fail_publication_for_test(fail_publication) };
+    let mut fail_next_publication = fail_publication;
     let mut original_calls = 0;
     let mut conversion_matched = true;
     let mut callback_calls = 0;
@@ -1506,7 +1502,7 @@ fn exercise_pipeline(
         bootstrap_refused =
             // SAFETY: This is unpublished attach or isolated fixture state, with no competing
             // observer boundary or detach.
-            unsafe { collector_capture::sampling::Shared::with_sizing(0, 0, 1, &minimal_sizing()) }.is_err();
+            unsafe { collector_capture::sampling::Shared::with_fixture_sizing(0, 0, 1, &minimal_sizing(), 0) }.is_err();
         assert!(before.is_null());
         assert_eq!(
             before,
@@ -1643,7 +1639,11 @@ fn exercise_pipeline(
                         if !collector_memory::terminal::failed() {
                             let _ = processor
                                 .prepare(&frame)
-                                .and_then(|()| processor.frame(&frame));
+                                .and_then(|()| processor.frame_before_publication(&frame, || {
+                                    if std::mem::take(&mut fail_next_publication) {
+                                        collector_memory::terminal::fail(Phase::Spool, Code::Reserve);
+                                    }
+                                }));
                         }
                     }
                     Phase::Status => {

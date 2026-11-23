@@ -18,7 +18,10 @@ pub struct ReadCounts {
     pub bytes: u64,
 }
 
+type ReadObserver = fn(ReadCounts);
+
 thread_local! {
+    static OBSERVER: Cell<Option<ReadObserver>> = const { Cell::new(None) };
     static COUNTS: Cell<ReadCounts> = const { Cell::new(ReadCounts::ZERO) };
 }
 
@@ -36,6 +39,10 @@ impl ReadCounts {
         COUNTS.with(|counts| counts.replace(Self::ZERO))
     }
 
+    pub fn replace_observer(observer: Option<fn(Self)>) -> Option<fn(Self)> {
+        OBSERVER.replace(observer)
+    }
+
     #[inline]
     pub fn add_current(self) {
         COUNTS.with(|counts| self.add_to(counts));
@@ -46,6 +53,9 @@ impl ReadCounts {
         let mut value = counts.get();
         value += self;
         counts.set(value);
+        if let Some(observe) = OBSERVER.get() {
+            observe(self);
+        }
     }
 }
 

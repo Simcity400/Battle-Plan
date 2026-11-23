@@ -137,6 +137,7 @@ fn stopped_child_fronts_request_returns_its_unread_naval_loan() {
     unsafe { pool.shutdown() }.unwrap();
     let completed = pool.finish(ticket).unwrap();
     assert!(matches!(completed.report, Err(Failure::Stopped)));
+    #[cfg(feature = "acquisition_profile")]
     assert_eq!(
         completed.table_reads,
         collector_memory::read_accounting::ZERO

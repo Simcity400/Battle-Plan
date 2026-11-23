@@ -93,15 +93,15 @@ fn fresh_generation() -> u64 {
     NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+static HISTORY: std::sync::Mutex<History> = std::sync::Mutex::new(History {
+    scope: (0, 0),
+    historical: 0,
+    pointers: Vec::new(),
+    rows: Vec::new(),
+    generation: 0,
+});
+
 fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
-    static HISTORY: std::sync::Mutex<History> = std::sync::Mutex::new(History {
-        scope: (0, 0),
-        historical: 0,
-        pointers: Vec::new(),
-        rows: Vec::new(),
-        generation: 0,
-    });
     match HISTORY.try_lock() {
         Ok(mut history) => history.generation(scope, historical, pointers, rows),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
@@ -111,24 +111,23 @@ fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], r
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static HISTORY: std::cell::RefCell<History> = std::cell::RefCell::default();
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn generation_of(scope: (usize, usize), historical: usize, pointers: &[usize], rows: &[u8]) -> u64 {
-    HISTORY.with_borrow_mut(|history| history.generation(scope, historical, pointers, rows))
-}
-
 static LIVE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static LIVE_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+#[test]
+fn role_generations_follow_rows_across_workers() {
+    let _globals = super::test_globals();
+    let generation = || generation_of((123, 456), 1, &[789], &[17; ROW]);
+    let first = generation();
+    assert_eq!(std::thread::spawn(generation).join().unwrap(), first);
+}
 
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn forget_live() {
     LIVE_LEN.store(0, std::sync::atomic::Ordering::Relaxed);
     LIVE_HINT.store(0, std::sync::atomic::Ordering::Relaxed);
-    HISTORY.with_borrow_mut(|history| *history = History::default());
+    *HISTORY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = History::default();
 }
 
 pub(super) fn remember_roster(count: usize) {

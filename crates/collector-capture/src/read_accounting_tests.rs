@@ -1,3 +1,5 @@
+#![cfg(feature = "acquisition_profile")]
+
 use collector_memory::read_accounting::{
     fixtures::{copies, read},
     *,

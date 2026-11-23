@@ -37,199 +37,538 @@ struct LogSwap {
     next: Option<Box<Storage>>,
     retired: Option<Box<Storage>>,
 }
-static LOG_SWAP: Mutex<LogSwap> = Mutex::new(LogSwap {
-    current: None,
-    next: None,
-    retired: None,
-});
-static LOG: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
-static LOG_CAPACITY: AtomicUsize = AtomicUsize::new(0);
-static LOG_REQUIRED: AtomicUsize = AtomicUsize::new(0);
-static OBSERVER_WORDS: AtomicUsize = AtomicUsize::new(0);
-static BASE_WORDS: AtomicUsize = AtomicUsize::new(0);
-static RESIZING: AtomicBool = AtomicBool::new(false);
-static SPILL: SpillStack<(u64, Vec<u64>)> = SpillStack::new();
-static SPILLED: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
-static STORAGE_LOST: AtomicU64 = AtomicU64::new(u64::MAX);
-const STORAGE_FAILED: &str = "land event storage allocation failed";
-fn spilled() -> std::sync::MutexGuard<'static, Vec<(u64, u64)>> {
-    SPILLED.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-fn take_spill(held: &mut Vec<(u64, u64)>, end: u64) -> bool {
-    let mut kept = true;
-    for (first, words) in SPILL.take() {
-        if engine_allocation::reserve(held, words.len()).is_err() {
-            if first < end {
-                kept = false;
-            } else {
-                STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-                fail();
-            }
-            continue;
-        }
-        held.extend((first..).zip(words));
-    }
-    kept
-}
-
-#[inline(always)]
-fn unless_foreign<T>(diverted: impl FnOnce() -> T, body: impl FnOnce() -> T) -> T {
-    #[cfg(any(test, feature = "test-support"))]
-    let _entered = match test_support::enter() {
-        Some(entered) => entered,
-        None => return diverted(),
-    };
-    #[cfg(not(any(test, feature = "test-support")))]
-    let _ = diverted;
-    body()
-}
-
-pub fn prepare() {
-    unless_foreign(|| (), || engine_allocation::advisory(prepare_storage));
-}
-
-fn prepare_storage() {
-    let Ok(mut swap) = LOG_SWAP.lock() else {
-        return;
-    };
-    drop(swap.retired.take());
-    let required = LOG_REQUIRED.load(Ordering::Relaxed);
-    let mut capacity = LOG_CAPACITY.load(Ordering::Acquire);
-    if required <= capacity
-        || swap
-            .next
-            .as_ref()
-            .is_some_and(|s| s.words.len() >= required)
-    {
-        return;
-    }
-    collector_primitives::table_capture::grow_capacity(&mut capacity, required);
-    if let Ok(mut words) = engine_allocation::vec(capacity) {
-        words.resize_with(capacity, || AtomicU64::new(0));
-        if let Ok(next) = engine_allocation::boxed(Storage::new(words, Default::default())) {
-            swap.next = Some(next);
-        }
-    }
-}
-
-pub fn presize(words: usize) {
-    unless_foreign(
-        || (),
-        || {
-            BASE_WORDS.fetch_max(words, Ordering::Relaxed);
-            LOG_REQUIRED.fetch_max(
-                words.saturating_add(OBSERVER_WORDS.load(Ordering::Relaxed)),
-                Ordering::Relaxed,
-            );
-            engine_allocation::advisory(prepare_storage);
-        },
-    );
-}
-
-pub fn observe_observer_rows(rows: usize) {
-    unless_foreign(
-        || (),
-        || {
-            let words = rows.saturating_mul(11);
-            OBSERVER_WORDS.fetch_max(words, Ordering::Relaxed);
-            LOG_REQUIRED.fetch_max(
-                BASE_WORDS.load(Ordering::Relaxed).saturating_add(words),
-                Ordering::Relaxed,
-            );
-        },
-    );
-}
-
-pub fn capacity() -> usize {
-    LOG_REQUIRED.load(Ordering::Relaxed)
-}
-
-pub fn install_offered() {
-    unless_foreign(|| (), install_offered_owned);
-}
-fn install_offered_owned() {
-    let Ok(mut swap) = LOG_SWAP.try_lock() else {
-        return;
-    };
-    if swap.next.is_none() || swap.retired.is_some() {
-        return;
-    }
-    RESIZING.store(true, Ordering::SeqCst);
-    if PRODUCERS.load(Ordering::SeqCst) == 0
-        && CURSOR.load(Ordering::SeqCst) == CONSUMED.load(Ordering::SeqCst)
-    {
-        let mut next = swap.next.take().unwrap();
-        LOG.store(&mut *next, Ordering::SeqCst);
-        LOG_CAPACITY.store(next.words.len(), Ordering::Release);
-        swap.retired = swap.current.replace(next);
-    }
-    RESIZING.store(false, Ordering::SeqCst);
-}
-
-pub fn release() -> Result<(), &'static str> {
-    unless_foreign(|| Ok(()), release_owned)
-}
-fn release_owned() -> Result<(), &'static str> {
-    if ENABLED.load(Ordering::SeqCst)
-        || ACTIVE.load(Ordering::SeqCst) != 0
-        || PRODUCERS.load(Ordering::SeqCst) != 0
-        || TAP_IN_FLIGHT.load(Ordering::SeqCst) != 0
-    {
-        return Err("land event storage release before callback quiescence");
-    }
-    let buffers = {
-        let mut swap = LOG_SWAP.lock().unwrap_or_else(|error| error.into_inner());
-        LOG.store(ptr::null_mut(), Ordering::SeqCst);
-        LOG_CAPACITY.store(0, Ordering::Release);
-        LOG_REQUIRED.store(0, Ordering::Relaxed);
-        BASE_WORDS.store(0, Ordering::Relaxed);
-        OBSERVER_WORDS.store(0, Ordering::Relaxed);
-        CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::SeqCst);
-        STORAGE_LOST.store(u64::MAX, Ordering::SeqCst);
-        drop(SPILL.take());
-        (std::mem::take(&mut *swap), std::mem::take(&mut *spilled()))
-    };
-    drop(buffers);
-    Ok(())
-}
-
-fn log() -> Option<&'static Storage> {
-    unsafe { LOG.load(Ordering::SeqCst).as_ref() }
-}
-static CURSOR: AtomicU64 = AtomicU64::new(0);
-static CONSUMED: AtomicU64 = AtomicU64::new(0);
-static EPOCH: AtomicU64 = AtomicU64::new(1);
-static OBSERVED_EPOCH: AtomicU64 = AtomicU64::new(0);
-static LAST_HOUR: AtomicU64 = AtomicU64::new(0);
-static ENABLED: AtomicBool = AtomicBool::new(false);
 static TAP_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 static TAP_ESCAPED_UNWINDS: AtomicU64 = AtomicU64::new(0);
 const TAP_UNWIND_RETENTION: &str = "land verdict resolver escaped unwind; collector retained";
-static CALL_ESCAPED_UNWINDS: AtomicU64 = AtomicU64::new(0);
 const CALL_UNWIND_RETENTION: &str = "land callback escaped unwind; collector retained";
-fn escaped_unwind_reason() -> Option<&'static str> {
-    if TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst) != 0 {
-        Some(TAP_UNWIND_RETENTION)
-    } else if CALL_ESCAPED_UNWINDS.load(Ordering::SeqCst) != 0 {
-        Some(CALL_UNWIND_RETENTION)
-    } else {
-        None
+static BASE: AtomicUsize = AtomicUsize::new(0);
+const STORAGE_FAILED: &str = "land event storage allocation failed";
+
+pub(crate) struct Observer {
+    tap_in_flight: &'static AtomicUsize,
+    tap_unwinds: &'static AtomicU64,
+    log_swap: Mutex<LogSwap>,
+    log: AtomicPtr<Storage>,
+    log_capacity: AtomicUsize,
+    log_required: AtomicUsize,
+    observer_words: AtomicUsize,
+    base_words: AtomicUsize,
+    resizing: AtomicBool,
+    spill: SpillStack<(u64, Vec<u64>)>,
+    spilled: Mutex<Vec<(u64, u64)>>,
+    storage_lost: AtomicU64,
+    cursor: AtomicU64,
+    consumed: AtomicU64,
+    epoch: AtomicU64,
+    observed_epoch: AtomicU64,
+    last_hour: AtomicU64,
+    enabled: AtomicBool,
+    call_escaped_unwinds: AtomicU64,
+    active: Padded<AtomicUsize>,
+    producers: Padded<AtomicUsize>,
+    lost: AtomicU64,
+}
+
+impl Observer {
+    const fn new(tap_in_flight: &'static AtomicUsize, tap_unwinds: &'static AtomicU64) -> Self {
+        Self {
+            tap_in_flight,
+            tap_unwinds,
+            log_swap: Mutex::new(LogSwap {
+                current: None,
+                next: None,
+                retired: None,
+            }),
+            log: AtomicPtr::new(ptr::null_mut()),
+            log_capacity: AtomicUsize::new(0),
+            log_required: AtomicUsize::new(0),
+            observer_words: AtomicUsize::new(0),
+            base_words: AtomicUsize::new(0),
+            resizing: AtomicBool::new(false),
+            spill: SpillStack::new(),
+            spilled: Mutex::new(Vec::new()),
+            storage_lost: AtomicU64::new(u64::MAX),
+            cursor: AtomicU64::new(0),
+            consumed: AtomicU64::new(0),
+            epoch: AtomicU64::new(1),
+            observed_epoch: AtomicU64::new(0),
+            last_hour: AtomicU64::new(0),
+            enabled: AtomicBool::new(false),
+            call_escaped_unwinds: AtomicU64::new(0),
+            active: Padded(AtomicUsize::new(0)),
+            producers: Padded(AtomicUsize::new(0)),
+            lost: AtomicU64::new(0),
+        }
+    }
+
+    fn spilled(&self) -> std::sync::MutexGuard<'_, Vec<(u64, u64)>> {
+        self.spilled.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    fn take_spill(&self, held: &mut Vec<(u64, u64)>, end: u64) -> bool {
+        let mut kept = true;
+        for (first, words) in self.spill.take() {
+            if engine_allocation::reserve(held, words.len()).is_err() {
+                if first < end {
+                    kept = false;
+                } else {
+                    self.storage_lost.fetch_min(first, Ordering::SeqCst);
+                    self.fail();
+                }
+                continue;
+            }
+            held.extend((first..).zip(words));
+        }
+        kept
+    }
+
+    fn prepare_storage(&self) {
+        let Ok(mut swap) = self.log_swap.lock() else {
+            return;
+        };
+        drop(swap.retired.take());
+        let required = self.log_required.load(Ordering::Relaxed);
+        let mut capacity = self.log_capacity.load(Ordering::Acquire);
+        if required <= capacity
+            || swap
+                .next
+                .as_ref()
+                .is_some_and(|s| s.words.len() >= required)
+        {
+            return;
+        }
+        collector_primitives::table_capture::grow_capacity(&mut capacity, required);
+        if let Ok(mut words) = engine_allocation::vec(capacity) {
+            words.resize_with(capacity, || AtomicU64::new(0));
+            if let Ok(next) = engine_allocation::boxed(Storage::new(words, Default::default())) {
+                swap.next = Some(next);
+            }
+        }
+    }
+
+    pub(crate) fn install_offered(&self) {
+        let Ok(mut swap) = self.log_swap.try_lock() else {
+            return;
+        };
+        if swap.next.is_none() || swap.retired.is_some() {
+            return;
+        }
+        self.resizing.store(true, Ordering::SeqCst);
+        if self.producers.load(Ordering::SeqCst) == 0
+            && self.cursor.load(Ordering::SeqCst) == self.consumed.load(Ordering::SeqCst)
+        {
+            let mut next = swap.next.take().unwrap();
+            self.log.store(&mut *next, Ordering::SeqCst);
+            self.log_capacity.store(next.words.len(), Ordering::Release);
+            swap.retired = swap.current.replace(next);
+        }
+        self.resizing.store(false, Ordering::SeqCst);
+    }
+
+    fn release(&self) -> Result<(), &'static str> {
+        if self.enabled.load(Ordering::SeqCst)
+            || self.active.load(Ordering::SeqCst) != 0
+            || self.producers.load(Ordering::SeqCst) != 0
+            || self.tap_in_flight.load(Ordering::SeqCst) != 0
+        {
+            return Err("land event storage release before callback quiescence");
+        }
+        let buffers = {
+            let mut swap = self.log_swap.lock().unwrap_or_else(|error| error.into_inner());
+            self.log.store(ptr::null_mut(), Ordering::SeqCst);
+            self.log_capacity.store(0, Ordering::Release);
+            self.log_required.store(0, Ordering::Relaxed);
+            self.base_words.store(0, Ordering::Relaxed);
+            self.observer_words.store(0, Ordering::Relaxed);
+            self.consumed.store(self.cursor.load(Ordering::SeqCst), Ordering::SeqCst);
+            self.storage_lost.store(u64::MAX, Ordering::SeqCst);
+            drop(self.spill.take());
+            (std::mem::take(&mut *swap), std::mem::take(&mut *self.spilled()))
+        };
+        drop(buffers);
+        Ok(())
+    }
+
+    fn log(&self) -> Option<&Storage> {
+        unsafe { self.log.load(Ordering::SeqCst).as_ref() }
+    }
+    fn escaped_unwind_reason(&self) -> Option<&'static str> {
+        if self.tap_unwinds.load(Ordering::SeqCst) != 0 {
+            Some(TAP_UNWIND_RETENTION)
+        } else if self.call_escaped_unwinds.load(Ordering::SeqCst) != 0 {
+            Some(CALL_UNWIND_RETENTION)
+        } else {
+            None
+        }
+    }
+    fn append_at(
+        &self,
+        size: usize,
+        copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>,
+    ) {
+        if self.escaped_unwind_reason().is_some() {
+            return;
+        }
+        struct Producer<'a> {
+            observer: &'a Observer,
+            uncommitted: bool,
+        }
+        impl Drop for Producer<'_> {
+            fn drop(&mut self) {
+                if self.uncommitted {
+                    self.observer.fail();
+                }
+                self.observer.producers.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        self.producers.fetch_add(1, Ordering::SeqCst);
+        let mut producer = Producer { observer: self, uncommitted: false };
+        let first = self.cursor.fetch_add(size as u64, Ordering::SeqCst);
+        let consumed = self.consumed.load(Ordering::SeqCst);
+        let required = self.cursor.load(Ordering::SeqCst).wrapping_sub(consumed) as usize;
+        self.log_required.fetch_max(required.max(size), Ordering::Relaxed);
+        let end = first.wrapping_add(size as u64).wrapping_sub(consumed);
+        let ring = (!self.resizing.load(Ordering::SeqCst))
+            .then(|| self.log())
+            .flatten()
+            .filter(|log| end <= log.words.len() as u64);
+        let Some(log) = ring else {
+            let mut words = Vec::new();
+            if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut words, size.max(1)))
+                .is_err()
+            {
+                self.storage_lost.fetch_min(first, Ordering::SeqCst);
+                self.fail();
+                return;
+            }
+            words.push(0);
+            producer.uncommitted = true;
+            let mut written = 1;
+            let result = copy(first, &mut |word| {
+                if written < size {
+                    words.push(word);
+                }
+                written += 1;
+            });
+            producer.uncommitted = false;
+            if result.is_err() || written != size {
+                self.fail();
+                return;
+            }
+            words[0] = size as u64;
+            if self.spill.push((first, words)).is_err() {
+                self.storage_lost.fetch_min(first, Ordering::SeqCst);
+                self.fail();
+            }
+            return;
+        };
+        let capacity = log.words.len() as u64;
+        producer.uncommitted = true;
+        log.words[(first % capacity) as usize].store(0, Ordering::Relaxed);
+        let mut written = 1;
+        let result = copy(first, &mut |word| {
+            if written < size {
+                log.words[(first.wrapping_add(written as u64) % capacity) as usize]
+                    .store(word, Ordering::Relaxed);
+            }
+            written += 1;
+        });
+        producer.uncommitted = false;
+        let lapped = self.consumed.load(Ordering::SeqCst) > first
+            && self.cursor.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
+        if result.is_err() || written != size || lapped {
+            self.fail();
+            return;
+        }
+        log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
+    }
+
+    pub(crate) fn lost_drain(&self, hour: i32, reason: &'static str) -> Drain {
+        self.fail();
+        let first = self.consumed.load(Ordering::SeqCst);
+        Drain {
+            epoch: self.epoch.load(Ordering::SeqCst),
+            first,
+            words: 0,
+            required: self.cursor.load(Ordering::SeqCst).wrapping_sub(first) as usize,
+            from_hour: self.last_hour.load(Ordering::Relaxed) as i32,
+            to_hour: hour,
+            complete: false,
+            lost: self.lost.load(Ordering::Relaxed),
+            reason,
+        }
+    }
+    fn drain_buffer(
+        &self,
+        output: engine_native::walk::Buffer<'_, u64>,
+        hour: i32,
+        invalidating: bool,
+    ) -> Drain {
+        if invalidating {
+            self.advance_epoch();
+        }
+        let mut held = self.spilled();
+        let end = self.cursor.load(Ordering::SeqCst);
+        let storage_lost = self.storage_lost
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |lost| {
+                (lost < end).then_some(u64::MAX)
+            })
+            .is_ok();
+        let result = self.drain_interval(output, hour, invalidating, end, storage_lost, &mut held);
+        self.take_spill(&mut held, end);
+        held.sort_unstable_by_key(|&(index, _)| index);
+        let taken = held.partition_point(|&(index, _)| index < end);
+        held.drain(..taken);
+        result
+    }
+    fn drain_interval(
+        &self,
+        mut output: engine_native::walk::Buffer<'_, u64>,
+        hour: i32,
+        invalidating: bool,
+        end: u64,
+        storage_lost: bool,
+        spilled: &mut Vec<(u64, u64)>,
+    ) -> Drain {
+        let first = self.consumed.swap(end, Ordering::SeqCst);
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let old_epoch = self.observed_epoch.swap(epoch, Ordering::SeqCst);
+        let from = self.last_hour.swap(hour as u64, Ordering::Relaxed) as i32;
+        let required = end.wrapping_sub(first) as usize;
+        self.log_required.fetch_max(required, Ordering::Relaxed);
+        let mut result = Drain {
+            epoch,
+            first,
+            words: 0,
+            required,
+            from_hour: from,
+            to_hour: hour,
+            complete: false,
+            lost: self.lost.load(Ordering::Relaxed),
+            reason: "land event interval not observed",
+        };
+        if let Some(reason) = self.escaped_unwind_reason() {
+            result.reason = reason;
+            return result;
+        }
+        if !self.enabled.load(Ordering::SeqCst) {
+            result.reason = "land event hooks unavailable";
+            return result;
+        }
+        if invalidating || old_epoch == 0 {
+            result.reason = "land events before first sample/load/gap unknown";
+            return result;
+        }
+        if from.checked_add(1) != Some(hour) {
+            result.epoch = self.advance_epoch();
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = "land event hour unavailable or discontinuous";
+            return result;
+        }
+        if let Err(reason) = output.ensure(required) {
+            self.fail();
+            result.epoch = self.epoch.load(Ordering::SeqCst);
+            result.lost = self.lost.load(Ordering::Relaxed);
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = reason;
+            return result;
+        }
+        if required > output.len() {
+            self.fail();
+            result.epoch = self.epoch.load(Ordering::SeqCst);
+            result.lost = self.lost.load(Ordering::Relaxed);
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = "land event drain capacity exceeded";
+            return result;
+        }
+        if storage_lost {
+            result.epoch = self.epoch.load(Ordering::SeqCst);
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = STORAGE_FAILED;
+            return result;
+        }
+        if epoch != old_epoch {
+            result.reason = "land event epoch changed after a failed read";
+            return result;
+        }
+        if self.producers.load(Ordering::SeqCst) != 0 {
+            self.fail();
+            result.epoch = self.epoch.load(Ordering::SeqCst);
+            result.lost = self.lost.load(Ordering::Relaxed);
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = "land event producer active at boundary";
+            return result;
+        }
+        if !self.take_spill(spilled, end) {
+            self.fail();
+            result.epoch = self.epoch.load(Ordering::SeqCst);
+            result.lost = self.lost.load(Ordering::Relaxed);
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = STORAGE_FAILED;
+            return result;
+        }
+        spilled.sort_unstable_by_key(|&(index, _)| index);
+        let log = self.log().filter(|log| !log.words.is_empty());
+        let mut held = spilled.partition_point(|&(index, _)| index < first);
+        let mut missing = false;
+        for (n, word) in output[..required].iter_mut().enumerate() {
+            let index = first.wrapping_add(n as u64);
+            *word = match spilled.get(held) {
+                Some(&(at, value)) if at == index => {
+                    held += 1;
+                    value
+                }
+                _ => match log {
+                    Some(log) => {
+                        log.words[(index % log.words.len() as u64) as usize].load(Ordering::Acquire)
+                    }
+                    None => {
+                        missing = true;
+                        0
+                    }
+                },
+            };
+        }
+        if missing
+            || self.producers.load(Ordering::SeqCst) != 0
+            || self.epoch.load(Ordering::SeqCst) != epoch
+            || self.cursor.load(Ordering::SeqCst) != end
+        {
+            self.fail();
+            result.epoch = self.epoch.load(Ordering::SeqCst);
+            result.lost = self.lost.load(Ordering::Relaxed);
+            self.observed_epoch.store(result.epoch, Ordering::SeqCst);
+            result.reason = "land event log changed during drain";
+            return result;
+        }
+        result.complete = true;
+        result.words = required;
+        result
+    }
+
+
+    pub(crate) fn prepare(&self) {
+        engine_allocation::advisory(|| self.prepare_storage());
+    }
+
+    fn presize(&self, words: usize) {
+        self.base_words.fetch_max(words, Ordering::Relaxed);
+        self.log_required.fetch_max(
+            words.saturating_add(self.observer_words.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
+        self.prepare();
+    }
+
+    fn observe_observer_rows(&self, rows: usize) {
+        let words = rows.saturating_mul(11);
+        self.observer_words.fetch_max(words, Ordering::Relaxed);
+        self.log_required.fetch_max(
+            self.base_words.load(Ordering::Relaxed).saturating_add(words),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.log_required.load(Ordering::Relaxed)
+    }
+
+    fn observing(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed) && self.escaped_unwind_reason().is_none()
+    }
+
+    fn stop(&self) {
+        self.enabled.store(false, Ordering::SeqCst);
+    }
+
+    fn fail(&self) {
+        self.lost.fetch_add(1, Ordering::Relaxed);
+        self.advance_epoch();
+    }
+
+    fn advance_epoch(&self) -> u64 {
+        self.epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub(crate) fn lost_casualty_reads(&self, count: u64) -> u64 {
+        self.lost.fetch_add(count, Ordering::Relaxed).saturating_add(count)
+    }
+
+    fn append(&self, size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'static str>) {
+        self.append_at(size, |_, put| copy(put));
+    }
+
+    pub(crate) fn drain(&self, output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
+        self.drain_buffer(engine_native::walk::Buffer::Growing(output), hour, invalidating)
     }
 }
+pub(crate) static LIVE: Observer = Observer::new(&TAP_IN_FLIGHT, &TAP_ESCAPED_UNWINDS);
+
+
+pub fn prepare() {
+    LIVE.prepare();
+}
+
+pub fn presize(words: usize) {
+    LIVE.presize(words);
+}
+
+pub fn observe_observer_rows(rows: usize) {
+    LIVE.observe_observer_rows(rows);
+}
+
+pub fn capacity() -> usize {
+    LIVE.capacity()
+}
+
+pub fn install_offered() {
+    LIVE.install_offered();
+}
+
+pub fn release() -> Result<(), &'static str> {
+    LIVE.release()
+}
+
+pub fn stop_observation() {
+    LIVE.stop();
+}
+
+pub fn fail() {
+    LIVE.fail();
+}
+
+pub fn lost_casualty_reads(count: u64) -> u64 {
+    LIVE.lost_casualty_reads(count)
+}
+
+pub fn lost_drain(hour: i32, reason: &'static str) -> Drain {
+    LIVE.lost_drain(hour, reason)
+}
+
+pub fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
+    LIVE.drain(output, hour, invalidating)
+}
+
+fn escaped_unwind_reason() -> Option<&'static str> {
+    LIVE.escaped_unwind_reason()
+}
+
+fn observing() -> bool {
+    LIVE.observing()
+}
+
+fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'static str>) {
+    LIVE.append(size, copy);
+}
+
+fn append_at(size: usize, copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>) {
+    LIVE.append_at(size, copy);
+}
+
 pub fn active() -> usize {
-    ACTIVE
+    LIVE.active
         .load(Ordering::SeqCst)
         .saturating_add(TAP_IN_FLIGHT.load(Ordering::SeqCst))
 }
-fn observing() -> bool {
-    ENABLED.load(Ordering::Relaxed) && escaped_unwind_reason().is_none()
-}
-pub fn stop_observation() {
-    unless_foreign(|| (), || ENABLED.store(false, Ordering::SeqCst));
-}
-static BASE: AtomicUsize = AtomicUsize::new(0);
-pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
-static PRODUCERS: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 const FINALIZE: usize = 0;
 const DESTROYED: usize = 1;
 const BORDER_FINALIZE: usize = 2;
@@ -238,32 +577,6 @@ const DISPATCH_ORIGINAL: usize = 4;
 const WIPE_ORIGINAL: usize = 5;
 const DESTRUCTION_ORIGINAL: usize = 6;
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
-static LOST: AtomicU64 = AtomicU64::new(0);
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static THREAD_COUNTS: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) };
-    static THREAD_EPOCHS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-fn advance_epoch() -> u64 {
-    #[cfg(any(test, feature = "test-support"))]
-    THREAD_EPOCHS.with(|epochs| epochs.set(epochs.get().wrapping_add(1)));
-    EPOCH.fetch_add(1, Ordering::SeqCst) + 1
-}
-#[inline]
-fn count_on_thread(lost: u64, leader_calls: u64) {
-    #[cfg(any(test, feature = "test-support"))]
-    THREAD_COUNTS.with(|counts| {
-        let [previous_lost, previous_calls] = counts.get();
-        counts.set([
-            previous_lost.wrapping_add(lost),
-            previous_calls.wrapping_add(leader_calls),
-        ]);
-    });
-    #[cfg(not(any(test, feature = "test-support")))]
-    let _ = (lost, leader_calls);
-}
-
 #[derive(Clone, Copy)]
 struct Border {
     combat: usize,
@@ -298,7 +611,7 @@ const NO_DISPATCH: Dispatch = Dispatch {
 thread_local! {static DISPATCH:Cell<Dispatch>=const{Cell::new(NO_DISPATCH)};}
 thread_local! {static LAST_DISPATCHED:Cell<(usize,u64,u64)>=const{Cell::new((0,0,0))};}
 fn take_dispatched(combat: usize, handle: u64) -> bool {
-    LAST_DISPATCHED.replace((0, 0, 0)) == (combat, handle, EPOCH.load(Ordering::SeqCst))
+    LAST_DISPATCHED.replace((0, 0, 0)) == (combat, handle, LIVE.epoch.load(Ordering::SeqCst))
 }
 impl Dispatch {
     fn slot(self, side: usize, caller: usize, base: usize) -> Result<Option<usize>, ()> {
@@ -348,16 +661,24 @@ struct Destruction {
 }
 thread_local! {static DESTRUCTION:Cell<Destruction>=const{Cell::new(Destruction{army:0,from:0,to:0,division:0,entry:0,seen:false,failed:false})};}
 
-struct Call {
+struct Call<'a> {
+    observer: &'a Observer,
     completed: Cell<bool>,
     timing: collector_timing::hook_timing::Span,
 }
-impl Call {
+impl Call<'static> {
     fn enter() -> Self {
+        Self::enter_for(&LIVE)
+    }
+}
+
+impl<'a> Call<'a> {
+    fn enter_for(observer: &'a Observer) -> Self {
         let timing =
             collector_timing::hook_timing::enter(collector_timing::hook_timing::Family::LandEvents);
-        ACTIVE.fetch_add(1, Ordering::SeqCst);
+        observer.active.fetch_add(1, Ordering::SeqCst);
         Self {
+            observer,
             completed: Cell::new(false),
             timing,
         }
@@ -386,121 +707,17 @@ impl<T: Copy + 'static> Drop for Restore<T> {
         self.cell.set(self.previous);
     }
 }
-impl Drop for Call {
+impl Drop for Call<'_> {
     fn drop(&mut self) {
         if !self.completed.get() || std::thread::panicking() {
-            CALL_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
-            ENABLED.store(false, Ordering::SeqCst);
-            fail();
+            self.observer.call_escaped_unwinds.fetch_add(1, Ordering::SeqCst);
+            self.observer.enabled.store(false, Ordering::SeqCst);
+            self.observer.fail();
             return;
         }
-        ACTIVE.fetch_sub(1, Ordering::SeqCst);
+        self.observer.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
-pub fn fail() {
-    unless_foreign(|| (), fail_owned);
-}
-fn fail_owned() {
-    count_on_thread(1, 0);
-    LOST.fetch_add(1, Ordering::Relaxed);
-    advance_epoch();
-}
-
-pub fn lost_casualty_reads(count: u64) -> u64 {
-    unless_foreign(|| count, || lost_casualty_reads_owned(count))
-}
-fn lost_casualty_reads_owned(count: u64) -> u64 {
-    count_on_thread(count, 0);
-    LOST.fetch_add(count, Ordering::Relaxed)
-        .saturating_add(count)
-}
-
-fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'static str>) {
-    append_at(size, |_, put| copy(put));
-}
-fn append_at(size: usize, copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>) {
-    unless_foreign(|| (), || append_owned(size, copy));
-}
-fn append_owned(
-    size: usize,
-    copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>,
-) {
-    if escaped_unwind_reason().is_some() {
-        return;
-    }
-    struct Producer {
-        uncommitted: bool,
-    }
-    impl Drop for Producer {
-        fn drop(&mut self) {
-            if self.uncommitted {
-                fail();
-            }
-            PRODUCERS.fetch_sub(1, Ordering::SeqCst);
-        }
-    }
-    PRODUCERS.fetch_add(1, Ordering::SeqCst);
-    let mut producer = Producer { uncommitted: false };
-    let first = CURSOR.fetch_add(size as u64, Ordering::SeqCst);
-    let consumed = CONSUMED.load(Ordering::SeqCst);
-    let required = CURSOR.load(Ordering::SeqCst).wrapping_sub(consumed) as usize;
-    LOG_REQUIRED.fetch_max(required.max(size), Ordering::Relaxed);
-    let end = first.wrapping_add(size as u64).wrapping_sub(consumed);
-    let ring = (!RESIZING.load(Ordering::SeqCst))
-        .then(log)
-        .flatten()
-        .filter(|log| end <= log.words.len() as u64);
-    let Some(log) = ring else {
-        let mut words = Vec::new();
-        if engine_allocation::advisory(|| engine_allocation::reserve_exact(&mut words, size.max(1)))
-            .is_err()
-        {
-            STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-            fail();
-            return;
-        }
-        words.push(0);
-        producer.uncommitted = true;
-        let mut written = 1;
-        let result = copy(first, &mut |word| {
-            if written < size {
-                words.push(word);
-            }
-            written += 1;
-        });
-        producer.uncommitted = false;
-        if result.is_err() || written != size {
-            fail();
-            return;
-        }
-        words[0] = size as u64;
-        if SPILL.push((first, words)).is_err() {
-            STORAGE_LOST.fetch_min(first, Ordering::SeqCst);
-            fail();
-        }
-        return;
-    };
-    let capacity = log.words.len() as u64;
-    producer.uncommitted = true;
-    log.words[(first % capacity) as usize].store(0, Ordering::Relaxed);
-    let mut written = 1;
-    let result = copy(first, &mut |word| {
-        if written < size {
-            log.words[(first.wrapping_add(written as u64) % capacity) as usize]
-                .store(word, Ordering::Relaxed);
-        }
-        written += 1;
-    });
-    producer.uncommitted = false;
-    let lapped = CONSUMED.load(Ordering::SeqCst) > first
-        && CURSOR.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
-    if result.is_err() || written != size || lapped {
-        fail();
-        return;
-    }
-    log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Drain {
     pub epoch: u64,
@@ -513,201 +730,6 @@ pub struct Drain {
     pub lost: u64,
     pub reason: &'static str,
 }
-pub fn drain(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
-    drain_buffer(
-        engine_native::walk::Buffer::Growing(output),
-        hour,
-        invalidating,
-    )
-}
-pub fn lost_drain(hour: i32, reason: &'static str) -> Drain {
-    unless_foreign(|| diverted_drain(hour), || lost_drain_owned(hour, reason))
-}
-fn lost_drain_owned(hour: i32, reason: &'static str) -> Drain {
-    fail_owned();
-    let first = CONSUMED.load(Ordering::SeqCst);
-    Drain {
-        epoch: EPOCH.load(Ordering::SeqCst),
-        first,
-        words: 0,
-        required: CURSOR.load(Ordering::SeqCst).wrapping_sub(first) as usize,
-        from_hour: LAST_HOUR.load(Ordering::Relaxed) as i32,
-        to_hour: hour,
-        complete: false,
-        lost: LOST.load(Ordering::Relaxed),
-        reason,
-    }
-}
-fn drain_buffer(
-    output: engine_native::walk::Buffer<'_, u64>,
-    hour: i32,
-    invalidating: bool,
-) -> Drain {
-    unless_foreign(
-        || diverted_drain(hour),
-        || drain_owned(output, hour, invalidating),
-    )
-}
-#[cfg_attr(not(test), allow(dead_code))]
-fn diverted_drain(hour: i32) -> Drain {
-    Drain {
-        epoch: 0,
-        first: 0,
-        words: 0,
-        required: 0,
-        from_hour: hour,
-        to_hour: hour,
-        complete: false,
-        lost: 0,
-        reason: "land event log owned by another test",
-    }
-}
-fn drain_owned(
-    output: engine_native::walk::Buffer<'_, u64>,
-    hour: i32,
-    invalidating: bool,
-) -> Drain {
-    if invalidating {
-        advance_epoch();
-    }
-    let mut held = spilled();
-    let end = CURSOR.load(Ordering::SeqCst);
-    let storage_lost = STORAGE_LOST
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |lost| {
-            (lost < end).then_some(u64::MAX)
-        })
-        .is_ok();
-    let result = drain_interval(output, hour, invalidating, end, storage_lost, &mut held);
-    take_spill(&mut held, end);
-    held.sort_unstable_by_key(|&(index, _)| index);
-    let taken = held.partition_point(|&(index, _)| index < end);
-    held.drain(..taken);
-    result
-}
-fn drain_interval(
-    mut output: engine_native::walk::Buffer<'_, u64>,
-    hour: i32,
-    invalidating: bool,
-    end: u64,
-    storage_lost: bool,
-    spilled: &mut Vec<(u64, u64)>,
-) -> Drain {
-    let first = CONSUMED.swap(end, Ordering::SeqCst);
-    let epoch = EPOCH.load(Ordering::SeqCst);
-    let old_epoch = OBSERVED_EPOCH.swap(epoch, Ordering::SeqCst);
-    let from = LAST_HOUR.swap(hour as u64, Ordering::Relaxed) as i32;
-    let required = end.wrapping_sub(first) as usize;
-    LOG_REQUIRED.fetch_max(required, Ordering::Relaxed);
-    let mut result = Drain {
-        epoch,
-        first,
-        words: 0,
-        required,
-        from_hour: from,
-        to_hour: hour,
-        complete: false,
-        lost: LOST.load(Ordering::Relaxed),
-        reason: "land event interval not observed",
-    };
-    if let Some(reason) = escaped_unwind_reason() {
-        result.reason = reason;
-        return result;
-    }
-    if !ENABLED.load(Ordering::SeqCst) {
-        result.reason = "land event hooks unavailable";
-        return result;
-    }
-    if invalidating || old_epoch == 0 {
-        result.reason = "land events before first sample/load/gap unknown";
-        return result;
-    }
-    if from.checked_add(1) != Some(hour) {
-        result.epoch = advance_epoch();
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = "land event hour unavailable or discontinuous";
-        return result;
-    }
-    if let Err(reason) = output.ensure(required) {
-        fail();
-        result.epoch = EPOCH.load(Ordering::SeqCst);
-        result.lost = LOST.load(Ordering::Relaxed);
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = reason;
-        return result;
-    }
-    if required > output.len() {
-        fail();
-        result.epoch = EPOCH.load(Ordering::SeqCst);
-        result.lost = LOST.load(Ordering::Relaxed);
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = "land event drain capacity exceeded";
-        return result;
-    }
-    if storage_lost {
-        result.epoch = EPOCH.load(Ordering::SeqCst);
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = STORAGE_FAILED;
-        return result;
-    }
-    if epoch != old_epoch {
-        result.reason = "land event epoch changed after a failed read";
-        return result;
-    }
-    if PRODUCERS.load(Ordering::SeqCst) != 0 {
-        fail();
-        result.epoch = EPOCH.load(Ordering::SeqCst);
-        result.lost = LOST.load(Ordering::Relaxed);
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = "land event producer active at boundary";
-        return result;
-    }
-    if !take_spill(spilled, end) {
-        fail();
-        result.epoch = EPOCH.load(Ordering::SeqCst);
-        result.lost = LOST.load(Ordering::Relaxed);
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = STORAGE_FAILED;
-        return result;
-    }
-    spilled.sort_unstable_by_key(|&(index, _)| index);
-    let log = log().filter(|log| !log.words.is_empty());
-    let mut held = spilled.partition_point(|&(index, _)| index < first);
-    let mut missing = false;
-    for (n, word) in output[..required].iter_mut().enumerate() {
-        let index = first.wrapping_add(n as u64);
-        *word = match spilled.get(held) {
-            Some(&(at, value)) if at == index => {
-                held += 1;
-                value
-            }
-            _ => match log {
-                Some(log) => {
-                    log.words[(index % log.words.len() as u64) as usize].load(Ordering::Acquire)
-                }
-                None => {
-                    missing = true;
-                    0
-                }
-            },
-        };
-    }
-    if missing
-        || PRODUCERS.load(Ordering::SeqCst) != 0
-        || EPOCH.load(Ordering::SeqCst) != epoch
-        || CURSOR.load(Ordering::SeqCst) != end
-    {
-        fail();
-        result.epoch = EPOCH.load(Ordering::SeqCst);
-        result.lost = LOST.load(Ordering::Relaxed);
-        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
-        result.reason = "land event log changed during drain";
-        return result;
-    }
-    result.complete = true;
-    result.words = required;
-    result
-}
-
 fn observe(combat: usize) {
     if !observing() {
         return;
@@ -820,18 +842,23 @@ unsafe extern "system-unwind" {
     fn land_wipe_entry();
 }
 unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
-    let _call = Call::enter();
-    if !observing() {
+    // SAFETY: This is the installed wipe entry with its original native arguments.
+    unsafe { observe_wipe_for(&LIVE, combatant, army) };
+}
+
+unsafe fn observe_wipe_for(observer: &Observer, combatant: usize, army: usize) {
+    let _call = Call::enter_for(observer);
+    if !observer.observing() {
         _call.finish();
         return;
     }
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     match engine_land_inputs::land_wipe::WipePlan::read(&memory, base, combatant, army) {
-        Ok(Some(plan)) => append(plan.words, |put| plan.copy(&memory, base, put)),
+        Ok(Some(plan)) => observer.append(plan.words, |put| plan.copy(&memory, base, put)),
         Ok(None) => {}
         Err(_) => {
-            fail();
+            observer.fail();
         }
     }
     #[cfg(test)]
@@ -1025,7 +1052,7 @@ unsafe extern "system-unwind" fn leader_tap_body(
         fn drop(&mut self) {
             if self.0 {
                 TAP_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
-                ENABLED.store(false, Ordering::SeqCst);
+                LIVE.enabled.store(false, Ordering::SeqCst);
                 fail();
             }
         }
@@ -1101,7 +1128,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
     let observed = DISPATCH.get();
     if observing() {
         if observed.combat != 0 && observed.seen == [true; 2] {
-            LAST_DISPATCHED.set((combat, observed.combat, EPOCH.load(Ordering::SeqCst)));
+            LAST_DISPATCHED.set((combat, observed.combat, LIVE.epoch.load(Ordering::SeqCst)));
             append(6, |put| {
                 put(4);
                 put(observed.combat);
@@ -1118,7 +1145,6 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
 }
 unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: usize) -> usize {
     let _call = Call::enter();
-    count_on_thread(0, 1);
     let result = unsafe { leader_observation(&_call, side, caller, target) };
     _call.finish();
     result
@@ -1127,7 +1153,7 @@ unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: 
 /// The original passed here is a live function with the hooked function's ABI that accepts these
 /// arguments, and every object they reach stays valid for the reads its site makes; one the
 /// original destroys is an identity only once it returns.
-unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: usize) -> usize {
+unsafe fn leader_observation(call: &Call<'_>, side: usize, caller: usize, target: usize) -> usize {
     let original: unsafe extern "system-unwind" fn(usize) -> usize =
         unsafe { std::mem::transmute(target) };
     let result = call.original(|| unsafe { original(side) });
@@ -1251,8 +1277,8 @@ impl Hooks {
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
         self.publication_attempted |= enabled;
-        ENABLED.store(false, Ordering::SeqCst);
-        advance_epoch();
+        LIVE.enabled.store(false, Ordering::SeqCst);
+        LIVE.advance_epoch();
         if let Some(reason) = escaped_unwind_reason().filter(|_| enabled) {
             return Err(reason.into());
         }
@@ -1277,9 +1303,9 @@ impl Hooks {
         }
         #[cfg(test)]
         tests::escape_after_publication();
-        ENABLED.store(enabled && self.hooks.len() == 9, Ordering::SeqCst);
+        LIVE.enabled.store(enabled && self.hooks.len() == 9, Ordering::SeqCst);
         if let Some(reason) = escaped_unwind_reason().filter(|_| enabled) {
-            ENABLED.store(false, Ordering::SeqCst);
+            LIVE.enabled.store(false, Ordering::SeqCst);
             return Err(reason.into());
         }
         Ok(true)
@@ -1336,63 +1362,12 @@ pub mod test_support {
     }
 
     pub(super) static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
-    static OWNER: AtomicU64 = AtomicU64::new(0);
-    static GENERATIONS: AtomicU64 = AtomicU64::new(0);
-    thread_local! {
-        static OWNED: Cell<u64> = const { Cell::new(0) };
+
+    pub fn own() -> std::sync::MutexGuard<'static, ()> {
+        EXCLUSIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub struct Owned {
-        _gate: std::sync::RwLockWriteGuard<'static, ()>,
-        _exclusive: std::sync::MutexGuard<'static, ()>,
-    }
-    impl Drop for Owned {
-        fn drop(&mut self) {
-            OWNER.store(0, Ordering::SeqCst);
-            OWNED.with(|owned| owned.set(0));
-        }
-    }
-
-    pub fn own() -> Owned {
-        let exclusive = EXCLUSIVE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let gate = GATE
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let generation = GENERATIONS.fetch_add(1, Ordering::SeqCst) + 1;
-        OWNED.with(|owned| owned.set(generation));
-        OWNER.store(generation, Ordering::SeqCst);
-        Owned {
-            _gate: gate,
-            _exclusive: exclusive,
-        }
-    }
-
-    pub fn adopt() {
-        OWNED.with(|owned| owned.set(OWNER.load(Ordering::SeqCst)));
-    }
-
-    pub(super) enum Entered {
-        Owner,
-        Shared(#[allow(dead_code)] std::sync::RwLockReadGuard<'static, ()>),
-    }
-    pub(super) fn enter() -> Option<Entered> {
-        let owner = OWNER.load(Ordering::SeqCst);
-        if owner != 0 && OWNED.with(Cell::get) == owner {
-            return Some(Entered::Owner);
-        }
-        match GATE.try_read() {
-            Ok(shared) => Some(Entered::Shared(shared)),
-            Err(std::sync::TryLockError::Poisoned(shared)) => {
-                Some(Entered::Shared(shared.into_inner()))
-            }
-            Err(std::sync::TryLockError::WouldBlock) => None,
-        }
-    }
-
-    pub fn exclusive() -> (std::sync::MutexGuard<'static, ()>, Owned) {
+    pub fn exclusive() -> (std::sync::MutexGuard<'static, ()>, std::sync::MutexGuard<'static, ()>) {
         let family = collector_hooks::hook::FAMILY_TEST
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1402,37 +1377,37 @@ pub mod test_support {
         reset_with_words(1024);
     }
     pub fn reset_with_words(words: usize) {
-        let mut swap = LOG_SWAP.lock().unwrap();
+        let mut swap = LIVE.log_swap.lock().unwrap();
         swap.next = None;
         swap.retired = None;
         let mut storage = Box::new(Storage::new(
             (0..words).map(|_| AtomicU64::new(0)).collect(),
             Default::default(),
         ));
-        LOG.store(&mut *storage, Ordering::SeqCst);
-        LOG_CAPACITY.store(words, Ordering::SeqCst);
-        LOG_REQUIRED.store(0, Ordering::SeqCst);
-        BASE_WORDS.store(0, Ordering::SeqCst);
-        OBSERVER_WORDS.store(0, Ordering::SeqCst);
-        RESIZING.store(false, Ordering::SeqCst);
+        LIVE.log.store(&mut *storage, Ordering::SeqCst);
+        LIVE.log_capacity.store(words, Ordering::SeqCst);
+        LIVE.log_required.store(0, Ordering::SeqCst);
+        LIVE.base_words.store(0, Ordering::SeqCst);
+        LIVE.observer_words.store(0, Ordering::SeqCst);
+        LIVE.resizing.store(false, Ordering::SeqCst);
         free_spill();
-        STORAGE_LOST.store(u64::MAX, Ordering::SeqCst);
+        LIVE.storage_lost.store(u64::MAX, Ordering::SeqCst);
         swap.current = Some(storage);
-        CURSOR.store(0, Ordering::SeqCst);
-        CONSUMED.store(0, Ordering::SeqCst);
-        EPOCH.store(1, Ordering::SeqCst);
-        OBSERVED_EPOCH.store(0, Ordering::SeqCst);
-        LAST_HOUR.store(0, Ordering::SeqCst);
-        LOST.store(0, Ordering::SeqCst);
-        ACTIVE.store(0, Ordering::SeqCst);
-        CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
-        PRODUCERS.store(0, Ordering::SeqCst);
+        LIVE.cursor.store(0, Ordering::SeqCst);
+        LIVE.consumed.store(0, Ordering::SeqCst);
+        LIVE.epoch.store(1, Ordering::SeqCst);
+        LIVE.observed_epoch.store(0, Ordering::SeqCst);
+        LIVE.last_hour.store(0, Ordering::SeqCst);
+        LIVE.lost.store(0, Ordering::SeqCst);
+        LIVE.active.store(0, Ordering::SeqCst);
+        LIVE.call_escaped_unwinds.store(0, Ordering::SeqCst);
+        LIVE.producers.store(0, Ordering::SeqCst);
         LAST_DISPATCHED.set((0, 0, 0));
-        ENABLED.store(true, Ordering::SeqCst);
+        LIVE.enabled.store(true, Ordering::SeqCst);
     }
     pub fn free_spill() {
-        drop(SPILL.take());
-        drop(std::mem::take(&mut *spilled()));
+        drop(LIVE.spill.take());
+        drop(std::mem::take(&mut *LIVE.spilled()));
     }
     pub fn append_record(payload: &[u64]) {
         append(payload.len() + 1, |put| {
@@ -1443,29 +1418,69 @@ pub mod test_support {
         });
     }
     pub fn disable() {
-        ENABLED.store(false, Ordering::SeqCst);
-    }
-    pub fn production_enabled() -> bool {
-        ENABLED.load(Ordering::SeqCst)
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
-    pub fn required_words() -> usize {
-        LOG_REQUIRED.load(Ordering::Relaxed)
+
+
+    pub fn lost() -> u64 {
+        LIVE.lost.load(Ordering::Relaxed)
     }
 
-    pub fn observe_while_disabled() {
-        assert!(!production_enabled());
-        unsafe { observe_wipe(0, 0) }
+    pub fn epoch() -> u64 {
+        LIVE.epoch.load(Ordering::SeqCst)
     }
 
-    pub fn thread_lost() -> u64 {
-        THREAD_COUNTS.with(|counts| counts.get()[0])
+    pub struct Fixture {
+        pub(crate) observer: Observer,
     }
-    pub fn thread_leader_calls() -> u64 {
-        THREAD_COUNTS.with(|counts| counts.get()[1])
-    }
-    pub fn thread_epochs() -> u64 {
-        THREAD_EPOCHS.with(|epochs| epochs.get())
+
+    impl Fixture {
+        pub fn new(words: usize) -> Self {
+            static NO_TAPS: AtomicUsize = AtomicUsize::new(0);
+            static NO_UNWINDS: AtomicU64 = AtomicU64::new(0);
+            let observer = Observer::new(&NO_TAPS, &NO_UNWINDS);
+            let mut storage = Box::new(Storage::new(
+                (0..words).map(|_| AtomicU64::new(0)).collect(),
+                Default::default(),
+            ));
+            observer.log.store(&mut *storage, Ordering::SeqCst);
+            observer.log_capacity.store(words, Ordering::SeqCst);
+            observer.log_swap.lock().unwrap().current = Some(storage);
+            observer.enabled.store(true, Ordering::SeqCst);
+            Self { observer }
+        }
+
+        pub fn stop(&self) {
+            self.observer.stop();
+        }
+
+        pub fn production_enabled(&self) -> bool {
+            self.observer.enabled.load(Ordering::SeqCst)
+        }
+
+        pub fn lost(&self) -> u64 {
+            self.observer.lost.load(Ordering::Relaxed)
+        }
+
+        pub fn required_words(&self) -> usize {
+            self.observer.capacity()
+        }
+
+        pub fn observe_while_disabled(&self) {
+            assert!(!self.production_enabled());
+            // SAFETY: A disabled fixture never follows either native pointer.
+            unsafe { observe_wipe_for(&self.observer, 0, 0) }
+        }
+
+        pub(crate) fn append_record(&self, payload: &[u64]) {
+            self.observer.append(payload.len() + 1, |put| {
+                for &word in payload {
+                    put(word);
+                }
+                Ok(())
+            });
+        }
     }
 }
 
@@ -1492,26 +1507,23 @@ mod tests {
     }
     #[test]
     fn losses_count_on_the_thread_that_records_them() {
-        let _guard = exclusive();
-        reset();
-        let before = test_support::thread_lost();
+        let owner = test_support::Fixture::new(8);
+        let other = test_support::Fixture::new(8);
+        let before = owner.lost();
         collector_test_support::with_allocations_denied(|| {
-            fail();
-            fail();
+            owner.observer.fail();
+            owner.observer.fail();
         });
-        assert_eq!(test_support::thread_lost(), before + 2);
-        let global = LOST.load(Ordering::Relaxed);
-        let calls = test_support::thread_leader_calls();
-        std::thread::spawn(|| {
-            test_support::adopt();
-            fail()
+        assert_eq!(owner.lost(), before + 2);
+        let before_other = other.lost();
+        let after_other = std::thread::spawn(move || {
+            other.observer.fail();
+            other.lost()
         })
         .join()
         .unwrap();
-        assert!(LOST.load(Ordering::Relaxed) > global);
-        assert_eq!(test_support::thread_lost(), before + 2);
-        assert_eq!(test_support::thread_leader_calls(), calls);
-        ENABLED.store(false, Ordering::SeqCst);
+        assert!(after_other > before_other);
+        assert_eq!(owner.lost(), before + 2);
     }
 
     #[test]
@@ -1552,21 +1564,21 @@ mod tests {
         };
         ESCAPE_AFTER_PUBLICATION.store(true, Ordering::SeqCst);
         assert_eq!(group.set_enabled(true), Err(TAP_UNWIND_RETENTION.into()));
-        assert!(!ENABLED.load(Ordering::SeqCst));
-        ENABLED.store(true, Ordering::SeqCst);
+        assert!(!LIVE.enabled.load(Ordering::SeqCst));
+        LIVE.enabled.store(true, Ordering::SeqCst);
         assert!(!observing());
-        let cursor = CURSOR.load(Ordering::SeqCst);
+        let cursor = LIVE.cursor.load(Ordering::SeqCst);
         append(2, |_| {
             panic!("retained unwind must refuse before reading payload")
         });
-        assert_eq!(CURSOR.load(Ordering::SeqCst), cursor);
-        ENABLED.store(false, Ordering::SeqCst);
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 1);
-        assert_eq!(CALL_ESCAPED_UNWINDS.load(Ordering::SeqCst), 1);
+        assert_eq!(LIVE.cursor.load(Ordering::SeqCst), cursor);
+        LIVE.enabled.store(false, Ordering::SeqCst);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 1);
+        assert_eq!(LIVE.call_escaped_unwinds.load(Ordering::SeqCst), 1);
         TAP_IN_FLIGHT.store(0, Ordering::SeqCst);
         TAP_ESCAPED_UNWINDS.store(escaped, Ordering::SeqCst);
-        ACTIVE.store(0, Ordering::SeqCst);
-        CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
+        LIVE.active.store(0, Ordering::SeqCst);
+        LIVE.call_escaped_unwinds.store(0, Ordering::SeqCst);
         assert!(group.set_enabled(false).unwrap());
         drop(group);
         release().unwrap();
@@ -1586,21 +1598,21 @@ mod tests {
                 collector_primitives::raw_memory::Charge::empty_on(&TRACKER),
             ))
         };
-        let mut swap = LOG_SWAP.lock().unwrap();
+        let mut swap = LIVE.log_swap.lock().unwrap();
         swap.current = Some(buffer(4));
         swap.next = Some(buffer(8));
         swap.retired = Some(buffer(2));
-        LOG.store(swap.current.as_deref_mut().unwrap(), Ordering::SeqCst);
+        LIVE.log.store(swap.current.as_deref_mut().unwrap(), Ordering::SeqCst);
         drop(swap);
         assert_eq!(TRACKER.snapshot().current.payload_vectors, 14 * 8);
-        ACTIVE.store(1, Ordering::SeqCst);
+        LIVE.active.store(1, Ordering::SeqCst);
         assert!(release().is_err());
         assert_eq!(TRACKER.snapshot().current.payload_vectors, 14 * 8);
-        ACTIVE.store(0, Ordering::SeqCst);
+        LIVE.active.store(0, Ordering::SeqCst);
         release().unwrap();
-        assert!(LOG.load(Ordering::SeqCst).is_null());
+        assert!(LIVE.log.load(Ordering::SeqCst).is_null());
         assert_eq!(TRACKER.snapshot().current, Default::default());
-        LOG_SWAP.lock().unwrap().next = Some(buffer(3));
+        LIVE.log_swap.lock().unwrap().next = Some(buffer(3));
         drop(Hooks {
             hooks: vec![],
             refused: true,
@@ -1675,7 +1687,7 @@ mod tests {
             }
             side + 1
         }
-        let enabled = ENABLED.swap(false, Ordering::SeqCst);
+        let enabled = LIVE.enabled.swap(false, Ordering::SeqCst);
         ENTERED.store(false, Ordering::SeqCst);
         RELEASE.store(false, Ordering::SeqCst);
         let site = land_leader_tap_test_site as *const () as usize;
@@ -1691,7 +1703,7 @@ mod tests {
         .unwrap();
         assert!(hook.set_enabled(true).unwrap());
         let worker = std::thread::spawn(|| {
-            test_support::adopt();
+
             let mut vtable = [0usize; 30];
             vtable[29] = target as *const () as usize;
             let mut preserved = [0usize; 8];
@@ -1717,7 +1729,7 @@ mod tests {
             unsafe { ptr::read_unaligned(site as *const [u8; 16]) },
             sentinel
         );
-        ENABLED.store(enabled, Ordering::SeqCst);
+        LIVE.enabled.store(enabled, Ordering::SeqCst);
     }
     #[test]
     fn verdict_tap_stub_has_seh_stack_unwind_metadata() {
@@ -1826,7 +1838,7 @@ mod tests {
             assert!(hook.set_enabled(true).unwrap());
             let patched = unsafe { ptr::read_unaligned(site as *const [u8; 16]) };
             let worker = std::thread::spawn(move || {
-                test_support::adopt();
+
                 let wait: unsafe extern "system" fn() = unsafe { std::mem::transmute(address) };
                 unsafe {
                     wait();
@@ -1860,7 +1872,7 @@ mod tests {
         let _restore = Restore::new(&DESTRUCTION);
         let mut output = vec![0; 32];
         drain(&mut output, 10, true);
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         for _ in 0..2 {
             append_at(10, |entry, put| {
                 DESTRUCTION.set(Destruction {
@@ -1884,11 +1896,11 @@ mod tests {
         ORIGINAL[DESTROYED].store(original, Ordering::SeqCst);
         test_support::disable();
         assert!(observed.complete);
-        assert_eq!(test_support::thread_lost(), lost);
+        assert_eq!(test_support::lost(), lost);
         assert_eq!(observed.words, 28);
         assert_eq!(&output[10..14], &[4, 6, 0, 0]);
         assert_eq!(&output[24..28], &[4, 6, 14, 0]);
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
     }
     #[test]
     fn failed_destruction_read_is_counted_once_across_nested_writer() {
@@ -1904,12 +1916,12 @@ mod tests {
         let outer =
             ORIGINAL[DESTRUCTION_ORIGINAL].swap(original as *const () as usize, Ordering::SeqCst);
         let inner = ORIGINAL[DESTROYED].swap(writer as *const () as usize, Ordering::SeqCst);
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         unsafe {
             destruction(0, 0, 0);
         }
-        assert_eq!(test_support::thread_lost() - lost, 1);
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        assert_eq!(test_support::lost() - lost, 1);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
         ORIGINAL[DESTRUCTION_ORIGINAL].store(outer, Ordering::SeqCst);
         ORIGINAL[DESTROYED].store(inner, Ordering::SeqCst);
         BASE.store(base, Ordering::SeqCst);
@@ -1959,7 +1971,7 @@ mod tests {
             "collector install may continue"
         );
         assert!(group.refused);
-        assert!(!ENABLED.load(Ordering::SeqCst));
+        assert!(!LIVE.enabled.load(Ordering::SeqCst));
         assert!(group.hooks.iter().all(|h| !h.is_enabled()));
         assert_eq!(unsafe { std::slice::from_raw_parts(page, 16) }, sentinel);
         assert_eq!(
@@ -2014,8 +2026,8 @@ mod tests {
         }
         let after = collector_timing::hook_timing::counts(family);
         assert!(after.calls > timed.calls && after.original > timed.original);
-        let log = log().unwrap();
-        let words = (0..CURSOR.load(Ordering::SeqCst) as usize)
+        let log = LIVE.log().unwrap();
+        let words = (0..LIVE.cursor.load(Ordering::SeqCst) as usize)
             .map(|n| log.words[n].load(Ordering::Acquire))
             .collect::<Vec<_>>();
         assert_eq!(words[0], 11);
@@ -2024,7 +2036,7 @@ mod tests {
         assert_eq!(words[4], 1);
         assert_eq!(words[5], 1 << 32 | 70);
         assert_eq!(words[6], 234_567);
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
         ORIGINAL[FINALIZE].store(old_original, Ordering::SeqCst);
         BASE.store(old_base, Ordering::SeqCst);
         test_support::disable();
@@ -2036,7 +2048,7 @@ mod tests {
         let old_base = BASE.swap(0, Ordering::SeqCst);
         let mut output = vec![0; 8];
         drain(&mut output, 10, true);
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         let unknown_side = 0u64;
         let land_side = engine_native::cland_combatant::VTABLE_RVA.0 as u64;
         let unsupported_unit = [engine_native::carmy::VTABLE_RVA.0 as u64, 1];
@@ -2056,7 +2068,7 @@ mod tests {
         let interval = drain(&mut output, 11, false);
         BASE.store(old_base, Ordering::SeqCst);
         test_support::disable();
-        assert_eq!(test_support::thread_lost() - lost, 6);
+        assert_eq!(test_support::lost() - lost, 6);
         assert!(interval.lost >= 6);
         assert!(!interval.complete);
     }
@@ -2069,7 +2081,7 @@ mod tests {
         unsafe extern "system" fn predicate(side: usize) -> u8 {
             ((side >> 40) ^ side) as u8
         }
-        let enabled = ENABLED.swap(false, Ordering::SeqCst);
+        let enabled = LIVE.enabled.swap(false, Ordering::SeqCst);
         let old_border =
             ORIGINAL[BORDER_TERMINATE].swap(predicate as *const () as usize, Ordering::SeqCst);
         let border: unsafe extern "system" fn(usize) -> u8 =
@@ -2082,8 +2094,8 @@ mod tests {
             )
         });
         ORIGINAL[BORDER_TERMINATE].store(old_border, Ordering::SeqCst);
-        ENABLED.store(enabled, Ordering::SeqCst);
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        LIVE.enabled.store(enabled, Ordering::SeqCst);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
         for (side, actual_leader, actual_border) in observed {
             assert_eq!(actual_leader, side.rotate_left(17));
             assert_eq!(actual_border, ((side >> 40) ^ side) as u8);
@@ -2195,10 +2207,10 @@ mod tests {
     #[test]
     fn wipe_observation_bridge_preserves_native_caller_registers_and_stack_effects() {
         let _guard = exclusive();
-        let enabled = ENABLED.swap(true, Ordering::SeqCst);
+        let enabled = LIVE.enabled.swap(true, Ordering::SeqCst);
         let base = BASE.swap(0, Ordering::SeqCst);
         let clobber = WIPE_TEST_CLOBBER_XMM.swap(true, Ordering::SeqCst);
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         let site = land_wipe_test_site as *const () as usize;
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
@@ -2230,17 +2242,17 @@ mod tests {
             for n in 0..6 {
                 assert_eq!(&output[8 + n * 2..10 + n * 2], &[n as u64 + 1; 2]);
             }
-            assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+            assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
         }
         ORIGINAL[WIPE_ORIGINAL].store(previous, Ordering::SeqCst);
         assert_eq!(
-            test_support::thread_lost() - lost,
+            test_support::lost() - lost,
             1,
             "refusing observer body ran"
         );
         BASE.store(base, Ordering::SeqCst);
         WIPE_TEST_CLOBBER_XMM.store(clobber, Ordering::SeqCst);
-        ENABLED.store(enabled, Ordering::SeqCst);
+        LIVE.enabled.store(enabled, Ordering::SeqCst);
         assert_eq!(
             unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
             sentinel
@@ -2249,11 +2261,14 @@ mod tests {
     #[test]
     fn win64_verdict_tap_preserves_argument_return_and_nonvolatile_integer_registers() {
         let _guard = exclusive();
-        let enabled = ENABLED.swap(true, Ordering::SeqCst);
+        let enabled = LIVE.enabled.swap(true, Ordering::SeqCst);
+        static HITS: AtomicU64 = AtomicU64::new(0);
         unsafe extern "system-unwind" fn commander(side: usize) -> usize {
+            HITS.fetch_add(u64::from(TAP_IN_FLIGHT.load(Ordering::SeqCst) != 0), Ordering::Relaxed);
             side.rotate_left(17)
         }
         unsafe extern "system-unwind" fn other_commander(side: usize) -> usize {
+            HITS.fetch_add(u64::from(TAP_IN_FLIGHT.load(Ordering::SeqCst) != 0), Ordering::Relaxed);
             !side
         }
         let mut vtable = [0usize; 30];
@@ -2263,7 +2278,7 @@ mod tests {
             Ordering::SeqCst,
         );
         let saved_dispatch = DISPATCH.get();
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
             .unwrap();
@@ -2277,7 +2292,7 @@ mod tests {
             )
         }
         .unwrap();
-        let hits = test_support::thread_leader_calls();
+        let hits = HITS.load(Ordering::Relaxed);
         for tapped in [false, true, false] {
             assert!(hook.set_enabled(tapped).unwrap());
             for side in [0, 0x8000_0001_2345_6789, usize::MAX] {
@@ -2316,19 +2331,19 @@ mod tests {
                 }
             }
         }
-        assert_eq!(test_support::thread_leader_calls() - hits, 6);
+        assert_eq!(HITS.load(Ordering::Relaxed) - hits, 6);
         assert_eq!(
-            test_support::thread_lost() - lost,
+            test_support::lost() - lost,
             6,
             "all tapped observer bodies ran"
         );
         assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
         assert_eq!(
             unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
             sentinel
         );
-        ENABLED.store(enabled, Ordering::SeqCst);
+        LIVE.enabled.store(enabled, Ordering::SeqCst);
         BASE.store(base, Ordering::SeqCst);
         DISPATCH.set(saved_dispatch);
     }
@@ -2341,7 +2356,7 @@ mod tests {
         }
         const SAMPLES: usize = 201;
         const HITS: usize = 2048;
-        let enabled = ENABLED.swap(true, Ordering::SeqCst);
+        let enabled = LIVE.enabled.swap(true, Ordering::SeqCst);
         let site = land_leader_tap_test_site as *const () as usize;
         let base = site + 6 - native::DISPATCH_LEADER_RETURNS[0].0;
         let saved_base = BASE.swap(base, Ordering::SeqCst);
@@ -2408,7 +2423,7 @@ mod tests {
                     assert_eq!(result, pointer);
                     assert_eq!(DISPATCH.get().seen[0], mode == 1 && with_commander);
                     assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
-                    assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+                    assert_eq!(LIVE.active.load(Ordering::SeqCst), 0);
                     times[mode].push(elapsed);
                 }
             }
@@ -2450,7 +2465,7 @@ mod tests {
         assert!(hook.set_enabled(false).unwrap());
         DISPATCH.set(saved_dispatch);
         BASE.store(saved_base, Ordering::SeqCst);
-        ENABLED.store(enabled, Ordering::SeqCst);
+        LIVE.enabled.store(enabled, Ordering::SeqCst);
     }
     #[test]
     fn verdict_resolver_rust_unwind_retains_the_asm_owned_flight() {
@@ -2461,19 +2476,19 @@ mod tests {
         reset();
         assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 0);
         let escaped = TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst);
-        let storage = LOG.load(Ordering::SeqCst);
+        let storage = LIVE.log.load(Ordering::SeqCst);
         TAP_IN_FLIGHT.store(1, Ordering::SeqCst);
         let result = std::panic::catch_unwind(|| {
             unsafe { leader_tap_body(0, 0, native_unwind as *const () as usize) };
         });
         assert!(result.is_err());
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 1);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 1);
         assert_eq!(TAP_IN_FLIGHT.load(Ordering::SeqCst), 1);
         assert_eq!(TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst), escaped + 1);
         assert!(active() != 0);
-        assert!(!ENABLED.load(Ordering::SeqCst));
+        assert!(!LIVE.enabled.load(Ordering::SeqCst));
         assert!(release().is_err());
-        assert_eq!(LOG.load(Ordering::SeqCst), storage);
+        assert_eq!(LIVE.log.load(Ordering::SeqCst), storage);
         let mut out = vec![0; 32];
         for (hour, load) in [(10, false), (11, true), (12, false)] {
             let rejected = drain(&mut out, hour, load);
@@ -2488,15 +2503,15 @@ mod tests {
         assert_eq!(group.set_enabled(true), Err(TAP_UNWIND_RETENTION.into()));
         TAP_IN_FLIGHT.store(0, Ordering::SeqCst);
         TAP_ESCAPED_UNWINDS.store(escaped, Ordering::SeqCst);
-        ACTIVE.store(0, Ordering::SeqCst);
-        CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
+        LIVE.active.store(0, Ordering::SeqCst);
+        LIVE.call_escaped_unwinds.store(0, Ordering::SeqCst);
         release().unwrap();
     }
     #[test]
     fn original_unwind_retains_active_and_restores_nested_tls() {
         let _guard = exclusive();
         reset();
-        let enabled = ENABLED.swap(false, Ordering::SeqCst);
+        let enabled = LIVE.enabled.swap(false, Ordering::SeqCst);
         unsafe extern "system-unwind" fn unwind_three(_: usize, _: usize, _: usize) {
             DISPATCH.set(NO_DISPATCH);
             BORDER.set(NO_BORDER);
@@ -2523,7 +2538,7 @@ mod tests {
             let run: unsafe extern "system-unwind" fn(usize, usize, usize) =
                 unsafe { std::mem::transmute(callback) };
             assert!(std::panic::catch_unwind(|| unsafe { run(0, 0, 0) }).is_err());
-            assert_ne!(ACTIVE.load(Ordering::SeqCst), 0);
+            assert_ne!(LIVE.active.load(Ordering::SeqCst), 0);
             if slot == DISPATCH_ORIGINAL {
                 assert_eq!(DISPATCH.get().combat, 91);
             } else {
@@ -2546,10 +2561,10 @@ mod tests {
             if slot == BORDER_FINALIZE {
                 assert_eq!(BORDER.get().combat, 93);
             }
-            assert_ne!(ACTIVE.load(Ordering::SeqCst), 0);
+            assert_ne!(LIVE.active.load(Ordering::SeqCst), 0);
             ORIGINAL[slot].store(old, Ordering::SeqCst);
         }
-        assert_eq!(ACTIVE.load(Ordering::SeqCst), 4);
+        assert_eq!(LIVE.active.load(Ordering::SeqCst), 4);
         assert!(active() != 0);
         assert!(release().is_err());
         let mut output = vec![0; 8];
@@ -2564,12 +2579,12 @@ mod tests {
             publication_attempted: false,
         };
         assert_eq!(group.set_enabled(true), Err(CALL_UNWIND_RETENTION.into()));
-        ACTIVE.store(0, Ordering::SeqCst);
-        CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
+        LIVE.active.store(0, Ordering::SeqCst);
+        LIVE.call_escaped_unwinds.store(0, Ordering::SeqCst);
         DISPATCH.set(NO_DISPATCH);
         BORDER.set(NO_BORDER);
         DESTRUCTION.set(Destruction::default());
-        ENABLED.store(enabled, Ordering::SeqCst);
+        LIVE.enabled.store(enabled, Ordering::SeqCst);
     }
     #[test]
     fn append_unwind_releases_producer_and_refuses_interval() {
@@ -2577,7 +2592,7 @@ mod tests {
         reset();
         let mut output = vec![0; 8];
         drain(&mut output, 10, true);
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         let result = std::panic::catch_unwind(|| {
             append(4, |put| {
                 put(6);
@@ -2585,12 +2600,12 @@ mod tests {
             })
         });
         assert!(result.is_err());
-        assert_eq!(PRODUCERS.load(Ordering::SeqCst), 0);
+        assert_eq!(LIVE.producers.load(Ordering::SeqCst), 0);
         let refused = drain(&mut output, 11, false);
         assert!(!refused.complete);
-        assert_eq!(test_support::thread_lost() - lost, 1);
+        assert_eq!(test_support::lost() - lost, 1);
         assert!(refused.lost >= 1);
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
     #[test]
     fn resolver_observations_require_the_native_verdict_callers() {
@@ -2640,7 +2655,7 @@ mod tests {
         LAST_DISPATCHED.set((0x1000, 17, 1));
         assert!(take_dispatched(0x1000, 17));
         assert!(!take_dispatched(0x1000, 17));
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
     #[test]
     fn dispatched_pointer_reuse_with_a_different_handle_keeps_fallback() {
@@ -2649,20 +2664,20 @@ mod tests {
         LAST_DISPATCHED.set((0x1000, 17, 1));
         assert!(!take_dispatched(0x1000, 18));
         assert!(!take_dispatched(0x1000, 17));
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
     #[test]
     fn failed_dispatch_append_invalidates_the_skip_witness() {
         let _guard = exclusive();
         reset();
-        let epoch = EPOCH.load(Ordering::SeqCst);
-        let lost = test_support::thread_lost();
+        let epoch = LIVE.epoch.load(Ordering::SeqCst);
+        let lost = test_support::lost();
         LAST_DISPATCHED.set((0x1000, 17, epoch));
         append(6, |_| Err("failed dispatch append"));
-        assert!(EPOCH.load(Ordering::SeqCst) > epoch);
-        assert_eq!(test_support::thread_lost() - lost, 1);
+        assert!(LIVE.epoch.load(Ordering::SeqCst) > epoch);
+        assert_eq!(test_support::lost() - lost, 1);
         assert!(!take_dispatched(0x1000, 17));
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
     #[test]
     fn first_gap_read_failure_and_busy_producer_are_unknown() {
@@ -2678,11 +2693,11 @@ mod tests {
             Ok(())
         });
         assert_eq!(drain(&mut out, 12, false).words, 4);
-        let lost = test_support::thread_lost();
+        let lost = test_support::lost();
         append(4, |_| Err("short native read"));
         let bad = drain(&mut out, 13, false);
         assert!(!bad.complete);
-        assert_eq!(test_support::thread_lost() - lost, 1);
+        assert_eq!(test_support::lost() - lost, 1);
         assert!(bad.lost >= 1);
         assert!(drain(&mut out, 14, false).complete);
         assert!(!drain(&mut out, 20, true).complete);
@@ -2697,10 +2712,10 @@ mod tests {
         assert!(grown.complete, "{}", grown.reason);
         assert_eq!(grown.words, 4);
         drain(&mut out, 23, true);
-        PRODUCERS.store(1, Ordering::SeqCst);
+        LIVE.producers.store(1, Ordering::SeqCst);
         assert!(!drain(&mut out, 24, false).complete);
-        PRODUCERS.store(0, Ordering::SeqCst);
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.producers.store(0, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
     #[test]
     fn a_record_past_the_log_spills_whole_and_the_log_grows_to_it() {
@@ -2709,8 +2724,8 @@ mod tests {
         let demand = (1 << 20) + 17;
         let mut out = vec![0; demand];
         drain(&mut out, 10, true);
-        let lost = test_support::thread_lost();
-        let epochs = test_support::thread_epochs();
+        let lost = test_support::lost();
+        let epochs = test_support::epoch();
         for hour in [11, 12] {
             append(demand, |put| {
                 for word in 1..demand {
@@ -2724,14 +2739,14 @@ mod tests {
             assert_eq!(drained.required, demand);
             assert_eq!(out[0], demand as u64);
             assert!(out[1..].iter().enumerate().all(|(n, &word)| word == n as u64 + 1));
-            assert!(spilled().is_empty() && SPILL.is_empty());
+            assert!(LIVE.spilled().is_empty() && LIVE.spill.is_empty());
             prepare();
             install_offered();
-            assert!(LOG_CAPACITY.load(Ordering::SeqCst) >= demand);
+            assert!(LIVE.log_capacity.load(Ordering::SeqCst) >= demand);
         }
-        assert_eq!(test_support::thread_lost(), lost);
-        assert_eq!(test_support::thread_epochs(), epochs);
-        ENABLED.store(false, Ordering::SeqCst);
+        assert_eq!(test_support::lost(), lost);
+        assert_eq!(test_support::epoch(), epochs);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
     #[test]
@@ -2751,8 +2766,8 @@ mod tests {
             records,
             (1..=6).map(|payload| vec![3, payload, payload * 10]).collect::<Vec<_>>()
         );
-        assert!(spilled().is_empty() && SPILL.is_empty());
-        ENABLED.store(false, Ordering::SeqCst);
+        assert!(LIVE.spilled().is_empty() && LIVE.spill.is_empty());
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
     #[test]
@@ -2761,11 +2776,11 @@ mod tests {
         test_support::reset_with_words(8);
         let mut out = vec![0; 1024];
         drain(&mut out, 10, true);
-        let lost = LOST.load(Ordering::SeqCst);
-        let held = spilled();
+        let lost = LIVE.lost.load(Ordering::SeqCst);
+        let held = LIVE.spilled();
         let (done, finished) = std::sync::mpsc::channel();
         let producer = std::thread::spawn(move || {
-            test_support::adopt();
+
             for payload in 1..=40_u64 {
                 test_support::append_record(&[payload, payload * 10, !payload]);
             }
@@ -2786,9 +2801,9 @@ mod tests {
                 .map(|payload| vec![4, payload, payload * 10, !payload])
                 .collect::<Vec<_>>()
         );
-        assert_eq!(LOST.load(Ordering::SeqCst), lost);
-        assert!(spilled().is_empty() && SPILL.is_empty());
-        ENABLED.store(false, Ordering::SeqCst);
+        assert_eq!(LIVE.lost.load(Ordering::SeqCst), lost);
+        assert!(LIVE.spilled().is_empty() && LIVE.spill.is_empty());
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
     #[test]
@@ -2810,7 +2825,7 @@ mod tests {
         let observed = drain(&mut out, 11, false);
         assert!(observed.complete);
         assert_eq!(observed.words, 50_005);
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
     #[test]
@@ -2828,10 +2843,10 @@ mod tests {
             }
             frames[(hour as usize - 10) % 4].drain(hour, hour == 10);
             assert_eq!(capacities.words, 9);
-            assert_eq!(LOG_REQUIRED.load(Ordering::Relaxed), 9);
-            assert_eq!(LOG_CAPACITY.load(Ordering::Acquire), 16);
+            assert_eq!(LIVE.log_required.load(Ordering::Relaxed), 9);
+            assert_eq!(LIVE.log_capacity.load(Ordering::Acquire), 16);
         }
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
 
     #[test]
@@ -2844,7 +2859,7 @@ mod tests {
         let release = std::sync::Barrier::new(2);
         std::thread::scope(|scope| {
             let producer = scope.spawn(|| {
-                test_support::adopt();
+
                 let _call = Call::enter();
                 append(4, |put| {
                     put(6);
@@ -2857,10 +2872,10 @@ mod tests {
                 _call.finish();
             });
             entered.wait();
-            LOG_REQUIRED.fetch_max(4096, Ordering::SeqCst);
+            LIVE.log_required.fetch_max(4096, Ordering::SeqCst);
             prepare();
             install_offered();
-            assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), 1024);
+            assert_eq!(LIVE.log_capacity.load(Ordering::SeqCst), 1024);
             let bad = drain(&mut out, 11, false);
             assert!(!bad.complete);
             assert!(bad.lost > 0);
@@ -2868,11 +2883,11 @@ mod tests {
             producer.join().unwrap();
         });
         install_offered();
-        assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), 4096);
+        assert_eq!(LIVE.log_capacity.load(Ordering::SeqCst), 4096);
         let next = drain(&mut out, 12, false);
         assert!(next.complete);
         assert_eq!(next.words, 0);
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
     }
     #[test]
     fn resolver_lifetime_at_boundary_does_not_poison_an_interval() {
@@ -2881,10 +2896,10 @@ mod tests {
         let mut out = vec![0; 32];
         drain(&mut out, 10, true);
         let _resolver_call = Call::enter();
-        assert_ne!(ACTIVE.load(Ordering::SeqCst), 0);
-        assert_eq!(PRODUCERS.load(Ordering::SeqCst), 0);
+        assert_ne!(LIVE.active.load(Ordering::SeqCst), 0);
+        assert_eq!(LIVE.producers.load(Ordering::SeqCst), 0);
         assert!(drain(&mut out, 11, false).complete);
-        ENABLED.store(false, Ordering::SeqCst);
+        LIVE.enabled.store(false, Ordering::SeqCst);
         _resolver_call.finish();
     }
 }
@@ -2895,40 +2910,41 @@ mod ownership_tests {
     use super::*;
 
     #[test]
-    fn a_foreign_thread_leaves_an_owned_log_alone() {
+    fn live_drains_progress_while_another_observer_is_in_use() {
         let _guard = exclusive();
         reset();
+        let fixture = Fixture::new(8);
         let mut out = vec![0; 32];
-        drain(&mut out, 10, true);
-        let epoch = EPOCH.load(Ordering::SeqCst);
-        let capacity = LOG_CAPACITY.load(Ordering::SeqCst);
+        fixture.observer.drain(&mut out, 10, true);
+        let epoch = fixture.observer.epoch.load(Ordering::SeqCst);
+        let capacity = fixture.observer.log_capacity.load(Ordering::SeqCst);
+        append_record(&[5]);
         std::thread::spawn(|| {
+            let mut words = vec![0; 32];
+            drain(&mut words, 9, true);
+            append_record(&[5]);
+            let recorded = drain(&mut words, 10, false);
+            assert!(recorded.complete, "{}", recorded.reason);
+            assert_eq!(&words[..recorded.words], &[2, 5]);
             fail();
-            assert_eq!(lost_casualty_reads(3), 3);
+            assert_eq!(lost_casualty_reads(3), 4);
             let drained = lost_drain(11, "land observer frame not captured");
             assert!(!drained.complete);
-            assert_eq!(drained.reason, "land event log owned by another test");
+            assert_eq!(drained.reason, "land observer frame not captured");
             presize(1 << 16);
             stop_observation();
-            append_record(&[5]);
         })
         .join()
         .unwrap();
-        assert_eq!(EPOCH.load(Ordering::SeqCst), epoch);
-        assert_eq!(LOG_CAPACITY.load(Ordering::SeqCst), capacity);
-        assert!(ENABLED.load(Ordering::SeqCst));
-        append_record(&[9]);
-        let owned = drain(&mut out, 11, false);
+        assert_eq!(fixture.observer.epoch.load(Ordering::SeqCst), epoch);
+        assert_eq!(fixture.observer.log_capacity.load(Ordering::SeqCst), capacity);
+        assert!(fixture.production_enabled());
+        fixture.append_record(&[9]);
+        let owned = fixture.observer.drain(&mut out, 11, false);
         assert!(owned.complete);
         assert_eq!(&out[..owned.words], &[2, 9]);
-        std::thread::spawn(|| {
-            adopt();
-            fail();
-        })
-        .join()
-        .unwrap();
-        assert_ne!(EPOCH.load(Ordering::SeqCst), epoch);
-        assert!(!drain(&mut out, 12, false).complete);
-        disable();
+        std::thread::scope(|scope| scope.spawn(|| fixture.observer.fail()).join().unwrap());
+        assert_ne!(fixture.observer.epoch.load(Ordering::SeqCst), epoch);
+        assert!(!fixture.observer.drain(&mut out, 12, false).complete);
     }
 }

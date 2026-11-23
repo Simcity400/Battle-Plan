@@ -49,8 +49,6 @@ pub struct Steps {
     current: std::sync::atomic::AtomicU8,
     walls: [std::sync::atomic::AtomicU64; STEPS],
     gated: std::sync::atomic::AtomicU64,
-    #[cfg(any(test, feature = "test-support"))]
-    started: [std::sync::atomic::AtomicU64; Phase::Wait as usize + 1],
     #[cfg(feature = "phase_cpu")]
     cycles: [std::sync::atomic::AtomicU64; Phase::Wait as usize + 1],
     #[cfg(feature = "phase_cpu")]
@@ -106,8 +104,6 @@ impl Steps {
             current: std::sync::atomic::AtomicU8::new(Phase::Wait as u8),
             walls: [const { std::sync::atomic::AtomicU64::new(0) }; STEPS],
             gated: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-support"))]
-            started: [const { std::sync::atomic::AtomicU64::new(0) }; Phase::Wait as usize + 1],
             #[cfg(feature = "phase_cpu")]
             cycles: [const { std::sync::atomic::AtomicU64::new(0) }; Phase::Wait as usize + 1],
             #[cfg(feature = "phase_cpu")]
@@ -152,8 +148,6 @@ impl Steps {
     pub unsafe fn span_now(&self, _phase: Phase) -> Span<'_> {
         self.current
             .store(_phase as u8, std::sync::atomic::Ordering::Relaxed);
-        #[cfg(any(test, feature = "test-support"))]
-        self.started[_phase as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Span(
             self,
             _phase,
@@ -164,10 +158,6 @@ impl Steps {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn phase(&self, phase: Phase) -> (u64,) {
-        (self.started[phase as usize].load(std::sync::atomic::Ordering::Relaxed),)
-    }
 }
 
 pub static SPOOL: Steps = Steps::new();

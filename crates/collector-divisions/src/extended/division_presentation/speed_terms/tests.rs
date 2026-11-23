@@ -755,6 +755,18 @@ fn river_demand_is_only_inside_native_crossing_kinds_and_survives_later_refusal(
 }
 
 #[test]
+fn river_crossing_answers_follow_work_across_threads() {
+    let key = (u32::MAX, u32::MAX);
+    held_crossings(|cache| cache.answers.insert(key, Some(3)));
+    assert_eq!(
+        std::thread::spawn(move || held_crossings(|cache| cache.answers.remove(&key)))
+            .join()
+            .unwrap(),
+        Some(Some(3))
+    );
+}
+
+#[test]
 fn river_and_combat_skip_unselected_branches() {
     let mut world = World::new(8);
     let seed = attacking_mover(&mut world);

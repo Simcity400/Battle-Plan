@@ -559,6 +559,7 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
     }
 }
 
+#[cfg(feature = "acquisition_profile")]
 #[test]
 fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_dispatch() {
     use collector_memory::read_accounting::{self, Capture, fixtures};

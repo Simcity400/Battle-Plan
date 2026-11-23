@@ -310,8 +310,6 @@ impl Drop for Call {
     }
 }
 pub fn invalidate() {
-    #[cfg(any(test, feature = "test-support"))]
-    let _exclusive = tests::exclusive();
     restart();
 }
 pub fn lost_drain() {
@@ -416,8 +414,6 @@ fn seal_offered(log: &'static Log) -> &'static Log {
     log
 }
 pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
-    #[cfg(any(test, feature = "test-support"))]
-    let _exclusive = tests::exclusive();
     if ENABLED.load(Ordering::Acquire) || ACTIVE.load(Ordering::SeqCst) != 0 {
         return Err("operation completion sequence restoration requires disabled hooks");
     }
@@ -432,8 +428,6 @@ pub fn resize(entries: usize) {
     presize(entries, 0);
 }
 pub fn presize(entries: usize, bytes: usize) {
-    #[cfg(any(test, feature = "test-support"))]
-    let _exclusive = tests::exclusive();
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -508,8 +502,6 @@ pub fn presize(entries: usize, bytes: usize) {
     }
 }
 pub fn reset_admitted() {
-    #[cfg(any(test, feature = "test-support"))]
-    let _exclusive = tests::exclusive();
     let current = LOG.load(Ordering::Acquire);
     for log in LOGS
         .lock()
@@ -529,8 +521,6 @@ pub fn reset_admitted() {
 /// holding a Handoff or log reference is joined. The early return retains the storage only while
 /// observation is still enabled or a call is active; it cannot see a worker's reference.
 pub unsafe fn release() {
-    #[cfg(any(test, feature = "test-support"))]
-    let _exclusive = tests::exclusive();
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
         return;
     }
@@ -1063,8 +1053,6 @@ impl Hooks {
     /// `base` identifies the authenticated executable in this process. The caller owns these sites
     /// exclusively and restores the hooks and quiesces native calls before releasing code or unloading.
     pub unsafe fn new(memory: &impl Memory, base: usize, runtime_enabled: bool) -> Self {
-        #[cfg(any(test, feature = "test-support"))]
-        let _exclusive = tests::exclusive();
         RUNTIME_ENABLED.store(runtime_enabled, Ordering::Relaxed);
         if !runtime_enabled {
             let _ = UNHOOKED.set(std::borrow::Cow::Borrowed(
@@ -1094,8 +1082,6 @@ impl Hooks {
         Ok(Self { entry: Some(hook) })
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
-        #[cfg(any(test, feature = "test-support"))]
-        let _exclusive = tests::exclusive();
         if !enabled {
             ENABLED.store(false, Ordering::SeqCst);
         }

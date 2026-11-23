@@ -29,7 +29,7 @@ fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
             aces_active: active,
             census_reads: std::cell::Cell::new(0),
         };
-        let copy = copy_air_bases_refresh(
+        let copy = copy_air_bases_fixture(
             &memory,
             AirBasesCopyContext {
                 base: kit::BASE,

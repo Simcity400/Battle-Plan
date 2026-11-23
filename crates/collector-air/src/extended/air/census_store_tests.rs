@@ -45,7 +45,7 @@ fn hour(
         inner: kit::memory(bytes),
         reads: RefCell::default(),
     };
-    let report = copy_air_bases_refresh(
+    let report = copy_air_bases_fixture(
         &memory,
         AirBasesCopyContext {
             hour: 0,
