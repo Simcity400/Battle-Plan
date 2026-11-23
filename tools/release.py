@@ -313,7 +313,7 @@ def summarize(pulls):
                          for pull in pulls)
     request = urllib.request.Request(SUMMARY_URL, method="POST", headers={
         "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": "battleplan-release"}, data=json.dumps({
-            "model": SUMMARY_MODEL, "reasoning_effort": "high", "include_reasoning": False,
+            "model": SUMMARY_MODEL, "reasoning_effort": "medium", "include_reasoning": False,
             "max_completion_tokens": SUMMARY_TOKENS,
             "response_format": {"type": "json_object"},
             "messages": [{"role": "system", "content": SUMMARY_INSTRUCTIONS},

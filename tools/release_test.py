@@ -452,7 +452,7 @@ class Notes(unittest.TestCase):
                     mock.patch.object(release, "say") as said:
                 self.assertIsNone(release.summarize([{"number": 1, "title": "Fix", "body": ""}]))
                 self.assertNotIn("gsk_secret", said.call_args.args[0])
-        self.assertEqual(json.loads(failed.call_args.args[0].data)["reasoning_effort"], "high")
+        self.assertEqual(json.loads(failed.call_args.args[0].data)["reasoning_effort"], "medium")
 
     def test_the_page_lists_every_pull_beneath_the_summary_or_alone_without_one(self):
         notes = {"version": "1.4.3", "since": "1.4.2", "date": None, "changes": 3, "more": 1,
