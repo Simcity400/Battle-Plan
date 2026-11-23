@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use dashboard_text::triggers::{
     Combat, Eval, Evaluator, Scope, Scopes, World, compare, shown, trigger_boolean,
 };
@@ -1309,7 +1310,7 @@ pub(super) fn bind(
                     .as_ref()
                     .map_err(Clone::clone)?;
                 let effects = scripted_content.effects()?;
-                let effect_context = dashboard_text::effect_description::Context::new(
+                let effect_context = dashboard_effects::effect_description::Context::new(
                     text,
                     loc,
                     vision.ours(),
@@ -1317,7 +1318,7 @@ pub(super) fn bind(
                     effects.view(None),
                 );
                 let mut refused = BTreeMap::new();
-                let sources = dashboard_text::effect_description::doctrine_tactic_sources(
+                let sources = dashboard_effects::effect_description::doctrine_tactic_sources(
                     &effect_context,
                     vision.ours(),
                     candidate.tactic_id,
@@ -1876,7 +1877,7 @@ mod tests {
             std::fs::write(path, contents).unwrap();
         }
         let layers = content_reader_core::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
-        let content = Ok(dashboard_text::scripted_text::ScriptedContent::read(
+        let content = Ok(dashboard_base::catalogue::read_scripted_content(
             Arc::new(content_reader_core::content::ResolvedContent {
                 layers,
                 stats: Default::default(),

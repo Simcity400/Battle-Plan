@@ -58,11 +58,11 @@ workspace = true
 [target.'cfg(all())'.dev-dependencies]
 content-reader-province-area = { workspace = true, features = ["test-support"] }
 content-reader-weather = { workspace = true, features = ["test-support"] }
+dashboard-effects = { workspace = true, features = ["test-support"] }
 recorder-derive = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["default", "journal", "recording", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }
-unify-bitflags-2 = { workspace = true }
 unify-dpi = { workspace = true }
 unify-indexmap = { workspace = true }
 unify-once_cell = { workspace = true }

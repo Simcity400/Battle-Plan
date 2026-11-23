@@ -413,6 +413,7 @@ mod tests {
             },
         };
         let bytes = crate::campaign::fixtures::encode_records(
+            recorder_derive::writers(),
             campaign.as_bytes().to_vec(),
             &[vec![crate::spool::Record::SessionStart(session)]],
         )

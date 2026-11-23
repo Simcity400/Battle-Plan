@@ -213,7 +213,7 @@ mod tests {
         ];
         let path = root.join("recordings/synthetic.battleplan");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        Replay::from_records(CAMPAIGN.into(), &[records]).unwrap().write_atomic(&path).unwrap();
+        Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records]).unwrap().write_atomic(&path).unwrap();
         let recorded = Replay::open_newest(&path).unwrap();
         let addition = writer::Addition { facts: Some(&older), ..writer::Addition::default() };
         let level = replay::compression::Compression::default().level();

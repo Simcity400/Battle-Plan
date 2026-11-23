@@ -80,7 +80,7 @@ fn assert_exercises_every_link(path: &Path) {
 #[test]
 fn a_recording_compressed_again_reads_as_it_did_and_is_smaller() {
     let folder = Folder::new("again");
-    let bytes = fixtures::restored(7, &RUNS);
+    let bytes = fixtures::restored(recorder_derive::writers(), 7, &RUNS);
     let path = folder.recording(&bytes);
     let before = folder.0.join("before.battleplan");
     fs::write(&before, &bytes).unwrap();
@@ -108,7 +108,7 @@ fn a_recording_compressed_again_reads_as_it_did_and_is_smaller() {
 #[test]
 fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlisted() {
     let folder = Folder::new("stopped");
-    let bytes = fixtures::restored(7, &RUNS[1..]);
+    let bytes = fixtures::restored(recorder_derive::writers(), 7, &RUNS[1..]);
     let path = folder.recording(&bytes);
     let staged = Staged::beside(&path).unwrap();
     let partial = staged.path.clone();
@@ -142,7 +142,7 @@ fn a_recompress_stopped_midway_leaves_the_recording_whole_and_its_partial_unlist
 #[test]
 fn a_finished_partial_belongs_to_its_attempt_until_the_destination_is_checked() {
     let folder = Folder::new("interleaved");
-    let bytes = fixtures::restored(7, &RUNS[1..]);
+    let bytes = fixtures::restored(recorder_derive::writers(), 7, &RUNS[1..]);
     let path = folder.recording(&bytes);
     let before = folder.0.join("before.battleplan");
     fs::write(&before, &bytes).unwrap();
@@ -171,7 +171,7 @@ fn a_finished_partial_belongs_to_its_attempt_until_the_destination_is_checked() 
 #[test]
 fn a_recording_already_at_the_level_is_left_alone() {
     let folder = Folder::new("already");
-    let bytes = fixtures::restored(19, &[(1, 100, 1)]);
+    let bytes = fixtures::restored(recorder_derive::writers(), 19, &[(1, 100, 1)]);
     let path = folder.recording(&bytes);
     assert_eq!(recompress_file(&path, 19, false, |_| true).unwrap(), Outcome::AlreadyAt(19));
     assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -181,7 +181,7 @@ fn a_recording_already_at_the_level_is_left_alone() {
 #[test]
 fn a_recording_still_being_written_is_refused_by_name() {
     let folder = Folder::new("written");
-    let bytes = fixtures::restored(7, &[(1, 100, 1)]);
+    let bytes = fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
     let path = folder.recording(&bytes);
     let writer = OpenOptions::new().read(true).write(true).share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE).open(&path).unwrap();
     let held = recompress_file(&path, 19, false, |_| true);
@@ -204,7 +204,7 @@ fn a_recording_still_being_written_is_refused_by_name() {
 #[test]
 fn a_recording_opened_elsewhere_while_compressed_is_kept_as_it_was() {
     let folder = Folder::new("elsewhere");
-    let bytes = fixtures::restored(7, &[(1, 100, 1)]);
+    let bytes = fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]);
     let path = folder.recording(&bytes);
     let mut reader = None;
     let kept = recompress_file(&path, 19, false, |_| {
@@ -222,7 +222,7 @@ fn a_recording_opened_elsewhere_while_compressed_is_kept_as_it_was() {
 fn a_background_recompress_runs_below_normal_priority() {
     use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, NORMAL_PRIORITY_CLASS, SetPriorityClass, THREAD_PRIORITY_BELOW_NORMAL};
     let folder = Folder::new("priority");
-    let path = folder.recording(&fixtures::restored(7, &[(1, 100, 1)]));
+    let path = folder.recording(&fixtures::restored(recorder_derive::writers(), 7, &[(1, 100, 1)]));
     let seen = std::thread::spawn(move || {
         let mut seen = None;
         let outcome = recompress_file(&path, 19, true, |_| {
@@ -318,7 +318,7 @@ impl State {
 #[test]
 fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
     let folder = Folder::new("large");
-    let path = folder.recording(&fixtures::one_large_unit(1));
+    let path = folder.recording(&fixtures::one_large_unit(recorder_derive::writers(), 1));
     let file = Recording::open_path(&path).unwrap();
     let mut units = Vec::new();
     let mut heads = 0;
@@ -358,7 +358,7 @@ fn a_very_large_unit_keeps_every_worker_busy_and_writes_the_same_bytes() {
 #[test]
 fn a_unit_waits_for_its_part_frames_task_to_say_it_is_done() {
     let folder = Folder::new("parts-late");
-    let path = folder.recording(&fixtures::restored(7, &RUNS));
+    let path = folder.recording(&fixtures::restored(recorder_derive::writers(), 7, &RUNS));
     assert_exercises_every_link(&path);
     let hold = Arc::new(PartsHold { taken: AtomicBool::new(false), seen: Mutex::new(None) });
     let paced = |name: &str, pace: Pace| {

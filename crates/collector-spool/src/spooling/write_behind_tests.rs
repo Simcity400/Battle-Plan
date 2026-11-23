@@ -258,7 +258,7 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
         .filter(|((campaign, _), _)| campaign == ID)
         .map(|((_, index), bytes)| (*index, recover_prefix(bytes)))
         .collect::<Vec<_>>();
-    replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
+    replay::campaign::Replay::from_recovered(recorder_derive::writers(), ID.to_vec(), &segments).unwrap()
 }
 /// # Safety
 /// Run only in an isolated fixture process with no live attachment or competing allocation-failure

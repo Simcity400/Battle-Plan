@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use super::{loc, paths_named, withhold_named};
 use crate::binding::{self, Bindings, Flags};
 use crate::content::Content;

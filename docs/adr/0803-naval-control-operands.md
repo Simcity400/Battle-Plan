@@ -4,4 +4,4 @@ The recorder evaluates the game's naval control rule when its input changes so b
 
 When `NavalSupremacy` changes, recompute the affected regions. A changed or incomplete identity or diplomacy input can affect every current region. Reserved-country inputs are consulted when the reserved slot is involved, with their own status and named refusal. A supremacy read expires after its day even if no subsequent row changes. A resume restores the held viewer index and recomputes the rule from the recorded tables.
 
-[Naval control writer](../../crates/recorder-derive/src/naval_control.rs)
+[Naval control writer](../../crates/recorder-derive-naval/src/naval_control.rs)

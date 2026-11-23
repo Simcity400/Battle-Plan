@@ -215,7 +215,7 @@ mod windows {
                 frame
             })
             .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         Source::from_replay(dashboard_base::SourceKey { source_id: "air-windows".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
     }
 
@@ -366,7 +366,7 @@ mod windows {
                 frame
             })
             .collect();
-        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+        let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
         let source = Source::from_replay(dashboard_base::SourceKey { source_id: "air-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
         let query = dashboard_base::queries::query(&source, 1).unwrap();
         let (context, running) = (LoadContext { content: None }, AtomicBool::new(false));

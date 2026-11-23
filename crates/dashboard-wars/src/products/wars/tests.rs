@@ -200,7 +200,7 @@ fn naming_frame(hour: i32) -> replay_frame::frame::DecodedFrame {
 fn a_names_goal_its_type_tokens_text_and_its_states_name_are_read_as_they_stood_at_the_hour_it_is_dated() {
     use dashboard_base::test_fixtures::{CAMPAIGN, records};
     use inputs::{Goal, Held};
-    let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, (100..=130).map(naming_frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = replay::campaign::Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (100..=130).map(naming_frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "war-names".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let run = dashboard_base::queries::query(&source, 1).unwrap().timeline.stretches[0].run;
     let wars = run_wars(source.replay_ref().recording(), run).unwrap();
@@ -228,7 +228,7 @@ fn a_names_goal_its_type_tokens_text_and_its_states_name_are_read_as_they_stood_
 #[test]
 fn a_countrys_naming_operands_at_an_hour_are_its_holders_look_with_every_overlord_it_reaches() {
     use content_reader_country_names::country_names::Operands;
-    use recorder_derive::looks::Look;
+    use recorder_derive_world::looks::Look;
     let ops = |tag: &str, overlord: Option<u32>| Ok(Operands::from_parts(overlord, [tag, "", "", "", "", ""].map(str::to_owned)));
     let look = |slot: u32, chain: Vec<(u32, Result<Operands, String>)>| Look { slot, id: slot, chain, ..Default::default() };
     let looks = RunLooks {

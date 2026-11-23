@@ -1,5 +1,5 @@
 use content_reader_localisation::localisation::Piece;
-use dashboard_text::effect_description::{EntityKind as Marked, Span, spans};
+use dashboard_effects::effect_description::{EntityKind as Marked, Span, spans};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "export-types"))]
 use ts_rs::TS;

@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use super::{CHARACTER_REFERENCE, COMPLETION_MARKER, Context, OTHER_OWNER, ProjectContent, Reads, Withheld, branch, context, definition, effect_tables, owner_read, owners_of, project_slices, spelled, supplied_project};
 use dashboard_base::{
     Source,
@@ -153,7 +154,7 @@ fn chosen<'c>(content: &'c ProjectContent, listing: &Listing) -> Result<&'c cont
     Ok(found)
 }
 
-fn scopes(frame: &DecodedFrame, row: &ProjectHistoryRow) -> dashboard_text::effect_description::IterationScopes {
+fn scopes(frame: &DecodedFrame, row: &ProjectHistoryRow) -> dashboard_effects::effect_description::IterationScopes {
     let context = &row.context;
     let scientist = match context.character_reference {
         0 => Ok(None),
@@ -167,7 +168,7 @@ fn scopes(frame: &DecodedFrame, row: &ProjectHistoryRow) -> dashboard_text::effe
             .map_err(|why| format!("Provinces are unavailable: {why}"))
             .and_then(|rows| rows.iter().find(|row| row.id == province).map(|row| Some((province, row.state))).ok_or_else(|| "Provinces lacks the iteration's facility province".to_owned())),
     };
-    dashboard_text::effect_description::IterationScopes {
+    dashboard_effects::effect_description::IterationScopes {
         country_seed: context.country_reference,
         scientist,
         scientist_seed: context.scientist_reference,
@@ -186,8 +187,8 @@ fn render(content: &ProjectContent, frame: &DecodedFrame, slot: u32, listing: &L
     let project = &listing.project;
     let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, slot);
     let cache = scripted.effects()?;
-    let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project iteration", cache.view(None)).with_entity_links();
-    let description = dashboard_text::effect_description::project_iteration_description(&option.output, &context, project.owner, project.local_id, scopes(frame, &listing.row));
+    let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, slot, "special-project iteration", cache.view(None)).with_entity_links();
+    let description = dashboard_effects::effect_description::project_iteration_description(&option.output, &context, project.owner, project.local_id, scopes(frame, &listing.row));
     out.no_changes = description.no_changes;
     let mut refusals = description.refusals;
     for section in &description.sections {

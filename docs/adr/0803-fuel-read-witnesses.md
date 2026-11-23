@@ -6,4 +6,4 @@ Where fuel days overlap, prefer the read in the daily slot. An off-slot read can
 
 Fuel demand groups the fuel consumption pack and its parts in the game's army, air and navy order. Preserve its wrapping native rate sum and project it over a day. Separately sum the known daily part projections in widened arithmetic, both signed and clamped to nonnegative contributions. A family with missing part values has an unavailable native result while independently known families remain available. A stale pack stamp, rejected or missing pack, or parts that cannot reconstruct its lists withholds the pack with its reason. A new table read can invalidate a pack even when its header remained unchanged. Resume rebuilds the part indexes from the held tables.
 
-[Fuel day writer](../../crates/recorder-derive/src/fuel_days.rs) · [Fuel demand writer](../../crates/recorder-derive/src/fuel_demand.rs)
+[Fuel day writer](../../crates/recorder-derive-economy/src/fuel_days.rs) · [Fuel demand writer](../../crates/recorder-derive-economy/src/fuel_demand.rs)

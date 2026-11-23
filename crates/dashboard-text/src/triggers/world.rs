@@ -1097,7 +1097,7 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn country_slots(&self) -> Result<Vec<u32>, Failure> {
+    pub fn country_slots(&self) -> Result<Vec<u32>, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CountrySlots),
             || self.country_slots_unrecorded(),
@@ -1392,7 +1392,7 @@ impl<'a> World<'a> {
         self
     }
 
-    pub(crate) fn neighbor_states(&self) -> Result<&'a BTreeMap<u32, Vec<u32>>, &'a str> {
+    pub fn neighbor_states(&self) -> Result<&'a BTreeMap<u32, Vec<u32>>, &'a str> {
         if let Some(content) = self.prepared_content {
             return content.geography().neighbors();
         }
@@ -1619,7 +1619,7 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn unit_status(
+    pub fn unit_status(
         &self,
         reference: u64,
     ) -> Result<Cow<'a, replay_data::rows::DivisionStatusRow>, Failure> {
@@ -1651,7 +1651,7 @@ impl<'a> World<'a> {
             })
     }
 
-    pub(crate) fn raid_wing_name(&self, reference: u64) -> Result<Vec<u8>, Failure> {
+    pub fn raid_wing_name(&self, reference: u64) -> Result<Vec<u8>, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::RaidWingName(reference)),
             || self.raid_wing_name_unrecorded(reference),
@@ -1662,7 +1662,7 @@ impl<'a> World<'a> {
         crate::air_wing_names::raid_name(&self.frame, reference).map_err(Into::into)
     }
 
-    pub(crate) fn industrial_organisation(
+    pub fn industrial_organisation(
         &self,
         reference: u64,
     ) -> Result<Cow<'a, replay_data::rows::IndustrialOrganisationRow>, Failure> {
@@ -2065,7 +2065,7 @@ impl<'a> World<'a> {
         linked(overlords.get(&subject).copied(), unresolved)
     }
 
-    pub(crate) fn original_reference(&self, slot: u32) -> Result<i32, Failure> {
+    pub fn original_reference(&self, slot: u32) -> Result<i32, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::OriginalReference(slot)),
             || self.original_reference_unrecorded(slot),
@@ -2371,7 +2371,7 @@ impl<'a> World<'a> {
         linked(parties.ruling.get(&slot).copied(), &parties.unresolved)
     }
 
-    pub(crate) fn named_ideology(&self, token: &[u8]) -> Result<(u32, &'a [u8]), Failure> {
+    pub fn named_ideology(&self, token: &[u8]) -> Result<(u32, &'a [u8]), Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::NamedIdeology(token.to_vec())),
             || self.named_ideology_unrecorded(token),
@@ -2785,7 +2785,7 @@ impl<'a> World<'a> {
         Ok(content)
     }
 
-    pub(crate) fn exists(&self, slot: u32) -> Result<bool, Failure> {
+    pub fn exists(&self, slot: u32) -> Result<bool, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::Exists(slot)),
             || self.exists_unrecorded(slot),
@@ -2810,7 +2810,7 @@ impl<'a> World<'a> {
         Ok(self.country_counter_inputs(slot)?.owned_state_count)
     }
 
-    pub(crate) fn country_counter_inputs(
+    pub fn country_counter_inputs(
         &self,
         slot: u32,
     ) -> Result<Cow<'a, CountryCounterInputRow>, Failure> {
@@ -3287,7 +3287,7 @@ impl<'a> World<'a> {
             })
     }
 
-    pub(crate) fn script_constants(&self) -> Result<&'a Constants, &'a str> {
+    pub fn script_constants(&self) -> Result<&'a Constants, &'a str> {
         *self.script_constants
     }
 
@@ -3399,7 +3399,7 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn unit_leader(
+    pub fn unit_leader(
         &self,
         reference: u64,
     ) -> Result<Option<Cow<'a, replay_data::rows::UnitLeaderRow>>, Failure> {
@@ -3559,7 +3559,7 @@ impl<'a> World<'a> {
         }
     }
 
-    pub(crate) fn party_leaders(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
+    pub fn party_leaders(&self, slot: u32) -> Result<Vec<PartyLeaders>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::PartyLeaders(slot)),
             || self.party_leaders_unrecorded(slot),
@@ -3671,7 +3671,7 @@ impl<'a> World<'a> {
         Ok(parties.into_values().collect())
     }
 
-    pub(crate) fn country_characters(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
+    pub fn country_characters(&self, slot: u32) -> Result<Vec<Option<u32>>, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::CountryCharacters(slot)),
             || self.country_characters_unrecorded(slot),
@@ -4133,7 +4133,7 @@ impl<'a> World<'a> {
         self
     }
 
-    pub(crate) fn has_template(&self, slot: u32, wanted: &[u8]) -> Result<bool, Failure> {
+    pub fn has_template(&self, slot: u32, wanted: &[u8]) -> Result<bool, Failure> {
         super::inputs::query_resolved(
             || super::inputs::Key::World(Query::HasTemplate(slot, wanted.to_vec())),
             || self.has_template_unrecorded(slot, wanted),
@@ -4224,7 +4224,7 @@ impl<'a> World<'a> {
         unknown.map_or(Ok(false), Err)
     }
 
-    pub(crate) fn character(&self, id: u32) -> Result<Option<Cow<'a, CharacterRow>>, Failure> {
+    pub fn character(&self, id: u32) -> Result<Option<Cow<'a, CharacterRow>>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::Character(id)),
             || self.character_unrecorded(id),
@@ -4245,7 +4245,7 @@ impl<'a> World<'a> {
         ))
     }
 
-    pub(crate) fn appearance(&self, slot: u32) -> Result<Cow<'a, CountryAppearanceRow>, Failure> {
+    pub fn appearance(&self, slot: u32) -> Result<Cow<'a, CountryAppearanceRow>, Failure> {
         super::inputs::query_debug_resolved(
             || super::inputs::Key::World(Query::Appearance(slot)),
             || self.appearance_unrecorded(slot),

@@ -11,6 +11,7 @@ use crate::{
     rows::{TABLE_COUNT, TableId},
     spool::{ControlRecord, Record, Recovery, encode_record},
 };
+use recorder_derive_framework::framework::Writers;
 use replay_columnar::{
     container::{SectionKey, Tags},
     envelope::{self, Kind, UNIT_ORDINALS},
@@ -22,11 +23,12 @@ use std::{
 };
 
 impl Replay {
-    pub fn from_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
-        Self::open(encode_records(campaign_id, segments)?)
+    pub fn from_records(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Self> {
+        Self::open(encode_records(writers, campaign_id, segments)?)
     }
 
     pub fn from_synthetic(
+        writers: Writers,
         campaign_id: Vec<u8>,
         session: crate::identity::SessionStart,
         branch: crate::branches::BranchStart,
@@ -44,7 +46,7 @@ impl Replay {
         let records = Records { sessions: vec![session], branches: vec![branch], ..Records::default() };
         let identity = identity_of(campaign_id, &records)?;
         let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
-        let mut file = HourWriter::new(file, LEVEL)?;
+        let mut file = HourWriter::new(file, LEVEL, writers)?;
         let mut synthetic = Synthetic::new(id, first)?;
         file.start_run(id, envelope::epoch::START, first)?;
         for hour in first..=last {
@@ -57,9 +59,9 @@ impl Replay {
         Self::open(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
     }
 
-    pub fn from_records_derived(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<(Self, Vec<DecodedFrame>)> {
+    pub fn from_records_derived(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<(Self, Vec<DecodedFrame>)> {
         let mut derived = Vec::new();
-        let bytes = encoded(campaign_id, segments, Some(&mut derived))?;
+        let bytes = encoded(writers, campaign_id, segments, Some(&mut derived))?;
         Ok((Self::open(bytes)?, derived))
     }
 
@@ -103,14 +105,14 @@ impl Replay {
             .collect())
     }
 
-    pub fn from_recovered(campaign_id: Vec<u8>, segments: &[(u32, Recovery<Record>)]) -> io::Result<Self> {
+    pub fn from_recovered(writers: Writers, campaign_id: Vec<u8>, segments: &[(u32, Recovery<Record>)]) -> io::Result<Self> {
         let mut ordered: Vec<_> = segments.iter().collect();
         ordered.sort_unstable_by_key(|(number, _)| *number);
         let records: Vec<Vec<Record>> = ordered
             .into_iter()
             .map(|(_, recovery)| recovery.records.clone())
             .collect();
-        Self::from_records(campaign_id, &records)
+        Self::from_records(writers, campaign_id, &records)
     }
 
     pub fn damaged_block(&self, block: &super::BlockIndex) -> io::Result<Vec<u8>> {
@@ -142,25 +144,25 @@ impl Replay {
 
 const SETTINGS: Settings = Settings { level: LEVEL };
 
-pub fn encode_records(campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
-    encoded(campaign_id, segments, None)
+pub fn encode_records(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    encoded(writers, campaign_id, segments, None)
 }
 
-fn encoded(campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut Vec<DecodedFrame>>) -> io::Result<Vec<u8>> {
+fn encoded(writers: Writers, campaign_id: Vec<u8>, segments: &[Vec<Record>], derived: Option<&mut Vec<DecodedFrame>>) -> io::Result<Vec<u8>> {
     let records = records_of(segments, None)?;
     let identity = identity_of(campaign_id, &records)?;
     let mode = crate::scope::CaptureMode::from_byte(identity.capture_mode)?;
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
-    let mut file = write_runs(file, segments, false, derived.map(|derived| (derived, mode)))?;
+    let mut file = write_runs(writers, file, segments, false, derived.map(|derived| (derived, mode)))?;
     add_records(&mut file, &records, FormatVersion::CURRENT)?;
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+pub fn encode_records_naming(writers: Writers, format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
     let records = records_of(segments, None)?;
     let identity = identity_of(campaign_id, &records)?;
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, TABLE_COUNT, SETTINGS, None)?;
-    let mut file = write_runs(file, segments, false, None)?;
+    let mut file = write_runs(writers, file, segments, false, None)?;
     let mut bytes = records.encode(FormatVersion::CURRENT)?;
     bytes[super::records::MAGIC.len()..super::records::MAGIC.len() + 2].copy_from_slice(&format.to_le_bytes());
     let container = file.container();
@@ -169,11 +171,12 @@ pub fn encode_records_naming(format: u16, campaign_id: Vec<u8>, segments: &[Vec<
     Ok(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
 }
 
-pub fn encode_records_at(format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
-    encode_framed_at(format, campaign_id, segments, |_, _| Ok(()))
+pub fn encode_records_at(writers: impl FnOnce(&[usize], &[usize]) -> Writers, format: u16, campaign_id: Vec<u8>, segments: &[Vec<Record>]) -> io::Result<Vec<u8>> {
+    encode_framed_at(writers, format, campaign_id, segments, |_, _| Ok(()))
 }
 
 pub fn encode_framed_at(
+    writers: impl FnOnce(&[usize], &[usize]) -> Writers,
     format: u16,
     campaign_id: Vec<u8>,
     segments: &[Vec<Record>],
@@ -188,7 +191,7 @@ pub fn encode_framed_at(
     let schema = envelope::schema_digest_prefix(&crate::columnar_frames::schema_at(format)?[..columns.len()], &columns).ok_or_else(|| io::Error::other("the format frames no schema of this build"))?;
     let identity = envelope::Identity { schema, ..identity_of(campaign_id, &records)? };
     let file = FileWriter::create(Cursor::new(Vec::new()), identity, columns.len(), SETTINGS, None)?;
-    let mut file = HourWriter::framed(file, LEVEL, replay_columnar::unit::Settings::at(LEVEL), &columns)?;
+    let mut file = HourWriter::framed(file, LEVEL, replay_columnar::unit::Settings::at(LEVEL), &columns, writers)?;
     let mut run: Option<(Synthetic, BranchId, Hour)> = None;
     for segment in segments {
         let mut decoder = FrameDecoder::new();
@@ -223,7 +226,7 @@ fn add_records<W: Write + Seek + Read>(file: &mut FileWriter<W>, records: &Recor
 }
 
 impl Replay {
-    pub fn append(&self, segments: &[Vec<Record>]) -> io::Result<Self> {
+    pub fn append(&self, writers: Writers, segments: &[Vec<Record>]) -> io::Result<Self> {
         let records = records_of(segments, Some(self))?;
         let resumed = Resumed {
             root: self.recording().root().clone(),
@@ -233,7 +236,7 @@ impl Replay {
         };
         let held = Cursor::new(self.bytes()[..self.saved_length() as usize].to_vec());
         let file = FileWriter::resume(held, resumed, TABLE_COUNT, SETTINGS, None)?;
-        let mut file = write_runs(file, segments, true, None)?;
+        let mut file = write_runs(writers, file, segments, true, None)?;
         add_records(&mut file, &records, FormatVersion::CURRENT)?;
         Self::open(file.finish_runs(&[], true, |_| Ok(()))?.0.into_inner())
     }
@@ -406,12 +409,13 @@ fn records_of(segments: &[Vec<Record>], existing: Option<&Replay>) -> io::Result
 }
 
 fn write_runs<W: Write + Seek + Read>(
+    writers: Writers,
     file: FileWriter<W>,
     segments: &[Vec<Record>],
     mut started: bool,
     mut derived: Option<(&mut Vec<DecodedFrame>, crate::scope::CaptureMode)>,
 ) -> io::Result<FileWriter<W>> {
-    let mut file = HourWriter::new(file, LEVEL)?;
+    let mut file = HourWriter::new(file, LEVEL, writers)?;
     let mut run: Option<(FrameWriter, BranchId, Hour)> = None;
     for segment in segments {
         let mut decoder = FrameDecoder::new();

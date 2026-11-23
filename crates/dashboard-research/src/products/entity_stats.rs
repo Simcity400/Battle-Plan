@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use dashboard_base::{
     Source, catalogue,
     products::{

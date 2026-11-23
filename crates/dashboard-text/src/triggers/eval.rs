@@ -215,7 +215,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         self.written.replace(session.written.clone());
     }
 
-    pub(crate) fn variable_effects(&self) -> u64 {
+    pub fn variable_effects(&self) -> u64 {
         self.variable_effects.get()
     }
 
@@ -224,7 +224,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             .set(self.variable_effects.get().wrapping_add(1));
     }
 
-    pub(crate) fn with_variable_session(self, session: &VariableSession) -> Self {
+    pub fn with_variable_session(self, session: &VariableSession) -> Self {
         self.restore_variable_session(session);
         self.description_depth.set(usize::from(session.active));
         self.with_temps(session.temps)

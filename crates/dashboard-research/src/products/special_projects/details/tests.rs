@@ -21,8 +21,9 @@ const MOVED_OWNER: u32 = 9002;
 const MOVED_READS: [i32; 3] = [47, 50, 53];
 const MOVED_HELD: std::ops::Range<i32> = 49..53;
 const MOVED_ITERATION: i32 = 51;
-const HISTORY_UNSTAMPED: [i32; 2] = [30, 35];
-const HISTORY_READ_AT_FIRST: std::ops::Range<i32> = FIRST..45;
+const HISTORY_UNSTAMPED: [i32; 2] = [31, 35];
+const HISTORY_LISTED: i32 = 30;
+const HISTORY_HELD: std::ops::Range<i32> = HISTORY_LISTED..55;
 const ALIAS_UNSTAMPED: i32 = 38;
 
 fn set(frame: &mut DecodedFrame, table: TableId, rows: TableRows) {
@@ -44,7 +45,7 @@ fn frame(hour: i32) -> DecodedFrame {
     set(&mut frame, TableId::ScientistDaily, TableRows::ScientistDaily(vec![ScientistDailyRow { character: 7, country: 11, injury_days: Recorded::Value(Some(8)), template_visibility: Recorded::Value(Some(0)), ..Default::default() }]));
     set(&mut frame, TableId::ScientistSkills, TableRows::ScientistSkills(vec![ScientistSkillRow { character: 7, ordinal: 0, token: 41, level: -2, experience_raw: i64::MAX }]));
     set(&mut frame, TableId::CharacterRoleTraits, TableRows::CharacterRoleTraits(vec![CharacterRoleTraitRow { character: 7, kind: CharacterRoleTraitRow::SCIENTIST, tokens: vec![42, 42], ..Default::default() }]));
-    let spelled_42: &[u8] = if hour == FIRST { b"mod_option" } else { b"mod_trait" };
+    let spelled_42: &[u8] = if hour == HISTORY_LISTED { b"mod_option" } else { b"mod_trait" };
     set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(vec![LexicalTokenRow { token: 41, literal: b"mod_skill".to_vec() }, LexicalTokenRow { token: 42, literal: spelled_42.to_vec() }]));
     set(&mut frame, TableId::ProjectPrograms, TableRows::ProjectPrograms(vec![ProjectProgramRow {
         id: 9,
@@ -83,7 +84,7 @@ fn frame(hour: i32) -> DecodedFrame {
     ));
     let history_read = |read: Option<i32>| match hour {
         _ if HISTORY_UNSTAMPED.contains(&hour) => Some(FIRST - 1),
-        _ if HISTORY_READ_AT_FIRST.contains(&hour) => Some(FIRST),
+        _ if HISTORY_HELD.contains(&hour) => Some(HISTORY_LISTED),
         _ => read,
     };
     let stamp = |table: TableId, owner, read: Option<i32>| read.map(|sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour });
@@ -103,7 +104,7 @@ fn frame(hour: i32) -> DecodedFrame {
 
 fn recording() -> Source {
     let frames = (FIRST..=LAST).map(frame).collect();
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, frames)]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-details".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 
@@ -144,7 +145,9 @@ fn details_carry_each_daily_value_with_the_hour_of_its_read() {
     assert_eq!((project["readHour"].clone(), project["label"]["token"].clone(), project["label"]["name"].clone()), (json!(PROJECT_READS[1]), json!("77"), Value::Null));
     assert!(has(&reply, "77"), "an unspelled definition keeps its project, named as missing: {reply}");
     assert_eq!(project["choices"].as_array().unwrap().len(), 4, "the completion marker is not a chosen option");
-    assert_eq!(project["historyReadHour"], json!(FIRST), "the choices carry the history read they come from, apart from the project read: {project}");
+    let earlier: Vec<_> = project["choices"].as_array().unwrap().iter().map(|choice| choice["earlier"].clone()).collect();
+    assert_eq!(earlier, [json!(true), json!(false), json!(false), json!(false)], "U-S4, X-S2: a choice before the last completion is an earlier attempt's, kept apart from the current one");
+    assert_eq!(project["historyReadHour"], json!(HISTORY_LISTED), "the choices carry the history read they come from, apart from the project read: {project}");
     assert_eq!(project["choices"][0]["option"]["token"], json!("mod_option"), "a choice is spelled by the history read it comes from, as its effects are: {project}");
     assert_eq!(details(&source, 53)["programs"][0]["readHour"], json!(52), "the next day's read supplies the next day");
     let unstamped = details(&source, HISTORY_UNSTAMPED[1]);
@@ -173,7 +176,7 @@ fn followed_details_answer_as_the_direct_query_as_the_history_read_expires_and_r
     let at = followed_as_direct(&recording());
     assert_eq!(at(HISTORY_UNSTAMPED[1] - 1)["projects"][0]["choices"].as_array().map(Vec::len), Some(4));
     assert_eq!(at(HISTORY_UNSTAMPED[1])["projects"][0]["choices"], Value::Null, "an unproven history read is not recorded, never the last one's choices");
-    let expired = FIRST + STAGGER_PERIOD;
+    let expired = HISTORY_LISTED + STAGGER_PERIOD;
     assert!(at(expired - 1)["projects"][0]["choices"].is_array());
     assert_eq!(at(expired)["projects"][0]["choices"], Value::Null, "a history read older than a day is not recorded, though no table changed");
     assert!(has(&at(expired), "Project choice history was not read"));
@@ -208,7 +211,7 @@ fn followed_details_drop_an_owners_refusal_once_another_reason_withholds_its_cho
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
         frame
     };
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-refusals".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let at = followed_as_direct(&source);
     assert!(has(&at(EXPIRED - 1), OTHER_OWNER), "the history read before the owner joined is another country's");
@@ -236,7 +239,7 @@ fn followed_details_spell_choices_again_when_unchanged_rows_are_read_again() {
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
         frame
     };
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-respelled".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let at = followed_as_direct(&source);
     let option = |hour: i32| at(hour)["projects"][0]["choices"][0]["option"]["token"].clone();
@@ -309,7 +312,7 @@ fn effects_without_the_recorded_content_are_refused_by_name() {
 
 #[test]
 fn project_output_is_the_game_text_with_its_links_and_names_what_it_cannot_show() {
-    use dashboard_text::effect_description::Description;
+    use dashboard_effects::effect_description::Description;
     let shown = ProjectEffects::from(Description {
         text: "On research completed:\n\u{11}HUnlocks \u{1}rmod_tech\u{2}Gun Carriages\u{3}\u{11}!\nSub units: \u{1}smod_unit\u{2}Super-Heavy Artillery\u{3}\n".into(),
         refusals: BTreeMap::from([("Scope unavailable".to_owned(), 2)]),
@@ -376,7 +379,7 @@ fn an_iteration_is_the_listing_projects_choice_rendered_with_that_projects_defin
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
         frame
     };
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-iteration-listed".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let iteration = |ordinal: u32, hour: i32, read: i32| {
         asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": ordinal, "hour": hour, "read": read }))
@@ -443,7 +446,7 @@ fn an_iteration_listed_by_a_read_in_part_is_withheld_by_name() {
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
         frame
     };
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-iteration-in-part".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let iteration = |read: i32| asked::<SpecialProjectIterationAt>(&source, json!({ "branchId": "1", "country": "GER", "owner": 9001, "project": 3, "ordinal": 0, "hour": CHOICE, "read": read }));
     let in_part = iteration(IN_PART).unwrap();
@@ -548,7 +551,7 @@ fn operands(history: impl Fn(i32) -> Vec<(u32, u32, i32)>, stamp: impl Fn(i32) -
         set(&mut frame, TableId::SliceReads, TableRows::SliceReads(slices));
         frame
     };
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     let source = Source::from_replay(dashboard_base::SourceKey { source_id: "special-project-operands".into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap();
     let context = SpecialProjectIterationAt::context(&source, &load()).unwrap();
     let query = dashboard_base::queries::query(&source, 1).unwrap();
@@ -609,7 +612,7 @@ fn owned_frame(hour: i32, linked: impl Fn(i32) -> bool, definition: impl Fn(i32)
 }
 
 fn owned_source(id: &str, frame: impl Fn(i32) -> DecodedFrame) -> Source {
-    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
+    let replay = Replay::from_records(recorder_derive::writers(), CAMPAIGN.into(), &[records(1, (FIRST..=LAST).map(frame).collect())]).unwrap().into_timelines(&Default::default()).unwrap();
     Source::from_replay(dashboard_base::SourceKey { source_id: id.into(), revision: "1".into() }, "synthetic.battleplan".into(), Arc::new(replay), &AtomicBool::new(false)).unwrap()
 }
 

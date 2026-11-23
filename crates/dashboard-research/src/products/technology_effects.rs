@@ -1,3 +1,4 @@
+use dashboard_effects::ScriptedEffects;
 use dashboard_base::{
     Source,
     products::{
@@ -51,7 +52,7 @@ pub struct Context {
 }
 
 fn tables() -> Vec<TableId> {
-    let mut tables: Vec<TableId> = dashboard_text::effect_description::recorded_tables()
+    let mut tables: Vec<TableId> = dashboard_effects::effect_description::recorded_tables()
         .chain([TableId::TechnologyDefinitions, TableId::ResearchTechnologies, TableId::SimulationFeatures, TableId::CountryAppearance, TableId::LexicalTokens])
         .collect();
     tables.sort_unstable();
@@ -111,8 +112,8 @@ impl AtHour for TechnologyEffectsAt {
             let scripted = catalogue.scripted_content()?;
             let text = dashboard_text::scripted_text::ScriptedText::new(frame, &catalogue.localisation, scripted, owner.slot);
             let cache = scripted.effects()?;
-            let context = dashboard_text::effect_description::Context::new(&text, &catalogue.localisation, owner.slot, "technology effects", cache.view(None)).with_entity_links();
-            Ok(dashboard_text::effect_description::technology_description(&params.token, params.database_index, &context, owner.slot))
+            let context = dashboard_effects::effect_description::Context::new(&text, &catalogue.localisation, owner.slot, "technology effects", cache.view(None)).with_entity_links();
+            Ok(dashboard_effects::effect_description::technology_description(&params.token, params.database_index, &context, owner.slot))
         };
         match render() {
             Ok(mut description) => {

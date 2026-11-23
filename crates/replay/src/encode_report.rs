@@ -10,6 +10,7 @@ use crate::{
     columnar_frames::{Open, Recording},
     columnar_journal::{Journal, Record, Source},
 };
+use recorder_derive_framework::framework::Writers;
 use replay_data::identity::{Identity, SessionStart};
 use serde_json::{Map, Value, json};
 use std::{
@@ -45,7 +46,7 @@ pub fn encoder_source(multiplied: bool, start: Option<u32>) -> String {
     source
 }
 
-pub fn open_encoded(out: &Path, state: &Path, capture: u32, settings: Settings, source: &str) -> io::Result<LiveWriter> {
+pub fn open_encoded(out: &Path, state: &Path, capture: u32, settings: Settings, source: &str, writers: Writers) -> io::Result<LiveWriter> {
     let cursors = match std::fs::metadata(out) {
         Ok(_) => Recording::open_path_as(out, Open::Newest)?.records()?.cursors,
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -59,7 +60,7 @@ pub fn open_encoded(out: &Path, state: &Path, capture: u32, settings: Settings, 
             other.source
         )));
     }
-    LiveWriter::open(out, state, source, capture, settings, Vec::new())
+    LiveWriter::open_with(out, state, source, capture, settings, Vec::new(), writers)
 }
 
 pub fn session_facts_file(directory: &Path, campaign: &[u8]) -> Option<PathBuf> {

@@ -171,7 +171,7 @@ impl Environment {
         })
     }
 
-    pub(crate) fn catalogue_notes(&self) -> Vec<String> {
+    pub fn catalogue_notes(&self) -> Vec<String> {
         [
             self.ideologies.get().map(|db| &db.1),
             self.terrain_definitions.get().map(|db| &db.1),
@@ -205,19 +205,19 @@ impl Environment {
             .map_err(String::as_str)
     }
 
-    pub(crate) fn defines(&self) -> &content_reader_core::defines::Defines {
+    pub fn defines(&self) -> &content_reader_core::defines::Defines {
         &self.defines
     }
 
-    pub(crate) fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, String> {
+    pub fn ideologies(&self) -> Result<&content_reader_core::ideologies::Ideologies, String> {
         self.ideologies_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn terrain(&self) -> Result<&content_reader_core::terrain::TerrainDefinitions, String> {
+    pub fn terrain(&self) -> Result<&content_reader_core::terrain::TerrainDefinitions, String> {
         self.terrain_result().as_ref().map_err(Clone::clone)
     }
 
-    pub(crate) fn leader_traits(
+    pub fn leader_traits(
         &self,
     ) -> Result<&content_reader_core::leader_traits::LeaderTraits, String> {
         self.leader_traits_result().as_ref().map_err(Clone::clone)
@@ -461,7 +461,7 @@ impl<'a> ScriptedText<'a> {
             .map_err(Clone::clone)
     }
 
-    pub(crate) fn world(&self) -> Result<&World<'a>, String> {
+    pub fn world(&self) -> Result<&World<'a>, String> {
         let world = self.trigger_world()?;
         match world.core_gap() {
             Some(gap) => Err(gap.to_string()),
@@ -577,7 +577,7 @@ impl<'a> ScriptedText<'a> {
         Ok(String::new())
     }
 
-    pub(crate) fn state_name(&self, id: u32) -> Result<String, String> {
+    pub fn state_name(&self, id: u32) -> Result<String, String> {
         self.state_name_for(id, false)
     }
 
@@ -680,7 +680,7 @@ impl<'a> ScriptedText<'a> {
         })
     }
 
-    pub(crate) fn province_display_name(&self, id: u32) -> Result<String, String> {
+    pub fn province_display_name(&self, id: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::ProvinceDisplayName(id)),
             || self.province_display_name_unrecorded(id),
@@ -727,7 +727,7 @@ impl<'a> ScriptedText<'a> {
         }
     }
 
-    pub(crate) fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
+    pub fn province_victory_point_name(&self, id: u32) -> Result<String, String> {
         crate::triggers::inputs::query(
             || crate::triggers::inputs::Key::Text(TextQuery::ProvinceVictoryPointName(id)),
             || self.province_victory_point_name_unrecorded(id),
@@ -765,13 +765,13 @@ impl<'a> ScriptedText<'a> {
         victory_point_name(self.localisation, id, &tag)
     }
 
-    pub(crate) fn province_terrain(&self, id: u32) -> Result<i32, String> {
+    pub fn province_terrain(&self, id: u32) -> Result<i32, String> {
         crate::triggers::PreparedContent::geography(self.content).terrain().and_then(|map| map.terrain(id))
             .map(|terrain| terrain.index)
             .ok_or_else(|| format!("Terrain of province {id}: the recorded-content province template is unavailable"))
     }
 
-    pub(crate) fn terrain_id_name(&self, ordinal: i32) -> Result<String, String> {
+    pub fn terrain_id_name(&self, ordinal: i32) -> Result<String, String> {
         if ordinal == 0 {
             return Ok(String::new());
         }

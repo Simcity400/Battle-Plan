@@ -8573,6 +8573,7 @@ pub(crate) mod tests {
         };
         let replay = Arc::new(
             Replay::from_records(
+                recorder_derive::writers(),
                 b"unload-test".to_vec(),
                 &[vec![Record::SessionStart(session)]],
             )
@@ -9036,7 +9037,7 @@ pub(crate) mod tests {
         use replay::{spool::ControlRecord, spool::Record};
         let healthy = crate::playback::tests::fixture();
         let partial = healthy
-            .append(&[vec![
+            .append(recorder_derive::writers(), &[vec![
                 Record::SessionStart(healthy.sessions[0].clone()),
                 Record::BranchStart(healthy.branches[0].clone()),
                 Record::Control(ControlRecord::Partial {
@@ -9077,6 +9078,7 @@ pub(crate) mod tests {
         let mut session = healthy.sessions[0].clone();
         session.capture_mode = CaptureMode::Map;
         let map = Replay::from_records(
+            recorder_derive::writers(),
             healthy.campaign_id.clone(),
             &[vec![Record::SessionStart(session)]],
         )
