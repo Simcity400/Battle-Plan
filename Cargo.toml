@@ -49,6 +49,11 @@ content-witness = { path = "crates/content-witness" }
 map-products = { path = "crates/map-products" }
 map-content = { path = "crates/map-content" }
 viewer-playback = { path = "crates/viewer-playback" }
+viewer-layer-core = { path = "crates/viewer-layer-core" }
+viewer-layers-counters = { path = "crates/viewer-layers-counters" }
+viewer-layers-forces = { path = "crates/viewer-layers-forces" }
+viewer-layers-political = { path = "crates/viewer-layers-political" }
+viewer-layers-infrastructure = { path = "crates/viewer-layers-infrastructure" }
 map-display-data = { path = "crates/map-display-data" }
 map-snow = { path = "crates/map-snow" }
 shader-pipeline = { path = "crates/shader-pipeline" }

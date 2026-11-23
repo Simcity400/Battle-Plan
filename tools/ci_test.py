@@ -192,8 +192,23 @@ class Crates(unittest.TestCase):
         ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
         job = next(job for job in pipeline.jobs if job.name == "clippy")
         self.assertEqual(ci.decide(job, ctx, "check").arguments, ["-p", "core"])
+        ctx.transitive = True
+        self.assertEqual(ci.decide(job, ctx, "main").arguments, ["-p", "core"])
         ctx.everything = True
         self.assertEqual(ci.decide(job, ctx, "main").arguments, ["--workspace"])
+
+    def test_main_takes_every_crate_above_a_change_and_every_crate_whose_tests_use_one(self):
+        workspace = dict(crates(core=[], mid=["core"], top=["mid"], other=[]),
+                         probe=ci.Crate("probe", "crates/probe", frozenset({"top"}), frozenset()),
+                         outer=ci.Crate("outer", "crates/outer", frozenset({"probe"}), frozenset({"probe"})))
+        ctx = context(["crates/core/src/lib.rs"], workspace=workspace)
+        self.assertEqual(decide("test", ctx).arguments, ["-p", "core", "-p", "mid"])
+        ctx.transitive = True
+        decision = decide("test", ctx, tier="main")
+        self.assertEqual(decision.arguments, ["-p", "core", "-p", "mid", "-p", "probe", "-p", "top"])
+        self.assertEqual(decision.beyond, ["probe", "top"])
+        self.assertEqual(decision.detail, "4 crates (2 beyond a pull request's scope)")
+        self.assertEqual(decide("test", context(["docs/x.md"], workspace=workspace), tier="main").state, "skipped")
 
     def test_a_changed_runner_script_selects_no_crates(self):
         self.assertEqual(decide("clippy", context(["tools/boat.py"])).state, "skipped")
@@ -221,6 +236,7 @@ class Crates(unittest.TestCase):
                                          'test-unify = { path = "../test-unify" }\n',
                 "crates/test-unify/Cargo.toml": '[package]\nname = "test-unify"\n',
                 "crates/gone/Cargo.toml": '[package]\nname = "gone"\n',
+                "fuzz/Cargo.toml": '[package]\nname = "fuzz"\n[dependencies]\nt = { package = "top", path = "../crates/top" }\n',
             }
             for name, text in files.items():
                 Path(root, name).parent.mkdir(parents=True, exist_ok=True)
@@ -232,6 +248,19 @@ class Crates(unittest.TestCase):
             self.assertEqual(found["top"].deps, {"mid", "test-unify"})
             self.assertEqual(found["top"].libraries, {"mid"})
             self.assertEqual(found["core"].folder, "crates/core")
+            self.assertEqual(ci.manifest_reach(root, "fuzz/Cargo.toml", found), {"top", "mid"})
+            self.assertIsNone(ci.manifest_reach(root, "missing/Cargo.toml", found))
+        pipeline = ci.load_pipeline(PIPELINE + '[[job]]\nname = "fuzz"\ngroup = "all"\ntier = "check"\ntoolchain = "rust"\n'
+                                               'inputs = ["fuzz/**"]\nmanifest = "fuzz/Cargo.toml"\ncommand = ["cargo", "check"]\n')
+        ctx = context(["crates/core/src/lib.rs"])
+        ctx.pipeline, ctx.definitions = pipeline, {job.name: job.definition for job in pipeline.jobs}
+        ctx.manifests = {"fuzz/Cargo.toml": {"mid"}}
+        self.assertEqual(decide("fuzz", ctx).state, "skipped")
+        ctx.changed = {"crates/mid/src/lib.rs"}
+        self.assertEqual(decide("fuzz", ctx).state, "run")
+        ctx.manifests = {"fuzz/Cargo.toml": None}
+        ctx.changed = {"crates/core/src/lib.rs"}
+        self.assertEqual(decide("fuzz", ctx).state, "run")
 
 
 
@@ -365,13 +394,13 @@ class Sharding(unittest.TestCase):
     def table(costs):
         return ci.json.dumps({"crates": {name: {"build": build, "test": test} for name, (build, test) in costs.items()}})
 
-    def sharded(self, changed, tier="check", shards=2):
+    def sharded(self, changed, tier="check", shards=2, everything=False):
         pipeline = PIPELINE.replace('command = ["boat", "test", "{packages}"]\n', f'command = ["boat", "test", "{{packages}}"]\nshards = {shards}\n')
         tree = {f"crates/{name}/src/lib.rs" for name in self.WORKSPACE}
         ctx = context(changed, tree=tree, workspace=self.WORKSPACE)
         ctx.pipeline = ci.load_pipeline(pipeline)
         ctx.definitions = {job.name: job.definition for job in ctx.pipeline.jobs}
-        ctx.everything = tier != "check"
+        ctx.everything, ctx.transitive = everything, tier != "check"
         return ctx, [ci.decide(job, ctx, tier) for job in ctx.pipeline.jobs], self.table(self.COSTS)
 
     def test_every_crate_runs_once_and_a_dependent_joins_the_runner_building_its_dependencies(self):
@@ -454,15 +483,15 @@ class Sharding(unittest.TestCase):
         _, refused = ci.take_shard(mine, legs[0]["shard"], ctx.crates, moved)
         self.assertEqual([o.state for o in refused], ["fail"])
 
-    def test_main_tests_the_workspace_and_names_what_lies_beyond_a_pull_requests_scope(self):
-        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"], tier="main")
+    def test_everything_tests_the_workspace_and_names_what_lies_beyond_a_pull_requests_scope(self):
+        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"], tier="main", everything=True)
         decision = next(d for d in decisions if d.job.name == "test")
         self.assertEqual(decision.arguments, ["--workspace"])
         self.assertEqual(decision.beyond, ["app", "hub", "mid", "tool"])
-        self.assertIn("4 beyond a pull request's scope", decision.detail)
-        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"])
+        self.assertIn("workspace-wide; 4 beyond a pull request's scope", decision.detail)
+        _, decisions, _ = self.sharded(["crates/leaf/src/lib.rs"], tier="main")
         self.assertEqual(next(d for d in decisions if d.job.name == "test").arguments, ["-p", "leaf", "-p", "other"])
-        _, decisions, _ = self.sharded(["docs/x.md"], tier="main")
+        _, decisions, _ = self.sharded(["docs/x.md"], tier="main", everything=True)
         decision = next(d for d in decisions if d.job.name == "test")
         self.assertEqual((decision.state, decision.arguments), ("run", ["--workspace"]))
         self.assertEqual(len(decision.beyond), len(self.WORKSPACE))

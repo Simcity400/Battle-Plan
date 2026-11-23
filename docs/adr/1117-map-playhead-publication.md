@@ -8,4 +8,4 @@ A playing frame takes the latest eligible products without blocking for every pe
 
 The window tries to take the side lock without waiting. Capturing a stepped picture ties the answer to its request and view, including another view of the same hour. A stop or timeout refuses the waiting capture by name and does not answer a later request with the same refusal. A seek that lands during catch-up drives row demand for the replacement epoch. Camera-only movement can update placement without rebuilding declarations except when it crosses a declaration boundary or a layer explicitly reads camera inputs.
 
-[Page ownership](../../crates/viewer-playback/src/playhead_host/units.rs) · [Playback and capture regressions](../../crates/viewer-playback/src/playhead_host/tests.rs)
+[Page ownership](../../crates/viewer-layer-core/src/playhead_host/units.rs) · [Playback and capture regressions](../../crates/viewer-layer-core/src/playhead_host/tests.rs)

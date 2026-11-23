@@ -4,7 +4,7 @@ import { Icon } from '../components/Icons';
 import { Segmented } from '../components/Segmented';
 import type { UpdateChannel } from './api';
 import * as api from './api';
-import { blockedReason, CHANNEL_LABELS, channelDescription, channelLocked, confirmInstall, restartQuestion, UPDATE_READ_FAILED, updateAction, updateButtonLabel,
+import { blockedReason, CHANNEL_LABELS, channelDescription, channelLocked, confirmInstall, restartLabel, restartQuestion, UPDATE_READ_FAILED, updateAction, updateButtonLabel,
   updateDescription, updateDisabled, updateFailure } from './logic';
 import { UpdateNotes, useUpdateActions } from './UpdateControl';
 import { useUpdateState } from './useUpdateState';
@@ -43,13 +43,13 @@ export default function UpdateSettings() {
     </div>
     {asking && state && version && <div className="settings-row update-confirm" role="alertdialog" aria-labelledby="update-confirm-title"
       onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel(); } }}>
-      <span className="settings-row-text"><strong id="update-confirm-title">{restartQuestion(version)}</strong>
-        <small>{blockedReason(state) ?? confirmInstall(version)}</small><UpdateNotes state={state} /></span>
+      <span className="settings-row-text"><strong id="update-confirm-title">{restartQuestion(version, state.downgrade)}</strong>
+        <small>{blockedReason(state) ?? confirmInstall(version, state.downgrade)}</small><UpdateNotes state={state} /></span>
       <span className="update-confirm-actions">
         <button type="button" className="button small quiet" onClick={() => void actions.openRelease(version)}>Release notes</button>
         <button type="button" className="button small quiet" autoFocus onClick={cancel}>Cancel</button>
         <button type="button" className="button small primary" disabled={state.installBlocked != null || actions.pending}
-          onClick={() => { setConfirming(null); actions.install(opener.current); }}>Restart to update</button>
+          onClick={() => { setConfirming(null); actions.install(opener.current); }}>{restartLabel(state)}</button>
       </span>
     </div>}
     <div className="settings-row" id="updates-channel"><span className="settings-row-text">

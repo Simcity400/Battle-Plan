@@ -1,5 +1,5 @@
 
-use crate::layers::political::Political;
+use viewer_layers_political::political::Political;
 use map_display_data::{landscape::Regions, province_field, value_index::ValueIndex};
 use std::{collections::BTreeSet, sync::Arc};
 use viewer_borders::demilitarized::Zone;

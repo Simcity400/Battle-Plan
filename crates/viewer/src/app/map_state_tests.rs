@@ -1,8 +1,7 @@
 use super::{Config, Options, Playhead, Viewer};
-use crate::{
-    layers::{Carried, Settling, Inputs, Layer, Published, View, recorded::record},
-    playhead_host::{Entry, MapSide, mirror::Mirrors, open, views::tests::hourly_steps, side::SideThread},
-};
+use viewer_layer_core::{layers::{Carried, Settling, Inputs, Layer, Published, View}, test_support::recorded::record};
+use crate::playhead_host::{Entry, MapSide, mirror::Mirrors, open, views::tests::hourly_steps};
+use viewer_playback::side::SideThread;
 use playhead::Step;
 use replay_columnar::manifest::Status;
 use replay_data::{Hour, rows::TableId};
@@ -118,11 +117,11 @@ fn side(name: &str) -> (MapSide, Arc<AtomicBool>) {
 fn joins(entry: &Arc<Entry>) -> (MapSide, Arc<AtomicBool>) {
     let gate = Arc::new(AtomicBool::new(true));
     let layer = Held { open: Arc::clone(&gate), next: None, published: None };
-    (MapSide::new(Arc::clone(entry), vec![Box::new(layer)], View::default()).unwrap(), gate)
+    (MapSide::with_products(Arc::clone(entry), vec![Box::new(layer)], View::default()).unwrap(), gate)
 }
 
 fn frames_at(side: &mut MapSide, hour: Hour, what: &str, mut done: impl FnMut(&MapSide) -> bool) {
-    crate::layers::recorded::frames_at(side, hour, what, |side, _| done(side));
+    viewer_layer_core::test_support::recorded::frames_at(side, hour, what, |side, _| done(side));
 }
 
 fn shown_at(side: &mut MapSide, hour: Hour) {
@@ -283,7 +282,7 @@ fn a_layers_install_runs_on_the_frame_that_takes_its_publication_whatever_the_fr
         store.status(TableId::Countries.index(), Status::Complete, true, Some(at as i32), true).unwrap();
     });
     let entry = open(units, hourly_steps()).unwrap();
-    let mut side = MapSide::new(Arc::clone(&entry), vec![Box::new(Owing { owes: false, installs: 0 })], View::default()).unwrap();
+    let mut side = MapSide::with_products(Arc::clone(&entry), vec![Box::new(Owing { owes: false, installs: 0 })], View::default()).unwrap();
     shown_at(&mut side, 2);
     viewer_runtime::display_refresh::pace_at(1e12);
     let mut installed = 0;

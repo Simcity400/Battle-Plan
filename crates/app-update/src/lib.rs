@@ -3,12 +3,13 @@ pub mod commands;
 mod control;
 mod feed;
 mod install;
+mod label;
 
 pub use channel::Channel;
 
 use serde::Serialize;
 use std::{
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -46,8 +47,8 @@ impl Role {
 
     fn app(self) -> &'static str {
         match self {
-            Self::Dashboard => "BattlePlan",
-            Self::Recorder => "BattlePlan Recorder",
+            Self::Dashboard => app_name(),
+            Self::Recorder => recorder_name(),
         }
     }
 
@@ -60,6 +61,22 @@ impl Role {
 }
 
 pub type Launch = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+fn nightly() -> bool {
+    VERSION.contains("-nightly.")
+}
+
+pub fn app_name() -> &'static str {
+    static NAME: LazyLock<String> =
+        LazyLock::new(|| format!("BattlePlan ({})", label::channel_label(VERSION)));
+    &NAME
+}
+
+pub fn recorder_name() -> &'static str {
+    static NAME: LazyLock<String> =
+        LazyLock::new(|| format!("BattlePlan Recorder ({})", label::channel_label(VERSION)));
+    &NAME
+}
 
 pub trait Host: Send + Sync + 'static {
     fn install_blocked(&self) -> Option<String> {
@@ -88,7 +105,7 @@ impl Build {
             Self::Preview
         } else if RELEASES.is_none() {
             Self::Development
-        } else if VERSION.contains("-nightly.") {
+        } else if nightly() {
             Self::Nightly
         } else {
             Self::Stable
@@ -154,6 +171,7 @@ pub struct UpdateState {
     pub message: Option<String>,
     pub error_context: Option<Action>,
     pub install_blocked: Option<String>,
+    pub downgrade: bool,
 }
 
 struct Inner {
@@ -276,6 +294,7 @@ pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result
         message: disabled.clone().or(saved.err()),
         error_context: None,
         install_blocked: None,
+        downgrade: false,
     };
     let control_error = control::serve(role, Arc::new(Answering(Arc::clone(&host))))
         .err()
@@ -467,10 +486,11 @@ impl Updates {
             }
             Ok(channel)
         })?;
+        let switching = channel != Build::current().channel();
         let result = match (saved, feed(channel), &self.client) {
             (Err(error), _, _) | (_, Err(error), _) => Err(error),
             (_, _, None) => Err("The update client didn’t start.".to_owned()),
-            (Ok(_), Ok(url), Some(client)) => feed::newer(client, &url, &self.current)
+            (Ok(_), Ok(url), Some(client)) => feed::offer(client, &url, &self.current, switching)
                 .await
                 .map_err(|error| {
                     format!(
@@ -497,6 +517,7 @@ impl Updates {
                     inner.state.available_version = Some(update.version.clone());
                     inner.state.released_at = update.released_at.clone();
                     inner.state.notes = notes(update.notes.as_deref());
+                    inner.state.downgrade = update.older;
                     inner.state.error_context = None;
                     inner.state.message = None;
                     inner.update = Some(update);
@@ -559,6 +580,7 @@ impl Updates {
         inner.state.notes.clear();
         inner.state.download_percent = None;
         inner.state.install_blocked = None;
+        inner.state.downgrade = false;
     }
 
     pub async fn download(self: &Arc<Self>, app: &AppHandle) -> Result<UpdateState, String> {

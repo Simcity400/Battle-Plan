@@ -1,11 +1,8 @@
 
 use super::{Compared, political, political_fresh, political_marked};
-use crate::{
-    app::faction_highlight::Picture,
-    document::Document,
-    layers::{Layer, political::Political},
-    playhead_host::mirror::Mirrors,
-};
+use crate::{app::faction_highlight::Picture, document::Document, playhead_host::mirror::Mirrors};
+use viewer_layer_core::layers::Layer;
+use viewer_layers_political::political::Political;
 use map_display_data::landscape::Regions;
 use serde_json::json;
 use std::{collections::BTreeSet, io, sync::Arc, time::Instant};
@@ -25,7 +22,7 @@ fn cycle_hz() -> f64 {
 const POINTED: usize = 20;
 
 pub(super) fn make(document: &Document) -> Box<dyn Layer> {
-    Box::new(Political::new(Arc::new(crate::layers::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
+    Box::new(Political::new(Arc::new(viewer_layers_political::political::Content::new(Arc::clone(&document.content.map), Arc::clone(&document.border_meshes)))))
 }
 
 fn plans(meshes: &viewer_borders::borders::BorderMeshes, regions: &Regions, zone: &Zone, provinces: &BTreeSet<u32>) -> (ClassPlan, ZonePlan, ZonePlan) {
@@ -85,7 +82,7 @@ pub(super) fn today(layer: &dyn Layer, document: &Document) -> io::Result<Compar
     Ok(compared)
 }
 
-pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &crate::layers::Upstream<'_>) -> io::Result<Compared> {
+pub(super) fn fresh(layer: &dyn Layer, mirrors: &Mirrors, upstream: &viewer_layer_core::layers::Upstream<'_>) -> io::Result<Compared> {
     political_fresh(layer, mirrors, upstream)
 }
 

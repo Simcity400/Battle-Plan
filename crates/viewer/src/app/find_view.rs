@@ -6,7 +6,7 @@ use engine_executable::executable_tables::folding::FoldingTable;
 use replay_data::rows::tables;
 use replay_frame::frame::DecodedFrame;
 use map_display_data::landscape::{LabelName, Labels};
-use viewer_playback::layers::labels::Stamped;
+use viewer_layers_political::labels::Stamped;
 use std::{collections::BTreeMap, sync::Arc};
 use viewer_combat::find_view::{
     Control, EditKey, Field, FindView,
