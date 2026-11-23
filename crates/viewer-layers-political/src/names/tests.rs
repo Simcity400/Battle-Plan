@@ -523,14 +523,20 @@ fn made_ahead(side: &mut viewer_layer_core::playhead_host::MapSide, hour: i32) {
     loop {
         let before = side.entry().playhead().step_state();
         let applied = side.applied().unwrap();
-        side.frame(applied).unwrap();
+        side.frame_synced(applied).unwrap();
         if names(side).made_through() >= Some(hour) {
             return;
         }
         if before.0 < Some(hour) {
             assert!(side.wait_step_after(before, hour).unwrap(), "no step ends by hour {hour}, so the worker cannot make it: {}", seen(side));
-        } else {
-            std::thread::yield_now();
+            continue;
+        }
+        let state = seen(side);
+        let layer = side.layers_mut()[0].any_mut().and_then(|layer| layer.downcast_mut::<Names>()).expect("the names layer is home");
+        assert!(layer.kept.back().is_some_and(|step| step.last() >= hour), "the step to hour {hour} is built but was not handed to the names worker: {state}");
+        let made = layer.made.as_ref().expect("the names worker runs").recv().unwrap_or_else(|_| panic!("the names worker stopped before making hour {hour}: {state}"));
+        if made.epoch == layer.epoch {
+            layer.fed.receive(made.stamp, made);
         }
     }
 }
