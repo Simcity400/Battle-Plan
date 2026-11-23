@@ -53,8 +53,17 @@ impl Lent {
         &self.kinds
     }
 
-    pub fn changed(&self) -> usize {
-        self.changed.len()
+    pub fn pending_keys(&self) -> (Vec<u128>, Vec<u128>) {
+        let born = if self.empty { self.state.live.ones().collect() } else { self.born.clone() };
+        let mut sets: Vec<_> = born.into_iter()
+            .chain(self.changed.iter().map(|&(slot, ..)| slot))
+            .map(|slot| self.state.keys.get(slot))
+            .collect();
+        sets.sort_unstable();
+        sets.dedup();
+        let mut deletes = self.deletes.clone();
+        deletes.sort_unstable();
+        (sets, deletes)
     }
 
     pub fn view<'a>(&'a self, strings: &'a Strings) -> TableView<'a> {

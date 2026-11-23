@@ -295,12 +295,13 @@ fn an_hour_recomputes_only_the_countries_its_changes_reach() {
         for table in TABLES.into_iter().chain([TableId::StabilityParts, TableId::StabilityPartKeys]) {
             store.index(table.index());
         }
-        let mut rows = Rows::logging(&store);
-        writer.hour(&Hour::new(&store, 1, at, at == 0, at == 0, &[]), &mut rows).unwrap();
-        let mut set: Vec<u32> = rows.keys(TableId::StabilityParts).0.iter().map(|key| (key >> 40) as u32).collect();
+        let keys = testing::logging(&store, writer.tables(), |rows| {
+            writer.hour(&Hour::new(&store, 1, at, at == 0, at == 0, &[]), rows)?;
+            Ok(rows.keys(TableId::StabilityParts).0)
+        }).unwrap();
+        let mut set: Vec<u32> = keys.iter().map(|key| (key >> 40) as u32).collect();
         set.dedup();
         owners.push(set);
-        drop(rows);
         store.end_hour(&mut Discard).unwrap();
     }
     assert_eq!(owners, [vec![1, 2], vec![1], vec![]], "country 1's read reaches it alone; a renamed character reaches no country");
@@ -327,16 +328,14 @@ fn a_read_dated_anew_with_nothing_changed_sets_no_part() {
         for table in TABLES.into_iter().chain([TableId::StabilityParts, TableId::StabilityPartKeys]) {
             store.index(table.index());
         }
-        let mut rows = Rows::logging(&store);
-        {
+        testing::logging(&store, writer.tables(), |rows| {
             let hour = Hour::new(&store, 1, at, at == 0, at == 0, &[]);
             if at == 2 {
                 assert!(writer.reread_alike(&hour, 2), "country 2 has no line");
                 assert!(!writer.reread_alike(&hour, 1), "country 1's adviser line names a character");
             }
-            writer.hour(&hour, &mut rows).unwrap();
-        }
-        drop(rows);
+            writer.hour(&hour, rows)
+        }).unwrap();
         store.end_hour(&mut Discard).unwrap();
     }
     let (mut store, mut writers) = (testing::store(), Writers::new(vec![Box::new(testing::noting::Noting(StabilityParts::default()))]));
@@ -385,4 +384,24 @@ fn its_state_is_its_tables_so_a_resume_reads_them_back() {
     writer.load(&[]).unwrap();
     assert!(writer.rebuild);
     assert!(writer.load(&[1]).is_err());
+
+    let (mut saved, mut before) = (testing::store(), writers());
+    run(&mut saved, &mut before, 0);
+    let mut store = testing::resumed_holding(&saved);
+    writers().load(&before.save().unwrap(), &mut store).unwrap();
+    let removed: Vec<_> = testing::rows(&store, TableId::StabilityParts)
+        .into_iter()
+        .filter_map(|(key, _)| (key >> 40 == 2).then_some(key))
+        .collect();
+    assert!(!removed.is_empty(), "the save holds the departed country's parts");
+    store.begin_hour(1, &[]).unwrap();
+    testing::remove(&mut store, TableId::Countries, 2).unwrap();
+    store.settle();
+    let (deletes, new_handles) = testing::logging(&store, writer.tables(), |rows| {
+        writer.hour(&Hour::new(&store, 1, 1, false, false, &[]), rows)?;
+        Ok((rows.keys(TableId::StabilityParts).1, rows.keys(TableId::StabilityPartKeys).0))
+    }).unwrap();
+    assert_eq!(deletes, removed, "the rebuild deletes every saved part for the departed country");
+    assert!(new_handles.is_empty(), "the rebuild reuses the saved dictionary");
+    store.end_hour(&mut Discard).unwrap();
 }

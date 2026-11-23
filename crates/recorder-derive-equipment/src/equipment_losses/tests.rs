@@ -815,7 +815,6 @@ impl Writer for Noting {
     }
 
     fn start(&mut self) {
-        recorder_derive_framework::framework::note_keys();
         self.inner.start();
     }
 
@@ -832,7 +831,6 @@ impl Writer for Noting {
     }
 
     fn load(&mut self, blob: &[u8]) -> io::Result<()> {
-        recorder_derive_framework::framework::note_keys();
         self.inner.load(blob)
     }
 
