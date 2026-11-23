@@ -2228,17 +2228,22 @@ mod tests {
 
     #[test]
     fn cancellation_wakes_a_join_sleeping_on_a_worker_only_queued_ticket() {
+        let trace = Arc::new(collector_memory::read_accounting::fixtures::ReadTrace::default());
         let release = Arc::new(AtomicBool::new(false));
         let (entered_tx, entered_rx) = mpsc::channel();
         let pool = {
             let release = Arc::clone(&release);
+            let runner_trace = Arc::clone(&trace);
             // SAFETY: Test owns this local acquisition pool and drops it before test exit.
             unsafe {
                 Pool::start(1, 2, move |job: &mut u8| {
-                    assert_eq!(*job, 1, "cancelled queued job ran");
-                    entered_tx.send(()).unwrap();
-                    wait_until(|| release.load(Ordering::Acquire));
-                    *job
+                    runner_trace.record(*job, || {
+                        collector_memory::read_accounting::fixtures::read(1);
+                        assert_eq!(*job, 1, "cancelled queued job ran");
+                        entered_tx.send(()).unwrap();
+                        wait_until(|| release.load(Ordering::Acquire));
+                        *job
+                    })
                 })
             }
             .unwrap()
@@ -2270,6 +2275,10 @@ mod tests {
             joined.store(true, Ordering::Release);
             assert!(helper.join().unwrap());
             assert_eq!(done.report, Err(Failure::Stopped));
+            assert_eq!(
+                trace.take(done.request),
+                collector_memory::read_accounting::ZERO
+            );
             #[cfg(feature = "acquisition_profile")]
             assert_eq!(done.table_reads, collector_memory::read_accounting::ZERO);
         });
@@ -3087,6 +3096,7 @@ mod tests {
         let mut out = None;
         assert!(!pool.finish_parked_into(ticket, &mut out, |_| None));
         assert!(out.is_none());
+        let reads = collector_memory::read_accounting::Capture::new();
         collector_test_support::with_allocations_denied(|| {
             assert!(pool.finish_parked_into(ticket, &mut out, |request| {
                 assert_eq!(request as *mut _, unsafe {
@@ -3103,6 +3113,7 @@ mod tests {
         assert_eq!(completed.request.as_ptr(), allocation);
         assert_eq!(completed.request[0], 9);
         assert_eq!(completed.report, Ok(3));
+        assert_eq!(reads.finish(), collector_memory::read_accounting::ZERO);
         #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             completed.table_reads,
@@ -3238,28 +3249,33 @@ mod tests {
         assert_eq!(rejected, Some(4));
     }
 
-    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn panic_returns_partial_request_cancels_queued_jobs_and_does_not_retry() {
+        use collector_memory::read_accounting::fixtures::ReadTrace;
         use engine_native::{
             Memory, memory::CountedMemory, memory::ReadCounts, memory::SliceMemory,
         };
         use replay_data::rows::TableId;
 
+        let trace = Arc::new(ReadTrace::default());
+        let runner_trace = Arc::clone(&trace);
         let calls = Arc::new(AtomicU64::new(0));
         let count = Arc::clone(&calls);
         // SAFETY: Test owns this local acquisition pool and drops it before test exit.
         let pool = unsafe {
             Pool::start(0, 2, move |request: &mut Owned| -> usize {
-                count.fetch_add(1, Ordering::Relaxed);
-                let _reads = collector_memory::read_accounting::table(TableId::Divisions);
-                let memory = CountedMemory::new(SliceMemory {
-                    base: 0x1000,
-                    bytes: &request.payload,
-                });
-                assert!(memory.copy(0x1000, &mut [0]));
-                request.payload[0] = 42;
-                panic!("synthetic acquisition failure");
+                let key = request.payload.as_ptr() as usize;
+                runner_trace.record(key, || {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    let _reads = collector_memory::read_accounting::table(TableId::Divisions);
+                    let memory = CountedMemory::new(SliceMemory {
+                        base: 0x1000,
+                        bytes: &request.payload,
+                    });
+                    assert!(memory.copy(0x1000, &mut [0]));
+                    request.payload[0] = 42;
+                    panic!("synthetic acquisition failure");
+                })
             })
         }
         .unwrap();
@@ -3269,6 +3285,11 @@ mod tests {
         let failed = pool.finish(second).unwrap();
         let canceled = pool.finish(first).unwrap();
         assert_eq!(canceled.report, Err(Failure::Stopped));
+        assert_eq!(
+            trace.take(canceled.request.payload.as_ptr() as usize),
+            collector_memory::read_accounting::ZERO
+        );
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             canceled.table_reads,
             collector_memory::read_accounting::ZERO
@@ -3282,6 +3303,11 @@ mod tests {
             bytes: 1,
             ..ReadCounts::ZERO
         };
+        assert_eq!(
+            trace.take(failed.request.payload.as_ptr() as usize),
+            expected
+        );
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(failed.table_reads, expected);
         assert_eq!(failed.request.payload, [42]);
         let mut rejected = Some(failed.request);
@@ -3298,11 +3324,19 @@ mod tests {
 
     #[test]
     fn shutdown_cancels_pending_without_running_and_returns_arc_leases() {
+        let trace = Arc::new(collector_memory::read_accounting::fixtures::ReadTrace::default());
+        let runner_trace = Arc::clone(&trace);
         let mut owner = Arc::new(vec![7]);
         // SAFETY: Test owns this local acquisition pool and drops it before test exit.
-        let pool: Pool<Arc<Vec<u8>>, ()> =
-            unsafe { Pool::start(0, 1, |_: &mut Arc<Vec<u8>>| panic!("canceled job ran")) }
-                .unwrap();
+        let pool: Pool<Arc<Vec<u8>>, ()> = unsafe {
+            Pool::start(0, 1, move |_: &mut Arc<Vec<u8>>| {
+                runner_trace.record((), || {
+                    collector_memory::read_accounting::fixtures::read(1);
+                    panic!("canceled job ran");
+                });
+            })
+        }
+        .unwrap();
         let ticket = submit(&pool, &mut Some(Arc::clone(&owner)));
         // SAFETY: This is the pool's owner. No submitted work is still borrowing its storage at
         // shutdown.
@@ -3310,6 +3344,7 @@ mod tests {
         assert!(Arc::get_mut(&mut owner).is_none());
         let completion = pool.finish(ticket).unwrap();
         assert_eq!(completion.report, Err(Failure::Stopped));
+        assert_eq!(trace.take(()), collector_memory::read_accounting::ZERO);
         #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             completion.table_reads,

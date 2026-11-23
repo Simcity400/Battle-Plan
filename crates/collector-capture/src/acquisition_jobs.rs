@@ -2147,9 +2147,18 @@ impl Pool {
         workers: usize,
         run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
     ) -> Self {
+        Self::with_test_runner_capacity(workers, MAX_JOBS, run)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn with_test_runner_capacity(
+        workers: usize,
+        capacity: usize,
+        run: impl Fn(&mut Job) -> Report + Send + Sync + 'static,
+    ) -> Self {
         // SAFETY: Test owns this local acquisition pool and drops it before test exit.
         let executor =
-            unsafe { collector_workers::acquisition::Pool::start(workers, MAX_JOBS, run) }.unwrap();
+            unsafe { collector_workers::acquisition::Pool::start(workers, capacity, run) }.unwrap();
         executor.set_on_completed(presentation::completed);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         let executor = Arc::new(executor);
@@ -2628,9 +2637,11 @@ mod scheduling_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "acquisition_profile")]
     use characters::CharactersCopyContext;
-    use collector_memory::read_accounting::{self, Capture};
+    use collector_memory::read_accounting::{
+        self, Capture,
+        fixtures::{ReadTrace, copies},
+    };
     use engine_native::memory::{CountedMemory, ReadCounts};
     use replay_data::rows::TableId;
 
@@ -2645,30 +2656,8 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "acquisition_profile")]
     fn accounted_read(owner: TableId, len: usize) {
-        read_accounting::with_table(owner, || {
-            let source = [7; 8];
-            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
-                base: 0x1000,
-                bytes: &source,
-            });
-            assert!(engine_native::Memory::copy(
-                &memory,
-                0x1000,
-                &mut [0; 8][..len]
-            ));
-        });
-    }
-
-    #[cfg(feature = "acquisition_profile")]
-    fn one_copy(bytes: u64) -> ReadCounts {
-        ReadCounts {
-            copy_calls: 1,
-            spans: 1,
-            bytes,
-            ..ReadCounts::ZERO
-        }
+        read_accounting::with_table(owner, || read_accounting::fixtures::read(len));
     }
 
     fn country_snapshot(
@@ -3629,20 +3618,24 @@ mod tests {
                     &mut direct.payload,
                 )
             };
-            let _expected_reads = reads.finish();
+            let expected_reads = reads.finish();
+            let trace = Arc::new(ReadTrace::default());
+            let runner_trace = Arc::clone(&trace);
             // SAFETY: Test owns this local acquisition pool and drops it before test exit.
             let pool = unsafe {
                 collector_workers::acquisition::Pool::start(
                     workers,
                     1,
                     move |request: &mut EconomyRequest| {
-                        run_economy_shared(
-                            request,
-                            &CountedMemory::new(engine_native::memory::SliceMemory {
-                                base: 0,
-                                bytes: &bytes,
-                            }),
-                        )
+                        runner_trace.record((), || {
+                            run_economy_shared(
+                                request,
+                                &CountedMemory::new(engine_native::memory::SliceMemory {
+                                    base: 0,
+                                    bytes: &bytes,
+                                }),
+                            )
+                        })
                     },
                 )
             }
@@ -3660,8 +3653,10 @@ mod tests {
             );
             assert_eq!(report.raw_ok, expected.raw_ok);
             assert_eq!(report.raw_bytes, expected.raw_bytes);
+            let observed = trace.take(());
+            assert_eq!(observed, expected_reads);
             #[cfg(feature = "acquisition_profile")]
-            assert_eq!(completed.table_reads, _expected_reads);
+            assert_eq!(completed.table_reads, observed);
             assert_eq!(pool.calibration().uncollected, 0);
         }
     }
@@ -3670,19 +3665,23 @@ mod tests {
     fn absent_world_parts_read_nothing_and_keep_no_economy_attempt() {
         for workers in [0, 1] {
             let bytes = empty_memory();
+            let trace = Arc::new(ReadTrace::default());
+            let runner_trace = Arc::clone(&trace);
             // SAFETY: Test owns this local acquisition pool and drops it before test exit.
             let pool = unsafe {
                 collector_workers::acquisition::Pool::start(
                     workers,
                     1,
                     move |request: &mut WorldRequest| {
-                        run_world_shared(
-                            request,
-                            &CountedMemory::new(engine_native::memory::SliceMemory {
-                                base: 0,
-                                bytes: &bytes,
-                            }),
-                        )
+                        runner_trace.record((), || {
+                            run_world_shared(
+                                request,
+                                &CountedMemory::new(engine_native::memory::SliceMemory {
+                                    base: 0,
+                                    bytes: &bytes,
+                                }),
+                            )
+                        })
                     },
                 )
             }
@@ -3696,6 +3695,8 @@ mod tests {
             let report = completed.report.unwrap();
             assert!(completed.request.production.is_none());
             assert!(completed.request.construction.is_none());
+            let observed = trace.take(());
+            assert_eq!(observed, read_accounting::ZERO);
             #[cfg(feature = "acquisition_profile")]
             assert_eq!(completed.table_reads, read_accounting::ZERO);
             macro_rules! empty {
@@ -3712,21 +3713,24 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn single_requests_share_executor_without_mixing_reports() {
         let capture = Capture::new();
         accounted_read(TableId::Clock, 1);
-        let pool = synthetic_pool(|job| match job {
-            Job::World(_) => {
-                accounted_read(TableId::ProductionLines, 3);
-                Report::World(WorldReport::default())
-            }
-            Job::Characters(_) => {
-                accounted_read(TableId::Characters, 2);
-                Report::Characters(characters::CharactersCopyReport::default())
-            }
-            _ => panic!("unexpected test job"),
+        let trace = Arc::new(ReadTrace::default());
+        let runner_trace = Arc::clone(&trace);
+        let pool = synthetic_pool(move |job| {
+            runner_trace.record(job.role() as usize, || match job {
+                Job::World(_) => {
+                    accounted_read(TableId::ProductionLines, 3);
+                    Report::World(WorldReport::default())
+                }
+                Job::Characters(_) => {
+                    accounted_read(TableId::Characters, 2);
+                    Report::Characters(characters::CharactersCopyReport::default())
+                }
+                _ => panic!("unexpected test job"),
+            })
         });
         let mut batch = Batch::new(&pool);
         let mut world = Some(Job::World(world_request()));
@@ -3747,21 +3751,32 @@ mod tests {
         assert!(matches!(completed.request, Job::Characters(_)));
         assert!(matches!(completed.report, Ok(Report::Characters(_))));
         let mut expected = read_accounting::ZERO;
-        expected[TableId::Characters.index()] = one_copy(2);
-        assert_eq!(completed.table_reads, expected);
-        expected[TableId::Clock.index()] = one_copy(1);
+        expected[TableId::Characters.index()] = copies(1, 2);
+        let character_reads = trace.take(completed.request.role() as usize);
+        assert_eq!(character_reads, expected);
+        #[cfg(feature = "acquisition_profile")]
+        assert_eq!(completed.table_reads, character_reads);
+        #[cfg(not(feature = "acquisition_profile"))]
+        read_accounting::merge(&character_reads);
+        expected[TableId::Clock.index()] = copies(1, 1);
         assert_eq!(read_accounting::snapshot(), expected);
-        assert!(matches!(
-            batch.finish(world_ticket).unwrap().report,
-            Ok(Report::World(_))
-        ));
+        let completed = batch.finish(world_ticket).unwrap();
+        assert!(matches!(completed.report, Ok(Report::World(_))));
+        let world_reads = trace.take(completed.request.role() as usize);
+        let mut expected_world = read_accounting::ZERO;
+        expected_world[TableId::ProductionLines.index()] = copies(1, 3);
+        assert_eq!(world_reads, expected_world);
+        #[cfg(feature = "acquisition_profile")]
+        assert_eq!(completed.table_reads, world_reads);
+        #[cfg(not(feature = "acquisition_profile"))]
+        read_accounting::merge(&world_reads);
         let roles = pool.calibration().roles;
         for role in [Role::World, Role::Characters] {
             assert_eq!(roles[role as usize].counters.accepted, 1);
             assert_eq!(roles[role as usize].counters.completed, 1);
         }
         assert_eq!(roles[Role::Intel as usize].counters.accepted, 0);
-        expected[TableId::ProductionLines.index()] = one_copy(3);
+        expected[TableId::ProductionLines.index()] = copies(1, 3);
         assert_eq!(read_accounting::snapshot(), expected);
         assert!(batch.finish(characters_ticket).is_none());
         assert!(batch.finish(world_ticket).is_none());
@@ -3769,7 +3784,6 @@ mod tests {
         assert_eq!(capture.finish(), expected);
     }
 
-    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn rejected_provinces_worker_retains_its_storage_without_inline_reads() {
         for workers in [0, 1] {
@@ -3783,15 +3797,32 @@ mod tests {
                 (
                     source.as_ptr() as usize,
                     "province table has no province slots",
-                    one_copy(16),
+                    copies(1, 16),
                 ),
             ] {
                 let capture = Capture::new();
                 accounted_read(TableId::Clock, 3);
-                let pool =
-                // SAFETY: The attaching runtime or isolated fixture owns this worker through
-                // shutdown.
-                unsafe { Pool::start(workers, WORKER_ONLY_JOBS + 1) }.unwrap();
+                let trace = Arc::new(ReadTrace::default());
+                let runner_trace = Arc::clone(&trace);
+                let memory_base = source.as_ptr() as usize;
+                let bytes = source.clone();
+                let pool = Pool::with_test_runner_capacity(
+                    workers.max(1),
+                    WORKER_ONLY_JOBS + 1,
+                    move |job| {
+                        let Job::Provinces(request) = job else {
+                            panic!("unexpected province fixture job");
+                        };
+                        let key = request.payload.rows.as_ptr() as usize;
+                        runner_trace.record(key, || {
+                            let memory = CountedMemory::new(engine_native::memory::SliceMemory {
+                                base: memory_base,
+                                bytes: &bytes,
+                            });
+                            run_for_test(job, &memory)
+                        })
+                    },
+                );
                 let make = || {
                     Job::Provinces(ProvincesRequest {
                         base: 0,
@@ -3826,11 +3857,19 @@ mod tests {
                 let mut job_reads = read_accounting::ZERO;
                 job_reads[TableId::Provinces.index()] = reads;
                 let mut expected = read_accounting::ZERO;
-                expected[TableId::Clock.index()] = one_copy(3);
+                expected[TableId::Clock.index()] = copies(1, 3);
                 assert_eq!(read_accounting::snapshot(), expected);
                 for ticket in tickets {
                     let completed = batch.finish(ticket).unwrap();
-                    assert_eq!(completed.table_reads, job_reads);
+                    let Job::Provinces(request) = &completed.request else {
+                        panic!("province request routing changed");
+                    };
+                    let observed = trace.take(request.payload.rows.as_ptr() as usize);
+                    assert_eq!(observed, job_reads);
+                    #[cfg(feature = "acquisition_profile")]
+                    assert_eq!(completed.table_reads, observed);
+                    #[cfg(not(feature = "acquisition_profile"))]
+                    read_accounting::merge(&observed);
                     let Ok(Report::Provinces(report)) = completed.report else {
                         panic!("province report routing changed");
                     };
@@ -3840,6 +3879,7 @@ mod tests {
                     );
                     expected[TableId::Provinces.index()] += reads;
                 }
+                assert_eq!(trace.take(pointer as usize), read_accounting::ZERO);
                 let calibration = pool.calibration();
                 let counts = calibration.roles[Role::Provinces as usize].counters;
                 assert_eq!(counts.accepted, WORKER_ONLY_JOBS as u64);
@@ -3957,21 +3997,24 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "acquisition_profile")]
     #[test]
     fn callback_unwind_drains_jobs_and_releases_single_country_leases() {
         let capture = Capture::new();
         accounted_read(TableId::Clock, 2);
+        let trace = Arc::new(ReadTrace::default());
+        let runner_trace = Arc::clone(&trace);
         let calls = Arc::new(AtomicU64::new(0));
         let observed = Arc::clone(&calls);
         let (release, wait) = std::sync::mpsc::channel::<()>();
         let wait = Mutex::new(wait);
-        let pool = synthetic_pool(move |_| {
-            assert!(wait.lock().unwrap().recv().is_err());
-            observed.fetch_add(1, Ordering::Relaxed);
-            accounted_read(TableId::ProductionLines, 3);
-            accounted_read(TableId::Focus, 4);
-            panic!("synthetic acquisition panic");
+        let pool = synthetic_pool(move |job| {
+            runner_trace.record(job.role() as usize, || {
+                assert!(wait.lock().unwrap().recv().is_err());
+                observed.fetch_add(1, Ordering::Relaxed);
+                accounted_read(TableId::ProductionLines, 3);
+                accounted_read(TableId::Focus, 4);
+                panic!("synthetic acquisition panic");
+            })
         });
         let countries = empty_country_snapshot();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
@@ -3995,10 +4038,20 @@ mod tests {
         assert_eq!(stats.roles[Role::World as usize].counters.panicked, 1);
         assert_eq!(stats.roles[Role::World as usize].counters.stopped, 2);
         let mut expected = read_accounting::ZERO;
-        expected[TableId::Clock.index()] = one_copy(2);
-        expected[TableId::ProductionLines.index()] = one_copy(3);
-        expected[TableId::Focus.index()] = one_copy(4);
-        assert_eq!(capture.finish(), expected);
+        expected[TableId::ProductionLines.index()] = copies(1, 3);
+        expected[TableId::Focus.index()] = copies(1, 4);
+        assert_eq!(trace.take(Role::World as usize), expected);
+        #[cfg(not(feature = "acquisition_profile"))]
+        {
+            let mut caller = read_accounting::ZERO;
+            caller[TableId::Clock.index()] = copies(1, 2);
+            assert_eq!(capture.finish(), caller);
+        }
+        #[cfg(feature = "acquisition_profile")]
+        {
+            expected[TableId::Clock.index()] = copies(1, 2);
+            assert_eq!(capture.finish(), expected);
+        }
     }
 
     #[test]

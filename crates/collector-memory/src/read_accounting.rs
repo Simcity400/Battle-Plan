@@ -234,13 +234,53 @@ mod counted {
 #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
 pub use counted::{Capture, merge, snapshot, snapshot_into};
 
-#[cfg(not(any(test, feature = "test-support", feature = "acquisition_profile")))]
-pub use Scope as Capture;
-
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures {
-    use super::ReadCounts;
+    use super::{Capture, ReadCounts, TableCounts, ZERO};
     use engine_native::{Memory, memory::CountedMemory, memory::SliceMemory};
+    use std::{collections::HashMap, hash::Hash, sync::Mutex};
+
+    pub struct ReadTrace<K>(Mutex<HashMap<K, TableCounts>>);
+
+    impl<K> Default for ReadTrace<K> {
+        fn default() -> Self {
+            Self(Mutex::default())
+        }
+    }
+
+    impl<K: Eq + Hash> ReadTrace<K> {
+        pub fn record<R>(&self, key: K, run: impl FnOnce() -> R) -> R {
+            let _record = Recorded {
+                trace: self,
+                capture: Some(Capture::new()),
+                key: Some(key),
+            };
+            run()
+        }
+
+        pub fn take(&self, key: K) -> TableCounts {
+            self.0.lock().unwrap().remove(&key).unwrap_or(ZERO)
+        }
+    }
+
+    struct Recorded<'a, K: Eq + Hash> {
+        trace: &'a ReadTrace<K>,
+        capture: Option<Capture>,
+        key: Option<K>,
+    }
+
+    impl<K: Eq + Hash> Drop for Recorded<'_, K> {
+        fn drop(&mut self) {
+            let counts = self.capture.take().unwrap().finish();
+            #[cfg(feature = "acquisition_profile")]
+            super::merge(&counts);
+            let mut by_key = self.trace.0.lock().unwrap();
+            let total = by_key.entry(self.key.take().unwrap()).or_insert(ZERO);
+            for (total, counts) in total.iter_mut().zip(counts) {
+                *total += counts;
+            }
+        }
+    }
 
     pub fn read(len: usize) {
         let source = [7; 32];
@@ -274,11 +314,20 @@ mod tests {
         read(3);
         let census_reads = ReadCounts::take_current();
         read(7);
-        let plan_reads = ReadCounts::take_deferred();
-        census_reads.restore_current();
+        use engine_native::{
+            Memory,
+            memory::{CountedMemory, SliceMemory},
+        };
+
+        let memory = CountedMemory::new(SliceMemory {
+            base: 0,
+            bytes: &[],
+        });
+        let plan_reads = memory.take_deferred_reads();
+        census_reads.add_current();
         read(5);
         table.select(TableId::ArmyOrderPlans);
-        plan_reads.add_current();
+        memory.add_deferred_reads(plan_reads);
         read(11);
         drop(table);
         let mut expected = ZERO;

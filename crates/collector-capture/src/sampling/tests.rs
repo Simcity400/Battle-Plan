@@ -90,6 +90,12 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
         completed.report,
         Err(acquisition::Failure::Stopped)
     ));
+    assert_eq!(
+        pool.calibration().roles[collector_workers::roles::Role::DivisionInputs as usize]
+            .counters
+            .inline_completed,
+        0
+    );
     #[cfg(feature = "acquisition_profile")]
     assert_eq!(
         completed.table_reads,
@@ -191,6 +197,12 @@ fn rejected_air_missions_reuses_the_heap_payload_and_publishes_named_first_hour_
             completed.report,
             Ok(acquisition::Report::AirMissions(_))
         ));
+        assert_eq!(
+            pool.calibration().roles[collector_workers::roles::Role::AirMissions as usize]
+                .counters
+                .inline_completed,
+            0
+        );
         #[cfg(feature = "acquisition_profile")]
         assert_eq!(
             completed.table_reads,

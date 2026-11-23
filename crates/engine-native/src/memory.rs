@@ -354,6 +354,16 @@ fn record_source_prefix(sources: RecordSources<'_>, layout: &RecordLayout<'_>) -
 }
 
 pub trait Memory {
+    #[inline]
+    fn take_deferred_reads(&self) -> ReadCounts {
+        ReadCounts::take_current()
+    }
+
+    #[inline]
+    fn add_deferred_reads(&self, reads: ReadCounts) {
+        reads.add_current();
+    }
+
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool;
 
     #[inline]

@@ -11,7 +11,7 @@ use collector_projection::projection::{
 #[cfg(test)]
 use collector_projection::table_conversion::table_iter;
 use collector_status::status::status;
-use collector_workers::spool_phases::retry_cause;
+use collector_workers::spool_phases::{HELPER, PhaseObserver, Steps, retry_cause};
 use engine_native::{cgame_state::Clock, walk::Outcome};
 #[cfg(test)]
 use replay::spool::SegmentedSpool;
@@ -3949,6 +3949,16 @@ fn decoded_with_costs(
     branch: BranchId,
     conversion: &mut SpoolConversion<'_, '_>,
 ) -> (FrameInput, collector_capture::pack_conversion::HourCosts) {
+    decoded_with_helper_steps(captured, clock, branch, conversion, &HELPER)
+}
+
+fn decoded_with_helper_steps(
+    captured: &Captured,
+    clock: Clock<&[u8]>,
+    branch: BranchId,
+    conversion: &mut SpoolConversion<'_, '_>,
+    helper_steps: &Steps<impl PhaseObserver + Sync>,
+) -> (FrameInput, collector_capture::pack_conversion::HourCosts) {
     let mut costs = collector_capture::pack_conversion::HourCosts::EMPTY;
     let metrics = Metrics {
         total_ns: captured.total_ns,
@@ -4002,7 +4012,7 @@ fn decoded_with_costs(
                     split,
                     &mut tables,
                     &mut costs,
-                    span,
+                    (span, helper_steps),
                 );
             }
         }
@@ -4234,9 +4244,12 @@ fn convert_with_helper(
     split: HelperSplit<'_>,
     tables: &mut [TableInput; TABLE_COUNT],
     costs: &mut collector_capture::pack_conversion::HourCosts,
-    span: collector_workers::spool_phases::Span<'static>,
+    (span, helper_steps): (
+        collector_workers::spool_phases::Span<'static>,
+        &Steps<impl PhaseObserver + Sync>,
+    ),
 ) {
-    use collector_workers::spool_phases::{HELPER, Phase};
+    use collector_workers::spool_phases::Phase;
     struct Converted {
         map: Option<[TableInput; 10]>,
         packs: [Option<TableInput>; TABLE_COUNT],
@@ -4314,7 +4327,7 @@ fn convert_with_helper(
         let mut packs = [const { None }; TABLE_COUNT];
         let span =
         // SAFETY: This worker records phases on the counters assigned to its spool role.
-        unsafe { HELPER.span(Phase::ConvertCore) };
+        unsafe { helper_steps.span(Phase::ConvertCore) };
         let map = (index == 0).then(|| crate::map_spool::table_inputs(map, projection.as_mut()));
         let span = span.switch(Phase::ConvertPacks);
         // SAFETY: This conversion belongs to the joined spool round and uses its shared queue.

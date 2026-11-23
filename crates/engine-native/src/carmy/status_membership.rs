@@ -219,7 +219,7 @@ static WORK: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 #[cfg(feature = "order_membership_oracle")]
 fn measure() -> [u64; 3] {
     let counts = crate::memory::ReadCounts::take_current();
-    counts.restore_current();
+    counts.add_current();
     [counts.bytes, counts.spans, engine_allocation::growths()]
 }
 #[cfg(feature = "order_membership_oracle")]

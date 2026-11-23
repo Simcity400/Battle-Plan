@@ -559,7 +559,6 @@ fn settle_worker_releases_status_without_callback_collection_and_drains_its_chil
     }
 }
 
-#[cfg(feature = "acquisition_profile")]
 #[test]
 fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_dispatch() {
     use collector_memory::read_accounting::{self, Capture, fixtures};
@@ -582,11 +581,14 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
         let children = Arc::new(Gate::default());
         let parent = Arc::new(Gate::default());
         let (started, running) = mpsc::channel();
+        let trace = Arc::new(fixtures::ReadTrace::default());
         let pool = acquisition::Pool::with_test_runner(4, {
             let children = Arc::clone(&children);
             let parent = Arc::clone(&parent);
             let ranges = AtomicUsize::new(0);
+            let runner_trace = Arc::clone(&trace);
             move |job| {
+                runner_trace.record((), || {
                 if matches!(job, acquisition::Job::PresentationStatus(request) if request.preparation)
                 {
                     let index = ranges.fetch_add(1, Ordering::Relaxed);
@@ -601,6 +603,7 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
                     assert!(!fail_parent, "setup fixture failure after range release");
                 }
                 report
+            })
             }
         });
         let mut request = request();
@@ -686,6 +689,10 @@ fn armed_setup_children_drain_without_collection_even_if_the_parent_fails_after_
         }
         let mut expected = read_accounting::ZERO;
         expected[TableId::DivisionStatus.index()] = fixtures::copies(3, 15);
+        assert_eq!(trace.take(()), expected);
+        #[cfg(not(feature = "acquisition_profile"))]
+        assert_eq!(reads.finish(), read_accounting::ZERO);
+        #[cfg(feature = "acquisition_profile")]
         assert_eq!(reads.finish(), expected);
     }
 }

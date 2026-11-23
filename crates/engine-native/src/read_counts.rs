@@ -44,18 +44,6 @@ impl ReadCounts {
         COUNTS.with(|counts| counts.replace(Self::ZERO))
     }
 
-    pub fn take_deferred() -> Self {
-        let reads = Self::take_current();
-        if reads != Self::ZERO && let Some(observe) = OBSERVER.get() {
-            observe(ReadChange::Defer(reads));
-        }
-        reads
-    }
-
-    pub fn restore_current(self) {
-        COUNTS.with(|counts| self.restore(counts));
-    }
-
     pub fn replace_observer(observer: Option<ReadObserver>) -> Option<ReadObserver> {
         OBSERVER.replace(observer)
     }
@@ -67,14 +55,6 @@ impl ReadCounts {
 
     #[inline]
     fn add_to(self, counts: &Cell<Self>) {
-        self.restore(counts);
-        if let Some(observe) = OBSERVER.get() {
-            observe(ReadChange::Add(self));
-        }
-    }
-
-    #[inline]
-    fn restore(self, counts: &Cell<Self>) {
         let mut value = counts.get();
         value += self;
         counts.set(value);
@@ -132,10 +112,26 @@ impl<M> CountedMemory<M> {
         }
         #[cfg(not(all(windows, target_env = "msvc", target_arch = "x86_64")))]
         counts.add_current();
+
+        if let Some(observe) = OBSERVER.get() {
+            observe(ReadChange::Add(counts));
+        }
     }
 }
 
 impl<M: Memory> Memory for CountedMemory<M> {
+    fn take_deferred_reads(&self) -> ReadCounts {
+        let reads = ReadCounts::take_current();
+        if let Some(observe) = OBSERVER.get() {
+            observe(ReadChange::Defer(reads));
+        }
+        reads
+    }
+
+    fn add_deferred_reads(&self, reads: ReadCounts) {
+        self.add_counts(reads);
+    }
+
     #[inline]
     fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
         #[cfg(feature = "acquisition_profile")]

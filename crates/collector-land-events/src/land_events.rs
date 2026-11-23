@@ -1464,6 +1464,22 @@ pub mod test_support {
         LIVE.epoch.load(Ordering::SeqCst)
     }
 
+    impl Owned {
+        pub fn production_enabled(&self) -> bool {
+            LIVE.enabled.load(Ordering::SeqCst)
+        }
+
+        pub fn required_words(&self) -> usize {
+            LIVE.log_required.load(Ordering::Relaxed)
+        }
+
+        pub fn observe_while_disabled(&self) {
+            assert!(!self.production_enabled());
+            // SAFETY: A disabled observer never follows either native pointer.
+            unsafe { observe_wipe(0, 0) };
+        }
+    }
+
     pub struct Fixture {
         pub(crate) observer: Observer,
     }

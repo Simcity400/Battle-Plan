@@ -167,7 +167,7 @@ impl Orders {
         let (plan_reads, plan_ticks) = self.successors.plan_gathers();
         self.ticks = self.ticks.saturating_sub(plan_ticks);
         reads.select(TableId::ArmyOrderPlans);
-        plan_reads.add_current();
+        memory.add_deferred_reads(plan_reads);
     }
     pub fn fail(&mut self, reason: &'static str) {
         let outcome = Outcome::Unavailable { reason };

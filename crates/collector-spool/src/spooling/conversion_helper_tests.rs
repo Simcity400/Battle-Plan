@@ -141,7 +141,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
         // SAFETY: This fixture owns its frame and worker state and runs without a live attachment.
         unsafe { collector_workers::spool_helper::SpoolHelper::start(None) }.unwrap(),
     ];
-    let mut helper_calls = 0;
+    let helper_steps = Steps::counted();
     let packs = PACK_NAMES.len();
     let later_first: [Option<u64>; PACK_NAMES.len()] =
         std::array::from_fn(|pack| Some(pack as u64 + 1));
@@ -157,7 +157,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
         let convert = |helper| {
             let scratch = ProjectionScratch::default();
             let mut projection = Projection::new(&encoder, 1, clock.hour, false, &scratch);
-            decoded_with_costs(
+            decoded_with_helper_steps(
                 &source,
                 clock.borrowed(),
                 1,
@@ -170,6 +170,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
                     projection: Some(&mut projection),
                     helper,
                 },
+                &helper_steps,
             )
         };
         let (serial, _) = convert(None);
@@ -177,6 +178,8 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
             for helpers in 1..=pool.len() {
                 let plan = Plan::new(estimates, helpers);
                 assert_eq!(plan.helpers(), helpers);
+                let phase = collector_workers::spool_phases::Phase::ConvertPacks;
+                let before = helper_steps.entries(phase);
                 let (split, costs) = convert(Some(HelperSplit {
                     helpers: collector_workers::spool_helper::Helpers {
                         pool: &pool,
@@ -184,6 +187,7 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
                     },
                     plan,
                 }));
+                assert_eq!(helper_steps.entries(phase) - before, helpers);
                 assert_eq!(
                     split.tables, serial.tables,
                     "{ordinary_failure:?}, {helpers}"
@@ -205,7 +209,6 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
                 let expected: Vec<bool> =
                     (0..MAX_THREADS).map(|thread| thread <= helpers).collect();
                 assert_eq!(walls, expected);
-                helper_calls += walls[1..].iter().filter(|&&ran| ran).count();
             }
         }
         if let Some(reason) = ordinary_failure {
@@ -219,5 +222,5 @@ fn the_conversion_helpers_reproduce_single_thread_conversion_whatever_the_plan()
             TableInput::Sampled(TableView::Complete(_))
         ));
     }
-    assert!(helper_calls >= 24);
+    assert!(helper_steps.entries(collector_workers::spool_phases::Phase::ConvertPacks) >= 24);
 }

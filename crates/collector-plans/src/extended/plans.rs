@@ -2105,7 +2105,7 @@ mod l3b_bench {
             let census_ticks =
                 (qpc().saturating_sub(begin).max(0) as u64).saturating_sub(plan_ticks);
             reads.select(TableId::ArmyOrderPlans);
-            plan_reads.add_current();
+            memory.add_deferred_reads(plan_reads);
             drop(reads);
             self.captured.visit(
                 memory,

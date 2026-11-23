@@ -95,7 +95,7 @@ impl Part {
         let (plan_reads, gather_ticks) = self.lists.plan_gathers();
         self.census_ticks = ticks.saturating_sub(gather_ticks);
         reads.select(TableId::ArmyOrderPlans);
-        plan_reads.add_current();
+        memory.add_deferred_reads(plan_reads);
         self.census = Some(census);
         let begin = qpc();
         let plan = corder_instance::walk_plans_ordered_with_sources(

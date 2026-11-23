@@ -65,31 +65,20 @@ use windows_sys::Win32::{
 
 macro_rules! refuse_detach {
     ($reason:expr, $retain:expr) => {{
-        refuse_detach!(
-            || {
-                // SAFETY: The caller owns teardown of the active collector session.
-                unsafe { collector_land_events::land_events::stop_observation() }
-            },
-            $reason,
-            $retain
-        );
-    }};
-    ($stop_land:expr, $reason:expr, $retain:expr) => {{
         let reason = $reason;
-        ($stop_land)();
-        // SAFETY: The caller owns teardown of the active collector session or its isolated fixture.
-        unsafe { collector_combat_log::history_events::stop() };
+        // SAFETY: Session detach refusal owns teardown of land-event and combat-history observation.
+        unsafe {
+            collector_land_events::land_events::stop_observation();
+            collector_combat_log::history_events::stop();
+        }
         ($retain)(reason);
         return Err(reason);
     }};
 }
 
 #[cfg(test)]
-pub(crate) fn refuse_land_detach_for_test(
-    fixture: &collector_land_events::land_events::test_support::Fixture,
-    retain: impl FnOnce(),
-) -> Result<(), &'static str> {
-    refuse_detach!(|| fixture.stop(), "synthetic land detach refused", |_reason| retain());
+pub(crate) fn refuse_land_detach_for_test(retain: impl FnOnce()) -> Result<(), &'static str> {
+    refuse_detach!("synthetic land detach refused", |_reason| retain());
 }
 
 #[derive(Deserialize)]
