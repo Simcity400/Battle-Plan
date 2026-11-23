@@ -627,16 +627,16 @@ fn owned_frame(hour: i32, linked: impl Fn(i32) -> bool, definition: impl Fn(i32)
     for &table in DETAIL_TABLES.iter().filter(|&&table| table != TableId::CountryLinks) {
         set(&mut frame, table, TableRows::empty(table));
     }
-    if !linked(hour) {
+    if linked(hour) {
         let TableView::Complete(TableRows::CountryLinks(links)) = &mut *frame.tables[TableId::CountryLinks.index()] else { unreachable!() };
-        links.retain(|link| link.id != 9001);
+        links.push(CountryLinkRow { id: MOVED_OWNER, canonical_slot: 7 });
     }
-    set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: 9001, local_id: 3, definition_id: definition(hour), ..Default::default() }]));
-    set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(vec![ProjectHistoryRow { owner: 9001, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: 30, ..Default::default() }]));
+    set(&mut frame, TableId::Projects, TableRows::Projects(vec![ProjectRow { owner: MOVED_OWNER, local_id: 3, definition_id: definition(hour), ..Default::default() }]));
+    set(&mut frame, TableId::ProjectHistory, TableRows::ProjectHistory(vec![ProjectHistoryRow { owner: MOVED_OWNER, project: 3, ordinal: 0, prototype_reward_handle: 41, option_handle: 42, date: 30, ..Default::default() }]));
     let spelled = [(41, "mod_reward"), (42, "mod_option"), (77, "project"), (78, "replacement")].into_iter().filter(|&(token, _)| token != 78 || hour >= 35);
     set(&mut frame, TableId::LexicalTokens, TableRows::LexicalTokens(spelled.map(|(token, literal)| LexicalTokenRow { token, literal: literal.as_bytes().to_vec() }).collect()));
     let (projects, history) = read(hour);
-    let mut slices: Vec<SliceReadRow> = [11, 9001]
+    let mut slices: Vec<SliceReadRow> = [11, MOVED_OWNER]
         .into_iter()
         .flat_map(|owner| [(TableId::Projects, projects), (TableId::ProjectHistory, history)].map(|(table, read)| read.map(|sample_hour| SliceReadRow { table: table.index() as u32, owner, sample_hour })))
         .flatten()

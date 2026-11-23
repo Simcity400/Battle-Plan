@@ -293,6 +293,7 @@ struct Coverage {
     reads: Vec<(i32, i32)>,
     whole_reads: Vec<(i32, i32)>,
     whole: Vec<(i32, i32)>,
+    parts: Vec<(i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,9 +326,11 @@ impl Reads<'_, '_> {
             let last = run.block_first_hour(block).saturating_add(replay_columnar::unit::BLOCK as i32 - 1).min(run.last_hour());
             let reads = cost::storage(|| lanes::available_reads(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
             let whole_reads = cost::storage(|| lanes::complete_reads(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
-            let whole = cost::storage(|| lanes::statuses(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
-            let whole = whole.into_iter().filter(|run| run.status == replay_columnar::manifest::Status::Complete).map(|run| (run.first, run.last)).collect();
-            cache.insert(key, Coverage { block, reads, whole_reads, whole });
+            let statuses = cost::storage(|| lanes::statuses(recording, self.run, table, first, last)).map_err(|e| format!("{what}: {e}"))?;
+            let spans = |kept: fn(&replay_columnar::manifest::Status) -> bool| statuses.iter().filter(|run| kept(&run.status)).map(|run| (run.first, run.last)).collect();
+            let whole = spans(|status| *status == replay_columnar::manifest::Status::Complete);
+            let parts = spans(|status| matches!(status, replay_columnar::manifest::Status::Truncated { .. }));
+            cache.insert(key, Coverage { block, reads, whole_reads, whole, parts });
         }
         Ok(of(&cache[&key]))
     }
@@ -372,8 +375,9 @@ impl Reads<'_, '_> {
         if !super::current(read, self.hour) {
             return Err(Withheld::Unread);
         }
-        if !self.spans(table, "Project reads", |coverage| super::within(&coverage.whole, read)).map_err(|_| Withheld::Partial)? {
-            return Err(Withheld::Partial);
+        let (whole, part) = self.spans(table, "Project reads", |coverage| (super::within(&coverage.whole, read), super::within(&coverage.parts, read))).map_err(|_| Withheld::Unread)?;
+        if !whole {
+            return Err(if part { Withheld::Partial } else { Withheld::Unread });
         }
         self.held_since(owner, read)
     }
