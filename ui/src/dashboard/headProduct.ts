@@ -16,8 +16,8 @@ import type { Live, LiveValues } from '../charts/live';
 import { PreparingPage } from './preparing.ts';
 import { useRecordedRows } from './widgetPerf.ts';
 import { recordedPanelRows } from '../draw/panels/views.ts';
-import { asFailure } from './queryError.ts';
-import type { Pipeline } from './follow/pipeline';
+import { asFailure, RefusedError } from './queryError.ts';
+import { restartPipeline, type Pipeline } from './follow/pipeline.ts';
 import { coverageOf, useReadsRegion, type ReadCoverage } from './widgetTime.ts';
 import { axisHour, regionFollows, regionHour, type AxisHour, type ParamsFor, type Region, type TrackHour } from './regionTime.ts';
 import type { Gate } from './regionGate';
@@ -119,8 +119,11 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
   const panel = installedPanel(model);
   const pushed = following && view?.mode === 'picture' && panel !== undefined;
   const fromPanel = pushed ? panelReply(panel, validate) : {};
-  const named = checked?.refused ?? (following && (view?.mode === 'failed' || view?.mode === 'refused') ? view.reason ?? 'The followed stream failed' : undefined);
-  const followFailure = useMemo(() => named === undefined ? undefined : asFailure(new Error(named)), [named]);
+  const refusedNamed = checked?.refused ?? (following && view?.mode === 'refused' ? view.reason ?? 'Not in this recording' : undefined);
+  const failedNamed = following && view?.mode === 'failed' ? view.reason ?? 'The followed stream failed' : undefined;
+  const subError = following && pipeline && sub !== undefined ? (pipeline.status(sub).error ?? (pipe !== null ? pipeline.widgetError(pipe) : undefined)) : undefined;
+  const followFailure = useMemo(() => refusedNamed !== undefined ? new RefusedError(refusedNamed)
+    : failedNamed !== undefined ? (subError ?? asFailure(new Error(failedNamed))) : undefined, [refusedNamed, failedNamed, subError]);
   const live = useMemo(() => pipeline && pipe !== null && sub !== undefined ? installedLive(pipeline, pipe, sub) : null, [pipeline, pipe, sub]);
   const asked = useFollowedProduct<T>(runtime.client, hour === null ? null : forwardRequest(track!.source, product, { ...params, branchId: track!.branch.id, hour } as unknown as ParamsFor<K>),
     [], active, validate, track?.source);
@@ -153,14 +156,14 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
     return () => pipeline.answer(pipe, owner, null);
   }, [pipeline, pipe, owner, pinned, data, at, panelName, auditable]);
   useLayoutEffect(() => {
-    if (!perfLog || pipe === null || !pinned || !auditable) return;
-    perfLog.reader(pipe, owner, async hour => {
+    if (!perfLog || !pipeline || pipe === null || !pinned || !auditable) return;
+    return perfLog.reader(pipe, owner, async hour => {
       const read = exactNow.current;
       if (!read) return null;
       const raw = await read(hour);
       return { values: new Map(panelAuditRows(panelName, raw, exactLive(raw)).map(row => [row.key, row.value])) };
-    });
-  }, [pipe, owner, pinned, panelName, auditable]);
+    }, pipeline.generation);
+  }, [pipeline, pipe, owner, pinned, panelName, auditable]);
   useLayoutEffect(() => {
     if (!perfLog || !pipeline || pipe === null || sub === undefined || !auditable) return;
     let texted = false;
@@ -170,21 +173,29 @@ export function useHeadProduct<T, const K extends DeclaredProduct>(runtime: Widg
       if (texts) return [...texts].map(([key, value]) => ({ row: key, key, value }));
       return panel?.data === undefined ? undefined : panelAuditRows(panelName, panel.data, fields[`live:${sub}`] as ReadonlyMap<string, unknown> | null | undefined);
     });
-    perfLog.reader(pipe, sub, async hour => {
+    const stopReader = perfLog.reader(pipe, sub, async hour => {
       const read = exactNow.current;
       if (!read) return null;
       const raw = await read(hour), live = exactLive(raw);
       const rows = texted ? [...panelTexts(panelName, raw, live, hour) ?? []].map(([key, value]) => ({ row: key, key, value })) : panelAuditRows(panelName, raw, live);
       return { values: new Map(rows.map(row => [row.key, row.value])) };
-    });
-    return () => pipeline.audit(pipe, sub, null);
+    }, pipeline.generation);
+    return () => { stopReader(); pipeline.audit(pipe, sub, null); };
   }, [pipeline, pipe, sub, panelName, auditable]);
   useRecordedRows(panelName, pushed && data !== undefined && at !== null && exactRead ? {
     hour: at, rows: () => recordedPanelRows(panelName, data), exact: async () => recordedPanelRows(panelName, await exactRead(at)),
   } : undefined, pipe ?? undefined);
+  const followRetryable = following && (failedNamed !== undefined || (fromPanel.error !== undefined && !(fromPanel.error instanceof RefusedError)));
+  const retry = useCallback(() => {
+    if (following) {
+      if (followRetryable && pipeline) restartPipeline(pipeline);
+      return;
+    }
+    asked.retry();
+  }, [following, followRetryable, pipeline, asked.retry]);
   const shownThrough = () => outside ? null : following ? (pipe === null || !pipeline ? null : pipeline.view(pipe)?.through ?? null) : data === undefined ? null : at;
   return {
-    data, error, retry: asked.retry, root, hour, live: shownLive, ...coverageOf(gate.outside),
+    data, error, retry, root, hour, live: shownLive, ...coverageOf(gate.outside),
     structure: outside || !pushed ? undefined : model?.structure,
     exactRead,
     workerFollow: pushed ? sub : undefined,

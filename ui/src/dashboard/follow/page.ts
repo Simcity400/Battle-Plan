@@ -646,7 +646,7 @@ export class Page<B extends Bitmap = Bitmap> {
     if (change.bounds !== undefined) widget.bounds = change.bounds;
     if (change.pin !== undefined || change.offset !== undefined || change.bounds !== undefined) this.trackBounds(widget);
     this.retireEarly(widget, 'binding');
-    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget)) this.reading(widget); }
+    if (change.subscription) { widget.failed = false; if (this.failedRoute(widget) || widget.status === 'failed' || widget.status === 'refused') this.reading(widget); }
     else if (change.pin !== undefined || change.offset !== undefined) this.revalidate(widget);
     this.touched.add(widget);
     this.tell();
@@ -676,11 +676,11 @@ export class Page<B extends Bitmap = Bitmap> {
     this.request(true, false);
   }
 
-  name(id: number, status: 'failed' | 'reading', reason?: string) {
+  name(id: number, status: 'failed' | 'refused' | 'reading', reason?: string) {
     const widget = this.widgets.get(id);
     if (!widget) return;
-    if (status === 'failed') widget.failed = true;
-    this.retireEarly(widget, status === 'failed' ? 'failed' : 'binding');
+    if (status === 'failed' || status === 'refused') widget.failed = true;
+    this.retireEarly(widget, status === 'reading' ? 'binding' : status);
     this.clear(widget, status, reason);
     this.tell();
   }
@@ -717,6 +717,29 @@ export class Page<B extends Bitmap = Bitmap> {
     this.post('all', { type: 'fail', route, seek: this.seek, command, reason });
     this.tell();
     return true;
+  }
+
+  dispose() {
+    for (const presentation of this.queue) for (const entry of presentation.entries) { this.earlyClosed.delete(entry); closeParts(entry); this.disown(entry); }
+    this.queue = [];
+    for (const widget of this.widgets.values()) {
+      if (widget.early) { this.earlyClosed.delete(widget.early); closeParts(widget.early); this.disown(widget.early); widget.early = null; }
+      for (const entry of widget.earlyMore) { this.earlyClosed.delete(entry); closeParts(entry); this.disown(entry); }
+      widget.earlyMore = [];
+      this.drop(widget.installed);
+      widget.installed = null;
+      widget.surfaces = [];
+      widget.changed = undefined;
+      widget.dated = undefined;
+    }
+    this.widgets.clear(); this.routes.clear(); this.byRoute.clear(); this.earlyWidgets.clear(); this.bounded.clear();
+    this.kept.clear(); this.sent.clear(); this.touched.clear(); this.redated.clear();
+    this.safeLo = -Infinity; this.safeHi = Infinity; this.safeDirty = false;
+    for (const map of this.laneConfirmed) map.clear();
+    for (const set of this.inspectedByLane) set.clear();
+    for (const list of this.acks) list.length = 0;
+    for (const list of this.refusals) list.length = 0;
+    for (let i = 0; i < this.targets.length; i++) this.targets[i] = -Infinity;
   }
 
   pending(lane: number) { return { installed: this.acks[lane]!.length, refused: this.refusals[lane]!.length }; }

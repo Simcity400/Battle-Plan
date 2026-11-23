@@ -8,11 +8,12 @@ import type { WidgetRuntime } from './definitions';
 
 const replacements: Record<string, string> = {
   '/dashboard/definitions.ts': `export const widgetUnavailable = () => null;
-    export const widgetDefinition = () => ({ data: true, render: () => 'RENDERED' });`,
+    export const widgetDefinition = kind => ({ data: true,
+      playsBackDated: kind === 'synthetic-dated',
+      render: () => 'RENDERED' });`,
 };
 
-// quarantine: #3 re-enable in the dashboard rework; the issue names its failure
-test.skip('a default-campaign widget is gated by the campaign it renders, not its saved tracks', async () => {
+test('a default-campaign widget is gated by the campaign it renders, not its saved tracks', async () => {
   const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'widget-scope', enforce: 'pre',
       transform(_source, id) { return Object.entries(replacements).find(([suffix]) => id.replaceAll('\\', '/').endsWith(suffix))?.[1]; } }] });
@@ -26,10 +27,15 @@ test.skip('a default-campaign widget is gated by the campaign it renders, not it
         time: { mode: 'follow' }, countries: { kind: 'tags', tags: [] } } as WidgetSpec,
       runtime: { tracks, campaignTracks: tracks, defaultRoleId, maps: {}, client: {}, clock: { getHour: () => 0, getSnapshot: () => ({ playing }) } } as unknown as WidgetRuntime }));
     assert.match(render('full', 'track-map'), /RENDERED/, 'Map to Full: the Full default renders');
-    assert.match(render('map', 'track-full'), /Not in this recording: a Map recording/, 'Full to Map: the Map default is gated');
-    assert.match(render('full', 'track-full', true), /Synthetic isn(?:&#x27;|')t playing back yet/);
-    for (const kind of ['research', 'active-research', 'special-projects', 'doctrine-mastery', 'nuclear-arsenal']) {
-      assert.match(render('full', 'track-full', true, kind), /RENDERED/, kind);
-    }
+    const gated = render('map', 'track-full');
+    assert.match(gated, /This is a Map recording, which holds the campaign map and battle windows only\./, 'Full to Map: the Map default is gated');
+    assert.match(gated, /data-state="unavailable"/);
+    assert.doesNotMatch(gated, /is-error|role="alert"/);
+    const placeholder = render('full', 'track-full', true, 'synthetic');
+    assert.match(placeholder, /Synthetic isn’t playing back yet\./);
+    assert.match(placeholder, /data-state="placeholder"/);
+    assert.match(placeholder, /data-playback-placeholder/);
+    assert.doesNotMatch(placeholder, /is-error|role="alert"/);
+    assert.match(render('full', 'track-full', true, 'synthetic-dated'), /RENDERED/, 'a playsBackDated widget renders during playback');
   } finally { await vite.close(); }
 });

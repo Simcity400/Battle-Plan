@@ -5,6 +5,8 @@ import { FollowedCard, installedEntry, type FollowEntry, type FollowQuery, type 
 import { observeOnScreen, useWidgetKey } from '../../dashboard/follow/useFollow.ts';
 import type { OnScreen } from '../../dashboard/follow/useFollow';
 import { branchBounds, useElement, useFollowedWidget, useInstalled, useOnScreen, usePipeline } from '../../dashboard/follow/useFollowed.ts';
+import { restartPipeline } from '../../dashboard/follow/pipeline.ts';
+import { asFailure, type Failure } from '../../dashboard/queryError.ts';
 import { PreparingPage } from '../../dashboard/preparing.ts';
 import type { Live } from '../../charts/live';
 
@@ -12,7 +14,9 @@ export interface FollowedAll {
   entries: readonly (FollowEntry | null)[];
   reason?: string;
   failure?: string;
+  error?: Failure;
   outside?: boolean;
+  retry: () => void;
   current: (at: number) => FollowEntry | null;
   subscribe: (changed: () => void) => () => void;
 }
@@ -50,11 +54,20 @@ export function useFollowedAll(store: FollowStore | null, queries: readonly (Fol
   }), [pipeline, pipe, subs, key]);
   const current = useCallback((at: number) => entries[at] ?? null, [entries]);
   const subscribe = useCallback((changed: () => void) => pipeline && pipe !== null ? pipeline.onInstall(pipe, changed) : () => {}, [pipeline, pipe]);
-  return useMemo(() => {
+  const outcome = useMemo(() => {
     const unavailable = entries.find((entry, at) => queries[at] && entry?.status === 'unavailable');
-    const failed = entries.find((entry, at) => queries[at] && entry?.status === 'failed');
-    return { entries, reason: unavailable?.reason, ...(failed && { failure: failed.reason ?? 'The followed stream failed' }), outside: view?.mode === 'outside', current, subscribe };
-  }, [entries, view, current, subscribe]);
+    const failed = entries.filter((entry, at): entry is FollowEntry => !!queries[at] && entry?.status === 'failed');
+    const cause = failed.find(entry => entry.error !== undefined) ?? failed[0];
+    const failure = cause ? cause.reason ?? 'The followed stream failed' : undefined;
+    const error = cause ? cause.error ?? asFailure(new Error(failure!)) : undefined;
+    return { reason: unavailable?.reason, failure, error };
+  }, [entries]);
+  const retryable = outcome.error !== undefined;
+  const retry = useCallback(() => { if (retryable && pipeline) restartPipeline(pipeline); }, [retryable, pipeline]);
+  return useMemo(() => ({
+    entries, reason: outcome.reason, ...(outcome.failure && { failure: outcome.failure }), ...(outcome.error && { error: outcome.error }),
+    outside: view?.mode === 'outside', retry, current, subscribe,
+  }), [entries, outcome, view, retry, current, subscribe]);
 }
 
 export function handedLive<T>(all: () => FollowedAll, at: number,

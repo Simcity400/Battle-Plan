@@ -165,6 +165,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   private minPruneHour = Infinity;
   private readonly limitedSubs = new Set<number>();
   private readonly failedSubs = new Set<number>();
+  private readonly failedWidgets = new Set<number>();
   private readonly routes = new Map<number, number>();
   private readonly natives = new Map<number, number>();
   private readonly offsets = new Map<number, number>();
@@ -333,6 +334,8 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   }
 
   private failWidget(widget: Widget, reason: string) {
+    if (this.failedWidgets.has(widget.id)) return;
+    this.failedWidgets.add(widget.id);
     widget.halted = widget.binding.generation;
     widget.motion = false;
     widget.inflight = null;
@@ -454,6 +457,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
   unmount(widget: number) {
     const held = this.widgets.get(widget);
     if (held) this.unindexWidget(held);
+    this.failedWidgets.delete(widget);
     this.widgets.delete(widget);
     for (const [id, owner] of this.presented) if (owner.widget === widget) this.presented.delete(id);
   }
@@ -1057,7 +1061,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
       const widget = this.widgets.get(refusal.widget);
       if (!widget) continue;
       if (widget.inflight?.id === refusal.id) widget.inflight = null;
-      if (refusal.reason === 'failed') widget.halted = widget.binding.generation;
+      if (refusal.reason === 'failed' || refusal.reason === 'refused') widget.halted = widget.binding.generation;
       if (refusal.reason === 'kept content') widget.installed = null;
       widget.parked = refusal.reason === 'uncovered' && owner ? owner.sent : null;
       widget.sent = { ...widget.installed?.contents ?? {} };
@@ -1205,7 +1209,7 @@ export class Lane<B extends { readonly width: number; close(): void }> {
     const due: { widget: Widget; selected: Selected; motion: boolean; target: number }[] = [];
     for (const wid of candidates) {
       const widget = this.widgets.get(wid);
-      if (!widget || widget.halted === widget.binding.generation) continue;
+      if (!widget || widget.halted === widget.binding.generation || this.failedWidgets.has(wid)) continue;
       this.stats.visited++;
       if (!request.exact && widget.parked) { widget.parked = null; this.parkedWidgets.delete(wid); }
       const key = inspect.get(widget.id) ?? null, target = this.targetOf(widget, request.target);

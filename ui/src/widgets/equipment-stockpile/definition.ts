@@ -39,6 +39,6 @@ export const definition = {
   description: 'What a country holds of each equipment type and model, where the game says it is short, and what it makes a day.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'follow', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
-  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
+  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS, viewSwitch: { option: 'count' },
   variants: choiceVariants(OPTIONS.find(field => field.key === 'view'), () => 'Stockpile over time'),
 } as const satisfies WidgetMeta;

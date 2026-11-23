@@ -1,4 +1,4 @@
-export const OUTCOME_RANK = Object.freeze({ content: 0, placeholder: 1, refusal: 2, error: 3 });
+export const OUTCOME_RANK = Object.freeze({ content: 0, outside: 1, 'not-recorded': 1, placeholder: 2, refusal: 3, error: 4 });
 
 export function mergeWidgetOutcomes(widgets, observed) {
   return widgets.map(widget => {
@@ -39,7 +39,7 @@ export async function measureIdleCost({ pausePlayback, waitPlayButton, setSpeed,
 }
 
 export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, observe, requestFrame, cancelFrame, waitForPlaying = false }) {
-  const rank = { content: 0, placeholder: 1, refusal: 2, error: 3 };
+  const rank = { content: 0, outside: 1, 'not-recorded': 1, placeholder: 2, refusal: 3, error: 4 };
   const worst = new Map();
   let active = !waitForPlaying || isPlaying();
   let stopped = false;
@@ -116,22 +116,31 @@ export function createOutcomeWatcher({ grid, playHost, isPlaying, classify, obse
   };
 }
 
-export function buildWidgetClassifierExpr(classifySnapshot, refusalPattern) {
+export function buildWidgetClassifierExpr(classifySnapshot) {
   return `(a => {
     const classify = ${classifySnapshot.toString()};
-    const refusal = new RegExp(${JSON.stringify(refusalPattern.source)}, 'i');
-    const placeholder = a.querySelector('.dash-empty[role="status"]');
+    const readDetail = el => el ? (el.getAttribute('data-detail')?.trim() || el.getAttribute('data-tooltip')?.trim() || el.textContent?.trim() || null) : null;
+    const bodyState = a.querySelector('.widget-state[data-state]:not(.is-section)') ?? a.querySelector('[data-state]');
+    const domState = bodyState?.getAttribute('data-state') ?? null;
+    const placeholder = a.querySelector('[data-playback-placeholder], [data-state="placeholder"]');
     const unavailable = a.querySelector('[data-state="unavailable"]');
     const error = a.querySelector('[data-state="error"], [role="alert"]');
+    const outside = a.querySelector('[data-state="outside"]');
+    const notRecorded = a.querySelector('[data-state="not-recorded"]');
     const empty = a.querySelector('[data-state="empty"]');
     const probe = window.__e2e?.stateOf?.(a) ?? null;
     return classify({
+      domState,
+      domDetail: readDetail(bodyState),
+      isPlaceholder: Boolean(placeholder),
       placeholderText: placeholder?.textContent ?? null,
-      unavailableText: unavailable ? (unavailable.getAttribute('data-tooltip')?.trim() || unavailable.textContent || 'unavailable') : null,
-      errorDetail: error ? (error.getAttribute('data-detail')?.trim() || error.textContent || 'error') : null,
+      unavailableText: unavailable ? (readDetail(unavailable) || 'unavailable') : null,
+      errorDetail: error ? (readDetail(error) || 'error') : null,
+      outsideText: outside ? (readDetail(outside) || 'outside') : null,
+      notRecordedText: notRecorded ? (readDetail(notRecorded) || 'not-recorded') : null,
       emptyText: empty?.textContent ?? null,
       probeState: probe?.state ?? null,
       probeDrawing: Boolean(probe?.drawing),
-    }, refusal);
+    });
   })`;
 }

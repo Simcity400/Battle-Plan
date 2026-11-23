@@ -1,8 +1,5 @@
-import { useContext, useEffect, useMemo, useRef } from 'react';
-import type { ReactNode } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useMemo, useRef } from 'react';
 import WidgetState from '../../components/WidgetState';
-import { Segmented } from '../../components/Segmented';
 import Sunburst from '../../charts/sunburst/Sunburst';
 import type { SunburstText, SunburstValues } from '../../charts/sunburst/Sunburst';
 import type { SunburstItem, SunburstKey } from '../../charts/sunburst/layout';
@@ -14,7 +11,6 @@ import { columnAt, columnsLayer } from '../../charts/columns';
 import type { ColumnPeriod } from '../../charts/columns';
 import { liveAt } from '../../charts/live';
 import type { Live } from '../../charts/live';
-import { HeaderActionsSlot } from '../../charts/ZoomReset';
 import { useChartTokens } from '../../charts/useChartTokens';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { icDecimals } from '../../dashboard/icDecimals';
@@ -24,7 +20,6 @@ import { usePlaybackMotion } from '../../dashboard/playback';
 import { UNIT, formatAppliedIc, noProductionAt, spendingRecorded } from '../production-spending/spendingData';
 import type { SpendingWindow } from '../production-spending/spendingData';
 import { useSpending } from '../production-spending/useSpending';
-import { VIEWS } from './definition';
 import type { DockyardViewChoice } from './definition';
 import { LEVELS, formatExactIc, monthColumns, monthLabel, monthsOf, reasonLabel } from './dockyardData';
 import type { Exact, PurposeMonth } from './dockyardData';
@@ -55,7 +50,7 @@ const NO_WARNINGS: string[] = [];
 const ZERO: Exact = { exact: 0n, reason: null };
 const sentence = (text: string) => text[0].toUpperCase() + text.slice(1);
 
-export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnostics, headerSlot, setOption }: WidgetProps & { kind: PurposeSpendingKind }) {
+export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnostics }: WidgetProps & { kind: PurposeSpendingKind }) {
   const options = resolveOptions(kind.options, widget.options);
   const view: DockyardViewChoice = options.view === 'months' ? 'months' : 'circle';
   const headKey = useRef<(hour: number) => string>(() => '');
@@ -69,26 +64,20 @@ export function PurposeSpendingWidget({ kind, widget, runtime, active, onDiagnos
     return () => onDiagnostics(NO_WARNINGS);
   }, [data, onDiagnostics]);
   headKey.current = at => view === 'months' || !data || end == null ? view : JSON.stringify(emptyAt(kind, data, { from, hour: at, end }));
-  const actions = useContext(HeaderActionsSlot);
-  const slot = actions ?? headerSlot;
-  const header = slot && setOption && createPortal(<Segmented value={view} options={VIEWS}
-    onChange={value => setOption('view', value)} label={`${kind.name} view`} />, slot);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
 
   const read = data && (spendingRecorded(data) || kind.read?.(data) === true);
-  let body: ReactNode;
-  if (!track || !tag) body = <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
-  else if (error) body = <WidgetState kind="error" failure={error} onRetry={retry} />;
-  else if (!data) body = <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
-  else if (!read) body = <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;
-  else if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) body = <WidgetState kind="outside" />;
-  else if (view === 'months') body = <PurposeMonths kind={kind} data={data} options={options}
+  if (!track || !tag) return <WidgetState kind="empty" icon="sunburst" message={`Load a campaign and choose a country to see its ${kind.name.toLowerCase()}.`} />;
+  if (error) return <WidgetState kind="error" failure={error} onRetry={retry} />;
+  if (!data) return <WidgetState kind="loading" label={`Loading ${kind.name.toLowerCase()}…`} />;
+  if (!read) return <WidgetState kind="unavailable" message={`${kind.name} wasn’t recorded.`} />;
+  if (hour == null || end == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="outside" />;
+  if (view === 'months') return <PurposeMonths kind={kind} data={data} options={options}
     extent={[from ?? track.branch.firstHour, widget.time.mode === 'range' ? hour : track.branch.lastHour]}
     last={headAt ? track.branch.lastHour : hour} playhead={headAt ? hour : null} headAt={headAt} runtime={runtime}
     branchStart={track.branch.firstHour} decimals={decimals} digits={digits} hoursPerSecond={hoursPerSecond} active={active} />;
-  else body = <PurposeCircle kind={kind} data={data} window={{ from, hour, end }} options={options} decimals={decimals} digits={digits}
+  return <PurposeCircle kind={kind} data={data} window={{ from, hour, end }} options={options} decimals={decimals} digits={digits}
     headAt={headAt} runtime={runtime} hoursPerSecond={hoursPerSecond} active={active} />;
-  return <>{header}{body}</>;
 }
 
 function emptyAt(kind: PurposeSpendingKind, data: SpendingData, window: SpendingWindow): [boolean, string] {

@@ -10,7 +10,7 @@ test('all installed kinds have independent lazy loaders and unknown saved kinds 
   assert.equal(await loadWidgetRenderer('uninstalled-synthetic-kind'), undefined);
   const registry = readFileSync(new URL('./index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(registry, /import \w+ from ['"]\.\/[^'"]+['"]/);
-  assert.match(registry, /'map': lazyWidget\('map', \['render', 'headerControls'\]\)/);
+  assert.match(registry, /'map': lazyWidget\('map', \['render'\]\)/);
 });
 
 test('every installed widget registers its body and all declared lazy slots', () => {
@@ -21,7 +21,7 @@ test('every installed widget registers its body and all declared lazy slots', ()
     const entry = ['index.ts', 'index.tsx'].map(name => new URL(`./${meta.kind}/${name}`, import.meta.url)).find(existsSync);
     assert.ok(entry, `${meta.kind} must provide an index.ts or index.tsx entry`);
     const source = readFileSync(entry, 'utf8');
-    for (const slot of ['headerControls', 'countryChip']) {
+    for (const slot of ['countryChip']) {
       if (new RegExp(`\\b${slot}\\s*[:,]`).test(source)) assert.ok(slots?.includes(`'${slot}'`), `${meta.kind} must retain ${slot}`);
     }
   }
@@ -47,7 +47,7 @@ test('every widget module loads with its registered lazy body and the catalogue 
       const renderer = await load(meta.kind);
       assert.equal(typeof renderer.render, 'function', `${meta.kind} body loads`);
       assert.equal(typeof registered.render, 'function', `${meta.kind} body is registered`);
-      for (const slot of ['headerControls', 'countryChip']) {
+      for (const slot of ['countryChip']) {
         if (renderer[slot]) assert.equal(typeof registered[slot], 'function', `${meta.kind} ${slot} is registered`);
       }
       if (renderer.usePresets) assert.equal(registered.usePresets, renderer.usePresets, `${meta.kind} presets are available on first catalogue open`);
