@@ -12,7 +12,7 @@ export function modelLabel(name: string): string {
 }
 
 export function aircraftTitle(entry: Pick<AircraftEntry, 'titles' | 'name'>): string {
-  return entry.titles.length ? entry.titles.join(' / ') : modelLabel(entry.name);
+  return entry.titles[0] ?? modelLabel(entry.name);
 }
 
 export function loadAircraftChoice(recording: string, storage?: ChoiceStorage): AircraftChoice | null {

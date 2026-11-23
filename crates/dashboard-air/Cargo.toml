@@ -17,6 +17,7 @@ test-support = ["dashboard-base/test-support"]
 content-reader-defines.workspace = true
 content-reader-gui.workspace = true
 content-reader-key-names.workspace = true
+content-reader-layers.workspace = true
 content-reader-map.workspace = true
 content-reader-mesh.workspace = true
 content-reader-parser.workspace = true
